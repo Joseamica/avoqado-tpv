@@ -402,4 +402,21 @@ sealed class NavRoute(val route: String) {
      * intocado, regla dura del founder.
      */
     data object TableCheckout : NavRoute("table_checkout")
+
+    companion object {
+        /**
+         * 🔴 Dónde se pinta el aviso de cobros sin confirmar, y por qué son TRES y no una.
+         *
+         * Desde F0 una obligación pendiente cerca su VENTA y ya no apaga la terminal, así que el
+         * negocio sigue cobrando — y con eso vuelve a caber recobrar la misma venta entrando por
+         * otra puerta. Las dos puertas las midió Codex el 2026-09-12: **Pago rápido**, que no
+         * lleva orden y por tanto no tiene cerca, y el **carrito**, que al volver crea una orden
+         * NUEVA con otra identidad. En el Inicio el aviso llega cuando el cajero ya pasó.
+         *
+         * Vive aquí, con las rutas de verdad, para que una prueba pueda vigilarlo: dentro del
+         * composable nadie lo alcanzaba. Ver `AvisoDeCobrosPendientes`.
+         */
+        val RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES: Set<String> =
+            setOf(Home.route, FastPaymentEntry.route, Checkout.route)
+    }
 }

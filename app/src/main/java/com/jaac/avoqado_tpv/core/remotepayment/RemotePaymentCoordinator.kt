@@ -120,6 +120,8 @@ class RemotePaymentCoordinator @Inject constructor(
         return remotePaymentInbox.markProcessing(requestId)
     }
 
+    fun observePendingObligations(venueId: String) = remotePaymentInbox.observePendingObligations(venueId)
+
     fun observePendingObligationCount(venueId: String) = remotePaymentInbox.observePendingObligationCount(venueId)
 
     suspend fun prepareSocketPaymentRequest(

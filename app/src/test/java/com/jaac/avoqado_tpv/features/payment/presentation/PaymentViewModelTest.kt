@@ -275,7 +275,7 @@ class PaymentViewModelTest {
 
         // 📒 Ledger (La Libreta) — relaxed: the wiring is observational, tests verify the calls
         mockPaymentAttemptLedger = mockk(relaxed = true) {
-            coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+            coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
             coEvery { markKernelEntered(any()) } returns true
             coEvery { markHostResponded(any(), any(), any(), any(), any()) } returns true
@@ -1013,7 +1013,7 @@ class PaymentViewModelTest {
                 tipCents = 0L,
                 recordingRoute = PaymentAttemptEntity.ROUTE_REFUND,
                 contextJson = capture(contextJson),
-                kind = PaymentAttemptEntity.KIND_REFUND
+                kind = PaymentAttemptEntity.KIND_REFUND, esKiosco = any()
             )
         }
         assertThat(attemptId.captured).isNotEmpty()
@@ -1041,7 +1041,7 @@ class PaymentViewModelTest {
             mockPaymentAttemptLedger.openAttempt(
                 attemptId = capture(ids), venueId = any(), processor = any(), amountCents = any(),
                 tipCents = any(), recordingRoute = any(), contextJson = any(),
-                kind = PaymentAttemptEntity.KIND_REFUND
+                kind = PaymentAttemptEntity.KIND_REFUND, esKiosco = any()
             )
         }
         assertThat(ids.toSet()).hasSize(2)
@@ -1262,7 +1262,7 @@ class PaymentViewModelTest {
         assertThat(estado).isInstanceOf(PaymentState.Error::class.java)
         assertThat((estado as PaymentState.Error).message).contains("sin registrar")
         assertThat(estado.canRetry).isFalse()
-        coVerify(exactly = 0) { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         vm.viewModelScope.cancel()
     }
 
@@ -1326,7 +1326,7 @@ class PaymentViewModelTest {
         // la fila abierta no se cerraba nunca y se marcaba «registrada» una llave sin fila.
         val abierta = slot<String>()
         coEvery {
-            mockPaymentAttemptLedger.openAttempt(capture(abierta), any(), any(), any(), any(), any(), any(), any())
+            mockPaymentAttemptLedger.openAttempt(capture(abierta), any(), any(), any(), any(), any(), any(), any(), any())
         } returns true
         coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
             Result.success(mockk(relaxed = true))
@@ -1649,7 +1649,7 @@ class PaymentViewModelTest {
     @Test
     fun `review durable snapshot preserves kiosk attribution instead of logged in staff`() = runTest {
         val savedContext = slot<String>()
-        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any()) } returns true
+        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any(), any()) } returns true
         val vm = createViewModel()
         try {
             vm.setKioskPaymentMode(true, "original-kiosk-seller")
@@ -1664,7 +1664,7 @@ class PaymentViewModelTest {
     @Test
     fun `startPayment opens a ledger attempt before charging`() = runTest {
         val savedContext = slot<String>()
-        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any()) } returns true
+        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any(), any()) } returns true
         val viewModel = createViewModel()
 
         viewModel.startPayment("100.00", null)
@@ -1674,7 +1674,7 @@ class PaymentViewModelTest {
         coVerify {
             mockPaymentAttemptLedger.openAttempt(
                 any(), any(), PaymentAttemptEntity.PROCESSOR_BLUMON,
-                any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any()
             )
         }
 

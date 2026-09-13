@@ -40,7 +40,12 @@ class PaymentAttemptLedger @Inject constructor(
         tipCents: Long,
         recordingRoute: String,
         contextJson: String,
-        kind: String = PaymentAttemptEntity.KIND_SALE
+        kind: String = PaymentAttemptEntity.KIND_SALE,
+        /**
+         * 🔴 En autoservicio NO hay cajero que distinga «reintento» de «venta nueva», así que
+         * cualquier obligación pendiente vuelve a apartar el aparato. Ver [PaymentAttemptDao.reserveTerminal].
+         */
+        esKiosco: Boolean = false,
     ): Boolean {
         if (!isEnabled()) return true
         // Cancellation propagates; a failed write cannot become permission to charge.
@@ -48,7 +53,12 @@ class PaymentAttemptLedger @Inject constructor(
             withContext(Dispatchers.IO) {
                 val json = runCatching { com.google.gson.JsonParser.parseString(contextJson).asJsonObject }.getOrNull()
                 val order = json?.get("orderId")?.takeUnless { it.isJsonNull }?.asString
-                val fragment = if (order.isNullOrBlank()) null
+                // 🔴 `isNullOrEmpty`, NO `isNullOrBlank`: el SQL de la guarda 1 decide «tiene
+                // identidad» con `instr(ctx,'"orderId":"')` y sólo descarta la cadena vacía, así
+                // que un id de puros espacios le parecía identidad válida mientras aquí se
+                // descartaba — la venta quedaba sin cerca Y el aparato suelto. Los dos criterios
+                // tienen que ser el MISMO (hallazgo de Codex, 2026-09-12).
+                val fragment = if (order.isNullOrEmpty()) null
                     else "\"orderId\":" + com.google.gson.Gson().toJson(order)
                 // 🛑 La CERCA del cobro remoto viaja a la sentencia: una solicitud con lápida, con cancel
                 // aceptado o con su desenlace final ya escrito NO admite ningún intento nuevo (C.5 / H.3).
@@ -62,7 +72,7 @@ class PaymentAttemptLedger @Inject constructor(
                     attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
                     amountCents = amountCents, tipCents = tipCents, recordingRoute = recordingRoute,
                     contextJson = contextJson, orderJsonFragment = fragment, now = now,
-                    terminalPaymentRequestId = solicitudRemota
+                    terminalPaymentRequestId = solicitudRemota, esKiosco = esKiosco
                 )
                 if (rowId > 0L) {
                     Timber.d("📒 [Libreta] PREPARANDO | attemptId=%s amount=%d+%d", attemptId, amountCents, tipCents)
@@ -118,6 +128,46 @@ class PaymentAttemptLedger @Inject constructor(
     } catch (error: Exception) {
         Timber.e(error, "📒 [Libreta] no se pudo leer si hay un cobro sin resolver — se asume que SÍ")
         CobroSinResolver(null)
+    }
+
+    /**
+     * 🔴 ¿Cuál es MI cobro pendiente? Adopción por IDENTIDAD, nunca «el último».
+     *
+     * Un ViewModel recreado necesita recuperar el intento que dejó en vuelo. Hasta el 2026-09-12
+     * bastaba con pedir «el cobro sin resolver» porque sólo podía haber uno: una obligación
+     * pendiente apagaba el aparato entero. Desde que cerca su propia venta y deja cobrar las demás,
+     * pueden convivir varias — y adoptar la más reciente sería colgarle a esta solicitud el
+     * desenlace de otra cuenta: dinero mal atribuido, que es justo lo que la libreta existe
+     * para impedir.
+     *
+     * **Sólo por identidad**: la fila cuyo contexto lleva ESTA `terminalPaymentRequestId`. El id
+     * sobrevive a la recreación (vive en el `SavedStateHandle`), así que para un cobro del POS la
+     * fila propia SIEMPRE se encuentra por aquí.
+     *
+     * 🔴 Hubo un respaldo —«si hay UNA sola pendiente sin dueño, adóptala»— y Codex demostró que
+     * era un P1 de dinero (2026-09-12): «sin solicitud del POS» también describe a una **venta
+     * LOCAL legítima**. Secuencia: A es local e incierta; F0 deja entrar B, del POS; la
+     * recuperación registra B antes de que llegue su callback; buscar por la solicitud de B no
+     * encuentra nada (REGISTRADO queda fuera) y el respaldo elegía **A**. El callback aprobado de
+     * B escribía su autorización sobre A y A quedaba REGISTRADO: la obligación real de A
+     * desaparecía del aviso y de la cerca **sin haberse registrado nunca**. Unicidad no demuestra
+     * pertenencia.
+     *
+     * Devolver null aquí NO afirma que no se cobró: quien llama sigue consultando
+     * [cobroSinResolver] antes de degradar un callback vacío a «cancelado».
+     */
+    suspend fun adoptarCobroDeLaSolicitud(requestId: String): CobroSinResolver? = try {
+        val fragmento = "\"terminalPaymentRequestId\":" + com.google.gson.Gson().toJson(requestId)
+        dao.findUnresolvedForRequest(fragmento)?.let { CobroSinResolver(it.attemptId) }
+            ?: run {
+                Timber.w("📒 [Libreta] NO se adopta: ninguna fila lleva la solicitud %s", requestId)
+                null
+            }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo buscar el cobro de la solicitud %s", requestId)
+        null
     }
 
     /** Pre-SDK barrier: committed before the SDK call is allowed to start. */

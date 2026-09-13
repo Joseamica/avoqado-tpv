@@ -103,6 +103,13 @@ data class PaymentAttemptEntity(
 
         const val PROCESSOR_BLUMON = "BLUMON"
         const val PROCESSOR_ANGELPAY = "ANGELPAY"
+        /**
+         * 🔴 Marca de `last_error` que distingue «incierta porque lo dijo el procesador» de
+         * «incierta porque se acabó el plazo». La segunda NO acredita que la llamada nativa
+         * terminara, así que sigue apartando el aparato aunque la venta tenga identidad.
+         */
+        const val CUARENTENA_POR_ANTIGUEDAD = "cuarentena_por_antiguedad"
+
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"
         const val ROUTE_FAST = "FAST"

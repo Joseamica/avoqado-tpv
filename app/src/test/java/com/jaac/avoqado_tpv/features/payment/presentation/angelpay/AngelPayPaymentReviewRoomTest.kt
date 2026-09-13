@@ -267,10 +267,18 @@ class AngelPayPaymentReviewRoomTest {
             // Sonda sin mockk: un DAO decorador cuenta las consultas REALES a la libreta.
             val sonda = java.util.concurrent.atomic.AtomicInteger(0)
             val daoBase = db.paymentAttemptDao()
+            // Cuenta CUALQUIER pregunta a la libreta sobre cobros sin resolver: lo que se vigila es
+            // que la decisión NO salga de la RAM del ViewModel, no cuál de las dos consultas se usa.
+            val porIdentidad = java.util.concurrent.atomic.AtomicInteger(0)
             val daoSonda = object : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by daoBase {
                 override suspend fun findUnresolvedCharge(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity? {
                     sonda.incrementAndGet()
                     return daoBase.findUnresolvedCharge()
+                }
+                override suspend fun findUnresolvedForRequest(requestJsonFragment: String): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity? {
+                    sonda.incrementAndGet()
+                    porIdentidad.incrementAndGet()
+                    return daoBase.findUnresolvedForRequest(requestJsonFragment)
                 }
             }
             paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(daoSonda, tpvSettingsRepository)
@@ -294,6 +302,10 @@ class AngelPayPaymentReviewRoomTest {
             // queda como no resuelta, que es lo que impide darla por buena.
             assertThat(db.paymentAttemptDao().getById("original-attempt")?.state).isAnyOf("AUTORIZANDO", "INDETERMINADO")
             assertThat(sonda.get()).isAtLeast(1)
+            // 🔴 Y se adopta por IDENTIDAD: con varias obligaciones pendientes conviviendo,
+            // «la más reciente» le colgaría a esta solicitud el desenlace de otra cuenta.
+            com.google.common.truth.Truth.assertWithMessage("la adopción tiene que buscar por la solicitud")
+                .that(porIdentidad.get()).isAtLeast(1)
 
             // (3) IMPIDE VOLVER A COBRAR — jamás se publica la prueba «no se autorizó nada».
             // Emitir PRE_AUTHORIZATION aquí le diría al POS que puede pasar la tarjeta otra vez.

@@ -31,9 +31,9 @@ class PaymentAttemptLedgerTest {
     @Test
     fun `OFF observability mode still persists money barrier`() = runTest {
         every { settingsRepository.getCurrentSettings() } returns settingsWith(PaymentLedgerMode.OFF)
-        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
         ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 1000, PaymentAttemptEntity.ROUTE_FAST, "{}")
-        coVerify(exactly = 1) { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -44,7 +44,7 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `openAttempt inserts PREPARANDO and returns true`() = runTest {
-        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
         val ok = ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 1000, PaymentAttemptEntity.ROUTE_FAST, "{}")
         assertTrue(ok)
         // La reserva y el estado PREPARANDO viven ahora DENTRO de la sentencia atómica del DAO;
@@ -54,14 +54,15 @@ class PaymentAttemptLedgerTest {
                 attemptId = "a1", venueId = "v1", processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
                 kind = any(), amountCents = 10000L, tipCents = 1000L,
                 recordingRoute = PaymentAttemptEntity.ROUTE_FAST, contextJson = any(),
-                orderJsonFragment = null, now = any(), terminalPaymentRequestId = null
+                orderJsonFragment = null, now = any(), terminalPaymentRequestId = null,
+                esKiosco = false,
             )
         }
     }
 
     @Test
     fun `openAttempt detects attemptId reuse (PK collision) and returns false`() = runTest {
-        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns -1L // no entró
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns -1L // no entró
         // …y la fila YA existe con ese id ⇒ es reuso de attemptId, no terminal ocupada.
         coEvery { dao.getById("a1") } returns PaymentAttemptEntity(
             attemptId = "a1", venueId = "v1", processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
@@ -111,7 +112,7 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `disk failure prevents processor entry`() = runTest {
-        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } throws RuntimeException("disk io")
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } throws RuntimeException("disk io")
         // must not throw AND must return true — a ledger failure degrades to "no row",
         // never to the double-charge signal (false) that callers escalate on
         val ok = ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 1, 0, PaymentAttemptEntity.ROUTE_FAST, "{}")

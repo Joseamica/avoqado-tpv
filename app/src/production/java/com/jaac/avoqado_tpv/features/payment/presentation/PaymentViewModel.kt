@@ -3378,7 +3378,10 @@ class PaymentViewModel @Inject constructor(
                     attemptId, currentVenueId,
                     com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
                     context.amount.movePointRight(2).longValueExact(), context.tip.movePointRight(2).longValueExact(),
-                    if (context is PaymentContext.OrderPayment) "ORDER" else "FAST", json.toString()
+                    if (context is PaymentContext.OrderPayment) "ORDER" else "FAST", json.toString(),
+                    // 🔴 En autoservicio no hay cajero que distinga un reintento de una venta nueva,
+                    // así que cualquier obligación pendiente vuelve a apartar el aparato (Codex, 12-sep).
+                    esKiosco = sessionSnapshot.isKioskPayment,
                 )
             }.getOrElse { error ->
                 if (error is CancellationException) throw error

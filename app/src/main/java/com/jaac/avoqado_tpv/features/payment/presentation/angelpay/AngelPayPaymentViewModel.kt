@@ -2095,13 +2095,18 @@ class AngelPayPaymentViewModel @Inject constructor(
             // procesaba como si no hubiera intento — y la libreta se quedaba con la fila
             // AUTORIZANDO para siempre mientras la pantalla volvía a estar lista para cobrar.
             // La libreta SÍ sobrevive: se adopta de ahí el intento que este objeto no recuerda.
-            if (currentPaymentAttemptId == null && _socketRequestId != null) {
-                paymentAttemptLedger.cobroSinResolver()?.attemptId?.let { pendiente ->
+            // 🔴 Se adopta el intento de ESTA solicitud, no «el último sin resolver». Desde que una
+            // obligación pendiente cerca su venta en vez de apagar el aparato pueden convivir
+            // varias, y «el más reciente» le colgaría a esta solicitud el desenlace de otra cuenta.
+            _socketRequestId?.let { solicitud ->
+              if (currentPaymentAttemptId == null) {
+                paymentAttemptLedger.adoptarCobroDeLaSolicitud(solicitud)?.attemptId?.let { pendiente ->
                     Timber.w("📒 [AngelPay] ViewModel recreado: se adopta el intento pendiente %s", pendiente)
                     currentPaymentAttemptId = pendiente
                     authorizationWasLaunched = true
                     ledgerOpenedAttemptId = pendiente
                 }
+              }
             }
             if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
@@ -2133,7 +2138,13 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // El id puede venir de la LIBRETA cuando este ViewModel es uno recreado: la
                 // fila existe aunque el objeto no la recuerde. Sin esto, el cobro quedaba
                 // AUTORIZANDO para siempre y nadie lo marcaba como «no sé qué pasó».
-                (currentPaymentAttemptId ?: cobroPendiente?.attemptId)?.let {
+                // 🔴 SÓLO la fila de ESTE intento. `cobroPendiente` sale de una consulta de
+                // APARATO (`cobroSinResolver`), así que usarlo aquí marcaba INDETERMINADA una fila
+                // de otra venta — el mismo defecto de atribución que Codex encontró en el respaldo
+                // de la adopción (2026-09-12). Para el cobro del POS el id ya llega por identidad;
+                // una fila heredada sin dueño la recoge la cuarentena por antigüedad, que es lenta
+                // pero no le cuelga a nadie el desenlace de otro.
+                currentPaymentAttemptId?.let {
                     paymentAttemptLedger.markIndeterminate(it, "AngelPay ${result.code}")
                 }
                 verificarCobroIncierto(result.message, result.code, null, null, null)

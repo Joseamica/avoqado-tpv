@@ -170,6 +170,10 @@ class AngelPayPaymentViewModelTest {
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
         paymentAttemptLedger = mockk(relaxed = true) {
             coEvery { cobroSinResolver() } returns null
+            // 🔴 Explícito, y no por relajado: un mock relajado devuelve un CobroSinResolver FALSO,
+            // y entonces el ViewModel adopta un intento inventado y sigue registrando un pago que
+            // nunca ocurrió. Por defecto NO hay nada que adoptar, que es el caso de estas pruebas.
+            coEvery { adoptarCobroDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.remotepayment
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -8,23 +9,56 @@ import androidx.room.Transaction
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
 import org.json.JSONObject
 
+/**
+ * 🔴 Lo que el aviso de la pantalla necesita para ser ÚTIL: cuánto y desde cuándo.
+ *
+ * «Hay 2 cobros pendientes» no le sirve al cajero, porque no le deja distinguir «es esta misma
+ * venta» de «es una venta nueva» — y desde la libreta esas dos cosas son indistinguibles: sólo
+ * él lo sabe. Nombrar el importe y la antigüedad es lo que convierte el aviso en una decisión
+ * que alguien puede tomar (hallazgo de Codex sobre F0, 2026-09-12).
+ */
+data class ObligacionPendiente(
+    @ColumnInfo(name = "total_centavos") val totalCentavos: Long,
+    @ColumnInfo(name = "desde_millis") val desdeMillis: Long,
+)
+
 @Dao
 interface RemotePaymentRequestDao {
-    /** One snapshot and scalar result: no duplicate count while an inbox gains its ledger row.
-     * PREPARANDO alone does not resolve a claimed remote command; it stays visible.
-     * Gson writes the exact request identity below; instr has no LIKE wildcard semantics.
+    /** Una sola consulta y una sola verdad: no hay doble conteo mientras una fila del buzón gana
+     * su fila de libreta. PREPARANDO por sí solo no resuelve un cobro remoto reclamado: sigue
+     * visible. Gson escribe la identidad exacta de la solicitud; `instr` no tiene comodines.
+     *
+     * 🔴 `kind = 'SALE'`: una DEVOLUCIÓN pendiente no es un cobro por repetir. Contarla hacía que
+     * el aviso dijera «no repitas esas ventas» sobre dinero que va en la dirección contraria, y un
+     * aviso que miente deja de leerse.
+     *
+     * 🔴 Las filas HEREDADAS (`legacy_shadow = 1`) SÍ cuentan: no apartan la terminal, pero son
+     * dinero de desenlace desconocido igual que las demás, y de eso es de lo que avisa esto.
+     *
+     * El tope de 50 es para no traer una lista sin fin a la pantalla; con 50 obligaciones
+     * pendientes el problema ya no es el aviso. ⚠️ Declarado: pasadas 50, el conteo del aviso
+     * dice 50; no hay ninguna decisión de dinero colgada de ese número.
+     *
+     * 🔴 La antigüedad sale de `created_at`, NO de `updated_at`: lo segundo es la última vez que
+     * alguien tocó la fila —una cuarentena, un reintento de recuperación— y hacía que una venta
+     * de hace tres horas apareciera como «hace unos segundos», que es justo la pista que el
+     * cajero necesita para reconocerla (Codex, 2026-09-12).
      */
-    @Query("""SELECT
-        (SELECT COUNT(*) FROM payment_attempts WHERE venue_id = :venueId
-            AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO'))
-        + (SELECT COUNT(*) FROM remote_payment_requests r
-            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
-            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-                WHERE p.venue_id = :venueId
-                AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
-                                'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
-                AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0))""")
-    fun observePendingObligationCount(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+    @Query("""SELECT (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis
+        FROM payment_attempts
+        WHERE venue_id = :venueId AND kind = 'SALE'
+        AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        UNION ALL
+        SELECT (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis
+        FROM remote_payment_requests r
+        WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
+        AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+            WHERE p.venue_id = :venueId
+            AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
+                            'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+            AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+        ORDER BY desde_millis DESC LIMIT 50""")
+    fun observePendingObligations(venueId: String): kotlinx.coroutines.flow.Flow<List<ObligacionPendiente>>
 
     @Query("""UPDATE remote_payment_requests SET status = 'PROCESSING', updated_at = :now
         WHERE request_id = :requestId AND venue_id = :venueId AND status = 'RECEIVED'""")

@@ -167,6 +167,50 @@ class RemotePaymentInboxRoomTest {
         assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(1)
     }
 
+
+    /**
+     * 🔴 El aviso tiene que NOMBRAR el dinero. «Hay 2 cobros pendientes» no le sirve al cajero
+     * para distinguir «es esta misma venta» de «es una venta nueva» — y esa distinción es lo
+     * único que separa un reintento legítimo de un cobro doble (hallazgo de Codex, 12-sep).
+     */
+    @Test fun `P1 el aviso nombra el importe y la antiguedad de cada obligacion pendiente`() = runTest {
+        // 🔴 `createdAt` es CUÁNDO SE COBRÓ; `updatedAt` es la última vez que alguien tocó la fila
+        // (una cuarentena, un reintento de recuperación). Usar el segundo hacía que una venta de
+        // hace horas apareciera como «hace unos segundos» — justo la pista que el cajero necesita.
+        val fila = PaymentAttemptEntity("a-1", "venue-1", "ANGELPAY", state = "INDETERMINADO",
+            amountCents = 12000, tipCents = 500, recordingRoute = "ORDER",
+            paymentContextJson = """{"orderId":"cuenta-1"}""", createdAt = 1_000, updatedAt = 9_000)
+        db.paymentAttemptDao().insert(fila)
+        val pendientes = inbox.observePendingObligations("venue-1").first()
+        assertThat(pendientes).hasSize(1)
+        assertThat(pendientes.first().totalCentavos).isEqualTo(12500)
+        assertThat(pendientes.first().desdeMillis).isEqualTo(1_000)
+        assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(1)
+    }
+
+    /**
+     * 🔴 Una DEVOLUCIÓN pendiente no es un cobro por repetir. Contarla decía «no repitas esas
+     * ventas» sobre dinero que va en la dirección contraria, y el cajero deja de creerle al aviso.
+     */
+    @Test fun `P1 una devolucion pendiente no se cuenta como cobro por repetir`() = runTest {
+        db.paymentAttemptDao().insert(PaymentAttemptEntity("dev-1", "venue-1", "ANGELPAY",
+            kind = PaymentAttemptEntity.KIND_REFUND, state = "INDETERMINADO",
+            amountCents = 5000, tipCents = 0, recordingRoute = "ORDER",
+            paymentContextJson = "{}", createdAt = 1, updatedAt = 1))
+        assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(0)
+        assertThat(inbox.observePendingObligations("venue-1").first()).isEmpty()
+    }
+
+    /** Un cobro remoto reclamado y sin fila de libreta también es dinero pendiente, con su importe. */
+    @Test fun `P2 el aviso incluye el cobro remoto reclamado que aun no tiene libreta`() = runTest {
+        receive()
+        coordinator.claimSocketPaymentRequest("req-1")
+        val pendientes = inbox.observePendingObligations("venue-1").first()
+        assertThat(pendientes).hasSize(1)
+        assertThat(pendientes.first().totalCentavos).isEqualTo(11000)
+        assertThat(inbox.observePendingObligations("otro-venue").first()).isEmpty()
+    }
+
     @Test fun `cancel during readiness wait prevents navigation after readiness resumes`() = runTest {
         receive()
         val readiness = CompletableDeferred<Boolean>()

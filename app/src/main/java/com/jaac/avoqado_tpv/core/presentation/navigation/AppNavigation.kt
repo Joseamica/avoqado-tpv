@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
+import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import com.jaac.avoqado_tpv.core.remotepayment.rejectRemotePaymentBeforeAuthorization
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -876,22 +877,36 @@ fun AppNavigation(
         // restart. A venue key resets collection immediately when activation changes.
         val bannerRoute = navController.currentBackStackEntryAsState().value?.destination?.route
         val bannerVenueId = secureStorage.getVenueId()
-        if (bannerRoute == NavRoute.Home.route && !bannerVenueId.isNullOrBlank()) {
+        // 🔴 Las TRES pantallas donde el aviso cambia una decisión, no sólo el Inicio.
+        // Desde F0 una obligación pendiente cerca su VENTA y ya no apaga la terminal, así que se
+        // puede volver a cobrar entrando por otra puerta: el carrito (que crea una orden NUEVA,
+        // con otra identidad) o el Pago rápido (que no lleva orden). Ésas son exactamente las dos
+        // rutas que la auditoría de Codex señaló, y el aviso tiene que estar AHÍ — en el Inicio
+        // llega tarde. Ver [AvisoDeCobrosPendientes].
+        val rutasQueCobran = NavRoute.RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES
+        if (bannerRoute in rutasQueCobran && !bannerVenueId.isNullOrBlank()) {
             key(bannerVenueId) {
                 val pendingFlow = remember(bannerVenueId) {
-                    remotePaymentCoordinator.observePendingObligationCount(bannerVenueId)
+                    remotePaymentCoordinator.observePendingObligations(bannerVenueId)
                 }
-                val unresolvedCount by pendingFlow.collectAsStateWithLifecycle(initialValue = 0)
-                if (unresolvedCount > 0) {
+                val pendientes by pendingFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+                // La antigüedad se recalcula sola: un «hace 1 min» congelado media hora miente.
+                var ahora by remember { mutableStateOf(System.currentTimeMillis()) }
+                LaunchedEffect(pendientes.isNotEmpty()) {
+                    while (pendientes.isNotEmpty()) {
+                        ahora = System.currentTimeMillis()
+                        delay(30_000)
+                    }
+                }
+                val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
+                if (aviso != null) {
                     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = "Hay $unresolvedCount " +
-                                    (if (unresolvedCount == 1) "cobro pendiente" else "cobros pendientes") +
-                                    " de confirmar. No repitas esas ventas.",
+                                text = aviso,
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.weight(1f),
                             )

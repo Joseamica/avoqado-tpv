@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.remotepayment
 
+import kotlinx.coroutines.flow.map
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import org.json.JSONObject
 import timber.log.Timber
@@ -81,7 +82,16 @@ class RemotePaymentInbox @Inject constructor(
         }
     }
 
-    fun observePendingObligationCount(venueId: String) = dao.observePendingObligationCount(venueId)
+    /** Lo que la pantalla necesita para avisar con nombre y apellido: cuánto y desde cuándo. */
+    fun observePendingObligations(venueId: String) = dao.observePendingObligations(venueId)
+
+    /**
+     * El conteo sale de la MISMA lista, no de una consulta hermana: dos consultas con el mismo
+     * propósito se separan en cuanto alguien toca una — y entonces el número del aviso deja de
+     * corresponder con lo que el aviso enumera.
+     */
+    fun observePendingObligationCount(venueId: String) =
+        dao.observePendingObligations(venueId).map { it.size }
 
     suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean =
         dao.markProcessingForVenue(requestId, venueId, System.currentTimeMillis()) == 1

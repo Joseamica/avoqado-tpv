@@ -17,6 +17,17 @@ en lugar de Codex): **APROBADA CON CAMBIOS, sin P1 de dinero**; esta versión in
 
 ## Condición obligatoria de dinero y prioridades de producto
 
+🔴 **Los dos límites, dichos por el founder el 12-sep-2026 tras quedarse sin poder cobrar en una
+Nexgo:** «no podemos interrumpir el proceso de cobro en un negocio, eso sería catastrófico, pero
+tampoco dejando de lado que cobren doble, o no se registre la venta, o que registre la venta sin
+que en realidad haya pasado el cobro». Se juzgan JUNTOS. La salida no es quitar el bloqueo ante un
+desenlace incierto —eso produjo el cobro doble del 10-ago— sino que el bloqueo **dure segundos y lo
+resuelva el cajero**: la duda se resuelve PREGUNTANDO por el desenlace acreditado, no esperando, y
+lo que bloquea se ve, se explica y se puede volver a consultar desde la pantalla. Hoy la única
+salida real ha sido escribir SQL en la base del aparato, dos veces. Detalle y reglas de aplicación:
+memoria `invariante-del-cobro-founder`.
+
+
 🔴 **La rapidez nunca autoriza otra ejecución capaz de cobrar mientras la anterior pueda haber movido
 dinero.** Timeout, cancel solicitado, desconexión y ausencia de `Payment` no prueban ausencia de cargo.
 Los reintentos de transporte y de registro conservan sus respectivas llaves; repetir un mensaje no

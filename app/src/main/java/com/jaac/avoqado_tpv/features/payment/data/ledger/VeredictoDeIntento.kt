@@ -111,8 +111,14 @@ data class ResultadoDelVeredicto(
         RECHAZADO_OTRO_PAYMENT,
         /** Mismo Payment con datos distintos (outcome, origen, montos): no se pisa. */
         RECHAZADO_DATOS_DISTINTOS,
-        /** La fila no es de este venue/procesador/tipo/solicitud, o es heredada. */
+        /** La fila es de OTRO venue o de OTRA solicitud: un veredicto que no le pertenece (anomalía; no se pisa nada). */
         RECHAZADO_PERTENENCIA,
+        /**
+         * Codex (código, P1-2/P1-6): la fila existe pero queda FUERA del checkpoint 2 — heredada (`legacy_shadow`), de otro
+         * procesador (Blumon/PAX: port posterior) o una devolución. No es un rechazo: la cola y la recuperación por aprobación
+         * siguen el camino que tenían ANTES del checkpoint.
+         */
+        FUERA_DE_ALCANCE,
         /** No hay fila para ese intento en esta terminal. */
         SIN_FILA,
     }

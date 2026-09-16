@@ -66,7 +66,7 @@ class LedgerServerRecoveryRoomTest {
     private val notRecorded = Response.success(TerminalAttemptStatusResponse(attempt = TerminalAttemptResultDto(outcome = "NOT_RECORDED")))
     private fun http(code: Int) = Response.error<TerminalAttemptStatusResponse>(code, "{}".toResponseBody("application/json".toMediaTypeOrNull()))
 
-    @Test fun `RECORDED por S6 cierra una ENTREGADA_A_COLA (la cola no cerraba la libreta) y resuelve la bandeja; 404 y NOT_RECORDED solo estampan`() = runTest {
+    @Test fun `RECORDED por S6 cierra una ENTREGADA_A_COLA (la cola no cerraba la libreta) y resuelve la bandeja · 404 y NOT_RECORDED solo estampan`() = runTest {
         fila("a", "ENTREGADA_A_COLA"); fila("b", "INDETERMINADO", hostApproved = null); fila("c", "REGISTRO_FALLIDO")
         bandeja("req-a")
         coEvery { api.getAttemptStatus(venue, "a") } returns recorded("a", "pay-a")
@@ -89,7 +89,7 @@ class LedgerServerRecoveryRoomTest {
         coVerify(exactly = 1) { api.getAttemptStatus(venue, "a") }
     }
 
-    @Test fun `sin respuesta HTTP no se gasta el turno y un 5xx si; el paso 0 reaplica lo guardado antes de consultar`() = runTest {
+    @Test fun `sin respuesta HTTP no se gasta el turno y un 5xx si · el paso 0 reaplica lo guardado antes de consultar`() = runTest {
         fila("d", "HOST_RESPONDIO"); fila("e", "HOST_RESPONDIO")
         coEvery { api.getAttemptStatus(venue, "d") } throws java.io.IOException("sin red")
         coEvery { api.getAttemptStatus(venue, "e") } returns http(503)
@@ -107,7 +107,23 @@ class LedgerServerRecoveryRoomTest {
         coVerify(exactly = 0) { api.getAttemptStatus(venue, "f") }
     }
 
-    @Test fun `recoverOne: primero lo guardado, despues S6; con veredicto final no consulta`() = runTest {
+    @Test fun `P2-1 el timeout de UNA consulta no aborta la pasada — cuenta como sin respuesta, no gasta el turno y el worker reintenta`() = runTest {
+        // Codex (código, P2-1): `withTimeout` lanza `TimeoutCancellationException` (una CancellationException) y la pasada
+        // entera se relanzaba como cancelada; y una IOException absorbida nunca llegaba al `retry()` del worker.
+        fila("t1", "HOST_RESPONDIO"); fila("t2", "HOST_RESPONDIO", requestId = "req-t2"); bandeja("req-t2")
+        coEvery { api.getAttemptStatus(venue, "t1") } coAnswers { kotlinx.coroutines.delay(LedgerServerRecovery.CONSULTA_TIMEOUT_MS + 1_000); http(503) }
+        coEvery { api.getAttemptStatus(venue, "t2") } returns recorded("t2", "pay-t2")
+        val r = LedgerServerRecovery(dao, ledger, api).recover(venue, now)
+        assertThat(r.sinRespuesta).isEqualTo(1)
+        assertThat(r.consultados).isEqualTo(1)
+        assertThat(r.aplicados).isEqualTo(1)
+        assertThat(dao.getById("t1")!!.serverCheckedAt).isNull()
+        assertThat(dao.getById("t2")!!.state).isEqualTo("REGISTRADO")
+        assertThat(LedgerServerRecoveryWorker.debeReintentar(r)).isTrue()
+        assertThat(LedgerServerRecoveryWorker.debeReintentar(LedgerServerRecovery.Resultado(0, 1, 1, emptyList(), sinRespuesta = 0))).isFalse()
+    }
+
+    @Test fun `recoverOne — primero lo guardado, despues S6 · con veredicto final no consulta`() = runTest {
         fila("g", "INDETERMINADO", hostApproved = null); bandeja("req-g")
         coEvery { api.getAttemptStatus(venue, "g") } returns recorded("g", "pay-g")
         val json = LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "g")

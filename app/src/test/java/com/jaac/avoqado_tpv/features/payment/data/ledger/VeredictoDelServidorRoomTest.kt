@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
 import io.mockk.mockk
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
@@ -163,6 +164,24 @@ class VeredictoDelServidorRoomTest {
         assertThat(dao.getById("a5")).isNotNull()
     }
 
+    @Test fun `sin veredicto del servidor (columnas NULL) la fila NO es contradiccion — sigue en el aviso de pendientes y la poda y el cierre la alcanzan`() = runTest {
+        // SQL trivalente: `NOT (NULL IN (...))` es NULL y dejaba fuera del aviso y de la poda a TODA fila sin veredicto.
+        fila("n1", "INDETERMINADO", hostApproved = null); fila("n2", "DESCARTADA", hostApproved = null, requestId = "req-2")
+        fila("n3", "REGISTRADO", requestId = "req-3")
+        assertThat(dao.esContradiccion("n1")).isFalse()
+        assertThat(dao.esContradiccion("n2")).isFalse()
+        val pendientes = db.remotePaymentRequestDao().observePendingObligations(venue).first()
+        assertThat(pendientes).hasSize(1)
+        assertThat(pendientes.single().contradiccion).isEqualTo(0)
+        assertThat(dao.closeRecordedOlderThan(venue, now + 2L * 24 * 3600_000, now + 2L * 24 * 3600_000)).isEqualTo(1)
+        assertThat(dao.getById("n3")!!.state).isEqualTo("CERRADA")
+        assertThat(dao.pruneTerminalOlderThan(venue, now + 8L * 24 * 3600_000)).isEqualTo(2)
+        assertThat(dao.getById("n1")).isNotNull()
+        // Y un RECORDED cuyo host NO contestó (host_approved NULL) tampoco es contradicción por sí solo (igual que la liberación).
+        fila("n4", "INDETERMINADO", hostApproved = null, requestId = "req-4"); bandeja("req-4")
+        assertThat(dao.aplicarVeredictoDelServidor(s5("n4", paymentId = "pay-4", requestId = "req-4"), now).contradiccion).isFalse()
+    }
+
     @Test fun `segunda captura con ganador acreditado pasa a REGISTRADO, resuelve la bandeja con el GANADOR y nunca se cierra ni se poda`() = runTest {
         fila("b1", "AUTORIZADO"); bandeja()
         val r = dao.aplicarVeredictoDelServidor(s6("b1", "SECOND_CAPTURE_EVIDENCE", paymentId = "pay-b", isWinner = false, winner = "pay-ganador"), now)
@@ -188,7 +207,7 @@ class VeredictoDelServidorRoomTest {
         assertThat(dao.getById("b2")!!.state).isEqualTo("REGISTRADO")
     }
 
-    @Test fun `colision sin ganador guarda la evidencia y la bandeja CONSERVA su obligacion; la promocion a RECORDED del mismo Payment se acepta (Codex v3 cambio 2)`() = runTest {
+    @Test fun `colision sin ganador guarda la evidencia y la bandeja CONSERVA su obligacion · la promocion a RECORDED del mismo Payment se acepta (Codex v3 cambio 2)`() = runTest {
         fila("c1", "HOST_RESPONDIO"); bandeja()
         val r = dao.aplicarVeredictoDelServidor(s6("c1", "REFERENCE_COLLISION_EVIDENCE", paymentId = "pay-c", isWinner = false), now)
         assertThat(r.decision).isEqualTo(ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR)
@@ -222,19 +241,74 @@ class VeredictoDelServidorRoomTest {
         assertThat(dao.getById("d1")!!.serverCheckCount).isEqualTo(3) // cada intento estampa la consulta
     }
 
-    @Test fun `pertenencia antes de escribir: otro venue, otra solicitud, heredada, otro procesador o devolucion no se tocan`() = runTest {
+    @Test fun `pertenencia antes de escribir — otro venue, otra solicitud, heredada, otro procesador o devolucion no se tocan`() = runTest {
         fila("e1", "HOST_RESPONDIO"); fila("e2", "HOST_RESPONDIO", legacy = true, requestId = "req-e2")
         fila("e3", "HOST_RESPONDIO", processor = "BLUMON", requestId = "req-e3"); fila("e4", "HOST_RESPONDIO", kind = "REFUND", requestId = "req-e4")
         assertThat(dao.aplicarVeredictoDelServidor(s5("e1").copy(venueId = "otro-venue"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
         assertThat(dao.aplicarVeredictoDelServidor(s5("e1", requestId = "req-ajena"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
-        assertThat(dao.aplicarVeredictoDelServidor(s5("e2", requestId = "req-e2"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
-        assertThat(dao.aplicarVeredictoDelServidor(s5("e3", requestId = "req-e3"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
-        assertThat(dao.aplicarVeredictoDelServidor(s5("e4", requestId = "req-e4"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
+        // Codex (código, P1-2/P1-6): heredada, otro procesador o devolución NO son un rechazo — están FUERA del checkpoint
+        // (la cola y la recuperación por aprobación siguen su camino anterior); venue/solicitud ajenos SÍ son un rechazo.
+        assertThat(dao.aplicarVeredictoDelServidor(s5("e2", requestId = "req-e2"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE)
+        assertThat(dao.aplicarVeredictoDelServidor(s5("e3", requestId = "req-e3"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE)
+        assertThat(dao.aplicarVeredictoDelServidor(s5("e4", requestId = "req-e4"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE)
         assertThat(dao.aplicarVeredictoDelServidor(s5("no-existe"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.SIN_FILA)
         for (id in listOf("e1", "e2", "e3", "e4")) assertThat(dao.getById(id)!!.serverPaymentId).isNull()
     }
 
-    @Test fun `la bandeja: un negativo previo lo reemplaza el exito, un exito sin paymentId se enriquece, el mismo ganador es no-op, RECEIVED y lapida no se tocan`() = runTest {
+    @Test fun `P1-3 cincuenta veredictos finales INAPLICABLES (montos distintos) no bloquean la reaplicacion del que si aplica`() = runTest {
+        // Codex (código): el lote de reaplicación tomaba siempre los 50 más antiguos por `server_verdict_at`; una contradicción
+        // (RECORDED con montos distintos) nunca sale de ese conjunto y el intento 51 no se reaplicaba jamás — ni S6 lo
+        // consultaba, porque ya tiene veredicto final.
+        for (i in 1..50) {
+            fila("c$i", "AUTORIZADO", requestId = "req-c$i"); bandeja("req-c$i")
+            val r = dao.aplicarVeredictoDelServidor(s5("c$i", paymentId = "pay-c$i", requestId = "req-c$i", amount = 9_999), now - 100_000 + i)
+            assertThat(r.transiciono).isFalse(); assertThat(r.contradiccion).isTrue()
+        }
+        fila("z", "AUTORIZANDO", hostApproved = null, requestId = "req-z"); bandeja("req-z")
+        assertThat(dao.aplicarVeredictoDelServidor(s5("z", paymentId = "pay-z", requestId = "req-z"), now).decision)
+            .isEqualTo(ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR)
+        ledger.markIndeterminate("z", "sin veredicto")
+        val lote = dao.veredictosPendientesDeAplicar(venue).map { it.attemptId }
+        assertThat(lote).contains("z")
+        assertThat(lote).containsNoneIn((1..50).map { "c$it" }) // una contradicción no es reaplicable: no ocupa el lote
+        val r = dao.reaplicarVeredictoGuardado("z", now + 5)!!
+        assertThat(r.transiciono).isTrue()
+        assertThat(dao.getById("z")!!.state).isEqualTo("REGISTRADO")
+        assertThat(db.remotePaymentRequestDao().getById("req-z")!!.status).isEqualTo("RESOLVED")
+    }
+
+    @Test fun `P1-4 una segunda captura del MISMO outcome sin ganador no borra el ganador final ya guardado`() = runTest {
+        fila("w1", "AUTORIZANDO", hostApproved = null); bandeja()
+        dao.aplicarVeredictoDelServidor(s6("w1", "SECOND_CAPTURE_EVIDENCE", paymentId = "pay-w1", isWinner = false, winner = "pay-ganador"), now)
+        assertThat(dao.getById("w1")!!.serverWinnerPaymentId).isEqualTo("pay-ganador")
+        // Misma identidad, mismos importes y origen, mismo outcome… pero sin ganador (respuesta menos completa).
+        val r = dao.aplicarVeredictoDelServidor(s6("w1", "SECOND_CAPTURE_EVIDENCE", paymentId = "pay-w1", isWinner = false, winner = null), now + 1)
+        assertThat(r.decision).isEqualTo(ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR)
+        assertThat(dao.getById("w1")!!.serverWinnerPaymentId).isEqualTo("pay-ganador")
+        // Y tras el callback incierto la reaplicación sigue teniendo con qué liberar (E1/E2).
+        ledger.markIndeterminate("w1", "sin veredicto")
+        assertThat(dao.veredictosPendientesDeAplicar(venue).map { it.attemptId }).contains("w1")
+        assertThat(dao.reaplicarVeredictoGuardado("w1", now + 2)!!.transiciono).isTrue()
+        assertThat(dao.getById("w1")!!.state).isEqualTo("REGISTRADO")
+    }
+
+    @Test fun `P1-5 cincuenta contradicciones CADUCADAS (mas de 72 h) no dejan fuera del aviso a un cobro incierto mas antiguo`() = runTest {
+        val cuatroDias = 4L * 24 * 3600_000; val cincoDias = 5L * 24 * 3600_000
+        for (i in 1..50) {
+            fila("k$i", "AUTORIZADO", requestId = "req-k$i"); bandeja("req-k$i")
+            dao.aplicarVeredictoDelServidor(s5("k$i", paymentId = "pay-k$i", requestId = "req-k$i", amount = 9_999), now - cuatroDias + i)
+        }
+        dao.insert(PaymentAttemptEntity(attemptId = "viejo", venueId = venue, processor = "ANGELPAY", kind = "SALE", state = "INDETERMINADO",
+            amountCents = 12_050, tipCents = 0, recordingRoute = "FAST", paymentContextJson = """{"venueId":"$venue"}""",
+            createdAt = now - cincoDias, updatedAt = now - cincoDias, hostApproved = null))
+        val todas = db.remotePaymentRequestDao().observePendingObligations(venue).first()
+        assertThat(todas.filter { it.contradiccion == 0 }.map { it.totalCentavos }).containsExactly(12_050L)
+        val texto = com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.texto(todas, now)!!
+        assertThat(texto).contains("$120.50")
+        assertThat(texto).doesNotContain("posible cobro doble") // las 50 contradicciones ya caducaron: no se muestran
+    }
+
+    @Test fun `la bandeja — un negativo previo lo reemplaza el exito, un exito sin paymentId se enriquece, el mismo ganador es no-op, RECEIVED y lapida no se tocan`() = runTest {
         val negativo = JSONObject().put("requestId", "req-1").put("status", "cancelled").put("outcomeEvidence", "PRE_AUTHORIZATION").toString()
         fila("f1", "HOST_RESPONDIO"); bandeja(status = "RESOLVED", finalJson = negativo)
         val r1 = dao.aplicarVeredictoDelServidor(s5("f1"), now)
@@ -257,7 +331,7 @@ class VeredictoDelServidorRoomTest {
         assertThat(db.remotePaymentRequestDao().getById("req-4")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_NOT_FOUND_ANSWERED)
     }
 
-    @Test fun `E3 el lote de 25 avanza: la consultada va al final y la 26 entra en la segunda pasada, sin NULLS FIRST`() = runTest {
+    @Test fun `E3 el lote de 25 avanza — la consultada va al final y la 26 entra en la segunda pasada, sin NULLS FIRST`() = runTest {
         for (i in 1..26) fila("q$i".padStart(4, '0'), "ENTREGADA_A_COLA", requestId = "req-q$i")
         val primera = dao.candidatasDeConsultaAlServidor(venue, now, now, 10 * 60_000, 24 * 3600_000)
         assertThat(primera).hasSize(25)

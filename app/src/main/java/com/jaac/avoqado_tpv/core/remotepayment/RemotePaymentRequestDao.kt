@@ -46,26 +46,36 @@ interface RemotePaymentRequestDao {
      * de hace tres horas apareciera como «hace unos segundos», que es justo la pista que el
      * cajero necesita para reconocerla (Codex, 2026-09-12).
      */
-    @Query("""SELECT (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, 0 AS contradiccion
-        FROM payment_attempts
-        WHERE venue_id = :venueId AND kind = 'SALE'
-        AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND NOT """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
+    // Codex (código, P1-5): el cupo de 50 es POR FAMILIA (pendientes / solicitudes sin intento / contradicciones), no global —
+    // 50 contradicciones viejas (que el aviso ya no muestra pasadas 72 h) dejaban fuera del `LIMIT` a un cobro incierto más
+    // antiguo, y el aviso salía vacío con la obligación viva. Cada familia va en su subconsulta con su propio `LIMIT 50`
+    // (la sintaxis compuesta de SQLite sólo admite `ORDER BY`/`LIMIT` al final, por eso los `SELECT * FROM (…)`).
+    @Query("""SELECT * FROM (
+            SELECT (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, 0 AS contradiccion
+            FROM payment_attempts
+            WHERE venue_id = :venueId AND kind = 'SALE'
+            AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+            AND NOT """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
+            ORDER BY created_at DESC LIMIT 50)
         UNION ALL
-        SELECT (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, 0 AS contradiccion
-        FROM remote_payment_requests r
-        WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
-        AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-            WHERE p.venue_id = :venueId
-            AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
-                            'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
-            AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+        SELECT * FROM (
+            SELECT (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, 0 AS contradiccion
+            FROM remote_payment_requests r
+            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
+            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+                WHERE p.venue_id = :venueId
+                AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
+                                'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+                AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+            ORDER BY r.created_at DESC LIMIT 50)
         UNION ALL
-        SELECT (amount_cents + tip_cents) AS total_centavos, COALESCE(server_verdict_at, updated_at) AS desde_millis, 1 AS contradiccion
-        FROM payment_attempts
-        WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
-        AND """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
-        ORDER BY desde_millis DESC LIMIT 50""")
+        SELECT * FROM (
+            SELECT (amount_cents + tip_cents) AS total_centavos, COALESCE(server_verdict_at, updated_at) AS desde_millis, 1 AS contradiccion
+            FROM payment_attempts
+            WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
+            AND """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
+            ORDER BY desde_millis DESC LIMIT 50)
+        ORDER BY desde_millis DESC""")
     fun observePendingObligations(venueId: String): kotlinx.coroutines.flow.Flow<List<ObligacionPendiente>>
 
     @Query("""UPDATE remote_payment_requests SET status = 'PROCESSING', updated_at = :now

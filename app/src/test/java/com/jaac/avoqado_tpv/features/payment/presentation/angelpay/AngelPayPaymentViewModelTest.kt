@@ -179,6 +179,13 @@ class AngelPayPaymentViewModelTest {
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
             coEvery { cercaDeSolicitud(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.LIBRE
+            // Checkpoint 2 (E1, Codex P1-1): la pantalla consume la DECISIÓN de la libreta. Por defecto el 2xx del REST queda
+            // APLICADO (un relajado devuelve un `Result` con un Object adentro y revienta el `getOrNull()` con ClassCastException).
+            coEvery { aplicarVeredictoDelServidor(any()) } returns Result.success(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                    com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false,
+                ),
+            )
         }
         authAttemptTelemetryStore = mockk(relaxed = true)
         chargeVerifier = mockk(relaxed = true)
@@ -1378,10 +1385,17 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
-    fun `approved SDK result marks host verdict then AUTORIZADO and REGISTRADO on record success`() = runTest(testDispatcher) {
+    fun `approved SDK result marks host verdict then AUTORIZADO, and the REST verdict (E1) decides REGISTRADO`() = runTest(testDispatcher) {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        // Checkpoint 2 · E1: el 2xx del REST ya no libera con `markRecorded` a ciegas — se aplica como VEREDICTO durable.
+        val veredictos = mutableListOf<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(capture(veredictos)) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false,
+            ),
+        )
         coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
             PaymentReceipt(
                 paymentId = "pay-led-1",
@@ -1401,7 +1415,16 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             // recordCardPayment hops through withContext(Dispatchers.IO) — wait for the tail mark.
-            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.markRecorded(any()) }
+            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
+            val veredicto = veredictos.single()
+            assertThat(veredicto.outcome).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED)
+            assertThat(veredicto.fuente).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.Fuente.REST)
+            assertThat(veredicto.paymentId).isEqualTo("pay-led-1")
+            assertThat(veredicto.amountCents).isEqualTo(10000L)
+            assertThat(veredicto.requestId).isNull() // cobro LOCAL: sin solicitud del POS
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            // El paso a REGISTRADO lo decide el veredicto (E1): nadie llama `markRecorded` a ciegas.
+            coVerify(exactly = 0) { paymentAttemptLedger.markRecorded(any()) }
             coVerify(exactly = 1) {
                 paymentAttemptLedger.markHostResponded(any(), true, null, "R1", "A1")
             }
@@ -1652,6 +1675,89 @@ class AngelPayPaymentViewModelTest {
         every { result.cardBin } returns null
         every { result.callResult } returns null
         return result
+    }
+
+    private fun resultado(decision: com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision, transiciono: Boolean, contradiccion: Boolean) =
+        Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(decision, transiciono, null, contradiccion))
+
+    /** Cobro remoto aprobado por el SDK y registrado por REST con el recibo dado; el DAO contesta [decision]. */
+    private fun kotlinx.coroutines.test.TestScope.vmRemotoRegistradoCon(
+        decision: com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision, transiciono: Boolean, contradiccion: Boolean,
+        receipt: PaymentReceipt = PaymentReceipt(paymentId = "pay-1", receiptUrl = "https://receipt/pay-1", accessKey = "key-1",
+            amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO),
+    ): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(receipt)
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns resultado(decision, transiciono, contradiccion)
+        val vm = createViewModel()
+        vm.initPayment(amount = "100.00")
+        runCurrent()
+        vm.setSocketPaymentSource("SOCKET", "req-veredicto")
+        vm.onAngelPaySdkResult(approvedSdkResult())
+        runCurrent()
+        return vm
+    }
+
+    @Test
+    fun `P1-1 el REST NO pinta Success ni reporta success al POS cuando el DAO RECHAZA el veredicto o guarda una contradiccion`() = runTest(testDispatcher) {
+        // Codex (código, P1-1): `aplicarVeredictoDelRest` decidía sólo con el recibo. Libreta $100, REST RECORDED $90 ⇒ el DAO
+        // conserva la discrepancia sin liberar y la pantalla decía «cobrado» con el importe pendiente, reportando `success`.
+        val casos = listOf(
+            Triple(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_DATOS_DISTINTOS, false, true),
+            Triple(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT, false, true),
+            Triple(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, false),
+            Triple(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR, false, true), // RECORDED con montos distintos
+        )
+        for ((decision, transiciono, contradiccion) in casos) {
+            io.mockk.clearMocks(socketManager, paymentAttemptLedger, answers = false, recordedCalls = true, verificationMarks = true)
+            val vm = vmRemotoRegistradoCon(decision, transiciono, contradiccion)
+            try {
+                coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
+                runCurrent()
+                val estado = vm.state.value
+                assertThat(estado).isNotInstanceOf(AngelPayPaymentState.Success::class.java)
+                assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+                assertThat((estado as AngelPayPaymentState.Error).canRetry).isFalse()
+                assertThat(estado.message).isEqualTo(CobroRemotoDelPos.REGISTRADO_CON_DISCREPANCIA)
+                verify(exactly = 0) {
+                    socketManager.emitTerminalPaymentResult(any(), "success", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+                }
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test
+    fun `P1-1 un veredicto ya APLICADO antes (S5 llego primero, sin transicion nueva) sigue siendo Success y reporta success`() = runTest(testDispatcher) {
+        val vm = vmRemotoRegistradoCon(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, transiciono = false, contradiccion = false)
+        try {
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(requestId = "req-veredicto", status = "success", paymentId = "pay-1",
+                    transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any())
+            }
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `P1-1 una segunda captura APLICADA con ganador conserva su aviso y reporta al GANADOR`() = runTest(testDispatcher) {
+        val vm = vmRemotoRegistradoCon(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, transiciono = true, contradiccion = true,
+            receipt = PaymentReceipt(paymentId = "pay-mio", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO, serverStatus = "PENDING", reconciliationKind = "POSSIBLE_SECOND_CAPTURE", winnerPaymentId = "pay-ganador"),
+        )
+        try {
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(requestId = "req-veredicto", status = "success", paymentId = "pay-ganador",
+                    transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any())
+            }
+            runCurrent()
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            assertThat((estado as AngelPayPaymentState.Success).aviso).isEqualTo(CobroRemotoDelPos.SEGUNDA_CAPTURA)
+        } finally { vm.viewModelScope.cancel() }
     }
 
     @Test
@@ -3212,9 +3318,10 @@ class AngelPayPaymentViewModelTest {
     fun `N1 con ACK autorizador se anuncia el intento DESPUES de la fila durable y ANTES de AUTORIZANDO, y se cobra`() = runTest(testDispatcher) {
         val orden = mutableListOf<String>()
         coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } answers { orden += "openAttempt"; true }
-        coEvery { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") } answers { orden += "emit"; com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar }
         coEvery { paymentAttemptLedger.markAuthorizing("attempt-N1") } answers { orden += "markAuthorizing"; true }
         val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar)
+        // DESPUÉS del helper: su stub genérico de `emitAttemptOpened("REQ-N1", any())` taparía a éste, que es el que anota el orden.
+        coEvery { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") } answers { orden += "emit"; com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar }
         try {
             runCurrent()
             assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
@@ -3223,6 +3330,31 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
             coVerify(exactly = 1) { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") }
             coVerify(exactly = 0) { paymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 un ACK autorizador que llega DESPUES de que la pantalla dejo de esperar (reset) no cobra`() = runTest(testDispatcher) {
+        // Codex (código, precisión de N1): la espera vive en la corrutina del cobro, no en un Job que `resetPayment()` cancele.
+        val ack = kotlinx.coroutines.CompletableDeferred<com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } returns true
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar)
+        coEvery { socketManager.emitAttemptOpened("REQ-N1", "attempt-tardio") } coAnswers { ack.await() }
+        try {
+            runCurrent()
+            var resultado: Boolean? = null
+            val espera = launch { resultado = vm.openLedgerAttemptAndMarkAuthorizing("attempt-tardio") }
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LinkingAttempt::class.java)
+            vm.resetPayment() // el cajero empezó otra cosa mientras el servidor no contestaba
+            runCurrent()
+            ack.complete(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar)
+            runCurrent()
+            espera.join()
+            assertThat(resultado).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.LinkingAttempt::class.java)
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -3365,7 +3497,7 @@ class AngelPayPaymentViewModelTest {
             vm.initPayment("100.00")
             vm.setSocketPaymentSource("SOCKET", "REQ-N1")
             runCurrent()
-            val espera = kotlinx.coroutines.launch { vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1") }
+            val espera = launch { vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1") }
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LinkingAttempt::class.java)
             assertThat(sinDineroEnVuelo(vm.state.value)).isTrue()
@@ -3391,19 +3523,18 @@ class AngelPayPaymentViewModelTest {
 
     @Test
     fun `N2 payment_confirmed registrado cierra un ResultadoIncierto de ESTE intento con Success y no toca otro intento ni uno sin registrar`() = runTest(testDispatcher) {
-        io.mockk.mockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
-        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
-            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Resultado no concluyente", "G505", "GATEWAY")
+        // Mismo camino que U101: un intento ABIERTO (primeSdkLaunch) cuyo SDK contesta sin veredicto y AngelPay no responde.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin red")
         val ids = mutableListOf<String>()
         coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
-        val vm = createViewModel()
+        val vm = vmConCobroDelPos("REQ-S5")
         try {
-            vm.setSocketPaymentSource("SOCKET", "REQ-S5")
-            vm.initPayment("100.00")
-            vm.onAngelPayResult(0, null)
+            vm.onAngelPaySdkResult(sdkInciertoResult())
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
             val mio = ids.last()
+            // El «timeout» al POS ya salió (ResultadoIncierto sin verificar): lo que se vigila abajo es que S5 no emita OTRO.
+            io.mockk.clearMocks(socketManager, answers = false, recordedCalls = true, verificationMarks = true)
 
             // Otro intento: se ignora.
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-S5", "otro-intento", "pay-x", 10000, 0, registrado = true))
@@ -3423,7 +3554,6 @@ class AngelPayPaymentViewModelTest {
             verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
-            io.mockk.unmockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
         }
     }
 

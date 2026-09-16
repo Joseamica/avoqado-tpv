@@ -54,6 +54,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
+import com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto
 import com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento
 import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
@@ -677,19 +678,46 @@ class AngelPayPaymentViewModel @Inject constructor(
         successState: AngelPayPaymentState.Success,
     ) {
         val attemptId = paymentContext.idempotencyKey
+        var decision: ResultadoDelVeredicto? = null
         if (attemptId != null) {
             // 📒 [Libreta] HOST_RESPONDIO → AUTORIZADO (card facts); el paso a REGISTRADO lo decide el veredicto.
             paymentAttemptLedger.markAuthorized(attemptId, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
-            paymentAttemptLedger.aplicarVeredictoDelServidor(
+            decision = paymentAttemptLedger.aplicarVeredictoDelServidor(
                 VeredictoDeIntento.desdeRecibo(
                     venueId = paymentContext.venueId, attemptId = attemptId,
                     requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET }, receipt = receipt,
                 ),
-            )
+            ).getOrNull() // un fallo de Room no cambia lo que el servidor ya registró: la fila queda para N3/S6
         }
         val veredicto = receipt.veredictoDelServidor
         val ganador = receipt.ganadorAcreditado
+        // Codex (código, P1-1): la pantalla consume la DECISIÓN de la libreta, no sólo el recibo. Un rechazo (otro Payment, datos
+        // distintos, pertenencia) o un RECORDED que la libreta guarda SIN liberar por contradicción (importes distintos a los de
+        // esta terminal) no es un «cobrado» limpio ni se reporta `success`: el servidor arbitra y Avoqado lo concilia. Un
+        // veredicto ya aplicado antes (S5 llegó primero, sin transición nueva) sigue siendo éxito; una segunda captura
+        // aplicada conserva su aviso aunque sea contradicción por definición.
+        val libretaLoRechazo = decision != null && decision.decision in setOf(
+            ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT, ResultadoDelVeredicto.Decision.RECHAZADO_DATOS_DISTINTOS,
+            ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA,
+        )
+        val recordedSinLiberar = decision?.decision == ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR &&
+            veredicto == VeredictoDelServidor.RECORDED
         when {
+            libretaLoRechazo || recordedSinLiberar -> {
+                Timber.e(
+                    "🚨 [AngelPay] el REST registró %s como %s pero la libreta lo %s (%s) | attemptId=%s",
+                    receipt.paymentId, veredicto, if (libretaLoRechazo) "RECHAZÓ" else "guarda SIN liberar (contradicción)",
+                    decision?.decision, attemptId,
+                )
+                observability.logError(
+                    tag = "AngelPayVeredictoRest",
+                    message = "Veredicto del REST no acreditado por la libreta: ${decision?.decision}",
+                    error = null,
+                    metadata = mapOf("attemptId" to (attemptId ?: "none"), "paymentId" to (receipt.paymentId), "outcome" to veredicto.name),
+                )
+                _mensajeDelPos.value = CobroRemotoDelPos.REGISTRADO_CON_DISCREPANCIA
+                _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.REGISTRADO_CON_DISCREPANCIA, canRetry = false)
+            }
             veredicto == VeredictoDelServidor.RECORDED -> {
                 _state.value = successState.copy(receipt = receipt)
                 // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
@@ -932,6 +960,13 @@ class AngelPayPaymentViewModel @Inject constructor(
         _state.value = AngelPayPaymentState.LinkingAttempt(previo)
         val decision = socketManager.emitAttemptOpened(requestId, paymentAttemptId)
         if (cobroCanceladoPorElPos) return false // el POS canceló durante la espera: la bandeja ya alineó la pantalla
+        // Codex (código, precisión de N1): la espera vive en la corrutina del cobro, no en un Job que `resetPayment()` cancele.
+        // Si mientras llegaba el ACK la pantalla dejó de esperar (reset, otra solicitud, otro intento), el ACK es tardío y no
+        // autoriza nada: la fila PREPARANDO la cierra quien la reinició y el CAS a AUTORIZANDO sigue exigiendo PREPARANDO.
+        if (_state.value !is AngelPayPaymentState.LinkingAttempt || _socketRequestId != requestId) {
+            Timber.w("🔗 [AngelPay] ACK tardío para %s: la pantalla ya no espera este vínculo — no se cobra", paymentAttemptId)
+            return false
+        }
         return when (decision) {
             is DecisionDelVinculo.Cobrar -> {
                 linkAutorizado = paymentAttemptId

@@ -66,6 +66,7 @@ object SocketModule {
         sessionManager: SessionManager,
         remotePaymentInbox: RemotePaymentInbox,
         remotePaymentCoordinator: RemotePaymentCoordinator,
+        paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
     ): SocketManager {
         return SocketManager(
             secureStorage = secureStorage,
@@ -73,6 +74,7 @@ object SocketModule {
             sessionManager = sessionManager,
             remotePaymentInbox = remotePaymentInbox,
             remotePaymentCoordinator = remotePaymentCoordinator,
+            paymentAttemptLedger = paymentAttemptLedger, // checkpoint 2 · N2: el aviso S5 se aplica durable en la libreta
         )
     }
 }

@@ -15,7 +15,9 @@ import timber.log.Timber
  * Checkpoint 2 · N3/N4 (diseño v3, D2/D3): el worker de RED de la recuperación por servidor. Propio a propósito —
  * `LedgerShadowSweepWorker` (cuarentena, poda, historial) debe correr OFFLINE y sin constraints; éste exige CONNECTED y se
  * encola con `APPEND_OR_REPLACE` (una petición nacida a media corrida encadena otra corrida, no se pierde como con KEEP).
- * Un fallo de red devuelve `retry()` (backoff por defecto de WorkManager); lo demás `success()`.
+ * Una pasada con consultas SIN respuesta (red, tope) devuelve `retry()` (backoff por defecto de WorkManager) — la recuperación
+ * absorbe esos fallos por candidata para seguir con las demás, así que el worker decide por `Resultado.sinRespuesta`, no por
+ * una excepción (Codex, código, P2-1); lo demás `success()`.
  */
 @HiltWorker
 class LedgerServerRecoveryWorker @AssistedInject constructor(
@@ -31,7 +33,10 @@ class LedgerServerRecoveryWorker @AssistedInject constructor(
             val r = serverRecovery.recover(venueId)
             // Un `success` durable de bandeja recién escrito se emite al servidor si hay socket (persistido ANTES de emitir).
             r.bandejasResueltas.forEach(socketManager::emitDurableTerminalPaymentResult)
-            Result.success()
+            if (debeReintentar(r)) {
+                Timber.w("🔎 [LedgerServer] %d consultas sin respuesta en la pasada — se reintenta", r.sinRespuesta)
+                Result.retry()
+            } else Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: java.io.IOException) {
@@ -41,5 +46,10 @@ class LedgerServerRecoveryWorker @AssistedInject constructor(
             Timber.e(error, "🔎 [LedgerServer] la pasada falló — la siguiente corrida cubre")
             Result.success()
         }
+    }
+
+    companion object {
+        /** Codex (código, P2-1): una consulta sin respuesta HTTP en la pasada ⇒ `retry()` (backoff de WorkManager), no `success()`. */
+        fun debeReintentar(r: LedgerServerRecovery.Resultado): Boolean = r.sinRespuesta > 0
     }
 }

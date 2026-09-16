@@ -44,7 +44,12 @@ class LedgerApprovalRecovery @Inject constructor(
                 }
                 val completedAt = maxOf(now, System.currentTimeMillis())
                 val receipt = result.getOrNull()
-                if (receipt != null) {
+                if (receipt != null && row.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY) {
+                    // Codex (código, P1-6): el checkpoint 2 es Nexgo/AngelPay. Una aprobación Blumon/PAX conserva la recuperación
+                    // que tenía ANTES (REST 2xx ⇒ REGISTRADO) hasta el port a PAX; pasarla por el veredicto la dejaba retenida
+                    // (el DAO la declara FUERA_DE_ALCANCE) hasta agotar sus cinco intentos.
+                    if (dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRADO, completedAt, null) == 1) recovered++
+                } else if (receipt != null) {
                     // Checkpoint 2 (E1/E5): el 2xx se aplica como VEREDICTO por la MISMA regla que S5/S6 — REGISTRADO sólo
                     // con un veredicto final aprobado y los mismos montos; una evidencia (segunda captura sin ganador,
                     // colisión, PENDING) se guarda y la fila conserva su estado. Un fallo al persistir deja la fila con su
@@ -52,10 +57,17 @@ class LedgerApprovalRecovery @Inject constructor(
                     val aplicado = dao.aplicarVeredictoDelServidor(
                         VeredictoDeIntento.desdeRecibo(venueId, row.attemptId, row.terminalPaymentRequestId, receipt), completedAt,
                     )
-                    if (aplicado.transiciono) recovered++
-                    if (aplicado.decision == ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR) {
-                        Timber.e("🚨 [LedgerApproval] el servidor conserva %s como %s (sin liberar) | attemptId=%s",
-                            receipt.paymentId, receipt.veredictoDelServidor, row.attemptId)
+                    when (aplicado.decision) {
+                        ResultadoDelVeredicto.Decision.APLICADO -> if (aplicado.transiciono) recovered++
+                        ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR ->
+                            Timber.e("🚨 [LedgerApproval] el servidor conserva %s como %s (sin liberar) | attemptId=%s",
+                                receipt.paymentId, receipt.veredictoDelServidor, row.attemptId)
+                        // Una fila AngelPay que el DAO declara fuera de alcance (devolución, heredada) sigue el camino anterior.
+                        ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE ->
+                            if (dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRADO, completedAt, null) == 1) recovered++
+                        // Un rechazo no guardó nada: la fila conserva su estado y su lease; el tope de 5 intentos la acota y S6/F0 la ven.
+                        else -> Timber.e("🚨 [LedgerApproval] la libreta RECHAZÓ el veredicto del 2xx (%s) | attemptId=%s paymentId=%s",
+                            aplicado.decision, row.attemptId, receipt.paymentId)
                     }
                 } else {
                     dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,

@@ -9,6 +9,7 @@ import io.socket.client.Socket
 import io.socket.client.Ack
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
@@ -270,7 +271,7 @@ class SocketManagerTest {
         }
         every { mockSocket.emit("terminal:payment_result", any<JSONObject>()) } answers { orden += "emit"; mockSocket }
         val eventos = mutableListOf<SocketEvent>()
-        val recoleccion = kotlinx.coroutines.launch { socketManager.events.collect { eventos += it } }
+        val recoleccion = launch { socketManager.events.collect { eventos += it } }
 
         capturedListeners["terminal:payment_confirmed"]?.call(
             JSONObject().put("requestId", "req-s5").put("attemptId", "att-s5").put("paymentId", "pay-s5")

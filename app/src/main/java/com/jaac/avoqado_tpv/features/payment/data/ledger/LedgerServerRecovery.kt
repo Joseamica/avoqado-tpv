@@ -29,14 +29,16 @@ class LedgerServerRecovery @Inject constructor(
         val aplicados: Int,
         /** JSON de resultados de bandeja que quedaron RESOLVED `success` en esta pasada: hay que emitirlos al servidor. */
         val bandejasResueltas: List<String>,
+        /** Codex (código, P2-1): consultas SIN respuesta HTTP (red, timeout) en esta pasada — el worker reintenta por ellas. */
+        val sinRespuesta: Int = 0,
     )
 
     suspend fun recover(venueId: String, now: Long = System.currentTimeMillis()): Resultado {
-        var reaplicados = 0; var consultados = 0; var aplicados = 0
+        var reaplicados = 0; var consultados = 0; var aplicados = 0; var sinRespuesta = 0
         val bandejas = mutableListOf<String>()
         // Paso 0 · E2: lo ya sabido se aplica sin gastar red.
         for (fila in runCatching { dao.veredictosPendientesDeAplicar(venueId) }.getOrDefault(emptyList())) {
-            val r = ledger.reaplicarVeredictoGuardado(fila.attemptId) ?: continue
+            val r = ledger.reaplicarVeredictoGuardado(fila.attemptId, now) ?: continue
             if (r.transiciono) reaplicados++
             r.bandejaResueltaJson?.let(bandejas::add)
         }
@@ -46,7 +48,15 @@ class LedgerServerRecovery @Inject constructor(
         }.getOrDefault(emptyList())
         for (fila in candidatas) {
             try {
-                val respuesta = kotlinx.coroutines.withTimeout(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, fila.attemptId) }
+                // Codex (código, P2-1, ronda 2): el tope PROPIO de la consulta se expresa con `withTimeoutOrNull` — devuelve null
+                // en vez de lanzar una CancellationException indistinguible de la de un padre (worker cancelado, timeout externo),
+                // que SÍ tiene que propagarse. Sin respuesta = «no se gasta el turno», la pasada sigue con la siguiente candidata.
+                val respuesta = kotlinx.coroutines.withTimeoutOrNull(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, fila.attemptId) }
+                if (respuesta == null) {
+                    sinRespuesta++
+                    Timber.w("🔎 [LedgerServer] consulta sin respuesta (tope de %d ms) para %s", CONSULTA_TIMEOUT_MS, fila.attemptId)
+                    continue
+                }
                 consultados++
                 val veredicto = if (respuesta.isSuccessful) {
                     respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, fila.attemptId, it) }
@@ -56,43 +66,49 @@ class LedgerServerRecovery @Inject constructor(
                     null
                 }
                 if (veredicto == null) {
-                    dao.estamparConsultaAlServidor(fila.attemptId, System.currentTimeMillis())
+                    dao.estamparConsultaAlServidor(fila.attemptId, now)
                     continue
                 }
-                val r = ledger.aplicarVeredictoDelServidor(veredicto).getOrNull() ?: continue
+                val r = ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull() ?: continue
                 if (r.transiciono) aplicados++
                 r.bandejaResueltaJson?.let(bandejas::add)
             } catch (cancelled: CancellationException) {
-                throw cancelled
+                throw cancelled // cancelación EXTERNA (el worker, un timeout del padre): se propaga, nunca se cuenta como «sin respuesta»
             } catch (error: Exception) {
-                // Sin respuesta HTTP (red, timeout): no se gasta el turno de la fila; el worker con CONNECTED reintenta.
+                // Sin respuesta HTTP (red): no se gasta el turno de la fila; el worker con CONNECTED reintenta por `sinRespuesta`.
+                sinRespuesta++
                 Timber.w(error, "🔎 [LedgerServer] consulta sin respuesta para %s", fila.attemptId)
             }
         }
-        if (reaplicados + consultados + aplicados > 0) {
-            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d bandejas=%d", reaplicados, consultados, aplicados, bandejas.size)
+        if (reaplicados + consultados + aplicados + sinRespuesta > 0) {
+            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d sinRespuesta=%d bandejas=%d",
+                reaplicados, consultados, aplicados, sinRespuesta, bandejas.size)
         }
-        return Resultado(reaplicados, consultados, aplicados, bandejas)
+        return Resultado(reaplicados, consultados, aplicados, bandejas, sinRespuesta)
     }
 
     /**
      * D3: UN intento, en el acto — primero lo guardado (E2), después S6 si hace falta. Un fallo es no-op (el worker lo
      * retoma). Devuelve el JSON de bandeja resuelto, si lo hubo, para emitirlo.
      */
-    suspend fun recoverOne(venueId: String, attemptId: String): String? {
-        ledger.reaplicarVeredictoGuardado(attemptId)?.let { if (it.transiciono || it.bandejaResueltaJson != null) return it.bandejaResueltaJson }
+    suspend fun recoverOne(venueId: String, attemptId: String, now: Long = System.currentTimeMillis()): String? {
+        ledger.reaplicarVeredictoGuardado(attemptId, now)?.let { if (it.transiciono || it.bandejaResueltaJson != null) return it.bandejaResueltaJson }
         val fila = runCatching { dao.getById(attemptId) }.getOrNull() ?: return null
         if (fila.legacyShadow || fila.venueId != venueId || fila.terminalPaymentRequestId == null) return null
         val outcomeGuardado = fila.serverOutcome
         if (outcomeGuardado == PaymentAttemptEntity.SERVER_RECORDED || outcomeGuardado == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE) return null
         return try {
-            val respuesta = kotlinx.coroutines.withTimeout(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, attemptId) }
+            val respuesta = kotlinx.coroutines.withTimeoutOrNull(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, attemptId) }
+            if (respuesta == null) {
+                Timber.w("🔎 [LedgerServer] consulta inmediata sin respuesta (tope) para %s", attemptId)
+                return null
+            }
             val veredicto = if (respuesta.isSuccessful) respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) } else null
             if (veredicto == null) {
-                dao.estamparConsultaAlServidor(attemptId, System.currentTimeMillis())
+                dao.estamparConsultaAlServidor(attemptId, now)
                 null
             } else {
-                ledger.aplicarVeredictoDelServidor(veredicto).getOrNull()?.bandejaResueltaJson
+                ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson
             }
         } catch (cancelled: CancellationException) {
             throw cancelled

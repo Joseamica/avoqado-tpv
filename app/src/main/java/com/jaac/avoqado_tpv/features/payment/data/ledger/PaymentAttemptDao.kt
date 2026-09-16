@@ -504,11 +504,17 @@ interface PaymentAttemptDao {
      * E2 · veredictos FINALES ya guardados que todavía no se aplicaron: la fila cambió de estado (el SDK volvió incierto,
      * el registro falló…) después de guardar la evidencia. Se REAPLICAN sin otra consulta.
      */
+    // Codex (código, P1-3): sólo entran al lote los veredictos que la transición PUEDE aplicar (mismas condiciones que
+    // `registrarPorVeredictoDelServidor`): una contradicción (montos distintos, rechazo del host) o una segunda captura sin
+    // ganador nunca sale de este conjunto por sí sola y, con 50 de ellas delante, el intento 51 no se reaplicaba jamás.
     @Query(
         """SELECT * FROM payment_attempts
            WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
            AND server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE')
            AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','ENTREGADA_A_COLA','INDETERMINADO')
+           AND host_approved IS NOT 0
+           AND server_amount_cents = amount_cents AND server_tip_cents = tip_cents
+           AND (server_outcome = 'RECORDED' OR server_winner_payment_id IS NOT NULL)
            ORDER BY server_verdict_at ASC, attempt_id ASC LIMIT 50"""
     )
     suspend fun veredictosPendientesDeAplicar(venueId: String): List<PaymentAttemptEntity>
@@ -543,8 +549,11 @@ interface PaymentAttemptDao {
     suspend fun aplicarVeredictoDelServidor(v: VeredictoDeIntento, now: Long): ResultadoDelVeredicto {
         val fila = getById(v.attemptId) ?: return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.SIN_FILA, false, null, false)
         val requestId = v.requestId ?: fila.terminalPaymentRequestId
-        if (fila.legacyShadow || fila.venueId != v.venueId || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
-            fila.kind != PaymentAttemptEntity.KIND_SALE ||
+        // Codex (código, P1-2/P1-6): fuera del checkpoint (heredada, Blumon/PAX, devolución) NO es un rechazo — quien llama
+        // sigue su camino anterior; un venue o una solicitud ajenos SÍ lo son (anomalía: no se pisa nada).
+        if (fila.legacyShadow || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY || fila.kind != PaymentAttemptEntity.KIND_SALE)
+            return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE, false, null, false)
+        if (fila.venueId != v.venueId ||
             (v.requestId != null && fila.terminalPaymentRequestId != null && fila.terminalPaymentRequestId != v.requestId)
         ) return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false)
         if (fila.serverPaymentId != null && v.paymentId != null && fila.serverPaymentId != v.paymentId) {
@@ -557,11 +566,13 @@ interface PaymentAttemptDao {
             estamparConsultaAlServidor(v.attemptId, now)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_DATOS_DISTINTOS, false, null, esContradiccion(v.attemptId) == true)
         }
-        val guardadoEsFinal = fila.serverOutcome == PaymentAttemptEntity.SERVER_RECORDED ||
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE
-        if (mismoPayment && guardadoEsFinal && !v.esFinalAprobado && v.outcome.name != fila.serverOutcome) {
-            // Codex (v3, cambio 2): una respuesta ANTIGUA (evidencia no final) nunca degrada un veredicto final ya guardado;
-            // el veredicto guardado se REEVALÚA con lo que hay (E2).
+        // Codex (v3, cambio 2 · código, P1-4): «final aprobado» guardado = RECORDED, o segunda captura CON ganador. Una respuesta
+        // menos completa —evidencia no final, o el MISMO outcome sin ganador— nunca lo degrada ni borra el ganador; se decide por
+        // la acreditación, no por el nombre del outcome (una segunda captura sin `winnerPaymentId` borraba `server_winner_payment_id`).
+        val guardadoEsFinalAprobado = fila.serverOutcome == PaymentAttemptEntity.SERVER_RECORDED ||
+            (fila.serverOutcome == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE && fila.serverWinnerPaymentId != null)
+        if (mismoPayment && guardadoEsFinalAprobado && !v.esFinalAprobado) {
+            // Una respuesta ANTIGUA o incompleta nunca degrada un veredicto final ya guardado; el guardado se REEVALÚA (E2).
             estamparConsultaAlServidor(v.attemptId, now)
             val transiciono = registrarPorVeredictoDelServidor(v.attemptId, now) == 1
             val bandejaJson = fila.serverWinnerPaymentId?.let { g -> requestId?.let { resolverBandejaConGanador(it, g, fila.serverRecordedVia ?: "terminal", now) } }

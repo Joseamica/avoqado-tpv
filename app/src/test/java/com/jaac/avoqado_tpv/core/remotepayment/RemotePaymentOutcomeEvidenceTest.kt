@@ -24,7 +24,7 @@ class RemotePaymentOutcomeEvidenceTest {
         val manager = SocketManager(
             secureStorage = mockk(relaxed = true), authRepositoryLazy = mockk(relaxed = true),
             sessionManager = mockk(relaxed = true), remotePaymentInbox = inbox,
-            remotePaymentCoordinator = mockk(relaxed = true),
+            remotePaymentCoordinator = mockk(relaxed = true), paymentAttemptLedger = mockk(relaxed = true),
         )
         rejectRemotePaymentBeforeAuthorization(manager, "req-pre-sdk", "SDK not initialized")
         val json = JSONObject(withTimeout(5_000) { durable.await() })
@@ -42,7 +42,7 @@ class RemotePaymentOutcomeEvidenceTest {
         val manager = SocketManager(
             secureStorage = mockk(relaxed = true), authRepositoryLazy = mockk(relaxed = true),
             sessionManager = mockk(relaxed = true), remotePaymentInbox = inbox,
-            remotePaymentCoordinator = mockk(relaxed = true),
+            remotePaymentCoordinator = mockk(relaxed = true), paymentAttemptLedger = mockk(relaxed = true),
         )
         manager.emitTerminalPaymentResult("req-proof", "failed", outcomeEvidence = "PROCESSOR_DECLINED")
         val json = JSONObject(withTimeout(5_000) { durable.await() })

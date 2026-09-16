@@ -452,11 +452,26 @@ class PaymentSyncWorker @AssistedInject constructor(
             venueId = payment.venueId, attemptId = attemptId, requestId = requestId, receipt = receipt,
         )
         val r = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrElse { return false }
-        if (r.decision == com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR) {
-            Timber.e("🚨 [Payment Sync] el servidor conserva %s como %s: la libreta lo guarda como evidencia | ref=%s",
-                receipt.paymentId, receipt.veredictoDelServidor, payment.referenceNumber)
+        // Codex (código, P1-2): «el DAO contestó» no es «quedó durable». Sólo APLICADO/GUARDADO_SIN_LIBERAR escriben `server_*`;
+        // SIN_FILA (cola anterior a la libreta) y FUERA_DE_ALCANCE (Blumon/PAX, devolución, heredada) siguen el camino de
+        // antes del checkpoint; un RECHAZO no guardó nada y la fila se conserva reintentable con la MISMA llave (H.3/E5).
+        return when (r.decision) {
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO -> true
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR -> {
+                Timber.e("🚨 [Payment Sync] el servidor conserva %s como %s: la libreta lo guarda como evidencia | ref=%s",
+                    receipt.paymentId, receipt.veredictoDelServidor, payment.referenceNumber)
+                true
+            }
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.SIN_FILA,
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE -> true
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA,
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT,
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_DATOS_DISTINTOS -> {
+                Timber.e("🚨 [Payment Sync] la libreta RECHAZÓ el veredicto del 2xx (%s): nada quedó durable, la fila sigue reintentable | ref=%s paymentId=%s",
+                    r.decision, payment.referenceNumber, receipt.paymentId)
+                false
+            }
         }
-        return true
     }
 
     private suspend fun releaseClaim(

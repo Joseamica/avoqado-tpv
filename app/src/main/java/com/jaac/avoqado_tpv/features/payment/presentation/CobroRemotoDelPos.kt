@@ -38,6 +38,14 @@ internal object CobroRemotoDelPos {
     /** E4: una segunda captura con ganador acreditado — el banco aprobó, pero NO es una venta más. */
     const val SEGUNDA_CAPTURA = "Avoqado registró este cobro como posible cobro DOBLE y lo concilia. No lo vuelvas a cobrar."
 
+    /**
+     * Codex (código, P1-1): el REST registró el cobro pero la libreta NO pudo dar el veredicto por bueno (importes distintos
+     * a los de esta terminal, otro Payment para la misma llave, o datos que contradicen lo ya guardado): la pantalla no
+     * afirma «cobrado» a secas y no reporta `success` — el servidor arbitra y Avoqado lo concilia.
+     */
+    const val REGISTRADO_CON_DISCREPANCIA = "El banco aprobó y Avoqado registró el cobro, pero con datos distintos a los de esta terminal. " +
+        "No lo vuelvas a cobrar: Avoqado lo concilia. Revisa Transacciones antes de intentar otra vez."
+
     /** E4: evidencia sin ganador acreditado (colisión de referencia o pendiente sin clasificar). */
     const val EVIDENCIA_SIN_GANADOR = "El banco aprobó; Avoqado conserva el cobro como evidencia y lo concilia. No lo vuelvas a cobrar."
 

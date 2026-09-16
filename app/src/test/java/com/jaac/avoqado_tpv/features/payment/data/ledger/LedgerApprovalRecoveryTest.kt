@@ -29,9 +29,36 @@ class LedgerApprovalRecoveryTest {
     init { coEvery { dao.completeRecovery(any(), any(), any(), any(), any(), any()) } returns 1 }
     private val receipt = PaymentReceipt("payment", "url", "key", BigDecimal("100.00"), BigDecimal("10.00"))
 
+    private val angelPayContext = PaymentContext.AngelPayPayment(
+        venueId = "venue", staffId = "staff", amount = BigDecimal("100.00"), tip = BigDecimal("10.00"),
+        merchantAccountId = "merchant", deviceSerialNumber = "N860W173397", idempotencyKey = "attempt-ap",
+        terminalPaymentRequestId = "request-ap",
+    )
+    private val approvedAngelPay = approved.copy(
+        attemptId = "attempt-ap", processor = "ANGELPAY", paymentContextJson = Gson().toJson(angelPayContext),
+        terminalPaymentRequestId = "request-ap", operationId = null,
+    )
+
     @Test
-    fun `restart replays approval registration with original key and processor identity`() = runTest {
+    fun `restart replays a BLUMON approval with original key and processor identity — by the recovery it had BEFORE the checkpoint`() = runTest {
+        // Codex (código, P1-6): el checkpoint 2 es Nexgo/AngelPay; el DAO del veredicto rechaza `processor != ANGELPAY`,
+        // así que pasar una aprobación Blumon por él la dejaba retenida hasta agotar sus 5 intentos. Blumon conserva
+        // `completeRecovery(REGISTRADO)` tal cual, hasta el port a PAX.
         coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        val contexts = mutableListOf<PaymentContext>()
+        coEvery { fast.recordPayment(capture(contexts), any(), "AUTH", "REF") } returns Result.success(receipt)
+        assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
+        assertEquals("attempt", contexts.single().idempotencyKey)
+        assertEquals("request", contexts.single().terminalPaymentRequestId)
+        assertEquals(123, (contexts.single() as PaymentContext.FastPayment).blumonOperationNumber)
+        coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+        coVerify(exactly = 0) { dao.aplicarVeredictoDelServidor(any(), any()) }
+    }
+
+    @Test
+    fun `restart replays an ANGELPAY approval as a VERDICT by the single rule (E1), not as a blind REGISTRADO`() = runTest {
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approvedAngelPay)
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
         val contexts = mutableListOf<PaymentContext>()
         coEvery { fast.recordPayment(capture(contexts), any(), "AUTH", "REF") } returns Result.success(receipt)
@@ -40,11 +67,10 @@ class LedgerApprovalRecoveryTest {
         coEvery { dao.aplicarVeredictoDelServidor(capture(veredictos), any()) } returns
             ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.APLICADO, transiciono = true, bandejaResueltaJson = null, contradiccion = false)
         assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
-        assertEquals("attempt", contexts.single().idempotencyKey)
-        assertEquals("request", contexts.single().terminalPaymentRequestId)
-        assertEquals(123, (contexts.single() as PaymentContext.FastPayment).blumonOperationNumber)
+        assertEquals("attempt-ap", contexts.single().idempotencyKey)
+        assertEquals("request-ap", contexts.single().terminalPaymentRequestId)
         val v = veredictos.single()
-        assertEquals("attempt", v.attemptId)
+        assertEquals("attempt-ap", v.attemptId)
         assertEquals(VeredictoDeIntento.Fuente.REST, v.fuente)
         assertEquals(com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED, v.outcome)
         assertEquals(10000L, v.amountCents)
@@ -54,7 +80,7 @@ class LedgerApprovalRecoveryTest {
 
     @Test
     fun `una evidencia del servidor (segunda captura sin ganador) NO cuenta como recuperada y la fila conserva su estado`() = runTest {
-        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved)
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approvedAngelPay)
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
         coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(
             receipt.copy(serverStatus = "PENDING", reconciliationKind = "POSSIBLE_REFERENCE_COLLISION"),

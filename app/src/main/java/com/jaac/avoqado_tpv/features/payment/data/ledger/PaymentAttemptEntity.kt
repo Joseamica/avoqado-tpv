@@ -148,10 +148,18 @@ data class PaymentAttemptEntity(
          * evidencia que no es una venta normal, o dinero para un intento que la terminal dio por no cobrado o con otros
          * montos. Lo consumen la poda/cierre (la conservan), el veto de negativos (H.3 + `server_payment_id`) y el aviso.
          * Va como `const` para poder ir DENTRO de las anotaciones `@Query` (Room exige literales).
+         *
+         * 🔴 NUNCA puede evaluar a NULL: se usa como `AND NOT SQL_CONTRADICCION` en la poda, el cierre y el aviso de
+         * pendientes, y en SQL `NOT NULL` es NULL — una fila SIN veredicto (`server_outcome` NULL, el caso normal) quedaba
+         * fuera de la poda y del aviso (medido: dos pruebas del aviso F0 en cero). Por eso el `IS NOT NULL` externo y los
+         * `IS` / `IS NOT` (NULL-seguros en SQLite) en vez de `=` / `!=`: `host_approved` NULL (sin veredicto del host) cuenta
+         * como no rechazado, igual que en `registrarPorVeredictoDelServidor`; unos importes del servidor NULL sobre un RECORDED
+         * (S6 sólo los omite sin Payment) cuentan como «no se pudo confirmar el importe» — contradicción, el lado seguro.
          */
-        const val SQL_CONTRADICCION = "(server_outcome IN ('SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
-            "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved = 0 " +
-            "OR server_amount_cents != amount_cents OR server_tip_cents != tip_cents)))"
+        const val SQL_CONTRADICCION = "(server_outcome IS NOT NULL AND (" +
+            "server_outcome IN ('SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
+            "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved IS 0 " +
+            "OR server_amount_cents IS NOT amount_cents OR server_tip_cents IS NOT tip_cents))))"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

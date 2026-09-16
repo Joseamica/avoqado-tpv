@@ -331,9 +331,14 @@ class PaymentAttemptLedger @Inject constructor(
      * saber si la evidencia quedó durable (si no, no marca sincronizada su fila); los demás pueden ignorar el fallo.
      * Nunca lanza: un fallo aquí no puede bloquear un cobro ya hecho.
      */
-    suspend fun aplicarVeredictoDelServidor(veredicto: VeredictoDeIntento): Result<ResultadoDelVeredicto> = runCatching {
+    suspend fun aplicarVeredictoDelServidor(veredicto: VeredictoDeIntento): Result<ResultadoDelVeredicto> =
+        aplicarVeredictoDelServidor(veredicto, System.currentTimeMillis())
+
+    /** Sobrecarga con el reloj por parámetro (una pasada de recuperación estampa todo con el MISMO `now`); no es un default: un
+     *  `mockk` que stubea `aplicarVeredictoDelServidor(any())` no casaría con un parámetro por defecto calculado al vuelo. */
+    suspend fun aplicarVeredictoDelServidor(veredicto: VeredictoDeIntento, now: Long): Result<ResultadoDelVeredicto> = runCatching {
         withContext(NonCancellable + Dispatchers.IO) {
-            val r = dao.aplicarVeredictoDelServidor(veredicto, System.currentTimeMillis())
+            val r = dao.aplicarVeredictoDelServidor(veredicto, now)
             Timber.i(
                 "📒 [Libreta] veredicto del servidor %s/%s ⇒ %s (transición=%s, bandeja=%s, contradicción=%s) | attemptId=%s",
                 veredicto.fuente, veredicto.outcome, r.decision, r.transiciono, r.bandejaResueltaJson != null, r.contradiccion, veredicto.attemptId,
@@ -349,8 +354,10 @@ class PaymentAttemptLedger @Inject constructor(
     }
 
     /** E2: reaplica un veredicto FINAL ya guardado (sin red) cuando el estado local cambió. Null si no hay nada guardado. */
-    suspend fun reaplicarVeredictoGuardado(attemptId: String): ResultadoDelVeredicto? = runCatching {
-        withContext(NonCancellable + Dispatchers.IO) { dao.reaplicarVeredictoGuardado(attemptId, System.currentTimeMillis()) }
+    suspend fun reaplicarVeredictoGuardado(attemptId: String): ResultadoDelVeredicto? = reaplicarVeredictoGuardado(attemptId, System.currentTimeMillis())
+
+    suspend fun reaplicarVeredictoGuardado(attemptId: String, now: Long): ResultadoDelVeredicto? = runCatching {
+        withContext(NonCancellable + Dispatchers.IO) { dao.reaplicarVeredictoGuardado(attemptId, now) }
     }.getOrElse {
         if (it is kotlinx.coroutines.CancellationException) throw it
         Timber.e(it, "📒 [Libreta] no se pudo reaplicar el veredicto guardado | attemptId=%s", attemptId)

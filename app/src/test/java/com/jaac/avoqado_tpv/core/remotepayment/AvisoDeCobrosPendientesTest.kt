@@ -75,4 +75,20 @@ class AvisoDeCobrosPendientesTest {
         assertThat(NavRoute.RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES).contains("fast_payment_entry")
         assertThat(NavRoute.RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES).contains("checkout")
     }
+
+    @Test fun `una contradiccion con el servidor se avisa aparte, no se mezcla con los pendientes y caduca a las 72 h`() {
+        val ahora = 1_700_000_000_000L
+        val pendiente = ObligacionPendiente(totalCentavos = 12050, desdeMillis = ahora - 3 * 60_000)
+        val contradiccion = ObligacionPendiente(totalCentavos = 5000, desdeMillis = ahora - 60_000, contradiccion = 1)
+        val texto = AvisoDeCobrosPendientes.texto(listOf(contradiccion, pendiente), ahora)!!
+        assertThat(texto).startsWith("Quedó un cobro de $120.50 sin confirmar")
+        assertThat(texto).contains("Avoqado registró dinero de un cobro ($50.00)")
+        assertThat(texto).contains("no lo vuelvas a cobrar")
+        // Sólo contradicción: no dice «sin confirmar».
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(contradiccion), ahora)!!).doesNotContain("sin confirmar")
+        // Caducada (más de 72 h): desaparece del aviso.
+        val vieja = contradiccion.copy(desdeMillis = ahora - AvisoDeCobrosPendientes.VENTANA_CONTRADICCION_MS - 1)
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(vieja), ahora)).isNull()
+    }
+
 }

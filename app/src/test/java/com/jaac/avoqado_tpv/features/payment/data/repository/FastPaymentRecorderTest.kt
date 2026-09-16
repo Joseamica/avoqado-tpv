@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardNature
 import com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
 import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.slot
@@ -101,6 +102,29 @@ class FastPaymentRecorderTest {
         ),
     )
 
+    /**
+     * Checkpoint 2 (Codex P1-2, 16-sep): el cuerpo REAL de un 201 de SEGUNDA CAPTURA — el servidor conserva el dinero
+     * como Payment `PENDING` con `processorData.reconciliation.kind = POSSIBLE_SECOND_CAPTURE` (S0/S3 del checkpoint 1).
+     */
+    private fun secondCaptureResponse(): Response<PaymentResponse> = Response.success(
+        PaymentResponse(
+            success = true,
+            data = PaymentData(
+                id = "pmt_segunda",
+                amount = BigDecimal("100.00"),
+                tipAmount = BigDecimal("5.00"),
+                authorizationNumber = "111222",
+                referenceNumber = "260916000001",
+                digitalReceipt = null,
+                status = "PENDING",
+                processorData = com.google.gson.JsonParser.parseString(
+                    """{"reconciliation":{"kind":"POSSIBLE_SECOND_CAPTURE","requestId":"req-1","winnerPaymentId":"pmt_ganador"},
+                       "registradoVia":"webhook","possibleSecondCapture":true}""",
+                ).asJsonObject,
+            ),
+        ),
+    )
+
     private fun errorResponse(body: String): Response<PaymentResponse> =
         Response.error(
             400,
@@ -122,6 +146,74 @@ class FastPaymentRecorderTest {
      * El cobro SIEMPRE estuvo registrado y no hubo doble cargo — la idempotencia del server hizo
      * su trabajo las 2,781 veces. Lo único que faltaba era el QR.
      */
+    @Test
+    fun `un 2xx con Payment PENDING de segunda captura NO es una venta normal y conserva al ganador`() = runTest {
+        coEvery { apiService.recordFastPayment(venueId = any(), request = any()) } returns secondCaptureResponse()
+
+        val receipt = recorder.recordPayment(
+            context = cardContext(), cardDetails = CardDetails.CASH, authorizationNumber = "111222", referenceNumber = "260916000001",
+        ).getOrThrow()
+
+        // Sigue siendo `success` (el dinero se movió y el servidor lo tiene durable), pero el veredicto lo distingue.
+        assertThat(receipt.paymentId).isEqualTo("pmt_segunda")
+        assertThat(receipt.serverStatus).isEqualTo("PENDING")
+        assertThat(receipt.reconciliationKind).isEqualTo("POSSIBLE_SECOND_CAPTURE")
+        assertThat(receipt.winnerPaymentId).isEqualTo("pmt_ganador")
+        assertThat(receipt.veredictoDelServidor).isEqualTo(VeredictoDelServidor.SECOND_CAPTURE_EVIDENCE)
+        assertThat(receipt.veredictoDelServidor.esVentaNormal).isFalse()
+        assertThat(receipt.serverRecordedVia).isEqualTo("webhook")
+        // El ganador acreditado es el que nombra el servidor, nunca el Payment PENDING de este intento.
+        assertThat(receipt.ganadorAcreditado).isEqualTo("pmt_ganador")
+        assertThat(receipt.copy(winnerPaymentId = null).ganadorAcreditado).isNull()
+        assertThat(receipt.copy(reconciliationKind = "POSSIBLE_REFERENCE_COLLISION").ganadorAcreditado).isNull()
+        assertThat(receipt.copy(reconciliationKind = null).ganadorAcreditado).isNull()
+    }
+
+    @Test
+    fun `N0b un COMPLETED con la solicitud ligada en el 2xx acredita al ganador`() = runTest {
+        coEvery { apiService.recordFastPayment(venueId = any(), request = any()) } returns Response.success(
+            PaymentResponse(
+                success = true,
+                data = PaymentData(
+                    id = "pmt_ligado", amount = BigDecimal("100.00"), tipAmount = BigDecimal.ZERO,
+                    authorizationNumber = "123456", referenceNumber = "REF-LIGADA", digitalReceipt = null,
+                    status = "COMPLETED", terminalPaymentRequestId = "req-ligada",
+                ),
+            ),
+        )
+        val receipt = recorder.recordPayment(
+            context = cardContext(), cardDetails = CardDetails.CASH, authorizationNumber = "123456", referenceNumber = "REF-LIGADA",
+        ).getOrThrow()
+        assertThat(receipt.veredictoDelServidor).isEqualTo(VeredictoDelServidor.RECORDED)
+        assertThat(receipt.solicitudLigada).isEqualTo("req-ligada")
+        assertThat(receipt.ganadorAcreditado).isEqualTo("pmt_ligado")
+    }
+
+    @Test
+    fun `un 2xx sin status (servidor anterior) o COMPLETED sigue siendo una venta normal`() = runTest {
+        coEvery { apiService.recordFastPayment(venueId = any(), request = any()) } returns successResponse()
+        val sinStatus = recorder.recordPayment(
+            context = cardContext(), cardDetails = CardDetails.CASH, authorizationNumber = "EFECTIVO", referenceNumber = "CASH-1",
+        ).getOrThrow()
+        assertThat(sinStatus.serverStatus).isNull()
+        assertThat(sinStatus.veredictoDelServidor).isEqualTo(VeredictoDelServidor.RECORDED)
+        assertThat(sinStatus.serverRecordedVia).isEqualTo("terminal")
+        // N0b: un COMPLETED NO basta — sin la solicitud ligada en el 2xx no acredita ganador (registrado, no ligado).
+        assertThat(sinStatus.solicitudLigada).isNull()
+        assertThat(sinStatus.ganadorAcreditado).isNull()
+        assertThat(sinStatus.copy(solicitudLigada = "req-1").ganadorAcreditado).isEqualTo("pmt_123")
+        assertThat(sinStatus.copy(solicitudLigada = "").ganadorAcreditado).isNull()
+
+        assertThat(VeredictoDelServidor.de("COMPLETED", null)).isEqualTo(VeredictoDelServidor.RECORDED)
+        assertThat(VeredictoDelServidor.de("completed", "POSSIBLE_SECOND_CAPTURE")).isEqualTo(VeredictoDelServidor.RECORDED)
+        assertThat(VeredictoDelServidor.de("PENDING", "POSSIBLE_REFERENCE_COLLISION")).isEqualTo(VeredictoDelServidor.REFERENCE_COLLISION_EVIDENCE)
+        assertThat(VeredictoDelServidor.de("PENDING", null)).isEqualTo(VeredictoDelServidor.PENDING_EVIDENCE)
+        assertThat(VeredictoDelServidor.de("PROCESSING", "algo-nuevo")).isEqualTo(VeredictoDelServidor.PENDING_EVIDENCE)
+        assertThat(VeredictoDelServidor.porNombre("SECOND_CAPTURE_EVIDENCE")).isEqualTo(VeredictoDelServidor.SECOND_CAPTURE_EVIDENCE)
+        assertThat(VeredictoDelServidor.porNombre("NOT_RECORDED")).isNull()
+        assertThat(VeredictoDelServidor.porNombre(null)).isNull()
+    }
+
     @Test
     fun `recordPayment succeeds when backend returns null digitalReceipt`() = runTest {
         coEvery {

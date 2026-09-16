@@ -53,6 +53,8 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
             secureStorage.getVenueId()?.let { venueId ->
                 unknownRecovery.recover(venueId, System.currentTimeMillis())
                 approvalRecovery.recover(venueId, System.currentTimeMillis())
+                // Checkpoint 2 · N3: lo barato y de Avoqado va en su propio worker con RED; este barrido sigue offline.
+                LedgerSweepScheduler.runServerRecoveryNow(applicationContext)
             }
             val result = LedgerSweepLogic.runGated(
                 settingsRepository = settingsRepository,

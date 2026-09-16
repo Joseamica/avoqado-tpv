@@ -100,6 +100,8 @@ class PaymentSyncWorker @AssistedInject constructor(
     private val recordPaymentUseCase: RecordPaymentUseCase,
     private val paymentQueueStateManager: PaymentQueueStateManager,
     private val refundQueueRepository: RefundQueueRepository,
+    /** Checkpoint 2 (E5): el 2xx del replay se aplica como VEREDICTO en la libreta ANTES de dar por consumida la fila. */
+    private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -296,6 +298,15 @@ class PaymentSyncWorker @AssistedInject constructor(
                 "✅ [Payment Sync] Payment synced successfully | " +
                         "ref=${payment.referenceNumber} | queueId=${payment.queueId}"
             )
+            // Checkpoint 2 (E5, Codex v3 cambio 4): el 2xx puede ser una EVIDENCIA (segunda captura, colisión) y la libreta
+            // tiene que saberlo ANTES de que esta fila desaparezca — S6 no puede recuperar un intento sin vínculo S1, así
+            // que este 2xx es su único canal. Si el veredicto NO quedó durable y la libreta tiene fila, la cola se conserva
+            // reintentable con la MISMA llave (el REST es idempotente; nunca se vuelve al SDK). Una cola anterior a la
+            // libreta (sin fila) sigue siendo no-op.
+            if (!veredictoDurableEnLaLibreta(payment, context, result.getOrThrow())) {
+                releaseClaim(payment, payment.retryCount + 1, "El veredicto del servidor no quedó guardado en la libreta; se reintenta")
+                return false
+            }
             markSyncedChecked(payment)
             return true
         }
@@ -429,6 +440,25 @@ class PaymentSyncWorker @AssistedInject constructor(
      * worker mientras sigue registrando el mismo pago — exactamente el doble-registro que F-8
      * existe para evitar.
      */
+    /** true si la libreta no tiene fila para la llave (nada que aplicar) o el veredicto quedó durable; false si falló. */
+    private suspend fun veredictoDurableEnLaLibreta(
+        payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
+        context: PaymentContext,
+        receipt: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt,
+    ): Boolean {
+        val attemptId = payment.idempotencyKey ?: return true
+        val requestId = (context as? PaymentContext.AngelPayPayment)?.terminalPaymentRequestId
+        val veredicto = com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.desdeRecibo(
+            venueId = payment.venueId, attemptId = attemptId, requestId = requestId, receipt = receipt,
+        )
+        val r = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrElse { return false }
+        if (r.decision == com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR) {
+            Timber.e("🚨 [Payment Sync] el servidor conserva %s como %s: la libreta lo guarda como evidencia | ref=%s",
+                receipt.paymentId, receipt.veredictoDelServidor, payment.referenceNumber)
+        }
+        return true
+    }
+
     private suspend fun releaseClaim(
         payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
         retryCount: Int,

@@ -200,7 +200,23 @@ sealed interface SocketEvent {
         val processedByStaffId: String?,
         val senderDeviceName: String?,
         val venueId: String,
-        val timestamp: String
+        val timestamp: String,
+        /** N0 (checkpoint 2): capacidad del servidor que entregó la solicitud; 0 cuando el payload no la trae. */
+        val attemptLinkVersion: Int = 0,
+    ) : SocketEvent
+
+    /**
+     * S5 (checkpoint 2 · N2): el servidor confirma que el webhook registró el dinero de ESTE intento y cerró la solicitud.
+     * Llega DESPUÉS de que la libreta aplicó el veredicto: `registrado` dice si la fila ya pasó a REGISTRADO (o ya lo
+     * estaba); si el SDK sigue dentro, la evidencia quedó guardada y la fila se reaplica al salir.
+     */
+    data class TerminalPaymentConfirmed(
+        val requestId: String,
+        val attemptId: String,
+        val paymentId: String,
+        val amountCents: Long,
+        val tipCents: Long,
+        val registrado: Boolean,
     ) : SocketEvent
 
     /**

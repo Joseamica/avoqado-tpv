@@ -47,6 +47,27 @@ class RemotePaymentInboxRoomTest {
         coordinator.submitSocketPaymentRequest(decision.request)
     }
 
+    @Test fun `N0 la version de capacidad se persiste con la solicitud, sube con un duplicado mayor y nunca baja`() = runTest {
+        val sinBandera = inbox.receive(request) as RemotePaymentReceiveDecision.Deliver
+        assertThat(sinBandera.request.attemptLinkVersion).isEqualTo(0)
+        assertThat(db.remotePaymentRequestDao().getById("req-1")!!.attemptLinkVersion).isEqualTo(0)
+
+        // El servidor nuevo reentrega la MISMA solicitud (mismo contrato de dinero) ya con la bandera.
+        val conBandera = inbox.receive(request.copy(attemptLinkVersion = 1)) as RemotePaymentReceiveDecision.Deliver
+        assertThat(conBandera.request.attemptLinkVersion).isEqualTo(1)
+        assertThat(db.remotePaymentRequestDao().getById("req-1")!!.attemptLinkVersion).isEqualTo(1)
+
+        // Un replay de un servidor anterior (sin bandera) no borra lo que otro ya declaró.
+        val replayViejo = inbox.receive(request) as RemotePaymentReceiveDecision.Deliver
+        assertThat(replayViejo.request.attemptLinkVersion).isEqualTo(1)
+        assertThat(db.remotePaymentRequestDao().getById("req-1")!!.attemptLinkVersion).isEqualTo(1)
+
+        // Una solicitud que nace con la bandera la conserva de entrada.
+        val nueva = inbox.receive(request.copy(requestId = "req-2", attemptLinkVersion = 1)) as RemotePaymentReceiveDecision.Deliver
+        assertThat(nueva.request.attemptLinkVersion).isEqualTo(1)
+        assertThat(db.remotePaymentRequestDao().getById("req-2")!!.attemptLinkVersion).isEqualTo(1)
+    }
+
     @Test fun `committed received cancellation keeps proof across duplicate replay`() = runTest {
         receive()
         val result = inbox.cancel("req-1")

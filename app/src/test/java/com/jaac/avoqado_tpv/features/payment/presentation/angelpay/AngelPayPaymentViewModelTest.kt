@@ -3191,4 +3191,240 @@ class AngelPayPaymentViewModelTest {
             vm.viewModelScope.cancel()
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    // Checkpoint 2 · N1 (diseño v3, D4): la decisión del vínculo intento→solicitud ANTES del SDK
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+
+    private fun vmRemotoConVinculo(decision: com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo, capacidad: Int = 1): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.capacidadDeVinculo("REQ-N1") } returns capacidad
+        coEvery { socketManager.emitAttemptOpened("REQ-N1", any()) } returns decision
+        val vm = createViewModel()
+        vm.initPayment("100.00")
+        vm.setSocketPaymentSource("SOCKET", "REQ-N1")
+        return vm
+    }
+
+    @Test
+    fun `N1 con ACK autorizador se anuncia el intento DESPUES de la fila durable y ANTES de AUTORIZANDO, y se cobra`() = runTest(testDispatcher) {
+        val orden = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } answers { orden += "openAttempt"; true }
+        coEvery { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") } answers { orden += "emit"; com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar }
+        coEvery { paymentAttemptLedger.markAuthorizing("attempt-N1") } answers { orden += "markAuthorizing"; true }
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Cobrar)
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
+            assertThat(orden).containsExactly("openAttempt", "emit", "markAuthorizing").inOrder()
+            // El fallback con la MISMA llave ya autorizada no vuelve a esperar.
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
+            coVerify(exactly = 1) { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") }
+            coVerify(exactly = 0) { paymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 sin capacidad del servidor no se anuncia nada y se cobra como hoy`() = runTest(testDispatcher) {
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.NoEsDuena, capacidad = 0)
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
+            coVerify(exactly = 0) { socketManager.emitAttemptOpened(any(), any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markAuthorizing("attempt-N1") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 un cobro LOCAL nunca anuncia el intento aunque el servidor tenga capacidad`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.capacidadDeVinculo(any()) } returns 1
+        val vm = createViewModel()
+        try {
+            vm.initPayment("100.00")
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-local")).isTrue()
+            coVerify(exactly = 0) { socketManager.emitAttemptOpened(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 el camino legacy (ERROR, malformado o sin ACK) cobra sin vinculo y NO descarta`() = runTest(testDispatcher) {
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Legacy("sin ACK"))
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
+            coVerify(exactly = 1) { paymentAttemptLedger.markAuthorizing("attempt-N1") }
+            coVerify(exactly = 0) { paymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) }
+            coVerify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            // Tras un timeout el mismo intento vuelve a anunciarse en un relanzamiento (segunda oportunidad de vincular).
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isTrue()
+            coVerify(exactly = 2) { socketManager.emitAttemptOpened("REQ-N1", "attempt-N1") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 NOT_OWNER nunca toca el SDK descarta la PREPARANDO emite failed PRE_AUTHORIZATION y lo dice`() = runTest(testDispatcher) {
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.NoEsDuena)
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markDiscardedBeforeCharge("attempt-N1", "NOT_OWNER") }
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "REQ-N1", status = "failed", paymentId = null, transactionId = null, cardDetails = null,
+                    errorMessage = any(), receiptUrl = null, receiptAccessKey = null, outcomeEvidence = "PRE_AUTHORIZATION",
+                )
+            }
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).message).isEqualTo(CobroRemotoDelPos.NO_ES_LA_DUENA)
+            assertThat(estado.canRetry).isFalse()
+            // El desenlace ya salió: un reintento en esta pantalla queda bloqueado (H.3).
+            vm.retryAfterError()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(CobroRemotoDelPos.SOLICITUD_CERRADA)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 executionAuthorized false no cobra y el negativo es cancelled si el POS pidio cancelar y failed en los demas`() = runTest(testDispatcher) {
+        val cancelRequested = com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.NoEjecutable(requestStatus = "CANCEL_REQUESTED", outcome = "LINKED")
+        val vm = vmRemotoConVinculo(cancelRequested)
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markDiscardedBeforeCharge("attempt-N1", "REQUEST_NOT_EXECUTABLE:CANCEL_REQUESTED") }
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "REQ-N1", status = "cancelled", paymentId = null, transactionId = null, cardDetails = null,
+                    errorMessage = any(), receiptUrl = null, receiptAccessKey = null, outcomeEvidence = "PRE_AUTHORIZATION",
+                )
+            }
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("No se inició otro cobro")
+        } finally { vm.viewModelScope.cancel() }
+
+        val completed = com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.NoEjecutable(requestStatus = "COMPLETED", outcome = "LATE_EVIDENCE")
+        val vm2 = vmRemotoConVinculo(completed)
+        try {
+            runCurrent()
+            assertThat(vm2.openLedgerAttemptAndMarkAuthorizing("attempt-N1b")).isFalse()
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "REQ-N1", status = "failed", paymentId = null, transactionId = null, cardDetails = null,
+                    errorMessage = any(), receiptUrl = null, receiptAccessKey = null, outcomeEvidence = "PRE_AUTHORIZATION",
+                )
+            }
+            val mensaje = (vm2.state.value as AngelPayPaymentState.Error).message
+            assertThat(mensaje).contains("No se inició otro cobro")
+            assertThat(mensaje).doesNotContain("No se cobró")
+        } finally { vm2.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 llave ajena o invalida no cobra no emite negativo y el reintento abre una llave NUEVA`() = runTest(testDispatcher) {
+        val vm = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.LlaveAjena)
+        try {
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1")).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markDiscardedBeforeCharge("attempt-N1", "ATTEMPT_REUSE") }
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            val estado = vm.state.value as AngelPayPaymentState.Error
+            assertThat(estado.canRetry).isTrue()
+            // Reintentar NO está bloqueado (no salió ningún desenlace) y el siguiente intento es una llave nueva.
+            vm.retryAfterError()
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Error::class.java)
+        } finally { vm.viewModelScope.cancel() }
+
+        val vm2 = vmRemotoConVinculo(com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo.Invalida)
+        try {
+            runCurrent()
+            assertThat(vm2.openLedgerAttemptAndMarkAuthorizing("attempt-N1c")).isFalse()
+            coVerify(exactly = 1) { paymentAttemptLedger.markDiscardedBeforeCharge("attempt-N1c", "INVALID_LINK") }
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally { vm2.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `N1 durante la espera la pantalla es pre-dinero y un abandono avisa cancelled sin haber tocado el SDK`() = runTest(testDispatcher) {
+        // La espera queda ANCLADA (el ACK nunca llega): el estado observable es LinkingAttempt.
+        val nuncaContesta = kotlinx.coroutines.CompletableDeferred<com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo>()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.capacidadDeVinculo("REQ-N1") } returns 1
+        coEvery { socketManager.emitAttemptOpened("REQ-N1", any()) } coAnswers { nuncaContesta.await() }
+        val vm = createViewModel()
+        try {
+            vm.initPayment("100.00")
+            vm.setSocketPaymentSource("SOCKET", "REQ-N1")
+            runCurrent()
+            val espera = kotlinx.coroutines.launch { vm.openLedgerAttemptAndMarkAuthorizing("attempt-N1") }
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LinkingAttempt::class.java)
+            assertThat(sinDineroEnVuelo(vm.state.value)).isTrue()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            // El cajero abandona la pantalla: el POS recibe cancelled + PRE_AUTHORIZATION (nada capaz de autorizar empezó).
+            vm.emitCancelledIfAbandoned()
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "REQ-N1", status = "cancelled", paymentId = null, transactionId = null, cardDetails = null,
+                    errorMessage = any(), receiptUrl = null, receiptAccessKey = null, outcomeEvidence = "PRE_AUTHORIZATION",
+                )
+            }
+            espera.cancel()
+            runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    // Checkpoint 2 · N2 (S5): la confirmación del servidor cierra la espera de la pantalla — sólo para ESTE intento
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `N2 payment_confirmed registrado cierra un ResultadoIncierto de ESTE intento con Success y no toca otro intento ni uno sin registrar`() = runTest(testDispatcher) {
+        io.mockk.mockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Resultado no concluyente", "G505", "GATEWAY")
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-S5")
+            vm.initPayment("100.00")
+            vm.onAngelPayResult(0, null)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            val mio = ids.last()
+
+            // Otro intento: se ignora.
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-S5", "otro-intento", "pay-x", 10000, 0, registrado = true))
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            // Sin transición en la libreta: la pantalla no afirma nada.
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-S5", mio, "pay-s5", 10000, 0, registrado = false))
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            // El mío, registrado: Success con el Payment del servidor y sin emitir otro desenlace (ya está en la bandeja).
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-S5", mio, "pay-s5", 10000, 0, registrado = true))
+            val exito = vm.state.value
+            assertThat(exito).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            assertThat((exito as AngelPayPaymentState.Success).receipt?.paymentId).isEqualTo("pay-s5")
+            assertThat(exito.receipt?.serverRecordedVia).isEqualTo("webhook")
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            // Y un abandono posterior tampoco emite: el desenlace ya es durable.
+            vm.emitCancelledIfAbandoned()
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
+        }
+    }
+
 }

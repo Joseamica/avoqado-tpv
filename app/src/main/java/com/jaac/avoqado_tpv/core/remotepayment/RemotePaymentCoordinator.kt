@@ -42,7 +42,9 @@ data class RemotePaymentRequest(
     val orderId: String? = null,  // Dual-mode: null = FastPayment, set = OrderPayment
     val processedByStaffId: String? = null,
     val source: PaymentSource = PaymentSource.SOCKET,
-    val socketRequestId: String? = null
+    val socketRequestId: String? = null,
+    /** N0: ≥ 1 ⇒ el servidor que entregó esta solicitud contesta el vínculo intento→solicitud (S1); 0 ⇒ camino legacy. */
+    val attemptLinkVersion: Int = 0,
 )
 
 /**

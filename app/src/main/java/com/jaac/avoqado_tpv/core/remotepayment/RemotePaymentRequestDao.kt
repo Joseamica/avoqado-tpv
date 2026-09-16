@@ -20,6 +20,8 @@ import org.json.JSONObject
 data class ObligacionPendiente(
     @ColumnInfo(name = "total_centavos") val totalCentavos: Long,
     @ColumnInfo(name = "desde_millis") val desdeMillis: Long,
+    /** Checkpoint 2 (E1): 1 = CONTRADICCIÓN con el servidor (dinero acreditado para un intento que la terminal dio por no cobrado, o evidencia de posible cobro doble). */
+    @ColumnInfo(name = "contradiccion") val contradiccion: Int = 0,
 )
 
 @Dao
@@ -44,12 +46,13 @@ interface RemotePaymentRequestDao {
      * de hace tres horas apareciera como «hace unos segundos», que es justo la pista que el
      * cajero necesita para reconocerla (Codex, 2026-09-12).
      */
-    @Query("""SELECT (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis
+    @Query("""SELECT (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, 0 AS contradiccion
         FROM payment_attempts
         WHERE venue_id = :venueId AND kind = 'SALE'
         AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND NOT """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
         UNION ALL
-        SELECT (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis
+        SELECT (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, 0 AS contradiccion
         FROM remote_payment_requests r
         WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
         AND NOT EXISTS (SELECT 1 FROM payment_attempts p
@@ -57,6 +60,11 @@ interface RemotePaymentRequestDao {
             AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
                             'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
             AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+        UNION ALL
+        SELECT (amount_cents + tip_cents) AS total_centavos, COALESCE(server_verdict_at, updated_at) AS desde_millis, 1 AS contradiccion
+        FROM payment_attempts
+        WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
+        AND """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
         ORDER BY desde_millis DESC LIMIT 50""")
     fun observePendingObligations(venueId: String): kotlinx.coroutines.flow.Flow<List<ObligacionPendiente>>
 
@@ -109,6 +117,14 @@ interface RemotePaymentRequestDao {
     )
     suspend fun markResolved(requestId: String, finalResultJson: String, now: Long): Int
 
+    /** N0: sólo SUBE la versión de capacidad, y sólo mientras la solicitud siga viva (RECEIVED/PROCESSING). */
+    @Query(
+        """UPDATE remote_payment_requests
+           SET attempt_link_version = :version, updated_at = :now
+           WHERE request_id = :requestId AND attempt_link_version < :version AND status IN ('RECEIVED', 'PROCESSING')""",
+    )
+    suspend fun raiseAttemptLinkVersion(requestId: String, version: Int, now: Long): Int
+
     // ─────────────────────────────────────────────────────────────────────────────────────────────
     // C.5 / H.3 (11-sep): la libreta y la bandeja se leen JUNTAS, en la misma transacción.
     // El intento se liga a su solicitud por `"terminalPaymentRequestId":"<id>"` dentro de
@@ -123,7 +139,7 @@ interface RemotePaymentRequestDao {
      */
     @Query("""SELECT COUNT(*) FROM payment_attempts
         WHERE instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0
-        AND (legacy_shadow = 1 OR state NOT IN ('PREPARANDO', 'DESCARTADA'))""")
+        AND (legacy_shadow = 1 OR state NOT IN ('PREPARANDO', 'DESCARTADA') OR server_payment_id IS NOT NULL)""")
     suspend fun contarIntentosBloqueadores(requestId: String): Int
 
     @Query("""SELECT COUNT(*) FROM payment_attempts

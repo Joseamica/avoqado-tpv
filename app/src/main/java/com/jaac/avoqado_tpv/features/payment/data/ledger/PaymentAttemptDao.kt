@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 
 @Dao
 interface PaymentAttemptDao {
@@ -183,10 +184,10 @@ interface PaymentAttemptDao {
     @Query("""INSERT OR IGNORE INTO payment_attempts (
             attempt_id, venue_id, processor, kind, state, state_version,
             amount_cents, tip_cents, currency, recording_route, context_schema_version,
-            payment_context_json, verify_attempts, created_at, updated_at)
+            payment_context_json, verify_attempts, created_at, updated_at, terminal_payment_request_id)
         SELECT :attemptId, :venueId, :processor, :kind, 'PREPARANDO', 0,
             :amountCents, :tipCents, 'MXN', :recordingRoute, 1,
-            :contextJson, 0, :now, :now
+            :contextJson, 0, :now, :now, :terminalPaymentRequestId
         WHERE NOT EXISTS (
             SELECT 1 FROM payment_attempts hold
             WHERE hold.legacy_shadow = 0
@@ -231,6 +232,10 @@ interface PaymentAttemptDao {
             ELSE 'LIBRE' END
         FROM remote_payment_requests WHERE request_id = :requestId""")
     suspend fun cercaDeSolicitud(requestId: String): String?
+
+    /** N0/E6: la capacidad DURABLE del servidor que entregó la solicitud (0 si no la trajo o no existe). */
+    @Query("SELECT attempt_link_version FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun attemptLinkVersionDeSolicitud(requestId: String): Int?
 
     /**
      * C.5 — CAS del EFECTIVO/CRIPTO de un cobro remoto, ANTES de registrar. Gana sólo si la solicitud
@@ -417,14 +422,214 @@ interface PaymentAttemptDao {
     suspend fun discardStalePreparing(venueId: String, olderThan: Long, now: Long): Int
 
     /** Happy-path rows close silently after a day (spec §4.3). */
+    /** Checkpoint 2 (E1): una CONTRADICCIÓN con el servidor nunca se cierra ni se poda por tiempo — es evidencia. */
     @Query(
         """UPDATE payment_attempts
            SET state = 'CERRADA', state_version = state_version + 1, updated_at = :now
-           WHERE venue_id = :venueId AND state = 'REGISTRADO' AND updated_at < :olderThan"""
+           WHERE venue_id = :venueId AND state = 'REGISTRADO' AND updated_at < :olderThan
+           AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION
     )
     suspend fun closeRecordedOlderThan(venueId: String, olderThan: Long, now: Long): Int
 
     /** Prune terminal rows at ~7 days (mirror of deleteOldSyncedPayments). INDETERMINADO is NEVER deleted. */
-    @Query("DELETE FROM payment_attempts WHERE venue_id = :venueId AND state IN ('CERRADA','DESCARTADA') AND updated_at < :olderThan")
+    @Query(
+        """DELETE FROM payment_attempts WHERE venue_id = :venueId AND state IN ('CERRADA','DESCARTADA') AND updated_at < :olderThan
+           AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION
+    )
     suspend fun pruneTerminalOlderThan(venueId: String, olderThan: Long): Int
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    // Checkpoint 2 (webhook como primer confirmador, diseño v3 E1–E4): el VEREDICTO DEL SERVIDOR sobre un intento
+    // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    /** La evidencia del servidor, idempotente por identidad Y datos; `server_verdict_at` conserva la PRIMERA vez. */
+    @Query(
+        """UPDATE payment_attempts
+           SET server_payment_id = :paymentId, server_outcome = :outcome, server_recorded_via = :via,
+               server_amount_cents = :amountCents, server_tip_cents = :tipCents, server_winner_payment_id = :winnerPaymentId,
+               server_verdict_at = COALESCE(server_verdict_at, :now),
+               server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now
+           WHERE attempt_id = :attemptId"""
+    )
+    suspend fun guardarVeredictoDelServidor(
+        attemptId: String, paymentId: String?, outcome: String, via: String,
+        amountCents: Long?, tipCents: Long?, winnerPaymentId: String?, now: Long,
+    ): Int
+
+    /**
+     * 🔴 LA regla de liberación (E1), una sola para S5, S6 y REST: REGISTRADO sólo desde un estado posterior al host y
+     * con un veredicto FINAL y APROBADO para ESTE intento — `RECORDED` con los mismos montos, o segunda captura con ganador
+     * acreditado y los mismos montos — y nunca sobre un rechazo explícito del host ni sobre una fila heredada. Una
+     * autorización ya aprobada por el host no puede volver a autorizar: por eso es la prueba de salida del SDK, la misma
+     * con la que hoy libera la cadena historial→REST. Cualquier otro veredicto deja la fila y su retención como estaban.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET state = 'REGISTRADO', state_version = state_version + 1, updated_at = :now
+           WHERE attempt_id = :attemptId AND legacy_shadow = 0 AND host_approved IS NOT 0
+           AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','ENTREGADA_A_COLA','INDETERMINADO')
+           AND server_amount_cents = amount_cents AND server_tip_cents = tip_cents
+           AND (server_outcome = 'RECORDED'
+                OR (server_outcome = 'SECOND_CAPTURE_EVIDENCE' AND server_winner_payment_id IS NOT NULL))"""
+    )
+    suspend fun registrarPorVeredictoDelServidor(attemptId: String, now: Long): Int
+
+    /** Una consulta S6 sin veredicto aplicable (NOT_RECORDED, 404, error HTTP) sólo gasta el turno de la fila (E3). */
+    @Query("UPDATE payment_attempts SET server_checked_at = :now, server_check_count = server_check_count + 1 WHERE attempt_id = :attemptId")
+    suspend fun estamparConsultaAlServidor(attemptId: String, now: Long): Int
+
+    @Query("SELECT " + PaymentAttemptEntity.SQL_CONTRADICCION + " FROM payment_attempts WHERE attempt_id = :attemptId")
+    suspend fun esContradiccion(attemptId: String): Boolean?
+
+    /**
+     * E3 · candidatas de CONSULTA S6: con solicitud, sin veredicto o con veredicto NO final (el servidor puede volverlo
+     * RECORDED al conciliar), fuera de los estados con SDK dentro salvo que lleven más de :vivosAntesDe, y espaciadas por
+     * intento (`min(base × 2^count, tope)`). Orden ESTABLE con avance: la consultada va al final (`server_checked_at`
+     * ascendente, NULL primero por defecto en SQLite — nada de `NULLS FIRST`, que exige SQLite 3.30). 25 por pasada.
+     */
+    @Query(
+        """SELECT * FROM payment_attempts
+           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+           AND terminal_payment_request_id IS NOT NULL AND state != 'CERRADA'
+           AND (state NOT IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO') OR updated_at < :vivosAntesDe)
+           AND (server_outcome IS NULL OR server_outcome IN ('REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+           AND (server_checked_at IS NULL
+                OR server_checked_at < :now - MIN(:espaciadoBaseMs * (1 << MIN(server_check_count, 7)), :espaciadoTopeMs))
+           ORDER BY server_checked_at ASC, created_at ASC, attempt_id ASC
+           LIMIT 25"""
+    )
+    suspend fun candidatasDeConsultaAlServidor(venueId: String, vivosAntesDe: Long, now: Long, espaciadoBaseMs: Long, espaciadoTopeMs: Long): List<PaymentAttemptEntity>
+
+    /**
+     * E2 · veredictos FINALES ya guardados que todavía no se aplicaron: la fila cambió de estado (el SDK volvió incierto,
+     * el registro falló…) después de guardar la evidencia. Se REAPLICAN sin otra consulta.
+     */
+    @Query(
+        """SELECT * FROM payment_attempts
+           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+           AND server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE')
+           AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','ENTREGADA_A_COLA','INDETERMINADO')
+           ORDER BY server_verdict_at ASC, attempt_id ASC LIMIT 50"""
+    )
+    suspend fun veredictosPendientesDeAplicar(venueId: String): List<PaymentAttemptEntity>
+
+    // ── La bandeja, dentro de la misma transacción (E4). Mismo SQL que `RemotePaymentRequestDao.markResolved` /
+    //    `replaceResolvedResult`: viven aquí para que libreta y bandeja se escriban en UNA transacción (P1-4). ──
+    @Query("SELECT * FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun bandejaDe(requestId: String): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity?
+
+    @Query(
+        """UPDATE remote_payment_requests
+           SET status = 'RESOLVED', final_result_json = :finalResultJson, final_emitted_at = :now, updated_at = :now
+           WHERE request_id = :requestId AND status = 'PROCESSING'"""
+    )
+    suspend fun bandejaResolverProcessing(requestId: String, finalResultJson: String, now: Long): Int
+
+    @Query(
+        """UPDATE remote_payment_requests
+           SET final_result_json = :finalResultJson, updated_at = :now
+           WHERE request_id = :requestId AND status = 'RESOLVED' AND final_result_json = :previousResultJson"""
+    )
+    suspend fun bandejaReemplazarResuelto(requestId: String, previousResultJson: String, finalResultJson: String, now: Long): Int
+
+    /**
+     * 🔴 UNA operación durable de conciliación con el servidor (E1–E4), libreta y bandeja en la MISMA transacción (P1-4):
+     * pertenencia antes de escribir → evidencia previa se preserva → la evidencia se guarda en cualquier estado → la
+     * transición sólo por [registrarPorVeredictoDelServidor] → la bandeja sólo con un GANADOR acreditado. Devuelve un
+     * resultado verificable; la EMISIÓN al servidor y la pantalla van después del commit, fuera de aquí.
+     * Recibir el MISMO Payment con los mismos datos vuelve a evaluar las proyecciones (E2), nunca es un no-op ciego.
+     */
+    @Transaction
+    suspend fun aplicarVeredictoDelServidor(v: VeredictoDeIntento, now: Long): ResultadoDelVeredicto {
+        val fila = getById(v.attemptId) ?: return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.SIN_FILA, false, null, false)
+        val requestId = v.requestId ?: fila.terminalPaymentRequestId
+        if (fila.legacyShadow || fila.venueId != v.venueId || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
+            fila.kind != PaymentAttemptEntity.KIND_SALE ||
+            (v.requestId != null && fila.terminalPaymentRequestId != null && fila.terminalPaymentRequestId != v.requestId)
+        ) return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false)
+        if (fila.serverPaymentId != null && v.paymentId != null && fila.serverPaymentId != v.paymentId) {
+            estamparConsultaAlServidor(v.attemptId, now)
+            return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT, false, null, esContradiccion(v.attemptId) == true)
+        }
+        val mismoPayment = fila.serverPaymentId != null && fila.serverPaymentId == v.paymentId
+        if (mismoPayment && (fila.serverRecordedVia != v.recordedVia || fila.serverAmountCents != v.amountCents || fila.serverTipCents != v.tipCents)) {
+            // Identidad, origen o importes distintos para el MISMO Payment: no se pisa nada (E2).
+            estamparConsultaAlServidor(v.attemptId, now)
+            return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_DATOS_DISTINTOS, false, null, esContradiccion(v.attemptId) == true)
+        }
+        val guardadoEsFinal = fila.serverOutcome == PaymentAttemptEntity.SERVER_RECORDED ||
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE
+        if (mismoPayment && guardadoEsFinal && !v.esFinalAprobado && v.outcome.name != fila.serverOutcome) {
+            // Codex (v3, cambio 2): una respuesta ANTIGUA (evidencia no final) nunca degrada un veredicto final ya guardado;
+            // el veredicto guardado se REEVALÚA con lo que hay (E2).
+            estamparConsultaAlServidor(v.attemptId, now)
+            val transiciono = registrarPorVeredictoDelServidor(v.attemptId, now) == 1
+            val bandejaJson = fila.serverWinnerPaymentId?.let { g -> requestId?.let { resolverBandejaConGanador(it, g, fila.serverRecordedVia ?: "terminal", now) } }
+            val estado = getById(v.attemptId)?.state
+            val decision = if (estado == PaymentAttemptEntity.STATE_REGISTRADO || estado == PaymentAttemptEntity.STATE_CERRADA) {
+                ResultadoDelVeredicto.Decision.APLICADO
+            } else {
+                ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR
+            }
+            return ResultadoDelVeredicto(decision, transiciono, bandejaJson, esContradiccion(v.attemptId) == true)
+        }
+        // Mismo Payment con el mismo veredicto, o PROMOCIÓN válida de evidencia no final → final (el servidor concilió y S6
+        // calcula el outcome sobre el estado vigente del Payment): se guarda y se reevalúan las proyecciones.
+        guardarVeredictoDelServidor(
+            v.attemptId, v.paymentId, v.outcome.name, v.recordedVia, v.amountCents, v.tipCents, v.ganadorAcreditado, now,
+        )
+        val transiciono = v.esFinalAprobado && registrarPorVeredictoDelServidor(v.attemptId, now) == 1
+        val bandejaJson = v.ganadorAcreditado?.let { ganador -> requestId?.let { resolverBandejaConGanador(it, ganador, v.recordedVia, now) } }
+        val estadoFinal = getById(v.attemptId)?.state
+        val decision = if (estadoFinal == PaymentAttemptEntity.STATE_REGISTRADO || estadoFinal == PaymentAttemptEntity.STATE_CERRADA) {
+            ResultadoDelVeredicto.Decision.APLICADO
+        } else {
+            ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR
+        }
+        return ResultadoDelVeredicto(decision, transiciono, bandejaJson, esContradiccion(v.attemptId) == true)
+    }
+
+    /** E2: vuelve a evaluar un veredicto FINAL ya guardado (sin red) cuando el estado local cambió. */
+    @Transaction
+    suspend fun reaplicarVeredictoGuardado(attemptId: String, now: Long): ResultadoDelVeredicto? {
+        val fila = getById(attemptId) ?: return null
+        val outcome = com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.porNombre(fila.serverOutcome) ?: return null
+        if (fila.serverPaymentId == null) return null
+        val v = VeredictoDeIntento(
+            venueId = fila.venueId, attemptId = attemptId, requestId = fila.terminalPaymentRequestId, outcome = outcome,
+            paymentId = fila.serverPaymentId, recordedVia = fila.serverRecordedVia ?: "terminal",
+            amountCents = fila.serverAmountCents, tipCents = fila.serverTipCents,
+            ganadorAcreditado = fila.serverWinnerPaymentId, fuente = VeredictoDeIntento.Fuente.CONSULTA_S6,
+        )
+        return aplicarVeredictoDelServidor(v, now)
+    }
+
+    /**
+     * E4 · la bandeja responde por la SOLICITUD y sólo con un ganador acreditado: PROCESSING ⇒ RESOLVED `success`;
+     * RESOLVED con negativo ⇒ el éxito lo reemplaza (un éxito nunca se degrada); RESOLVED `success` sin `paymentId` ⇒ se
+     * enriquece con el ganador; con el mismo ganador ⇒ no-op; RECEIVED (sin intento) o lápida ⇒ no se toca. Devuelve el
+     * JSON que quedó escrito (para EMITIRLO tras el commit) o null si no hubo cambio.
+     */
+    private suspend fun resolverBandejaConGanador(requestId: String, ganador: String, via: String, now: Long): String? {
+        val bandeja = bandejaDe(requestId) ?: return null
+        val json = org.json.JSONObject().put("requestId", requestId).put("status", "success")
+            .put("paymentId", ganador).put("transactionId", ganador).put("errorMessage", org.json.JSONObject.NULL)
+            .put("via", via).put("completedAt", java.time.Instant.ofEpochMilli(now).toString()).toString()
+        return when (bandeja.status) {
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity.STATUS_PROCESSING ->
+                json.takeIf { bandejaResolverProcessing(requestId, it, now) == 1 }
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity.STATUS_RESOLVED -> {
+                val previo = bandeja.finalResultJson ?: return null
+                val previoJson = runCatching { org.json.JSONObject(previo) }.getOrNull() ?: return null
+                val previoEsExito = previoJson.optString("status") == "success"
+                val previoPaymentId = previoJson.optString("paymentId").takeIf { it.isNotBlank() && it != "null" }
+                when {
+                    previoEsExito && previoPaymentId == ganador -> null // mismo ganador: nada que cambiar
+                    previoEsExito && previoPaymentId != null -> null // otro éxito con identidad: no se pisa
+                    else -> json.takeIf { bandejaReemplazarResuelto(requestId, previo, it, now) == 1 }
+                }
+            }
+            else -> null
+        }
+    }
 }

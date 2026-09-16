@@ -29,6 +29,7 @@ object LedgerSweepScheduler {
     private const val PERIODIC_WORK_NAME = "ledger_shadow_sweep"
     private const val ONE_SHOT_WORK_NAME = "ledger_shadow_sweep_once"
     private const val SWEEP_INTERVAL_HOURS = 6L
+    private const val SERVER_RECOVERY_WORK_NAME = "ledger_server_recovery"
 
     /** Enqueue the 6h periodic sweep (KEEP — no-op if already scheduled). */
     fun schedule(context: Context) {
@@ -45,6 +46,25 @@ object LedgerSweepScheduler {
             request
         )
         Timber.d("📒 [LedgerSweep] Periodic sweep scheduled (every %dh, KEEP)", SWEEP_INTERVAL_HOURS)
+    }
+
+    /**
+     * Checkpoint 2 · N3/N4 (diseño v3, D2/D3): la recuperación por SERVIDOR, en su propio worker con red.
+     * `APPEND_OR_REPLACE`: una petición durante una corrida en curso encadena otra corrida DESPUÉS (KEEP la descartaría y
+     * la incertidumbre esperaría al periódico). `CONNECTED` (LTE vale): sin red no hay nada que consultar; el mantenimiento
+     * local vive en [LedgerShadowSweepWorker], que sigue sin constraints. [initialDelayMinutes] es un MÍNIMO, no un plazo.
+     */
+    fun runServerRecoveryNow(context: Context, initialDelayMinutes: Long = 0L) {
+        val request = OneTimeWorkRequestBuilder<LedgerServerRecoveryWorker>()
+            .setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build())
+            .apply { if (initialDelayMinutes > 0) setInitialDelay(initialDelayMinutes, TimeUnit.MINUTES) }
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            SERVER_RECOVERY_WORK_NAME,
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            request
+        )
+        Timber.d("🔎 [LedgerServer] recuperación por servidor encolada (APPEND_OR_REPLACE, CONNECTED, +%d min)", initialDelayMinutes)
     }
 
     /** One-shot catch-up sweep at login/startup (KEEP — repeated starts don't stack). */

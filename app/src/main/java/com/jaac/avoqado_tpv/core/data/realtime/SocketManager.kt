@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import dagger.Lazy
 import io.socket.client.IO
 import io.socket.client.Socket
+import com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo
 import io.socket.client.Ack
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.CoroutineScope
@@ -84,6 +85,8 @@ class SocketManager @Inject constructor(
     private val sessionManager: SessionManager,
     private val remotePaymentInbox: RemotePaymentInbox,
     private val remotePaymentCoordinator: RemotePaymentCoordinator,
+    /** Checkpoint 2 · N2: el aviso S5 se aplica DURABLE en la libreta (libreta + bandeja en una transacción) antes de la pantalla. */
+    private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
 ) {
 
     // ========================================
@@ -144,6 +147,8 @@ class SocketManager @Inject constructor(
         private const val SOCKET_AUTH_NONFATAL_MIN_RETRIES = 3
         /** Cooldown between non-fatals during one extended outage */
         private const val SOCKET_AUTH_NONFATAL_COOLDOWN_MS = 5 * 60_000L
+        /** S1 (N1): el cliente espera al POS hasta 330 s; estos 4 s sólo se pagan si el servidor no contesta el vínculo. */
+        const val ATTEMPT_LINK_ACK_TIMEOUT_MS = 4_000L
     }
 
     /**
@@ -518,6 +523,7 @@ class SocketManager @Inject constructor(
         on("terminal:payment_request", onTerminalPaymentRequest)
         on("terminal:payment_cancel", onTerminalPaymentCancel)
         on("terminal:payment_probe", onTerminalPaymentProbe)
+        on("terminal:payment_confirmed", onTerminalPaymentConfirmed) // S5 (checkpoint 2 · N2)
         on("terminal:print_receipt_request", onTerminalReceiptPrintRequest)
         on("terminal:refund_request", onTerminalRefundRequest)
 
@@ -1540,6 +1546,7 @@ class SocketManager @Inject constructor(
                 senderDeviceName = data.optString("senderDeviceName").takeIf { it.isNotEmpty() },
                 venueId = data.optString("venueId", ""),
                 timestamp = data.optString("timestamp", ""),
+                attemptLinkVersion = data.optInt("attemptLinkVersion", 0).coerceAtLeast(0),
             )
 
             socketScope.launch {
@@ -1646,6 +1653,40 @@ class SocketManager @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_probe")
+        }
+    }
+
+    /**
+     * S5 (checkpoint 2 · N2): el webhook fue el PRIMER confirmador y el servidor avisa `{requestId, attemptId, paymentId,
+     * amountCents, tipCents, via}`. DURABLE PRIMERO: la libreta aplica el veredicto (libreta + bandeja en una transacción,
+     * REGISTRADO sólo desde un estado sin SDK dentro — con el SDK dentro la evidencia se guarda y se reaplica cuando salga);
+     * después, si la bandeja quedó RESOLVED aquí, se emite; y por último la pantalla (`SocketEvent.TerminalPaymentConfirmed`).
+     */
+    private val onTerminalPaymentConfirmed = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val requestId = data.optString("requestId").takeIf { it.isNotBlank() } ?: return@Listener
+            val attemptId = data.optString("attemptId").takeIf { it.isNotBlank() } ?: return@Listener
+            val paymentId = data.optString("paymentId").takeIf { it.isNotBlank() } ?: return@Listener
+            val venueId = secureStorage.getVenueId() ?: return@Listener
+            Timber.i("📣 [Socket] terminal:payment_confirmed | requestId=%s attemptId=%s paymentId=%s", requestId, attemptId, paymentId)
+            socketScope.launch {
+                val veredicto = com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.desdeAvisoS5(
+                    venueId = venueId, requestId = requestId, attemptId = attemptId, paymentId = paymentId,
+                    via = data.optString("via", "webhook"), amountCents = data.optLong("amountCents", -1L), tipCents = data.optLong("tipCents", -1L),
+                )
+                val r = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrNull()
+                r?.bandejaResueltaJson?.let(::emitPersistedTerminalPaymentResult)
+                _events.tryEmit(
+                    SocketEvent.TerminalPaymentConfirmed(
+                        requestId = requestId, attemptId = attemptId, paymentId = paymentId,
+                        amountCents = veredicto.amountCents ?: -1L, tipCents = veredicto.tipCents ?: -1L,
+                        registrado = r?.decision == com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO,
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:payment_confirmed")
         }
     }
 
@@ -2056,6 +2097,43 @@ class SocketManager @Inject constructor(
             Timber.e(e, "❌ Failed to emit terminal:payment_result")
         }
     }
+
+    /**
+     * S1 (checkpoint 2 · N1): anuncia el intento ANTES de tocar el SDK y espera la decisión del servidor.
+     * `terminal:payment_attempt_opened {requestId, attemptId}` con ACK; el ACK se lee ESTRICTAMENTE
+     * ([DecisionDelVinculo.de]). Sin socket, sin ACK en [ATTEMPT_LINK_ACK_TIMEOUT_MS] o con cualquier error ⇒
+     * [DecisionDelVinculo.Legacy] (cobrar sin vínculo, el camino certificado): un fallo aquí nunca bloquea el cobro ni
+     * autoriza otro intento. La correlación es por OPERACIÓN (el `CompletableDeferred` de ESTE emit), no por ids en el ACK.
+     * Cancelar la corrutina que espera deja el ACK tardío sin consumidor: se ignora.
+     */
+    suspend fun emitAttemptOpened(requestId: String, attemptId: String): DecisionDelVinculo {
+        val s = socket ?: return DecisionDelVinculo.Legacy("sin socket")
+        if (!s.connected()) return DecisionDelVinculo.Legacy("socket desconectado")
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Array<out Any?>>()
+        return try {
+            s.emit(
+                "terminal:payment_attempt_opened",
+                JSONObject().put("requestId", requestId).put("attemptId", attemptId),
+                Ack { args -> respuesta.complete(args) },
+            )
+            val ack = kotlinx.coroutines.withTimeoutOrNull(ATTEMPT_LINK_ACK_TIMEOUT_MS) { respuesta.await() }
+            val decision = DecisionDelVinculo.de(ack)
+            Timber.i("🔗 [Socket] attempt_opened | requestId=%s attemptId=%s ⇒ %s", requestId, attemptId, decision)
+            decision
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.e(error, "❌ [Socket] terminal:payment_attempt_opened falló; se sigue por el camino legacy")
+            DecisionDelVinculo.Legacy("error al emitir: ${error.message}")
+        }
+    }
+
+    /**
+     * Checkpoint 2: un `success` de bandeja que la LIBRETA ya dejó durable (S5/S6/replay, en su transacción) se emite tal
+     * cual — el persist ocurrió antes, en [PaymentAttemptDao.aplicarVeredictoDelServidor]. Sin socket, no pasa nada: la
+     * sonda y la reentrega contestan RESOLVED desde la bandeja.
+     */
+    fun emitDurableTerminalPaymentResult(finalResultJson: String) = emitPersistedTerminalPaymentResult(finalResultJson)
 
     private fun emitPersistedTerminalPaymentResult(finalResultJson: String) {
         try {

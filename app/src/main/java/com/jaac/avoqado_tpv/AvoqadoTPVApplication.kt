@@ -59,6 +59,10 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     @Inject
     lateinit var angelPaySdkGatewayProvider: Provider<AngelPaySdkGateway>
 
+    /** Checkpoint 2 · N4: cablea el hook de la libreta (recuperación por servidor al nacer una incertidumbre). */
+    @Inject
+    lateinit var ledgerRecoveryTrigger: com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerRecoveryTrigger
+
     override fun onCreate() {
         // ⚠️ CRITICAL: Prepare Blumon's `AppManager.dal` BEFORE super.onCreate().
         // super.onCreate() triggers Hilt's `hiltInternalInject()` which eagerly
@@ -94,6 +98,9 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
 
         // ✅ Initialize critical components only (startup optimization)
         initializeTimber()
+
+        // Checkpoint 2 · N4: la libreta avisa al nacer una incertidumbre; sin esto sólo cubren el barrido y la reconexión.
+        runCatching { ledgerRecoveryTrigger.instalar() }.onFailure { timber.log.Timber.e(it, "No se pudo instalar el hook de recuperación por servidor") }
 
         initializeAngelPaySdkIfEnabled()
 

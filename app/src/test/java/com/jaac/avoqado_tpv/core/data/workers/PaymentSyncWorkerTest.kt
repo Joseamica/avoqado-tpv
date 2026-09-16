@@ -132,6 +132,84 @@ class PaymentSyncWorkerTest {
         coVerify(exactly = 0) { repo.release(any(), any(), any(), any()) }
     }
 
+    // ── Checkpoint 2 (E5, Codex v3 cambio 4): el 2xx del replay es un VEREDICTO para la libreta ──
+
+    @Test
+    fun `E5 con llave el veredicto del 2xx se aplica en la libreta ANTES de marcar sincronizado`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-e5", idempotencyKey = "k-e5",
+            processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        val receipt = com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+            paymentId = "pmt-e5", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal("5.00"),
+            serverStatus = "PENDING", reconciliationKind = "POSSIBLE_SECOND_CAPTURE", winnerPaymentId = "pmt-ganador",
+        )
+        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(receipt)
+        val orden = mutableListOf<String>()
+        val ledger = mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true)
+        val veredictos = mutableListOf<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
+        coEvery { ledger.aplicarVeredictoDelServidor(capture(veredictos)) } answers {
+            orden += "veredicto"
+            Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, true))
+        }
+        coEvery { repo.markSynced(any(), any()) } answers { orden += "markSynced"; 1 }
+
+        buildWorker(repo, useCase, ledger = ledger).doWork()
+
+        assertThat(orden).containsExactly("veredicto", "markSynced").inOrder()
+        val v = veredictos.single()
+        assertThat(v.attemptId).isEqualTo("k-e5")
+        assertThat(v.venueId).isEqualTo("venue-1")
+        assertThat(v.fuente).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.Fuente.REST)
+        assertThat(v.outcome).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.SECOND_CAPTURE_EVIDENCE)
+        assertThat(v.ganadorAcreditado).isEqualTo("pmt-ganador")
+        assertThat(v.amountCents).isEqualTo(10000L)
+        assertThat(v.tipCents).isEqualTo(500L)
+        coVerify(exactly = 0) { repo.release(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `E5 si el veredicto NO queda durable la fila se conserva reintentable con la misma llave y no se marca sincronizada`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-e5b", idempotencyKey = "k-e5b",
+            processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                paymentId = "pmt-e5b", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
+                serverStatus = "PENDING", reconciliationKind = "POSSIBLE_REFERENCE_COLLISION",
+            ),
+        )
+        val ledger = mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true)
+        coEvery { ledger.aplicarVeredictoDelServidor(any()) } returns Result.failure(IllegalStateException("Room cerrado"))
+
+        buildWorker(repo, useCase, ledger = ledger).doWork()
+
+        coVerify(exactly = 0) { repo.markSynced(any(), any()) }
+        coVerify(exactly = 1) { repo.release(payment.queueId, payment.claimToken.orEmpty(), payment.retryCount + 1, any()) }
+        // El replay siguiente vuelve a registrar por REST (idempotente) — nunca vuelve al SDK: sólo UNA llamada aquí.
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `E5 una cola anterior a la libreta (sin fila para la llave) sigue marcando sincronizado`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-e5c", idempotencyKey = "k-e5c")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                paymentId = "pmt-e5c", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("50.00"), tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+        buildWorker(repo, useCase).doWork() // libreta por defecto: SIN_FILA
+        coVerify(exactly = 1) { repo.markSynced(payment.queueId, payment.claimToken.orEmpty()) }
+        coVerify(exactly = 0) { repo.release(any(), any(), any(), any()) }
+    }
+
     @Test
     fun `409 del backend se REINTENTA — jamas se marca sincronizado`() = runTest {
         // Semántica nueva (mismo fix que android 73b7f40 / ios d336599): un 409 NO
@@ -346,6 +424,15 @@ class PaymentSyncWorkerTest {
     // ------------------------------------------------------------------
 
     /** Construye el worker directo (bypass de Hilt) con los dobles de prueba dados. */
+    /** La libreta por defecto NO tiene fila para la llave (cola anterior a la libreta): el veredicto es no-op. */
+    private fun libretaSinFila() = mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true).also {
+        coEvery { it.aplicarVeredictoDelServidor(any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.SIN_FILA, false, null, false,
+            ),
+        )
+    }
+
     private fun buildWorker(
         repo: PaymentQueueRepository,
         useCase: RecordPaymentUseCase,
@@ -354,6 +441,7 @@ class PaymentSyncWorkerTest {
             mockk<com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository>(relaxed = true).also {
                 coEvery { it.claimBatch(any()) } returns emptyList()
             },
+        ledger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger = libretaSinFila(),
     ): PaymentSyncWorker {
         val context = mockk<Context>(relaxed = true)
         return TestListenableWorkerBuilder<PaymentSyncWorker>(context)
@@ -362,7 +450,7 @@ class PaymentSyncWorkerTest {
                     appContext: Context,
                     workerClassName: String,
                     workerParameters: WorkerParameters,
-                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager, refundRepo)
+                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager, refundRepo, ledger)
             })
             .build()
     }

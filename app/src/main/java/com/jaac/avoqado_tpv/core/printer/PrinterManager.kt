@@ -417,27 +417,7 @@ class PrinterManager @Inject constructor(
             // ========================================
             // QR CODE (for digital receipt/invoicing)
             // ========================================
-            if (receiptUrl != null) {
-                try {
-                    val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
-                    if (qrBitmap != null) {
-                        Timber.d("✅ [Printer] QR bitmap generated (${qrBitmap.width}x${qrBitmap.height})")
-                        val centeredQr = centerBitmap(qrBitmap, targetWidth = PAPER_WIDTH)
-                        printerInstance.printBitmap(centeredQr)
-                        printerInstance.printStr("\n", null)
-                        Timber.d("✅ [Printer] Centered QR bitmap printed")
-                    } else {
-                        Timber.w("⚠️ [Printer] QR bitmap generation returned null")
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
-                }
-
-                printerInstance.printStr(
-                    if (autofacturaAvailable) "Escanea para recibo y factura\n\n" else "Escanea para recibo digital\n\n",
-                    null,
-                )
-            }
+            imprimirQrDelRecibo(printerInstance, receiptUrl, autofacturaAvailable)
 
             // ========================================
             // FOOTER
@@ -736,6 +716,55 @@ class PrinterManager @Inject constructor(
             Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
             printerInstance.printStr("${centerText("AVOQADO")}\n", null)
         }
+    }
+
+    /**
+     * Imprime el QR del recibo digital y SU LEYENDA. Devuelve `true` si el QR salió de verdad.
+     *
+     * 🔴 Dos defectos que esta función existe para cerrar, y los dos dejaban al cliente peor que
+     * sin nada:
+     *
+     *  1. **La leyenda huérfana.** Estaba FUERA de la condición del bitmap: bastaba con que
+     *     `receiptUrl` no fuera nulo para imprimir «Escanea para recibo y factura», aunque
+     *     `generateQrBitmap` devolviera null o la generación lanzara. El cliente se queda buscando
+     *     un código que nunca se imprimió. Ahora la leyenda sólo sale si el QR SALIÓ.
+     *  2. **La cadena vacía.** La condición era `!= null`, y el cliente guarda `""` cuando el
+     *     servidor responde sin recibo — entraba al bloque y ZXing fallaba con contenido vacío.
+     *     `isNullOrBlank()` lo cubre (así lo hacía ya AngelPayTicketBuilder).
+     *
+     * Un solo sitio para los tres tickets que llevan QR (venta, kiosco y reimpresión del
+     * historial): tenerlo copiado tres veces es cómo se llegó a que sólo uno supiera dibujarlo.
+     */
+    private fun imprimirQrDelRecibo(
+        printerInstance: IPrinter,
+        receiptUrl: String?,
+        autofacturaAvailable: Boolean,
+    ): Boolean {
+        if (!QrDelRecibo.debeIntentarse(receiptUrl)) return false
+        val url = receiptUrl ?: return false
+
+        val qrImpreso = try {
+            val qrBitmap = generateQrBitmap(url, size = 200)
+            if (qrBitmap != null) {
+                val centeredQr = centerBitmap(qrBitmap, targetWidth = PAPER_WIDTH)
+                printerInstance.printBitmap(centeredQr)
+                printerInstance.printStr("\n", null)
+                Timber.d("✅ [Printer] QR del recibo impreso")
+                true
+            } else {
+                Timber.w("⚠️ [Printer] El QR no se pudo generar — no se imprime la leyenda")
+                false
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Printer] Falló la impresión del QR — no se imprime la leyenda")
+            false
+        }
+
+        if (qrImpreso) {
+            printerInstance.printStr(QrDelRecibo.leyenda(autofacturaAvailable), null)
+        }
+
+        return qrImpreso
     }
 
     /**
@@ -1344,7 +1373,12 @@ class PrinterManager @Inject constructor(
      */
     fun printPaymentHistoryReceipt(
         payment: com.jaac.avoqado_tpv.features.payments.domain.models.Payment,
-        venueName: String? = null
+        venueName: String? = null,
+        // 🔴 El QR de facturación de la REIMPRESIÓN (Asana, 11-sep-2026). El ticket del cobro lo
+        // lleva desde nov-2025; éste NUNCA lo tuvo, porque la liga del recibo no viaja en el
+        // historial. Aditivo con default: una llamada vieja imprime exactamente lo de antes.
+        receiptUrl: String? = null,
+        autofacturaAvailable: Boolean = false,
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -1409,7 +1443,17 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("Procesado por: ${payment.processedBy.getFullName()}\n", null)
             }
 
-            printerInstance.printStr("\n================================\n\n\n", null)
+            printerInstance.printStr("\n", null)
+
+            // ========================================
+            // QR DEL RECIBO DIGITAL (facturación)
+            // ========================================
+            // 🔴 Lo que faltaba: el ticket del cobro lleva QR y éste no, así que el MISMO ticket
+            // salía distinto según se imprimiera al cobrar o al reimprimir. Mismo helper que los
+            // otros dos tickets — la leyenda sólo sale si el QR salió.
+            imprimirQrDelRecibo(printerInstance, receiptUrl, autofacturaAvailable)
+
+            printerInstance.printStr("================================\n\n\n", null)
 
             // Execute print
             val result = printerInstance.start()
@@ -1819,23 +1863,7 @@ class PrinterManager @Inject constructor(
             // ========================================
             // QR CODE (if receipt URL available)
             // ========================================
-            if (receiptUrl != null) {
-                try {
-                    val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
-                    if (qrBitmap != null) {
-                        val centeredQr = centerBitmap(qrBitmap, targetWidth = PAPER_WIDTH)
-                        printerInstance.printBitmap(centeredQr)
-                        printerInstance.printStr("\n", null)
-                        Timber.d("✅ [Printer] Kiosk receipt QR printed")
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Printer] Could not print QR code")
-                }
-                printerInstance.printStr(
-                    if (autofacturaAvailable) "Escanea para recibo y factura\n\n" else "Escanea para recibo digital\n\n",
-                    null,
-                )
-            }
+            imprimirQrDelRecibo(printerInstance, receiptUrl, autofacturaAvailable)
 
             // ========================================
             // FOOTER

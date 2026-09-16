@@ -67,8 +67,13 @@ class RemotePaymentInbox @Inject constructor(
                     Timber.e("🛑 [RemotePaymentInbox] requestId repetido con contrato distinto: ${event.requestId}")
                     return RemotePaymentReceiveDecision.Reject("requestId ya existe con otro importe o contexto")
                 }
+                // N0: un duplicado con versión de capacidad MAYOR sube la columna (la entidad es lo que se entrega, no el
+                // evento); nunca la baja — un replay de un servidor anterior no borra lo que otro ya declaró.
+                val entregable = if (event.attemptLinkVersion > existing.attemptLinkVersion &&
+                    dao.raiseAttemptLinkVersion(event.requestId, event.attemptLinkVersion, System.currentTimeMillis()) == 1
+                ) existing.copy(attemptLinkVersion = event.attemptLinkVersion) else existing
                 when (existing.status) {
-                    RemotePaymentRequestEntity.STATUS_RECEIVED -> RemotePaymentReceiveDecision.Deliver(existing.toRemoteRequest())
+                    RemotePaymentRequestEntity.STATUS_RECEIVED -> RemotePaymentReceiveDecision.Deliver(entregable.toRemoteRequest())
                     RemotePaymentRequestEntity.STATUS_PROCESSING -> RemotePaymentReceiveDecision.AckOnly
                     RemotePaymentRequestEntity.STATUS_RESOLVED -> existing.finalResultJson
                         ?.let(RemotePaymentReceiveDecision::ReplayResult)

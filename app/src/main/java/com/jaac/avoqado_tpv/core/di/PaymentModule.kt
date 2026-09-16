@@ -123,6 +123,13 @@ object PaymentModule {
         return retrofit.create(PaymentApiService::class.java)
     }
 
+    /** S6 (checkpoint 2): la consulta del intento a la terminal, por el mismo cliente fail-fast de pagos. */
+    @Provides
+    @Singleton
+    fun provideTerminalAttemptApiService(@PaymentClient retrofit: Retrofit): com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService {
+        return retrofit.create(com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService::class.java)
+    }
+
     /**
      * Provides FastPaymentRecorder for recording fast payments.
      *

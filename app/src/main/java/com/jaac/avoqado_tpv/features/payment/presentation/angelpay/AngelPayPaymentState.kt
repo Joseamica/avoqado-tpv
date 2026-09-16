@@ -119,6 +119,12 @@ sealed class AngelPayPaymentState {
         val orderId: String? = null,
         val orderNumber: String? = null,
         val isCash: Boolean = false,
+        /**
+         * Checkpoint 2 (E4): el banco aprobó y el servidor conserva el cobro, pero NO como una venta normal — una
+         * SEGUNDA CAPTURA con ganador acreditado. La pantalla lo dice en vez de presentar un éxito limpio:
+         * «posible cobro doble; Avoqado lo concilia; no lo vuelvas a cobrar». Null en un cobro normal.
+         */
+        val aviso: String? = null,
     ) : AngelPayPaymentState()
 
     /**
@@ -176,6 +182,14 @@ sealed class AngelPayPaymentState {
      * Pre-dinero: todavía no se abrió la libreta ni se tocó el SDK.
      */
     data object ConectandoAngelPay : AngelPayPaymentState()
+
+    /**
+     * Checkpoint 2 · N1 (16-sep): el intento ya quedó DURABLE en la libreta (PREPARANDO) y la terminal está anunciándolo al
+     * servidor (`terminal:payment_attempt_opened`, ≤ 4 s) antes de tocar el SDK. Pre-dinero: ninguna llamada capaz de
+     * autorizar empezó; un cancel del POS o un abandono aquí cierran la PREPARANDO por el camino durable de H.3 y la
+     * continuación nunca lanza el SDK. [previo] es el estado que se restaura si el servidor autoriza (o calla).
+     */
+    data class LinkingAttempt(val previo: AngelPayPaymentState) : AngelPayPaymentState()
 
     /**
      * D2 (spec §18.1): a merchant switch is in flight. The payment-time guard in

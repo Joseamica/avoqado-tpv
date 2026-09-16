@@ -174,6 +174,13 @@ class PaymentSyncWorkerRefundTest {
                     workerParameters: WorkerParameters,
                 ): ListenableWorker = PaymentSyncWorker(
                     appContext, workerParameters, payments, useCase, stateManager, refunds,
+                    mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true).also {
+                        coEvery { it.aplicarVeredictoDelServidor(any()) } returns Result.success(
+                            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.SIN_FILA, false, null, false,
+                            ),
+                        )
+                    },
                 )
             })
             .build()

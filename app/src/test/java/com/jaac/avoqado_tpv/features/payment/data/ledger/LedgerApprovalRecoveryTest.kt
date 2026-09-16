@@ -35,11 +35,34 @@ class LedgerApprovalRecoveryTest {
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
         val contexts = mutableListOf<PaymentContext>()
         coEvery { fast.recordPayment(capture(contexts), any(), "AUTH", "REF") } returns Result.success(receipt)
+        // Checkpoint 2 (E1/E5): el 2xx entra como VEREDICTO por la regla única, no como `completeRecovery(REGISTRADO)`.
+        val veredictos = mutableListOf<VeredictoDeIntento>()
+        coEvery { dao.aplicarVeredictoDelServidor(capture(veredictos), any()) } returns
+            ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.APLICADO, transiciono = true, bandejaResueltaJson = null, contradiccion = false)
         assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
         assertEquals("attempt", contexts.single().idempotencyKey)
         assertEquals("request", contexts.single().terminalPaymentRequestId)
         assertEquals(123, (contexts.single() as PaymentContext.FastPayment).blumonOperationNumber)
-        coVerify { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+        val v = veredictos.single()
+        assertEquals("attempt", v.attemptId)
+        assertEquals(VeredictoDeIntento.Fuente.REST, v.fuente)
+        assertEquals(com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED, v.outcome)
+        assertEquals(10000L, v.amountCents)
+        assertEquals(1000L, v.tipCents)
+        coVerify(exactly = 0) { dao.completeRecovery(any(), any(), any(), "REGISTRADO", any(), any()) }
+    }
+
+    @Test
+    fun `una evidencia del servidor (segunda captura sin ganador) NO cuenta como recuperada y la fila conserva su estado`() = runTest {
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(
+            receipt.copy(serverStatus = "PENDING", reconciliationKind = "POSSIBLE_REFERENCE_COLLISION"),
+        )
+        coEvery { dao.aplicarVeredictoDelServidor(any(), any()) } returns
+            ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR, transiciono = false, bandejaResueltaJson = null, contradiccion = true)
+        assertEquals(0, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
+        coVerify(exactly = 0) { dao.completeRecovery(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test

@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+import com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
@@ -53,6 +54,8 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
+import com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento
+import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
@@ -586,6 +589,19 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var ledgerOpenedAmountCents: Long? = null
     private var ledgerOpenedTipCents: Long? = null
 
+    /**
+     * Checkpoint 2 · N1: el `attemptId` que ya recibió un ACK AUTORIZADOR del servidor (S1). Sólo con ACK positivo se
+     * salta la espera en un relanzamiento con la misma llave (fallback SDK→app-to-app); tras un timeout/ERROR se vuelve
+     * a esperar (segunda oportunidad de vincular). Se limpia con la llave.
+     */
+    private var linkAutorizado: String? = null
+
+    /**
+     * La ÚLTIMA decisión del vínculo que resolvió la pantalla por sí misma (NOT_OWNER, no ejecutable, llave rechazada):
+     * el llamador no traduce el `false` del helper como un fallo de la cerca. Null = no decidió nada.
+     */
+    private var decisionQueResolvioLaPantalla: DecisionDelVinculo? = null
+
     // 🔐 D308 mid-payment session recovery (2026-07-03). The SDK can report
     // isAuthenticated()=true locally while the server-side session is dead, so the
     // expiry only surfaces as AppErrorCatalog D308 in the PaymentResult. We keep the
@@ -642,6 +658,62 @@ class AngelPayPaymentViewModel @Inject constructor(
      * makes the replay safe even if the original request actually landed. Falls
      * back to the manual-review error state only if the LOCAL enqueue also fails.
      */
+    /**
+     * Checkpoint 2 (diseño v3, E1/E4/E5): el 2xx del REST NO siempre es una venta normal. Se aplica como VEREDICTO del
+     * servidor por la MISMA regla que S5 y S6 ([PaymentAttemptLedger.aplicarVeredictoDelServidor]: libreta y bandeja en una
+     * transacción; REGISTRADO sólo con un veredicto final aprobado y los mismos montos) y la pantalla dice lo que pasó:
+     *  - RECORDED ⇒ `Success` y el resultado al POS como hoy (este VM reporta SU propio desenlace: el servidor decide si
+     *    liga la solicitud; un COMPLETED sin ligar sigue siendo el cobro de esta terminal).
+     *  - segunda captura con GANADOR acreditado ⇒ `Success(aviso)` («posible cobro doble; Avoqado lo concilia») y al POS
+     *    `success` con el ganador — la solicitud sí está cobrada, por el ganador.
+     *  - colisión / PENDING sin ganador ⇒ el banco aprobó y el servidor conserva el cobro como EVIDENCIA: ni `Success` ni
+     *    `failed`; la bandeja conserva su obligación (nada se emite) y la pantalla lo dice. Avoqado concilia.
+     * Un fallo al persistir el veredicto no cambia el dinero (ya es durable en el servidor): se registra y N3 lo retoma.
+     */
+    private suspend fun aplicarVeredictoDelRest(
+        paymentContext: PaymentContext.AngelPayPayment,
+        cardDetails: CardDetails,
+        receipt: PaymentReceipt,
+        successState: AngelPayPaymentState.Success,
+    ) {
+        val attemptId = paymentContext.idempotencyKey
+        if (attemptId != null) {
+            // 📒 [Libreta] HOST_RESPONDIO → AUTORIZADO (card facts); el paso a REGISTRADO lo decide el veredicto.
+            paymentAttemptLedger.markAuthorized(attemptId, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
+            paymentAttemptLedger.aplicarVeredictoDelServidor(
+                VeredictoDeIntento.desdeRecibo(
+                    venueId = paymentContext.venueId, attemptId = attemptId,
+                    requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET }, receipt = receipt,
+                ),
+            )
+        }
+        val veredicto = receipt.veredictoDelServidor
+        val ganador = receipt.ganadorAcreditado
+        when {
+            veredicto == VeredictoDelServidor.RECORDED -> {
+                _state.value = successState.copy(receipt = receipt)
+                // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
+                emitSocketResultIfSocketSourced(
+                    status = "success",
+                    paymentId = receipt.paymentId,
+                    transactionId = receipt.paymentId,
+                    receiptUrl = receipt.receiptUrl,
+                    receiptAccessKey = receipt.accessKey,
+                )
+            }
+            veredicto == VeredictoDelServidor.SECOND_CAPTURE_EVIDENCE && ganador != null -> {
+                Timber.e("🚨 [AngelPay] SEGUNDA CAPTURA acreditada por el servidor | attemptId=%s ganador=%s", attemptId, ganador)
+                _state.value = successState.copy(receipt = receipt, aviso = CobroRemotoDelPos.SEGUNDA_CAPTURA)
+                emitSocketResultIfSocketSourced(status = "success", paymentId = ganador, transactionId = ganador)
+            }
+            else -> {
+                Timber.e("🚨 [AngelPay] EVIDENCIA sin ganador acreditado (%s) | attemptId=%s paymentId=%s", veredicto, attemptId, receipt.paymentId)
+                _mensajeDelPos.value = CobroRemotoDelPos.EVIDENCIA_SIN_GANADOR
+                _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.EVIDENCIA_SIN_GANADOR, canRetry = false)
+            }
+        }
+    }
+
     @VisibleForTesting
     internal suspend fun handleRecordFailure(
         paymentLabel: String,
@@ -817,6 +889,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 ledgerOpenedAmountCents = amountCents
                 ledgerOpenedTipCents = tipCents
             }
+            // ── Checkpoint 2 · N1: anunciar el intento (ya DURABLE en PREPARANDO) y decidir con el ACK ANTES del SDK.
+            if (!vincularIntentoAntesDelSdk(paymentAttemptId)) return false
             // A second launch is only the known pre-authorization D308/validation fallback.
             val marked = paymentAttemptLedger.markAuthorizing(paymentAttemptId)
             marked.also { if (it) { authorizationWasLaunched = true; confirmedNegativeOutcome = false; confirmedNegativeEvidence = null } }
@@ -825,6 +899,93 @@ class AngelPayPaymentViewModel @Inject constructor(
         } catch (error: Exception) {
             Timber.e(error, "Cannot persist payment attempt; processor entry refused")
             false
+        }
+    }
+
+    /**
+     * Checkpoint 2 · N1 (diseño v3, D4): la fila del intento ya está commiteada en PREPARANDO. Si el cobro viene del
+     * POS y la solicitud fue entregada por un servidor que contesta el vínculo (capacidad DURABLE ≥ 1, leída de la
+     * bandeja por `requestId`), se anuncia `attemptId → requestId` y se decide con el ACK — ESTRICTAMENTE
+     * ([DecisionDelVinculo.de]) — antes de tocar el SDK. Devuelve true si se puede seguir (CAS a AUTORIZANDO y SDK);
+     * false si la decisión ya resolvió la pantalla (y deja [decisionQueResolvioLaPantalla] para el llamador).
+     *
+     *  - `Cobrar` ⇒ seguir (la llave queda como vínculo autorizado: un fallback con la misma llave no re-espera).
+     *  - `Legacy` (ERROR, malformado, sin ACK en 4 s, sin socket) ⇒ seguir SIN vínculo: el camino certificado del
+     *    checkpoint 1; un timeout no bloquea el cobro ni autoriza otro intento.
+     *  - `NoEjecutable` ⇒ no SDK; PREPARANDO → DESCARTADA; el negativo (`cancelled` si el POS pidió cancelar, `failed` en
+     *    los demás) sólo por la vía transaccional de H.3 — si otro intento de la solicitud bloquea, no se emite nada y
+     *    PROCESSING permanece; la pantalla dice «no se inició OTRO cobro».
+     *  - `NoEsDuena` (NOT_OWNER) ⇒ 🔴 no SDK, NUNCA: el servidor no acredita que esta conexión sea la dueña; PREPARANDO →
+     *    DESCARTADA, `failed + PRE_AUTHORIZATION` por H.3, 🚨 con ids. Sin prometer que el servidor libere nada.
+     *  - `LlaveAjena` / `Invalida` ⇒ no SDK; PREPARANDO → DESCARTADA; SIN negativo (la solicitud sigue PROCESSING); la
+     *    pantalla ofrece reintentar y el reintento abre una llave NUEVA ([retryAfterError] limpia la llave). 🚨.
+     * Un cancel del POS o un abandono DURANTE la espera cierran la PREPARANDO por el camino durable (el estado
+     * [AngelPayPaymentState.LinkingAttempt] es pre-dinero) y la continuación no lanza el SDK: el CAS a AUTORIZANDO no
+     * puede ganar sobre una fila DESCARTADA.
+     */
+    private suspend fun vincularIntentoAntesDelSdk(paymentAttemptId: String): Boolean {
+        val requestId = _socketRequestId
+        if (_paymentSource != CobroRemotoDelPos.FUENTE_SOCKET || requestId == null) return true
+        if (linkAutorizado == paymentAttemptId) return true
+        if (paymentAttemptLedger.capacidadDeVinculo(requestId) < 1) return true // servidor sin S1: camino legacy, sin espera
+        val previo = _state.value
+        _state.value = AngelPayPaymentState.LinkingAttempt(previo)
+        val decision = socketManager.emitAttemptOpened(requestId, paymentAttemptId)
+        if (cobroCanceladoPorElPos) return false // el POS canceló durante la espera: la bandeja ya alineó la pantalla
+        return when (decision) {
+            is DecisionDelVinculo.Cobrar -> {
+                linkAutorizado = paymentAttemptId
+                _state.value = previo
+                true
+            }
+            is DecisionDelVinculo.Legacy -> {
+                Timber.w("🔗 [AngelPay] Sin vínculo (%s): se cobra por el camino legacy", decision.motivo)
+                _state.value = previo
+                true
+            }
+            is DecisionDelVinculo.NoEjecutable -> {
+                decisionQueResolvioLaPantalla = decision
+                paymentAttemptLedger.markDiscardedBeforeCharge(paymentAttemptId, "REQUEST_NOT_EXECUTABLE:${decision.requestStatus}")
+                val mensaje = CobroRemotoDelPos.noEjecutable(decision.requestStatus, decision.yaCobrada)
+                emitSocketResultIfSocketSourced(status = decision.statusNegativo, errorMessage = mensaje, outcomeEvidence = "PRE_AUTHORIZATION")
+                _mensajeDelPos.value = mensaje
+                _state.value = AngelPayPaymentState.Error(mensaje, canRetry = false)
+                false
+            }
+            DecisionDelVinculo.NoEsDuena -> {
+                decisionQueResolvioLaPantalla = decision
+                paymentAttemptLedger.markDiscardedBeforeCharge(paymentAttemptId, "NOT_OWNER")
+                Timber.e(
+                    "🚨 [AngelPay] NOT_OWNER: el servidor no acredita a esta terminal como dueña | requestId=%s attemptId=%s venue=%s",
+                    requestId, paymentAttemptId, cachedVenueId,
+                )
+                observability.logError(
+                    tag = "AngelPayAttemptLink",
+                    message = "terminal:payment_attempt_opened → NOT_OWNER: no se inició el cobro",
+                    error = IllegalStateException("NOT_OWNER"),
+                    metadata = mapOf("requestId" to requestId, "attemptId" to paymentAttemptId, "venueId" to cachedVenueId),
+                )
+                emitSocketResultIfSocketSourced(
+                    status = "failed", errorMessage = "NOT_OWNER: esta terminal no es la dueña de la solicitud", outcomeEvidence = "PRE_AUTHORIZATION",
+                )
+                _mensajeDelPos.value = CobroRemotoDelPos.NO_ES_LA_DUENA
+                _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.NO_ES_LA_DUENA, canRetry = false)
+                false
+            }
+            DecisionDelVinculo.LlaveAjena, DecisionDelVinculo.Invalida -> {
+                decisionQueResolvioLaPantalla = decision
+                val motivo = if (decision is DecisionDelVinculo.LlaveAjena) "ATTEMPT_REUSE" else "INVALID_LINK"
+                paymentAttemptLedger.markDiscardedBeforeCharge(paymentAttemptId, motivo)
+                Timber.e("🚨 [AngelPay] S1 rechazó la llave (%s) | requestId=%s attemptId=%s", motivo, requestId, paymentAttemptId)
+                observability.logError(
+                    tag = "AngelPayAttemptLink",
+                    message = "terminal:payment_attempt_opened → $motivo: llave rechazada, se ofrece reintentar con llave nueva",
+                    error = IllegalStateException(motivo),
+                    metadata = mapOf("requestId" to requestId, "attemptId" to paymentAttemptId),
+                )
+                _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.LLAVE_RECHAZADA, canRetry = true)
+                false
+            }
         }
     }
 
@@ -954,6 +1115,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                     // aviso en pantalla, filtrado por la solicitud de ESTE cobro — `events` tiene replay = 1
                     // y un suscriptor nuevo recibe el último evento, que puede ser de otra solicitud.
                     is SocketEvent.TerminalPaymentCancel -> manejarCancelacionRemota(event)
+                    // S5 (checkpoint 2 · N2): el webhook registró el dinero de ESTE intento. Lo durable ya lo hizo la
+                    // libreta (SocketManager); aquí sólo la pantalla, y sólo para el intento de ESTE cobro.
+                    is SocketEvent.TerminalPaymentConfirmed -> manejarConfirmacionDelServidor(event)
                     else -> Unit // Other events handled elsewhere
                 }
             }
@@ -1789,6 +1953,12 @@ class AngelPayPaymentViewModel @Inject constructor(
 
         // 📒 [Libreta] Pre-SDK barrier — committed after session alignment, before validation/launch.
         if (!openLedgerAttemptAndMarkAuthorizing(paymentAttemptId)) {
+            // Checkpoint 2 · N1: si el vínculo con el servidor ya resolvió la pantalla, no hay cerca que traducir.
+            if (decisionQueResolvioLaPantalla != null) {
+                decisionQueResolvioLaPantalla = null
+                clearChargingOnTerminal()
+                return
+            }
             // 🛑 La cerca de la solicitud remota se traduce a lo que pasó, nunca a «no se pudo guardar».
             traducirBarreraRechazada()
             clearChargingOnTerminal()
@@ -1920,6 +2090,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         // 📒 [Libreta] Pre-intent barrier. On the SDK→app-to-app in-session fallback the row
         // is already open+AUTORIZANDO — the helper's attemptId guard + the CAS make this a no-op.
         if (!openLedgerAttemptAndMarkAuthorizing(paymentAttemptId)) {
+            // Checkpoint 2 · N1: si el vínculo con el servidor ya resolvió la pantalla, no hay cerca que traducir.
+            if (decisionQueResolvioLaPantalla != null) {
+                decisionQueResolvioLaPantalla = null
+                clearChargingOnTerminal()
+                return
+            }
             // 🛑 La cerca de la solicitud remota se traduce a lo que pasó, nunca a «no se pudo guardar».
             traducirBarreraRechazada()
             clearChargingOnTerminal()
@@ -2746,6 +2922,48 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * S5 (checkpoint 2 · N2, paso 4): el servidor confirmó el dinero de ESTE intento por webhook. La libreta ya aplicó el
+     * veredicto (REGISTRADO si el SDK ya salió; evidencia guardada si sigue dentro). La pantalla sólo cambia cuando el cobro
+     * está esperando un desenlace que ya no va a llegar por otra vía — `Queued` (registro encolado), `ResultadoIncierto` o
+     * un `Error` de registro— y NUNCA mientras el SDK esté dentro: ese camino termina por su REST (idempotente) y llega al
+     * mismo `Success`. Un evento de otro intento se ignora.
+     */
+    @VisibleForTesting
+    internal fun manejarConfirmacionDelServidor(event: SocketEvent.TerminalPaymentConfirmed) {
+        if (_paymentSource != CobroRemotoDelPos.FUENTE_SOCKET || event.requestId != _socketRequestId) return
+        if (event.attemptId != currentPaymentAttemptId) return
+        if (!event.registrado) {
+            // La libreta no lo dio por REGISTRADO (SDK dentro, contradicción, montos distintos…): la pantalla no afirma nada.
+            Timber.w("📣 [AngelPay] payment_confirmed para %s sin transición en la libreta: la pantalla no cambia", event.attemptId)
+            return
+        }
+        val estado = _state.value
+        val enEspera = estado is AngelPayPaymentState.Queued || estado is AngelPayPaymentState.ResultadoIncierto ||
+            (estado is AngelPayPaymentState.Error && authorizationWasLaunched && !confirmedNegativeOutcome)
+        if (!enEspera) {
+            Timber.i("📣 [AngelPay] payment_confirmed para %s en %s: la pantalla sigue su camino", event.attemptId, estado::class.simpleName)
+            return
+        }
+        Timber.i("📣 [AngelPay] payment_confirmed cierra la espera de %s (registrado=%s)", event.attemptId, event.registrado)
+        _socketResultEmitted = true // el desenlace durable ya está en la bandeja (lo escribió la libreta): este VM no emite otro
+        cancelarCierrePorAbandono()
+        clearChargingOnTerminal()
+        _state.value = AngelPayPaymentState.Success(
+            authCode = "", // el webhook no trae la autorización del SDK; el recibo llega por REST si la app la registra después
+            amount = pendingAmount.toPlainString(),
+            tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
+            referenceNumber = null,
+            orderId = pendingOrderId,
+            orderNumber = pendingOrderNumber,
+            isCash = false,
+            receipt = PaymentReceipt(
+                paymentId = event.paymentId, receiptUrl = "", accessKey = "",
+                amount = pendingAmount, tipAmount = pendingTip, serverRecordedVia = "webhook", solicitudLigada = event.requestId,
+            ),
+        )
+    }
+
     /** Aviso en pantalla del cancel del POS, filtrado por la solicitud de ESTE cobro. */
     @VisibleForTesting
     internal fun manejarCancelacionRemota(event: SocketEvent.TerminalPaymentCancel) {
@@ -3034,21 +3252,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay] Card payment recorded | receipt=${receipt.receiptUrl}")
-                // 📒 [Libreta] Money moved and the backend owns the record from here on:
-                // HOST_RESPONDIO → AUTORIZADO (card facts) → REGISTRADO.
-                paymentContext.idempotencyKey?.let { attemptIdForLedger ->
-                    paymentAttemptLedger.markAuthorized(attemptIdForLedger, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
-                    paymentAttemptLedger.markRecorded(attemptIdForLedger)
-                }
-                _state.value = successState.copy(receipt = receipt)
-                // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
-                emitSocketResultIfSocketSourced(
-                    status = "success",
-                    paymentId = receipt.paymentId,
-                    transactionId = receipt.paymentId,
-                    receiptUrl = receipt.receiptUrl,
-                    receiptAccessKey = receipt.accessKey,
-                )
+                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState)
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend — enqueueing for sync")
@@ -3147,21 +3351,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay SDK] Card payment recorded | receipt=${receipt.receiptUrl}")
-                // 📒 [Libreta] Money moved and the backend owns the record from here on:
-                // HOST_RESPONDIO → AUTORIZADO (card facts) → REGISTRADO.
-                paymentContext.idempotencyKey?.let { attemptIdForLedger ->
-                    paymentAttemptLedger.markAuthorized(attemptIdForLedger, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
-                    paymentAttemptLedger.markRecorded(attemptIdForLedger)
-                }
-                _state.value = successState.copy(receipt = receipt)
-                // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
-                emitSocketResultIfSocketSourced(
-                    status = "success",
-                    paymentId = receipt.paymentId,
-                    transactionId = receipt.paymentId,
-                    receiptUrl = receipt.receiptUrl,
-                    receiptAccessKey = receipt.accessKey,
-                )
+                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState)
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend — enqueueing for sync")
@@ -3770,6 +3960,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         currentPaymentAttemptId = null
         ledgerOpenedAttemptId = null
         consumedResultAttemptId = null
+        linkAutorizado = null
+        decisionQueResolvioLaPantalla = null
         // El cajero retomó: el reloj de abandono ya no debe cerrarle la fila al POS.
         cancelarCierrePorAbandono()
         // T26 / H.3: un intento nuevo — si vuelve a fallar antes de autorizar, retendrá su propio final.
@@ -3969,6 +4161,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         cachedStaffId = null
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
         consumedResultAttemptId = null
+        linkAutorizado = null
+        decisionQueResolvioLaPantalla = null
         currentCryptoRequestId = null  // 🪙 Drop in-flight crypto request so old socket events are ignored
         lastSdkLaunchRequest = null    // 🔐 D308 recovery state — never reuse a request across attempts
         lastSdkLaunchUsedTipFallback = false
@@ -4154,6 +4348,8 @@ internal fun sinDineroEnVuelo(state: AngelPayPaymentState): Boolean = when (stat
     is AngelPayPaymentState.Switching,
     // T26: autenticando ANTES de la libreta y del SDK — nada capaz de autorizar empezó.
     is AngelPayPaymentState.ConectandoAngelPay,
+    // Checkpoint 2 · N1: anunciando el intento al servidor; la fila está en PREPARANDO y el SDK no se ha tocado.
+    is AngelPayPaymentState.LinkingAttempt,
     is AngelPayPaymentState.GeneratingCryptoQR,
     is AngelPayPaymentState.Error -> true
 

@@ -43,10 +43,24 @@ class LedgerApprovalRecovery @Inject constructor(
                     else fast.recordPayment(context, card, row.authCode.orEmpty(), row.referenceNumber.orEmpty())
                 }
                 val completedAt = maxOf(now, System.currentTimeMillis())
-                val changed = dao.completeRecovery(row.attemptId, venueId, ownedLease,
-                    if (result.isSuccess) PaymentAttemptEntity.STATE_REGISTRADO else PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
-                    completedAt, if (result.isSuccess) null else "Cobrado; registro pendiente")
-                if (result.isSuccess && changed == 1) recovered++
+                val receipt = result.getOrNull()
+                if (receipt != null) {
+                    // Checkpoint 2 (E1/E5): el 2xx se aplica como VEREDICTO por la MISMA regla que S5/S6 — REGISTRADO sólo
+                    // con un veredicto final aprobado y los mismos montos; una evidencia (segunda captura sin ganador,
+                    // colisión, PENDING) se guarda y la fila conserva su estado. Un fallo al persistir deja la fila con su
+                    // lease: la siguiente pasada vuelve a registrar (idempotente) y a aplicar.
+                    val aplicado = dao.aplicarVeredictoDelServidor(
+                        VeredictoDeIntento.desdeRecibo(venueId, row.attemptId, row.terminalPaymentRequestId, receipt), completedAt,
+                    )
+                    if (aplicado.transiciono) recovered++
+                    if (aplicado.decision == ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR) {
+                        Timber.e("🚨 [LedgerApproval] el servidor conserva %s como %s (sin liberar) | attemptId=%s",
+                            receipt.paymentId, receipt.veredictoDelServidor, row.attemptId)
+                    }
+                } else {
+                    dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
+                        completedAt, "Cobrado; registro pendiente")
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

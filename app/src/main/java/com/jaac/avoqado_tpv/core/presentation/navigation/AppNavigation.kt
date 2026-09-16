@@ -336,7 +336,11 @@ fun AppNavigation(
     // WorkManager KEEP scheduling prevents repeated connection callbacks piling up.
     LaunchedEffect(socketManager) {
         socketManager.isConnected.distinctUntilChanged().collect { connected ->
-            if (connected) LedgerSweepScheduler.runOnceNow(context)
+            if (connected) {
+                LedgerSweepScheduler.runOnceNow(context)
+                // Checkpoint 2 · N3: al reconectar, consultar al servidor lo que quedó sin desenlace (sin retraso).
+                LedgerSweepScheduler.runServerRecoveryNow(context)
+            }
         }
     }
 

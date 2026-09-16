@@ -363,6 +363,9 @@ fun AngelPayPaymentScreen(
                         }
                     },
                     onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
+                    // Checkpoint 2 (E4): una segunda captura con ganador acreditado NO es un éxito limpio — el mismo
+                    // renglón ámbar «no lo vuelvas a cobrar» que ya usa el registro pendiente.
+                    pendingSyncMessage = successState.aviso,
                     onNavigateHome = {
                         viewModel.resetPayment()
                         onNavigateHome()
@@ -679,6 +682,15 @@ fun AngelPayPaymentScreen(
                 is AngelPayPaymentState.Charging -> {
                     LoadingContent(
                         message = "Procesando cobro…",
+                        subtitle = "No cierres esta pantalla",
+                        largeSpinner = true,
+                    )
+                }
+
+                // Checkpoint 2 · N1: anunciando el intento al servidor (≤ 4 s) antes de tocar el SDK. Pre-dinero.
+                is AngelPayPaymentState.LinkingAttempt -> {
+                    LoadingContent(
+                        message = "Confirmando con Avoqado…",
                         subtitle = "No cierres esta pantalla",
                         largeSpinner = true,
                     )

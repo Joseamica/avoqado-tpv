@@ -72,7 +72,39 @@ data class PaymentData(
     // pagos nunca se le portó. El cobro SIEMPRE quedó registrado — lo único que faltaba era el QR.
     @SerializedName("digitalReceipt")
     val digitalReceipt: DigitalReceiptData?,
-)
+
+    // Checkpoint 2 (Codex P1-2): el estado del Payment y `processorData.reconciliation` viajan en el mismo 2xx. Nulos si el
+    // servidor no los manda (versión anterior). Gson: un objeto ausente es null, nunca revienta.
+    @SerializedName("status")
+    val status: String? = null,
+    @SerializedName("processorData")
+    val processorData: com.google.gson.JsonObject? = null,
+    /**
+     * N0b: la COLUMNA `Payment.terminalPaymentRequestId`, que el servidor sólo escribe al LIGAR la solicitud con este Payment
+     * (`closeRowFromPaymentTx`). Con `status = COMPLETED` es la prueba durable de que este Payment cerró esa solicitud; un
+     * COMPLETED sin ella quedó registrado pero NO ligado (sin identidad de terminal, asociación inválida) y no acredita ganador.
+     */
+    @SerializedName("terminalPaymentRequestId")
+    val terminalPaymentRequestId: String? = null,
+) {
+    /** `processorData.reconciliation.kind` si viene como cadena; null en cualquier otra forma. */
+    val reconciliationKind: String?
+        get() = runCatching {
+            processorData?.getAsJsonObject("reconciliation")?.get("kind")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+
+    /** `processorData.registradoVia` (`webhook` sólo si el servidor lo dice); ausente ⇒ `terminal`. */
+    val registradoVia: String
+        get() = runCatching {
+            processorData?.get("registradoVia")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()?.takeIf { it == "webhook" } ?: "terminal"
+
+    /** `processorData.reconciliation.winnerPaymentId` si viene como cadena. */
+    val winnerPaymentId: String?
+        get() = runCatching {
+            processorData?.getAsJsonObject("reconciliation")?.get("winnerPaymentId")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+}
 
 /**
  * Datos del recibo digital generado automáticamente.

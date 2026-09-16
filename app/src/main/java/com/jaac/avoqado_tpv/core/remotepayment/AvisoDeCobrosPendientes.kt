@@ -25,7 +25,22 @@ object AvisoDeCobrosPendientes {
 
 
     /** null = no hay nada que avisar. La lista viene de la más reciente a la más vieja. */
-    fun texto(pendientes: List<ObligacionPendiente>, ahoraMillis: Long): String? {
+    fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long): String? {
+        // Checkpoint 2 (E1): una CONTRADICCIÓN con el servidor se avisa aparte y sólo durante VENTANA_CONTRADICCION_MS
+        // después del veredicto — es evidencia que Avoqado concilia, no algo que el cajero pueda resolver; la fila se
+        // conserva (nunca se poda) aunque el aviso deje de mostrarla.
+        val contradicciones = todas.filter { it.contradiccion == 1 && ahoraMillis - it.desdeMillis < VENTANA_CONTRADICCION_MS }
+        val pendientes = todas.filter { it.contradiccion == 0 }
+        val textoPendientes = textoDePendientes(pendientes, ahoraMillis)
+        val textoContradicciones = contradicciones.takeIf { it.isNotEmpty() }?.let { lista ->
+            val enumeradas = lista.take(MAXIMO_ENUMERADO).joinToString(", ") { pesos(it.totalCentavos) }
+            "Avoqado registró dinero de ${if (lista.size == 1) "un cobro" else "${lista.size} cobros"} ($enumeradas) que esta terminal " +
+                "dio por no cobrado o como posible cobro doble: no lo vuelvas a cobrar, Avoqado lo concilia."
+        }
+        return listOfNotNull(textoPendientes, textoContradicciones).takeIf { it.isNotEmpty() }?.joinToString(" ")
+    }
+
+    private fun textoDePendientes(pendientes: List<ObligacionPendiente>, ahoraMillis: Long): String? {
         val masReciente = pendientes.firstOrNull() ?: return null
         val importe = pesos(masReciente.totalCentavos)
         val cuando = antiguedad(ahoraMillis - masReciente.desdeMillis)
@@ -47,6 +62,9 @@ object AvisoDeCobrosPendientes {
         return "Quedaron ${pendientes.size} cobros sin confirmar: $enumeradas$cola. " +
             "Si alguno es esta venta, no la cobres otra vez."
     }
+
+    /** 72 h: suficiente para que operaciones actúe; después la contradicción sigue en la libreta, no en el aviso. */
+    const val VENTANA_CONTRADICCION_MS = 72L * 60 * 60 * 1000
 
     private fun pesos(centavos: Long): String =
         CurrencyFormatter.format(BigDecimal(centavos).movePointLeft(2))

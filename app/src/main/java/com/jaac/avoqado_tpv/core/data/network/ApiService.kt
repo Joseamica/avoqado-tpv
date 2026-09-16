@@ -1293,6 +1293,19 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.features.payments.data.dto.PaymentHistoryResponse>
 
     /**
+     * La liga del recibo digital de un cobro ya hecho, para dibujar el QR al REIMPRIMIR.
+     *
+     * 🔴 El historial (`getPaymentHistory`) NO trae esta llave, así que el ticket reimpreso salía
+     * sin QR de facturación aunque el del cobro sí lo lleve (Asana, 11-sep-2026). El servidor la
+     * genera si el cobro todavía no tenía recibo — misma llave siempre.
+     */
+    @GET("tpv/venues/{venueId}/payments/{paymentId}/receipt")
+    suspend fun getReceiptLink(
+        @Path("venueId") venueId: String,
+        @Path("paymentId") paymentId: String
+    ): Response<com.jaac.avoqado_tpv.features.payments.data.dto.ReceiptLinkResponse>
+
+    /**
      * Send TPV feedback (bug report or feature suggestion)
      *
      * POST /api/v1/tpv/feedback

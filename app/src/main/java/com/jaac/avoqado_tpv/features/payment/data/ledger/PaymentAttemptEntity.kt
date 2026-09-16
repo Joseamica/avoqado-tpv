@@ -71,7 +71,33 @@ data class PaymentAttemptEntity(
      *    bloqueadora).
      * La migración 33→34 la pone en 1 para TODAS las filas existentes; nada del APK nuevo la escribe en 1.
      */
-    @ColumnInfo(name = "legacy_shadow", defaultValue = "0") val legacyShadow: Boolean = false
+    @ColumnInfo(name = "legacy_shadow", defaultValue = "0") val legacyShadow: Boolean = false,
+
+    // ── Checkpoint 2 (webhook como primer confirmador), Room v35. Todas ADITIVAS y nulas/0 por default. ──
+    /**
+     * La solicitud del POS (`terminalPaymentRequestId` del contexto) como COLUMNA, para que la recuperación
+     * por servidor (N3) seleccione candidatas sin buscar dentro de `payment_context_json`. La escribe
+     * `reserveTerminal` y la migración 34→35 la rellena para las filas que ya existían.
+     */
+    @ColumnInfo(name = "terminal_payment_request_id") val terminalPaymentRequestId: String? = null,
+    /**
+     * Lo que el SERVIDOR acreditó de este intento (S5 `terminal:payment_confirmed`, S6 `GET …/attempts/:attemptId`
+     * o el 2xx del REST): `server_outcome` ∈ RECORDED · SECOND_CAPTURE_EVIDENCE · REFERENCE_COLLISION_EVIDENCE ·
+     * PENDING_EVIDENCE. Es EVIDENCIA durable: una fila con `server_payment_id` no se poda por tiempo y veta cualquier
+     * desenlace negativo de su solicitud. `server_recorded_via` es lo que dijo el servidor (`webhook`/`terminal`),
+     * nunca inferido del canal por el que llegó el veredicto.
+     */
+    @ColumnInfo(name = "server_payment_id") val serverPaymentId: String? = null,
+    @ColumnInfo(name = "server_outcome") val serverOutcome: String? = null,
+    @ColumnInfo(name = "server_recorded_via") val serverRecordedVia: String? = null,
+    @ColumnInfo(name = "server_amount_cents") val serverAmountCents: Long? = null,
+    @ColumnInfo(name = "server_tip_cents") val serverTipCents: Long? = null,
+    @ColumnInfo(name = "server_verdict_at") val serverVerdictAt: Long? = null,
+    /** El Payment que cerró la SOLICITUD según el servidor (E4); null si el veredicto no acredita ganador. */
+    @ColumnInfo(name = "server_winner_payment_id") val serverWinnerPaymentId: String? = null,
+    /** Última consulta S6 de esta fila y cuántas van: el lote de N3 avanza (las consultadas van al final) y se espacia. */
+    @ColumnInfo(name = "server_checked_at") val serverCheckedAt: Long? = null,
+    @ColumnInfo(name = "server_check_count", defaultValue = "0") val serverCheckCount: Int = 0,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -109,6 +135,23 @@ data class PaymentAttemptEntity(
          * terminara, así que sigue apartando el aparato aunque la venta tenga identidad.
          */
         const val CUARENTENA_POR_ANTIGUEDAD = "cuarentena_por_antiguedad"
+
+        /** Veredictos del servidor sobre un intento (`server_outcome`); mismos nombres que `AttemptOutcome` de S6. */
+        const val SERVER_RECORDED = "RECORDED"
+        const val SERVER_SECOND_CAPTURE_EVIDENCE = "SECOND_CAPTURE_EVIDENCE"
+        const val SERVER_REFERENCE_COLLISION_EVIDENCE = "REFERENCE_COLLISION_EVIDENCE"
+        /** Un Payment PENDING sin `reconciliation.kind` conocido: evidencia, nunca una venta normal. */
+        const val SERVER_PENDING_EVIDENCE = "PENDING_EVIDENCE"
+
+        /**
+         * 🔴 CONTRADICCIÓN = predicado DERIVADO (nunca una columna, para que no se desincronice): el servidor tiene
+         * evidencia que no es una venta normal, o dinero para un intento que la terminal dio por no cobrado o con otros
+         * montos. Lo consumen la poda/cierre (la conservan), el veto de negativos (H.3 + `server_payment_id`) y el aviso.
+         * Va como `const` para poder ir DENTRO de las anotaciones `@Query` (Room exige literales).
+         */
+        const val SQL_CONTRADICCION = "(server_outcome IN ('SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
+            "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved = 0 " +
+            "OR server_amount_cents != amount_cents OR server_tip_cents != tip_cents)))"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

@@ -307,8 +307,54 @@ class PaymentAttemptLedger @Inject constructor(
                     PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, System.currentTimeMillis(), error?.take(500)
                 )
                 logCas(n, attemptId, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO)
+                if (n == 1) avisarIncertidumbre(attemptId)
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markRecordFailed failed") }
+    }
+
+    /**
+     * Checkpoint 2 · N4 (diseño v3, D3): al NACER una incertidumbre (INDETERMINADO o REGISTRO_FALLIDO) se pide la
+     * recuperación por servidor en el acto — reaplicar un veredicto ya guardado sin red, consultar S6 si hay conexión, y
+     * el worker de red como respaldo durable. El hook lo cablea [LedgerRecoveryTrigger] al arrancar; sin él (pruebas,
+     * arranque a medias) no pasa nada: el barrido periódico y la reconexión siguen cubriendo. Nunca en REGISTRADO.
+     */
+    @Volatile var onUncertaintyBorn: ((attemptId: String) -> Unit)? = null
+
+    private fun avisarIncertidumbre(attemptId: String) {
+        runCatching { onUncertaintyBorn?.invoke(attemptId) }
+            .onFailure { Timber.e(it, "📒 [Libreta] el aviso de incertidumbre falló (attemptId=%s)", attemptId) }
+    }
+
+    /**
+     * Checkpoint 2 (E1–E4): aplica el veredicto del servidor sobre un intento — libreta y bandeja en UNA transacción
+     * ([PaymentAttemptDao.aplicarVeredictoDelServidor]). Devuelve `Result` a propósito: el consumidor de la COLA necesita
+     * saber si la evidencia quedó durable (si no, no marca sincronizada su fila); los demás pueden ignorar el fallo.
+     * Nunca lanza: un fallo aquí no puede bloquear un cobro ya hecho.
+     */
+    suspend fun aplicarVeredictoDelServidor(veredicto: VeredictoDeIntento): Result<ResultadoDelVeredicto> = runCatching {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val r = dao.aplicarVeredictoDelServidor(veredicto, System.currentTimeMillis())
+            Timber.i(
+                "📒 [Libreta] veredicto del servidor %s/%s ⇒ %s (transición=%s, bandeja=%s, contradicción=%s) | attemptId=%s",
+                veredicto.fuente, veredicto.outcome, r.decision, r.transiciono, r.bandejaResueltaJson != null, r.contradiccion, veredicto.attemptId,
+            )
+            if (r.contradiccion) {
+                Timber.e("🚨 [Libreta] CONTRADICCIÓN con el servidor | attemptId=%s outcome=%s paymentId=%s", veredicto.attemptId, veredicto.outcome, veredicto.paymentId)
+            }
+            r
+        }
+    }.onFailure {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.e(it, "📒 [Libreta] no se pudo aplicar el veredicto del servidor | attemptId=%s", veredicto.attemptId)
+    }
+
+    /** E2: reaplica un veredicto FINAL ya guardado (sin red) cuando el estado local cambió. Null si no hay nada guardado. */
+    suspend fun reaplicarVeredictoGuardado(attemptId: String): ResultadoDelVeredicto? = runCatching {
+        withContext(NonCancellable + Dispatchers.IO) { dao.reaplicarVeredictoGuardado(attemptId, System.currentTimeMillis()) }
+    }.getOrElse {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.e(it, "📒 [Libreta] no se pudo reaplicar el veredicto guardado | attemptId=%s", attemptId)
+        null
     }
 
     /** Once queued, pending_payments owns the money (its idempotency + retry) — the ledger row rests. */
@@ -348,6 +394,7 @@ class PaymentAttemptLedger @Inject constructor(
                     PaymentAttemptEntity.STATE_INDETERMINADO, System.currentTimeMillis(), reason.take(500)
                 )
                 logCas(n, attemptId, PaymentAttemptEntity.STATE_INDETERMINADO)
+                if (n == 1) avisarIncertidumbre(attemptId)
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markIndeterminate failed") }
     }
@@ -416,6 +463,24 @@ class PaymentAttemptLedger @Inject constructor(
      * el intento». Un fallo de lectura NO se traduce como LIBRE: se contesta CERRADA, que es el lado que no
      * cobra de nuevo.
      */
+    /**
+     * N0/E6 (checkpoint 2): ¿el servidor que entregó ESTA solicitud contesta el vínculo intento→solicitud (S1)? Se lee de
+     * la bandeja DURABLE al decidir, no de la copia en memoria del `RemotePaymentRequest`: un duplicado con versión mayor
+     * sube la columna después de haber entregado la entidad. 0 ⇒ camino legacy (sin espera). Un error de lectura ⇒ 0:
+     * no esperar nunca es el comportamiento de hoy.
+     */
+    suspend fun capacidadDeVinculo(requestId: String?): Int {
+        if (requestId.isNullOrBlank()) return 0
+        return try {
+            withContext(Dispatchers.IO) { dao.attemptLinkVersionDeSolicitud(requestId) ?: 0 }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.e(error, "📒 [Libreta] no se pudo leer la capacidad de vínculo de %s — se asume 0", requestId)
+            0
+        }
+    }
+
     suspend fun cercaDeSolicitud(requestId: String?): CercaDeSolicitud {
         if (requestId.isNullOrBlank()) return CercaDeSolicitud.LIBRE
         return try {

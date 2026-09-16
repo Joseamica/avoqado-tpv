@@ -166,7 +166,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // gana `legacy_shadow` (las filas que dejó la libreta SHADOW de 2.9.x no reservan la terminal).
     // 🔴 Cruza versión de esquema: un regreso a 2.9.2 (v33) sería un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`). El retroceso exige un APK de retroceso con v34.
-    version = 34,
+    version = 35,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1932,6 +1932,74 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 if (!columnaExiste("payment_attempts", "legacy_shadow")) {
                     db.execSQL("ALTER TABLE payment_attempts ADD COLUMN legacy_shadow INTEGER NOT NULL DEFAULT 0")
                     db.execSQL("UPDATE payment_attempts SET legacy_shadow = 1")
+                }
+            }
+        }
+
+        /**
+         * v34 → v35 — checkpoint 2 del webhook como primer confirmador (16-sep-2026). Sólo columnas ADITIVAS:
+         *  - `remote_payment_requests.attempt_link_version INTEGER NOT NULL DEFAULT 0` (N0: la capacidad del servidor
+         *    que entregó la solicitud, persistida porque un duplicado entrega la ENTIDAD).
+         *  - `payment_attempts.terminal_payment_request_id TEXT` (la solicitud del POS como columna; se RELLENA desde
+         *    `payment_context_json` para las filas que ya existían — Gson lo escribe compacto y sin escapar ASCII, que es
+         *    la misma forma en la que ya buscan `contarIntentosBloqueadores` y `descartarPreparandoDeSolicitud`),
+         *    `server_payment_id TEXT`, `server_outcome TEXT`, `server_recorded_via TEXT`, `server_amount_cents INTEGER`,
+         *    `server_tip_cents INTEGER`, `server_verdict_at INTEGER`, `server_winner_payment_id TEXT`, `server_checked_at INTEGER`,
+         *    `server_check_count INTEGER NOT NULL DEFAULT 0`.
+         * Las filas existentes quedan con los `server_*` en NULL/0: nada se inventa sobre
+         * intentos que resolvió una versión anterior. Idempotente por `PRAGMA table_info` (SQLite no tiene
+         * `ADD COLUMN IF NOT EXISTS`). No toca `pending_payments` ni `pending_refunds`.
+         */
+        val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+
+                if (!columnaExiste("remote_payment_requests", "attempt_link_version")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN attempt_link_version INTEGER NOT NULL DEFAULT 0")
+                }
+                val rellenarSolicitud = !columnaExiste("payment_attempts", "terminal_payment_request_id")
+                val columnas = listOf(
+                    "terminal_payment_request_id TEXT",
+                    "server_payment_id TEXT",
+                    "server_outcome TEXT",
+                    "server_recorded_via TEXT",
+                    "server_amount_cents INTEGER",
+                    "server_tip_cents INTEGER",
+                    "server_verdict_at INTEGER",
+                    "server_winner_payment_id TEXT",
+                    "server_checked_at INTEGER",
+                    "server_check_count INTEGER NOT NULL DEFAULT 0",
+                )
+                for (definicion in columnas) {
+                    val nombre = definicion.substringBefore(' ')
+                    if (!columnaExiste("payment_attempts", nombre)) {
+                        db.execSQL("ALTER TABLE payment_attempts ADD COLUMN $definicion")
+                    }
+                }
+                if (rellenarSolicitud) {
+                    // Sólo la primera vez que nace la columna: el valor entre `"terminalPaymentRequestId":"` y la comilla
+                    // siguiente; una cadena vacía o ausente queda NULL.
+                    // `resto` = lo que sigue a la llave; el valor termina en la primera comilla de `resto`.
+                    db.execSQL(
+                        """UPDATE payment_attempts
+                           SET terminal_payment_request_id = (
+                               SELECT substr(resto, 1, instr(resto, '"') - 1) FROM (
+                                   SELECT substr(payment_context_json,
+                                                 instr(payment_context_json, '"terminalPaymentRequestId":"')
+                                                 + length('"terminalPaymentRequestId":"')) AS resto
+                               )
+                           )
+                           WHERE instr(payment_context_json, '"terminalPaymentRequestId":"') > 0
+                           AND instr(payment_context_json, '"terminalPaymentRequestId":""') = 0"""
+                    )
                 }
             }
         }

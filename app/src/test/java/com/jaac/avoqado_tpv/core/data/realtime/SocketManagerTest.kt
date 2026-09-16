@@ -39,6 +39,7 @@ class SocketManagerTest {
     private lateinit var mockSessionManager: com.jaac.avoqado_tpv.core.session.SessionManager
     private lateinit var mockRemotePaymentInbox: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
     private lateinit var mockRemotePaymentCoordinator: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+    private lateinit var mockPaymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     private lateinit var socketManager: SocketManager
 
     // Captured listeners for simulating server events
@@ -78,12 +79,14 @@ class SocketManagerTest {
         every { IO.socket(any<URI>(), any<IO.Options>()) } returns mockSocket
 
         // Create SocketManager and call connect() to register all event listeners
+        mockPaymentAttemptLedger = mockk(relaxed = true)
         socketManager = SocketManager(
             secureStorage = mockSecureStorage,
             authRepositoryLazy = mockAuthRepositoryLazy,
             sessionManager = mockSessionManager,
             remotePaymentInbox = mockRemotePaymentInbox,
             remotePaymentCoordinator = mockRemotePaymentCoordinator,
+            paymentAttemptLedger = mockPaymentAttemptLedger,
         )
         socketManager.connect("https://test.socket.io", "test-token")
     }
@@ -223,6 +226,69 @@ class SocketManagerTest {
 
         verify(timeout = 2_000) { ack.call(any()) }
         assertThat(markers).containsExactly("persist", "queue", "ack").inOrder()
+    }
+
+    @Test
+    fun `N0 el parseo conserva attemptLinkVersion del payload y lo deja en cero cuando no viene`() = runTest(testDispatcher) {
+        val recibidos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent.TerminalPaymentRequest>())
+        coEvery { mockRemotePaymentInbox.receive(any()) } answers {
+            recibidos += firstArg<SocketEvent.TerminalPaymentRequest>()
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision.AckOnly
+        }
+        val ack = mockk<Ack>(relaxed = true)
+        capturedListeners["terminal:payment_request"]?.call(
+            JSONObject().put("requestId", "req-con-bandera").put("venueId", "venue-1").put("amountCents", 10000)
+                .put("attemptLinkVersion", 1),
+            ack,
+        )
+        capturedListeners["terminal:payment_request"]?.call(
+            JSONObject().put("requestId", "req-sin-bandera").put("venueId", "venue-1").put("amountCents", 10000),
+            ack,
+        )
+        // Un servidor hostil o roto no puede mandar una versión negativa que la bandeja lea como «capacidad».
+        capturedListeners["terminal:payment_request"]?.call(
+            JSONObject().put("requestId", "req-negativa").put("venueId", "venue-1").put("amountCents", 10000)
+                .put("attemptLinkVersion", -3),
+            ack,
+        )
+        verify(timeout = 2000, exactly = 3) { ack.call(any()) }
+        assertThat(recibidos.map { it.requestId to it.attemptLinkVersion })
+            .containsExactly("req-con-bandera" to 1, "req-sin-bandera" to 0, "req-negativa" to 0)
+    }
+
+    @Test
+    fun `S5 payment_confirmed aplica el veredicto en la libreta ANTES de emitir y de avisar a la pantalla`() = runTest(testDispatcher) {
+        every { mockSecureStorage.getVenueId() } returns "venue-1"
+        val orden = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val veredictos = java.util.Collections.synchronizedList(mutableListOf<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>())
+        val resuelto = JSONObject().put("requestId", "req-s5").put("status", "success").put("paymentId", "pay-s5").toString()
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } answers {
+            veredictos += firstArg<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
+            orden += "libreta"
+            Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, resuelto, false))
+        }
+        every { mockSocket.emit("terminal:payment_result", any<JSONObject>()) } answers { orden += "emit"; mockSocket }
+        val eventos = mutableListOf<SocketEvent>()
+        val recoleccion = kotlinx.coroutines.launch { socketManager.events.collect { eventos += it } }
+
+        capturedListeners["terminal:payment_confirmed"]?.call(
+            JSONObject().put("requestId", "req-s5").put("attemptId", "att-s5").put("paymentId", "pay-s5")
+                .put("amountCents", 10000).put("tipCents", 500).put("via", "webhook"),
+        )
+        verify(timeout = 2000) { mockSocket.emit("terminal:payment_result", match<JSONObject> { it.optString("paymentId") == "pay-s5" }) }
+        assertThat(orden).containsExactly("libreta", "emit").inOrder()
+        val v = veredictos.single()
+        assertThat(v.attemptId).isEqualTo("att-s5")
+        assertThat(v.requestId).isEqualTo("req-s5")
+        assertThat(v.ganadorAcreditado).isEqualTo("pay-s5")
+        assertThat(v.recordedVia).isEqualTo("webhook")
+        assertThat(v.fuente).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.Fuente.SOCKET_S5)
+        kotlinx.coroutines.delay(200)
+        val confirmado = eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().singleOrNull()
+        assertThat(confirmado).isNotNull()
+        assertThat(confirmado!!.registrado).isTrue()
+        recoleccion.cancel()
     }
 
     @Test

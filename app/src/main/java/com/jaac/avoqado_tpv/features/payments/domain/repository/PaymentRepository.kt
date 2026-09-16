@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payments.domain.repository
 
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaginatedPayments
+import com.jaac.avoqado_tpv.features.payments.domain.models.ResultadoLigaRecibo
 import java.time.Instant
 
 /**
@@ -43,4 +44,13 @@ interface PaymentRepository {
         toDate: Instant? = null,
         staffId: String? = null
     ): Result<PaginatedPayments>
+
+    /**
+     * La liga del recibo digital de un cobro, para dibujar el QR al REIMPRIMIR su ticket.
+     *
+     * 🔴 No devuelve `Result` sino los TRES desenlaces: la pantalla tiene que poder decir la verdad
+     * (sin red ≠ el servidor falló) y la impresión NUNCA se bloquea por esto — sin liga, el ticket
+     * sale sin QR y se avisa.
+     */
+    suspend fun getReceiptLink(venueId: String, paymentId: String): ResultadoLigaRecibo
 }

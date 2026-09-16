@@ -20,6 +20,27 @@ internal object CobroRemotoDelPos {
     /** Nadie retomó el cobro: salió su desenlace y la solicitud queda cerrada para esta terminal. */
     const val CERRADO_POR_ABANDONO = "El cobro se cerró sin cobrar. Vuelve a cobrar desde el punto de venta."
 
+    // ── Checkpoint 2 · N1 (16-sep): la decisión del servidor sobre el vínculo intento→solicitud, ANTES del SDK ──
+    /** `NOT_OWNER`: el servidor no acredita que ESTA conexión sea la dueña de la solicitud. Nunca se toca el SDK. */
+    const val NO_ES_LA_DUENA = "No se pudo verificar que esta terminal sea la dueña de este cobro. No se inició ningún cobro. " +
+        "Vuelve a enviarlo desde el POS; si se repite, cierra sesión y vuelve a entrar en la terminal."
+
+    /** La solicitud ya no es ejecutable en el servidor (cancelada, vencida, sin resolver): no se inició OTRO cobro. */
+    fun noEjecutable(requestStatus: String?, yaCobrada: Boolean): String = if (yaCobrada) {
+        "Este cobro ya está registrado en el POS. No se inició otro cobro."
+    } else {
+        "Este cobro ya no está activo en el POS (estado ${requestStatus ?: "desconocido"}). No se inició otro cobro."
+    }
+
+    /** `ATTEMPT_OWNED_BY_OTHER_REQUEST` / `INVALID`: la llave del intento no sirvió; el reintento abre una NUEVA. */
+    const val LLAVE_RECHAZADA = "No se pudo iniciar el cobro (la llave del intento fue rechazada). No se cobró. Inténtalo de nuevo."
+
+    /** E4: una segunda captura con ganador acreditado — el banco aprobó, pero NO es una venta más. */
+    const val SEGUNDA_CAPTURA = "Avoqado registró este cobro como posible cobro DOBLE y lo concilia. No lo vuelvas a cobrar."
+
+    /** E4: evidencia sin ganador acreditado (colisión de referencia o pendiente sin clasificar). */
+    const val EVIDENCIA_SIN_GANADOR = "El banco aprobó; Avoqado conserva el cobro como evidencia y lo concilia. No lo vuelvas a cobrar."
+
     /**
      * 🔴 INTERINO — decisión de producto PENDIENTE (P2-9, auditoría del 11-sep).
      *

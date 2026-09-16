@@ -43,6 +43,13 @@ data class RemotePaymentRequestEntity(
      * ejecuta. Room v34.
      */
     @ColumnInfo(name = "final_emitted_at") val finalEmittedAt: Long? = null,
+    /**
+     * Checkpoint 2 · N0: la capacidad del SERVIDOR viaja EN la solicitud (`attemptLinkVersion` del payload; 0 si no
+     * viene). La terminal sólo espera el ACK del vínculo intento→solicitud (S1) si la solicitud que cobra trae ≥ 1.
+     * Se PERSISTE aquí porque un duplicado RECEIVED entrega la ENTIDAD, no el evento nuevo; un duplicado con versión
+     * mayor sube la columna. Room v35.
+     */
+    @ColumnInfo(name = "attempt_link_version", defaultValue = "0") val attemptLinkVersion: Int = 0,
 ) {
     fun sameMoneyContract(event: SocketEvent.TerminalPaymentRequest): Boolean =
         venueId == event.venueId &&
@@ -62,6 +69,7 @@ data class RemotePaymentRequestEntity(
         processedByStaffId = processedByStaffId,
         source = PaymentSource.SOCKET,
         socketRequestId = requestId,
+        attemptLinkVersion = attemptLinkVersion,
     )
 
     companion object {
@@ -109,6 +117,7 @@ data class RemotePaymentRequestEntity(
             sourceTimestamp = event.timestamp,
             status = status,
             finalResultJson = finalResultJson,
+            attemptLinkVersion = event.attemptLinkVersion,
             createdAt = now,
             updatedAt = now,
         )

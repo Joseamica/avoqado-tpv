@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.processor.RefundLocation
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
+import com.jaac.avoqado_tpv.features.payments.domain.models.ResultadoLigaRecibo
 import com.jaac.avoqado_tpv.features.payments.domain.repository.PaymentRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -496,11 +497,24 @@ class PaymentsViewModel @Inject constructor(
 
                 when (printMode) {
                     PaymentPrintMode.INDIVIDUAL -> {
+                        val venueId = secureStorage.getVenueId()
+
                         // Print each payment individually
                         selectedPayments.forEach { payment ->
+                            // 🔴 La liga del recibo NO viaja en el historial: se pide por cobro para
+                            // poder dibujar el QR de facturación. Nunca bloquea la impresión — sin
+                            // liga el ticket sale igual, sólo que sin QR (y sin la leyenda).
+                            val liga = venueId?.let { paymentRepository.getReceiptLink(it, payment.id) }
+                            val obtenida = liga as? ResultadoLigaRecibo.Obtenida
+                            if (obtenida == null) {
+                                Timber.w("🧾 [PaymentsViewModel] Sin liga de recibo para ${payment.id} — ticket sin QR")
+                            }
+
                             val result = printerManager.printPaymentHistoryReceipt(
                                 payment = payment,
-                                venueName = venueName
+                                venueName = venueName,
+                                receiptUrl = obtenida?.receiptUrl,
+                                autofacturaAvailable = obtenida?.autofacturaAvailable ?: false,
                             )
                             if (result.isFailure) {
                                 Timber.e("❌ [PaymentsViewModel] Failed to print payment: ${payment.id}")

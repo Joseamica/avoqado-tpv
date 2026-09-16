@@ -134,6 +134,11 @@ class OrderPaymentRecorder @Inject constructor(
                         amount = body.data.amount,
                         tipAmount = body.data.tipAmount,
                         autofacturaAvailable = digitalReceipt?.autofacturaAvailable ?: false,
+                        serverStatus = body.data.status,
+                        reconciliationKind = body.data.reconciliationKind,
+                        winnerPaymentId = body.data.winnerPaymentId,
+                        serverRecordedVia = body.data.registradoVia,
+                        solicitudLigada = body.data.terminalPaymentRequestId?.takeIf { it.isNotBlank() },
                     )
 
                     // 🔍 DEBUG: Payment success details

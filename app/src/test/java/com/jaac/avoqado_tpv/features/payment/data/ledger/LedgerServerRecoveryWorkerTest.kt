@@ -13,7 +13,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -49,13 +49,18 @@ class LedgerServerRecoveryWorkerTest {
     }
 
     @Test fun `una cancelacion EXTERNA se propaga — nunca se degrada a success ni a retry`() = runTest {
+        // Codex (ronda 3): `cancel()` + `await()` sobre el Deferred lanza SIEMPRE, aunque `doWork()` se trague la cancelación y
+        // devuelva `success`. Lo que se comprueba es el desenlace de `doWork()` MISMO, capturado dentro de la corrutina.
         val entro = CompletableDeferred<Unit>()
+        val desenlace = CompletableDeferred<Any>()
         coEvery { recovery.recover("v1", any()) } coAnswers { entro.complete(Unit); kotlinx.coroutines.awaitCancellation() }
-        val trabajo = async { worker().doWork() }
+        val trabajo = launch { desenlace.complete(runCatching { worker().doWork() }.fold({ it }, { it })) }
         entro.await()
         trabajo.cancel()
-        assertThat(runCatching { trabajo.await() }.exceptionOrNull()).isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
-        assertThat(trabajo.isCancelled).isTrue()
+        trabajo.join()
+        val loQueDevolvio = desenlace.await()
+        assertThat(loQueDevolvio).isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+        assertThat(loQueDevolvio).isNotInstanceOf(ListenableWorker.Result::class.java)
     }
 
     @Test fun `sin venue no hay nada que recuperar`() = runTest {

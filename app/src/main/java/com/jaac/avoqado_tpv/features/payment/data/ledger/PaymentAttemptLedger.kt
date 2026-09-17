@@ -370,9 +370,12 @@ class PaymentAttemptLedger @Inject constructor(
      */
     suspend fun aplicarLiberacionDelServidor(l: LiberacionDelServidor, now: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
         val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
-        val n = dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, outcome, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia, now)
-        if (n == 1) Timber.w("📒 [Ledger] %s liberada por el servidor (%s): la venta queda destrabada", l.attemptId, l.evidencia)
+        val n = dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia, now)
+        if (n == 1) Timber.w("📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada", l.attemptId, l.evidencia, l.requestId)
         n == 1
+    }.onFailure {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
     }
 
     /** La fila tal cual está: la pantalla decide leyendo, nunca adivinando. Nunca lanza. */

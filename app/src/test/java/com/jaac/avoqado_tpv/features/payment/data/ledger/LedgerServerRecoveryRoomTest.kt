@@ -143,7 +143,7 @@ class LedgerServerRecoveryRoomTest {
     // ── Task 6 (ventana de confirmación): N3 aplica la LIBERACIÓN del servidor y sigue consultando la fila liberada. ──
 
     @Test fun `una fila INDETERMINADO cuya S6 dice NOT_CHARGED por ventana se cierra en la pasada N3 y cuenta como liberada`() = runTest {
-        fila("b1", "INDETERMINADO", hostApproved = null)   // creada hace ≥ 120 s: candidata de consulta
+        fila("b1", "INDETERMINADO", requestId = "req-1", hostApproved = null)   // creada hace ≥ 120 s: candidata de consulta; la MISMA solicitud que contesta S6
         coEvery { api.getAttemptStatus(venue, "b1") } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "b1", requestId = "req-1",
                 attempt = TerminalAttemptResultDto(attemptId = "b1", outcome = "NOT_RECORDED"),
@@ -158,7 +158,7 @@ class LedgerServerRecoveryRoomTest {
     @Test fun `una fila liberada sigue siendo candidata de consulta S6 — si el servidor dice RECORDED despues, queda contradiccion fechada desde el dinero`() = runTest {
         // La fila lleva la MISMA solicitud que contesta S6 (`req-1`): un veredicto de otra solicitud se rechaza por pertenencia.
         fila("b3", "INDETERMINADO", requestId = "req-1", hostApproved = null)
-        dao.cerrarPorLiberacionDelServidor("b3", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
+        dao.cerrarPorLiberacionDelServidor("b3", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
         assertThat(dao.candidatasDeConsultaAlServidor(venue, now - 120_000, now + 1, 600_000, 86_400_000).map { it.attemptId }).contains("b3")
         coEvery { api.getAttemptStatus(venue, "b3") } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "b3", requestId = "req-1",
@@ -172,8 +172,24 @@ class LedgerServerRecoveryRoomTest {
         assertThat(dao.esContradiccion("b3")).isTrue()
     }
 
+    @Test fun `una respuesta S6 cuyo requestId es de OTRA solicitud no libera la fila (pertenencia)`() = runTest {
+        // Task 7 (item B): la liberación es de la SOLICITUD. Una respuesta atada a otra solicitud —por un intento reusado,
+        // un id cruzado o una respuesta atrasada— no puede cerrar esta fila como «no se cobró».
+        fila("b4", "INDETERMINADO", requestId = "req-b4", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "b4") } returns Response.success(
+            TerminalAttemptStatusResponse(success = true, attemptId = "b4", requestId = "req-otra",
+                attempt = TerminalAttemptResultDto(attemptId = "b4", outcome = "NOT_RECORDED"),
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
+        )
+        assertThat(recovery.recoverOne(venue, "b4", now)).isNull()
+        val tras = dao.getById("b4")!!
+        assertThat(tras.state).isEqualTo("INDETERMINADO")
+        assertThat(tras.serverOutcome).isNull()
+        assertThat(tras.serverCheckedAt).isEqualTo(now)   // sólo se estampó la consulta
+    }
+
     @Test fun `recoverOne aplica la liberacion y la fila queda legible para la pantalla`() = runTest {
-        fila("b2", "INDETERMINADO", hostApproved = null)
+        fila("b2", "INDETERMINADO", requestId = "req-1", hostApproved = null)
         coEvery { api.getAttemptStatus(venue, "b2") } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "b2", requestId = "req-1",
                 attempt = TerminalAttemptResultDto(attemptId = "b2", outcome = "NOT_RECORDED"),

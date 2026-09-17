@@ -102,34 +102,47 @@ class LedgerServerRecovery @Inject constructor(
      * justo cuando la terminal se queda sin red al liberar el servidor y la venta sigue cercada. Los veredictos y las
      * liberaciones se guardan igual con o sin estampa.
      */
-    suspend fun recoverOne(venueId: String, attemptId: String, now: Long = System.currentTimeMillis(), estampar: Boolean = true): String? {
-        ledger.reaplicarVeredictoGuardado(attemptId, now)?.let { if (it.transiciono || it.bandejaResueltaJson != null) return it.bandejaResueltaJson }
-        val fila = runCatching { dao.getById(attemptId) }.getOrNull() ?: return null
-        if (fila.legacyShadow || fila.venueId != venueId || fila.terminalPaymentRequestId == null) return null
+    suspend fun recoverOne(venueId: String, attemptId: String, now: Long = System.currentTimeMillis(), estampar: Boolean = true): LecturaDelIntento {
+        ledger.reaplicarVeredictoGuardado(attemptId, now)?.let { if (it.transiciono || it.bandejaResueltaJson != null) return LecturaDelIntento(it.bandejaResueltaJson) }
+        val fila = runCatching { dao.getById(attemptId) }.getOrNull() ?: return LecturaDelIntento(null)
+        if (fila.legacyShadow || fila.venueId != venueId || fila.terminalPaymentRequestId == null) return LecturaDelIntento(null)
         val outcomeGuardado = fila.serverOutcome
-        if (outcomeGuardado == PaymentAttemptEntity.SERVER_RECORDED || outcomeGuardado == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE) return null
+        if (outcomeGuardado == PaymentAttemptEntity.SERVER_RECORDED || outcomeGuardado == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE) return LecturaDelIntento(null)
         return try {
             val respuesta = kotlinx.coroutines.withTimeoutOrNull(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, attemptId) }
             if (respuesta == null) {
                 Timber.w("🔎 [LedgerServer] consulta inmediata sin respuesta (tope) para %s", attemptId)
-                return null
+                return LecturaDelIntento(null)
             }
             val veredicto = if (respuesta.isSuccessful) respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) } else null
             if (veredicto == null) {
-                val liberacion = respuesta.body()?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
+                val cuerpo = respuesta.body()
+                val liberacion = cuerpo?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
                 val liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
                 if (!liberada && estampar) dao.estamparConsultaAlServidor(attemptId, now)
-                null
+                // P1-2: evidencia positiva del intento que NO es un veredicto aplicable (sin `paymentId`, o el banco aprobó sin
+                // Payment): la libreta no escribe nada —no hay Payment, la fila sigue INDETERMINADO— pero quien pregunta lo sabe.
+                val evidenciaSinRegistro = respuesta.isSuccessful && LiberacionDelServidor.acreditaDinero(cuerpo?.attempt)
+                if (evidenciaSinRegistro) Timber.w("🔎 [LedgerServer] %s: el servidor acredita dinero sin Payment (outcome=%s, banco=%s) — sin liberación", attemptId, cuerpo?.attempt?.outcome, cuerpo?.attempt?.processorEvidence)
+                LecturaDelIntento(null, evidenciaPositivaSinRegistro = evidenciaSinRegistro)
             } else {
-                ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson
+                LecturaDelIntento(ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             Timber.w(error, "🔎 [LedgerServer] consulta inmediata sin respuesta para %s", attemptId)
-            null
+            LecturaDelIntento(null)
         }
     }
+
+    /**
+     * Lo que UNA consulta de [recoverOne] dejó para quien la pidió: el JSON de bandeja que quedó RESOLVED (hay que EMITIRLO),
+     * y si el servidor acredita evidencia POSITIVA del intento SIN registro (el banco aprobó, sin Payment todavía — S6
+     * `attempt.processorEvidence = APPROVED`, o un outcome con dinero sin `paymentId`): la pantalla lo lee para vetar el
+     * recobro; la libreta NO lo escribe (no hay Payment: la fila se queda INDETERMINADO y el aviso F0 la muestra).
+     */
+    data class LecturaDelIntento(val bandejaResueltaJson: String?, val evidenciaPositivaSinRegistro: Boolean = false)
 
     companion object {
         /** Los estados con SDK dentro sólo se consultan pasados 120 s (mismo umbral que la recuperación por historial). */

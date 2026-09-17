@@ -378,8 +378,16 @@ class PaymentAttemptLedger @Inject constructor(
         Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
     }
 
-    /** La fila tal cual está: la pantalla decide leyendo, nunca adivinando. Nunca lanza. */
-    suspend fun leerIntento(attemptId: String): PaymentAttemptEntity? = runCatching { dao.getById(attemptId) }.getOrNull()
+    /**
+     * La fila tal cual está: la pantalla decide leyendo, nunca adivinando. Un fallo de lectura es «no se pudo leer» (null);
+     * una lectura CANCELADA se propaga (fix 2, P2): tragarla la volvía «fila inexistente» y quien lee seguía como si la
+     * libreta estuviera vacía.
+     */
+    suspend fun leerIntento(attemptId: String): PaymentAttemptEntity? = runCatching { dao.getById(attemptId) }.getOrElse {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.w(it, "📒 [Libreta] no se pudo leer el intento %s", attemptId)
+        null
+    }
 
     /** Once queued, pending_payments owns the money (its idempotency + retry) — the ledger row rests. */
     suspend fun markDeliveredToQueue(attemptId: String) = casNonCancellable(

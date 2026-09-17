@@ -37,6 +37,18 @@ class PaymentAttemptLedgerTest {
     }
 
     @Test
+    fun `leerIntento propaga la cancelacion en vez de contestar fila inexistente`() = runTest {
+        // Task 7 · fix 2 (P2): `runCatching { … }.getOrNull()` convertía una lectura CANCELADA en «no hay fila», y quien lee
+        // (el sondeo de la pantalla) seguía como si la libreta estuviera vacía. Mismo patrón que `aplicarLiberacionDelServidor`.
+        coEvery { dao.getById("a1") } throws kotlinx.coroutines.CancellationException("cancelada")
+        val resultado = runCatching { ledger.leerIntento("a1") }
+        assertTrue(resultado.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+        // Un fallo que NO es cancelación sigue siendo «no se pudo leer» (null), sin lanzar.
+        coEvery { dao.getById("a2") } throws IllegalStateException("room caída")
+        org.junit.Assert.assertNull(ledger.leerIntento("a2"))
+    }
+
+    @Test
     fun `missing durable authorizing transition refuses SDK entry`() = runTest {
         coEvery { dao.casTransition(any(), any(), any(), any()) } returns 0
         org.junit.Assert.assertEquals(false, ledger.markAuthorizing("a1"))

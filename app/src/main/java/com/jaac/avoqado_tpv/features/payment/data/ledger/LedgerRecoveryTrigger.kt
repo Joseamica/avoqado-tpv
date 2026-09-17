@@ -35,7 +35,7 @@ class LedgerRecoveryTrigger @Inject constructor(
             if (venueId != null) {
                 scope.launch {
                     runCatching { serverRecovery.get().recoverOne(venueId, attemptId) }
-                        .onSuccess { json -> json?.let { socketManager.get().emitDurableTerminalPaymentResult(it) } }
+                        .onSuccess { lectura -> lectura.bandejaResueltaJson?.let { socketManager.get().emitDurableTerminalPaymentResult(it) } }
                         .onFailure { Timber.w(it, "🔎 [LedgerServer] recuperación inmediata falló para %s", attemptId) }
                 }
             }

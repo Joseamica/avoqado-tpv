@@ -34,7 +34,9 @@ object AvisoDeCobrosPendientes {
         val textoPendientes = textoDePendientes(pendientes, ahoraMillis)
         val textoContradicciones = contradicciones.takeIf { it.isNotEmpty() }?.let { lista ->
             val enumeradas = lista.take(MAXIMO_ENUMERADO).joinToString(", ") { pesos(it.totalCentavos) }
-            "Avoqado registró dinero de ${if (lista.size == 1) "un cobro" else "${lista.size} cobros"} ($enumeradas) que esta terminal " +
+            // Fix 4 (D3b): «tiene evidencia de cobro», no «registró dinero» — la contradicción puede nacer de una aprobación
+            // bancaria SIN Payment, y afirmar un registro que no existe es una pantalla que miente.
+            "Avoqado tiene evidencia de cobro de ${if (lista.size == 1) "un intento" else "${lista.size} intentos"} ($enumeradas) que esta terminal " +
                 "dio por no cobrado o como posible cobro doble: no lo vuelvas a cobrar, Avoqado lo concilia."
         }
         return listOfNotNull(textoPendientes, textoContradicciones).takeIf { it.isNotEmpty() }?.joinToString(" ")

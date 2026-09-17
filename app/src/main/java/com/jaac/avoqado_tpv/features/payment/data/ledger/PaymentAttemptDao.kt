@@ -59,6 +59,10 @@ interface PaymentAttemptDao {
      *        procesador.
      *      - Un `INDETERMINADO` sin `orderId`: no hay venta que cercar, así que se cerca el aparato.
      *
+     * Fix 4 (D3c): una `DESCARTADA` con evidencia positiva DURABLE del servidor (`server_processor_evidence`) se trata
+     * igual que un INDETERMINADO con motivo: sin identidad de venta (o en kiosco) aparta el aparato; con `orderId` cerca su
+     * venta en la guarda 2. Un registro normal ya resuelto (REGISTRADO/CERRADA) nunca queda cercado por la marca.
+     *
      * 🔴 Lo que NO aparta el aparato: una obligación pendiente **CON** `orderId`. Ésa cerca SU
      * venta —la guarda 2 de [reserveTerminal], por orden y sin filtro de venue— y el negocio
      * sigue cobrando las demás. Apagar la terminal entera por una venta con dueño no protegía de
@@ -87,6 +91,9 @@ interface PaymentAttemptDao {
                      OR last_error = 'cuarentena_por_antiguedad'
                      OR instr(payment_context_json, '"orderId":"') = 0
                      OR instr(payment_context_json, '"orderId":""') > 0))
+            OR (state = 'DESCARTADA' AND server_processor_evidence IS 'APPROVED'
+                AND (instr(payment_context_json, '"orderId":"') = 0
+                     OR instr(payment_context_json, '"orderId":""') > 0))
         )
         LIMIT 1""")
     suspend fun findTerminalHold(): PaymentAttemptEntity?
@@ -113,7 +120,8 @@ interface PaymentAttemptDao {
      */
     @Query("""SELECT * FROM payment_attempts
         WHERE legacy_shadow = 0
-        AND state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+             OR (state = 'DESCARTADA' AND server_processor_evidence IS 'APPROVED'))
         ORDER BY updated_at DESC LIMIT 1""")
     suspend fun findUnresolvedCharge(): PaymentAttemptEntity?
 
@@ -131,7 +139,8 @@ interface PaymentAttemptDao {
      */
     @Query("""SELECT * FROM payment_attempts
         WHERE legacy_shadow = 0
-        AND state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+             OR (state = 'DESCARTADA' AND server_processor_evidence IS 'APPROVED'))
         AND instr(payment_context_json, :requestJsonFragment) > 0
         ORDER BY updated_at DESC LIMIT 1""")
     suspend fun findUnresolvedForRequest(requestJsonFragment: String): PaymentAttemptEntity?
@@ -167,7 +176,9 @@ interface PaymentAttemptDao {
      *     pantalla la ve el cliente, así que ni se le puede preguntar ni se le puede enseñar el
      *     importe de la venta de otro. Sin esto, un kiosco que se reinicia pierde su orden en
      *     memoria, crea otra y cobra dos veces la misma compra (Codex, 2026-09-12).
-     *  2. **La venta**, por `orderId`, para TODO estado no resuelto. 🔴 Sin filtro de venue a
+     *  2. **La venta**, por `orderId`, para TODO estado no resuelto — y para una DESCARTADA con evidencia positiva
+     *     DURABLE del servidor (fix 4, D3c): liberada por la ventana pero con el banco aprobando después, esa venta
+     *     sigue cercada INCLUSO si la nueva solicitud del POS es otra. 🔴 Sin filtro de venue a
      *     propósito: la terminal es UNA, y un cobro sin desenlace de la cuenta 7 sigue siendo de
      *     la cuenta 7 aunque el turno haya cambiado de sucursal. Ésta es la que impide el cobro
      *     doble mientras el aparato sigue cobrando las demás cuentas.
@@ -200,12 +211,17 @@ interface PaymentAttemptDao {
                          OR hold.last_error = 'cuarentena_por_antiguedad'
                          OR instr(hold.payment_context_json, '"orderId":"') = 0
                          OR instr(hold.payment_context_json, '"orderId":""') > 0))
+                OR (hold.state = 'DESCARTADA' AND hold.server_processor_evidence IS 'APPROVED'
+                    AND (:esKiosco = 1
+                         OR instr(hold.payment_context_json, '"orderId":"') = 0
+                         OR instr(hold.payment_context_json, '"orderId":""') > 0))
             )
         )
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
             SELECT 1 FROM payment_attempts dup
             WHERE dup.legacy_shadow = 0
-            AND dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+            AND (dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+                 OR (dup.state = 'DESCARTADA' AND dup.server_processor_evidence IS 'APPROVED'))
             AND instr(dup.payment_context_json, :orderJsonFragment) > 0
         ))
         AND (:terminalPaymentRequestId IS NULL OR NOT EXISTS (
@@ -329,6 +345,9 @@ interface PaymentAttemptDao {
                        AND (other.last_error IS NULL
                             OR other.last_error = 'cuarentena_por_antiguedad'
                             OR instr(other.payment_context_json, '"orderId":"') = 0
+                            OR instr(other.payment_context_json, '"orderId":""') > 0))
+                   OR (other.state = 'DESCARTADA' AND other.server_processor_evidence IS 'APPROVED'
+                       AND (instr(other.payment_context_json, '"orderId":"') = 0
                             OR instr(other.payment_context_json, '"orderId":""') > 0))
                )
            ))"""
@@ -478,6 +497,22 @@ interface PaymentAttemptDao {
     )
     suspend fun registrarPorVeredictoDelServidor(attemptId: String, now: Long): Int
 
+    /**
+     * Task 7 · fix 4 (D2): la evidencia POSITIVA del servidor sin veredicto aplicable (banco APPROVED sin Payment, o un outcome con
+     * dinero sin `paymentId`) se hace DURABLE. UPDATE idempotente por `attempt_id + venue_id`, en CUALQUIER estado (INDETERMINADO,
+     * DESCARTADA, REGISTRO_FALLIDO…), sin tocar `state`, `state_version`, `host_approved`, `server_outcome` ni `updated_at`;
+     * `server_processor_evidence_at` conserva la PRIMERA vez (repetir la evidencia no renueva las 72 h del aviso F0). Mismo alcance
+     * que el checkpoint: AngelPay, SALE, no heredada. La marca NUNCA se degrada a NULL ni se convierte en `host_approved`.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET server_processor_evidence = 'APPROVED',
+               server_processor_evidence_at = COALESCE(server_processor_evidence_at, :at)
+           WHERE attempt_id = :attemptId AND venue_id = :venueId
+             AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'""",
+    )
+    suspend fun marcarEvidenciaPositivaDelServidor(attemptId: String, venueId: String, at: Long): Int
+
     /** Una consulta S6 sin veredicto aplicable (NOT_RECORDED, 404, error HTTP) sólo gasta el turno de la fila (E3). */
     @Query("UPDATE payment_attempts SET server_checked_at = :now, server_check_count = server_check_count + 1 WHERE attempt_id = :attemptId")
     suspend fun estamparConsultaAlServidor(attemptId: String, now: Long): Int
@@ -625,13 +660,17 @@ interface PaymentAttemptDao {
      * `aplicarVeredictoDelServidor` como contradicción («RECORDED sobre DESCARTADA») y el aviso lo grita.
      * Pertenencia (Task 7 · B): la liberación es de UNA solicitud; la fila sólo se cierra si su `terminal_payment_request_id`
      * es exactamente esa — el mismo criterio con que `aplicarVeredictoDelServidor` rechaza un veredicto ajeno.
+     * Fix 4 (D3f): tampoco cierra una fila con evidencia positiva DURABLE (`server_processor_evidence`): una respuesta ATRASADA
+     * sin evidencia no puede descartar una INDETERMINADO que ya recibió la aprobación — `server_outcome` sigue NULL ahí, así que
+     * la guarda anterior no bastaba. El veto del parser o del VM no sustituye esta guarda transaccional.
      */
     @Query(
         """UPDATE payment_attempts SET state = 'DESCARTADA', last_error = :motivo, server_outcome = :serverOutcome,
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
            WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id = :requestId
              AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
-             AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL""",
+             AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL
+             AND server_processor_evidence IS NOT 'APPROVED'""",
     )
     suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long): Int
 

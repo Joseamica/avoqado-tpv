@@ -166,7 +166,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // gana `legacy_shadow` (las filas que dejó la libreta SHADOW de 2.9.x no reservan la terminal).
     // 🔴 Cruza versión de esquema: un regreso a 2.9.2 (v33) sería un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`). El retroceso exige un APK de retroceso con v34.
-    version = 35,
+    version = 36,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2000,6 +2000,33 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                            WHERE instr(payment_context_json, '"terminalPaymentRequestId":"') > 0
                            AND instr(payment_context_json, '"terminalPaymentRequestId":""') = 0"""
                     )
+                }
+            }
+        }
+
+        /**
+         * v35 → v36 — Task 7 · fix 4 (17-sep-2026): la evidencia POSITIVA del servidor sobre un intento es DURABLE. Sólo dos
+         * columnas ADITIVAS en `payment_attempts`: `server_processor_evidence TEXT` (único valor `'APPROVED'`) y
+         * `server_processor_evidence_at INTEGER` (primera vez). Nacen NULL para todas las filas existentes: la migración NO infiere
+         * evidencia (ni de un `server_outcome`, ni de un `host_approved`) — sólo la escriben S6/2xx a partir de ahora. Idempotente
+         * por `PRAGMA table_info` (SQLite no tiene `ADD COLUMN IF NOT EXISTS`). No toca la bandeja ni las colas.
+         */
+        val MIGRATION_35_36 = object : Migration(35, 36) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                for (definicion in listOf("server_processor_evidence TEXT", "server_processor_evidence_at INTEGER")) {
+                    val nombre = definicion.substringBefore(' ')
+                    if (!columnaExiste("payment_attempts", nombre)) {
+                        db.execSQL("ALTER TABLE payment_attempts ADD COLUMN $definicion")
+                    }
                 }
             }
         }

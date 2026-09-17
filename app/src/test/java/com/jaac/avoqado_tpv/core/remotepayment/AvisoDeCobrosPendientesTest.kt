@@ -82,7 +82,10 @@ class AvisoDeCobrosPendientesTest {
         val contradiccion = ObligacionPendiente(totalCentavos = 5000, desdeMillis = ahora - 60_000, contradiccion = 1)
         val texto = AvisoDeCobrosPendientes.texto(listOf(contradiccion, pendiente), ahora)!!
         assertThat(texto).startsWith("Quedó un cobro de $120.50 sin confirmar")
-        assertThat(texto).contains("Avoqado registró dinero de un cobro ($50.00)")
+        // Fix 4 (Codex, D3b): la contradicción puede nacer de una aprobación bancaria SIN Payment — el aviso admite
+        // «tiene evidencia de cobro» y ya no afirma un registro que puede no existir.
+        assertThat(texto).contains("Avoqado tiene evidencia de cobro de un intento ($50.00)")
+        assertThat(texto).doesNotContain("registró dinero")
         assertThat(texto).contains("no lo vuelvas a cobrar")
         // Sólo contradicción: no dice «sin confirmar».
         assertThat(AvisoDeCobrosPendientes.texto(listOf(contradiccion), ahora)!!).doesNotContain("sin confirmar")

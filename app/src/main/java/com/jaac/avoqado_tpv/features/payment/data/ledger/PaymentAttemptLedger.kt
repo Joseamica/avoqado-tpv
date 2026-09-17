@@ -170,6 +170,20 @@ class PaymentAttemptLedger @Inject constructor(
         null
     }
 
+    /**
+     * Fix 4 (D3d): la fila sin resolver de ESTA solicitud —incluida una DESCARTADA con evidencia positiva DURABLE del servidor—
+     * tal cual está, o null. Lectura silenciosa (sin el aviso de «no se adopta»): la usa un ViewModel recreado al arrancar el cobro
+     * para cargar el veto ANTES de ofrecer cobrar o declarar. Un fallo de lectura es null: quien llama no afirma nada con él.
+     */
+    suspend fun intentoDeLaSolicitud(requestId: String): PaymentAttemptEntity? = try {
+        dao.findUnresolvedForRequest("\"terminalPaymentRequestId\":" + com.google.gson.Gson().toJson(requestId))
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo leer el intento de la solicitud %s", requestId)
+        null
+    }
+
     /** Pre-SDK barrier: committed before the SDK call is allowed to start. */
     suspend fun markAuthorizing(attemptId: String): Boolean = try {
         withContext(Dispatchers.IO) {
@@ -376,6 +390,23 @@ class PaymentAttemptLedger @Inject constructor(
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
         Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
+    }
+
+    /**
+     * Task 7 · fix 4: la evidencia POSITIVA del servidor sobre el intento (banco APPROVED sin Payment, o un outcome con dinero sin
+     * `paymentId`) se hace DURABLE en la fila ([PaymentAttemptDao.marcarEvidenciaPositivaDelServidor]). `NonCancellable`: la
+     * escribe también un ViewModel que muere. Nunca lanza; `Result` para que quien llama pueda decir si quedó escrita — pero un
+     * fallo aquí NUNCA se lee como «sin evidencia»: el veto en RAM y la contradicción en pantalla no dependen de este retorno.
+     */
+    suspend fun marcarEvidenciaPositivaDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val n = dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, at)
+            if (n == 1) Timber.w("📒 [Libreta] evidencia POSITIVA del servidor (sin Payment) durable | attemptId=%s", attemptId)
+            n == 1
+        }
+    }.onFailure {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor | attemptId=%s", attemptId)
     }
 
     /**

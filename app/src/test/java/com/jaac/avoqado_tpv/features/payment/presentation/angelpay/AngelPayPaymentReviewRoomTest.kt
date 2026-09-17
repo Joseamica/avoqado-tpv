@@ -15,6 +15,16 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
+import com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService
+import com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptResultDto
+import com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptStatusResponse
+import retrofit2.Response
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
@@ -170,6 +180,8 @@ class AngelPayPaymentReviewRoomTest {
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
         paymentAttemptLedger = mockk(relaxed = true) {
             coEvery { cobroSinResolver() } returns null
+            // Fix 4: la restauración por solicitud lee la fila propia; por defecto no hay ninguna (un relajado devolvería una fila FALSA).
+            coEvery { intentoDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
@@ -195,7 +207,12 @@ class AngelPayPaymentReviewRoomTest {
         unmockkAll()
     }
 
-    private fun createViewModel(handle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle()): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    private fun createViewModel(
+        handle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        // Task 7 · fix 4: la recuperación por servidor y la API de la declaración REALES cuando la prueba lo pide.
+        ledgerServerRecovery: com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery = mockk(relaxed = true),
+        attemptApi: com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService = mockk(relaxed = true),
+    ): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
         appContext = appContext,
         recordPaymentUseCase = recordPaymentUseCase,
         shiftRepository = shiftRepository,
@@ -223,9 +240,9 @@ class AngelPayPaymentReviewRoomTest {
         // T26: botón «Reintentar» del banner (recuperación MANUAL de la auth de AngelPay).
         angelPayAuthRecovery = mockk(relaxed = true),
         chargeVerifier = chargeVerifier,
-        // Task 7 (ventana de confirmación): S6 mientras se espera al servidor + la declaración del cajero. Fuera de estas pruebas.
-        ledgerServerRecovery = mockk(relaxed = true),
-        attemptApi = mockk(relaxed = true),
+        // Task 7 (ventana de confirmación): S6 mientras se espera al servidor + la declaración del cajero.
+        ledgerServerRecovery = ledgerServerRecovery,
+        attemptApi = attemptApi,
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
         savedStateHandle = handle,
@@ -458,5 +475,134 @@ class AngelPayPaymentReviewRoomTest {
             val affiliation = com.google.gson.JsonParser.parseString(json.captured).asJsonObject.get("processorAffiliation")
             assertThat(affiliation?.takeUnless { it.isJsonNull }?.asString).isEqualTo("effective-affiliation")
         } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ── Task 7 · fix 4 (Codex, P1): la evidencia positiva del servidor es DURABLE — con la bandeja y la libreta REALES ──
+
+    private fun cuerpoS6(attemptId: String, requestId: String, evidencia: String?) = TerminalAttemptStatusResponse(
+        success = true, attemptId = attemptId, requestId = requestId,
+        attempt = TerminalAttemptResultDto(attemptId = attemptId, outcome = "NOT_RECORDED", paymentId = null, processorEvidence = evidencia),
+        request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject,
+    )
+
+    private fun solicitudDelPos(requestId: String) = SocketEvent.TerminalPaymentRequest(
+        requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = "o-$requestId",
+        processedByStaffId = "s1", senderDeviceName = "POS", venueId = "v1", timestamp = "2026-09-17T00:00:00Z",
+    )
+
+    @Test
+    fun `fix4 review R3 con la bandeja REAL - liberacion, 2xx APPROVED sin Payment, cancel remoto - la terminal contesta ACTIVE y la pantalla no pasa a Cancelado`() = kotlinx.coroutines.runBlocking {
+        // Reloj REAL (ver la nota de «review Room attempt survives VM recreation»): la libreta salta a Dispatchers.IO.
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val coordinator = RemotePaymentCoordinator(inbox)
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("historial vacío")
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val api = mockk<TerminalAttemptApiService>()
+        // El sondeo (S6) encuentra la solicitud LIBERADA por la ventana de 30 s, sin evidencia de dinero.
+        coEvery { api.getAttemptStatus("v1", "att-r3") } returns Response.success(cuerpoS6("att-r3", "req-r3", evidencia = null))
+        // …y el 2xx de la declaración trae la aprobación bancaria TARDÍA sin Payment.
+        coEvery { api.resolveNoInstrument("v1", "att-r3", any()) } returns Response.success(cuerpoS6("att-r3", "req-r3", evidencia = "APPROVED"))
+        val recovery = com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery(db.paymentAttemptDao(), paymentAttemptLedger, api)
+        assertThat(inbox.receive(solicitudDelPos("req-r3"))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(coordinator.prepareSocketPaymentRequest("req-r3", { true }, { "v1" })).isEqualTo(RemotePaymentAdmission.READY)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle, recovery, api)
+        var vm: AngelPayPaymentViewModel? = null
+        try {
+            original.initPayment("100.00")
+            original.setSocketPaymentSource("SOCKET", "req-r3")
+            assertThat(original.openLedgerAttemptAndMarkAuthorizing("att-r3")).isTrue()
+            original.onIntentLaunched()
+            original.viewModelScope.cancel()   // el sistema mata la Activity con el SDK en pantalla
+            val restoredHandle = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
+            vm = createViewModel(restoredHandle, recovery, api).also { it.msMostrarLiberada = 60_000 }   // la liberación se queda visible
+            vm!!.onAngelPayResult(android.app.Activity.RESULT_CANCELED, null)   // callback vacío: adopta att-r3 ⇒ incierto ⇒ espera al servidor
+            // 1) El sondeo inmediato aplica la LIBERACIÓN: «se puede volver a cobrar».
+            kotlinx.coroutines.withTimeout(15_000) {
+                vm!!.state.first { it is AngelPayPaymentState.Error && it.message.contains("volver a cobrar") }
+            }
+            assertThat(db.paymentAttemptDao().getById("att-r3")!!.state).isEqualTo("DESCARTADA")
+            // 2) El cajero declara; el 2xx trae APPROVED sin Payment ⇒ contradicción en pantalla y evidencia DURABLE en la fila.
+            vm!!.declararSinTarjeta()
+            kotlinx.coroutines.withTimeout(15_000) {
+                vm!!.state.first { it is AngelPayPaymentState.Error && it.message.contains("evidencia de cobro") }
+            }
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (db.paymentAttemptDao().getById("att-r3")!!.serverProcessorEvidence != "APPROVED") kotlinx.coroutines.delay(25)
+            }
+            // 3) El POS cancela: decide la BANDEJA (Room real), no la RAM.
+            val decision = coordinator.cancelSocketPaymentRequest("req-r3")
+            com.google.common.truth.Truth.assertWithMessage("con evidencia durable la terminal no puede certificar «no se cobró»")
+                .that(decision.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            assertThat(db.remotePaymentRequestDao().getById("req-r3")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+            vm!!.manejarCancelacionRemota(SocketEvent.TerminalPaymentCancel(requestId = "req-r3", reason = "cancelado desde el POS", timestamp = "t", disposition = decision.disposition.name))
+            assertThat(vm!!.state.value).isNotInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            assertThat((vm!!.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+            vm!!.resetPayment()
+            assertThat(vm!!.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)   // el veto retiene el reset
+            val fila = db.paymentAttemptDao().getById("att-r3")!!
+            assertThat(fila.state).isEqualTo("DESCARTADA")
+            assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
+            assertThat(db.paymentAttemptDao().esContradiccion("att-r3")).isTrue()
+        } finally { original.viewModelScope.cancel(); vm?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    @Test
+    fun `fix4 review recreacion SIN red ni callback - la evidencia durable restaura la contradiccion con el veto antes de ofrecer cobrar o declarar`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val coordinator = RemotePaymentCoordinator(inbox)
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val sinRed = mockk<TerminalAttemptApiService> {
+            coEvery { getAttemptStatus(any(), any()) } throws java.io.IOException("sin red")
+        }
+        val recovery = com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery(db.paymentAttemptDao(), paymentAttemptLedger, sinRed)
+        inbox.receive(solicitudDelPos("req-rc"))
+        assertThat(coordinator.prepareSocketPaymentRequest("req-rc", { true }, { "v1" })).isEqualTo(RemotePaymentAdmission.READY)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle, recovery, sinRed)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.initPayment("100.00")
+            original.setSocketPaymentSource("SOCKET", "req-rc")
+            assertThat(original.openLedgerAttemptAndMarkAuthorizing("att-rc")).isTrue()
+            original.onIntentLaunched()
+            // El SDK volvió sin veredicto y, antes de morir el proceso, el servidor ya había acreditado la aprobación
+            // bancaria sin Payment (N3 / S6): queda DURABLE en la fila. La RAM del ViewModel muere con él.
+            paymentAttemptLedger.markIndeterminate("att-rc", "AngelPay U101")
+            assertThat(paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", "att-rc").getOrThrow()).isTrue()
+            original.viewModelScope.cancel()
+
+            val restoredHandle = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
+            recreado = createViewModel(restoredHandle, recovery, sinRed)
+            // La pantalla se recompone como siempre: el tag (mismo id ⇒ retorno temprano) y el arranque del cobro. Sin red y SIN callback.
+            recreado!!.setSocketPaymentSource("SOCKET", "req-rc")
+            recreado!!.initPayment("100.00")
+            val estado = kotlinx.coroutines.withTimeout(10_000) { recreado!!.state.first { it !is AngelPayPaymentState.Idle } }
+            com.google.common.truth.Truth.assertWithMessage("la evidencia durable tiene que restaurar la contradicción, no ofrecer cobrar: %s", estado)
+                .that(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).canRetry).isFalse()
+            assertThat(estado.message).contains("evidencia de cobro")
+            recreado!!.declararSinTarjeta()
+            coVerify(exactly = 0) { sinRed.resolveNoInstrument(any(), any(), any()) }   // veto cargado desde la fila
+            recreado!!.resetPayment()
+            assertThat(recreado!!.state.value).isSameInstanceAs(estado)                   // y el reset se rechaza
+            assertThat(coordinator.cancelSocketPaymentRequest("req-rc").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
     }
 }

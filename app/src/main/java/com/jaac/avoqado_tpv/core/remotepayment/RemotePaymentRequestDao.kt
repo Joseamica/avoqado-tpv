@@ -46,6 +46,9 @@ interface RemotePaymentRequestDao {
      * de hace tres horas apareciera como «hace unos segundos», que es justo la pista que el
      * cajero necesita para reconocerla (Codex, 2026-09-12).
      */
+    // Fix 4 (D3b): las 72 h de una contradicción nacida de la EVIDENCIA positiva se cuentan desde `server_processor_evidence_at`
+    // (una liberación de hace días no puede esconder el aviso al nacer); si después llega dinero (RECORDED re-fechado), manda esa
+    // fecha más reciente. Repetir la evidencia no renueva el plazo: el escritor conserva la primera fecha (COALESCE).
     // Codex (código, P1-5): el cupo de 50 es POR FAMILIA (pendientes / solicitudes sin intento / contradicciones), no global —
     // 50 contradicciones viejas (que el aviso ya no muestra pasadas 72 h) dejaban fuera del `LIMIT` a un cobro incierto más
     // antiguo, y el aviso salía vacío con la obligación viva. Cada familia va en su subconsulta con su propio `LIMIT 50`
@@ -70,7 +73,11 @@ interface RemotePaymentRequestDao {
             ORDER BY r.created_at DESC LIMIT 50)
         UNION ALL
         SELECT * FROM (
-            SELECT (amount_cents + tip_cents) AS total_centavos, COALESCE(server_verdict_at, updated_at) AS desde_millis, 1 AS contradiccion
+            SELECT (amount_cents + tip_cents) AS total_centavos,
+                CASE WHEN server_processor_evidence_at IS NOT NULL
+                          AND (server_verdict_at IS NULL OR server_processor_evidence_at > server_verdict_at)
+                     THEN server_processor_evidence_at ELSE COALESCE(server_verdict_at, updated_at) END AS desde_millis,
+                1 AS contradiccion
             FROM payment_attempts
             WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
             AND """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
@@ -147,9 +154,12 @@ interface RemotePaymentRequestDao {
      * host, o descarte previo al procesador), y TODA fila heredada — su estado lo escribió una versión
      * con otra semántica.
      */
+    // Fix 4 (D3a): también bloquea la evidencia positiva DURABLE del servidor (`server_processor_evidence IS 'APPROVED'`): una
+    // DESCARTADA liberada cuyo banco aprobó después. Es el ÚNICO predicado — lo comparten el cancel y H.3.
     @Query("""SELECT COUNT(*) FROM payment_attempts
         WHERE instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0
-        AND (legacy_shadow = 1 OR state NOT IN ('PREPARANDO', 'DESCARTADA') OR server_payment_id IS NOT NULL)""")
+        AND (legacy_shadow = 1 OR state NOT IN ('PREPARANDO', 'DESCARTADA') OR server_payment_id IS NOT NULL
+             OR server_processor_evidence IS 'APPROVED')""")
     suspend fun contarIntentosBloqueadores(requestId: String): Int
 
     @Query("""SELECT COUNT(*) FROM payment_attempts

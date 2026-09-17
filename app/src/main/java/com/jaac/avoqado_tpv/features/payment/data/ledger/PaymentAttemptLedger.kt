@@ -364,6 +364,20 @@ class PaymentAttemptLedger @Inject constructor(
         null
     }
 
+    /**
+     * Ventana de confirmación (Task 6): la LIBERACIÓN del servidor cierra la fila INDETERMINADO como DESCARTADA y destraba la
+     * venta ([PaymentAttemptDao.cerrarPorLiberacionDelServidor]). Nunca lanza; `true` sólo si transicionó.
+     */
+    suspend fun aplicarLiberacionDelServidor(l: LiberacionDelServidor, now: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
+        val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
+        val n = dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, outcome, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia, now)
+        if (n == 1) Timber.w("📒 [Ledger] %s liberada por el servidor (%s): la venta queda destrabada", l.attemptId, l.evidencia)
+        n == 1
+    }
+
+    /** La fila tal cual está: la pantalla decide leyendo, nunca adivinando. Nunca lanza. */
+    suspend fun leerIntento(attemptId: String): PaymentAttemptEntity? = runCatching { dao.getById(attemptId) }.getOrNull()
+
     /** Once queued, pending_payments owns the money (its idempotency + retry) — the ledger row rests. */
     suspend fun markDeliveredToQueue(attemptId: String) = casNonCancellable(
         attemptId, from = listOf(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO),

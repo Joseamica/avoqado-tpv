@@ -123,3 +123,19 @@ data class ResultadoDelVeredicto(
         SIN_FILA,
     }
 }
+
+/** La SOLICITUD (no el intento) quedó NOT_CHARGED por evidencia del SERVIDOR: ventana vencida o declaración del cajero. */
+data class LiberacionDelServidor(val venueId: String, val attemptId: String, val evidencia: String) {
+    companion object {
+        val EVIDENCIAS = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED")
+        fun desdeConsultaS6(venueId: String, attemptId: String, respuesta: TerminalAttemptStatusResponse): LiberacionDelServidor? {
+            val intento = respuesta.attempt?.outcome
+            if (intento == "RECORDED" || intento == "SECOND_CAPTURE_EVIDENCE") return null // el dinero manda
+            val request = respuesta.request ?: return null
+            val outcome = runCatching { request.get("outcome")?.asString }.getOrNull()
+            val evidencia = runCatching { request.get("outcomeEvidence")?.asString }.getOrNull()
+            if (outcome != "NOT_CHARGED" || evidencia !in EVIDENCIAS) return null
+            return LiberacionDelServidor(venueId, attemptId, evidencia!!)
+        }
+    }
+}

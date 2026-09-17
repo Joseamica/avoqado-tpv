@@ -177,6 +177,9 @@ class AngelPayAuthPreviaCobroTest {
         chargeVerifier = mockk(relaxed = true),
         authAttemptTelemetryStore = mockk(relaxed = true),
         angelPayAuthRecovery = angelPayAuthRecovery,
+        // Task 7 (ventana de confirmación): S6 mientras se espera al servidor + la declaración del cajero. Fuera de estas pruebas.
+        ledgerServerRecovery = mockk(relaxed = true),
+        attemptApi = mockk(relaxed = true),
         savedStateHandle = androidx.lifecycle.SavedStateHandle(),
     ).also {
         it.flujoSdkForzadoParaPruebas = true

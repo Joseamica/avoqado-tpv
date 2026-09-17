@@ -21,7 +21,34 @@ interface TerminalAttemptApiService {
         @Path("venueId") venueId: String,
         @Path("attemptId") attemptId: String,
     ): Response<TerminalAttemptStatusResponse>
+
+    /**
+     * Declaración del cajero (ventana de confirmación, Task 7): «el cliente no presentó tarjeta».
+     *  · 200 ⇒ la SOLICITUD quedó liberada por el servidor (`request.outcome = NOT_CHARGED`, `OPERATOR_RECONCILED`); el cuerpo
+     *    es la misma proyección que S6 — si trae evidencia de DINERO del intento, ésa manda y no hay liberación.
+     *  · 403 `SUPERVISOR_AUTHORIZATION_REQUIRED` ⇒ pedir PIN de supervisor y repetir con el MISMO `resolutionId`;
+     *    `SESSION_NOT_IN_VENUE` / `TERMINAL_IDENTITY_REQUIRED` ⇒ no hay PIN que valga.
+     *  · 409 `ATTEMPT_NOT_ELIGIBLE` · `POSITIVE_EVIDENCE_EXISTS` · `RESOLUTION_CONFLICT` · `OTHER_ATTEMPT_UNRESOLVED` ⇒ no elegible:
+     *    se consulta el veredicto (S6), nunca se libera en local.
+     *  · 404 `ATTEMPT_NOT_FOUND`, 503 `RESOLUTION_UNAVAILABLE`, sin red ⇒ nada cambia.
+     * El `resolutionId` es UNO por intento: el replay (mismo id) es idempotente en el servidor.
+     */
+    @retrofit2.http.POST("tpv/venues/{venueId}/terminal-payment/attempts/{attemptId}/no-instrument-resolution")
+    suspend fun resolveNoInstrument(
+        @Path("venueId") venueId: String,
+        @Path("attemptId") attemptId: String,
+        @retrofit2.http.Body body: NoInstrumentResolutionRequest,
+    ): Response<TerminalAttemptStatusResponse>
 }
+
+/** Cuerpo de [TerminalAttemptApiService.resolveNoInstrument]; `statement`/`statementVersion` fijan el texto legal que el cajero afirma. */
+data class NoInstrumentResolutionRequest(
+    @SerializedName("requestId") val requestId: String,
+    @SerializedName("resolutionId") val resolutionId: String,
+    @SerializedName("statement") val statement: String = "NO_INSTRUMENT_PRESENTED",
+    @SerializedName("statementVersion") val statementVersion: Int = 1,
+    @SerializedName("supervisorPin") val supervisorPin: String? = null,
+)
 
 /** Espejo tolerante de `TerminalAttemptStatus` del servidor: todo nulo por defecto (Gson no respeta la no-nulabilidad). */
 data class TerminalAttemptStatusResponse(

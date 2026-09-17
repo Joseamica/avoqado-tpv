@@ -2090,8 +2090,12 @@ class SocketManager @Inject constructor(
                     if (status == "timeout") {
                         // Incertidumbre es un AVISO, nunca un cierre de la bandeja/libreta.
                         // Sin él, el POS sigue cargando hasta agotar sus cinco minutos.
-                        // El servidor conserva UNKNOWN; un resultado durable ya existente
-                        // gana arriba y un resultado tardío conserva su requestId.
+                        // Ventana de confirmación (16-sep): con este `timeout` el servidor mete
+                        // la solicitud a su ventana de 30 s (`TIMED_OUT` + sobre del resultado);
+                        // si el banco no la aprobó en ese plazo la libera como
+                        // `FAILED/NO_EVIDENCE_AFTER_WINDOW`, y un `Payment` tardío la REABRE
+                        // como cobro con dinero. Un resultado durable ya existente gana arriba
+                        // y un resultado tardío conserva su requestId.
                         try {
                             socket?.emit("terminal:payment_result", JSONObject().apply {
                                 put("requestId", requestId)

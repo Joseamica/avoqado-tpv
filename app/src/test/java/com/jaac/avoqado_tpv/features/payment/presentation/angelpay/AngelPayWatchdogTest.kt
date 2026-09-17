@@ -181,6 +181,9 @@ class AngelPayWatchdogTest {
         // T26: botón «Reintentar» del banner (recuperación MANUAL de la auth de AngelPay).
         angelPayAuthRecovery = mockk(relaxed = true),
         chargeVerifier = mockk(relaxed = true),
+        // Task 7 (ventana de confirmación): S6 mientras se espera al servidor + la declaración del cajero. Fuera de estas pruebas.
+        ledgerServerRecovery = mockk(relaxed = true),
+        attemptApi = mockk(relaxed = true),
         savedStateHandle = SavedStateHandle(),
     )
 

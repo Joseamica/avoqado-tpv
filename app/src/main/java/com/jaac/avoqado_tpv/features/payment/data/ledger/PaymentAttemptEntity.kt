@@ -142,6 +142,11 @@ data class PaymentAttemptEntity(
         const val SERVER_REFERENCE_COLLISION_EVIDENCE = "REFERENCE_COLLISION_EVIDENCE"
         /** Un Payment PENDING sin `reconciliation.kind` conocido: evidencia, nunca una venta normal. */
         const val SERVER_PENDING_EVIDENCE = "PENDING_EVIDENCE"
+        /** El SERVIDOR liberó la solicitud (ventana de 30 s sin evidencia). La fila queda DESCARTADA con `last_error` = prefijo + evidencia. */
+        const val SERVER_RELEASED_NO_EVIDENCE = "RELEASED_NO_EVIDENCE"
+        /** El cajero declaró «no se presentó tarjeta» y el servidor lo acreditó (OPERATOR_RECONCILED). */
+        const val SERVER_OPERATOR_NO_INSTRUMENT = "OPERATOR_NO_INSTRUMENT"
+        const val LAST_ERROR_LIBERADA_PREFIX = "liberada_por_el_servidor:"
 
         /**
          * 🔴 CONTRADICCIÓN = predicado DERIVADO (nunca una columna, para que no se desincronice): el servidor tiene

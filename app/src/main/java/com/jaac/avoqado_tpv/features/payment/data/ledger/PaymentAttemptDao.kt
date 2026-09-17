@@ -442,12 +442,16 @@ interface PaymentAttemptDao {
     // Checkpoint 2 (webhook como primer confirmador, diseño v3 E1–E4): el VEREDICTO DEL SERVIDOR sobre un intento
     // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-    /** La evidencia del servidor, idempotente por identidad Y datos; `server_verdict_at` conserva la PRIMERA vez. */
+    /**
+     * La evidencia del servidor, idempotente por identidad Y datos; `server_verdict_at` conserva la PRIMERA vez — salvo cuando
+     * el dinero SUSTITUYE a una liberación (`RELEASED_NO_EVIDENCE` / `OPERATOR_NO_INSTRUMENT`): ahí se re-fecha, para que el aviso
+     * F0 de contradicción cuente sus 72 h desde la EVIDENCIA nueva, no desde la liberación (Codex, Task 0, P5).
+     */
     @Query(
         """UPDATE payment_attempts
            SET server_payment_id = :paymentId, server_outcome = :outcome, server_recorded_via = :via,
                server_amount_cents = :amountCents, server_tip_cents = :tipCents, server_winner_payment_id = :winnerPaymentId,
-               server_verdict_at = COALESCE(server_verdict_at, :now),
+               server_verdict_at = CASE WHEN server_outcome IN ('RELEASED_NO_EVIDENCE','OPERATOR_NO_INSTRUMENT') THEN :now ELSE COALESCE(server_verdict_at, :now) END,
                server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now
            WHERE attempt_id = :attemptId"""
     )
@@ -492,7 +496,7 @@ interface PaymentAttemptDao {
            WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
            AND terminal_payment_request_id IS NOT NULL AND state != 'CERRADA'
            AND (state NOT IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO') OR updated_at < :vivosAntesDe)
-           AND (server_outcome IS NULL OR server_outcome IN ('REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+           AND (server_outcome IS NULL OR server_outcome IN ('REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE','RELEASED_NO_EVIDENCE','OPERATOR_NO_INSTRUMENT'))
            AND (server_checked_at IS NULL
                 OR server_checked_at < :now - MIN(:espaciadoBaseMs * (1 << MIN(server_check_count, 7)), :espaciadoTopeMs))
            ORDER BY server_checked_at ASC, created_at ASC, attempt_id ASC
@@ -614,6 +618,19 @@ interface PaymentAttemptDao {
         )
         return aplicarVeredictoDelServidor(v, now)
     }
+
+    /**
+     * Liberación del SERVIDOR (ventana de confirmación / declaración del cajero): sólo una fila INDETERMINADO sin veredicto y sin
+     * `host_approved` — el host nunca contestó — pasa a DESCARTADA. NO toca `host_approved`: un RECORDED posterior entra por
+     * `aplicarVeredictoDelServidor` como contradicción («RECORDED sobre DESCARTADA») y el aviso lo grita.
+     */
+    @Query(
+        """UPDATE payment_attempts SET state = 'DESCARTADA', last_error = :motivo, server_outcome = :serverOutcome,
+           server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+             AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL""",
+    )
+    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long): Int
 
     /**
      * E4 · la bandeja responde por la SOLICITUD y sólo con un ganador acreditado: PROCESSING ⇒ RESOLVED `success`;

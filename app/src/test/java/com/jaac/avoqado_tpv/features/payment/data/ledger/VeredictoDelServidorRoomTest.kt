@@ -367,4 +367,65 @@ class VeredictoDelServidorRoomTest {
         assertThat(VeredictoDeIntento.desdeConsultaS6(venue, "x", TerminalAttemptStatusResponse(attempt = null))).isNull()
         assertThat(rec.outcome).isEqualTo(VeredictoDelServidor.RECORDED)
     }
+
+    // ── Task 6 (ventana de confirmación): la LIBERACIÓN del servidor (S6 `request.outcome = NOT_CHARGED` por ventana o por
+    //    declaración del cajero) cierra la fila INDETERMINADO como DESCARTADA sin tocar `host_approved`. ──
+
+    private fun respuestaS6ConRequest(attemptId: String, requestJson: String, attemptOutcome: String? = null) =
+        TerminalAttemptStatusResponse(
+            success = true, attemptId = attemptId, requestId = "req-1",
+            attempt = attemptOutcome?.let { TerminalAttemptResultDto(attemptId = attemptId, outcome = it, paymentId = "pay-1") },
+            request = com.google.gson.JsonParser.parseString(requestJson).asJsonObject,
+        )
+
+    @Test fun `la liberacion del servidor cierra la fila INDETERMINADO como DESCARTADA sin tocar host_approved y destraba la venta`() = runTest {
+        fila("a1", "INDETERMINADO", hostApproved = null)
+        val n = dao.cerrarPorLiberacionDelServidor("a1", venue, PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE,
+            PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "NO_EVIDENCE_AFTER_WINDOW", now)
+        assertThat(n).isEqualTo(1)
+        val tras = dao.getById("a1")!!
+        assertThat(tras.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(tras.hostApproved).isNull()
+        assertThat(tras.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE")
+        assertThat(tras.serverVerdictAt).isEqualTo(now)
+        assertThat(dao.findUnresolvedOrder(venue, "\"orderId\":\"o1\"")).isNull()
+        assertThat(dao.observeUnresolvedCount(venue).first()).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a1", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now + 1)).isEqualTo(0) // idempotente
+    }
+
+    @Test fun `una fila con host_approved o con veredicto guardado NO se libera — el dinero manda`() = runTest {
+        fila("a2", "INDETERMINADO", hostApproved = true)
+        fila("a3", "INDETERMINADO", hostApproved = null); dao.aplicarVeredictoDelServidor(s6("a3", "RECORDED"), now)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a2", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a3", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
+    }
+
+    @Test fun `una fila AUTORIZANDO (SDK dentro) o legacy o de otro venue NO se libera`() = runTest {
+        fila("a4", "AUTORIZANDO", hostApproved = null)
+        fila("a5", "INDETERMINADO", hostApproved = null, legacy = true)
+        fila("a6", "INDETERMINADO", hostApproved = null, venueId = "otro-venue")
+        for (id in listOf("a4", "a5")) assertThat(dao.cerrarPorLiberacionDelServidor(id, venue, "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a6", venue, "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+    }
+
+    @Test fun `un RECORDED que llega despues de la liberacion queda como contradiccion visible`() = runTest {
+        fila("a7", "INDETERMINADO", hostApproved = null); bandeja()
+        dao.cerrarPorLiberacionDelServidor("a7", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
+        val r = dao.aplicarVeredictoDelServidor(s6("a7", "RECORDED"), now + 1)
+        assertThat(r.contradiccion).isTrue()
+    }
+
+    @Test fun `LiberacionDelServidor se lee del request de S6 y solo con las dos evidencias del servidor`() {
+        val ventana = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW","evidenceClass":"SERVER"}""")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", ventana)?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        val cajero = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED","evidenceClass":"OPERATOR"}""")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", cajero)?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        val declinado = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"PROCESSOR_DECLINED"}""")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", declinado)).isNull() // eso ya lo decide la propia terminal
+        val sinDesenlace = respuestaS6ConRequest("a8", """{"status":"TIMED_OUT","outcome":"UNRESOLVED"}""")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", sinDesenlace)).isNull()
+        val conDinero = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""", attemptOutcome = "RECORDED")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", conDinero)).isNull() // contradicción: gana el intento con dinero
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", TerminalAttemptStatusResponse(success = true, request = null))).isNull()
+    }
 }

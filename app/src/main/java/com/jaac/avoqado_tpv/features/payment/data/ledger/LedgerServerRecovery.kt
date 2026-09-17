@@ -31,10 +31,12 @@ class LedgerServerRecovery @Inject constructor(
         val bandejasResueltas: List<String>,
         /** Codex (código, P2-1): consultas SIN respuesta HTTP (red, timeout) en esta pasada — el worker reintenta por ellas. */
         val sinRespuesta: Int = 0,
+        /** Task 6: filas INDETERMINADO cerradas como DESCARTADA por la LIBERACIÓN del servidor (S6 `request.outcome = NOT_CHARGED`). */
+        val liberadas: Int = 0,
     )
 
     suspend fun recover(venueId: String, now: Long = System.currentTimeMillis()): Resultado {
-        var reaplicados = 0; var consultados = 0; var aplicados = 0; var sinRespuesta = 0
+        var reaplicados = 0; var consultados = 0; var aplicados = 0; var sinRespuesta = 0; var liberadas = 0
         val bandejas = mutableListOf<String>()
         // Paso 0 · E2: lo ya sabido se aplica sin gastar red.
         for (fila in runCatching { dao.veredictosPendientesDeAplicar(venueId) }.getOrDefault(emptyList())) {
@@ -66,6 +68,9 @@ class LedgerServerRecovery @Inject constructor(
                     null
                 }
                 if (veredicto == null) {
+                    // Task 6: sin veredicto sobre el INTENTO, la SOLICITUD puede venir liberada por el servidor (ventana / cajero).
+                    val liberacion = if (respuesta.isSuccessful) respuesta.body()?.let { LiberacionDelServidor.desdeConsultaS6(venueId, fila.attemptId, it) } else null
+                    if (liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)) { liberadas++; continue }
                     dao.estamparConsultaAlServidor(fila.attemptId, now)
                     continue
                 }
@@ -81,10 +86,10 @@ class LedgerServerRecovery @Inject constructor(
             }
         }
         if (reaplicados + consultados + aplicados + sinRespuesta > 0) {
-            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d sinRespuesta=%d bandejas=%d",
-                reaplicados, consultados, aplicados, sinRespuesta, bandejas.size)
+            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d liberadas=%d sinRespuesta=%d bandejas=%d",
+                reaplicados, consultados, aplicados, liberadas, sinRespuesta, bandejas.size)
         }
-        return Resultado(reaplicados, consultados, aplicados, bandejas, sinRespuesta)
+        return Resultado(reaplicados, consultados, aplicados, bandejas, sinRespuesta, liberadas)
     }
 
     /**
@@ -105,7 +110,8 @@ class LedgerServerRecovery @Inject constructor(
             }
             val veredicto = if (respuesta.isSuccessful) respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) } else null
             if (veredicto == null) {
-                dao.estamparConsultaAlServidor(attemptId, now)
+                val liberacion = respuesta.body()?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
+                if (liberacion == null || !ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)) dao.estamparConsultaAlServidor(attemptId, now)
                 null
             } else {
                 ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson

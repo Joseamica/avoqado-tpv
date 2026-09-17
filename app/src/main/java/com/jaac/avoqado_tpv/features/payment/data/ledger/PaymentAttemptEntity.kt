@@ -166,6 +166,16 @@ data class PaymentAttemptEntity(
             "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved IS 0 " +
             "OR server_amount_cents IS NOT amount_cents OR server_tip_cents IS NOT tip_cents))))"
 
+        /**
+         * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el
+         * servidor acredita dinero de ESTE intento (lo mismo que `VeredictoDeIntento.desdeConsultaS6` devuelve como veredicto).
+         * Una fila con cualquiera de ellos que NO esté en REGISTRADO es «Avoqado tiene evidencia de cobro»: nunca «se puede
+         * volver a cobrar». Las liberaciones (`RELEASED_NO_EVIDENCE`, `OPERATOR_NO_INSTRUMENT`) quedan fuera a propósito.
+         */
+        val SERVER_OUTCOMES_CON_DINERO = setOf(
+            SERVER_RECORDED, SERVER_SECOND_CAPTURE_EVIDENCE, SERVER_REFERENCE_COLLISION_EVIDENCE, SERVER_PENDING_EVIDENCE,
+        )
+
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"
         const val ROUTE_FAST = "FAST"

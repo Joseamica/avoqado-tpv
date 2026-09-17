@@ -188,6 +188,32 @@ class LedgerServerRecoveryRoomTest {
         assertThat(tras.serverCheckedAt).isEqualTo(now)   // sólo se estampó la consulta
     }
 
+    @Test fun `el sondeo interactivo de la pantalla (recoverOne sin estampar) no gasta el turno de E3 — la fila sigue siendo candidata del respaldo N3`() = runTest {
+        // Task 7 · fix 1 (Important #1): la pantalla consulta S6 cada 5 s durante la ventana. Si cada consulta «sin veredicto»
+        // estampara `server_check_count`, tras 7 sondeos el espaciado de E3 (base × 2^7 ≈ 21 h) dejaba la fila FUERA del worker
+        // de respaldo y del barrido — justo cuando la terminal se queda sin red al liberar el servidor.
+        fila("b5", "INDETERMINADO", requestId = "req-b5", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "b5") } returns notRecorded
+        // RED visto (run-avoqado-tpv.FjLeR5): con la firma anterior, 10 consultas del sondeo estampaban `server_check_count = 10`.
+        repeat(10) { recovery.recoverOne(venue, "b5", now + it, estampar = false) }
+        assertThat(dao.getById("b5")!!.serverCheckCount).isEqualTo(0)
+        assertThat(dao.getById("b5")!!.serverCheckedAt).isNull()
+        assertThat(dao.candidatasDeConsultaAlServidor(venue, now - 120_000, now + 11, 600_000, 86_400_000).map { it.attemptId }).contains("b5")
+        // Control: el respaldo (trigger / worker / barrido) SÍ estampa — con 10 consultas sin veredicto la misma fila deja de ser candidata.
+        repeat(10) { recovery.recoverOne(venue, "b5", now + 100 + it, estampar = true) }
+        assertThat(dao.getById("b5")!!.serverCheckCount).isEqualTo(10)
+        assertThat(dao.candidatasDeConsultaAlServidor(venue, now - 120_000, now + 200, 600_000, 86_400_000).map { it.attemptId }).doesNotContain("b5")
+        // Y sin estampa la LIBERACIÓN se sigue aplicando igual: el sondeo no pierde veredictos, sólo no gasta el turno.
+        fila("b6", "INDETERMINADO", requestId = "req-b6", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "b6") } returns Response.success(
+            TerminalAttemptStatusResponse(success = true, attemptId = "b6", requestId = "req-b6",
+                attempt = TerminalAttemptResultDto(attemptId = "b6", outcome = "NOT_RECORDED"),
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
+        )
+        assertThat(recovery.recoverOne(venue, "b6", now, estampar = false)).isNull()
+        assertThat(dao.getById("b6")!!.state).isEqualTo("DESCARTADA")
+    }
+
     @Test fun `recoverOne aplica la liberacion y la fila queda legible para la pantalla`() = runTest {
         fila("b2", "INDETERMINADO", requestId = "req-1", hostApproved = null)
         coEvery { api.getAttemptStatus(venue, "b2") } returns Response.success(

@@ -2837,6 +2837,14 @@ class AngelPayPaymentViewModel @Inject constructor(
     private fun esperarVeredictoDelServidor(motivo: String) {
         Timber.w("🔍 [AngelPay] Sin veredicto del historial (%s) — esperando al servidor", motivo)
         val previo = _state.value as? AngelPayPaymentState.ResultadoIncierto
+        // Fix 1 · Minor #4a: si el dinero YA llegó (S5 durante la consulta del historial, o el 2xx de una declaración con
+        // dinero), la espera no se repinta encima: el Success o la contradicción que dejó se quedan. Y al servidor no se le
+        // manda `timeout` — ya tiene evidencia de dinero de este intento, su ventana no aplica.
+        if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId) {
+            if (previo != null) mostrarContradiccion()   // defensa: la pantalla sigue en incierto con el veto encendido
+            else Timber.i("🔍 [AngelPay] El dinero ya consta (%s): la espera no pisa %s", vetoDeDineroDelIntento, _state.value::class.simpleName)
+            return
+        }
         val vieneDelHistorial = previo?.verificando != false
         if (vieneDelHistorial) {
             emitSocketResultIfSocketSourced(
@@ -2869,7 +2877,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             while (true) {
                 // La primera consulta es INMEDIATA: un veredicto que ya está en la libreta (S5 mientras el SDK estaba dentro,
                 // una liberación anterior) se enseña al instante, no 5 s después. Luego cada [msEntreConsultasS6].
-                runCatching { ledgerServerRecovery.recoverOne(venueId, attemptId) }
+                // `estampar = false` (fix 1 · Important #1): este sondeo NO gasta el turno de E3 — si lo gastara, siete sondeos
+                // sin veredicto sacarían la fila del respaldo N3 ~21 h. Un `success` durable de bandeja que resuelva `recoverOne`
+                // se EMITE al servidor, como hacen el trigger y el worker (fix 1 · Minor #5).
+                runCatching { ledgerServerRecovery.recoverOne(venueId, attemptId, estampar = false) }
+                    .onSuccess { json -> json?.let(socketManager::emitDurableTerminalPaymentResult) }
                     .onFailure { if (it is CancellationException) throw it }
                 if (aplicarLoQueDigaLaLibreta(attemptId)) return@launch
                 if (transcurrido >= msEsperaAlServidor) break
@@ -2897,7 +2909,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         val fila = paymentAttemptLedger.leerIntento(attemptId) ?: return false
         return when {
             fila.state == PaymentAttemptEntity.STATE_REGISTRADO -> { mostrarCobroConfirmadoPorS6(fila); true }
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_RECORDED -> { mostrarContradiccion(); true }
+            // Fix 1 · Minor #2: CUALQUIER evidencia de dinero del servidor sin promover (RECORDED, segunda captura, colisión de
+            // referencia, PENDING) es contradicción — no sólo RECORDED. Es la misma familia que `SQL_CONTRADICCION`, y enciende
+            // el veto: con esa fila el servidor rechazaría la declaración con 409, así que no se ofrece.
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO -> { vetoDeDineroDelIntento = attemptId; mostrarContradiccion(); true }
             // Con el veto de dinero encendido, una liberación en la fila (vieja o nueva) NO se anuncia: gana la evidencia.
             vetoDeDineroDelIntento == attemptId -> { mostrarContradiccion(); true }
             fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> { mostrarLiberada("OPERATOR_RECONCILED"); true }
@@ -2928,6 +2943,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         _socketResultEmitted = true
         cancelarCierrePorAbandono()
         clearChargingOnTerminal()
+        liberacionMostrada = false   // el dinero desmintió la liberación: un S5 tardío sin transición ya no tiene nada que desmentir
         _state.value = AngelPayPaymentState.Success(
             authCode = "", amount = pendingAmount.toPlainString(),
             tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
@@ -2976,11 +2992,16 @@ class AngelPayPaymentViewModel @Inject constructor(
         if (vetoDeDineroDelIntento == attemptId) { mostrarContradiccion(); return }   // ya hay evidencia de dinero: no se declara nada
         if (declaracionJob?.isActive == true) return                                  // single-flight: un doble toque no abre otro POST
         val id = resolutionId ?: java.util.UUID.randomUUID().toString().also { resolutionId = it }
-        actualizarIncierto { it.copy(error = null) }
+        // `declarando` apaga el botón mientras el POST vuela y lo dice (fix 1 · Minor #7a); se apaga en cada salida que
+        // deja la pantalla en incierto. Las salidas a Success/contradicción cambian de estado y no lo necesitan.
+        actualizarIncierto { it.copy(error = null, declarando = true) }
         declaracionJob = viewModelScope.launch {
             val respuesta = runCatching {
                 attemptApi.resolveNoInstrument(venueId, attemptId, NoInstrumentResolutionRequest(requestId, id, supervisorPin = pin))
             }.getOrElse { if (it is CancellationException) throw it; Timber.w(it, "🗣️ [AngelPay] declaración sin respuesta"); null }
+            actualizarIncierto { it.copy(declarando = false) }
+            // Se lee UNA vez: `errorBody()` es un stream y sólo se puede consumir una vez (fix 1 · Minor #3).
+            val codigo = respuesta?.takeUnless { it.isSuccessful }?.let(::codigoDeError)
             when {
                 respuesta == null -> actualizarIncierto { it.copy(error = "Sin conexión. Se sigue esperando al servidor.") }
                 respuesta.isSuccessful -> {
@@ -3011,10 +3032,15 @@ class AngelPayPaymentViewModel @Inject constructor(
                         }
                     }
                 }
-                respuesta.code() == 403 && codigoDeError(respuesta) == "SESSION_NOT_IN_VENUE" ->
-                    actualizarIncierto { it.copy(error = "La sesión de esta terminal no pertenece a este negocio. Vuelve a iniciar sesión.") }
-                respuesta.code() == 403 -> actualizarIncierto { it.copy(pidePin = true, error = if (pin == null) null else "Ese código no tiene permiso para confirmarlo.") }
-                else -> { actualizarIncierto { it.copy(error = "No se pudo confirmar (${codigoDeError(respuesta)}). Se consulta el veredicto.") }; consultarDeNuevo() }
+                // PIN SÓLO ante `SUPERVISOR_AUTHORIZATION_REQUIRED` (fix 1 · Minor #3): es el mismo código con el que el servidor
+                // rechaza un PIN incorrecto, así que el pad se queda y el cajero reintenta. Cualquier otro 403 —`SESSION_NOT_IN_VENUE`,
+                // `TERMINAL_IDENTITY_REQUIRED`, desconocido o sin cuerpo— no tiene PIN que valga: se dice con su código.
+                respuesta.code() == 403 && codigo == "SUPERVISOR_AUTHORIZATION_REQUIRED" ->
+                    actualizarIncierto { it.copy(pidePin = true, error = if (pin == null) null else "Ese código no tiene permiso para confirmarlo.") }
+                respuesta.code() == 403 && codigo == "SESSION_NOT_IN_VENUE" ->
+                    actualizarIncierto { it.copy(pidePin = false, error = "La sesión de esta terminal no pertenece a este negocio ($codigo). Vuelve a iniciar sesión.") }
+                respuesta.code() == 403 -> actualizarIncierto { it.copy(pidePin = false, error = "Esta terminal no puede confirmarlo ($codigo).") }
+                else -> { actualizarIncierto { it.copy(error = "No se pudo confirmar ($codigo). Se consulta el veredicto.") }; consultarDeNuevo() }
             }
         }
     }
@@ -3203,6 +3229,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         _socketResultEmitted = true // el desenlace durable ya está en la bandeja (lo escribió la libreta): este VM no emite otro
         cancelarCierrePorAbandono()
         clearChargingOnTerminal()
+        liberacionMostrada = false   // fix 1 · Minor #4b: el dinero desmintió la liberación; un S5 tardío sin transición no toca este Success
         _state.value = AngelPayPaymentState.Success(
             authCode = "", // el webhook no trae la autorización del SDK; el recibo llega por REST si la app la registra después
             amount = pendingAmount.toPlainString(),

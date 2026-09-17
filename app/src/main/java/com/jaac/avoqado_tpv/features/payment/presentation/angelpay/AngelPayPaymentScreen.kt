@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -870,9 +871,12 @@ private fun ResultadoInciertoContent(
     onConsultarDeNuevo: () -> Unit,
     onGoBack: () -> Unit,
 ) {
-    // El código vive sólo mientras el servidor lo pide; si deja de pedirlo, se descarta.
-    var pin by remember(state.pidePin) { mutableStateOf("") }
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    // El código vive sólo hasta que se manda: al arrancar el POST (`declarando`) y al volver se descarta, así un PIN
+    // incorrecto se vuelve a teclear entero; y si el servidor deja de pedirlo, también.
+    var pin by remember(state.pidePin, state.declarando) { mutableStateOf("") }
+    // `imePadding()` + scroll (fix 1 · Minor #7b): el teclado NumberPassword del PIN no se come el botón de confirmar
+    // en los 640 dp de la PAX (clase del defecto P2-1 del 12-sep).
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().imePadding()) {
         val minContentHeight = maxHeight
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -917,7 +921,7 @@ private fun ResultadoInciertoContent(
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Confirmando con el banco… (${state.segundos} s)",
+                        text = "Consultando al servidor… ${state.segundos} s",
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
                     )
@@ -944,14 +948,15 @@ private fun ResultadoInciertoContent(
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = { onDeclarar(pin) },
-                            enabled = pin.length in 4..8,
+                            enabled = !state.declarando && pin.length in 4..8,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text("Confirmar con código")
+                            Text(if (state.declarando) "Confirmando…" else "Confirmar con código")
                         }
                     } else {
-                        OutlinedButton(onClick = { onDeclarar(null) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("El cliente no presentó tarjeta")
+                        // Apagado y con su texto mientras el POST vuela (fix 1 · Minor #7a): un segundo toque no se traga en silencio.
+                        OutlinedButton(onClick = { onDeclarar(null) }, enabled = !state.declarando, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (state.declarando) "Confirmando…" else "El cliente no presentó tarjeta")
                         }
                     }
                     if (!state.esperandoAlServidor) {
@@ -1184,6 +1189,21 @@ private fun AngelPayResultadoInciertoEsperandoAlServidorPreview() {
             state = AngelPayPaymentState.ResultadoIncierto(
                 message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
                 verificando = false, esperandoAlServidor = true, segundos = 15, puedeDeclarar = true,
+            ),
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
+        )
+    }
+}
+
+/** El POST de la declaración en vuelo: el botón apagado y diciéndolo. */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun AngelPayResultadoInciertoDeclarandoPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
+                verificando = false, esperandoAlServidor = true, segundos = 10, puedeDeclarar = true, declarando = true,
             ),
             onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )

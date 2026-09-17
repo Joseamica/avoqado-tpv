@@ -2911,7 +2911,11 @@ class AngelPayPaymentViewModel @Inject constructor(
      * contradicción. true si el desenlace ya quedó.
      */
     private suspend fun aplicarLoQueDigaLaLibreta(attemptId: String): Boolean {
-        val fila = paymentAttemptLedger.leerIntento(attemptId) ?: return false
+        val fila = paymentAttemptLedger.leerIntento(attemptId)
+        // Fix 3 (P2): la lectura SUSPENDE, y en ese hueco pudo llegar S5 registrado=true y pintar Success. Una fila vieja (o nula)
+        // que vuelva después no puede desmentir el dinero ya pintado: se conserva la MISMA instancia y el desenlace «ya quedó».
+        if (_state.value is AngelPayPaymentState.Success) return true
+        if (fila == null) return false
         return when {
             fila.state == PaymentAttemptEntity.STATE_REGISTRADO -> { mostrarCobroConfirmadoPorS6(fila); true }
             // Fix 1 · Minor #2: CUALQUIER evidencia de dinero del servidor sin promover (RECORDED, segunda captura, colisión de
@@ -2996,7 +3000,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         val attemptId = currentPaymentAttemptId ?: return
         val requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET } ?: return
         val venueId = authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return
-        if (vetoDeDineroDelIntento == attemptId) { mostrarContradiccion(); return }   // ya hay evidencia de dinero: no se declara nada
+        if (vetoDeDineroDelIntento == attemptId) {
+            // Ya hay evidencia de dinero: no se declara nada. Y si la pantalla YA es Success (S5 registrado), se conserva ESA
+            // instancia (fix 3, P2): una contradicción no puede pisar el dinero ya pintado.
+            if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
+            return
+        }
         if (declaracionJob?.isActive == true) return                                  // single-flight: un doble toque no abre otro POST
         val id = resolutionId ?: java.util.UUID.randomUUID().toString().also { resolutionId = it }
         // `declarando` apaga el botón mientras el POST vuela y lo dice (fix 1 · Minor #7a); se apaga en cada salida que
@@ -3040,8 +3049,13 @@ class AngelPayPaymentViewModel @Inject constructor(
                     } else if (LiberacionDelServidor.acreditaDinero(respuesta.body()?.attempt)) {
                         // P1-2 (fix 2): el cuerpo acredita dinero del intento sin Payment (banco APPROVED, o un outcome con dinero sin
                         // `paymentId`): NUNCA una liberación — veto y contradicción; la fila se queda INDETERMINADO (no se marca RECORDED).
+                        // 🔴 Fix 3 (P1): la contradicción se pinta ANTES de suspender para leer Room — igual que la rama con veredicto.
+                        // Retira una liberación ya mostrada («se puede volver a cobrar») y revoca el «negativo confirmado», así un
+                        // «Salir» en ese intervalo NO pasa la guarda de `resetPayment()`, que cancelaría la declaración y borraría el
+                        // veto con una aprobación bancaria conocida. Sólo REGISTRADO (o un Success ya pintado) puede mejorar esto.
                         vetoDeDineroDelIntento = attemptId
-                        if (!aplicarLoQueDigaLaLibreta(attemptId)) mostrarContradiccion()
+                        if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
+                        aplicarLoQueDigaLaLibreta(attemptId)   // REGISTRADO ⇒ Success; cualquier otra fila (o ninguna) deja la contradicción
                     } else {
                         // Un 200 es, por contrato, «liberada por el cajero»: se sintetiza con el MISMO parser/veto que S6.
                         LiberacionDelServidor.desdeDeclaracion(venueId, attemptId, requestId, respuesta.body())
@@ -4432,7 +4446,10 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     fun resetPayment() {
         if (_state.value is AngelPayPaymentState.ResultadoIncierto ||
-            (authorizationWasLaunched && !confirmedNegativeOutcome && _state.value is AngelPayPaymentState.Error)) return
+            (authorizationWasLaunched && !confirmedNegativeOutcome && _state.value is AngelPayPaymentState.Error) ||
+            // Fix 3 (P1): con evidencia de dinero conocida para ESTE intento (veto), una contradicción nunca se limpia a mano —
+            // aunque la autorización no haya pasado por `onIntentLaunched` (p. ej. un intento restaurado).
+            (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId && _state.value is AngelPayPaymentState.Error)) return
         pendingProcessorAffiliation = null
         // El reloj de abandono muere con el cobro: `emitCancelledIfAbandoned` de abajo ya
         // resuelve la fila, y dejarlo vivo emitiría un segundo desenlace sobre otro cobro.

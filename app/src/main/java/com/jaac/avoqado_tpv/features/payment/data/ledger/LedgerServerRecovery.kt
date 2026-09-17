@@ -95,8 +95,14 @@ class LedgerServerRecovery @Inject constructor(
     /**
      * D3: UN intento, en el acto — primero lo guardado (E2), después S6 si hace falta. Un fallo es no-op (el worker lo
      * retoma). Devuelve el JSON de bandeja resuelto, si lo hubo, para emitirlo.
+     *
+     * [estampar] = si una respuesta SIN veredicto gasta el turno de E3 (`server_check_count`, espaciado `base × 2^n`). El
+     * respaldo (trigger, worker, barrido) estampa; el SONDEO INTERACTIVO de la pantalla (cada 5 s durante la ventana de
+     * confirmación, Task 7) pasa `false`: con siete sondeos «sin veredicto» la fila quedaba fuera del respaldo N3 ~21 h —
+     * justo cuando la terminal se queda sin red al liberar el servidor y la venta sigue cercada. Los veredictos y las
+     * liberaciones se guardan igual con o sin estampa.
      */
-    suspend fun recoverOne(venueId: String, attemptId: String, now: Long = System.currentTimeMillis()): String? {
+    suspend fun recoverOne(venueId: String, attemptId: String, now: Long = System.currentTimeMillis(), estampar: Boolean = true): String? {
         ledger.reaplicarVeredictoGuardado(attemptId, now)?.let { if (it.transiciono || it.bandejaResueltaJson != null) return it.bandejaResueltaJson }
         val fila = runCatching { dao.getById(attemptId) }.getOrNull() ?: return null
         if (fila.legacyShadow || fila.venueId != venueId || fila.terminalPaymentRequestId == null) return null
@@ -111,7 +117,8 @@ class LedgerServerRecovery @Inject constructor(
             val veredicto = if (respuesta.isSuccessful) respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) } else null
             if (veredicto == null) {
                 val liberacion = respuesta.body()?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
-                if (liberacion == null || !ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)) dao.estamparConsultaAlServidor(attemptId, now)
+                val liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
+                if (!liberada && estampar) dao.estamparConsultaAlServidor(attemptId, now)
                 null
             } else {
                 ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson

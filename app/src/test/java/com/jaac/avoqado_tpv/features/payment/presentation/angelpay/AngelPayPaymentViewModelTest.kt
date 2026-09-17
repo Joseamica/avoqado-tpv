@@ -60,8 +60,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -1733,9 +1735,13 @@ class AngelPayPaymentViewModelTest {
             io.mockk.clearMocks(socketManager, paymentAttemptLedger, answers = false, recordedCalls = true, verificationMarks = true)
             val vm = vmRemotoRegistradoCon(decision, transiciono, contradiccion)
             try {
-                coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
-                runCurrent()
-                val estado = vm.state.value
+                // Se espera al ESTADO en tiempo real, no a la llamada al mock: la continuación tras `withContext(IO)` corre en el
+                // hilo de IO (dispatcher de prueba unconfined) y `coVerify(timeout)` volvía en cuanto el mock era LLAMADO, unas
+                // instrucciones ANTES de `_state.value = Error` — leía `RecordingPayment` 1 de cada 3 corridas (Task 7, fix 1).
+                val estado = withContext(Dispatchers.Default) {
+                    kotlinx.coroutines.withTimeout(2_000) { vm.state.first { it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Success } }
+                }
+                coVerify(exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
                 assertThat(estado).isNotInstanceOf(AngelPayPaymentState.Success::class.java)
                 assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
                 assertThat((estado as AngelPayPaymentState.Error).canRetry).isFalse()
@@ -3114,7 +3120,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `INCIERTO sin hallazgo en historial emite timeout al POS y se queda esperando al servidor con el boton de declarar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("historial vacío")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
         // El holder es un mock relajado (su `isChargeAttemptActive()` siempre da false): se lee lo ÚLTIMO que el VM publicó.
         val publicado = mutableListOf<Boolean>()
@@ -3131,7 +3137,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `si S6 trae la liberacion por ventana, la pantalla dice que se puede volver a cobrar, sin Reintentar, y vuelve a Idle`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")   // null en la consulta inmediata; liberada en el sondeo
         val vm = vmConCobroDelPos("REQ-W2")
         try {
@@ -3147,7 +3153,9 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `si S6 trae RECORDED durante la espera, gana el dinero — Success con el paymentId de la libreta`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        // La consulta inmediata no resuelve nada; el sondeo de los 5 s SÍ resuelve la bandeja y devuelve su JSON durable.
+        val bandeja = """{"requestId":"REQ-W3","status":"success","paymentId":"pay-s6"}"""
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null andThen bandeja
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaRegistrada("att")   // null en la consulta inmediata; REGISTRADO en el sondeo
         val vm = vmConCobroDelPos("REQ-W3")
         try {
@@ -3155,12 +3163,14 @@ class AngelPayPaymentViewModelTest {
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
             val s = vm.state.value as AngelPayPaymentState.Success
             assertThat(s.receipt?.paymentId).isEqualTo("pay-s6"); assertThat(s.receipt?.serverRecordedVia).isEqualTo("s6")
+            // Fix 1 · Minor #5: el JSON durable que resolvió `recoverOne` se EMITE al servidor, como hacen el trigger y el worker.
+            verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(bandeja) }
         } finally { vm.viewModelScope.cancel() }
     }
 
     @Test fun `una fila DESCARTADA con RECORDED encima es contradiccion — la pantalla dice que Avoqado registro dinero y NUNCA que se puede volver a cobrar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaContradictoria("att")   // null en la consulta inmediata; contradicción en el sondeo
         val vm = vmConCobroDelPos("REQ-W8")
         try {
@@ -3175,7 +3185,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `un 2xx cuyo cuerpo trae RECORDED aplica el veredicto del CUERPO (sin otro viaje de red) y termina en Success aunque S6 falle`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null   // S6 «sin red»
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null   // S6 «sin red»
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W10",
             attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-body", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-body"))
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
@@ -3195,7 +3205,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `un 2xx con RECORDED cuyo guardado FALLA prohibe recobrar aunque la fila conserve una liberacion vieja`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W12",
             attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-body", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-body"))
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
@@ -3215,7 +3225,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `un 2xx con RECORDED guardado pero con la fila sin promover (GUARDADO_SIN_LIBERAR) prohibe recobrar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W13",
             attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "SECOND_CAPTURE_EVIDENCE", paymentId = "pay-2", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = false, winnerPaymentId = "pay-1"))
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
@@ -3232,7 +3242,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `dos toques abren UN solo POST, con el guardado del dinero SUSPENDIDO el sondeo lee una liberacion vieja y NO la anuncia (el veto se enciende antes de suspender)`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         val puertaPost = kotlinx.coroutines.CompletableDeferred<Unit>()
         val puertaGuardado = kotlinx.coroutines.CompletableDeferred<Unit>()
         val cuerpoConDinero = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W14",
@@ -3264,7 +3274,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `un POST sin dinero pendiente, llega S5 (registrado=false) y despues la respuesta — contradiccion, sin liberar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
         val ids = mutableListOf<String>()
         coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
@@ -3285,7 +3295,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `S5 (registrado=false) sobre una liberacion YA mostrada la desmiente y apaga el reset automatico`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")   // null en la consulta inmediata; liberada en el sondeo
         val ids = mutableListOf<String>()
         coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
@@ -3315,7 +3325,7 @@ class AngelPayPaymentViewModelTest {
         // Sin esto, la pantalla se quedaría diciendo «se puede volver a cobrar» con el veto encendido (el reset automático
         // se apaga por el veto, pero nadie retiraba el texto): Success con el Payment del servidor, como cualquier S5.
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")   // null en la consulta inmediata; liberada en el sondeo
         val ids = mutableListOf<String>()
         coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
@@ -3335,7 +3345,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `liberacion YA mostrada y luego el POST responde CON dinero — la liberacion se retira al instante, antes de guardar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")   // null en la consulta inmediata; liberada en el sondeo
         val puertaPost = kotlinx.coroutines.CompletableDeferred<Unit>()
         val puertaGuardado = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -3362,7 +3372,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `un 2xx sin poder leer la fila despues NO muestra liberada — avisa y vuelve a consultar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionOk()
         coEvery { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) } returns Result.failure(IllegalStateException("room caída"))
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
@@ -3378,7 +3388,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `tras un 2xx de la declaracion, si la libreta ya tenia RECORDED gana el dinero y no se muestra liberada`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaRegistrada("att")
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionOk()
         coEvery { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(false)  // el CAS local no transicionó
@@ -3392,7 +3402,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `declarar sin tarjeta con sesion con permiso libera sin PIN`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "OPERATOR_RECONCILED")   // null al entrar en espera; tras el CAS de la declaración la fila YA es la liberada
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionOk()
         coEvery { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(true)
@@ -3408,7 +3418,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `declarar sin permiso pide PIN y con el PIN vuelve a intentar con el MISMO resolutionId`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "OPERATOR_RECONCILED")   // null al entrar en espera; tras el CAS de la declaración la fila YA es la liberada
         coEvery { attemptApi.resolveNoInstrument(any(), any(), match { it.supervisorPin == null }) } returns respuesta403()
         coEvery { attemptApi.resolveNoInstrument(any(), any(), match { it.supervisorPin == "1234" }) } returns respuestaDeclaracionOk()
@@ -3428,7 +3438,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test fun `una declaracion rechazada con 409 no libera nada, muestra el codigo y vuelve a consultar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuesta409()
         val vm = vmConCobroDelPos("REQ-W6")
@@ -3439,13 +3449,13 @@ class AngelPayPaymentViewModelTest {
             assertThat(s.error).contains("POSITIVE_EVIDENCE_EXISTS")
             coVerify(exactly = 0) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            coVerify(atLeast = 1) { ledgerServerRecovery.recoverOne("v1", any(), any()) }
+            coVerify(atLeast = 1) { ledgerServerRecovery.recoverOne("v1", any(), any(), any()) }
         } finally { vm.viewModelScope.cancel() }
     }
 
     @Test fun `a los 45 s sin veredicto la pantalla deja de esperar pero conserva el boton de declarar y Consultar de nuevo`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
         val vm = vmConCobroDelPos("REQ-W7")
         try {
@@ -3476,7 +3486,7 @@ class AngelPayPaymentViewModelTest {
             assertThat(s.esperandoAlServidor).isFalse(); assertThat(s.puedeDeclarar).isFalse(); assertThat(s.verificando).isFalse()
             vm.declararSinTarjeta(); runCurrent()
             coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }
-            coVerify(exactly = 0) { ledgerServerRecovery.recoverOne(any(), any(), any()) }
+            coVerify(exactly = 0) { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) }
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -3484,7 +3494,7 @@ class AngelPayPaymentViewModelTest {
         // Antes de la Task 7 la pantalla «no afirmaba nada» y seguía en ResultadoIncierto; S5 es evidencia de DINERO del servidor,
         // la libreta lo haya promovido o no, así que ahora se dice y se veta la liberación de ESTE intento.
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin red")
-        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any()) } returns null
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
         val ids = mutableListOf<String>()
         coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
@@ -3498,6 +3508,131 @@ class AngelPayPaymentViewModelTest {
             vm.declararSinTarjeta(); runCurrent()
             coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }
             verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ── Fix round 1 (revisión independiente de la Task 7) ─────────────────────────────────────────
+
+    @Test fun `Minor 2 — una fila con PENDING_EVIDENCE (cualquier evidencia de dinero, no solo RECORDED) es contradiccion, prohibe recobrar y nunca ofrece declarar`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        val filaPendiente = mockk<PaymentAttemptEntity>(relaxed = true).also {
+            every { it.attemptId } returns "att"
+            every { it.state } returns PaymentAttemptEntity.STATE_INDETERMINADO
+            every { it.serverOutcome } returns PaymentAttemptEntity.SERVER_PENDING_EVIDENCE   // SQL_CONTRADICCION lo cuenta como contradicción
+            every { it.serverPaymentId } returns "pay-pendiente"
+        }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaPendiente
+        val vm = vmConCobroDelPos("REQ-W20")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse(); assertThat(s.message).contains("NO lo vuelvas a cobrar"); assertThat(s.message).doesNotContain("volver a cobrar")
+            advanceTimeBy(vm.msEsperaAlServidor + vm.msEntreConsultasS6); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(s)   // ni vuelve a esperar ni ofrece la declaración a los 45 s
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }   // con evidencia de dinero no se declara nada
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Minor 3 — un 403 que no es SUPERVISOR_AUTHORIZATION_REQUIRED no pide PIN, avisa con el codigo`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.error(403, """{"success":false,"code":"TERMINAL_IDENTITY_REQUIRED"}""".toResponseBody("application/json".toMediaType()))
+        val vm = vmConCobroDelPos("REQ-W22")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.declararSinTarjeta(); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.pidePin).isFalse(); assertThat(s.error).contains("TERMINAL_IDENTITY_REQUIRED")
+            // Un 403 sin cuerpo legible tampoco pide PIN: el aviso lleva el código HTTP.
+            coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.error(403, "".toResponseBody("application/json".toMediaType()))
+            vm.declararSinTarjeta(); runCurrent()
+            val s2 = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s2.pidePin).isFalse(); assertThat(s2.error).contains("403")
+            coVerify(exactly = 0) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Minor 4a — S5 (registrado=true) que llega mientras se consulta el historial deja Success, la espera al servidor no lo pisa`() = runTest(testDispatcher) {
+        val puertaHistorial = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } coAnswers { puertaHistorial.await(); VerificacionDelCobro.NoSePudoVerificar("x") }
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-W21")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).verificando).isTrue()
+            val mio = ids.last()
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W21", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            puertaHistorial.complete(Unit); runCurrent()   // el historial contesta «no se pudo verificar» DESPUÉS del S5
+            assertThat(vm.state.value).isSameInstanceAs(exito)
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "timeout", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Minor 4a — S5 (registrado=false) que llega mientras se consulta el historial deja la contradiccion, la espera al servidor no la pisa`() = runTest(testDispatcher) {
+        val puertaHistorial = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } coAnswers { puertaHistorial.await(); VerificacionDelCobro.NoSePudoVerificar("x") }
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-W23")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val mio = ids.last()
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W23", mio, "pay-s5", 10000, 0, registrado = false)); runCurrent()
+            val contradiccion = vm.state.value as AngelPayPaymentState.Error
+            assertThat(contradiccion.message).contains("evidencia de cobro")
+            puertaHistorial.complete(Unit); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(contradiccion)
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Minor 4b — Success por S5 tras una liberacion mostrada y luego S5 (registrado=false) tardio — el Success se queda`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-W24")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val mio = ids.last()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("volver a cobrar")   // liberación mostrada
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W24", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            // Un S5 repetido/atrasado sin transición en la libreta NO puede convertir un Success en contradicción.
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W24", mio, "pay-s5", 10000, 0, registrado = false)); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(exito)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Minor 7a — mientras el POST de la declaracion vuela la pantalla lo dice (declarando) y al volver se apaga`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns null
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val puertaPost = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } coAnswers { puertaPost.await(); respuesta403() }
+        val vm = vmConCobroDelPos("REQ-W25")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).declarando).isFalse()
+            vm.declararSinTarjeta(); runCurrent()
+            val enVuelo = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(enVuelo.declarando).isTrue(); assertThat(enVuelo.puedeDeclarar).isTrue()
+            puertaPost.complete(Unit); runCurrent()
+            val tras = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(tras.declarando).isFalse(); assertThat(tras.pidePin).isTrue()
         } finally { vm.viewModelScope.cancel() }
     }
 

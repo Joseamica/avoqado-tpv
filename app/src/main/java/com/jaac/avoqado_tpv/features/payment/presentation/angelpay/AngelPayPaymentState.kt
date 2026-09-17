@@ -167,6 +167,8 @@ sealed class AngelPayPaymentState {
      *  - [segundos] transcurridos de esa espera (sólo para la pantalla).
      *  - [puedeDeclarar] = se ofrece «El cliente no presentó tarjeta» (sólo con solicitud del POS).
      *  - [pidePin] = el servidor exigió PIN de supervisor para aceptar la declaración.
+     *  - [declarando] = el POST de la declaración está en vuelo: el botón se apaga y lo dice (un doble toque no se
+     *    traga en silencio; el single-flight del VM sigue siendo la garantía).
      *  - [error] = último aviso de la declaración/consulta (sin red, 409, sesión ajena…).
      * Los campos nuevos tienen default: ningún constructor existente cambia.
      */
@@ -178,6 +180,7 @@ sealed class AngelPayPaymentState {
         val puedeDeclarar: Boolean = false,
         val pidePin: Boolean = false,
         val error: String? = null,
+        val declarando: Boolean = false,
     ) : AngelPayPaymentState()
 
     /** Payment failed with optional retry. */

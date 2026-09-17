@@ -3586,6 +3586,225 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── Task 10 (QA en la Nexgo N86, 17-sep): tras liberar el cobro, la terminal SALE sola de la pantalla ─────────────
+    //
+    // Medido dos veces en hardware: la liberación se pintaba ~4 s y el reset automático dejaba el ViewModel en `Idle`, que para
+    // `AngelPayPaymentScreen` con monto es «preparando el cobro» (el cargando) y cuyo auto-arranque no se vuelve a disparar
+    // (sus llaves no cambian): la terminal se quedaba en el cargando para siempre. El ViewModel ahora pide UNA salida —evento
+    // de una vez— sólo cuando ESE reset ocurrió; la pantalla la convierte en su «Regresar».
+
+    /** Una pantalla que escucha la salida automática del ViewModel; `job.cancel()` la «desmonta». */
+    private class PantallaQueEscucha(val salidas: MutableList<Unit>, val job: kotlinx.coroutines.Job)
+
+    private fun kotlinx.coroutines.test.TestScope.pantallaQueEscucha(vm: AngelPayPaymentViewModel): PantallaQueEscucha {
+        val salidas = mutableListOf<Unit>()
+        val job = backgroundScope.launch { vm.salidaAutomatica.collect { salidas += it } }
+        return PantallaQueEscucha(salidas, job)
+    }
+
+    /** Un cobro del POS cuya liberación por VENTANA ya está en pantalla («se puede volver a cobrar»); el reset vence en 4 s. */
+    private fun kotlinx.coroutines.test.TestScope.vmConLiberacionPorVentana(requestId: String): AngelPayPaymentViewModel {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")   // null en la consulta inmediata; liberada en el sondeo
+        val vm = vmConCobroDelPos(requestId)
+        vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+        advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+        assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("volver a cobrar")
+        return vm
+    }
+
+    private fun fijarCampo(vm: AngelPayPaymentViewModel, nombre: String, valor: Any?) {
+        AngelPayPaymentViewModel::class.java.getDeclaredField(nombre).apply { isAccessible = true }.set(vm, valor)
+    }
+
+    @Test fun `Task 10 - la liberacion por ventana pide UNA salida de la pantalla, y sólo al vencer los 4 s`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10A")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            assertThat(pantalla.salidas).isEmpty()                          // la liberación se LEE primero: nada de salir al instante
+            advanceTimeBy(vm.msMostrarLiberada - 200); runCurrent()
+            assertThat(pantalla.salidas).isEmpty()                          // todavía no vencen los 4 s
+            advanceTimeBy(300); runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+            assertThat(pantalla.salidas).hasSize(1)                         // …y al vencer, UNA salida
+            advanceTimeBy(vm.msMostrarLiberada * 10); runCurrent()
+            assertThat(pantalla.salidas).hasSize(1)                         // nunca otra
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - la declaracion del cajero (OPERATOR_RECONCILED) tambien pide UNA salida al vencer los 4 s`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "OPERATOR_RECONCILED")   // null al entrar en espera; tras el CAS de la declaración, liberada
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionOk()
+        coEvery { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(true)
+        val vm = vmConCobroDelPos("REQ-T10B")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.declararSinTarjeta(); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("no se presentó tarjeta")
+            assertThat(pantalla.salidas).isEmpty()
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+            assertThat(pantalla.salidas).hasSize(1)
+            advanceTimeBy(vm.msEsperaAlServidor * 2); runCurrent()          // ni el sondeo (cancelado) ni nada más pide otra
+            assertThat(pantalla.salidas).hasSize(1)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - si dentro de los 4 s llega S5 sin registro (contradiccion), no se pide salida y la contradiccion se queda`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-T10C")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            vm.onIntentLaunched(); runCurrent()
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val mio = ids.last()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("volver a cobrar")
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-T10C", mio, "pay-s5", 10000, 0, registrado = false)); runCurrent()
+            val contradiccion = vm.state.value as AngelPayPaymentState.Error
+            assertThat(contradiccion.message).contains("evidencia de cobro")
+            advanceTimeBy(vm.msMostrarLiberada * 3); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(contradiccion)
+            assertThat(pantalla.salidas).isEmpty()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - si dentro de los 4 s llega S5 registrado (dinero), no se pide salida y el Success se queda`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-T10D")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val mio = ids.last()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("volver a cobrar")
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-T10D", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            advanceTimeBy(vm.msMostrarLiberada * 3); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(exito)
+            assertThat(pantalla.salidas).isEmpty()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - si el reset automatico se niega, no se pide salida y la liberacion se queda con su Regresar`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10E")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            val liberacion = vm.state.value as AngelPayPaymentState.Error
+            // Defensa en profundidad (hoy ningún camino de producción lo hace sin repintar): el «negativo confirmado» se revoca
+            // con la pantalla intacta y sin veto. Identidad y veto dejan pasar al reset automático; la guarda de `resetPayment()`
+            // («Error tras autorizar sin desenlace negativo») se niega.
+            fijarCampo(vm, "authorizationWasLaunched", true)
+            fijarCampo(vm, "confirmedNegativeOutcome", false)
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(liberacion)        // el reset se negó…
+            assertThat(pantalla.salidas).isEmpty()                         // …y la pantalla NO sale
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - Salir a mano antes de los 4 s no deja pedida una segunda salida`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10F")
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            vm.resetPayment(); runCurrent()                                // «Regresar»: la pantalla navega por su cuenta
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(pantalla.salidas).isEmpty()                         // el reset diferido no reinició nada: no pide otra salida
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - la salida es de UNA vez - una pantalla recreada no la vuelve a recibir`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10G")
+        val primera = pantallaQueEscucha(vm)
+        try {
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(primera.salidas).hasSize(1)
+            primera.job.cancel()                                           // la pantalla se desmonta (rotación, recreación)
+            val recreada = pantallaQueEscucha(vm)
+            advanceTimeBy(vm.msMostrarLiberada * 10); runCurrent()
+            assertThat(recreada.salidas).isEmpty()
+            assertThat(primera.salidas).hasSize(1)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - si al pedir la salida nadie escucha, se entrega UNA vez a la pantalla que vuelve`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10H")                 // sin pantalla escuchando
+        try {
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+            val vuelve = pantallaQueEscucha(vm); runCurrent()
+            assertThat(vuelve.salidas).hasSize(1)                          // no se perdió…
+            vuelve.job.cancel()
+            val otraVez = pantallaQueEscucha(vm); runCurrent()
+            assertThat(otraVez.salidas).isEmpty()                          // …ni se repite
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 - el colector de la pantalla convierte la salida en UNA llamada a su Regresar`() = runTest(testDispatcher) {
+        val vm = vmConLiberacionPorVentana("REQ-T10I")
+        var regresos = 0
+        // La MISMA función que usa `AngelPayPaymentScreen` (su cableado lo fija `AngelPayPaymentScreenSalidaTest`).
+        val colector = backgroundScope.launch { recogerSalidaAutomatica(vm.salidaAutomatica) { regresos++ } }
+        try {
+            advanceTimeBy(vm.msMostrarLiberada - 200); runCurrent()
+            assertThat(regresos).isEqualTo(0)
+            advanceTimeBy(300); runCurrent()
+            assertThat(regresos).isEqualTo(1)
+            advanceTimeBy(vm.msMostrarLiberada * 10); runCurrent()
+            assertThat(regresos).isEqualTo(1)
+        } finally { colector.cancel(); vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 hermano - Reintentar sin contexto (error antes de fijar el monto) sale de la pantalla en vez de quedarse cargando, y un doble toque no pide dos salidas`() = runTest(testDispatcher) {
+        // `retryAfterError()` sin monto cacheado hace un reset COMPLETO → `Idle` → el mismo cargando eterno. Se alcanza en un cobro
+        // LOCAL con un error de validación previo a fijar el monto (`Error.canRetry` es true por defecto); en un cobro del POS ese
+        // error ya emitió `failed` y la guarda H.3 corta antes.
+        every { authRepository.getVenueId() } returns null
+        val vm = createViewModel()
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            vm.setSocketPaymentSource(null, null)                          // lo que hace la pantalla en un cobro de la terminal
+            vm.initPayment(amount = "100.00"); runCurrent()
+            val error = vm.state.value as AngelPayPaymentState.Error
+            assertThat(error.canRetry).isTrue()
+            assertThat(pantalla.salidas).isEmpty()
+            vm.retryAfterError(); runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+            assertThat(pantalla.salidas).hasSize(1)
+            vm.retryAfterError(); runCurrent()                             // doble toque: ya estaba en Idle
+            assertThat(pantalla.salidas).hasSize(1)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `Task 10 regresion - Idle sigue siendo el arranque legitimo - initPayment desde Idle avanza y no pide salida`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val vm = createViewModel()
+        val pantalla = pantallaQueEscucha(vm)
+        try {
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)   // el estado inicial ANTES de initPayment
+            vm.setSocketPaymentSource("SOCKET", "REQ-T10J")
+            vm.initPayment(amount = "100.00"); runCurrent()
+            assertThat(vm.state.value).isNotEqualTo(AngelPayPaymentState.Idle)
+            advanceTimeBy(vm.msMostrarLiberada * 10); runCurrent()
+            assertThat(pantalla.salidas).isEmpty()
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     // ── Fix round 1 (revisión independiente de la Task 7) ─────────────────────────────────────────
 
     @Test fun `Minor 2 — una fila con PENDING_EVIDENCE (cualquier evidencia de dinero, no solo RECORDED) es contradiccion, prohibe recobrar y nunca ofrece declarar`() = runTest(testDispatcher) {
@@ -3976,6 +4195,24 @@ class AngelPayPaymentViewModelTest {
             vm.resetPayment(); runCurrent()
             assertThat(vm.state.value).isSameInstanceAs(s)   // el veto sigue: ni «Salir» lo limpia
             verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `S35 - contradiccion restaurada y rechazo del SDK embebido - al morir la pantalla no sale ningun negativo`() = runTest(testDispatcher) {
+        // Sonda de S35 (Task 8, validada en la copia aislada; aplicada en la Task 10): el rechazo confirmado del SDK fija `confirmedNegativeOutcome = true` ANTES de que el
+        // veto lo mande a `mostrarContradiccion()`, que lo REVOCA. La red de `onCleared` (`emitCancelledIfAbandoned`) no consulta el
+        // veto: sin la revocación (S35) le pediría al socket un negativo sobre un intento con evidencia de dinero del servidor.
+        val vm = vmRecreadoConEvidencia("REQ-RC9")
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500", message = "Transacción rechazada por el gateway")); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+            vm.emitCancelledIfAbandoned()   // lo que corre onCleared() cuando la pantalla muere
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = any(), status = any(), paymentId = any(), transactionId = any(),
+                    cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
+                    outcomeEvidence = any())
+            }
         } finally { vm.viewModelScope.cancel() }
     }
 

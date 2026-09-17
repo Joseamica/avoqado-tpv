@@ -73,12 +73,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -610,6 +612,21 @@ class AngelPayPaymentViewModel @Inject constructor(
     /** Lo que la pantalla muestra cuando el POS canceló (o llegó tarde). Null = no hay nada que decir. */
     private val _mensajeDelPos = MutableStateFlow<String?>(null)
     val mensajeDelPos: StateFlow<String?> = _mensajeDelPos.asStateFlow()
+
+    /**
+     * 🚪 Salida AUTOMÁTICA de la pantalla de cobro (Task 10, QA en la Nexgo N86, 17-sep). Tras liberar un cobro (ventana de
+     * 30 s o declaración del cajero) este ViewModel vuelve solo a [AngelPayPaymentState.Idle]; para `AngelPayPaymentScreen`
+     * con monto, `Idle` es «preparando el cobro» (el cargando) y su auto-arranque no se vuelve a disparar —sus llaves no
+     * cambian—, así que la terminal se quedaba en el cargando para siempre. Cada elemento le pide a la pantalla la MISMA
+     * salida que su botón «Regresar».
+     *
+     * Evento de UNA vez, a propósito un `Channel` y no estado: cada elemento se entrega a UN colector y una sola vez —no se
+     * repite al recrear la pantalla ni al rotar— y, si en ese instante nadie escucha, espera a la pantalla que vuelva.
+     * `CONFLATED`: dos salidas pendientes son la misma salida. Sólo lo alimenta [pedirSalidaSiSeReinicio].
+     */
+    private val _salidaAutomatica = Channel<Unit>(Channel.CONFLATED)
+    val salidaAutomatica: Flow<Unit> = _salidaAutomatica.receiveAsFlow()
+
     private var pendingProcessorAffiliation: String? = null
     private var ledgerOpenedAmountCents: Long? = null
     private var ledgerOpenedTipCents: Long? = null
@@ -3070,7 +3087,30 @@ class AngelPayPaymentViewModel @Inject constructor(
         _state.value = mostrado
         // El reset automático sólo si la pantalla sigue siendo ESTA liberación y nadie encendió el veto entre tanto (S5 puede
         // llegar en esos 4 s y convertirla en contradicción, que también es un `Error`: por eso se compara identidad).
-        viewModelScope.launch { delay(msMostrarLiberada); if (_state.value === mostrado && vetoDeDineroDelIntento == null) resetPayment() }
+        // Task 10 (QA N86, 17-sep): tras ESE reset la pantalla SALE —`Idle` con monto es su cargando de «preparando el cobro»—.
+        // Si este job no reinició (otra pantalla, veto) o `resetPayment()` se negó, no se pide nada.
+        viewModelScope.launch {
+            delay(msMostrarLiberada)
+            if (_state.value === mostrado && vetoDeDineroDelIntento == null) resetPayment()
+            else return@launch
+            pedirSalidaSiSeReinicio(desde = mostrado, motivo = "liberación $evidencia")
+        }
+    }
+
+    /**
+     * Task 10: pide a la pantalla la salida de «Regresar» SÓLO si el reinicio recién pedido ocurrió —se salió de [desde], que
+     * no era `Idle`, y el estado quedó en `Idle`—. Si `resetPayment()` se negó (sus guardas conservan una obligación), la
+     * pantalla sigue siendo la que era, con su propio «Regresar», y no se pide nada. Desde `Idle` tampoco: un doble toque no
+     * pide dos salidas.
+     */
+    private fun pedirSalidaSiSeReinicio(desde: AngelPayPaymentState, motivo: String) {
+        val seReinicio = desde !is AngelPayPaymentState.Idle && _state.value is AngelPayPaymentState.Idle
+        if (!seReinicio) {
+            Timber.w("🚪 [AngelPay] %s: no hubo reinicio (%s) — la pantalla se queda", motivo, _state.value::class.simpleName)
+            return
+        }
+        Timber.i("🚪 [AngelPay] %s: reinicio hecho — la pantalla sale sola, como con «Regresar»", motivo)
+        _salidaAutomatica.trySend(Unit)
     }
 
     /** «Consultar de nuevo» tras los 45 s: vuelve a esperar al servidor (sin re-emitir el `timeout` al POS). */
@@ -4390,7 +4430,12 @@ class AngelPayPaymentViewModel @Inject constructor(
             navigateToStep(PrePaymentNextStep.SELECT_MERCHANT, pendingAmount.toPlainString())
         } else {
             Timber.w("🔁 [AngelPay] Retry with no cached context → full reset")
+            // Task 10 (hermano de la liberación): el reset completo deja `Idle`, que con monto es el cargando de «preparando
+            // el cobro» y no se vuelve a arrancar solo — la pantalla SALE como con «Regresar». Llega aquí un cobro LOCAL con un
+            // error de validación previo a fijar el monto (el del POS ya emitió su `failed` y la guarda H.3 corta antes).
+            val desde = _state.value
             resetPayment()
+            pedirSalidaSiSeReinicio(desde = desde, motivo = "reintento sin contexto")
         }
     }
 
@@ -4691,7 +4736,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         /**
          * Ventana de confirmación (Task 7) — relojes de UX de ESTA pantalla, no financieros: el único reloj financiero es la
          * ventana de 30 s del servidor. Se espera su veredicto hasta 45 s (30 s de ventana + margen del webhook/S6),
-         * consultando S6 cada 5 s; una liberación se muestra 4 s antes de volver a Idle.
+         * consultando S6 cada 5 s; una liberación se muestra 4 s antes de volver a Idle y de que la pantalla salga (Task 10).
          */
         const val MS_ESPERA_AL_SERVIDOR = 45_000L
         const val MS_ENTRE_CONSULTAS_S6 = 5_000L

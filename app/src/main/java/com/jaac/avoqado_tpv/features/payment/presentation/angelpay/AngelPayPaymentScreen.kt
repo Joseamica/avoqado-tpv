@@ -41,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +73,9 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPayme
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.watchdogMessage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
@@ -201,6 +205,23 @@ fun AngelPayPaymentScreen(
     // regardless of payment state. The VM-side SavedStateHandle backing is the other half.
     LaunchedEffect(paymentSource, socketRequestId) {
         viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
+    }
+
+    // 🔴 «Regresar» del error: UNA sola definición para el botón y para la salida automática (Task 10). resetPayment() ANTES
+    // de navegar — igual que la flecha del top bar (ver `onNavigationClick`, rama Error): el botón sólo navegaba, así que un
+    // cobro empujado por el POS se abandonaba sin avisarle y el POS seguía colgado. Verificado en hardware el 2026-08-10 (N86, E699).
+    val regresarDelError: () -> Unit = {
+        viewModel.resetPayment()
+        onNavigateBack()
+    }
+    // 🚪 Task 10 (QA en la Nexgo N86, 17-sep): tras liberar un cobro el ViewModel vuelve solo a `Idle`, que aquí es el cargando
+    // de «preparando el cobro» y cuyo auto-arranque (abajo) no se vuelve a disparar: la terminal se quedaba en el cargando para
+    // siempre. El ViewModel pide entonces UNA salida —evento de una vez: ni se repite al recrear la pantalla ni se pierde si
+    // llega sin nadie escuchando— y aquí se convierte en la misma salida que «Regresar». Va antes de los overlays (que hacen
+    // `return`) para escuchar en todo estado.
+    val salirComoRegresar by rememberUpdatedState(regresarDelError)
+    LaunchedEffect(viewModel) {
+        recogerSalidaAutomatica(viewModel.salidaAutomatica) { salirComoRegresar() }
     }
 
     // Auto-start payment when screen opens with amount
@@ -747,14 +768,9 @@ fun AngelPayPaymentScreen(
                         // at rating/tip. Pre-flight errors fall back to the
                         // payment-method step. (User feedback 2026-05-30.)
                         onRetry = { viewModel.retryAfterError() },
-                        // 🔴 resetPayment() ANTES de navegar — igual que la flecha del top bar
-                        // (ver `onNavigationClick`, rama Error). Este botón sólo navegaba, así que
-                        // un cobro empujado por el POS se abandonaba sin avisarle: el POS seguía
-                        // colgado esperando. Verificado en hardware el 2026-08-10 (N86, E699).
-                        onGoBack = {
-                            viewModel.resetPayment()
-                            onNavigateBack()
-                        },
+                        // «Regresar»: la MISMA salida que la automática tras liberar un cobro (definida
+                        // arriba, con su porqué: resetPayment() ANTES de navegar).
+                        onGoBack = regresarDelError,
                         onOpenShift = onNavigateToShifts,
                     )
                 }
@@ -769,6 +785,19 @@ fun AngelPayPaymentScreen(
         }
     }
 
+}
+
+/**
+ * 🚪 Task 10 (QA en la Nexgo N86, 17-sep): recoge las salidas que pide el ViewModel
+ * ([AngelPayPaymentViewModel.salidaAutomatica]) y ejecuta con CADA una la salida que le pasa la pantalla — la misma de su
+ * botón «Regresar». Vive fuera del `@Composable` para poder probarla con el ViewModel real en una prueba de JVM.
+ *
+ * `Main.immediate` a propósito: el elemento se entrega dentro del `trySend` del ViewModel, sin la ventana en la que
+ * desmontar la pantalla cancelaría a este colector con el elemento ya sacado del canal (la terminal volvería a quedarse en
+ * el cargando).
+ */
+internal suspend fun recogerSalidaAutomatica(salidas: Flow<Unit>, salir: () -> Unit) {
+    withContext(Dispatchers.Main.immediate) { salidas.collect { salir() } }
 }
 
 // ── Shared composables ───────────────────────────────────────────────

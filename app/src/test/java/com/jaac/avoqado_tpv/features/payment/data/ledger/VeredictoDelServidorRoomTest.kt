@@ -380,7 +380,7 @@ class VeredictoDelServidorRoomTest {
 
     @Test fun `la liberacion del servidor cierra la fila INDETERMINADO como DESCARTADA sin tocar host_approved y destraba la venta`() = runTest {
         fila("a1", "INDETERMINADO", hostApproved = null)
-        val n = dao.cerrarPorLiberacionDelServidor("a1", venue, PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE,
+        val n = dao.cerrarPorLiberacionDelServidor("a1", venue, "req-1", PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE,
             PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "NO_EVIDENCE_AFTER_WINDOW", now)
         assertThat(n).isEqualTo(1)
         val tras = dao.getById("a1")!!
@@ -390,27 +390,34 @@ class VeredictoDelServidorRoomTest {
         assertThat(tras.serverVerdictAt).isEqualTo(now)
         assertThat(dao.findUnresolvedOrder(venue, "\"orderId\":\"o1\"")).isNull()
         assertThat(dao.observeUnresolvedCount(venue).first()).isEqualTo(0)
-        assertThat(dao.cerrarPorLiberacionDelServidor("a1", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now + 1)).isEqualTo(0) // idempotente
+        assertThat(dao.cerrarPorLiberacionDelServidor("a1", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now + 1)).isEqualTo(0) // idempotente
     }
 
     @Test fun `una fila con host_approved o con veredicto guardado NO se libera — el dinero manda`() = runTest {
         fila("a2", "INDETERMINADO", hostApproved = true)
         fila("a3", "INDETERMINADO", hostApproved = null); dao.aplicarVeredictoDelServidor(s6("a3", "RECORDED"), now)
-        assertThat(dao.cerrarPorLiberacionDelServidor("a2", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
-        assertThat(dao.cerrarPorLiberacionDelServidor("a3", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a2", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a3", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)).isEqualTo(0)
     }
 
-    @Test fun `una fila AUTORIZANDO (SDK dentro) o legacy o de otro venue NO se libera`() = runTest {
+    @Test fun `una fila AUTORIZANDO (SDK dentro) o legacy o de otro venue o de OTRA solicitud NO se libera`() = runTest {
         fila("a4", "AUTORIZANDO", hostApproved = null)
         fila("a5", "INDETERMINADO", hostApproved = null, legacy = true)
         fila("a6", "INDETERMINADO", hostApproved = null, venueId = "otro-venue")
-        for (id in listOf("a4", "a5")) assertThat(dao.cerrarPorLiberacionDelServidor(id, venue, "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
-        assertThat(dao.cerrarPorLiberacionDelServidor("a6", venue, "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+        fila("a9", "INDETERMINADO", hostApproved = null, requestId = "req-9")
+        for (id in listOf("a4", "a5")) assertThat(dao.cerrarPorLiberacionDelServidor(id, venue, "req-1", "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+        assertThat(dao.cerrarPorLiberacionDelServidor("a6", venue, "req-1", "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+        // Task 7 · B (pertenencia): la liberación es de la solicitud `req-1`; una fila de `req-9` no es suya — ni por el DAO ni por la libreta.
+        assertThat(dao.cerrarPorLiberacionDelServidor("a9", venue, "req-1", "RELEASED_NO_EVIDENCE", "x", now)).isEqualTo(0)
+        assertThat(ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venue, "a9", "req-1", "NO_EVIDENCE_AFTER_WINDOW"), now).getOrNull()).isFalse()
+        assertThat(dao.getById("a9")!!.state).isEqualTo("INDETERMINADO")
+        assertThat(ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venue, "a9", "req-9", "NO_EVIDENCE_AFTER_WINDOW"), now).getOrNull()).isTrue()
+        assertThat(dao.getById("a9")!!.state).isEqualTo("DESCARTADA")
     }
 
     @Test fun `un RECORDED que llega despues de la liberacion queda como contradiccion visible`() = runTest {
         fila("a7", "INDETERMINADO", hostApproved = null); bandeja()
-        dao.cerrarPorLiberacionDelServidor("a7", venue, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
+        dao.cerrarPorLiberacionDelServidor("a7", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
         val r = dao.aplicarVeredictoDelServidor(s6("a7", "RECORDED"), now + 1)
         assertThat(r.contradiccion).isTrue()
     }
@@ -418,6 +425,10 @@ class VeredictoDelServidorRoomTest {
     @Test fun `LiberacionDelServidor se lee del request de S6 y solo con las dos evidencias del servidor`() {
         val ventana = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW","evidenceClass":"SERVER"}""")
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", ventana)?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", ventana)?.requestId).isEqualTo("req-1")   // la solicitud liberada viaja con la liberación
+        // Task 7 · B: sin `requestId` en la respuesta no hay pertenencia que comprobar ⇒ no es una liberación aplicable.
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", ventana.copy(requestId = null))).isNull()
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", ventana.copy(requestId = ""))).isNull()
         val cajero = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED","evidenceClass":"OPERATOR"}""")
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", cajero)?.evidencia).isEqualTo("OPERATOR_RECONCILED")
         val declinado = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"PROCESSOR_DECLINED"}""")

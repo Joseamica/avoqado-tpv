@@ -623,14 +623,17 @@ interface PaymentAttemptDao {
      * Liberación del SERVIDOR (ventana de confirmación / declaración del cajero): sólo una fila INDETERMINADO sin veredicto y sin
      * `host_approved` — el host nunca contestó — pasa a DESCARTADA. NO toca `host_approved`: un RECORDED posterior entra por
      * `aplicarVeredictoDelServidor` como contradicción («RECORDED sobre DESCARTADA») y el aviso lo grita.
+     * Pertenencia (Task 7 · B): la liberación es de UNA solicitud; la fila sólo se cierra si su `terminal_payment_request_id`
+     * es exactamente esa — el mismo criterio con que `aplicarVeredictoDelServidor` rechaza un veredicto ajeno.
      */
     @Query(
         """UPDATE payment_attempts SET state = 'DESCARTADA', last_error = :motivo, server_outcome = :serverOutcome,
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
-           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id = :requestId
+             AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
              AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL""",
     )
-    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long): Int
+    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long): Int
 
     /**
      * E4 · la bandeja responde por la SOLICITUD y sólo con un ganador acreditado: PROCESSING ⇒ RESOLVED `success`;

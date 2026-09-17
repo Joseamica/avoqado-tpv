@@ -24,6 +24,8 @@ import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud
+import com.jaac.avoqado_tpv.features.payment.data.ledger.LiberacionDelServidor
+import com.jaac.avoqado_tpv.features.payment.data.ledger.NoInstrumentResolutionRequest
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
@@ -140,6 +142,11 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val authAttemptTelemetryStore: AuthAttemptTelemetryStore,
     // 🔁 T26: botón «Reintentar» del banner de AngelPay → recuperación MANUAL de la auth.
     private val angelPayAuthRecovery: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRecovery,
+    // 🕰️ Ventana de confirmación (Task 7): mientras la pantalla espera el veredicto del servidor
+    // sobre un desenlace INCIERTO, consulta S6 por aquí (dinero registrado o liberación) y por
+    // `attemptApi` el cajero DECLARA «no se presentó tarjeta». Hilt provee los dos.
+    private val ledgerServerRecovery: com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery,
+    private val attemptApi: com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService,
     // 📡 Survives process/Activity death while the AngelPay SDK Activity holds the foreground —
     // see [_paymentSource] / [_socketRequestId]. Hilt provides this automatically to @HiltViewModel.
     private val savedStateHandle: SavedStateHandle,
@@ -564,6 +571,23 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var solicitudCerradaAntesDeAutorizar = false
     private var confirmedNegativeOutcome = false
     private var confirmedNegativeEvidence: String? = null
+
+    // ── Ventana de confirmación (Task 7): la pantalla espera el veredicto del SERVIDOR ─────────
+    private var esperaAlServidorJob: Job? = null
+    private var declaracionJob: Job? = null     // single-flight: nunca dos POST de declaración en vuelo (Codex, Task 0 R4, P5)
+    private var resolutionId: String? = null   // UNA vez por intento: el replay es idempotente en el servidor
+    /**
+     * Veto de dinero POR INTENTO (Codex, Task 0 R4, P5): se enciende ANTES de suspender para guardar una evidencia de dinero y
+     * ya nunca se apaga en este cobro. Con él encendido no se intenta ni se muestra ninguna liberación aunque la fila conserve
+     * una liberación vieja o llegue una respuesta atrasada sin dinero. Se limpia sólo en `resetPayment()`.
+     */
+    private var vetoDeDineroDelIntento: String? = null
+    /** La pantalla anunció una liberación («se puede volver a cobrar») en este cobro; S5 lo usa para saber que tiene que desmentirla. */
+    private var liberacionMostrada = false
+
+    @VisibleForTesting internal var msEsperaAlServidor: Long = MS_ESPERA_AL_SERVIDOR
+    @VisibleForTesting internal var msEntreConsultasS6: Long = MS_ENTRE_CONSULTAS_S6
+    @VisibleForTesting internal var msMostrarLiberada: Long = MS_MOSTRAR_LIBERADA
 
     /**
      * 🛑 H.3 — desenlace NEGATIVO de un cobro remoto que ya llegó al SDK (rechazo del banco o aviso EMV)
@@ -2743,7 +2767,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         if (attemptId == null) {
             // Sin la referencia que viajó con el cobro no hay forma de reconocerlo en el
             // historial, y emparejar por monto/hora sería adivinar. Se queda dicho.
-            quedarSinVerificar("no hay referencia del intento")
+            esperarVeredictoDelServidor("no hay referencia del intento")
             return
         }
 
@@ -2786,34 +2810,220 @@ class AngelPayPaymentViewModel @Inject constructor(
                 )
             }
 
-            VerificacionDelCobro.NoCobrado -> quedarSinVerificar("El historial no ofrece prueba final de ausencia de cobro")
+            VerificacionDelCobro.NoCobrado -> esperarVeredictoDelServidor("El historial no ofrece prueba final de ausencia de cobro")
 
-            is VerificacionDelCobro.NoSePudoVerificar -> quedarSinVerificar(verificacion.motivo)
+            is VerificacionDelCobro.NoSePudoVerificar -> esperarVeredictoDelServidor(verificacion.motivo)
+        }
+    }
+
+    // ── Ventana de confirmación (Task 7): el veredicto lo pone el SERVIDOR ────────────────────
+
+    /**
+     * No se pudo verificar por el historial: el desenlace SIGUE sin conocerse. La fila de la libreta se queda
+     * en INDETERMINADO (nunca se poda) y la duda se le pasa AL SERVIDOR, que tiene la ventana de confirmación
+     * de 30 s: esta pantalla espera su veredicto por S6 (cada [MS_ENTRE_CONSULTAS_S6], hasta [MS_ESPERA_AL_SERVIDOR]).
+     *
+     * 📡 Al POS se le manda **`timeout`** AL INSTANTE, como siempre — el reloj es del servidor, no de esta
+     * pantalla. Es lo más cerca de "no sé" que admite el contrato (`success|failed|cancelled|timeout`), y desde
+     * la ventana de confirmación significa: la solicitud entra a la ventana de 30 s (`TIMED_OUT` + sobre del
+     * resultado); si en esos 30 s el banco no la aprobó, el servidor la libera como `FAILED/NO_EVIDENCE_AFTER_WINDOW`
+     * (venta y ranura destrabadas) y un `Payment` tardío la REABRE como cobro con dinero (contradicción visible).
+     * Un status inventado sería peor que no mandar nada: el servidor descarta lo que no reconoce, en silencio.
+     * El `timeout` sale UNA vez: sólo al venir del historial (`verificando = true`); «Consultar de nuevo» no re-emite.
+     *
+     * Un cobro INICIADO EN LA TERMINAL (sin solicitud del POS) no tiene ventana ni declaración en el servidor
+     * (`recoverOne` descarta las filas sin solicitud): queda sin confirmar, como antes, sin reloj ni botón.
+     */
+    private fun esperarVeredictoDelServidor(motivo: String) {
+        Timber.w("🔍 [AngelPay] Sin veredicto del historial (%s) — esperando al servidor", motivo)
+        val previo = _state.value as? AngelPayPaymentState.ResultadoIncierto
+        val vieneDelHistorial = previo?.verificando != false
+        if (vieneDelHistorial) {
+            emitSocketResultIfSocketSourced(
+                status = "timeout",
+                errorMessage = "La terminal no pudo confirmar el resultado del cobro. Confirmando con el banco.",
+            )
+        }
+        val attemptId = currentPaymentAttemptId
+        val requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET }
+        val venueId = authRepository.getVenueId() ?: secureStorage.getVenueId()
+        if (attemptId == null || requestId == null || venueId == null) {
+            Timber.w("🔍 [AngelPay] Sin solicitud del POS o sin referencia: queda sin confirmar (attemptId=%s, requestId=%s)", attemptId, requestId)
+            _state.value = AngelPayPaymentState.ResultadoIncierto(
+                message = "No se pudo confirmar si el cobro pasó ($motivo).\n\n" +
+                    "NO vuelvas a cobrar: revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
+                verificando = false,
+            )
+            return
+        }
+        _state.value = AngelPayPaymentState.ResultadoIncierto(
+            message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
+            verificando = false, esperandoAlServidor = true, segundos = 0, puedeDeclarar = true,
+            // El último aviso de la declaración (409, «no se pudo confirmar en este aparato»…) sobrevive a la consulta nueva:
+            // es lo que explica POR QUÉ se vuelve a consultar. Una declaración nueva lo limpia.
+            error = previo?.takeIf { !it.verificando }?.error,
+        )
+        esperaAlServidorJob?.cancel()
+        esperaAlServidorJob = viewModelScope.launch {
+            var transcurrido = 0L
+            while (true) {
+                // La primera consulta es INMEDIATA: un veredicto que ya está en la libreta (S5 mientras el SDK estaba dentro,
+                // una liberación anterior) se enseña al instante, no 5 s después. Luego cada [msEntreConsultasS6].
+                runCatching { ledgerServerRecovery.recoverOne(venueId, attemptId) }
+                    .onFailure { if (it is CancellationException) throw it }
+                if (aplicarLoQueDigaLaLibreta(attemptId)) return@launch
+                if (transcurrido >= msEsperaAlServidor) break
+                delay(msEntreConsultasS6); transcurrido += msEntreConsultasS6
+                actualizarIncierto { it.copy(segundos = (transcurrido / 1000).toInt()) }
+            }
+            // Servidor caído o sin veredicto en 45 s: se deja de girar, pero sin Reintentar. El watchdog del servidor
+            // libera por su cuenta y la recuperación por servidor (N3) lo aplica al reconectar.
+            actualizarIncierto {
+                it.copy(
+                    esperandoAlServidor = false,
+                    message = "El servidor todavía no confirma este cobro. Consulta de nuevo o, si no se presentó tarjeta, dilo aquí.",
+                )
+            }
         }
     }
 
     /**
-     * No se pudo preguntar: el desenlace SIGUE sin conocerse. La fila de la libreta se queda
-     * en INDETERMINADO (nunca se poda) y la pantalla lo dice con todas sus letras.
-     *
-     * 📡 Al POS se le manda **`timeout`**, no `failed`. Es lo más cerca de "no sé" que admite
-     * el contrato del servidor (`success|failed|cancelled|timeout`): cierra la fila sin
-     * afirmar que el cobro falló ni dejar el slot de la terminal retenido, y si el pago
-     * aparece después, el servidor reconcilia esa fila a COMPLETED desde el `Payment`
-     * registrado (su `lateResult`). Un status inventado sería peor que no mandar nada: el
-     * servidor descarta lo que no reconoce, en silencio.
+     * Lee la fila y mueve la pantalla, con EL DINERO PRIMERO (Codex, Task 0, P5): REGISTRADO ⇒ cobrado; RECORDED sin promover
+     * (contradicción sobre una liberación) ⇒ «Avoqado registró dinero», nunca «se puede volver a cobrar»; liberación ⇒ se puede
+     * volver a cobrar. La liberación se reconoce por `serverOutcome`, NO por el prefijo de `lastError`: ese texto sobrevive a la
+     * contradicción. true si el desenlace ya quedó.
      */
-    private fun quedarSinVerificar(motivo: String) {
-        Timber.w("🔍 [AngelPay] No se pudo verificar el cobro (%s) — queda sin confirmar", motivo)
-        _state.value = AngelPayPaymentState.ResultadoIncierto(
-            message = "No se pudo confirmar si el cobro pasó ($motivo).\n\n" +
-                "NO vuelvas a cobrar: revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
-            verificando = false,
+    private suspend fun aplicarLoQueDigaLaLibreta(attemptId: String): Boolean {
+        val fila = paymentAttemptLedger.leerIntento(attemptId) ?: return false
+        return when {
+            fila.state == PaymentAttemptEntity.STATE_REGISTRADO -> { mostrarCobroConfirmadoPorS6(fila); true }
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_RECORDED -> { mostrarContradiccion(); true }
+            // Con el veto de dinero encendido, una liberación en la fila (vieja o nueva) NO se anuncia: gana la evidencia.
+            vetoDeDineroDelIntento == attemptId -> { mostrarContradiccion(); true }
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> { mostrarLiberada("OPERATOR_RECONCILED"); true }
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> { mostrarLiberada("NO_EVIDENCE_AFTER_WINDOW"); true }
+            else -> false
+        }
+    }
+
+    /**
+     * Evidencia de dinero en el servidor que la libreta no pudo (o no debe) promover: se prohíbe recobrar, sin reset automático.
+     * Revoca el «desenlace negativo confirmado» que `mostrarLiberada` pudo haber fijado (Codex, Task 0 R6, P5.1): con él puesto,
+     * la guarda de `resetPayment()` dejaría pasar un reset manual y se perdería el veto con dinero conocido.
+     */
+    private fun mostrarContradiccion() {
+        esperaAlServidorJob?.cancel()
+        clearChargingOnTerminal()
+        confirmedNegativeOutcome = false
+        confirmedNegativeEvidence = null
+        _state.value = AngelPayPaymentState.Error(
+            message = "Avoqado tiene evidencia de cobro de este intento. NO lo vuelvas a cobrar: Avoqado lo concilia.",
+            canRetry = false,
         )
-        emitSocketResultIfSocketSourced(
-            status = "timeout",
-            errorMessage = "La terminal no pudo confirmar el resultado del cobro. Verifica antes de reintentar.",
+    }
+
+    /** Misma forma que `manejarConfirmacionDelServidor` (S5): el dinero consta en el servidor, la pantalla lo dice. */
+    private fun mostrarCobroConfirmadoPorS6(fila: PaymentAttemptEntity) {
+        esperaAlServidorJob?.cancel()
+        _socketResultEmitted = true
+        cancelarCierrePorAbandono()
+        clearChargingOnTerminal()
+        _state.value = AngelPayPaymentState.Success(
+            authCode = "", amount = pendingAmount.toPlainString(),
+            tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
+            referenceNumber = null, orderId = pendingOrderId, orderNumber = pendingOrderNumber, isCash = false,
+            receipt = PaymentReceipt(
+                paymentId = fila.serverPaymentId ?: "", receiptUrl = "", accessKey = "",
+                amount = pendingAmount, tipAmount = pendingTip, serverRecordedVia = "s6", solicitudLigada = _socketRequestId,
+            ),
         )
+    }
+
+    private fun mostrarLiberada(evidencia: String) {
+        if (vetoDeDineroDelIntento != null) { mostrarContradiccion(); return }   // defensa en profundidad: nunca «liberada» con veto
+        esperaAlServidorJob?.cancel()
+        clearChargingOnTerminal()
+        // El SERVIDOR acreditó «no se cobró» (evidencia de servidor/operador): es un desenlace negativo confirmado, y sin esto
+        // `resetPayment()` se negaría a limpiar (guarda «Error tras autorizar sin desenlace negativo»).
+        confirmedNegativeOutcome = true
+        confirmedNegativeEvidence = evidencia
+        liberacionMostrada = true
+        val mostrado = AngelPayPaymentState.Error(
+            message = if (evidencia == "OPERATOR_RECONCILED") "Confirmado: no se presentó tarjeta. Se puede volver a cobrar."
+                      else "No se confirmó el cobro en 30 s. Se puede volver a cobrar. Si el banco lo aprueba tarde, se registra solo y la terminal avisa.",
+            canRetry = false,
+        )
+        _state.value = mostrado
+        // El reset automático sólo si la pantalla sigue siendo ESTA liberación y nadie encendió el veto entre tanto (S5 puede
+        // llegar en esos 4 s y convertirla en contradicción, que también es un `Error`: por eso se compara identidad).
+        viewModelScope.launch { delay(msMostrarLiberada); if (_state.value === mostrado && vetoDeDineroDelIntento == null) resetPayment() }
+    }
+
+    /** «Consultar de nuevo» tras los 45 s: vuelve a esperar al servidor (sin re-emitir el `timeout` al POS). */
+    fun consultarDeNuevo() { if (_state.value is AngelPayPaymentState.ResultadoIncierto) esperarVeredictoDelServidor("consulta manual") }
+
+    /**
+     * Declaración del cajero: «el cliente no presentó tarjeta» (ni celular ni reloj). Sólo para un cobro con solicitud del
+     * POS. UN POST en vuelo a la vez, UN `resolutionId` por intento (el replay con PIN es idempotente en el servidor), y con
+     * el veto de dinero encendido no se declara nada. El 2xx trae la misma proyección que S6: si el cuerpo trae DINERO del
+     * intento, la liberación NI SE INTENTA; sin dinero, se aplica la liberación en la libreta y LA FILA decide la pantalla
+     * (si el CAS local no transicionó porque ya había RECORDED, gana el dinero; si no se puede leer, NUNCA «liberada»).
+     */
+    fun declararSinTarjeta(pin: String? = null) {
+        val attemptId = currentPaymentAttemptId ?: return
+        val requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET } ?: return
+        val venueId = authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return
+        if (vetoDeDineroDelIntento == attemptId) { mostrarContradiccion(); return }   // ya hay evidencia de dinero: no se declara nada
+        if (declaracionJob?.isActive == true) return                                  // single-flight: un doble toque no abre otro POST
+        val id = resolutionId ?: java.util.UUID.randomUUID().toString().also { resolutionId = it }
+        actualizarIncierto { it.copy(error = null) }
+        declaracionJob = viewModelScope.launch {
+            val respuesta = runCatching {
+                attemptApi.resolveNoInstrument(venueId, attemptId, NoInstrumentResolutionRequest(requestId, id, supervisorPin = pin))
+            }.getOrElse { if (it is CancellationException) throw it; Timber.w(it, "🗣️ [AngelPay] declaración sin respuesta"); null }
+            when {
+                respuesta == null -> actualizarIncierto { it.copy(error = "Sin conexión. Se sigue esperando al servidor.") }
+                respuesta.isSuccessful -> {
+                    // El cuerpo es un TerminalAttemptStatus. `desdeConsultaS6` devuelve algo SÓLO si el intento trae evidencia de
+                    // dinero (RECORDED / SECOND_CAPTURE / REFERENCE_COLLISION / PENDING_EVIDENCE); NOT_RECORDED ⇒ null.
+                    val veredicto = respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) }
+                    if (veredicto != null) {
+                        // 🔴 El veto se enciende ANTES de suspender para guardar (Codex, Task 0 R4, P5): cualquier respuesta atrasada,
+                        // lectura de la fila o reset que llegue después lo respeta. Con evidencia de dinero la liberación NI SE
+                        // INTENTA; se guarda el veredicto con el mismo normalizador que S6 y sin red; si guardarlo FALLA
+                        // (`Result.failure`), la pantalla igual prohíbe recobrar (la libreta lo reaplicará por E2/N3). Una
+                        // liberación VIEJA en la fila no cuenta: sólo REGISTRADO enseña Success.
+                        vetoDeDineroDelIntento = attemptId
+                        // Si la pantalla YA anunció una liberación (el sondeo la leyó mientras el POST volaba), se retira AHORA,
+                        // antes de suspender para guardar: ni un segundo de «se puede volver a cobrar» con dinero conocido (R6, P5.2).
+                        if (liberacionMostrada) mostrarContradiccion()
+                        val guardado = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).isSuccess
+                        val fila = paymentAttemptLedger.leerIntento(attemptId)
+                        if (guardado && fila?.state == PaymentAttemptEntity.STATE_REGISTRADO) mostrarCobroConfirmadoPorS6(fila) else mostrarContradiccion()
+                    } else if (vetoDeDineroDelIntento == attemptId) {
+                        mostrarContradiccion()   // una respuesta sin dinero que llegue con el veto ya encendido no libera nada
+                    } else {
+                        paymentAttemptLedger.aplicarLiberacionDelServidor(LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED"))
+                        if (!aplicarLoQueDigaLaLibreta(attemptId)) {
+                            // La fila no se pudo leer o no cambió: NUNCA «se puede volver a cobrar» sin verla. Se consulta de nuevo.
+                            actualizarIncierto { it.copy(error = "No se pudo confirmar en este aparato. Se consulta de nuevo.") }
+                            consultarDeNuevo()
+                        }
+                    }
+                }
+                respuesta.code() == 403 && codigoDeError(respuesta) == "SESSION_NOT_IN_VENUE" ->
+                    actualizarIncierto { it.copy(error = "La sesión de esta terminal no pertenece a este negocio. Vuelve a iniciar sesión.") }
+                respuesta.code() == 403 -> actualizarIncierto { it.copy(pidePin = true, error = if (pin == null) null else "Ese código no tiene permiso para confirmarlo.") }
+                else -> { actualizarIncierto { it.copy(error = "No se pudo confirmar (${codigoDeError(respuesta)}). Se consulta el veredicto.") }; consultarDeNuevo() }
+            }
+        }
+    }
+
+    private fun codigoDeError(r: retrofit2.Response<*>): String =
+        runCatching { org.json.JSONObject(r.errorBody()?.string().orEmpty()).optString("code") }.getOrNull()?.takeIf { it.isNotBlank() } ?: r.code().toString()
+
+    private inline fun actualizarIncierto(f: (AngelPayPaymentState.ResultadoIncierto) -> AngelPayPaymentState.ResultadoIncierto) {
+        (_state.value as? AngelPayPaymentState.ResultadoIncierto)?.let { _state.value = f(it) }
     }
 
     // ── Aviso EMV recuperable abandonado ─────────────────────────────
@@ -2968,13 +3178,22 @@ class AngelPayPaymentViewModel @Inject constructor(
     internal fun manejarConfirmacionDelServidor(event: SocketEvent.TerminalPaymentConfirmed) {
         if (_paymentSource != CobroRemotoDelPos.FUENTE_SOCKET || event.requestId != _socketRequestId) return
         if (event.attemptId != currentPaymentAttemptId) return
+        // Veto de dinero por intento (Task 7): S5 es evidencia de dinero del SERVIDOR, la libreta lo haya promovido o no.
+        // Desde aquí ninguna liberación (vieja, nueva o atrasada) se anuncia en este cobro.
+        vetoDeDineroDelIntento = event.attemptId
+        esperaAlServidorJob?.cancel()
         if (!event.registrado) {
-            // La libreta no lo dio por REGISTRADO (SDK dentro, contradicción, montos distintos…): la pantalla no afirma nada.
-            Timber.w("📣 [AngelPay] payment_confirmed para %s sin transición en la libreta: la pantalla no cambia", event.attemptId)
+            // La libreta no lo dio por REGISTRADO (contradicción sobre una fila liberada, SDK dentro, montos…). Si la pantalla
+            // está esperando el veredicto o YA anunció una liberación, tiene que dejar de decir «se puede volver a cobrar»;
+            // en cualquier otro estado, como hoy: no afirma nada.
+            if (_state.value is AngelPayPaymentState.ResultadoIncierto || liberacionMostrada) mostrarContradiccion()
+            else Timber.w("📣 [AngelPay] payment_confirmed para %s sin transición en la libreta: la pantalla no cambia", event.attemptId)
             return
         }
         val estado = _state.value
-        val enEspera = estado is AngelPayPaymentState.Queued || estado is AngelPayPaymentState.ResultadoIncierto ||
+        // Una liberación YA anunciada («se puede volver a cobrar») también es una espera que el dinero desmiente: sin esto la
+        // pantalla se quedaría con ese texto (el veto apaga su reset automático, pero nadie lo retiraría).
+        val enEspera = estado is AngelPayPaymentState.Queued || estado is AngelPayPaymentState.ResultadoIncierto || liberacionMostrada ||
             (estado is AngelPayPaymentState.Error && authorizationWasLaunched && !confirmedNegativeOutcome)
         if (!enEspera) {
             Timber.i("📣 [AngelPay] payment_confirmed para %s en %s: la pantalla sigue su camino", event.attemptId, estado::class.simpleName)
@@ -4195,6 +4414,13 @@ class AngelPayPaymentViewModel @Inject constructor(
         cachedVenueId = null
         cachedStaffId = null
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
+        // Ventana de confirmación (Task 7): la espera al servidor, la declaración en vuelo y el veto de dinero son de ESTE
+        // intento. Van aquí, después de las guardas de salida, para que un reset RECHAZADO (contradicción retenida) conserve el veto.
+        esperaAlServidorJob?.cancel(); esperaAlServidorJob = null
+        declaracionJob?.cancel(); declaracionJob = null
+        resolutionId = null
+        vetoDeDineroDelIntento = null
+        liberacionMostrada = false
         consumedResultAttemptId = null
         linkAutorizado = null
         decisionQueResolvioLaPantalla = null
@@ -4296,6 +4522,15 @@ class AngelPayPaymentViewModel @Inject constructor(
          * en vencer la fila del servidor, para llegar antes que el vigilante.
          */
         const val MS_ABANDONO_AVISO_EMV = 120_000L
+
+        /**
+         * Ventana de confirmación (Task 7) — relojes de UX de ESTA pantalla, no financieros: el único reloj financiero es la
+         * ventana de 30 s del servidor. Se espera su veredicto hasta 45 s (30 s de ventana + margen del webhook/S6),
+         * consultando S6 cada 5 s; una liberación se muestra 4 s antes de volver a Idle.
+         */
+        const val MS_ESPERA_AL_SERVIDOR = 45_000L
+        const val MS_ENTRE_CONSULTAS_S6 = 5_000L
+        const val MS_MOSTRAR_LIBERADA = 4_000L
 
         // 📡 SavedStateHandle keys for the POS→TPV arbitration link. These MUST survive
         // MainActivity death while the AngelPay SDK Activity is in front — see [_paymentSource].

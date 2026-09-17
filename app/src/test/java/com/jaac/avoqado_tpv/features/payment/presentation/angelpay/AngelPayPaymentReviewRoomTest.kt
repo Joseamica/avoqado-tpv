@@ -223,6 +223,9 @@ class AngelPayPaymentReviewRoomTest {
         // T26: botón «Reintentar» del banner (recuperación MANUAL de la auth de AngelPay).
         angelPayAuthRecovery = mockk(relaxed = true),
         chargeVerifier = chargeVerifier,
+        // Task 7 (ventana de confirmación): S6 mientras se espera al servidor + la declaración del cajero. Fuera de estas pruebas.
+        ledgerServerRecovery = mockk(relaxed = true),
+        attemptApi = mockk(relaxed = true),
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
         savedStateHandle = handle,

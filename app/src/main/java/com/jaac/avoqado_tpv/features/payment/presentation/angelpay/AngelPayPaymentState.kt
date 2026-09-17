@@ -160,10 +160,24 @@ sealed class AngelPayPaymentState {
      * [verificando] = se le está preguntando al historial de AngelPay. Cuando termina, esto
      * se resuelve solo a Success (el cobro existía) o a Error (no existía); sólo se queda
      * aquí cuando NO se pudo preguntar.
+     *
+     * Ventana de confirmación (Task 7): sin hallazgo del historial la duda se le pasa al SERVIDOR.
+     *  - [esperandoAlServidor] = se consulta S6 cada 5 s (hasta 45 s) por el veredicto: dinero
+     *    registrado, o liberación (ventana de 30 s vencida / declaración del cajero).
+     *  - [segundos] transcurridos de esa espera (sólo para la pantalla).
+     *  - [puedeDeclarar] = se ofrece «El cliente no presentó tarjeta» (sólo con solicitud del POS).
+     *  - [pidePin] = el servidor exigió PIN de supervisor para aceptar la declaración.
+     *  - [error] = último aviso de la declaración/consulta (sin red, 409, sesión ajena…).
+     * Los campos nuevos tienen default: ningún constructor existente cambia.
      */
     data class ResultadoIncierto(
         val message: String,
         val verificando: Boolean,
+        val esperandoAlServidor: Boolean = false,
+        val segundos: Int = 0,
+        val puedeDeclarar: Boolean = false,
+        val pidePin: Boolean = false,
+        val error: String? = null,
     ) : AngelPayPaymentState()
 
     /** Payment failed with optional retry. */

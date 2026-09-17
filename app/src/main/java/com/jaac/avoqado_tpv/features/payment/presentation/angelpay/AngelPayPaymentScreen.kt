@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -33,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -53,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.angelpay.angelpaysdk.AngelPayPaymentContract
 import com.angelpay.angelpaysdk.models.PaymentResult
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -726,7 +730,12 @@ fun AngelPayPaymentScreen(
                 }
 
                 is AngelPayPaymentState.ResultadoIncierto -> {
-                    ResultadoInciertoContent(state = currentState, onGoBack = onNavigateBack)
+                    ResultadoInciertoContent(
+                        state = currentState,
+                        onDeclarar = { pin -> viewModel.declararSinTarjeta(pin) },
+                        onConsultarDeNuevo = { viewModel.consultarDeNuevo() },
+                        onGoBack = onNavigateBack,
+                    )
                 }
 
                 is AngelPayPaymentState.Error -> {
@@ -848,12 +857,21 @@ private fun LoadingContent(
  * Ámbar y no rojo a propósito: rojo se lee como «falló», y lo que hay que comunicar es
  * justo lo contrario — *no se sabe*. Y **sin botón de Reintentar**: la única acción que
  * este estado no puede ofrecer es la que produce el doble cobro.
+ *
+ * Ventana de confirmación (Task 7): mientras [AngelPayPaymentState.ResultadoIncierto.esperandoAlServidor]
+ * se enseña el reloj de la espera; con `puedeDeclarar` el cajero puede decir «El cliente no presentó
+ * tarjeta» (un solo toque; PIN de supervisor sólo si el servidor lo exige); pasados los 45 s aparece
+ * «Consultar de nuevo». Nunca un «Reintentar».
  */
 @Composable
 private fun ResultadoInciertoContent(
     state: AngelPayPaymentState.ResultadoIncierto,
+    onDeclarar: (pin: String?) -> Unit,
+    onConsultarDeNuevo: () -> Unit,
     onGoBack: () -> Unit,
 ) {
+    // El código vive sólo mientras el servidor lo pide; si deja de pedirlo, se descarta.
+    var pin by remember(state.pidePin) { mutableStateOf("") }
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val minContentHeight = maxHeight
         Column(
@@ -894,10 +912,59 @@ private fun ResultadoInciertoContent(
                     textAlign = TextAlign.Center,
                 )
             } else {
+                if (state.esperandoAlServidor) {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Confirmando con el banco… (${state.segundos} s)",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                state.error?.let {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                    )
+                }
                 Spacer(modifier = Modifier.height(24.dp))
+                if (state.puedeDeclarar) {
+                    if (state.pidePin) {
+                        AvoqadoTextField(
+                            value = pin,
+                            onValueChange = { nuevo -> if (nuevo.length <= 8 && nuevo.all { it.isDigit() }) pin = nuevo },
+                            label = "Código de supervisor",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            isPassword = true,
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = { onDeclarar(pin) },
+                            enabled = pin.length in 4..8,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Confirmar con código")
+                        }
+                    } else {
+                        OutlinedButton(onClick = { onDeclarar(null) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("El cliente no presentó tarjeta")
+                        }
+                    }
+                    if (!state.esperandoAlServidor) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(onClick = onConsultarDeNuevo, modifier = Modifier.fillMaxWidth()) {
+                            Text("Consultar de nuevo")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
                 // Salir sí; volver a cobrar no. La salida existe para que la terminal no
                 // quede secuestrada, no para reintentar el cobro por otra puerta.
-                OutlinedButton(onClick = onGoBack, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = onGoBack, modifier = Modifier.fillMaxWidth()) {
                     Text("Salir")
                 }
             }
@@ -1086,11 +1153,12 @@ private fun AngelPayResultadoInciertoVerificandoPreview() {
                     "verificar. Estamos consultando con AngelPay si el pago pasó.",
                 verificando = true,
             ),
-            onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
 
+/** Cobro iniciado en la terminal (sin solicitud del POS): sin reloj y sin declaración, como antes. */
 @Preview(device = PAX_A910S, showSystemUi = true)
 @Composable
 private fun AngelPayResultadoInciertoSinVerificarPreview() {
@@ -1101,7 +1169,55 @@ private fun AngelPayResultadoInciertoSinVerificarPreview() {
                     "revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
                 verificando = false,
             ),
-            onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
+        )
+    }
+}
+
+/** Ventana de confirmación: esperando al servidor, con el botón de declarar (PAX A910S: 360×640 dp). */
+@Preview(widthDp = 360, heightDp = 640)
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPayResultadoInciertoEsperandoAlServidorPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
+                verificando = false, esperandoAlServidor = true, segundos = 15, puedeDeclarar = true,
+            ),
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
+        )
+    }
+}
+
+/** El servidor exigió PIN de supervisor para aceptar la declaración. */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun AngelPayResultadoInciertoPidePinPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
+                verificando = false, esperandoAlServidor = true, segundos = 20, puedeDeclarar = true, pidePin = true,
+                error = "Ese código no tiene permiso para confirmarlo.",
+            ),
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
+        )
+    }
+}
+
+/** Pasados los 45 s sin veredicto: se deja de girar, con «Consultar de nuevo» y la declaración — nunca «Reintentar». */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun AngelPayResultadoInciertoTrasLaEsperaPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "El servidor todavía no confirma este cobro. Consulta de nuevo o, si no se presentó tarjeta, dilo aquí.",
+                verificando = false, esperandoAlServidor = false, segundos = 45, puedeDeclarar = true,
+                error = "Sin conexión. Se sigue esperando al servidor.",
+            ),
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }

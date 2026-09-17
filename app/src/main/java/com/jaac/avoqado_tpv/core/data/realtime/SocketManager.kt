@@ -2042,7 +2042,7 @@ class SocketManager @Inject constructor(
      * Backend resolves the pending HTTP request from iOS.
      *
      * @param requestId The original request ID from terminal:payment_request
-     * @param status "success" or "failed"
+     * @param status "success", "failed", "cancelled", or non-final "timeout"
      * @param paymentId Backend Payment ID (if success)
      * @param transactionId Blumon transaction ID (if success)
      * @param cardDetails Card info for receipt
@@ -2082,11 +2082,29 @@ class SocketManager @Inject constructor(
                 }
                 put("completedAt", java.time.Instant.now().toString())
             }
-            // Dinero: el resultado va a disco ANTES del socket. Si el proceso muere
+            // Dinero: un resultado FINAL va a disco ANTES del socket. Si el proceso muere
             // entre ambos, la reentrega del mismo requestId reproduce este JSON.
             socketScope.launch {
                 val persisted = remotePaymentInbox.persistResult(requestId, payload.toString())
                 if (persisted == null) {
+                    if (status == "timeout") {
+                        // Incertidumbre es un AVISO, nunca un cierre de la bandeja/libreta.
+                        // Sin él, el POS sigue cargando hasta agotar sus cinco minutos.
+                        // El servidor conserva UNKNOWN; un resultado durable ya existente
+                        // gana arriba y un resultado tardío conserva su requestId.
+                        try {
+                            socket?.emit("terminal:payment_result", JSONObject().apply {
+                                put("requestId", requestId)
+                                put("status", "timeout")
+                                put("errorMessage", errorMessage ?: JSONObject.NULL)
+                                put("completedAt", payload.getString("completedAt"))
+                            })
+                            Timber.i("📡 [Socket] Submitted uncertainty notice; request remains unresolved | requestId=$requestId")
+                        } catch (error: Exception) {
+                            Timber.e(error, "❌ Failed to notify uncertain terminal payment; request remains unresolved")
+                        }
+                        return@launch
+                    }
                     Timber.w("⚠️ [Socket] Result not final or no durable inbox row | requestId=$requestId")
                     return@launch
                 }

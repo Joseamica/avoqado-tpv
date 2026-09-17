@@ -330,6 +330,15 @@ interface PaymentAttemptDao {
      * 🔴 El predicado de «identidad utilizable» vive IDÉNTICO en tres sitios —éste,
      * [findTerminalHold] y la guarda 1 de [reserveTerminal]— y tiene que seguir igual en los
      * tres: si uno se relaja y otro no, o la caja se apaga sin motivo o se abre un doble cobro.
+     *
+     * 🔴 Fix 5 (Codex r5, P1-A): la cerca de la MISMA VENTA con evidencia durable también aquí, ATÓMICA en el mismo
+     * UPDATE. Carrera reproducida: A liberada (DESCARTADA sin marca) → B RESERVA la misma venta (la guarda 2 la deja
+     * pasar) → llega la aprobación bancaria tardía de A (marca) → B pasaba a AUTORIZANDO porque este CAS sólo miraba la
+     * DESCARTADA con marca SIN identidad. Entre reservar y autorizar hay una espera real (el vínculo N1). Ahora una
+     * DESCARTADA con marca cuya `"orderId":"…"` sea el de la fila que se autoriza también cierra el paso; otras ventas
+     * siguen entrando. El fragmento se recorta de la propia fila (`payment_attempts.payment_context_json`): 11 = longitud
+     * de `"orderId":"`, y termina en la comilla siguiente — la misma forma compacta que escribe Gson y que ya comparan
+     * la guarda 2 y la migración 34→35.
      */
     @Query(
         """UPDATE payment_attempts
@@ -349,6 +358,14 @@ interface PaymentAttemptDao {
                    OR (other.state = 'DESCARTADA' AND other.server_processor_evidence IS 'APPROVED'
                        AND (instr(other.payment_context_json, '"orderId":"') = 0
                             OR instr(other.payment_context_json, '"orderId":""') > 0))
+                   OR (other.state = 'DESCARTADA' AND other.server_processor_evidence IS 'APPROVED'
+                       AND instr(payment_attempts.payment_context_json, '"orderId":"') > 0
+                       AND instr(payment_attempts.payment_context_json, '"orderId":""') = 0
+                       AND instr(other.payment_context_json,
+                                 substr(payment_attempts.payment_context_json,
+                                        instr(payment_attempts.payment_context_json, '"orderId":"'),
+                                        11 + instr(substr(payment_attempts.payment_context_json,
+                                                          instr(payment_attempts.payment_context_json, '"orderId":"') + 11), '"'))) > 0)
                )
            ))"""
     )

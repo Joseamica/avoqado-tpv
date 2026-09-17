@@ -272,6 +272,26 @@ class EvidenciaDurableDelServidorRoomTest {
         assertWithMessage("mostrador: otra venta entra").that(abrir("c", null, "o2", esKiosco = false)).isTrue()
     }
 
+    // ═══ Fix 5 · P1-A (Codex r5): la cerca de la MISMA venta también en el CAS a AUTORIZANDO ═══
+
+    @Test fun `P1-A carrera - B reserva la misma venta liberada, llega APPROVED durable para A, y el CAS a AUTORIZANDO de B pierde - otra venta si autoriza`() = runTest {
+        reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1"); liberar("a1", "req-1")
+        // Entre la reserva y la autorización hay una espera real (el vínculo N1): B reserva la MISMA venta cuando A todavía
+        // no tiene marca (guarda 2 la deja pasar)…
+        assertThat(abrir("b", "req-2", "o1")).isTrue()
+        // …y en ese hueco llega la aprobación bancaria tardía de A.
+        assertThat(marcar("a1")).isEqualTo(1)
+
+        assertWithMessage("el CAS a AUTORIZANDO tiene que ver la evidencia de la MISMA venta").that(ledger.markAuthorizing("b")).isFalse()
+        assertThat(dao.getById("b")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+        assertThat(ledger.markDiscardedBeforeCharge("b", "user_cancel")).isTrue()   // B no autorizó nada: se descarta limpio
+
+        // Control: otra venta reserva y AUTORIZA con normalidad (la cerca es por venta, no por aparato).
+        assertThat(abrir("c", "req-3", "o2")).isTrue()
+        assertThat(ledger.markAuthorizing("c")).isTrue()
+        assertThat(dao.getById("c")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+    }
+
     // ═══ D3(e) · RECORDED posterior (controles: la marca no cambia aplicarVeredictoDelServidor) ═══
 
     @Test fun `D3e RECORDED posterior - una INDETERMINADO con evidencia se promueve a REGISTRADO y deja de ser contradiccion`() = runTest {

@@ -61,6 +61,24 @@ class MigracionV36RoomTest {
         } finally {
             db.close()
         }
+
+        // Fix 5 (Codex r5, H): cerrar y REABRIR con el builder de producción — la base ya en v36 abre sin migrar otra vez y
+        // conserva las filas sembradas y la marca escrita (WAL incluido).
+        val reabierta = DatabaseModule.provideDatabase(context)
+        try {
+            val dao = reabierta.paymentAttemptDao()
+            assertThat(reabierta.openHelper.readableDatabase.version).isEqualTo(36)
+            assertThat(dao.getById("indeterminada")!!.state).isEqualTo("INDETERMINADO")
+            assertThat(dao.getById("indeterminada")!!.serverProcessorEvidence).isNull()
+            val liberada = dao.getById("liberada")!!
+            assertThat(liberada.state).isEqualTo("DESCARTADA")
+            assertThat(liberada.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE")
+            assertThat(liberada.serverProcessorEvidence).isEqualTo("APPROVED")
+            assertThat(liberada.serverProcessorEvidenceAt).isEqualTo(777L)
+            assertThat(liberada.terminalPaymentRequestId).isEqualTo("req-abc")
+        } finally {
+            reabierta.close()
+        }
     }
 
     private fun fila(db: SQLiteDatabase, attemptId: String, state: String, serverOutcome: String?) {

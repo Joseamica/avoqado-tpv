@@ -3808,6 +3808,107 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── Fix round 5 (Codex r5 sobre el fix 4: P1-B contexto monetario · D5 adopción y sumideros) ──
+
+    /** La fila REAL de la libreta que dejó el cobro remoto antes de morir el proceso: importe $120.50 + $10.00, venta o-77. */
+    private fun filaDeLaSolicitudConMarca(requestId: String, attemptId: String = "att-rc1") = PaymentAttemptEntity(
+        attemptId = attemptId, venueId = "v1", processor = "ANGELPAY", state = PaymentAttemptEntity.STATE_INDETERMINADO,
+        amountCents = 12050, tipCents = 1000, recordingRoute = "ORDER",
+        paymentContextJson = """{"venueId":"v1","staffId":"s1","shiftId":"sh-9","amount":120.50,"tip":10.00,"rating":5,"blumonSerialNumber":"","idempotencyKey":"$attemptId","terminalPaymentRequestId":"$requestId","authorizationCode":"","referenceNumber":"","orderId":"o-77","orderNumber":"77","isPortabilidad":false,"serialNumbers":[],"processorAffiliation":"AF-1"}""",
+        lastError = "AngelPay U101", createdAt = 1L, updatedAt = 2L, terminalPaymentRequestId = requestId,
+        serverProcessorEvidence = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, serverProcessorEvidenceAt = 3L,
+    )
+    /** El SavedStateHandle de un ViewModel que MURIÓ con un cobro del POS en vuelo (sólo estas llaves sobreviven). */
+    private fun handleRecreado(requestId: String) = androidx.lifecycle.SavedStateHandle(mapOf(
+        "angelpay_socket_payment_source" to "SOCKET", "angelpay_socket_request_id" to requestId,
+        "angelpay_socket_binding_fixed" to true, "angelpay_socket_bound_request_id" to requestId,
+    ))
+    private fun kotlinx.coroutines.test.TestScope.vmRecreadoConEvidencia(requestId: String): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.intentoDeLaSolicitud(requestId) } returns filaDeLaSolicitudConMarca(requestId)
+        coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns filaDeLaSolicitudConMarca(requestId)
+        val vm = createViewModel(handleRecreado(requestId))
+        vm.setSocketPaymentSource("SOCKET", requestId)   // la pantalla vuelve a etiquetar: mismo id ⇒ retorno temprano
+        vm.initPayment("100.00"); runCurrent()            // …y arranca el cobro: la fila con evidencia restaura la contradicción
+        assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+        return vm
+    }
+
+    @Test fun `fix5 P1-B - recreacion con evidencia y S5 registrado=true - Success con el importe, la propina y la venta de la FILA, no con cero`() = runTest(testDispatcher) {
+        val vm = vmRecreadoConEvidencia("REQ-RC1")
+        try {
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-RC1", "att-rc1", "pay-s5", 12050, 1000, registrado = true)); runCurrent()
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            assertThat(exito.amount).isEqualTo("120.50")
+            assertThat(exito.tipAmount).isEqualTo("10.00")
+            assertThat(exito.orderId).isEqualTo("o-77")
+            assertThat(exito.orderNumber).isEqualTo("77")
+            assertThat(exito.receipt!!.amount).isEqualTo(java.math.BigDecimal("120.50"))
+            assertThat(exito.receipt!!.tipAmount).isEqualTo(java.math.BigDecimal("10.00"))
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `fix5 P1-B - recreacion con evidencia y callback aprobado tardio - el registro lleva el importe y la venta originales (recorder de orden, no de cobro rapido)`() = runTest(testDispatcher) {
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-tardio", receiptUrl = "https://r/1", accessKey = "k", amount = java.math.BigDecimal("120.50"), tipAmount = java.math.BigDecimal("10.00")),
+        )
+        val vm = vmRecreadoConEvidencia("REQ-RC2")
+        try {
+            vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
+            // El registro corre en `withContext(NonCancellable + IO)` (hilo real): se espera al ESTADO, como en P1-1.
+            withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
+            }
+            val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
+            assertThat(ctx.amount).isEqualTo(java.math.BigDecimal("120.50"))
+            assertThat(ctx.tip).isEqualTo(java.math.BigDecimal("10.00"))
+            assertThat(ctx.orderId).isEqualTo("o-77")          // ⇒ RecordPaymentUseCase elige el recorder de ORDEN
+            assertThat(ctx.orderNumber).isEqualTo("77")
+            assertThat(ctx.idempotencyKey).isEqualTo("att-rc1")
+            assertThat(ctx.terminalPaymentRequestId).isEqualTo("REQ-RC2")
+            assertThat(ctx.shiftId).isEqualTo("sh-9")
+            assertThat(ctx.rating).isEqualTo(5)
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            assertThat(exito.amount).isEqualTo("120.50"); assertThat(exito.orderId).isEqualTo("o-77")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `fix5 D5 - un ViewModel recreado adopta el intento con evidencia al recibir un callback VACIO - contradiccion con veto, nunca ResultadoIncierto ni declaracion`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("offline")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.adoptarCobroDeLaSolicitud("REQ-AD1") } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CobroSinResolver("att-rc1")
+        coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns filaDeLaSolicitudConMarca("REQ-AD1")
+        val vm = createViewModel(handleRecreado("REQ-AD1"))
+        try {
+            vm.onAngelPayResult(android.app.Activity.RESULT_CANCELED, null); runCurrent()   // «no me acuerdo»: adopta att-rc1 por identidad
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse(); assertThat(s.message).contains("evidencia de cobro")
+            coVerify(exactly = 1) { paymentAttemptLedger.markIndeterminate("att-rc1", any()) }
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `fix5 D5 - sumidero del SDK embebido - un rechazo confirmado sobre un intento restaurado con evidencia pinta contradiccion, no Error con Reintentar`() = runTest(testDispatcher) {
+        val vm = vmRecreadoConEvidencia("REQ-RC3")
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500", message = "Transacción rechazada por el gateway")); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("evidencia de cobro")
+            assertThat(s.message).doesNotContain("Reintenta")
+            vm.resetPayment(); runCurrent()
+            assertThat(vm.state.value).isSameInstanceAs(s)   // el veto sigue: ni «Salir» lo limpia
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     // ── Fix round 3 (Codex r2 sobre el fix 2: 1 P1 + 1 P2 en la pantalla) ───────────────────────
 
     @Test fun `fix3 P1 — liberacion visible y luego el 2xx trae APPROVED sin Payment — la liberacion se retira ANTES de leer Room, y Salir no borra el veto ni cancela la declaracion`() = runTest(testDispatcher) {

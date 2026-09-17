@@ -515,8 +515,9 @@ class AngelPayPaymentReviewRoomTest {
         val handle = androidx.lifecycle.SavedStateHandle()
         val original = createViewModel(handle, recovery, api)
         var vm: AngelPayPaymentViewModel? = null
+        var recreado: AngelPayPaymentViewModel? = null
         try {
-            original.initPayment("100.00")
+            original.initPayment("100.00", orderId = "o-req-r3", orderNumber = "R3")   // la venta de la solicitud (como la pantalla)
             original.setSocketPaymentSource("SOCKET", "req-r3")
             assertThat(original.openLedgerAttemptAndMarkAuthorizing("att-r3")).isTrue()
             original.onIntentLaunched()
@@ -551,7 +552,28 @@ class AngelPayPaymentReviewRoomTest {
             assertThat(fila.state).isEqualTo("DESCARTADA")
             assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
             assertThat(db.paymentAttemptDao().esContradiccion("att-r3")).isTrue()
-        } finally { original.viewModelScope.cancel(); vm?.viewModelScope?.cancel(); db.close() }
+
+            // 4) Fix 5 (Codex r5, D5): el proceso muere DESPUÉS del cancel y la pantalla se recrea SIN red ni callback. La fila
+            // está DESCARTADA (liberada) con la marca: la restauración tiene que encontrarla igual (S16) y traer su contexto
+            // monetario (P1-B): un S5 posterior pinta el importe de la FILA, nunca cero.
+            vm!!.viewModelScope.cancel()
+            val sinRed = mockk<TerminalAttemptApiService> { coEvery { getAttemptStatus(any(), any()) } throws java.io.IOException("sin red") }
+            val restored2 = androidx.lifecycle.SavedStateHandle(restoredHandle.keys().associateWith { restoredHandle.get<Any?>(it) })
+            recreado = createViewModel(restored2, com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery(db.paymentAttemptDao(), paymentAttemptLedger, sinRed), sinRed)
+            recreado!!.setSocketPaymentSource("SOCKET", "req-r3")
+            recreado!!.initPayment("100.00")
+            val restaurado = kotlinx.coroutines.withTimeout(10_000) { recreado!!.state.first { it !is AngelPayPaymentState.Idle } }
+            com.google.common.truth.Truth.assertWithMessage("la DESCARTADA con marca tiene que restaurar la contradicción: %s", restaurado)
+                .that(restaurado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((restaurado as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+            recreado!!.declararSinTarjeta()
+            coVerify(exactly = 0) { sinRed.resolveNoInstrument(any(), any(), any()) }
+            assertThat(coordinator.cancelSocketPaymentRequest("req-r3").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            recreado!!.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("req-r3", "att-r3", "pay-s5", 10000, 0, registrado = true))
+            val exito = kotlinx.coroutines.withTimeout(10_000) { recreado!!.state.first { it is AngelPayPaymentState.Success } } as AngelPayPaymentState.Success
+            assertThat(exito.amount).isEqualTo("100.00")
+            assertThat(exito.orderId).isEqualTo("o-req-r3")
+        } finally { original.viewModelScope.cancel(); vm?.viewModelScope?.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
         Unit
     }
 
@@ -602,6 +624,65 @@ class AngelPayPaymentReviewRoomTest {
             recreado!!.resetPayment()
             assertThat(recreado!!.state.value).isSameInstanceAs(estado)                   // y el reset se rechaza
             assertThat(coordinator.cancelSocketPaymentRequest("req-rc").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    @Test
+    fun `fix5 D5 - sumidero app-to-app - callback DECLINADO tras recrear sobre un intento con evidencia durable pinta contradiccion, no Error con Reintentar`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val coordinator = RemotePaymentCoordinator(inbox)
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val sinRed = mockk<TerminalAttemptApiService> { coEvery { getAttemptStatus(any(), any()) } throws java.io.IOException("sin red") }
+        val recovery = com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery(db.paymentAttemptDao(), paymentAttemptLedger, sinRed)
+        inbox.receive(solicitudDelPos("req-dc"))
+        assertThat(coordinator.prepareSocketPaymentRequest("req-dc", { true }, { "v1" })).isEqualTo(RemotePaymentAdmission.READY)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle, recovery, sinRed)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.initPayment("100.00", orderId = "o-req-dc", orderNumber = "DC")
+            original.setSocketPaymentSource("SOCKET", "req-dc")
+            assertThat(original.openLedgerAttemptAndMarkAuthorizing("att-dc")).isTrue()
+            original.onIntentLaunched()
+            // El servidor acreditó la aprobación bancaria (sin Payment) antes de morir el proceso.
+            assertThat(paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", "att-dc").getOrThrow()).isTrue()
+            original.viewModelScope.cancel()
+
+            val restoredHandle = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
+            recreado = createViewModel(restoredHandle, recovery, sinRed)
+            // Declinación INEQUÍVOCA del emisor (código de dos dígitos) sobre el intento que el VM recreado ADOPTA por identidad.
+            val intent = android.content.Intent().putExtra(
+                com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser.EXTRA_TRANSACTION_RESULT,
+                """{"approved":false,"code":"05","message":"Declinada por el emisor"}""",
+            )
+            recreado!!.onAngelPayResult(android.app.Activity.RESULT_OK, intent)
+            val estado = kotlinx.coroutines.withTimeout(15_000) {
+                recreado!!.state.first { it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Cancelled || it is AngelPayPaymentState.Success }
+            }
+            com.google.common.truth.Truth.assertWithMessage("con evidencia de dinero del servidor un rechazo del SDK no puede ofrecer Reintentar: %s", estado)
+                .that(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).canRetry).isFalse()
+            assertThat(estado.message).contains("evidencia de cobro")
+            // La fila anotó el veredicto del host (DESCARTADA) y conserva la marca: sigue siendo contradicción y sigue cercando la venta.
+            val fila = kotlinx.coroutines.withTimeout(15_000) {
+                var f = db.paymentAttemptDao().getById("att-dc")!!
+                while (f.state == "AUTORIZANDO") { kotlinx.coroutines.delay(25); f = db.paymentAttemptDao().getById("att-dc")!! }
+                f
+            }
+            assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
+            assertThat(db.paymentAttemptDao().esContradiccion("att-dc")).isTrue()
+            assertThat(coordinator.cancelSocketPaymentRequest("req-dc").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
         } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
         Unit
     }

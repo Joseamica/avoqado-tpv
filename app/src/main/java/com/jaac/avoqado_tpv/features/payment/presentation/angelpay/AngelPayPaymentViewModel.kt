@@ -2998,12 +2998,39 @@ class AngelPayPaymentViewModel @Inject constructor(
         val fila = paymentAttemptLedger.intentoDeLaSolicitud(requestId) ?: return false
         if (!tieneEvidenciaDurableSinPromover(fila)) return false
         Timber.w("📒 [AngelPay] ViewModel recreado: la solicitud %s tiene evidencia de dinero del servidor en %s — se restaura la contradicción", requestId, fila.attemptId)
+        // Fix 5 (Codex r5, P1-B): el contexto MONETARIO vuelve de la fila ANTES de aceptar S5 o callbacks — con el `return`
+        // temprano de `initPayment` nada más lo cargaría, y un S5 pintaba Success con CERO y un callback aprobado tardío
+        // registraba $0 sin venta (recorder de cobro rápido).
+        restaurarContextoDesdeLaFila(fila)
         currentPaymentAttemptId = fila.attemptId
         ledgerOpenedAttemptId = fila.attemptId
+        ledgerOpenedAmountCents = fila.amountCents
+        ledgerOpenedTipCents = fila.tipCents
         authorizationWasLaunched = true
         vetoDeDineroDelIntento = fila.attemptId
         mostrarContradiccion()
         return true
+    }
+
+    /**
+     * Fix 5 (P1-B): importe y propina salen de las COLUMNAS (la verdad de lo que viajó al SDK); venta, turno, personal,
+     * calificación, seriales y afiliación, del contexto que `openLedgerAttemptAndMarkAuthorizing` guardó en la fila (Gson,
+     * compacto). Un contexto ilegible deja el importe puesto y lo demás en su valor por defecto — nunca inventa una venta.
+     */
+    private fun restaurarContextoDesdeLaFila(fila: PaymentAttemptEntity) {
+        pendingAmount = BigDecimal.valueOf(fila.amountCents, 2)
+        pendingTip = BigDecimal.valueOf(fila.tipCents, 2)
+        val ctx = runCatching { com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject }.getOrNull() ?: return
+        fun texto(clave: String): String? = ctx.get(clave)?.takeUnless { it.isJsonNull }?.let { runCatching { it.asString }.getOrNull() }?.takeIf { it.isNotBlank() }
+        pendingOrderId = texto("orderId")
+        pendingOrderNumber = texto("orderNumber")
+        pendingRating = ctx.get("rating")?.takeUnless { it.isJsonNull }?.let { runCatching { it.asInt }.getOrNull() }?.takeIf { it in 1..5 }
+        cachedVenueId = texto("venueId") ?: fila.venueId
+        cachedStaffId = texto("staffId")
+        cachedShiftId = texto("shiftId")
+        pendingIsPortabilidad = ctx.get("isPortabilidad")?.takeUnless { it.isJsonNull }?.let { runCatching { it.asBoolean }.getOrNull() } ?: false
+        pendingSerialNumbers = runCatching { ctx.getAsJsonArray("serialNumbers")?.mapNotNull { e -> e.takeUnless { it.isJsonNull }?.asString } }.getOrNull() ?: emptyList()
+        pendingProcessorAffiliation = texto("processorAffiliation")
     }
 
     /** Misma forma que `manejarConfirmacionDelServidor` (S5): el dinero consta en el servidor, la pantalla lo dice. */

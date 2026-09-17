@@ -98,6 +98,23 @@ data class PaymentAttemptEntity(
     /** Última consulta S6 de esta fila y cuántas van: el lote de N3 avanza (las consultadas van al final) y se espacia. */
     @ColumnInfo(name = "server_checked_at") val serverCheckedAt: Long? = null,
     @ColumnInfo(name = "server_check_count", defaultValue = "0") val serverCheckCount: Int = 0,
+
+    // ── Task 7 · fix 4 (Room v36): evidencia POSITIVA del servidor SIN veredicto aplicable. ──
+    /**
+     * 🔴 El banco aprobó este intento y el servidor lo sabe, pero NO hay Payment que aplicar: S6/2xx con
+     * `attempt.processorEvidence = APPROVED` (aprobación tardía, con otro importe: el servidor guarda el evento
+     * PENDING/AMOUNT_MISMATCH sin crear Payment) o un outcome con dinero SIN `paymentId`. `desdeConsultaS6` no produce
+     * veredicto sin id, así que `server_outcome` no lo guarda — y el veto vivía sólo en la RAM del ViewModel, que un cancel
+     * remoto, una liberación atrasada, el CAS de negativos (H.3) o recrear la pantalla borraban (Codex, fix 4, P1).
+     *
+     * MARCA normalizada y DURABLE: único valor [SERVER_PROCESSOR_EVIDENCE_APPROVED]; se escribe en CUALQUIER estado
+     * (INDETERMINADO, DESCARTADA…) sin tocar `state`, `state_version`, `host_approved` ni `server_outcome`; nunca se degrada a
+     * NULL ni se convierte en `host_approved`. La leen la cancelación y H.3 (`contarIntentosBloqueadores`), la contradicción
+     * ([SQL_CONTRADICCION] y el aviso F0), las cercas de venta y aparato, la restauración del ViewModel y el CAS de liberación.
+     * `server_processor_evidence_at` conserva la PRIMERA vez (COALESCE): repetir la evidencia no renueva las 72 h del aviso.
+     */
+    @ColumnInfo(name = "server_processor_evidence") val serverProcessorEvidence: String? = null,
+    @ColumnInfo(name = "server_processor_evidence_at") val serverProcessorEvidenceAt: Long? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -147,6 +164,8 @@ data class PaymentAttemptEntity(
         /** El cajero declaró «no se presentó tarjeta» y el servidor lo acreditó (OPERATOR_RECONCILED). */
         const val SERVER_OPERATOR_NO_INSTRUMENT = "OPERATOR_NO_INSTRUMENT"
         const val LAST_ERROR_LIBERADA_PREFIX = "liberada_por_el_servidor:"
+        /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
+        const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
 
         /**
          * 🔴 CONTRADICCIÓN = predicado DERIVADO (nunca una columna, para que no se desincronice): el servidor tiene
@@ -161,10 +180,14 @@ data class PaymentAttemptEntity(
          * como no rechazado, igual que en `registrarPorVeredictoDelServidor`; unos importes del servidor NULL sobre un RECORDED
          * (S6 sólo los omite sin Payment) cuentan como «no se pudo confirmar el importe» — contradicción, el lado seguro.
          */
-        const val SQL_CONTRADICCION = "(server_outcome IS NOT NULL AND (" +
+        // Fix 4 (Codex, D3b): la evidencia positiva PENDIENTE también es contradicción — `IS 'APPROVED'` (NULL-seguro) y sólo
+        // mientras no haya Payment o la fila no esté REGISTRADO/CERRADA: la marca nunca se borra, y un intento registrado
+        // después no puede quedar como contradicción permanente. Paréntesis externos: se usa como `AND NOT (…)`.
+        const val SQL_CONTRADICCION = "((server_outcome IS NOT NULL AND (" +
             "server_outcome IN ('SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
             "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved IS 0 " +
-            "OR server_amount_cents IS NOT amount_cents OR server_tip_cents IS NOT tip_cents))))"
+            "OR server_amount_cents IS NOT amount_cents OR server_tip_cents IS NOT tip_cents)))) " +
+            "OR (server_processor_evidence IS 'APPROVED' AND (server_payment_id IS NULL OR state NOT IN ('REGISTRADO','CERRADA'))))"
 
         /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el

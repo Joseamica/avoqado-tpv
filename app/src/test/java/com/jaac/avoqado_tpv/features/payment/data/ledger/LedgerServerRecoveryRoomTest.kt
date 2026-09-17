@@ -247,4 +247,92 @@ class LedgerServerRecoveryRoomTest {
         assertThat(recovery.recoverOne(venue, "b2", now).bandejaResueltaJson).isNull()   // no hay bandeja resuelta que emitir
         assertThat(ledger.leerIntento("b2")!!.serverOutcome).isEqualTo("OPERATOR_NO_INSTRUMENT")
     }
+
+    // ── Task 7 · fix 4 (Codex, P1): la evidencia POSITIVA del servidor es DURABLE — la escriben el lote (E3), `recoverOne` y el 2xx. ──
+
+    private fun aprobadaSinPayment(attemptId: String, requestId: String, outcome: String = "NOT_RECORDED", paymentId: String? = null, evidencia: String? = "APPROVED") = Response.success(
+        TerminalAttemptStatusResponse(success = true, attemptId = attemptId, requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = attemptId, outcome = outcome, paymentId = paymentId, processorEvidence = evidencia),
+            request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
+    )
+
+    @Test fun `fix4 W4 escritor - la marca APPROVED se escribe en INDETERMINADO y en DESCARTADA, la primera fecha es estable, y estado, version, host y outcome quedan intactos`() = runTest {
+        fila("w1", "INDETERMINADO", requestId = "req-w1", hostApproved = null)
+        fila("w2", "INDETERMINADO", requestId = "req-w2", hostApproved = null)
+        dao.cerrarPorLiberacionDelServidor("w2", venue, "req-w2", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1)
+        val antes1 = dao.getById("w1")!!; val antes2 = dao.getById("w2")!!
+        fila("legacy", "INDETERMINADO", requestId = "req-legacy", hostApproved = null)
+        dao.insert(PaymentAttemptEntity(attemptId = "blumon", venueId = venue, processor = "BLUMON", state = "INDETERMINADO", amountCents = 1, tipCents = 0,
+            recordingRoute = "FAST", paymentContextJson = "{}", createdAt = now, updatedAt = now, terminalPaymentRequestId = "req-b"))
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET legacy_shadow = 1 WHERE attempt_id = 'legacy'")
+
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("w1", venue, now)).isEqualTo(1)
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("w2", venue, now)).isEqualTo(1)
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("w1", venue, now + 5_000)).isEqualTo(1)   // idempotente…
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("w1", "otro-venue", now)).isEqualTo(0)      // pertenencia
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("legacy", venue, now)).isEqualTo(0)        // alcance del checkpoint
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("blumon", venue, now)).isEqualTo(0)
+
+        val w1 = dao.getById("w1")!!; val w2 = dao.getById("w2")!!
+        assertThat(w1.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(w1.serverProcessorEvidenceAt).isEqualTo(now)                                        // …y la PRIMERA fecha se conserva
+        assertThat(w2.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(w2.serverProcessorEvidenceAt).isEqualTo(now)
+        assertThat(w1.copy(serverProcessorEvidence = null, serverProcessorEvidenceAt = null)).isEqualTo(antes1)   // nada más cambió
+        assertThat(w2.copy(serverProcessorEvidence = null, serverProcessorEvidenceAt = null)).isEqualTo(antes2)
+        assertThat(w2.state).isEqualTo("DESCARTADA"); assertThat(w2.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE"); assertThat(w2.hostApproved).isNull()
+        assertThat(dao.getById("legacy")!!.serverProcessorEvidence).isNull()
+        assertThat(dao.getById("blumon")!!.serverProcessorEvidence).isNull()
+    }
+
+    @Test fun `fix4 W1 recover - S6 APPROVED sin Payment deja la evidencia DURABLE en la fila, no libera y la fila sigue INDETERMINADO`() = runTest {
+        fila("l1", "INDETERMINADO", requestId = "req-l1", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "l1") } returns aprobadaSinPayment("l1", "req-l1")
+        val r = recovery.recover(venue, now)
+        assertThat(r.liberadas).isEqualTo(0)
+        val tras = dao.getById("l1")!!
+        assertThat(tras.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(tras.serverProcessorEvidenceAt).isEqualTo(now)
+        assertThat(tras.state).isEqualTo("INDETERMINADO")
+        assertThat(tras.serverOutcome).isNull()
+        assertThat(tras.hostApproved).isNull()
+        assertThat(tras.serverCheckedAt).isEqualTo(now)   // el lote sí gasta el turno
+    }
+
+    @Test fun `fix4 W2 recoverOne - escribe la marca, y un outcome con dinero SIN paymentId tambien la escribe con server_outcome NULL`() = runTest {
+        fila("o1", "INDETERMINADO", requestId = "req-o1", hostApproved = null)
+        fila("o2", "INDETERMINADO", requestId = "req-o2", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "o1") } returns aprobadaSinPayment("o1", "req-o1")
+        coEvery { api.getAttemptStatus(venue, "o2") } returns aprobadaSinPayment("o2", "req-o2", outcome = "PENDING_EVIDENCE", paymentId = null, evidencia = null)
+
+        val l1 = recovery.recoverOne(venue, "o1", now, estampar = false)
+        assertThat(l1.evidenciaPositivaSinRegistro).isTrue()
+        assertThat(dao.getById("o1")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(dao.getById("o1")!!.serverProcessorEvidenceAt).isEqualTo(now)
+        assertThat(dao.getById("o1")!!.state).isEqualTo("INDETERMINADO")
+        assertThat(dao.getById("o1")!!.serverCheckedAt).isNull()   // el sondeo no estampa
+
+        val l2 = recovery.recoverOne(venue, "o2", now)
+        assertThat(l2.evidenciaPositivaSinRegistro).isTrue()
+        val o2 = dao.getById("o2")!!
+        assertThat(o2.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(o2.serverOutcome).isNull()          // sin `paymentId` no hay veredicto que guardar…
+        assertThat(o2.serverPaymentId).isNull()
+        assertThat(o2.state).isEqualTo("INDETERMINADO")   // …y la fila no se marca RECORDED en local
+    }
+
+    @Test fun `fix4 W2b recoverOne - la marca se escribe tambien sobre una fila YA liberada (DESCARTADA) y una segunda consulta no la re-fecha`() = runTest {
+        fila("d1", "INDETERMINADO", requestId = "req-d1", hostApproved = null)
+        dao.cerrarPorLiberacionDelServidor("d1", venue, "req-d1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 10)
+        coEvery { api.getAttemptStatus(venue, "d1") } returns aprobadaSinPayment("d1", "req-d1")
+
+        assertThat(recovery.recoverOne(venue, "d1", now, estampar = false).evidenciaPositivaSinRegistro).isTrue()
+        assertThat(recovery.recoverOne(venue, "d1", now + 7_000, estampar = false).evidenciaPositivaSinRegistro).isTrue()
+
+        val d1 = dao.getById("d1")!!
+        assertThat(d1.state).isEqualTo("DESCARTADA")
+        assertThat(d1.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(d1.serverProcessorEvidenceAt).isEqualTo(now)
+        assertThat(dao.esContradiccion("d1")).isTrue()
+    }
 }

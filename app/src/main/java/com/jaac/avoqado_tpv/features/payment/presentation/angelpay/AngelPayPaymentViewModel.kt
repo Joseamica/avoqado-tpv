@@ -1209,6 +1209,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         viewModelScope.launch {
             Timber.i("🔶 [AngelPay] initPayment | amount=$amount, orderId=$orderId")
 
+            // Fix 4 (Codex, D3d): un ViewModel RECREADO arranca el cobro de la MISMA solicitud (sobrevive en el SavedStateHandle; la
+            // RAM no) sin callback ni red. Si la libreta tiene el intento de esa solicitud con evidencia positiva del servidor, se
+            // restaura la contradicción con el veto ANTES de ofrecer cobrar o declarar. Una solicitud nueva no tiene fila: sigue igual.
+            if (currentPaymentAttemptId == null && restaurarEvidenciaDurableDeLaSolicitud()) return@launch
+
             val amountDecimal = amount.toBigDecimalOrNull()
             if (amountDecimal == null || amountDecimal <= BigDecimal.ZERO) {
                 _state.value = AngelPayPaymentState.Error("Monto invalido")
@@ -2340,6 +2345,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                     currentPaymentAttemptId = pendiente
                     authorizationWasLaunched = true
                     ledgerOpenedAttemptId = pendiente
+                    // Fix 4 (Codex, D3d): la evidencia positiva del servidor vive en la FILA; el veto en RAM murió con el VM anterior.
+                    // Se carga ANTES de procesar el callback: un rechazo del SDK no ofrece «Reintentar» sobre dinero ya acreditado.
+                    if (paymentAttemptLedger.leerIntento(pendiente)?.let(::tieneEvidenciaDurableSinPromover) == true) {
+                        Timber.w("📒 [AngelPay] la fila %s trae evidencia de dinero del servidor: veto restaurado", pendiente)
+                        vetoDeDineroDelIntento = pendiente
+                    }
                 }
               }
             }
@@ -2432,13 +2443,19 @@ class AngelPayPaymentViewModel @Inject constructor(
                         sdkMessage = result.message,
                         displayMessage = result.message,
                     )
-                    _state.value = AngelPayPaymentState.Error(
-                        message = result.message,
-                        canRetry = true,
-                    )
-                    // 🛑 H.3: aviso EMV recuperable o rechazo del banco, da igual — mientras la pantalla
-                    // ofrezca «Reintentar» esta misma solicitud, su desenlace NO sale.
-                    retenerDesenlaceDeRechazo(result.message)
+                    if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId) {
+                        // Fix 4 (D3d): el servidor ya acreditó dinero de ESTE intento — un rechazo del SDK no puede ofrecer «Reintentar».
+                        Timber.w("🛑 [AngelPay] rechazo del SDK con evidencia de dinero del servidor para %s: contradicción, sin reintento", currentPaymentAttemptId)
+                        mostrarContradiccion()
+                    } else {
+                        _state.value = AngelPayPaymentState.Error(
+                            message = result.message,
+                            canRetry = true,
+                        )
+                        // 🛑 H.3: aviso EMV recuperable o rechazo del banco, da igual — mientras la pantalla
+                        // ofrezca «Reintentar» esta misma solicitud, su desenlace NO sale.
+                        retenerDesenlaceDeRechazo(result.message)
+                    }
                 }
                 is AngelPayResult.Cancelled -> {
                     authAttemptOutcomeCode = "CANCELLED"
@@ -2672,18 +2689,24 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // va con su propio try/catch y NUNCA propaga: un fallo de papel no puede
                 // convertirse en una pantalla distinta de la que el cajero espera.
                 imprimirTicketDeRechazo(displayMessage, result.callResult?.code)
-                _state.value = AngelPayPaymentState.Error(
-                    message = displayMessage,
-                    canRetry = true,
-                )
-                // 🛑 H.3 (11-sep): ni el aviso EMV recuperable (E608: el cajero completa ESTA venta por
-                // chip) ni el rechazo del banco emiten su desenlace mientras la pantalla siga ofreciendo
-                // «Reintentar» esta MISMA solicitud. El caso del aviso ya era así desde el QA del
-                // 2026-07-14 (emitir «failed» ahí produjo un cobro doble mediado por una persona); lo que
-                // cambia es que el rechazo «de verdad» se trata igual, porque el botón sigue ahí.
-                // Sale al salir/cancelar o al vencer el reloj de abandono, y entonces la solicitud queda
-                // cercada: `reserveTerminal` ya no admite otro intento suyo.
-                retenerDesenlaceDeRechazo(displayMessage)
+                if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId) {
+                    // Fix 4 (D3d): el servidor ya acreditó dinero de ESTE intento — un rechazo del SDK no puede ofrecer «Reintentar».
+                    Timber.w("🛑 [AngelPay SDK] rechazo del SDK con evidencia de dinero del servidor para %s: contradicción, sin reintento", currentPaymentAttemptId)
+                    mostrarContradiccion()
+                } else {
+                    _state.value = AngelPayPaymentState.Error(
+                        message = displayMessage,
+                        canRetry = true,
+                    )
+                    // 🛑 H.3 (11-sep): ni el aviso EMV recuperable (E608: el cajero completa ESTA venta por
+                    // chip) ni el rechazo del banco emiten su desenlace mientras la pantalla siga ofreciendo
+                    // «Reintentar» esta MISMA solicitud. El caso del aviso ya era así desde el QA del
+                    // 2026-07-14 (emitir «failed» ahí produjo un cobro doble mediado por una persona); lo que
+                    // cambia es que el rechazo «de verdad» se trata igual, porque el botón sigue ahí.
+                    // Sale al salir/cancelar o al vencer el reloj de abandono, y entonces la solicitud queda
+                    // cercada: `reserveTerminal` ya no admite otro intento suyo.
+                    retenerDesenlaceDeRechazo(displayMessage)
+                }
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
@@ -2841,8 +2864,13 @@ class AngelPayPaymentViewModel @Inject constructor(
         // dinero), la espera no se repinta encima: el Success o la contradicción que dejó se quedan. Y al servidor no se le
         // manda `timeout` — ya tiene evidencia de dinero de este intento, su ventana no aplica.
         if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId) {
-            if (previo != null) mostrarContradiccion()   // defensa: la pantalla sigue en incierto con el veto encendido
-            else Timber.i("🔍 [AngelPay] El dinero ya consta (%s): la espera no pisa %s", vetoDeDineroDelIntento, _state.value::class.simpleName)
+            // Fix 4: el veto puede venir de la FILA (adopción tras recrear el VM) con la pantalla todavía en «validando…»:
+            // toda espera se convierte en contradicción; sólo un Success o un Error ya puestos se conservan.
+            when (_state.value) {
+                is AngelPayPaymentState.Success, is AngelPayPaymentState.Error ->
+                    Timber.i("🔍 [AngelPay] El dinero ya consta (%s): la espera no pisa %s", vetoDeDineroDelIntento, _state.value::class.simpleName)
+                else -> mostrarContradiccion()
+            }
             return
         }
         val vieneDelHistorial = previo?.verificando != false
@@ -2906,7 +2934,8 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     /**
      * Lee la fila y mueve la pantalla, con EL DINERO PRIMERO (Codex, Task 0, P5): REGISTRADO ⇒ cobrado; RECORDED sin promover
-     * (contradicción sobre una liberación) ⇒ «Avoqado registró dinero», nunca «se puede volver a cobrar»; liberación ⇒ se puede
+     * (contradicción sobre una liberación) o la evidencia positiva DURABLE del servidor (fix 4) ⇒ «Avoqado tiene evidencia de
+     * cobro», nunca «se puede volver a cobrar»; liberación ⇒ se puede
      * volver a cobrar. La liberación se reconoce por `serverOutcome`, NO por el prefijo de `lastError`: ese texto sobrevive a la
      * contradicción. true si el desenlace ya quedó.
      */
@@ -2922,6 +2951,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             // referencia, PENDING) es contradicción — no sólo RECORDED. Es la misma familia que `SQL_CONTRADICCION`, y enciende
             // el veto: con esa fila el servidor rechazaría la declaración con 409, así que no se ofrece.
             fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO -> { vetoDeDineroDelIntento = attemptId; mostrarContradiccion(); true }
+            // Fix 4 (Codex, D3d): la evidencia positiva DURABLE del servidor (banco APPROVED sin Payment) manda igual que un outcome
+            // con dinero — y sobrevive a la RAM: un ViewModel recreado la lee de la fila. Después del registro válido, antes de
+            // cualquier liberación (una liberación vieja en la misma fila no cuenta).
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED -> { vetoDeDineroDelIntento = attemptId; mostrarContradiccion(); true }
             // Con el veto de dinero encendido, una liberación en la fila (vieja o nueva) NO se anuncia: gana la evidencia.
             vetoDeDineroDelIntento == attemptId -> { mostrarContradiccion(); true }
             fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> { mostrarLiberada("OPERATOR_RECONCILED"); true }
@@ -2944,6 +2977,33 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = "Avoqado tiene evidencia de cobro de este intento. NO lo vuelvas a cobrar: Avoqado lo concilia.",
             canRetry = false,
         )
+    }
+
+    /**
+     * Fix 4 (D3d): la fila tiene evidencia de dinero del servidor que la libreta no promovió — la marca durable (banco APPROVED sin
+     * Payment) o un outcome con dinero sin REGISTRADO. Es lo que carga el veto al adoptar o al recrearse; un registro válido no.
+     */
+    private fun tieneEvidenciaDurableSinPromover(fila: PaymentAttemptEntity): Boolean =
+        fila.state != PaymentAttemptEntity.STATE_REGISTRADO && fila.state != PaymentAttemptEntity.STATE_CERRADA &&
+            (fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
+                fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO)
+
+    /**
+     * Fix 4 (D3d): restauración por la SOLICITUD propia, sin callback app-to-app y sin S6. Sólo si la fila trae evidencia
+     * durable: adopta el intento, enciende el veto y pinta la contradicción. Cualquier otra fila (o ninguna) devuelve false y el
+     * cobro sigue su camino normal — las cercas de la libreta ya protegen esa venta.
+     */
+    private suspend fun restaurarEvidenciaDurableDeLaSolicitud(): Boolean {
+        val requestId = _socketRequestId?.takeIf { _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET } ?: return false
+        val fila = paymentAttemptLedger.intentoDeLaSolicitud(requestId) ?: return false
+        if (!tieneEvidenciaDurableSinPromover(fila)) return false
+        Timber.w("📒 [AngelPay] ViewModel recreado: la solicitud %s tiene evidencia de dinero del servidor en %s — se restaura la contradicción", requestId, fila.attemptId)
+        currentPaymentAttemptId = fila.attemptId
+        ledgerOpenedAttemptId = fila.attemptId
+        authorizationWasLaunched = true
+        vetoDeDineroDelIntento = fila.attemptId
+        mostrarContradiccion()
+        return true
     }
 
     /** Misma forma que `manejarConfirmacionDelServidor` (S5): el dinero consta en el servidor, la pantalla lo dice. */
@@ -3041,21 +3101,26 @@ class AngelPayPaymentViewModel @Inject constructor(
                             guardado && fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> mostrarCobroConfirmadoPorS6(fila)
                             else -> mostrarContradiccion()
                         }
+                    } else if (LiberacionDelServidor.acreditaDinero(respuesta.body()?.attempt)) {
+                        // P1-2 (fix 2): el cuerpo acredita dinero del intento sin Payment (banco APPROVED, o un outcome con dinero sin
+                        // `paymentId`): NUNCA una liberación — veto y contradicción; la fila conserva su estado (no se marca RECORDED).
+                        // 🔴 Fix 3 (P1): la contradicción se pinta ANTES de suspender para leer Room — igual que la rama con veredicto.
+                        // Retira una liberación ya mostrada («se puede volver a cobrar») y revoca el «negativo confirmado», así un
+                        // «Salir» en ese intervalo NO pasa la guarda de `resetPayment()`, que cancelaría la declaración y borraría el
+                        // veto con una aprobación bancaria conocida. Sólo REGISTRADO (o un Success ya pintado) puede mejorar esto.
+                        // 🔴 Fix 4 (Codex, D2): esta rama va ANTES que la del veto RAM — la evidencia se hace DURABLE aunque el veto ya
+                        // estuviera encendido por el sondeo. La escritura vive en la libreta bajo `NonCancellable`; se espera su commit
+                        // y sólo después se lee la fila. Un fallo al escribir no cambia nada de lo anterior: el veto y la contradicción
+                        // ya están puestos, y una liberación vieja no se puede pintar con el veto encendido.
+                        vetoDeDineroDelIntento = attemptId
+                        if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
+                        paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId)
+                        aplicarLoQueDigaLaLibreta(attemptId)   // REGISTRADO ⇒ Success; cualquier otra fila (o ninguna) deja la contradicción
                     } else if (vetoDeDineroDelIntento == attemptId) {
                         // Una respuesta sin dinero que llega con el veto ya encendido no libera nada. Pero tampoco pisa lo que el
                         // dinero ya dejó (fix 2, P2): si la pantalla YA es Success (S5 llegó durante el POST) se conserva ESA
                         // instancia; si no, se relee la fila con prioridad REGISTRADO y sólo sin registro se dice contradicción.
                         if (_state.value !is AngelPayPaymentState.Success && !aplicarLoQueDigaLaLibreta(attemptId)) mostrarContradiccion()
-                    } else if (LiberacionDelServidor.acreditaDinero(respuesta.body()?.attempt)) {
-                        // P1-2 (fix 2): el cuerpo acredita dinero del intento sin Payment (banco APPROVED, o un outcome con dinero sin
-                        // `paymentId`): NUNCA una liberación — veto y contradicción; la fila se queda INDETERMINADO (no se marca RECORDED).
-                        // 🔴 Fix 3 (P1): la contradicción se pinta ANTES de suspender para leer Room — igual que la rama con veredicto.
-                        // Retira una liberación ya mostrada («se puede volver a cobrar») y revoca el «negativo confirmado», así un
-                        // «Salir» en ese intervalo NO pasa la guarda de `resetPayment()`, que cancelaría la declaración y borraría el
-                        // veto con una aprobación bancaria conocida. Sólo REGISTRADO (o un Success ya pintado) puede mejorar esto.
-                        vetoDeDineroDelIntento = attemptId
-                        if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
-                        aplicarLoQueDigaLaLibreta(attemptId)   // REGISTRADO ⇒ Success; cualquier otra fila (o ninguna) deja la contradicción
                     } else {
                         // Un 200 es, por contrato, «liberada por el cajero»: se sintetiza con el MISMO parser/veto que S6.
                         LiberacionDelServidor.desdeDeclaracion(venueId, attemptId, requestId, respuesta.body())
@@ -3287,6 +3352,14 @@ class AngelPayPaymentViewModel @Inject constructor(
         if (_paymentSource != CobroRemotoDelPos.FUENTE_SOCKET || requestId != _socketRequestId) return
         when (event.disposition) {
             "ACCEPTED" -> {
+                // Fix 4 (Codex, D3d): un ACCEPTED ATRASADO no pisa un veto conocido — con evidencia de dinero del servidor para ESTE
+                // intento la pantalla se queda en su contradicción (o en su Success) y no dice «cancelado». La bandeja ya no puede
+                // aceptar un cancel nuevo con la marca durable (D3a); esto cubre la carrera anterior al commit.
+                if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == currentPaymentAttemptId) {
+                    Timber.w("🛑 [AngelPay Socket] Cancel ACCEPTED atrasado para %s con evidencia de dinero del servidor: no se aplica", requestId)
+                    if (_state.value !is AngelPayPaymentState.Success && _state.value !is AngelPayPaymentState.Error) mostrarContradiccion()
+                    return
+                }
                 val sdkEnPrimerPlano = _state.value.let {
                     it is AngelPayPaymentState.LaunchingAngelPay ||
                         it is AngelPayPaymentState.LaunchingAngelPaySdk ||

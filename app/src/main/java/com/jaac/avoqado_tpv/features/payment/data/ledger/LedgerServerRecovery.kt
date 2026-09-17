@@ -33,10 +33,12 @@ class LedgerServerRecovery @Inject constructor(
         val sinRespuesta: Int = 0,
         /** Task 6: filas INDETERMINADO cerradas como DESCARTADA por la LIBERACIÓN del servidor (S6 `request.outcome = NOT_CHARGED`). */
         val liberadas: Int = 0,
+        /** Fix 4: filas con evidencia POSITIVA del servidor sin Payment (banco APPROVED) marcadas de forma DURABLE en esta pasada. */
+        val evidenciasMarcadas: Int = 0,
     )
 
     suspend fun recover(venueId: String, now: Long = System.currentTimeMillis()): Resultado {
-        var reaplicados = 0; var consultados = 0; var aplicados = 0; var sinRespuesta = 0; var liberadas = 0
+        var reaplicados = 0; var consultados = 0; var aplicados = 0; var sinRespuesta = 0; var liberadas = 0; var evidenciasMarcadas = 0
         val bandejas = mutableListOf<String>()
         // Paso 0 · E2: lo ya sabido se aplica sin gastar red.
         for (fila in runCatching { dao.veredictosPendientesDeAplicar(venueId) }.getOrDefault(emptyList())) {
@@ -68,6 +70,11 @@ class LedgerServerRecovery @Inject constructor(
                     null
                 }
                 if (veredicto == null) {
+                    // Fix 4 (D2): evidencia POSITIVA del intento sin veredicto aplicable (banco APPROVED sin Payment, outcome con dinero
+                    // sin `paymentId`): se hace DURABLE en la fila ANTES de decidir nada — el CAS de liberación y la cancelación la leen.
+                    if (respuesta.isSuccessful && LiberacionDelServidor.acreditaDinero(respuesta.body()?.attempt) &&
+                        ledger.marcarEvidenciaPositivaDelServidor(venueId, fila.attemptId, now).getOrDefault(false)
+                    ) evidenciasMarcadas++
                     // Task 6: sin veredicto sobre el INTENTO, la SOLICITUD puede venir liberada por el servidor (ventana / cajero).
                     val liberacion = if (respuesta.isSuccessful) respuesta.body()?.let { LiberacionDelServidor.desdeConsultaS6(venueId, fila.attemptId, it) } else null
                     if (liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)) { liberadas++; continue }
@@ -86,10 +93,10 @@ class LedgerServerRecovery @Inject constructor(
             }
         }
         if (reaplicados + consultados + aplicados + sinRespuesta > 0) {
-            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d liberadas=%d sinRespuesta=%d bandejas=%d",
-                reaplicados, consultados, aplicados, liberadas, sinRespuesta, bandejas.size)
+            Timber.i("🔎 [LedgerServer] pasada | reaplicados=%d consultados=%d aplicados=%d liberadas=%d evidencias=%d sinRespuesta=%d bandejas=%d",
+                reaplicados, consultados, aplicados, liberadas, evidenciasMarcadas, sinRespuesta, bandejas.size)
         }
-        return Resultado(reaplicados, consultados, aplicados, bandejas, sinRespuesta, liberadas)
+        return Resultado(reaplicados, consultados, aplicados, bandejas, sinRespuesta, liberadas, evidenciasMarcadas)
     }
 
     /**
@@ -117,13 +124,18 @@ class LedgerServerRecovery @Inject constructor(
             val veredicto = if (respuesta.isSuccessful) respuesta.body()?.let { VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, it) } else null
             if (veredicto == null) {
                 val cuerpo = respuesta.body()
+                // P1-2: evidencia positiva del intento que NO es un veredicto aplicable (sin `paymentId`, o el banco aprobó sin
+                // Payment): no hay Payment y la fila conserva su estado — pero desde el fix 4 la evidencia SÍ se escribe, DURABLE,
+                // ANTES de procesar cualquier liberación o devolver la lectura. Se decide por el CUERPO, nunca por el resultado de
+                // la escritura: un fallo al guardar no se lee como «sin evidencia».
+                val evidenciaSinRegistro = respuesta.isSuccessful && LiberacionDelServidor.acreditaDinero(cuerpo?.attempt)
+                if (evidenciaSinRegistro) {
+                    Timber.w("🔎 [LedgerServer] %s: el servidor acredita dinero sin Payment (outcome=%s, banco=%s) — evidencia durable, sin liberación", attemptId, cuerpo?.attempt?.outcome, cuerpo?.attempt?.processorEvidence)
+                    ledger.marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
+                }
                 val liberacion = cuerpo?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
                 val liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
                 if (!liberada && estampar) dao.estamparConsultaAlServidor(attemptId, now)
-                // P1-2: evidencia positiva del intento que NO es un veredicto aplicable (sin `paymentId`, o el banco aprobó sin
-                // Payment): la libreta no escribe nada —no hay Payment, la fila sigue INDETERMINADO— pero quien pregunta lo sabe.
-                val evidenciaSinRegistro = respuesta.isSuccessful && LiberacionDelServidor.acreditaDinero(cuerpo?.attempt)
-                if (evidenciaSinRegistro) Timber.w("🔎 [LedgerServer] %s: el servidor acredita dinero sin Payment (outcome=%s, banco=%s) — sin liberación", attemptId, cuerpo?.attempt?.outcome, cuerpo?.attempt?.processorEvidence)
                 LecturaDelIntento(null, evidenciaPositivaSinRegistro = evidenciaSinRegistro)
             } else {
                 LecturaDelIntento(ledger.aplicarVeredictoDelServidor(veredicto, now).getOrNull()?.bandejaResueltaJson)
@@ -140,7 +152,8 @@ class LedgerServerRecovery @Inject constructor(
      * Lo que UNA consulta de [recoverOne] dejó para quien la pidió: el JSON de bandeja que quedó RESOLVED (hay que EMITIRLO),
      * y si el servidor acredita evidencia POSITIVA del intento SIN registro (el banco aprobó, sin Payment todavía — S6
      * `attempt.processorEvidence = APPROVED`, o un outcome con dinero sin `paymentId`): la pantalla lo lee para vetar el
-     * recobro; la libreta NO lo escribe (no hay Payment: la fila se queda INDETERMINADO y el aviso F0 la muestra).
+     * recobro, y desde el fix 4 la libreta TAMBIÉN lo escribe (`server_processor_evidence`, durable): no hay Payment, la fila
+     * conserva su estado y el aviso F0 la muestra como contradicción.
      */
     data class LecturaDelIntento(val bandejaResueltaJson: String?, val evidenciaPositivaSinRegistro: Boolean = false)
 

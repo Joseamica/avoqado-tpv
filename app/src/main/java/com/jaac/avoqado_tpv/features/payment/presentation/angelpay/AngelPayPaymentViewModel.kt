@@ -2880,10 +2880,15 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // `estampar = false` (fix 1 · Important #1): este sondeo NO gasta el turno de E3 — si lo gastara, siete sondeos
                 // sin veredicto sacarían la fila del respaldo N3 ~21 h. Un `success` durable de bandeja que resuelva `recoverOne`
                 // se EMITE al servidor, como hacen el trigger y el worker (fix 1 · Minor #5).
-                runCatching { ledgerServerRecovery.recoverOne(venueId, attemptId, estampar = false) }
-                    .onSuccess { json -> json?.let(socketManager::emitDurableTerminalPaymentResult) }
+                val lectura = runCatching { ledgerServerRecovery.recoverOne(venueId, attemptId, estampar = false) }
                     .onFailure { if (it is CancellationException) throw it }
+                    .getOrNull()
+                lectura?.bandejaResueltaJson?.let(socketManager::emitDurableTerminalPaymentResult)
+                // P1-2 (fix 2): el servidor acredita dinero del intento SIN registro (el banco aprobó tarde, sin Payment). El veto se
+                // enciende ANTES de leer la fila: con él, una liberación vieja en la fila no se anuncia y sólo REGISTRADO enseña Success.
+                if (lectura?.evidenciaPositivaSinRegistro == true) vetoDeDineroDelIntento = attemptId
                 if (aplicarLoQueDigaLaLibreta(attemptId)) return@launch
+                if (vetoDeDineroDelIntento == attemptId) { mostrarContradiccion(); return@launch }   // fila sin nada que decir: manda la evidencia
                 if (transcurrido >= msEsperaAlServidor) break
                 delay(msEntreConsultasS6); transcurrido += msEntreConsultasS6
                 actualizarIncierto { it.copy(segundos = (transcurrido / 1000).toInt()) }
@@ -2940,6 +2945,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     /** Misma forma que `manejarConfirmacionDelServidor` (S5): el dinero consta en el servidor, la pantalla lo dice. */
     private fun mostrarCobroConfirmadoPorS6(fila: PaymentAttemptEntity) {
         esperaAlServidorJob?.cancel()
+        // Si la pantalla YA es Success (S5 llegó primero), se conserva ESA instancia: el mismo dinero no se pinta dos veces (fix 2, P2).
+        if (_state.value is AngelPayPaymentState.Success) return
         _socketResultEmitted = true
         cancelarCierrePorAbandono()
         clearChargingOnTerminal()
@@ -3020,11 +3027,25 @@ class AngelPayPaymentViewModel @Inject constructor(
                         if (liberacionMostrada) mostrarContradiccion()
                         val guardado = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).isSuccess
                         val fila = paymentAttemptLedger.leerIntento(attemptId)
-                        if (guardado && fila?.state == PaymentAttemptEntity.STATE_REGISTRADO) mostrarCobroConfirmadoPorS6(fila) else mostrarContradiccion()
+                        when {
+                            _state.value is AngelPayPaymentState.Success -> Unit   // S5 ya pintó ese dinero: se conserva la instancia (fix 2, P2)
+                            guardado && fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> mostrarCobroConfirmadoPorS6(fila)
+                            else -> mostrarContradiccion()
+                        }
                     } else if (vetoDeDineroDelIntento == attemptId) {
-                        mostrarContradiccion()   // una respuesta sin dinero que llegue con el veto ya encendido no libera nada
+                        // Una respuesta sin dinero que llega con el veto ya encendido no libera nada. Pero tampoco pisa lo que el
+                        // dinero ya dejó (fix 2, P2): si la pantalla YA es Success (S5 llegó durante el POST) se conserva ESA
+                        // instancia; si no, se relee la fila con prioridad REGISTRADO y sólo sin registro se dice contradicción.
+                        if (_state.value !is AngelPayPaymentState.Success && !aplicarLoQueDigaLaLibreta(attemptId)) mostrarContradiccion()
+                    } else if (LiberacionDelServidor.acreditaDinero(respuesta.body()?.attempt)) {
+                        // P1-2 (fix 2): el cuerpo acredita dinero del intento sin Payment (banco APPROVED, o un outcome con dinero sin
+                        // `paymentId`): NUNCA una liberación — veto y contradicción; la fila se queda INDETERMINADO (no se marca RECORDED).
+                        vetoDeDineroDelIntento = attemptId
+                        if (!aplicarLoQueDigaLaLibreta(attemptId)) mostrarContradiccion()
                     } else {
-                        paymentAttemptLedger.aplicarLiberacionDelServidor(LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED"))
+                        // Un 200 es, por contrato, «liberada por el cajero»: se sintetiza con el MISMO parser/veto que S6.
+                        LiberacionDelServidor.desdeDeclaracion(venueId, attemptId, requestId, respuesta.body())
+                            ?.let { paymentAttemptLedger.aplicarLiberacionDelServidor(it) }
                         if (!aplicarLoQueDigaLaLibreta(attemptId)) {
                             // La fila no se pudo leer o no cambió: NUNCA «se puede volver a cobrar» sin verla. Se consulta de nuevo.
                             actualizarIncierto { it.copy(error = "No se pudo confirmar en este aparato. Se consulta de nuevo.") }

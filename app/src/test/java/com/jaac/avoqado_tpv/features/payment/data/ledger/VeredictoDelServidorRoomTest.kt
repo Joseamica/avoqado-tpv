@@ -437,6 +437,18 @@ class VeredictoDelServidorRoomTest {
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", sinDesenlace)).isNull()
         val conDinero = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""", attemptOutcome = "RECORDED")
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", conDinero)).isNull() // contradicción: gana el intento con dinero
+        // Task 7 · fix 2 (P1-2): CUALQUIER evidencia positiva del intento veta la liberación — los cuatro outcomes con dinero y,
+        // sobre todo, `processorEvidence = APPROVED` (el banco aprobó tarde, sin Payment): el servidor conserva la evidencia y
+        // NO reabre la liberación; la terminal no puede decir «se puede volver a cobrar».
+        for (outcome in listOf("SECOND_CAPTURE_EVIDENCE", "REFERENCE_COLLISION_EVIDENCE", "PENDING_EVIDENCE")) {
+            val evidencia = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""", attemptOutcome = outcome)
+            com.google.common.truth.Truth.assertWithMessage(outcome).that(LiberacionDelServidor.desdeConsultaS6(venue, "a8", evidencia)).isNull()
+        }
+        val aprobadoSinPayment = respuestaS6ConRequest("a8", """{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""")
+            .copy(attempt = TerminalAttemptResultDto(attemptId = "a8", outcome = "NOT_RECORDED", paymentId = null, processorEvidence = "APPROVED"))
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", aprobadoSinPayment)).isNull()
+        val declinado2 = aprobadoSinPayment.copy(attempt = TerminalAttemptResultDto(attemptId = "a8", outcome = "NOT_RECORDED", processorEvidence = "DECLINED"))
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", declinado2)?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW") // DECLINED / NONE no vetan
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a8", TerminalAttemptStatusResponse(success = true, request = null))).isNull()
     }
 }

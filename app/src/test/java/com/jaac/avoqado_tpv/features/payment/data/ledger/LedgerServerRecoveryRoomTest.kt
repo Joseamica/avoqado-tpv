@@ -128,15 +128,15 @@ class LedgerServerRecoveryRoomTest {
     @Test fun `recoverOne — primero lo guardado, despues S6 · con veredicto final no consulta`() = runTest {
         fila("g", "INDETERMINADO", hostApproved = null); bandeja("req-g")
         coEvery { api.getAttemptStatus(venue, "g") } returns recorded("g", "pay-g")
-        val json = LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "g")
+        val json = LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "g").bandejaResueltaJson
         assertThat(json).isNotNull()
         assertThat(dao.getById("g")!!.state).isEqualTo("REGISTRADO")
-        assertThat(LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "g")).isNull()
+        assertThat(LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "g").bandejaResueltaJson).isNull()
         coVerify(exactly = 1) { api.getAttemptStatus(venue, "g") }
         // Una fila SIN solicitud (cobro local) nunca se consulta.
         dao.insert(PaymentAttemptEntity(attemptId = "local", venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 1, tipCents = 0,
             recordingRoute = "FAST", paymentContextJson = "{}", createdAt = now, updatedAt = now))
-        assertThat(LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "local")).isNull()
+        assertThat(LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "local").bandejaResueltaJson).isNull()
         coVerify(exactly = 0) { api.getAttemptStatus(venue, "local") }
     }
 
@@ -181,7 +181,7 @@ class LedgerServerRecoveryRoomTest {
                 attempt = TerminalAttemptResultDto(attemptId = "b4", outcome = "NOT_RECORDED"),
                 request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
         )
-        assertThat(recovery.recoverOne(venue, "b4", now)).isNull()
+        assertThat(recovery.recoverOne(venue, "b4", now).bandejaResueltaJson).isNull()
         val tras = dao.getById("b4")!!
         assertThat(tras.state).isEqualTo("INDETERMINADO")
         assertThat(tras.serverOutcome).isNull()
@@ -210,8 +210,31 @@ class LedgerServerRecoveryRoomTest {
                 attempt = TerminalAttemptResultDto(attemptId = "b6", outcome = "NOT_RECORDED"),
                 request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
         )
-        assertThat(recovery.recoverOne(venue, "b6", now, estampar = false)).isNull()
+        assertThat(recovery.recoverOne(venue, "b6", now, estampar = false).bandejaResueltaJson).isNull()
         assertThat(dao.getById("b6")!!.state).isEqualTo("DESCARTADA")
+    }
+
+    @Test fun `P1-2 — S6 con NOT_RECORDED + processorEvidence APPROVED y la solicitud liberada NO libera la fila (sigue INDETERMINADO) y lo dice`() = runTest {
+        // Secuencia real: el servidor libera a los 30 s → llega una aprobación bancaria TARDÍA con importe distinto → el servidor
+        // conserva el evento APROBADO como evidencia sin Payment. Liberar aquí sería decir «se puede volver a cobrar» con una
+        // aprobación conocida. La fila se queda INDETERMINADO (F0 la muestra); NUNCA se marca RECORDED en local (no hay Payment).
+        fila("b7", "INDETERMINADO", requestId = "req-b7", hostApproved = null)
+        coEvery { api.getAttemptStatus(venue, "b7") } returns Response.success(
+            TerminalAttemptStatusResponse(success = true, attemptId = "b7", requestId = "req-b7",
+                attempt = TerminalAttemptResultDto(attemptId = "b7", outcome = "NOT_RECORDED", paymentId = null, processorEvidence = "APPROVED"),
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"}""").asJsonObject),
+        )
+        val lectura = recovery.recoverOne(venue, "b7", now, estampar = false)
+        assertThat(lectura.bandejaResueltaJson).isNull()
+        assertThat(lectura.evidenciaPositivaSinRegistro).isTrue()
+        val tras = dao.getById("b7")!!
+        assertThat(tras.state).isEqualTo("INDETERMINADO")
+        assertThat(tras.serverOutcome).isNull()
+        assertThat(tras.hostApproved).isNull()
+        // Y por la pasada N3 (con estampa) tampoco: cuenta como consulta, no como liberación.
+        val r = recovery.recover(venue, now + 1)
+        assertThat(r.liberadas).isEqualTo(0)
+        assertThat(dao.getById("b7")!!.state).isEqualTo("INDETERMINADO")
     }
 
     @Test fun `recoverOne aplica la liberacion y la fila queda legible para la pantalla`() = runTest {
@@ -221,7 +244,7 @@ class LedgerServerRecoveryRoomTest {
                 attempt = TerminalAttemptResultDto(attemptId = "b2", outcome = "NOT_RECORDED"),
                 request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"}""").asJsonObject),
         )
-        assertThat(recovery.recoverOne(venue, "b2", now)).isNull()   // no hay bandeja resuelta que emitir
+        assertThat(recovery.recoverOne(venue, "b2", now).bandejaResueltaJson).isNull()   // no hay bandeja resuelta que emitir
         assertThat(ledger.leerIntento("b2")!!.serverOutcome).isEqualTo("OPERATOR_NO_INSTRUMENT")
     }
 }

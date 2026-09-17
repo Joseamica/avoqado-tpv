@@ -132,9 +132,19 @@ data class ResultadoDelVeredicto(
 data class LiberacionDelServidor(val venueId: String, val attemptId: String, val requestId: String, val evidencia: String) {
     companion object {
         val EVIDENCIAS = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED")
+
+        /**
+         * Evidencia POSITIVA del servidor sobre el INTENTO (Task 7 · fix 2, P1-2): un outcome con dinero (los cuatro de
+         * [PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO], con o sin `paymentId`) o `processorEvidence = APPROVED` — el banco
+         * aprobó (tarde, con otro importe…) y el servidor conserva ese evento aunque no haya Payment ni reabra la liberación.
+         * Con ella NINGUNA liberación se aplica: ni la de S6 ni la sintetizada del 2xx de la declaración. `DECLINED`/`NONE` no
+         * vetan. ÚNICO punto que decide esto: los dos parsers de abajo y `LedgerServerRecovery.recoverOne` lo consultan aquí.
+         */
+        fun acreditaDinero(intento: TerminalAttemptResultDto?): Boolean =
+            intento != null && (intento.outcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || intento.processorEvidence == "APPROVED")
+
         fun desdeConsultaS6(venueId: String, attemptId: String, respuesta: TerminalAttemptStatusResponse): LiberacionDelServidor? {
-            val intento = respuesta.attempt?.outcome
-            if (intento == "RECORDED" || intento == "SECOND_CAPTURE_EVIDENCE") return null // el dinero manda
+            if (acreditaDinero(respuesta.attempt)) return null // el dinero (o una aprobación conocida) manda
             val requestId = respuesta.requestId?.takeIf { it.isNotBlank() } ?: return null // sin solicitud no hay pertenencia que comprobar
             val request = respuesta.request ?: return null
             val outcome = runCatching { request.get("outcome")?.asString }.getOrNull()
@@ -142,5 +152,13 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
             if (outcome != "NOT_CHARGED" || evidencia !in EVIDENCIAS) return null
             return LiberacionDelServidor(venueId, attemptId, requestId, evidencia!!)
         }
+
+        /**
+         * El 2xx de la declaración del cajero (`POST …/no-instrument-resolution`): por contrato el servidor sólo contesta 200
+         * cuando liberó la solicitud como `OPERATOR_RECONCILED`, así que la liberación se sintetiza de la respuesta misma —
+         * pero con el MISMO veto que S6: si el cuerpo acredita dinero del intento, no hay liberación (null).
+         */
+        fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
+            if (acreditaDinero(respuesta?.attempt)) null else LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
     }
 }

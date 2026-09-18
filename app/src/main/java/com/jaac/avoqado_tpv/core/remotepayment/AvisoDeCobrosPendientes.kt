@@ -68,6 +68,13 @@ object AvisoDeCobrosPendientes {
     /** 72 h: suficiente para que operaciones actúe; después la contradicción sigue en la libreta, no en el aviso. */
     const val VENTANA_CONTRADICCION_MS = 72L * 60 * 60 * 1000
 
+    /**
+     * «$10.00, hace 2 min» — el MISMO formato de importe y antigüedad que este aviso, para que la pantalla que nombra
+     * la fila que aparta la terminal (§3.8, rechazo de la barrera en un cobro del POS) diga lo mismo que el aviso F0.
+     */
+    fun importeYAntiguedad(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
+        "${pesos(totalCentavos)}, ${antiguedad(ahoraMillis - desdeMillis)}"
+
     private fun pesos(centavos: Long): String =
         CurrencyFormatter.format(BigDecimal(centavos).movePointLeft(2))
 

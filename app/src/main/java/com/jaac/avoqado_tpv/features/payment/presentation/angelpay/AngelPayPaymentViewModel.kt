@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import com.jaac.avoqado_tpv.core.remotepayment.DecisionDelVinculo
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
@@ -38,7 +39,9 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AuthErrorKi
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayErrorMapper
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DecisionDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DesenlaceDelCobro
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.paraLaReglaDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
@@ -584,8 +587,22 @@ class AngelPayPaymentViewModel @Inject constructor(
      * una liberación vieja o llegue una respuesta atrasada sin dinero. Se limpia sólo en `resetPayment()`.
      */
     private var vetoDeDineroDelIntento: String? = null
-    /** La pantalla anunció una liberación («se puede volver a cobrar») en este cobro; S5 lo usa para saber que tiene que desmentirla. */
+    /**
+     * La pantalla anunció una liberación («se puede volver a cobrar») en este cobro; S5 lo usa para saber que tiene que
+     * desmentirla. También la enciende el «no se cobró» del SDK 1.0.19 en un cobro del POS ([cerrarSinAutorizacion]).
+     */
     private var liberacionMostrada = false
+    /**
+     * Codex r2 (P1-2 residual b): el último aviso S5 de ESTE intento. S5 lo publica aunque su propia escritura haya fallado
+     * (`registrado = false` sin nada en la fila); cuando el dinero sólo consta en el veto, con él se deja durable EL MISMO
+     * veredicto que S5 habría escrito ([dejarDuraderoElVeto]). Se limpia con el veto, en `resetPayment()`.
+     */
+    private var avisoS5DelIntento: SocketEvent.TerminalPaymentConfirmed? = null
+    /**
+     * El «no se cobró» del SDK 1.0.19 ANUNCIADO en un cobro del POS ([cerrarSinAutorizacion]): venue y motivo de ESE cierre.
+     * Si un S5 sin registrar lo desmiente, la evidencia se deja durable y, si no se puede, se reabre SÓLO esa fila.
+     */
+    private var cierreSinAutorizacionAnunciado: CierreAnunciado? = null
 
     @VisibleForTesting internal var msEsperaAlServidor: Long = MS_ESPERA_AL_SERVIDOR
     @VisibleForTesting internal var msEntreConsultasS6: Long = MS_ENTRE_CONSULTAS_S6
@@ -1811,6 +1828,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         return true
     }
 
+    /** «AngelPay SDK no está inicializado» → «…inicializado.»: [fallaAntesDeAutorizar] le añade « Reintenta.». */
+    private fun conPunto(texto: String): String = texto.trim().let { if (it.endsWith(".") || it.endsWith("!") || it.endsWith("?")) it else "$it." }
+
     /**
      * T26: un fallo ANTES de abrir la libreta y el SDK (auth previa o espera del comercio).
      * La pantalla queda en Error con «Reintentar» sobre la MISMA solicitud.
@@ -1963,15 +1983,14 @@ class AngelPayPaymentViewModel @Inject constructor(
                 startAppToAppCardPayment(credentials)
                 return
             }
-            _state.value = AngelPayPaymentState.Error(
-                message = initError?.message ?: "AngelPay SDK no está inicializado",
-                canRetry = true,
+            // 📡 T36 (§3.8, 18-sep): falla ANTES de la libreta y del SDK — nada capaz de autorizar empezó. Mismo camino
+            // que la auth previa (T26 / H.3): «Reintentar» sobre ESTA solicitud, su final (`failed + PRE_AUTHORIZATION`)
+            // RETENIDO mientras se pueda reintentar, y el reloj de abandono lo cierra si nadie retoma. Antes no salía
+            // NUNCA nada y la tablet terminaba en UNKNOWN con la terminal reservada.
+            fallaAntesDeAutorizar(
+                base = conPunto(initError?.message ?: "AngelPay SDK no está inicializado"),
+                mensajeParaPos = "La terminal no pudo iniciar AngelPay",
             )
-            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
-            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the
-            // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
-            // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
-            // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
             clearChargingOnTerminal()
             return
         }
@@ -2003,15 +2022,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                 startAppToAppCardPayment(credentials)
                 return
             }
-            _state.value = AngelPayPaymentState.Error(
-                message = error?.message ?: "No se pudo autenticar AngelPay SDK",
-                canRetry = true,
+            // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
+            fallaAntesDeAutorizar(
+                base = conPunto(error?.message ?: "No se pudo autenticar AngelPay SDK"),
+                mensajeParaPos = "La terminal no pudo conectar con AngelPay",
             )
-            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
-            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the
-            // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
-            // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
-            // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
             clearChargingOnTerminal()
             return
         }
@@ -2021,13 +2036,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         // en un merchant distinto al seleccionado. Fail-closed: una sesión no verificable
         // no mueve dinero.
         if (!sessionAlignedWithSelectedMerchant()) {
-            _state.value = AngelPayPaymentState.Error(
-                message = "La sesión de AngelPay quedó en otra cuenta. Vuelve a seleccionar el comercio e intenta de nuevo.",
-                canRetry = true,
+            // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
+            fallaAntesDeAutorizar(
+                base = "La sesión de AngelPay quedó en otra cuenta. Vuelve a seleccionar el comercio.",
+                mensajeParaPos = "La terminal no pudo preparar el comercio",
             )
-            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
-            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request (same
-            // rationale as the other pre-money sites above).
             clearChargingOnTerminal()
             return
         }
@@ -2108,16 +2121,41 @@ class AngelPayPaymentViewModel @Inject constructor(
             return
         }
 
-        _state.value = AngelPayPaymentState.Error(
-            message = validationError?.message ?: "No se pudo iniciar el cobro con AngelPay SDK",
-            canRetry = true,
-        )
-        // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
-        // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the id
-        // set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a stale
-        // "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out → server
-        // watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
+        // 🔑 Codex r1 (P2 previo, 18-sep): la validación falló y NINGÚN otro camino va a lanzar con esta llave — el fallback de
+        // propina no validó y el de app-a-app está apagado (los dos ya se descartaron arriba). ESTA invocación hizo la
+        // transición PREPARANDO → AUTORIZANDO y NUNCA lanzó el SDK, así que puede cerrar la fila ACREDITADA
+        // ([cerrarIntentoQueNoSeLanzo]). Antes la fila quedaba AUTORIZANDO: la terminal apartada y un «Reintentar» que las
+        // guardas bloqueaban. En un cobro del POS el final se RETIENE mientras se pueda reintentar (H.3), como en las demás
+        // fallas previas; si nadie retoma, el reloj de abandono lo cierra con `failed + PRE_AUTHORIZATION`.
+        val base = conPunto(validationError?.message ?: "No se pudo iniciar el cobro con AngelPay SDK")
+        if (cerrarIntentoQueNoSeLanzo(paymentAttemptId, causa = "validacion")) {
+            fallaAntesDeAutorizar(base, mensajeParaPos = "La terminal no pudo preparar el cobro")
+        } else {
+            // Sin la fila cerrada no se afirma nada: la obligación sigue viva y no se ofrece un «Reintentar» que las guardas bloquearían.
+            _state.value = AngelPayPaymentState.Error(message = base, canRetry = false)
+        }
         clearChargingOnTerminal()
+    }
+
+    /**
+     * Codex r1 (P2 previo): cierra ACREDITADA la fila AUTORIZANDO de un intento que ESTA invocación marcó
+     * ([openLedgerAttemptAndMarkAuthorizing]) y que NUNCA lanzó el SDK. Sólo lo llama quien lo sabe, y después de descartar
+     * cualquier fallback que vaya a continuar con la misma llave. Es el mismo CAS que el «no se cobró» del SDK 1.0.19
+     * ([PaymentAttemptLedger.markSinAutorizacion]: sólo desde AUTORIZANDO, sin `host_approved` y sin evidencia del servidor),
+     * con `no_lanzado:<causa>` en `last_error`. NO es un cierre genérico de filas AUTORIZANDO: fuera de esta invocación esa fila
+     * puede ser un cobro en vuelo.
+     *
+     * Con la fila cerrada, la marca de la barrera deja de contar como «autorización lanzada» ([authorizationWasLaunched]):
+     * «Reintentar» abre un intento NUEVO y, en un cobro del POS, el final se retiene como en cualquier falla previa.
+     */
+    private suspend fun cerrarIntentoQueNoSeLanzo(attemptId: String, causa: String): Boolean {
+        val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return false
+        if (!paymentAttemptLedger.markSinAutorizacion(attemptId, venueId, "no_lanzado:$causa")) {
+            Timber.w("📒 [AngelPay SDK] No se pudo cerrar el intento no lanzado %s — la obligación sigue viva", attemptId)
+            return false
+        }
+        authorizationWasLaunched = false
+        return true
     }
 
     // Internal for tests: the sandbox variant compiles with ANGELPAY_SDK_ENABLED=false,
@@ -2573,6 +2611,38 @@ class AngelPayPaymentViewModel @Inject constructor(
                     AngelPayErrorMapper.isPreChargeRegisterFailure(result.message)
                 )
 
+            // 🔑 SDK 1.0.19 (18-sep) — ANTES de clasificar: ¿el SDK ACREDITÓ que la petición no salió al host?
+            // ([AngelPayOutcomeClassifier.decidirSegunElSdk119]). Si la libreta lo escribe es «no se cobró», cierto e
+            // inmediato: sin verificador, sin incertidumbre y, en un cobro del POS, `failed + PRE_AUTHORIZATION` al
+            // instante. Si la libreta NO lo escribe (o el servidor ya tiene evidencia de dinero de este intento), sigue el
+            // camino incierto de siempre. Cualquier otra cosa que diga la regla (otra referencia, tarjeta ya leída,
+            // contradicción) fuerza INCIERTO: nunca un rechazo con «Reintentar».
+            val reglaDelSdk = reglaDelSdk119(result)
+            if (reglaDelSdk == DecisionDelSdk.SIN_AUTORIZACION) {
+                when (cerrarSinAutorizacion(result)) {
+                    CierreSinAutorizacion.CERRADO -> {
+                        // 📊 Task 6 — resuelto, y distinguible en la telemetría de un U101 incierto de antes.
+                        authAttemptOutcomeCode = "${result.callResult?.code ?: "SIN_CODIGO"}_SIN_AUTORIZACION"
+                        clearChargingOnTerminal()
+                        return@launch
+                    }
+                    CierreSinAutorizacion.DESMENTIDO -> {
+                        // S5 acreditó dinero mientras se escribía la libreta: la pantalla ya quedó en el cobro o en la contradicción.
+                        authAttemptOutcomeCode = "${result.callResult?.code ?: "SIN_CODIGO"}_CONTRADICCION"
+                        clearChargingOnTerminal()
+                        return@launch
+                    }
+                    CierreSinAutorizacion.NO_CERRADO -> Unit
+                }
+            }
+            if (reglaDelSdk == DecisionDelSdk.CONTRADICCION) {
+                reportarContradiccionDelSdk(result, "authorizationAttempted=false con datos que sólo escribe el host")
+            }
+            if (aprobadoSinIntentoDeAutorizar(result)) {
+                // Manda el dinero (la rama APROBADO de abajo registra la venta), pero el binario se contradijo: se grita.
+                reportarContradiccionDelSdk(result, "aprobado con authorizationAttempted=false")
+            }
+
             // 🔍 Los TRES desenlaces (2026-09-08). Antes esto era un `if (approved)` con un
             // `else` que metía en el mismo saco un rechazo del emisor y un "no sé qué pasó".
             // Ver [AngelPayOutcomeClassifier]: la pregunta no es "¿falló?" sino "¿contestó
@@ -2586,6 +2656,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // que además llegara con `status=TIMEOUT` bloquearía una venta buena y le
                 // quitaría al cajero la re-autenticación automática que ya funciona.
                 ledgerExpiryShapedDecline -> DesenlaceDelCobro.RECHAZADO_CONFIRMADO
+                // SDK 1.0.19: la regla habló y no se pudo cerrar como «no se cobró» ⇒ no se sabe. Nunca «Reintentar».
+                reglaDelSdk != DecisionDelSdk.REGLAS_DE_HOY -> DesenlaceDelCobro.INCIERTO
                 else -> AngelPayOutcomeClassifier.clasificar(
                     aprobado = result.approved,
                     status = nombreDeStatus(result),
@@ -2756,6 +2828,261 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     private fun nombreDeStatus(result: PaymentResult): String? =
         runCatching { result.status.name }.getOrNull()
+
+    /**
+     * La regla del SDK 1.0.19 sobre ESTE resultado y ESTE intento. Leer la versión o un campo del resultado jamás puede
+     * tumbar la clasificación: ante cualquier fallo, [DecisionDelSdk.REGLAS_DE_HOY] — el camino de siempre.
+     */
+    private fun reglaDelSdk119(result: PaymentResult): DecisionDelSdk = runCatching {
+        AngelPayOutcomeClassifier.decidirSegunElSdk119(
+            result.paraLaReglaDelSdk(sdkGateway.sdkVersion()),
+            currentPaymentAttemptId,
+        )
+    }.getOrElse { error ->
+        Timber.e(error, "🔶 [AngelPay SDK] No se pudo aplicar la regla del SDK 1.0.19 — se clasifica como siempre")
+        DecisionDelSdk.REGLAS_DE_HOY
+    }
+
+    /** Aprobado con `authorizationAttempted = false` en el binario auditado: imposible según el SDK — manda el dinero, y se grita. */
+    private fun aprobadoSinIntentoDeAutorizar(result: PaymentResult): Boolean = runCatching {
+        result.approved && !result.authorizationAttempted &&
+            sdkGateway.sdkVersion()?.trim() == AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA
+    }.getOrDefault(false)
+
+    /** 🚨 El SDK 1.0.19 dijo algo que su propio binario no explica. Nunca cambia el desenlace (lo deja incierto o aprobado). */
+    private fun reportarContradiccionDelSdk(result: PaymentResult, que: String) {
+        val codigo = result.callResult?.code
+        val status = nombreDeStatus(result)
+        Timber.e(
+            "🚨 [AngelPay SDK] CONTRADICCIÓN del SDK %s: %s | code=%s status=%s attemptId=%s",
+            AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA, que, codigo, status, currentPaymentAttemptId,
+        )
+        observability.logError(
+            tag = "AngelPaySdkContradiccion",
+            message = "El SDK de AngelPay ${AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA} se contradijo: $que",
+            metadata = mapOf(
+                "sdkCode" to (codigo ?: "none"),
+                "status" to (status ?: "none"),
+                "approved" to result.approved,
+                "authorizationAttempted" to runCatching { result.authorizationAttempted }.getOrNull(),
+                "attemptId" to (currentPaymentAttemptId ?: "none"),
+                "integratorReference" to (result.integratorReference ?: "none"),
+            ),
+        )
+    }
+
+    /**
+     * 🔑 SDK 1.0.19 — «no se cobró», CIERTO ([DecisionDelSdk.SIN_AUTORIZACION]). Devuelve true si el cobro quedó cerrado
+     * así; false ⇒ quien llama sigue el camino INCIERTO de siempre (nada se afirmó).
+     *
+     * El orden es el contrato (diseño `diseno-nexgo-sdk-1.0.19.md` §2.3):
+     *  1. **Veto de dinero**: si el servidor ya acreditó dinero de ESTE intento (S5 mientras el SDK estaba dentro),
+     *     «no se cobró» sería mentira ⇒ 🚨 y false.
+     *  2. **La libreta PRIMERO** ([PaymentAttemptLedger.markSinAutorizacion], `AUTORIZANDO → DESCARTADA` sin tocar
+     *     `host_approved`). Si no QUEDA escrita, false: la pantalla no puede afirmar lo que la libreta no dice.
+     *  2b. **Revalidación tras el CAS** (Codex r1 y r2): se relee la fila. Con dinero en la fila o en el veto de S5 ⇒
+     *     contradicción, y si el dinero sólo consta en el veto se deja DURABLE antes de pintar ([dejarDuraderoElVeto]). Si la
+     *     relectura falla o no devuelve la DESCARTADA del CAS ⇒ se falla CERRADO: la fila se reabre a INDETERMINADO
+     *     ([PaymentAttemptLedger.reabrirSinAutorizacion]) y sigue el camino incierto — nunca «No se cobró», nunca `failed`.
+     *  3. Cobro LOCAL: «No se cobró» con «Intentar de nuevo» (un intento y una referencia NUEVOS). Sin verificador, sin
+     *     ticket de rechazo, sin «rechazado por el banco».
+     *  4. Cobro del POS: `failed + PRE_AUTHORIZATION` AL INSTANTE (la bandeja lo re-verifica en su transacción), la
+     *     terminal dice que se reenvíe desde el POS y SALE SOLA a los [msMostrarLiberada]. Sin retención H.3: no hay
+     *     «Reintentar» que retener (decisión del founder, 18-sep).
+     */
+    private suspend fun cerrarSinAutorizacion(result: PaymentResult): CierreSinAutorizacion {
+        val attemptId = currentPaymentAttemptId ?: return CierreSinAutorizacion.NO_CERRADO
+        val codigo = result.callResult?.code?.trim()?.uppercase()
+        if (vetoDeDineroDelIntento != null && vetoDeDineroDelIntento == attemptId) {
+            reportarContradiccionDelSdk(result, "sin autorización según el SDK, pero el servidor tiene evidencia de dinero de este intento")
+            return CierreSinAutorizacion.NO_CERRADO
+        }
+        val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+        if (venueId == null) {
+            Timber.w("🔶 [AngelPay SDK] Sin venue para escribir «no se cobró» de %s — queda incierto", attemptId)
+            return CierreSinAutorizacion.NO_CERRADO
+        }
+        val motivo = "sin_autorizacion:sdk=${AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA};" +
+            "code=${codigo ?: "?"};status=${nombreDeStatus(result) ?: "?"}"
+        if (!paymentAttemptLedger.markSinAutorizacion(attemptId, venueId, motivo)) {
+            Timber.w("🔶 [AngelPay SDK] La libreta no escribió «no se cobró» para %s — queda incierto como siempre", attemptId)
+            return CierreSinAutorizacion.NO_CERRADO
+        }
+        // 🔴 Codex r1 (P1-2): el CAS SUSPENDE, y en ese hueco pudo llegar S5 —el servidor acreditó dinero de ESTE intento— sin
+        // cambiar la pantalla (`WaitingForResult` no es una espera para S5: sólo enciende el veto). ANTES de fijar banderas,
+        // emitir o pintar se revalida: la FILA (lo durable, que S5 escribe ANTES de avisar, y lo único que ve un cobro local) y
+        // el VETO en memoria (el aviso). Esta lectura también suspende; lo que sigue hasta pintar es síncrono, y lo que llegue
+        // DESPUÉS lo desmiente S5 sobre el negativo ya anunciado (`liberacionMostrada`, cobro del POS).
+        // 🔴 Codex r2 (P1-2 residual a): una relectura que FALLA no es «sin dinero» — la libreta convierte el error en null, y
+        // null tampoco dice nada: en ninguno de los dos casos se sabe si S5/S6 dejaron dinero en ese hueco (abajo, se falla CERRADO).
+        val fila = releerIntentoTrasElCierre(attemptId)
+        val dineroEnLaFila = fila != null && hayDineroEnLaFila(fila)
+        if (vetoDeDineroDelIntento == attemptId || dineroEnLaFila) {
+            vetoDeDineroDelIntento = attemptId
+            reportarContradiccionDelSdk(
+                result, "sin autorización según el SDK, pero el servidor acreditó dinero de este intento mientras se escribía la libreta",
+            )
+            // 🔴 Codex r2 (P1-2 residual b): si el dinero sólo consta en el VETO (S5 avisó pero su escritura no quedó), se deja
+            // durable ANTES de pintar. Sin esto la fila quedaba DESCARTADA limpia: muerto el proceso, el aviso F0 no la mostraba
+            // y la bandeja aceptaba el cancel del POS como «limpio».
+            if (!dineroEnLaFila) dejarDuraderoElVeto(attemptId, venueId, motivo)
+            when {
+                fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> mostrarCobroConfirmadoPorS6(fila)
+                // Defensivo: hoy S5 no pinta Success sobre `WaitingForResult`; si algún día lo hace, ese cobro no se pisa.
+                _state.value is AngelPayPaymentState.Success -> Unit
+                else -> mostrarContradiccion()
+            }
+            return CierreSinAutorizacion.DESMENTIDO
+        }
+        if (fila == null || fila.state != PaymentAttemptEntity.STATE_DESCARTADA) {
+            // 🔴 Codex r2 (P1-2 residual a): sin la fila del CAS a la vista no se afirma «no se cobró». Se falla CERRADO: la fila
+            // vuelve a incierta (la obligación sigue viva y la recuperación le pregunta al servidor) y quien llama sigue el camino
+            // INCIERTO — nunca «No se cobró», nunca `failed`.
+            val reabierta = paymentAttemptLedger.reabrirSinAutorizacion(
+                attemptId, venueId, motivo, "AngelPay sin veredicto: no se pudo releer la fila tras sin_autorizacion (code=${codigo ?: "?"})",
+            )
+            Timber.e("🚨 [AngelPay SDK] «no se cobró» escrito pero la fila no se pudo releer (%s) | attemptId=%s reabierta=%s", fila?.state, attemptId, reabierta)
+            observability.logError(
+                tag = "AngelPaySinAutorizacion",
+                message = "La libreta escribió «no se cobró» pero no se pudo releer la fila: queda incierto",
+                error = null,
+                metadata = mapOf(
+                    "attemptId" to attemptId,
+                    "sdkCode" to (codigo ?: "none"),
+                    "fila" to (fila?.state ?: "ilegible"),
+                    "reabierta" to reabierta,
+                ),
+            )
+            return CierreSinAutorizacion.NO_CERRADO
+        }
+        // ── Desde aquí CONSTA en la libreta: la petición no salió al host. ──
+        confirmedNegativeOutcome = true
+        confirmedNegativeEvidence = AngelPayOutcomeClassifier.EVIDENCIA_SIN_AUTORIZACION
+        declinacionRetenida = null
+        Timber.i("✅ [AngelPay SDK] No se cobró (SDK %s, %s) | attemptId=%s", AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA, codigo, attemptId)
+        observability.logWarning(
+            tag = "AngelPaySinAutorizacion",
+            message = "El SDK acreditó que el cobro no salió al banco: ${codigo ?: "sin-codigo"}",
+            metadata = mapOf(
+                "sdkCode" to (codigo ?: "none"),
+                "status" to (nombreDeStatus(result) ?: "none"),
+                "attemptId" to attemptId,
+                "remoto" to (_paymentSource == CobroRemotoDelPos.FUENTE_SOCKET),
+            ),
+        )
+        val esCobroDelPos = _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET && _socketRequestId != null
+        if (!esCobroDelPos) {
+            _state.value = AngelPayPaymentState.Error(
+                message = TextosNoSeCobro.pagoRapido(codigo, result.message),
+                canRetry = true,
+                noSeCobro = true,
+            )
+            return CierreSinAutorizacion.CERRADO
+        }
+        val paraElPos = TextosNoSeCobro.paraElPos(codigo, result.message)
+        cancelarCierrePorAbandono()
+        finalPreAutorizacionRetenido = null
+        emitSocketResultIfSocketSourced(
+            status = "failed",
+            errorMessage = paraElPos,
+            outcomeEvidence = AngelPayOutcomeClassifier.EVIDENCIA_SIN_AUTORIZACION,
+        )
+        solicitudCerradaAntesDeAutorizar = true
+        _mensajeDelPos.value = paraElPos
+        val mostrado = AngelPayPaymentState.Error(
+            message = TextosNoSeCobro.terminalEnCobroDelPos(codigo, result.message),
+            canRetry = false,
+            noSeCobro = true,
+        )
+        _state.value = mostrado
+        // Es un negativo ANUNCIADO, como una liberación: si el servidor acredita dinero de ESTE intento (S5) mientras se
+        // muestra, [manejarConfirmacionDelServidor] lo desmiente (contradicción o el cobro) en vez de dejar «no se cobró».
+        liberacionMostrada = true
+        cierreSinAutorizacionAnunciado = CierreAnunciado(attemptId, venueId, motivo)
+        // Como la liberación de la ventana (Task 10): si la pantalla sigue siendo ESTE «no se cobró», se reinicia y SALE sola.
+        viewModelScope.launch {
+            delay(msMostrarLiberada)
+            if (_state.value !== mostrado) return@launch
+            resetPayment()
+            pedirSalidaSiSeReinicio(desde = mostrado, motivo = "no se cobró (${codigo ?: "sin-codigo"})")
+        }
+        return CierreSinAutorizacion.CERRADO
+    }
+
+    /** Lo que resolvió [cerrarSinAutorizacion]. */
+    private enum class CierreSinAutorizacion {
+        /** No se afirmó nada: sigue el camino INCIERTO de siempre. */
+        NO_CERRADO,
+
+        /** «No se cobró», cierto: la libreta lo escribió y la pantalla lo dice. */
+        CERRADO,
+
+        /** El servidor acreditó dinero de ESTE intento mientras se escribía la libreta: la pantalla quedó en el cobro o en la contradicción. */
+        DESMENTIDO,
+    }
+
+    /** El «no se cobró» anunciado en un cobro del POS: lo que hace falta para reabrir SÓLO la fila de ESE cierre. */
+    private data class CierreAnunciado(val attemptId: String, val venueId: String, val motivo: String)
+
+    /** Codex r2 (P1-2 residual a): la relectura del cierre. Un error es null — nunca «sin dinero» —; una cancelación se propaga. */
+    private suspend fun releerIntentoTrasElCierre(attemptId: String): PaymentAttemptEntity? = try {
+        paymentAttemptLedger.leerIntento(attemptId)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [AngelPay SDK] no se pudo releer %s tras el cierre sin autorización", attemptId)
+        null
+    }
+
+    /**
+     * Codex r2 (P1-2 residual b): deja DURABLE el dinero de este intento que sólo consta en el VETO en memoria — S5 publica su
+     * aviso aunque su propia escritura haya fallado (`SocketManager.onTerminalPaymentConfirmed`). Primero, la MISMA evidencia
+     * que S5 habría escrito ([dejarDuraderoElAvisoS5]); si tampoco así queda, se reabre la fila de ESE cierre (incierta: el
+     * aviso F0 la muestra, la bandeja no acepta un negativo ni un cancel, y la recuperación le pregunta al servidor) y se
+     * REPORTA. Si también eso falla, queda el reporte y la contradicción en pantalla: nunca en silencio.
+     */
+    private suspend fun dejarDuraderoElVeto(attemptId: String, venueId: String, motivoDelCierre: String) {
+        val aviso = avisoS5DelIntento?.takeIf { it.attemptId == attemptId }
+        if (aviso != null && dejarDuraderoElAvisoS5(aviso, venueId)) return
+        val reabierta = paymentAttemptLedger.reabrirSinAutorizacion(
+            attemptId, venueId, motivoDelCierre,
+            "AngelPay: el servidor acreditó dinero de este intento (S5) que no quedó escrito tras sin_autorizacion",
+        )
+        Timber.e("🚨 [AngelPay SDK] dinero del servidor sin evidencia durable | attemptId=%s reabierta=%s", attemptId, reabierta)
+        observability.logError(
+            tag = "AngelPaySdkContradiccion",
+            message = "Evidencia de dinero del servidor para este intento que no quedó durable en la libreta",
+            error = null,
+            metadata = mapOf("attemptId" to attemptId, "paymentId" to (aviso?.paymentId ?: "none"), "reabierta" to reabierta),
+        )
+    }
+
+    /**
+     * Aplica el veredicto EXACTO que S5 habría escrito ([VeredictoDeIntento.desdeAvisoS5], libreta y bandeja en una transacción)
+     * y, si la bandeja quedó resuelta con el ganador, la EMITE como hace S5 tras su commit. Idempotente: si S5 sí lo escribió,
+     * se reevalúa con los mismos datos y la bandeja no cambia. true si la evidencia quedó durable.
+     */
+    private suspend fun dejarDuraderoElAvisoS5(aviso: SocketEvent.TerminalPaymentConfirmed, venueId: String): Boolean {
+        val resultado = paymentAttemptLedger.aplicarVeredictoDelServidor(
+            VeredictoDeIntento.desdeAvisoS5(
+                venueId = venueId, requestId = aviso.requestId, attemptId = aviso.attemptId, paymentId = aviso.paymentId,
+                // El servidor emite S5 sólo con `via: 'webhook'` (`terminal-payment.service.ts`, `confirmFromWebhook`).
+                via = "webhook", amountCents = aviso.amountCents, tipCents = aviso.tipCents,
+            ),
+        ).getOrNull()
+        resultado?.bandejaResueltaJson?.let(socketManager::emitDurableTerminalPaymentResult)
+        return resultado?.decision == ResultadoDelVeredicto.Decision.APLICADO ||
+            resultado?.decision == ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR
+    }
+
+    /**
+     * Evidencia DURABLE de dinero de un intento: un estado con aprobación o registro, la aprobación del host, un Payment del
+     * servidor, un veredicto con dinero o la aprobación bancaria sin Payment. La que S5 deja en la fila antes de avisar.
+     */
+    private fun hayDineroEnLaFila(fila: PaymentAttemptEntity): Boolean =
+        fila.state in ESTADOS_CON_DINERO || fila.hostApproved == true || fila.serverPaymentId != null ||
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED
 
     /**
      * 🔍 El SDK volvió SIN veredicto del procesador: hay que averiguar si el dinero se movió
@@ -3374,6 +3701,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // Veto de dinero por intento (Task 7): S5 es evidencia de dinero del SERVIDOR, la libreta lo haya promovido o no.
         // Desde aquí ninguna liberación (vieja, nueva o atrasada) se anuncia en este cobro.
         vetoDeDineroDelIntento = event.attemptId
+        avisoS5DelIntento = event
         esperaAlServidorJob?.cancel()
         if (!event.registrado) {
             // La libreta no lo dio por REGISTRADO (contradicción sobre una fila liberada, SDK dentro, montos…). Si la pantalla
@@ -3381,6 +3709,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             // en cualquier otro estado, como hoy: no afirma nada.
             if (_state.value is AngelPayPaymentState.ResultadoIncierto || liberacionMostrada) mostrarContradiccion()
             else Timber.w("📣 [AngelPay] payment_confirmed para %s sin transición en la libreta: la pantalla no cambia", event.attemptId)
+            // 🔴 Codex r2 (P1-2 residual b): sobre el «no se cobró» del SDK 1.0.19 YA anunciado, `registrado = false` puede ser una
+            // escritura de S5 que FALLÓ: el dinero sólo constaría en este veto. Se deja durable (idempotente si S5 sí escribió).
+            cierreSinAutorizacionAnunciado?.let { anunciado ->
+                viewModelScope.launch { dejarDuraderoElVeto(anunciado.attemptId, anunciado.venueId, anunciado.motivo) }
+            }
             return
         }
         val estado = _state.value
@@ -3462,11 +3795,53 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _mensajeDelPos.value = CobroRemotoDelPos.SOLICITUD_CERRADA
                 _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.SOLICITUD_CERRADA, canRetry = false)
             }
-            CercaDeSolicitud.LIBRE -> _state.value = AngelPayPaymentState.Error(
-                "No se pudo guardar el intento o esta venta tiene un cobro pendiente. No se inició otro cobro.",
-                canRetry = false,
-            )
+            CercaDeSolicitud.LIBRE -> {
+                if (_paymentSource == CobroRemotoDelPos.FUENTE_SOCKET && _socketRequestId != null && !_socketResultEmitted) {
+                    cerrarCobroDelPosNoIniciado()
+                } else {
+                    _state.value = AngelPayPaymentState.Error(
+                        "No se pudo guardar el intento o esta venta tiene un cobro pendiente. No se inició otro cobro.",
+                        canRetry = false,
+                    )
+                }
+            }
         }
+    }
+
+    /**
+     * §3.8 (rechazo MUDO, medido el 17-sep 21:45): la barrera de la libreta rechazó un cobro que mandó el POS —la
+     * terminal está apartada por un cobro anterior sin confirmar, o no pudo guardar el intento—. Nada capaz de autorizar
+     * empezó para ESTA solicitud, pero antes no se decía NADA: la tablet se quedaba «esperando a la terminal» hasta que
+     * el servidor retenía la ranura como UNKNOWN.
+     *
+     * Ahora sale `failed + PRE_AUTHORIZATION` AL INSTANTE y la pantalla lo NOMBRA. 🔴 Lo que lo hace seguro no es la
+     * pantalla sino la BANDEJA: `RemotePaymentRequestDao.resolverDesenlaceNegativo` sólo escribe (y [SocketManager]
+     * sólo emite) si ningún intento de ESTA solicitud quedó fuera de PREPARANDO/DESCARTADA, descarta en la misma
+     * transacción la PREPARANDO propia y re-deriva la evidencia de la libreta. La venta que aparta la terminal no se toca.
+     */
+    private suspend fun cerrarCobroDelPosNoIniciado() {
+        // Lo que aparta el APARATO — nunca ESTE mismo intento (su PREPARANDO la descarta la bandeja al escribir).
+        val retencion = paymentAttemptLedger.retencionDelAparato()?.takeUnless { it.attemptId == currentPaymentAttemptId }
+        val queLaAparta = retencion?.let {
+            AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, System.currentTimeMillis())
+        }
+        val paraElPos = if (retencion != null) CobroRemotoDelPos.NO_INICIADO_POR_COBRO_PENDIENTE
+            else CobroRemotoDelPos.NO_INICIADO_SIN_DETALLE
+        Timber.w(
+            "📡 [AngelPay Socket] La barrera rechazó el cobro del POS %s — failed + PRE_AUTHORIZATION (la aparta: %s)",
+            _socketRequestId, retencion?.attemptId ?: "sin detalle",
+        )
+        cancelarCierrePorAbandono()
+        declinacionRetenida = null
+        finalPreAutorizacionRetenido = null
+        emitSocketResultIfSocketSourced(
+            status = "failed",
+            errorMessage = paraElPos,
+            outcomeEvidence = AngelPayOutcomeClassifier.EVIDENCIA_SIN_AUTORIZACION,
+        )
+        solicitudCerradaAntesDeAutorizar = true
+        _mensajeDelPos.value = paraElPos
+        _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.noIniciadoEnLaTerminal(queLaAparta), canRetry = false)
     }
 
     /**
@@ -3487,27 +3862,6 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
     }
-
-    /**
-     * EMV advisories the AngelPay vendor catalog marks `Retry.IMMEDIATE_AFTER_FIX` —
-     * the payment SESSION is still alive at the terminal: the cashier fixes the condition
-     * (E608 tap over the contactless limit → insert chip; E615 chip required; E603 card
-     * removed; E607 CVM failed; …) and retries THIS SAME charge. They are NOT terminal
-     * outcomes, so a socket-sourced charge must NOT report "failed" to the POS on them.
-     *
-     * Source of truth: `AppErrorCatalog$Code` inside the vendored AAR (v1.0.15), extracted
-     * via javap 2026-07-14 — every EMV (E6xx) code whose retry policy is IMMEDIATE_AFTER_FIX.
-     * The runtime CallResult does not carry the retry policy, hence this mirrored set.
-     * NEVER-retry EMV codes (E601 not supported, E604 PIN attempts exceeded, E605/E606
-     * offline/online rejection, E610 expired, E619, E621, E622 AMEX) stay hard declines.
-     */
-    private val recoverableEmvAdvisoryCodes = setOf(
-        "E600", "E603", "E607", "E608", "E609", "E611", "E612", "E613", "E614",
-        "E615", "E616", "E617", "E618", "E620", "E623", "E624", "E625", "E699",
-    )
-
-    private fun isRecoverableEmvAdvisory(sdkCode: String?): Boolean =
-        sdkCode != null && sdkCode.uppercase() in recoverableEmvAdvisoryCodes
 
     /**
      * Reports every terminal (non-recovered) AngelPay decline to the backend/Crashlytics.
@@ -4508,6 +4862,10 @@ class AngelPayPaymentViewModel @Inject constructor(
     @androidx.annotation.VisibleForTesting
     internal fun socketRequestIdForTest(): String? = _socketRequestId
 
+    /** Test seam: el intento en curso — la `integratorReference` que un resultado REAL del SDK 1.0.19 le devuelve. */
+    @androidx.annotation.VisibleForTesting
+    internal fun attemptIdForTest(): String? = currentPaymentAttemptId
+
     /**
      * 📡 Red de seguridad: la pantalla murió sin que nadie reportara el desenlace al POS.
      *
@@ -4630,7 +4988,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         declaracionJob?.cancel(); declaracionJob = null
         resolutionId = null
         vetoDeDineroDelIntento = null
+        avisoS5DelIntento = null
         liberacionMostrada = false
+        cierreSinAutorizacionAnunciado = null
         consumedResultAttemptId = null
         linkAutorizado = null
         decisionQueResolvioLaPantalla = null
@@ -4717,16 +5077,24 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     companion object {
         /**
-         * Cuánto se espera a que el cajero retome un aviso EMV recuperable antes de cerrarle
-         * la fila al POS.
+         * Cuánto se espera a que el cajero retome un cobro del POS que quedó en pantalla con
+         * «Reintentar» antes de cerrarle la fila al POS.
          *
          * 🔴 Existe porque "no emitir nada" sólo era correcto mientras el cajero SIGUIERA ahí.
-         * Un `E618` («Retire la tarjeta») no reporta desenlace a propósito, para que el
-         * reintento en la misma sesión resuelva el long-poll abierto. Pero si nadie vuelve y
-         * nadie navega —la terminal se queda con la pantalla puesta— no se emite jamás: la
+         * Un rechazo RETENIDO (el del banco o el `E608` —«inserta el chip», rechazo con
+         * «Reintentar» en la misma venta—) y una falla ANTES de autorizar (auth previa,
+         * comercio, SDK sin inicializar) no reportan su desenlace a propósito (H.3), para que el
+         * reintento en la misma solicitud resuelva el long-poll abierto. Pero si nadie vuelve y
+         * nadie navega —la terminal se queda con la pantalla puesta— no se emitiría jamás: la
          * fila vence sola y el vigilante del servidor la parquea en `UNKNOWN`, que **retiene
          * el slot de la terminal** hasta que un humano lo desatasque (incidente Testarudo:
          * una PAX bloqueada 3 horas).
+         *
+         * ⚠️ Desde el SDK 1.0.19 (18-sep) el `E618` («Retire la tarjeta») y el `U101` que el SDK
+         * arma sin haber mandado nada YA NO pasan por aquí: con `authorizationAttempted = false`
+         * y nuestra referencia son «no se cobró» cierto y salen AL INSTANTE
+         * (`AngelPayOutcomeClassifier.decidirSegunElSdk119`); con cualquier otra forma son
+         * INCIERTOS y los resuelve la ventana de confirmación del servidor, no este reloj.
          *
          * 2 min: mucho más que un reintento real (segundos) y menos que los 5 min que tarda
          * en vencer la fila del servidor, para llegar antes que el vigilante.
@@ -4739,6 +5107,12 @@ class AngelPayPaymentViewModel @Inject constructor(
          * consultando S6 cada 5 s; una liberación se muestra 4 s antes de volver a Idle y de que la pantalla salga (Task 10).
          */
         const val MS_ESPERA_AL_SERVIDOR = 45_000L
+
+        /** Estados de la libreta que ya implican dinero (HOST_RESPONDIO es la aprobación del host; su rechazo es DESCARTADA). */
+        private val ESTADOS_CON_DINERO = setOf(
+            PaymentAttemptEntity.STATE_HOST_RESPONDIO, PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRADO,
+            PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, PaymentAttemptEntity.STATE_CERRADA,
+        )
         const val MS_ENTRE_CONSULTAS_S6 = 5_000L
         const val MS_MOSTRAR_LIBERADA = 4_000L
 

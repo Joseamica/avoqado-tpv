@@ -404,6 +404,44 @@ interface PaymentAttemptDao {
     )
     suspend fun casWithError(attemptId: String, expectedStates: List<String>, newState: String, now: Long, error: String?): Int
 
+    /**
+     * SDK 1.0.19 (18-sep): la petición NO salió al host — lo acreditó el SDK de AngelPay (`authorizationAttempted = false`
+     * con NUESTRA referencia) o la invocación que sabe que nunca lanzó el SDK ([PaymentAttemptLedger.markSinAutorizacion]
+     * dice quién). CAS SÓLO desde `AUTORIZANDO` (el estado en que un intento AngelPay espera el resultado
+     * del SDK) a `DESCARTADA`, **sin tocar `host_approved`** —por eso la bandeja deriva `PRE_AUTHORIZATION`
+     * (`RemotePaymentRequestDao.resolverDesenlaceNegativo`) y nunca `PROCESSOR_DECLINED`— y con el motivo en `last_error`.
+     *
+     * No gana sobre: otro estado (`INDETERMINADO` —de la cuarentena por reloj o de un desenlace incierto—,
+     * `HOST_RESPONDIO`, `REGISTRADO`…), otro venue, una fila heredada, una devolución, otro procesador, un veredicto
+     * del host ya escrito, ni NINGUNA evidencia del servidor (Payment, veredicto o aprobación bancaria): con evidencia
+     * de dinero, «no se cobró» sería mentira. Sin migración: el motivo vive en `last_error`.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET state = 'DESCARTADA', state_version = state_version + 1, updated_at = :now, last_error = :motivo
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND state = 'AUTORIZANDO'
+           AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0
+           AND host_approved IS NULL AND server_payment_id IS NULL AND server_outcome IS NULL
+           AND server_processor_evidence IS NULL"""
+    )
+    suspend fun marcarSinAutorizacion(attemptId: String, venueId: String, motivo: String, now: Long): Int
+
+    /**
+     * Codex r2 (P1-2 residual, 18-sep): REABRE la fila que cerró [marcarSinAutorizacion] — `DESCARTADA → INDETERMINADO` —
+     * cuando la pantalla no puede sostener ese «no se cobró»: la relectura posterior al CAS falló (nada garantiza que S5/S6
+     * no dejaran dinero en ese hueco) o el servidor acreditó dinero que no se pudo dejar escrito. SÓLO la fila que escribió
+     * ESE cierre: mismo intento, venue y motivo (`last_error`), sin veredicto del host, AngelPay SALE no heredada. No toca
+     * `host_approved` ni la evidencia del servidor. INDETERMINADO vuelve a apartar la terminal, a vetar un negativo de su
+     * solicitud (`RemotePaymentRequestDao.contarIntentosBloqueadores`) y a salir en el aviso F0.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET state = 'INDETERMINADO', state_version = state_version + 1, updated_at = :now, last_error = :razon
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND state = 'DESCARTADA' AND last_error = :motivoDelCierre
+           AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0 AND host_approved IS NULL"""
+    )
+    suspend fun reabrirSinAutorizacion(attemptId: String, venueId: String, motivoDelCierre: String, razon: String, now: Long): Int
+
     // ── Sweep / shadow observability (ALWAYS venue-scoped — tenant isolation) ──
 
     @Query("SELECT * FROM payment_attempts WHERE venue_id = :venueId AND state IN (:states) AND created_at < :olderThan ORDER BY created_at ASC LIMIT 50")

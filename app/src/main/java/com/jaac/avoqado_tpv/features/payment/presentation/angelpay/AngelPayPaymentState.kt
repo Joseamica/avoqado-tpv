@@ -183,11 +183,19 @@ sealed class AngelPayPaymentState {
         val declarando: Boolean = false,
     ) : AngelPayPaymentState()
 
-    /** Payment failed with optional retry. */
+    /**
+     * Payment failed with optional retry.
+     *
+     * [noSeCobro] (SDK 1.0.19, 18-sep): el SDK acreditó que el cobro NO salió al banco
+     * (`AngelPayOutcomeClassifier.decidirSegunElSdk119` → `SIN_AUTORIZACION`) y la libreta ya lo escribió. La pantalla
+     * lo titula «No se cobró» —no «Error en el pago»— y, con [canRetry], ofrece «Intentar de nuevo» (un intento y una
+     * referencia NUEVOS). Default `false`: ningún constructor existente cambia.
+     */
     data class Error(
         val message: String,
         val canRetry: Boolean = true,
         val showOpenShiftButton: Boolean = false,
+        val noSeCobro: Boolean = false,
     ) : AngelPayPaymentState()
 
     /** User cancelled the payment in AngelPay app. */

@@ -20,6 +20,26 @@ internal object CobroRemotoDelPos {
     /** Nadie retomó el cobro: salió su desenlace y la solicitud queda cerrada para esta terminal. */
     const val CERRADO_POR_ABANDONO = "El cobro se cerró sin cobrar. Vuelve a cobrar desde el punto de venta."
 
+    // ── §3.8 (rechazo MUDO, 18-sep): la barrera de la libreta rechazó un cobro que mandó el POS. NO se inició nada: se
+    //    dice AL INSTANTE (`failed + PRE_AUTHORIZATION`, verificado por la bandeja en su transacción) en vez de dejar a la
+    //    tablet «esperando a la terminal» hasta que el servidor retenga la ranura como UNKNOWN (medido el 17-sep 21:45). ──
+
+    /** Lo que ve la tablet cuando la terminal está apartada por un cobro anterior sin confirmar. */
+    const val NO_INICIADO_POR_COBRO_PENDIENTE =
+        "La terminal tiene un cobro anterior sin confirmar: este cobro NO se inició. Resuélvelo en la terminal o cobra con otra."
+
+    /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
+    const val NO_INICIADO_SIN_DETALLE =
+        "La terminal no pudo iniciar este cobro (tiene un cobro pendiente o no pudo guardar el intento): este cobro NO se inició."
+
+    /** La pantalla de la terminal, NOMBRANDO la fila que la aparta («$10.00, hace 2 min») cuando se conoce. */
+    fun noIniciadoEnLaTerminal(queLaAparta: String?): String = if (queLaAparta != null) {
+        "Este cobro del POS NO se inició: la terminal tiene un cobro anterior sin confirmar ($queLaAparta). " +
+            "Resuélvelo o cobra con otra terminal."
+    } else {
+        "Este cobro del POS NO se inició: la terminal tiene un cobro pendiente o no pudo guardar el intento. No se cobró."
+    }
+
     // ── Checkpoint 2 · N1 (16-sep): la decisión del servidor sobre el vínculo intento→solicitud, ANTES del SDK ──
     /** `NOT_OWNER`: el servidor no acredita que ESTA conexión sea la dueña de la solicitud. Nunca se toca el SDK. */
     const val NO_ES_LA_DUENA = "No se pudo verificar que esta terminal sea la dueña de este cobro. No se inició ningún cobro. " +

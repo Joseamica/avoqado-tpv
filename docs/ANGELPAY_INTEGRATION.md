@@ -219,12 +219,18 @@ aparta. La bandeja sólo lo escribe si ningún intento de ESA solicitud quedó f
    lo escribe) y una bandeja ya resuelta conserva y reproduce su ganador. Si S5 llega durante el CAS o con el
    «No se cobró» del POS ya en pantalla, la pantalla pasa a la contradicción o al cobro, y ese dinero queda en la fila
    (su veredicto; si no se puede, la fila vuelve a INDETERMINADO): el aviso F0 lo muestra, y el cancel del POS y la
-   sonda nunca contestan «limpio» (con el veredicto, RESOLVED con el cobro; con la reapertura, ACTIVE). Si la
-   relectura posterior al CAS falla, la terminal queda INCIERTA, no en
+   sonda nunca contestan «limpio» **cuando la bandeja todavía no tiene final**: con el veredicto aplicado
+   queda RESOLVED con el cobro, y con la reapertura sigue PROCESSING ⇒ ACTIVE. 🔴 **Si el negativo YA se había
+   persistido en la bandeja, la reapertura de la libreta NO la cambia** (Codex r3): la bandeja conserva su
+   `RESOLVED/failed`, la sonda reproduce ese negativo y el cancel contesta `ALREADY_RESOLVED`, aunque la fila quede
+   INDETERMINADO y el aviso F0 sí la muestre. La obligación durable vive en la TERMINAL; el final ya entregado al POS
+   no se reescribe. Si la relectura posterior al CAS falla, la terminal queda INCIERTA, no en
    «No se cobró». **Lo que NO cubre, declarado:** (a) si el proceso muere entre el aviso de S5 y la escritura de su
    veredicto, el veto en memoria se pierde; (b) si fallan esa escritura Y la reapertura, quedan el reporte y la
    contradicción en pantalla, pero no una obligación durable en la terminal; (c) si fallan la relectura Y la
-   reapertura, la pantalla queda incierta pero la fila sigue DESCARTADA (un cancel del POS se aceptaría). En (a) y
+   reapertura, la pantalla queda incierta pero la fila sigue DESCARTADA (un cancel del POS se aceptaría); (d) una
+   reapertura POSTERIOR a que la bandeja ya persistió el negativo no revierte ese final: el POS conserva el `failed`
+   que se le entregó. En (a) y
    (b) el servidor conserva su Payment: lo que se pierde es la evidencia en la TERMINAL, no el cobro. En (c) no hay
    dinero conocido: lo que se pierde es la obligación de confirmarlo.
 

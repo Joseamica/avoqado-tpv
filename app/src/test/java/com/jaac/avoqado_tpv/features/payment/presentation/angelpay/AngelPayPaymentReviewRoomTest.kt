@@ -446,6 +446,158 @@ class AngelPayPaymentReviewRoomTest {
     }
 
     @Test
+    fun `P1 validacion fallida con la libreta REAL - la fila queda DESCARTADA sin host_approved y el reintento no esta cercado`() = runTest(testDispatcher) {
+        // Codex r1 (P2 previo, SDK 1.0.19): antes la fila quedaba AUTORIZANDO sin que el SDK se lanzara — la terminal apartada y
+        // un «Reintentar» que las guardas bloqueaban. Con la libreta y la cerca REALES (Room): la primera validación falla, la
+        // fila se cierra acreditada y el reintento abre OTRA llave que sí reserva la terminal y llega al SDK.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false, angelPaySdkFallbackEnabled = false)
+        every { sdkGateway.ensureInitialized(any(), any()) } returns Result.success(Unit)
+        every { sdkGateway.isInitialized() } returns true
+        every { sdkGateway.validatePaymentIntent(any(), any()) } returnsMany listOf(
+            Result.failure(IllegalStateException("Monto inválido para el comercio")), Result.success(Unit),
+        )
+        coEvery { angelPayAuthRepository.ensureAuthenticated() } returns Result.success(Unit)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val vm = createViewModel()
+        suspend fun iniciarCobroConElSdk() = kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
+            val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("startSdkCardPayment",
+                com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials::class.java,
+                kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+            method.invoke(vm, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials("", "", "", ""), continuation)
+        }
+        try {
+            vm.initPayment("100.00")
+            runCurrent()
+            val primero = vm.attemptIdForTest()!!
+            iniciarCobroConElSdk()
+
+            val filaPrimero = db.paymentAttemptDao().getById(primero)!!
+            assertThat(filaPrimero.state).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_DESCARTADA)
+            assertThat(filaPrimero.hostApproved).isNull()
+            assertThat(filaPrimero.lastError).startsWith("no_lanzado:validacion")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).canRetry).isTrue()
+
+            vm.retryAfterError()
+            runCurrent()
+            iniciarCobroConElSdk()
+
+            val segundo = vm.attemptIdForTest()!!
+            assertThat(segundo).isNotEqualTo(primero)
+            assertThat(db.paymentAttemptDao().getById(segundo)!!.state)
+                .isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_AUTORIZANDO)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            verify(exactly = 2) { sdkGateway.validatePaymentIntent(any(), any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 S5 sin persistir durante el CAS - Room real - su veredicto queda durable y ni F0 ni la bandeja lo olvidan`() = kotlinx.coroutines.runBlocking {
+        // Codex r2 (P1-2 residual b). RELOJ REAL (ver la nota de la primera prueba de esta clase): la libreta salta a
+        // Dispatchers.IO y el reloj virtual deja de ejecutar el ViewModel. Se espera la CONDICIÓN, con tope.
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val requestId = "req-s5-sin-persistir"
+            // La solicitud del POS, reclamada (PROCESSING), como la deja la navegación.
+            val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao())
+            bandeja.receive(
+                SocketEvent.TerminalPaymentRequest(
+                    requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = null,
+                    processedByStaffId = "s1", senderDeviceName = "CPad", venueId = "v1", timestamp = "2026-09-18T05:00:00Z",
+                ),
+            )
+            assertThat(RemotePaymentCoordinator(bandeja).prepareSocketPaymentRequest(requestId, { true }, { "v1" }))
+                .isEqualTo(RemotePaymentAdmission.READY)
+            every { authRepository.getVenueId() } returns "v1"
+            every { authRepository.getStaffId() } returns "s1"
+            every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false, angelPaySdkFallbackEnabled = false)
+            every { sdkGateway.ensureInitialized(any(), any()) } returns Result.success(Unit)
+            every { sdkGateway.isInitialized() } returns true
+            every { sdkGateway.validatePaymentIntent(any(), any()) } returns Result.success(Unit)
+            every { sdkGateway.sdkVersion() } returns "1.0.19"
+            coEvery { angelPayAuthRepository.ensureAuthenticated() } returns Result.success(Unit)
+            // El CAS de «no se cobró» GANA de verdad (Room); dentro de su suspensión llega el aviso de S5 cuya PROPIA escritura
+            // falló (`registrado = false` y la fila sin tocar): el dinero sólo consta en el veto de la pantalla. Se inyecta con un
+            // DAO decorador — un `spyk` + `callOriginal()` de mockk devuelve COROUTINE_SUSPENDED cuando la libreta salta a IO.
+            var vmDelCobro: AngelPayPaymentViewModel? = null
+            val daoBase = db.paymentAttemptDao()
+            val daoConS5 = object : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by daoBase {
+                override suspend fun marcarSinAutorizacion(attemptId: String, venueId: String, motivo: String, now: Long): Int {
+                    val n = daoBase.marcarSinAutorizacion(attemptId, venueId, motivo, now)
+                    if (n == 1) vmDelCobro!!.manejarConfirmacionDelServidor(
+                        SocketEvent.TerminalPaymentConfirmed(requestId, attemptId, "pay-1", 10_000, 0, registrado = false),
+                    )
+                    return n
+                }
+            }
+            paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(daoConS5, tpvSettingsRepository)
+            val vm = createViewModel().also { vmDelCobro = it }
+            try {
+                vm.initPayment("100.00")
+                vm.setSocketPaymentSource("SOCKET", requestId)
+                kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
+                    val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("startSdkCardPayment",
+                        com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials::class.java,
+                        kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+                    method.invoke(vm, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials("", "", "", ""), continuation)
+                }
+                vm.onIntentLaunched()
+                val intento = vm.attemptIdForTest()!!
+                vm.onAngelPaySdkResult(
+                    PaymentResult(
+                        approved = false, status = PaymentResult.Status.TIMEOUT, message = "Tiempo de espera agotado", amount = 10_000L,
+                        integratorReference = intento, operationType = "VENTA", requireSignature = false, authorizationAttempted = false,
+                        callResult = callResultDelSdk(com.angelpay.angelpaysdk.models.AppErrorCatalog.Code.U101),
+                    ),
+                )
+                val alTerminar = kotlinx.coroutines.withTimeoutOrNull(15_000) { vm.state.first { it is AngelPayPaymentState.Error } }
+                com.google.common.truth.Truth.assertWithMessage("estado=%s fila=%s", vm.state.value, db.paymentAttemptDao().getById(intento))
+                    .that(alTerminar).isNotNull()
+                val estado = alTerminar as AngelPayPaymentState.Error
+                // La pantalla: la contradicción, nunca «No se cobró».
+                assertThat(estado.noSeCobro).isFalse()
+                assertThat(estado.message).contains("NO lo vuelvas a cobrar")
+
+                // Lo DURABLE: la fila del cierre lleva el veredicto que S5 habría escrito (RECORDED con SU Payment: DESCARTADA +
+                // RECORDED es contradicción), y la bandeja quedó resuelta con el ganador y se emitió, como tras el commit de S5.
+                val fila = db.paymentAttemptDao().getById(intento)!!
+                assertThat(fila.state).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_DESCARTADA)
+                assertThat(fila.serverOutcome).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SERVER_RECORDED)
+                assertThat(fila.serverPaymentId).isEqualTo("pay-1")
+                assertThat(fila.serverRecordedVia).isEqualTo("webhook")
+                val resuelta = db.remotePaymentRequestDao().getById(requestId)!!
+                assertThat(resuelta.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+                assertThat(org.json.JSONObject(resuelta.finalResultJson!!).getString("status")).isEqualTo("success")
+                assertThat(org.json.JSONObject(resuelta.finalResultJson!!).getString("paymentId")).isEqualTo("pay-1")
+                verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(resuelta.finalResultJson!!) }
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+
+            // «Muere el proceso»: sólo queda lo durable. El aviso F0 muestra la contradicción…
+            val obligaciones = db.remotePaymentRequestDao().observePendingObligations("v1").first()
+            assertThat(obligaciones.count { it.contradiccion == 1 }).isEqualTo(1)
+            // …y un proceso NUEVO no la cierra como «no se cobró»: el cancel del POS y la sonda contestan con el COBRO.
+            val bandejaTrasReiniciar = RemotePaymentInbox(db.remotePaymentRequestDao())
+            val cancel = bandejaTrasReiniciar.cancel(requestId)
+            assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ALREADY_RESOLVED)
+            assertThat(org.json.JSONObject(cancel.finalResultJson!!).getString("status")).isEqualTo("success")
+            val sonda = bandejaTrasReiniciar.probe(requestId, "v1")
+            assertThat(sonda.disposition).isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.RESOLVED)
+            assertThat(org.json.JSONObject(sonda.finalResultJson!!).getString("status")).isEqualTo("success")
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
     fun `review persisted affiliation belongs to authenticated session that will charge`() = runTest(testDispatcher) {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
@@ -687,3 +839,7 @@ class AngelPayPaymentReviewRoomTest {
         Unit
     }
 }
+
+/** `AppErrorCatalog.toCallResult` es extensión MIEMBRO del objeto: se llama con el objeto como receptor, como lo hace el AAR. */
+private fun callResultDelSdk(codigo: com.angelpay.angelpaysdk.models.AppErrorCatalog.Code) =
+    with(com.angelpay.angelpaysdk.models.AppErrorCatalog) { codigo.toCallResult() }

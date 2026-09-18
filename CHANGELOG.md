@@ -7,7 +7,17 @@
 
 ## [Unreleased]
 
-<!-- ── Nexgo · SDK de AngelPay 1.0.19 (18-sep) — sin número de versión todavía ── -->
+## [2.10.0] - 2026-09-18
+
+<!-- ── Nexgo · SDK de AngelPay 1.0.19 — APK firmado y entregado a AngelPay el 18-sep ── -->
+
+**QA en hardware (N86 `N860W175781`, ambiente QA de AngelPay, 18-sep 08:41–09:00):** cobro aprobado
+$10.00 (auth 677592) y $25.00 (auth 472836), registrados en ~1.3 s con el serial acreditado de la
+Nexgo · tarjeta presentada antes de tiempo (`E618`) ⇒ «No se cobró» + «Intentar de nuevo», libreta
+DESCARTADA, **cero** Payment creado y la terminal libre · lectura fallida (`E699`) ×2 ⇒ igual ·
+rechazo del gateway (`code=05`) ×6 ⇒ el rechazo se retiene mientras se puede reintentar y se entrega
+al POS al abandonar («El cobro fue rechazado. No se cobró la tarjeta»). Ningún desenlace negativo
+dejó la terminal apartada. Auditoría de Codex r3: **AUTORIZADO**.
 
 ### **Added**
 

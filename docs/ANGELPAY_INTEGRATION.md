@@ -136,6 +136,119 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.19 — «No se cobró» cierto (18-sep-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.19-fat-release.aar` (SHA-256
+`fe5ef7683e9d8cbcf34d1785610c6c2e05f71d1ccad0ca35dc3f99da1853e777`, `AngelPaySDK.version() == "1.0.19"`).
+`AngelPaySdk119ReglaTest` fija las dos cosas: 🔴 si llega otro AAR, esa prueba cae — NO se actualiza el hash a
+ciegas; la regla de abajo se re-audita contra el binario nuevo.
+
+**Lo nuevo en la API pública** (diff de `javap` 1.0.18 → 1.0.19): `PaymentResult.authorizationAttempted`,
+`PaymentResult.requireSignature`, `PaymentRequest.captureSignature` y `AngelPaySDK.getLastSignatureBase64()`.
+
+**`authorizationAttempted`** nace `false` en cada cobro y el orquestador del SDK (`b0.f0.m`) lo sube a `true`
+pegado al envío al host (EMV y banda). Con eso el propio proveedor pone la frontera del «no se cobró» en el ENVÍO:
+
+| Resultado del SDK | Qué hace la terminal |
+|---|---|
+| `false` + NUESTRA `integratorReference` + código de catálogo, sin campos del host ni tarjeta leída (U101, E618, E622, E699, I999, U100 del botón Cancelar) | **«No se cobró», cierto** (`AngelPayOutcomeClassifier.decidirSegunElSdk119` → `SIN_AUTORIZACION`) |
+| `false` SIN nuestra referencia (respaldos del contrato: «Cancelled», «Error al parsear resultado», «Unknown error», validación; el C200 al abrir; un E608 ajeno) | **incierto** — un resultado sin correlación nunca es un negativo cierto (el C200 era hoy un rechazo con «Reintentar»). Única excepción sin referencia: la sesión expirada (D308 / «registrar la terminal»), que sigue como hoy |
+| `false` con la referencia de OTRO intento, o sin intento propio con qué compararla | incierto |
+| `false` con cualquier campo que sólo escribe el host (o `status = APPROVED`) | incierto + 🚨 `AngelPaySdkContradiccion` |
+| `false` con tarjeta leída, salvo `E608` | incierto |
+| `E608` (límite sin contacto) con nuestra referencia | como hoy: rechazo con «Reintentar» en la misma venta (inserta el chip) |
+| `true` | como hoy. ⬜ Pendiente (§2.2 4a): un `G500`/`N400` sin respuesta del host sigue contando como rechazo |
+| aprobado | como hoy — registra la venta (con `false` además grita 🚨) |
+
+Con «no se cobró» la LIBRETA va primero (`PaymentAttemptLedger.markSinAutorizacion`: `AUTORIZANDO → DESCARTADA`
+sin tocar `host_approved`, para que la bandeja mande `PRE_AUTHORIZATION` y nunca `PROCESSOR_DECLINED`). Si la
+libreta no lo escribe, o el servidor ya acreditó dinero de ese intento (S5), el cobro sigue INCIERTO como siempre.
+Y si S5 llega MIENTRAS el CAS está suspendido, al retomar se revalidan la fila y el veto ANTES de fijar banderas,
+emitir o pintar: la pantalla termina en el cobro (fila REGISTRADO) o en la contradicción, nunca en «No se cobró».
+Dos precisiones de Codex r2 sobre esa revalidación:
+
+- **La relectura que falla no es «sin dinero».** Si después del CAS la fila no se puede releer (o no es la DESCARTADA
+  que escribió el CAS), la terminal no afirma nada: reabre ESA fila a INDETERMINADO
+  (`PaymentAttemptLedger.reabrirSinAutorizacion`, sólo con el mismo motivo) y el cobro sigue INCIERTO — nunca
+  «No se cobró» y nunca `failed`. La recuperación por servidor le pregunta por ese intento.
+- **El dinero que sólo consta en el veto se deja durable.** S5 publica su aviso aunque su propia escritura falle
+  (`registrado = false` sin nada en la fila). En ese caso la pantalla aplica, ANTES de pintar, el MISMO veredicto que
+  S5 habría escrito (`VeredictoDeIntento.desdeAvisoS5`, libreta y bandeja en una transacción: DESCARTADA + RECORDED es
+  contradicción, y la bandeja queda resuelta con su ganador y se emite). Lo mismo si ese S5 llega con el «No se cobró»
+  del POS ya en pantalla. Si tampoco así queda escrito, reabre la fila a INDETERMINADO y lo reporta
+  (`AngelPaySdkContradiccion`).
+
+El mismo CAS tiene un segundo llamador, y sólo ése: la invocación que pasó el intento a AUTORIZANDO y sabe que NUNCA
+lanzó el SDK — la validación (`createPaymentIntent`) falló y ni el fallback de propina ni el de app-a-app van a
+continuar. Cierra la fila con `last_error = no_lanzado:validacion`; «Reintentar» abre un intento nuevo y, en un
+cobro del POS, el final se retiene y lo cierra el reloj de abandono. Nunca es un cierre genérico de filas AUTORIZANDO.
+
+- **Pago rápido:** pantalla «No se cobró» con el texto por código (`TextosNoSeCobro`) e «Intentar de nuevo», que
+  abre un intento y una referencia NUEVOS. Sin verificador, sin cerca (la terminal no queda apartada), sin ticket de
+  rechazo.
+- **Cobro del POS:** `failed + PRE_AUTHORIZATION` al instante, texto para la tablet, y la terminal sale sola a los
+  4 s.
+
+**El panel de firma nuevo va APAGADO:** `captureSignature` vale `true` por defecto en 1.0.19; `AngelPaySdkGateway`
+manda `false` en la ruta normal y en el fallback de propina (comportamiento del 1.0.18).
+
+**Sin interruptor remoto** en esta entrega: el candado de versión es la salida (con otro AAR, la regla no corre).
+
+**§3.8 — la barrera ya no es muda:** si la libreta rechaza un cobro que mandó el POS (la terminal está apartada
+por un cobro anterior sin confirmar), la TPV emite `failed + PRE_AUTHORIZATION` al instante y nombra lo que la
+aparta. La bandeja sólo lo escribe si ningún intento de ESA solicitud quedó fuera de PREPARANDO/DESCARTADA.
+
+### Sin red — las cuatro preguntas (`.claude/rules/todo-funciona-sin-red.md`), con las precisiones de Codex r1 y r2
+
+1. **Qué ve el cajero sin red.** El «no se cobró» acreditado por el SDK se clasifica LOCALMENTE (resultado del SDK +
+   Room), así que la pantalla de la terminal es la misma con o sin red. Un POS desconectado **no se entera al
+   instante**: su final queda en la bandeja y le llega al servidor cuando vuelve la red. Con `attempted = true` manda la
+   tabla de hoy (decisión 4a): un rechazo del catálogo (`G500`, `N400`…) sigue siendo rechazo con «Reintentar» aunque el
+   host no haya contestado (⬜ lo pendiente de 4a), y un código sin veredicto (`U101`, `N402`, `G502`, `G505`, `I999`)
+   sigue INCIERTO (verificador y ventana del servidor, sin «Reintentar»). El cobro con tarjeta en sí es online-only a
+   propósito.
+2. **Qué se pierde si el proceso muere.** Antes del resultado del SDK: la fila queda AUTORIZANDO = incierto, como hoy.
+   🔴 **Después del CAS y ANTES de persistir el final en la bandeja** (cobro del POS): la libreta queda DESCARTADA y la
+   bandeja en PROCESSING — **se pierde la notificación pendiente** (la escritura de la bandeja corre en otra corrutina,
+   `SocketManager.emitTerminalPaymentResult` → `socketScope`). Ver «Pendiente declarado» abajo. Y si S5 avisó dinero
+   durante el CAS con su propia escritura fallida, el veredicto se deja durable ANTES de pintar; si el proceso muere
+   entre ese aviso y esa escritura, el veto en memoria se pierde (residual de la pregunta 4).
+3. **En qué orden se reproduce.** Un solo final por solicitud. DESPUÉS de persistirlo, la reentrega y la sonda
+   reproducen el ganador y no ejecutan otra autorización. ANTES de persistirlo no existe un final que reproducir.
+4. **Qué pasa si vuelve la red y el servidor ya cambió.** La evidencia positiva durable veta el negativo (la bandeja no
+   lo escribe) y una bandeja ya resuelta conserva y reproduce su ganador. Si S5 llega durante el CAS o con el
+   «No se cobró» del POS ya en pantalla, la pantalla pasa a la contradicción o al cobro, y ese dinero queda en la fila
+   (su veredicto; si no se puede, la fila vuelve a INDETERMINADO): el aviso F0 lo muestra, y el cancel del POS y la
+   sonda nunca contestan «limpio» (con el veredicto, RESOLVED con el cobro; con la reapertura, ACTIVE). Si la
+   relectura posterior al CAS falla, la terminal queda INCIERTA, no en
+   «No se cobró». **Lo que NO cubre, declarado:** (a) si el proceso muere entre el aviso de S5 y la escritura de su
+   veredicto, el veto en memoria se pierde; (b) si fallan esa escritura Y la reapertura, quedan el reporte y la
+   contradicción en pantalla, pero no una obligación durable en la terminal; (c) si fallan la relectura Y la
+   reapertura, la pantalla queda incierta pero la fila sigue DESCARTADA (un cancel del POS se aceptaría). En (a) y
+   (b) el servidor conserva su Payment: lo que se pierde es la evidencia en la TERMINAL, no el cobro. En (c) no hay
+   dinero conocido: lo que se pierde es la obligación de confirmarlo.
+
+### ⬜ Pendiente declarado: el cierre remoto partido entre libreta y bandeja (Codex r1, P2)
+
+En un cobro del POS, el «no se cobró» se escribe en DOS pasos: el CAS de la libreta (`markSinAutorizacion`) y, después,
+el final en la bandeja (`persistResult`, en `SocketManager`). No es una transacción única. Si el proceso muere entre los
+dos, queda exactamente esto:
+
+- **Ni el POS ni el servidor reciben un negativo:** la bandeja nunca escribió `failed`, así que la venta no se les
+  declara «no cobrada». En la TERMINAL sí: la libreta ya dice DESCARTADA y la pantalla pudo haber mostrado «No se
+  cobró» antes de morir (lo acreditó el SDK: la petición no salió al banco).
+- **Se pierde la notificación:** la tablet no recibe el `failed + PRE_AUTHORIZATION` de esa solicitud.
+- **La sonda contesta ACTIVE** (la bandeja sigue en PROCESSING): el servidor conserva la reserva.
+- **En el servidor:** la solicitud vence a los 5 min y queda UNKNOWN; la ranura de la terminal la suelta el destrabe
+  por tiempo (`AUTO_RELEASED`, 20 min después de que la terminal vuelve a latir) con la venta protegida, o un operador.
+  Mientras tanto la tablet ve «cobro sin confirmar».
+- En la terminal la fila DESCARTADA no aparta el aparato: el siguiente cobro local sí entra.
+
+Arreglo mínimo (fuera de esta entrega): un commit conjunto del descarte y del final remoto, o una obligación durable de
+completar ese final.
+
+Diseño: `avoqado-server/.superpowers/sdd/2026-09-16-ventana-de-confirmacion-cobro-sin-evidencia/diseno-nexgo-sdk-1.0.19.md`.
+
 ## File Structure
 
 ```

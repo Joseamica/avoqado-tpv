@@ -423,7 +423,7 @@ fun AngelPayPaymentScreen(
     }
 
     // ── Top bar title based on state ─────────────────────────────────
-    val topBarTitle = when (state) {
+    val topBarTitle = when (val estadoDelTitulo = state) {
         is AngelPayPaymentState.CollectingRating -> "Calificacion"
         is AngelPayPaymentState.CollectingTip -> "Propina"
         is AngelPayPaymentState.SelectingMerchant -> "Metodo de Pago"
@@ -432,7 +432,8 @@ fun AngelPayPaymentScreen(
         is AngelPayPaymentState.LaunchingAngelPaySdk -> "Procesando"
         is AngelPayPaymentState.RecordingPayment,
         is AngelPayPaymentState.ProcessingCash -> "Registrando"
-        is AngelPayPaymentState.Error -> "Error"
+        // SDK 1.0.19: un «no se cobró» cierto no es un error del pago — es un hecho, y la barra lo dice igual que el cuerpo.
+        is AngelPayPaymentState.Error -> if (estadoDelTitulo.noSeCobro) TextosNoSeCobro.TITULO else "Error"
         is AngelPayPaymentState.ResultadoIncierto -> "Sin confirmar"
         is AngelPayPaymentState.Cancelled -> "Cancelado"
         else -> "Cobro AngelPay"
@@ -1026,15 +1027,18 @@ private fun ErrorContent(
                 .heightIn(min = minContentHeight)
                 .padding(32.dp),
         ) {
+            // SDK 1.0.19 ([AngelPayPaymentState.Error.noSeCobro]): el SDK acreditó que el cobro NO salió al banco. No es
+            // «Error en el pago» ni un rechazo del banco — el título dice el hecho y el ícono no alarma.
             Icon(
                 imageVector = Icons.Default.Warning,
                 contentDescription = null,
-                tint = MaterialTheme.avoqadoColors.statusError,
+                tint = if (state.noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.avoqadoColors.statusError,
                 modifier = Modifier.size(64.dp),
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "Error en el pago",
+                text = if (state.noSeCobro) TextosNoSeCobro.TITULO else "Error en el pago",
                 style = MaterialTheme.typography.titleLarge,
             )
             Spacer(modifier = Modifier.height(8.dp))
@@ -1061,7 +1065,8 @@ private fun ErrorContent(
                     onClick = onRetry,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Reintentar")
+                    // «Intentar de nuevo»: tras un «no se cobró» es un cobro NUEVO (otra referencia), no «reintentar» el mismo.
+                    Text(if (state.noSeCobro) TextosNoSeCobro.INTENTAR_DE_NUEVO else "Reintentar")
                 }
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -1169,6 +1174,43 @@ private fun AngelPayErrorPreview() {
                 message = "Debes abrir un turno antes de cobrar",
                 canRetry = false,
                 showOpenShiftButton = true,
+            ),
+            onRetry = {},
+            onGoBack = {},
+            onOpenShift = {},
+        )
+    }
+}
+
+/** SDK 1.0.19 — Pago rápido: el SDK acreditó que el cobro NO salió al banco (PAX A910S / N86: 360×640 dp). */
+@Preview(widthDp = 360, heightDp = 640)
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPayNoSeCobroPagoRapidoPreview() {
+    AvoqadoTheme {
+        ErrorContent(
+            state = AngelPayPaymentState.Error(
+                message = TextosNoSeCobro.pagoRapido("U101", "Tiempo de espera agotado"),
+                canRetry = true,
+                noSeCobro = true,
+            ),
+            onRetry = {},
+            onGoBack = {},
+            onOpenShift = {},
+        )
+    }
+}
+
+/** SDK 1.0.19 — cobro del POS: la solicitud ya se cerró; sin «Intentar de nuevo» (la pantalla sale sola). */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun AngelPayNoSeCobroCobroDelPosPreview() {
+    AvoqadoTheme {
+        ErrorContent(
+            state = AngelPayPaymentState.Error(
+                message = TextosNoSeCobro.terminalEnCobroDelPos("E618", "Retire la tarjeta del lector e intente de nuevo"),
+                canRetry = false,
+                noSeCobro = true,
             ),
             onRetry = {},
             onGoBack = {},

@@ -34,6 +34,13 @@ class AngelPaySdkGateway @Inject constructor() {
 
     fun isInitialized(): Boolean = AngelPaySDK.isInitialized()
 
+    /**
+     * La versión del AAR de AngelPay que está corriendo (`AngelPaySDK.version()`: una constante del binario, no pide
+     * inicializar). Es el candado de la regla del 1.0.19 ([AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA]): con otra
+     * versión —o si no se puede leer— la regla no corre y el cobro se clasifica como siempre.
+     */
+    fun sdkVersion(): String? = runCatching { AngelPaySDK.version() }.getOrNull()
+
     fun isAuthenticated(): Boolean = AngelPaySDK.isAuthenticated()
 
     fun ensureInitialized(context: Context, env: String): Result<Unit> {
@@ -189,6 +196,10 @@ class AngelPaySdkGateway @Inject constructor() {
             // We use the same value as `reference` (the TPV's paymentAttemptId /
             // idempotencyKey) so the webhook receiver can match it to the Payment row.
             integratorReference = reference,
+            // 🔴 SDK 1.0.19: el panel de FIRMA nuevo va APAGADO (decisión del founder, 18-sep). El AAR lo trae ENCENDIDO
+            // por defecto (`captureSignature = true`): sin esta línea la pantalla del SDK pide firmar con el dedo después
+            // de aprobar, una pantalla que el cajero nunca ha visto, en medio del cobro. Va igual en el fallback.
+            captureSignature = false,
             approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
             errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )
@@ -217,6 +228,8 @@ class AngelPaySdkGateway @Inject constructor() {
             // See buildPaymentRequest — integratorReference triggers + is echoed
             // in the AngelPay webhook. Must be set on the tip-fallback path too.
             integratorReference = reference,
+            // SDK 1.0.19: panel de firma APAGADO, igual que en buildPaymentRequest.
+            captureSignature = false,
             approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
             errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )

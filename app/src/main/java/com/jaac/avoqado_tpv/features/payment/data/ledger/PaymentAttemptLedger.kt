@@ -492,6 +492,74 @@ class PaymentAttemptLedger @Inject constructor(
         }
     }
 
+    /**
+     * 📒 SDK 1.0.19 (18-sep) — «no se cobró», CIERTO: la petición NO salió al host. `AUTORIZANDO → DESCARTADA` por
+     * [PaymentAttemptDao.marcarSinAutorizacion]. Dos llamadores, y sólo ellos:
+     *  - el SDK de AngelPay armó el resultado con `authorizationAttempted = false` y NUESTRA referencia
+     *    ([com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.decidirSegunElSdk119]
+     *    → `SIN_AUTORIZACION`), motivo `sin_autorizacion:…`;
+     *  - la invocación que pasó el intento a AUTORIZANDO y sabe que NUNCA lanzó el SDK (la validación falló sin otro camino
+     *    que fuera a lanzar; Codex r1, P2), motivo `no_lanzado:<causa>`.
+     * Nunca como cierre genérico de una fila AUTORIZANDO: fuera de esos dos, esa fila puede ser un cobro en vuelo.
+     *
+     * 🔴 NO se reusa [markHostResponded] (`approved = false`): escribe `host_approved = 0`, y entonces la bandeja
+     * mandaría `PROCESSOR_DECLINED` —«lo rechazó el banco»—, que es falso: la petición nunca llegó al banco.
+     * 🔴 Devuelve si la escritura QUEDÓ. Con `false` quien llama NO afirma «no se cobró»: sigue el camino incierto de
+     * siempre. `NonCancellable` + IO como el resto de marcas post-SDK: se escribe aunque la pantalla muera en ese
+     * instante. Sin [avisarIncertidumbre]: aquí no nace ninguna incertidumbre. Si después la pantalla no puede sostener
+     * ese cierre, lo deshace [reabrirSinAutorizacion] (Codex r2).
+     */
+    suspend fun markSinAutorizacion(attemptId: String, venueId: String, motivo: String): Boolean {
+        return try {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val n = dao.marcarSinAutorizacion(attemptId, venueId, motivo.take(500), System.currentTimeMillis())
+                logCas(n, attemptId, PaymentAttemptEntity.STATE_DESCARTADA)
+                n == 1
+            }
+        } catch (error: Exception) {
+            // Ni siquiera una cancelación puede convertirse en «no se cobró»: sin la fila escrita, quien llama sigue el
+            // camino incierto (NonCancellable ya impide que la escritura se corte a medias).
+            Timber.e(error, "📒 [Libreta] markSinAutorizacion falló — el cobro NO se declara «no se cobró»")
+            false
+        }
+    }
+
+    /**
+     * Codex r2 (P1-2 residual): REABRE la fila que cerró [markSinAutorizacion] — `DESCARTADA → INDETERMINADO` por
+     * [PaymentAttemptDao.reabrirSinAutorizacion], sólo la que escribió ESE cierre (mismo `motivoDelCierre`) — cuando la
+     * pantalla no puede sostener el «no se cobró»: no pudo releer la fila después del CAS, o el servidor acreditó dinero de
+     * este intento que no quedó escrito. Nace una incertidumbre ([avisarIncertidumbre]): la recuperación le pregunta al
+     * servidor. Devuelve si QUEDÓ escrita; nunca lanza (una cancelación se propaga). `NonCancellable` + IO: se escribe aunque
+     * la pantalla muera en ese instante.
+     */
+    suspend fun reabrirSinAutorizacion(attemptId: String, venueId: String, motivoDelCierre: String, razon: String): Boolean =
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val n = dao.reabrirSinAutorizacion(attemptId, venueId, motivoDelCierre.take(500), razon.take(500), System.currentTimeMillis())
+                logCas(n, attemptId, PaymentAttemptEntity.STATE_INDETERMINADO)
+                if (n == 1) avisarIncertidumbre(attemptId)
+                n == 1
+            }
+        }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            Timber.e(it, "📒 [Libreta] no se pudo reabrir el cierre sin autorización | attemptId=%s", attemptId)
+            false
+        }
+
+    /**
+     * §3.8 (rechazo mudo): ¿qué fila está apartando el APARATO ahora? ([PaymentAttemptDao.findTerminalHold]). La pantalla
+     * la NOMBRA —importe y antigüedad— cuando la barrera rechaza un cobro que mandó el POS. Un fallo de lectura es null:
+     * sólo deja de nombrarse; nunca cambia la decisión, que ya tomó la barrera.
+     */
+    suspend fun retencionDelAparato(): PaymentAttemptEntity? = try {
+        dao.findTerminalHold()
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer qué aparta la terminal")
+        null
+    }
+
     /** ONLY from PREPARANDO: a cancel during AUTORIZANDO has an unknown outcome — the row must live. */
     suspend fun markDiscardedBeforeCharge(attemptId: String, reason: String): Boolean {
         return try {

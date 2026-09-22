@@ -293,6 +293,41 @@ class SocketManagerTest {
     }
 
     @Test
+    fun `S5 payment_confirmed trae la liga del recibo a la pantalla, y sin receipt en el payload llega nula`() = runTest(testDispatcher) {
+        // Testarudo 21-sep: cuando el webhook gana la carrera la pantalla verde nacía con `receiptUrl = ""` y el ticket de la
+        // terminal salía sin QR hasta que el REST propio rellenaba la liga (2-3 s). El servidor ya manda `receipt` en el aviso.
+        every { mockSecureStorage.getVenueId() } returns "venue-1"
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
+        val recoleccion = launch { socketManager.events.collect { eventos += it } }
+
+        capturedListeners["terminal:payment_confirmed"]?.call(
+            JSONObject().put("requestId", "req-s5r").put("attemptId", "att-s5r").put("paymentId", "pay-s5r")
+                .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook")
+                .put("receipt", JSONObject().put("receiptUrl", "https://dashboard.avoqado.io/receipts/public/key-s5r").put("receiptAccessKey", "key-s5r")),
+        )
+        capturedListeners["terminal:payment_confirmed"]?.call(
+            JSONObject().put("requestId", "req-s5s").put("attemptId", "att-s5s").put("paymentId", "pay-s5s")
+                .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
+        )
+        // El listener despacha en `Dispatchers.IO` (tiempo real): un `delay` del reloj virtual de runTest no espera nada.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(3000) {
+                while (eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().size < 2) kotlinx.coroutines.delay(20)
+            }
+        }
+        val confirmados = eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().associateBy { it.requestId }
+        assertThat(confirmados.keys).containsExactly("req-s5r", "req-s5s")
+        assertThat(confirmados.getValue("req-s5r").receiptUrl).isEqualTo("https://dashboard.avoqado.io/receipts/public/key-s5r")
+        assertThat(confirmados.getValue("req-s5r").receiptAccessKey).isEqualTo("key-s5r")
+        assertThat(confirmados.getValue("req-s5s").receiptUrl).isNull()   // servidor viejo: sin liga, sin reventar
+        assertThat(confirmados.getValue("req-s5s").receiptAccessKey).isNull()
+        recoleccion.cancel()
+    }
+
+    @Test
     fun `durable ACK remains accepted when in process navigation queue is full`() = runTest(testDispatcher) {
         val request = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequest(
             amountCents = 10000, socketRequestId = "req-queued",

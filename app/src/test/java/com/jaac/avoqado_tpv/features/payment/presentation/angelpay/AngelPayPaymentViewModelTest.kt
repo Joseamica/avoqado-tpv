@@ -3349,6 +3349,24 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    @Test fun `S5 con liga del recibo pinta el Success CON la liga — el ticket de la terminal sale con QR sin esperar al REST`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val vm = vmConCobroDelPos("REQ-W20")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val mio = ids.last()
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W20", mio, "pay-s5", 10000, 0, registrado = true,
+                receiptUrl = "https://dashboard.avoqado.io/receipts/public/key-w20", receiptAccessKey = "key-w20")); runCurrent()
+            val exito = vm.state.value as AngelPayPaymentState.Success
+            assertThat(exito.receipt?.receiptUrl).isEqualTo("https://dashboard.avoqado.io/receipts/public/key-w20")
+            assertThat(exito.receipt?.accessKey).isEqualTo("key-w20")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `liberacion YA mostrada y luego el POST responde CON dinero — la liberacion se retira al instante, antes de guardar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)

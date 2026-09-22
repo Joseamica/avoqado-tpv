@@ -3739,7 +3739,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             orderNumber = pendingOrderNumber,
             isCash = false,
             receipt = PaymentReceipt(
-                paymentId = event.paymentId, receiptUrl = "", accessKey = "",
+                // La liga viaja en el aviso desde el 21-sep-2026: sin ella, «Imprimir» en estos 2-3 s sacaba el ticket sin QR.
+                paymentId = event.paymentId, receiptUrl = event.receiptUrl.orEmpty(), accessKey = event.receiptAccessKey.orEmpty(),
                 amount = pendingAmount, tipAmount = pendingTip, serverRecordedVia = "webhook", solicitudLigada = event.requestId,
             ),
         )

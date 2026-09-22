@@ -217,6 +217,13 @@ sealed interface SocketEvent {
         val amountCents: Long,
         val tipCents: Long,
         val registrado: Boolean,
+        /**
+         * La liga del recibo digital que el servidor ya generó (`receipt.receiptUrl` / `receiptAccessKey`), para que el
+         * ticket de la terminal salga con QR desde este aviso y no sólo cuando el REST propio la rellene 2-3 s después.
+         * Nulas con un servidor anterior al 21-sep-2026 (aditivo).
+         */
+        val receiptUrl: String? = null,
+        val receiptAccessKey: String? = null,
     ) : SocketEvent
 
     /**

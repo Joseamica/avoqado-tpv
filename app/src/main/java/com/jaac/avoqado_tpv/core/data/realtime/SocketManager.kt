@@ -1677,11 +1677,14 @@ class SocketManager @Inject constructor(
                 )
                 val r = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrNull()
                 r?.bandejaResueltaJson?.let(::emitPersistedTerminalPaymentResult)
+                val liga = data.optJSONObject("receipt")
                 _events.tryEmit(
                     SocketEvent.TerminalPaymentConfirmed(
                         requestId = requestId, attemptId = attemptId, paymentId = paymentId,
                         amountCents = veredicto.amountCents ?: -1L, tipCents = veredicto.tipCents ?: -1L,
                         registrado = r?.decision == com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO,
+                        receiptUrl = liga?.optString("receiptUrl")?.takeIf { it.isNotBlank() },
+                        receiptAccessKey = liga?.optString("receiptAccessKey")?.takeIf { it.isNotBlank() },
                     ),
                 )
             }

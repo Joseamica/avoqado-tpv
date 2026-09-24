@@ -293,6 +293,80 @@ class SocketManagerTest {
     }
 
     @Test
+    fun `r13 P2-3 S5 - si el veredicto no quedo en la fila (falla o pertenencia), el listener deja la marca de dinero sin pantalla`() = runTest(testDispatcher) {
+        // Codex r13: sin la pantalla de ese intento no hay otro consumidor que persista la evidencia; el `SharedFlow` puede perder
+        // el aviso y la fila conservaría su liberación vieja hasta la siguiente recuperación.
+        every { mockSecureStorage.getVenueId() } returns "venue-1"
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } answers {
+            val v = firstArg<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
+            if (v.attemptId == "att-falla") Result.failure(IllegalStateException("room caída"))
+            else Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false))
+        }
+
+        for (intento in listOf("att-falla", "att-ajeno")) {
+            capturedListeners["terminal:payment_confirmed"]?.call(
+                JSONObject().put("requestId", "req-$intento").put("attemptId", intento).put("paymentId", "pay-$intento")
+                    .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
+            )
+        }
+        // El listener despacha en `Dispatchers.IO` (tiempo real): se espera con `timeout`, no con el reloj virtual.
+        coVerify(timeout = 3000) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-falla", any()) }
+        coVerify(timeout = 3000) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-ajeno", any()) }
+    }
+
+    @Test
+    fun `r15 P1 S5 - si la marca que aparta el aparato falla, el veredicto NO se aplica (queda para la consulta siguiente)`() = runTest(testDispatcher) {
+        every { mockSecureStorage.getVenueId() } returns "venue-1"
+        coEvery { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) } returns Result.failure(java.io.IOException("disco lleno"))
+        // «aplicar» funcionaría: lo que se prueba es que NI SE INTENTA sin la marca.
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
+        val recoleccion = launch { socketManager.events.collect { eventos += it } }
+
+        capturedListeners["terminal:payment_confirmed"]?.call(
+            JSONObject().put("requestId", "req-mf").put("attemptId", "att-mf").put("paymentId", "pay-mf")
+                .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
+        )
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(3000) { while (eventos.none { it is SocketEvent.TerminalPaymentConfirmed }) kotlinx.coroutines.delay(20) }
+        }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
+        assertThat(eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().single().registrado).isFalse()
+        recoleccion.cancel()
+    }
+
+    @Test
+    fun `r14 P1-2 S5 - la marca que aparta el aparato se escribe ANTES de aplicar el veredicto, aunque quede APLICADO`() = runTest(testDispatcher) {
+        // Codex r14: con la marca primero no hay instante en que la fila tenga el veredicto sin la protección del aparato, y un
+        // `GUARDADO_SIN_LIBERAR` (que «quedó en la fila» pero no promueve) tampoco se queda sin ella. 🔴 Codex r14 (P3): se espera
+        // el EVENTO final del intento —el listener ya decidió— en vez de un reloj.
+        every { mockSecureStorage.getVenueId() } returns "venue-1"
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
+        val recoleccion = launch { socketManager.events.collect { eventos += it } }
+
+        capturedListeners["terminal:payment_confirmed"]?.call(
+            JSONObject().put("requestId", "req-ok").put("attemptId", "att-ok").put("paymentId", "pay-ok")
+                .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
+        )
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(3000) {
+                while (eventos.none { it is SocketEvent.TerminalPaymentConfirmed }) kotlinx.coroutines.delay(20)
+            }
+        }
+        coVerifyOrder {
+            mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-ok", any())
+            mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any())
+        }
+        recoleccion.cancel()
+    }
+
+    @Test
     fun `S5 payment_confirmed trae la liga del recibo a la pantalla, y sin receipt en el payload llega nula`() = runTest(testDispatcher) {
         // Testarudo 21-sep: cuando el webhook gana la carrera la pantalla verde nacía con `receiptUrl = ""` y el ticket de la
         // terminal salía sin QR hasta que el REST propio rellenaba la liga (2-3 s). El servidor ya manda `receipt` en el aviso.

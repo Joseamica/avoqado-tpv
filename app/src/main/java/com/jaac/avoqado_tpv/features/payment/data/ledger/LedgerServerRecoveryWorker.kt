@@ -25,6 +25,7 @@ class LedgerServerRecoveryWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val secureStorage: SecureStorage,
     private val serverRecovery: LedgerServerRecovery,
+    private val bandejaRecovery: com.jaac.avoqado_tpv.core.remotepayment.BandejaServerRecovery,
     private val socketManager: SocketManager,
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
@@ -33,7 +34,19 @@ class LedgerServerRecoveryWorker @AssistedInject constructor(
             val r = serverRecovery.recover(venueId)
             // Un `success` durable de bandeja recién escrito se emite al servidor si hay socket (persistido ANTES de emitir).
             r.bandejasResueltas.forEach(socketManager::emitDurableTerminalPaymentResult)
-            if (debeReintentar(r)) {
+
+            // 🔴 Pieza D (22-sep): en la MISMA pasada se concilian las filas de bandeja HUÉRFANAS — las PROCESSING sin
+            // ningún intento correlacionado, que ninguna recuperación alcanzaba porque todas preguntan por INTENTO.
+            // Ésas son las que dejaban un aviso de «cobro sin confirmar» encendido para siempre (medido: 25 h en una
+            // N86, sobre una solicitud que el servidor ya había resuelto). Va DESPUÉS de la recuperación por intento a
+            // propósito: si esa pasada acaba de crear o cerrar un intento, esta fila ya no es huérfana y no se toca.
+            // Un fallo aquí no puede tumbar la pasada de intentos, que es la que mueve dinero.
+            val bandeja = runCatching { bandejaRecovery.conciliar(venueId) }
+                .onFailure { if (it is CancellationException) throw it; Timber.w(it, "🧾 [BandejaD] la conciliación falló — la siguiente pasada cubre") }
+                .getOrNull()
+
+            segundosParaSeguir(r)?.let { LedgerSweepScheduler.runServerRecoveryNow(applicationContext, initialDelaySeconds = it) }
+            if (debeReintentar(r) || (bandeja?.sinRespuesta ?: 0) > 0) {
                 Timber.w("🔎 [LedgerServer] %d consultas sin respuesta en la pasada — se reintenta", r.sinRespuesta)
                 Result.retry()
             } else Result.success()
@@ -51,5 +64,12 @@ class LedgerServerRecoveryWorker @AssistedInject constructor(
     companion object {
         /** Codex (código, P2-1): una consulta sin respuesta HTTP en la pasada ⇒ `retry()` (backoff de WorkManager), no `success()`. */
         fun debeReintentar(r: LedgerServerRecovery.Resultado): Boolean = r.sinRespuesta > 0
+
+        /**
+         * Ronda 21: una duda local que esta pasada vio por primera vez todavía no cumple la espera del aviso del banco (se mide
+         * en el reloj monotónico). Sin un seguimiento, esperaría al siguiente disparo (reconexión, otra duda, el periódico).
+         */
+        fun segundosParaSeguir(r: LedgerServerRecovery.Resultado): Long? =
+            r.proximaLiberacionSolaEnMs?.let { (it + 999) / 1000 + 1 }
     }
 }

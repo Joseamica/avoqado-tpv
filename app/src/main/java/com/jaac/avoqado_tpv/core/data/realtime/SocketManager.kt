@@ -1675,7 +1675,15 @@ class SocketManager @Inject constructor(
                     venueId = venueId, requestId = requestId, attemptId = attemptId, paymentId = paymentId,
                     via = data.optString("via", "webhook"), amountCents = data.optLong("amountCents", -1L), tipCents = data.optLong("tipCents", -1L),
                 )
-                val r = paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrNull()
+                // 🔴 Codex r13 (P2-3) / r14: sin la pantalla de ese intento nadie más persiste la evidencia (el `SharedFlow` puede perder
+                // el aviso). La marca que APARTA el aparato va PRIMERO —sin atribuir el Payment— y después el veredicto, en el MISMO
+                // tramo: ni una transacción caída, ni una pertenencia rechazada, ni un GUARDADO_SIN_LIBERAR la dejan sin escribir.
+                // (El scope del socket nunca se cancela; el tramo es defensivo.)
+                val r = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    // Codex r15 (P1): sin la marca, el veredicto NO se guarda — lo retoma la consulta siguiente, que sí puede protegerlo.
+                    if (paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId).isFailure) null
+                    else paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrNull()
+                }
                 r?.bandejaResueltaJson?.let(::emitPersistedTerminalPaymentResult)
                 val liga = data.optJSONObject("receipt")
                 _events.tryEmit(

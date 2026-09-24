@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
@@ -129,6 +130,7 @@ interface AppNavigationEntryPoint {
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
     fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+    fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
@@ -894,19 +896,56 @@ fun AppNavigation(
                     remotePaymentCoordinator.observePendingObligations(bannerVenueId)
                 }
                 val pendientes by pendingFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+                // 🔴 Decisión del founder (23-sep, «corrige y avisa»): el cobro que la terminal dio por NO cobrado y Avoqado SÍ
+                // registró. Hasta hoy apartaba el aparato para siempre (Codex r17/r18, P1); ahora sale aquí, con «Entendido».
+                val libretaDelAviso = remember { kioskEntryPoint.paymentAttemptLedger() }
+                val porConfirmarFlow = remember(bannerVenueId) { libretaDelAviso.observarCobrosPorReconocer(bannerVenueId) }
+                val porConfirmar by porConfirmarFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+                val alcanceDelAviso = rememberCoroutineScope()
                 // La antigüedad se recalcula sola: un «hace 1 min» congelado media hora miente.
                 var ahora by remember { mutableStateOf(System.currentTimeMillis()) }
-                LaunchedEffect(pendientes.isNotEmpty()) {
-                    while (pendientes.isNotEmpty()) {
+                val hayQueAvisar = pendientes.isNotEmpty() || porConfirmar.isNotEmpty()
+                LaunchedEffect(hayQueAvisar) {
+                    while (hayQueAvisar) {
                         ahora = System.currentTimeMillis()
                         delay(30_000)
+                    }
+                }
+                porConfirmar.firstOrNull()?.let { cobro ->
+                    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = AvisoDeCobrosPendientes.cobroQueSiPaso(cobro.amountCents + cobro.tipCents, cobro.createdAt, ahora),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = {
+                                // Quién lo confirmó: el nombre y el id del que tiene la sesión (queda en la fila).
+                                val quien = listOfNotNull(secureStorage.getStaffName(), secureStorage.getStaffId()?.let { "($it)" })
+                                    .joinToString(" ").ifBlank { "sin sesión" }
+                                alcanceDelAviso.launch { libretaDelAviso.reconocerCobroRegistrado(bannerVenueId, cobro.attemptId, quien) }
+                            }) {
+                                Text("Entendido")
+                            }
+                        }
                     }
                 }
                 val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
                 if (aviso != null) {
                     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo
+                            // ofrecía «Ayuda»: le decía al cajero que hay un cobro sin confirmar y lo dejaba
+                            // sin ningún sitio donde comprobar si entró. No se puede descartar a propósito —
+                            // desaparece cuando la obligación se resuelve, nunca porque alguien la tape.
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { navController.navigate(NavRoute.Payments.createRoute()) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
@@ -914,6 +953,9 @@ fun AppNavigation(
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.weight(1f),
                             )
+                            TextButton(onClick = { navController.navigate(NavRoute.Payments.createRoute()) }) {
+                                Text("Revisar")
+                            }
                             TextButton(onClick = { navController.navigate(NavRoute.Support.route) }) {
                                 Text("Ayuda")
                             }

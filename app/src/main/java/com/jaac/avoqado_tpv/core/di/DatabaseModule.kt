@@ -126,7 +126,11 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_32_33,  // ⭐ el split de la orden sobrevive a la cola offline
                 AvoqadoDatabase.MIGRATION_33_34,  // 🛑 cerca del cobro remoto + libreta SHADOW heredada (N3 / H.3)
                 AvoqadoDatabase.MIGRATION_34_35,  // 🪝 checkpoint 2: veredicto del servidor en la libreta + capacidad N0 en la bandeja
-                AvoqadoDatabase.MIGRATION_35_36   // 🧾 fix 4: evidencia positiva del servidor DURABLE en la libreta
+                AvoqadoDatabase.MIGRATION_35_36,  // 🧾 fix 4: evidencia positiva del servidor DURABLE en la libreta
+                AvoqadoDatabase.MIGRATION_36_37,  // 🧾 r5-4: el VETO del servidor, durable (los otros tres avisos)
+                AvoqadoDatabase.MIGRATION_37_38,  // 🧾 r8 P2-4: «el servidor CONTESTÓ» no es «se le preguntó»
+                AvoqadoDatabase.MIGRATION_38_39,  // 🧾 r17 P1: el dinero que la versión anterior guardó sin la marca que aparta el aparato
+                AvoqadoDatabase.MIGRATION_39_40   // 🧾 founder 23-sep: quién confirmó que un cobro dado por no cobrado SÍ pasó
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

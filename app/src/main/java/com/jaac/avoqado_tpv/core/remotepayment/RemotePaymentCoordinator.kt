@@ -166,7 +166,10 @@ class RemotePaymentCoordinator @Inject constructor(
     suspend fun probeSocketPaymentRequest(requestId: String?, venueId: String): RemotePaymentProbeAnswer {
         // Sin id no hay lápida posible, y sin lápida no hay NOT_FOUND: ACTIVE conserva la reserva (como el cancel sin id).
         if (requestId.isNullOrBlank()) return RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
-        val answer = remotePaymentInbox.probe(requestId, venueId)
+        // La propiedad se mira aquí, igual que en el cancel: una fila reclamada por ESTE proceso sigue
+        // viva; una de un proceso anterior no puede estar ejecutándose.
+        val propia = synchronized(reclamadasEnEsteProceso) { requestId in reclamadasEnEsteProceso }
+        val answer = remotePaymentInbox.probe(requestId, venueId, propiedadEnEsteProceso = propia)
         if (answer.disposition == RemotePaymentProbeDisposition.RECEIVED_CANCELLED) {
             synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
         }

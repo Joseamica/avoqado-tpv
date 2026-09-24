@@ -588,6 +588,55 @@ class AngelPaySdk119ViewModelTest {
     }
 
     @Test
+    fun `r8 P1-1 un VETO durable que dejo el WORKER en la fila tras el CAS termina en contradiccion, nunca en No se cobro`() = runTest(testDispatcher) {
+        // Codex r8: el worker consultó S6 y guardó `server_veto` mientras el CAS de la libreta estaba suspendido. La pantalla
+        // nunca vio esa consulta —su veto en RAM está apagado— y sólo la FILA puede delatarlo. Los dos orígenes del cobro.
+        for (requestId in listOf(null, "req-veto-worker")) {
+            val (vm, intento) = cobroLanzado(requestId = requestId)
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns
+                filaDelIntento(intento, PaymentAttemptEntity.STATE_DESCARTADA).copy(serverVeto = PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION)
+            try {
+                vm.onAngelPaySdkResult(u101(intento))
+                runCurrent()
+                val estado = vm.state.value as AngelPayPaymentState.Error
+                assertWithMessage("origen=$requestId: con una contradicción conocida nunca «no se cobró»").that(estado.noSeCobro).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.canRetry).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.message).contains("NO lo vuelvas a cobrar")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+        // Ni la tablet recibe «no se cobró»: el negativo del POS no sale con la contradicción a la vista.
+        verify(exactly = 0) {
+            socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+    }
+
+    @Test
+    fun `r9 P1-1 un rechazo NORMAL del banco sobre un intento con el VETO del worker es contradiccion, nunca Reintentar`() = runTest(testDispatcher) {
+        // Codex r9: el worker guardó `server_veto` mientras el SDK tenía la pantalla; la libreta ya no deja cerrar ESE intento
+        // (el CAS del rechazo pierde) y la fila lo delata. Sin mirarla, la pantalla ofrecía «Reintentar» con el veto en RAM apagado.
+        for (requestId in listOf(null, "req-rechazo-veto")) {
+            val (vm, intento) = cobroLanzado(requestId = requestId)
+            coEvery { paymentAttemptLedger.markHostResponded(intento, false, any(), any(), any()) } returns false
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns
+                filaDelIntento(intento, PaymentAttemptEntity.STATE_AUTORIZANDO).copy(serverVeto = PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION)
+            try {
+                vm.onAngelPaySdkResult(delHost(intento, aprobado = false, codigo = AppErrorCatalog.Code.G500, codigoEmisor = "05"))
+                runCurrent()
+                val estado = vm.state.value as AngelPayPaymentState.Error
+                assertWithMessage("origen=$requestId: nunca «Reintentar» con una contradicción conocida").that(estado.canRetry).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.message).contains("NO lo vuelvas a cobrar")
+                vm.retryAfterError()
+                runCurrent()
+                assertWithMessage("origen=$requestId: nada abre un intento nuevo").that(vm.attemptIdForTest()).isEqualTo(intento)
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+    }
+
+    @Test
     fun `P1 cobro del POS - si S5 REGISTRO el cobro DURANTE el CAS termina en exito`() = runTest(testDispatcher) {
         val (vm, intento) = cobroLanzado(requestId = "req-s5-registrado-cas")
         s5DuranteElCas(
@@ -1060,15 +1109,19 @@ class AngelPaySdk119ViewModelTest {
     }
 
     @Test
-    fun `P1 T33 el rechazo de la barrera en un cobro LOCAL no emite nada y dice lo de siempre`() = runTest(testDispatcher) {
+    fun `P1 T33 el rechazo de la barrera en un cobro LOCAL no emite nada y dice QUE lo aparta`() = runTest(testDispatcher) {
+        // 🔴 Antes decía «no se pudo guardar el intento O esta venta tiene un cobro pendiente»: dos causas
+        // en una frase y sin nombrar la venta (founder, 21-sep). Ahora la pantalla muestra lo que la
+        // LIBRETA dictamina, que es quien sabe cuál de las cercas rechazó el intento.
         coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
+        coEvery { paymentAttemptLedger.motivoDeLaBarrera(any(), any(), any()) } returns "LO QUE DICE LA LIBRETA"
         val vm = cobroDelPosEnMetodoDePago(requestId = null)
         try {
             vm.startCardPayment()
             runCurrent()
             verificarSinEmision()
             assertThat((vm.state.value as AngelPayPaymentState.Error).message)
-                .isEqualTo("No se pudo guardar el intento o esta venta tiene un cobro pendiente. No se inició otro cobro.")
+                .isEqualTo("LO QUE DICE LA LIBRETA")
         } finally {
             vm.viewModelScope.cancel()
         }

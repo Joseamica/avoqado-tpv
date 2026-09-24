@@ -283,4 +283,89 @@ class SinAutorizacionYBarreraRoomTest {
         assertThat(db.paymentAttemptDao().getById("propio")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
         assertThat(ledger.markAuthorizing("propio")).isFalse()
     }
+
+    // ═══════ Codex r8 (P1-1): el VETO durable que dejó el WORKER manda también sobre el «no se cobró» del SDK ═══════
+
+    @Test fun `r8 P1-1 con el veto que dejo el worker, markSinAutorizacion NO cierra y el Pago rapido sigue apartando`() = runTest {
+        enAutorizacion("a1")
+        // El worker consultó S6 con el SDK dentro y guardó la contradicción. La pantalla nunca vio esa consulta.
+        assertThat(db.paymentAttemptDao().marcarVetoDelServidor("a1", "venue-1", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, 5)).isEqualTo(1)
+
+        assertWithMessage("con el servidor contradiciendo, «no se cobró» sería mentira")
+            .that(ledger.markSinAutorizacion("a1", "venue-1", motivo)).isFalse()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+        assertWithMessage("un Pago rápido incierto sin venta sigue apartando el aparato")
+            .that(ledger.openAttempt("siguiente", "venue-1", "ANGELPAY", 500, 0, "FAST", "{}")).isFalse()
+    }
+
+    @Test fun `r8 P1-1 una DESCARTADA cuyo veto llego DESPUES del cierre bloquea el negativo y el cancel de su solicitud`() = runTest {
+        reclamar("req-v")
+        enAutorizacion("a1", contextoDe("req-v"))
+        assertThat(ledger.markSinAutorizacion("a1", "venue-1", motivo)).isTrue()
+        // El veto aterriza entre el cierre de la libreta y el final de la bandeja.
+        assertThat(db.paymentAttemptDao().marcarVetoDelServidor("a1", "venue-1", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, 5)).isEqualTo(1)
+
+        assertThat(db.remotePaymentRequestDao().contarIntentosBloqueadores("req-v")).isEqualTo(1)
+        assertWithMessage("la bandeja no puede fabricar el negativo con una contradicción conocida")
+            .that(inbox.persistResult("req-v", """{"requestId":"req-v","status":"failed","outcomeEvidence":"PRE_AUTHORIZATION"}""")).isNull()
+        assertThat(inbox.cancel("req-v").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+        assertThat(db.remotePaymentRequestDao().getById("req-v")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+    }
+
+    // ═══════ Codex r9 (P1-1): el rechazo NORMAL del banco tampoco tapa el veto ni la aprobación que el servidor acreditó ═══════
+
+    @Test fun `r9 P1-1 un rechazo NORMAL del banco NO cierra un intento con el veto del worker, y el siguiente cobro sigue apartado`() = runTest {
+        enAutorizacion("a1")
+        assertThat(db.paymentAttemptDao().marcarVetoDelServidor("a1", "venue-1", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, 5)).isEqualTo(1)
+
+        // La reproducción de Codex con el SQL real: cerrar A = 1; reservar B = 1. Ninguna de las dos puede pasar.
+        assertWithMessage("un DESCARTADA aquí es «Reintentar» sobre una contradicción conocida")
+            .that(ledger.markHostResponded("a1", approved = false, operationId = null, referenceNumber = "R1", authCode = null)).isFalse()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+        assertThat(ledger.openAttempt("siguiente", "venue-1", "ANGELPAY", 500, 0, "FAST", "{}")).isFalse()
+    }
+
+    @Test fun `r9 P1-1 con la aprobacion bancaria que el servidor acredito, el rechazo SE anota pero la terminal sigue apartada`() = runTest {
+        // Distinto del veto a propósito: una DESCARTADA con la marca APPROVED YA aparta el aparato en la reserva, así que el
+        // rechazo del host —un dato verdadero— se anota como siempre. Lo que no puede pasar es el siguiente cobro.
+        enAutorizacion("a1")
+        assertThat(db.paymentAttemptDao().marcarEvidenciaPositivaDelServidor("a1", "venue-1", 5)).isEqualTo(1)
+
+        assertThat(ledger.markHostResponded("a1", approved = false, operationId = null, referenceNumber = "R1", authCode = null)).isTrue()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(db.paymentAttemptDao().esContradiccion("a1")).isTrue()
+        assertThat(ledger.openAttempt("siguiente", "venue-1", "ANGELPAY", 500, 0, "FAST", "{}")).isFalse()
+    }
+
+    @Test fun `r10 - tambien un intento BLUMON con veto - el rechazo no lo cierra y el siguiente cobro sigue apartado`() = runTest {
+        // Codex r10 (nota): la recuperación inmediata (`LedgerRecoveryTrigger → recoverOne`) no filtra procesador, así que una fila
+        // de la PAX SÍ puede recibir el veto. El CAS no es de AngelPay: la misma guarda la protege.
+        assertThat(ledger.openAttempt("b1", "venue-1", "BLUMON", 1_000, 0, "FAST", "{}")).isTrue()
+        assertThat(ledger.markAuthorizing("b1")).isTrue()
+        assertThat(db.paymentAttemptDao().marcarVetoDelServidor("b1", "venue-1", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, 5)).isEqualTo(1)
+
+        assertThat(ledger.markHostResponded("b1", approved = false, operationId = null, referenceNumber = "R1", authCode = null)).isFalse()
+        assertThat(db.paymentAttemptDao().getById("b1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+        assertThat(ledger.openAttempt("siguiente", "venue-1", "BLUMON", 500, 0, "FAST", "{}")).isFalse()
+    }
+
+    @Test fun `r9 P1-1 control - un rechazo sin veto cierra como siempre, y una APROBACION aterriza aunque haya veto`() = runTest {
+        enAutorizacion("a2")
+        assertThat(ledger.markHostResponded("a2", false, null, "R2", null)).isTrue()
+        assertThat(db.paymentAttemptDao().getById("a2")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+
+        enAutorizacion("a1")
+        db.paymentAttemptDao().marcarVetoDelServidor("a1", "venue-1", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, 5)
+        assertWithMessage("el dinero manda").that(ledger.markHostResponded("a1", true, null, "R1", "600287")).isTrue()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_HOST_RESPONDIO)
+    }
+
+    @Test fun `r8 P1-1 control - la MISMA DESCARTADA sin veto sigue sin bloquear el negativo`() = runTest {
+        reclamar("req-c")
+        enAutorizacion("a1", contextoDe("req-c"))
+        assertThat(ledger.markSinAutorizacion("a1", "venue-1", motivo)).isTrue()
+
+        assertThat(db.remotePaymentRequestDao().contarIntentosBloqueadores("req-c")).isEqualTo(0)
+        assertThat(inbox.persistResult("req-c", """{"requestId":"req-c","status":"failed","outcomeEvidence":"PRE_AUTHORIZATION"}""")).isNotNull()
+    }
 }

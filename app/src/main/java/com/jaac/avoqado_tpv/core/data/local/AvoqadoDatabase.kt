@@ -166,7 +166,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // gana `legacy_shadow` (las filas que dejó la libreta SHADOW de 2.9.x no reservan la terminal).
     // 🔴 Cruza versión de esquema: un regreso a 2.9.2 (v33) sería un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`). El retroceso exige un APK de retroceso con v34.
-    version = 36,
+    version = 40,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2011,6 +2011,97 @@ abstract class AvoqadoDatabase : RoomDatabase() {
          * evidencia (ni de un `server_outcome`, ni de un `host_approved`) — sólo la escriben S6/2xx a partir de ahora. Idempotente
          * por `PRAGMA table_info` (SQLite no tiene `ADD COLUMN IF NOT EXISTS`). No toca la bandeja ni las colas.
          */
+        /**
+         * 37: `server_veto` — el VETO del servidor, durable (Codex r5-4, 22-sep). Hasta la 36 sólo el dinero propio
+         * (`server_processor_evidence`) sobrevivía al proceso; los otros tres avisos vivían en RAM y una respuesta
+         * limpia ATRASADA podía liberar una venta que otra consulta ya había contradicho.
+         */
+        val MIGRATION_36_37 = object : Migration(36, 37) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                if (!columnaExiste("payment_attempts", "server_veto")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN server_veto TEXT")
+                }
+            }
+        }
+
+        /**
+         * 38: `server_answered_at` — la última vez que el servidor CONTESTÓ (2xx) por esta fila (Codex r8, P2-4, 22-sep).
+         * `server_checked_at` es el turno de la recuperación y también se estampa tras un 401/403/404/5xx; como «el servidor
+         * ya contestó» dejaba declarar sin red y podar una declaración tras un 503. Nace NULL: la migración NO infiere
+         * respuestas de un `server_checked_at` viejo (no se sabe si fue 2xx). Idempotente por `PRAGMA table_info`.
+         */
+        val MIGRATION_37_38 = object : Migration(37, 38) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                if (!columnaExiste("payment_attempts", "server_answered_at")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN server_answered_at INTEGER")
+                }
+            }
+        }
+
+        /**
+         * 39: repara la marca que APARTA el aparato (Codex r17, P1, 23-sep). Desde la ronda 17 la marca va dentro de la
+         * transacción del veredicto, pero una fila que la versión anterior escribió con un veredicto CON DINERO y sin marca ya
+         * no vuelve a pasar por ahí (E2 no reaplica una DESCARTADA; E3 no consulta un RECORDED): al actualizar dejaba reservar
+         * y autorizar otro cobro. Sólo datos, idempotente, antes de que la app pueda abrir la base. Mismo alcance que la marca
+         * (AngelPay · SALE · no heredada); fuera de lo ya registrado, donde no aparta nada. Fechada desde el VEREDICTO: el
+         * aviso sigue contando sus 72 h desde el dinero, igual que antes de la reparación.
+         */
+        /**
+         * 40: `acknowledged_at` / `acknowledged_by` — quién confirmó con «Entendido» que un cobro dado por no cobrado SÍ pasó
+         * (decisión del founder, 23-sep). Nacen NULL: nada se da por confirmado al actualizar. Idempotente por `PRAGMA table_info`.
+         */
+        val MIGRATION_39_40 = object : Migration(39, 40) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                for (definicion in listOf("acknowledged_at INTEGER", "acknowledged_by TEXT")) {
+                    val nombre = definicion.substringBefore(' ')
+                    if (!columnaExiste("payment_attempts", nombre)) {
+                        db.execSQL("ALTER TABLE payment_attempts ADD COLUMN $definicion")
+                    }
+                }
+            }
+        }
+
+        val MIGRATION_38_39 = object : Migration(38, 39) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """UPDATE payment_attempts
+                       SET server_processor_evidence = 'APPROVED',
+                           server_processor_evidence_at = COALESCE(server_processor_evidence_at, server_verdict_at, updated_at)
+                       WHERE legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+                         AND server_processor_evidence IS NULL
+                         AND server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE')
+                         AND state NOT IN ('REGISTRADO','CERRADA')""",
+                )
+            }
+        }
+
         val MIGRATION_35_36 = object : Migration(35, 36) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 fun columnaExiste(tabla: String, columna: String): Boolean {

@@ -581,9 +581,13 @@ class AngelPayPaymentReviewRoomTest {
                 vm.viewModelScope.cancel()
             }
 
-            // «Muere el proceso»: sólo queda lo durable. El aviso F0 muestra la contradicción…
+            // «Muere el proceso»: sólo queda lo durable. 🔴 Ronda 19 (founder, 23-sep: «corrige y avisa»): un cobro LIMPIO —su
+            // Payment, mismos importes, ganador de la solicitud— ya no queda como contradicción para siempre en el aviso F0: sale
+            // en el aviso «ese cobro SÍ pasó · Entendido», y el aparato SIGUE apartado hasta que una persona lo confirme.
             val obligaciones = db.remotePaymentRequestDao().observePendingObligations("v1").first()
-            assertThat(obligaciones.count { it.contradiccion == 1 }).isEqualTo(1)
+            assertThat(obligaciones.count { it.contradiccion == 1 }).isEqualTo(0)
+            assertThat(db.paymentAttemptDao().observarCobrosPorReconocer("v1").first()).hasSize(1)
+            assertThat(db.paymentAttemptDao().findTerminalHold()).isNotNull()
             // …y un proceso NUEVO no la cierra como «no se cobró»: el cancel del POS y la sonda contestan con el COBRO.
             val bandejaTrasReiniciar = RemotePaymentInbox(db.remotePaymentRequestDao())
             val cancel = bandejaTrasReiniciar.cancel(requestId)

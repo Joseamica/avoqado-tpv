@@ -115,6 +115,31 @@ data class PaymentAttemptEntity(
      */
     @ColumnInfo(name = "server_processor_evidence") val serverProcessorEvidence: String? = null,
     @ColumnInfo(name = "server_processor_evidence_at") val serverProcessorEvidenceAt: Long? = null,
+    /**
+     * 🔴 Codex r5-4 (22-sep): el VETO del servidor, hecho durable. Hasta hoy sólo el dinero propio
+     * (`server_processor_evidence = APPROVED`) sobrevivía al proceso; los otros tres avisos —pago no atribuible,
+     * evidencia de otra terminal, evidencia sin dueño— vivían en RAM. Con tres consumidores concurrentes reales
+     * (el sondeo de la pantalla, la recuperación inmediata y el worker), una respuesta LIMPIA y ATRASADA llegaba
+     * después de la que traía la contradicción, pasaba el CAS y liberaba la venta.
+     *
+     * Guarda el PRIMER motivo visto y no se pisa: lo que importa es que algo contradice, no cuál fue el último.
+     */
+    @ColumnInfo(name = "server_veto") val serverVeto: String? = null,
+    /**
+     * 🔴 Codex r8 (P2-4, Room v38): la última vez que el servidor CONTESTÓ (2xx) una consulta S6 de esta fila.
+     * `server_checked_at` no sirve para eso: es el TURNO de la recuperación y también se estampa tras un 401, 403, 404
+     * o 5xx, para que una fila que el servidor no reconoce no se consulte en cada pasada. Usarlo como «el servidor ya
+     * contestó» dejaba declarar sin red y podar una declaración después de un 503. Lo leen la declaración local
+     * (candado 5) y la poda (la vigilancia de una declaración hecha sin red). Nunca afecta a `updated_at`.
+     */
+    @ColumnInfo(name = "server_answered_at") val serverAnsweredAt: Long? = null,
+    /**
+     * Decisión del founder (23-sep, «corrige y avisa»; Room v40): cuándo y quién confirmó con «Entendido» que un cobro que la
+     * terminal dio por NO cobrado SÍ pasó (el servidor lo registró). La fila pasa entonces a REGISTRADO, pero lo que dijo el
+     * lector (`host_approved`, `last_error`) se conserva: esto es la constancia de que una PERSONA reconoció la diferencia.
+     */
+    @ColumnInfo(name = "acknowledged_at") val acknowledgedAt: Long? = null,
+    @ColumnInfo(name = "acknowledged_by") val acknowledgedBy: String? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -152,6 +177,12 @@ data class PaymentAttemptEntity(
          * terminara, así que sigue apartando el aparato aunque la venta tenga identidad.
          */
         const val CUARENTENA_POR_ANTIGUEDAD = "cuarentena_por_antiguedad"
+        /**
+         * 🔴 Ronda 20 (founder, 23-sep): la duda que deja un proceso MUERTO a media venta. A diferencia de
+         * [CUARENTENA_POR_ANTIGUEDAD] SÍ acredita que la llamada nativa terminó —el SDK vive en el proceso de la app (su
+         * manifiesto no declara `android:process`), así que murió con él—: por eso, con orden, sólo cerca SU venta.
+         */
+        const val LAST_ERROR_PROCESO_TERMINADO = "proceso_terminado"
 
         /** Veredictos del servidor sobre un intento (`server_outcome`); mismos nombres que `AttemptOutcome` de S6. */
         const val SERVER_RECORDED = "RECORDED"
@@ -185,9 +216,36 @@ data class PaymentAttemptEntity(
         // después no puede quedar como contradicción permanente. Paréntesis externos: se usa como `AND NOT (…)`.
         const val SQL_CONTRADICCION = "((server_outcome IS NOT NULL AND (" +
             "server_outcome IN ('SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
-            "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR host_approved IS 0 " +
+            // Decisión del founder (23-sep): un rechazo del host que una PERSONA reconoció («Entendido», `acknowledged_at`) ya
+            // no es contradicción — el cobro SÍ pasó y está registrado; el rechazo se conserva como historia, no como alarma.
+            "OR (server_outcome = 'RECORDED' AND (state = 'DESCARTADA' OR (host_approved IS 0 AND acknowledged_at IS NULL) " +
             "OR server_amount_cents IS NOT amount_cents OR server_tip_cents IS NOT tip_cents)))) " +
-            "OR (server_processor_evidence IS 'APPROVED' AND (server_payment_id IS NULL OR state NOT IN ('REGISTRADO','CERRADA'))))"
+            "OR (server_processor_evidence IS 'APPROVED' AND (server_payment_id IS NULL OR state NOT IN ('REGISTRADO','CERRADA'))) " +
+            // 🔴 Codex r6 (P1-4): un VETO que llega DESPUÉS de una liberación no la deshacía, y la fila seguía
+            // diciendo «se puede volver a cobrar» y quedaba fuera del aviso y de la protección contra la poda. NO se
+            // reabre la fila a propósito: reabrirla apartaría el aparato por una contradicción SIN salida acreditada
+            // (P2-5 de la misma pasada) — que es exactamente la terminal muerta que este trabajo elimina. Se hace
+            // VISIBLE: entra al aviso F0 como contradicción, sobrevive a la poda y la pantalla deja de invitar a
+            // cobrar otra vez.
+            // 🔴 Ronda 23 (Codex r21, P1-1): en CUALQUIER estado. Excluía REGISTRADO/CERRADA como «escapatoria» — pero desde la
+            // ronda 22 un veto ya no deja promover, así que una fila registrada con veto es un veto que llegó DESPUÉS del registro
+            // (una consulta S6 que seguía en vuelo), y excluirla lo hacía desaparecer: ni aviso ni protección de la poda. No aparta
+            // el aparato (el cobro está registrado; apartarlo sería la terminal muerta sin salida): sale en el aviso de Inicio.
+            "OR server_veto IS NOT NULL)"
+
+        /**
+         * 🔴 Decisión del founder (23-sep, «corrige y avisa»; Codex r17/r18, P1): el cobro que la terminal dio por NO cobrado
+         * y el servidor SÍ registró, en su caso LIMPIO — Payment de ESTE intento, mismos importes, sin veto y, si vino del POS,
+         * el ganador de esa solicitud. Es lo ÚNICO que el cajero puede confirmar con «Entendido»; lo demás (PENDING, segunda
+         * captura, colisión, otros importes, un veto) sigue apartado, porque ahí «sí pasó» no está acreditado.
+         * UNA sola regla para la lista del aviso, el UPDATE que confirma, la barrera y la exclusión del aviso de contradicciones.
+         * NULL-segura a propósito (sólo `IS`, `IN` y columnas NOT NULL): se usa también negada, y `NOT NULL` es NULL.
+         */
+        const val SQL_COBRO_POR_RECONOCER = "(legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE' " +
+            "AND state IN ('DESCARTADA','INDETERMINADO') AND server_outcome IS 'RECORDED' AND server_payment_id IS NOT NULL " +
+            "AND server_amount_cents IS amount_cents AND server_tip_cents IS tip_cents AND server_veto IS NULL " +
+            "AND acknowledged_at IS NULL " +
+            "AND (terminal_payment_request_id IS NULL OR server_winner_payment_id IS server_payment_id))"
 
         /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el
@@ -198,6 +256,11 @@ data class PaymentAttemptEntity(
         val SERVER_OUTCOMES_CON_DINERO = setOf(
             SERVER_RECORDED, SERVER_SECOND_CAPTURE_EVIDENCE, SERVER_REFERENCE_COLLISION_EVIDENCE, SERVER_PENDING_EVIDENCE,
         )
+
+        /** Motivos de [PaymentAttemptEntity.serverVeto]: lo que el servidor publica y prohíbe usar para liberar. */
+        const val VETO_PAYMENT_CONTRADICTION = "PAYMENT_CONTRADICTION"
+        const val VETO_EVIDENCE_CONTRADICTION = "EVIDENCE_CONTRADICTION"
+        const val VETO_UNATTRIBUTED_EVIDENCE = "UNATTRIBUTED_EVIDENCE"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

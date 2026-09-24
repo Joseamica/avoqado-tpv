@@ -3,6 +3,10 @@
     <!-- HTTPS sigue siendo el default. Sólo el proxy de QA en la LAN y localhost (adb reverse) van en claro. -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">10.55.1.185</domain>
+        <!-- 22-sep-2026: la IP del Mac de QA cambió a .253. Esta lista es fija, así que cuando la red reparte otra
+             dirección Android bloquea el HTTP en claro EN SILENCIO y la app sólo dice «sin conexión al servidor»:
+             el ping funciona, internet funciona, y el síntoma no señala la causa. Sólo afecta a builds de DEBUG. -->
+        <domain includeSubdomains="false">10.55.1.253</domain>
         <domain includeSubdomains="false">192.168.1.113</domain>
         <domain includeSubdomains="false">localhost</domain>
         <domain includeSubdomains="false">127.0.0.1</domain>

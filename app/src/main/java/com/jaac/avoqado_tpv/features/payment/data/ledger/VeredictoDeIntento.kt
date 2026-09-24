@@ -25,6 +25,13 @@ data class VeredictoDeIntento(
     val tipCents: Long?,
     val ganadorAcreditado: String?,
     val fuente: Fuente,
+    /**
+     * 🔴 Ronda 21 (Codex r19, P1-1): el VETO que la MISMA respuesta publica (`paymentContradiction`, `evidenceContradiction`,
+     * `unattributedEvidence`). El servidor calcula el desenlace del Payment y la contradicción por separado, así que una
+     * respuesta puede traer las dos cosas; aplicado sin el veto, la fila quedaba RECORDED y limpia y el aviso ofrecía
+     * «Entendido» sobre un cobro que el propio servidor contradice. Se escribe en la MISMA transacción que el veredicto.
+     */
+    val veto: String? = null,
 ) {
     enum class Fuente { SOCKET_S5, CONSULTA_S6, REST }
 
@@ -87,6 +94,7 @@ data class VeredictoDeIntento(
                 tipCents = intento.tipCents,
                 ganadorAcreditado = ganador,
                 fuente = Fuente.CONSULTA_S6,
+                veto = LiberacionDelServidor.motivoDelVeto(intento),
             )
         }
     }
@@ -102,6 +110,16 @@ data class ResultadoDelVeredicto(
     /** El predicado derivado de contradicción, evaluado sobre la fila tras la escritura. */
     val contradiccion: Boolean,
 ) {
+    /**
+     * Codex r10/r11: el veredicto QUEDÓ en la fila. Las dos «RECHAZADO_» de datos cuentan porque la fila YA trae dinero del
+     * servidor (otro `server_payment_id`, o el mismo con otros datos) y eso la protege; las demás no escribieron nada, y quien
+     * aplica tiene que dejar la evidencia por su cuenta. No lanzar no es haberlo guardado.
+     */
+    val quedoEnLaFila: Boolean get() = when (decision) {
+        Decision.APLICADO, Decision.GUARDADO_SIN_LIBERAR, Decision.RECHAZADO_OTRO_PAYMENT, Decision.RECHAZADO_DATOS_DISTINTOS -> true
+        Decision.RECHAZADO_PERTENENCIA, Decision.FUERA_DE_ALCANCE, Decision.SIN_FILA -> false
+    }
+
     enum class Decision {
         /** Evidencia guardada; la fila pasó (o ya estaba) en REGISTRADO. */
         APLICADO,
@@ -129,7 +147,7 @@ data class ResultadoDelVeredicto(
  * Lleva la solicitud que el servidor liberó ([requestId]): la fila sólo se cierra si es SUYA (pertenencia, Task 7 · B) —
  * una respuesta de otra solicitud, cruzada o atrasada, nunca acredita «no se cobró» sobre este intento.
  */
-data class LiberacionDelServidor(val venueId: String, val attemptId: String, val requestId: String, val evidencia: String) {
+data class LiberacionDelServidor(val venueId: String, val attemptId: String, val requestId: String?, val evidencia: String) {
     companion object {
         val EVIDENCIAS = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED")
 
@@ -141,11 +159,63 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
          * vetan. ÚNICO punto que decide esto: los dos parsers de abajo y `LedgerServerRecovery.recoverOne` lo consultan aquí.
          */
         fun acreditaDinero(intento: TerminalAttemptResultDto?): Boolean =
-            intento != null && (intento.outcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || intento.processorEvidence == "APPROVED")
+            intento != null &&
+                (intento.outcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO ||
+                    intento.processorEvidence == "APPROVED" ||
+                    // 🔴 Codex r5-3 (22-sep): un `Payment` de ESTE intento que el servidor publica con estado NO final
+                    // (PENDING, PROCESSING) es dinero en vuelo — el veto del POST lo rechaza — y aquí no se miraba:
+                    // el outcome sigue siendo NOT_RECORDED y los tres avisos pueden estar apagados, así que el cliente
+                    // liberaba. Hay un pago identificado: eso basta para NO decirle al cajero que puede volver a cobrar.
+                    intento.paymentId != null)
+
+        /**
+         * 🔴 Pieza C (22-sep): el servidor publica en `attempt.unattributedEvidence` que existe evidencia del procesador
+         * para este intento que NO pudo atribuir a nadie (sin vínculo y sin serial). No cambia el desenlace —inventarle
+         * dueño sería peor— pero mientras exista, NINGUNA liberación puede aplicarse: es exactamente el caso del
+         * aprobado tardío que llega sin número de serie después de que el cajero declaró (Codex P1-3).
+         */
+        private fun hayEvidenciaSinDueno(intento: TerminalAttemptResultDto?): Boolean = intento?.unattributedEvidence == true
+
+        /**
+         * 🔴 Codex r4-3: la decisión de liberar conserva TODOS los vetos que el servidor publica, no sólo el dinero
+         * propio. `paymentContradiction` significa «hay un Payment con esta llave que no es atribuible a este intento»
+         * (otra solicitud, otra terminal, otro negocio, llave sucia) y `evidenceContradiction`, «hay evidencia del
+         * procesador con el serial de otra terminal». Ninguno acredita dinero PROPIO —por eso no entran en
+         * `acreditaDinero`— pero los dos son motivo de sobra para NO decirle al cajero que puede volver a cobrar.
+         */
+        private fun hayContradiccion(intento: TerminalAttemptResultDto?): Boolean =
+            intento?.paymentContradiction == true || intento?.evidenceContradiction == true
+
+        /**
+         * 🔴 Codex r5-4: qué veto publica el servidor sobre este intento, para hacerlo DURABLE. Devuelve el primero
+         * que aplique —cuál fue da igual, lo que importa es que algo contradice— o `null` si la respuesta está limpia.
+         * Único punto que traduce los avisos de S6 a un motivo guardable.
+         */
+        fun motivoDelVeto(intento: TerminalAttemptResultDto?): String? = when {
+            intento == null -> null
+            intento.paymentContradiction == true -> PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION
+            intento.evidenceContradiction == true -> PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION
+            intento.unattributedEvidence == true -> PaymentAttemptEntity.VETO_UNATTRIBUTED_EVIDENCE
+            else -> null
+        }
 
         fun desdeConsultaS6(venueId: String, attemptId: String, respuesta: TerminalAttemptStatusResponse): LiberacionDelServidor? {
             if (acreditaDinero(respuesta.attempt)) return null // el dinero (o una aprobación conocida) manda
-            val requestId = respuesta.requestId?.takeIf { it.isNotBlank() } ?: return null // sin solicitud no hay pertenencia que comprobar
+            if (hayEvidenciaSinDueno(respuesta.attempt)) return null // algo lo contradice y nadie puede reclamarlo: no se libera
+            if (hayContradiccion(respuesta.attempt)) return null // hay dinero o evidencia que no es de este intento: tampoco
+
+            // ── Cobro LOCAL (22-sep): iniciado EN la terminal, sin solicitud del POS ────────────────────────────
+            // Su liberación NO puede viajar en `request.outcome` porque no hay `request`. El servidor publica la
+            // declaración del cajero en `attempt.resolution`, y ésa es la única señal que destraba este caso.
+            val requestIdCrudo = respuesta.requestId?.takeIf { it.isNotBlank() }
+            if (requestIdCrudo == null && respuesta.request == null) {
+                val declaracion = respuesta.attempt?.resolution ?: return null
+                val evidencia = evidenciaDeLaDeclaracion(runCatching { declaracion.get("kind")?.asString }.getOrNull()) ?: return null
+                // `requestId` nulo = «sin solicitud»: es lo que manda la fila local al CAS, que exige IS NULL.
+                return LiberacionDelServidor(venueId, attemptId, null, evidencia)
+            }
+
+            val requestId = requestIdCrudo ?: return null // sin solicitud no hay pertenencia que comprobar
             val request = respuesta.request ?: return null
             val outcome = runCatching { request.get("outcome")?.asString }.getOrNull()
             val evidencia = runCatching { request.get("outcomeEvidence")?.asString }.getOrNull()
@@ -158,7 +228,24 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
          * cuando liberó la solicitud como `OPERATOR_RECONCILED`, así que la liberación se sintetiza de la respuesta misma —
          * pero con el MISMO veto que S6: si el cuerpo acredita dinero del intento, no hay liberación (null).
          */
-        fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
-            if (acreditaDinero(respuesta?.attempt)) null else LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
+        fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String?, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
+            if (acreditaDinero(respuesta?.attempt) || hayEvidenciaSinDueno(respuesta?.attempt) || hayContradiccion(respuesta?.attempt)) null
+            // Ronda 20: la declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
+            // Sin clase (un servidor anterior) o con la del cajero, lo de siempre.
+            else LiberacionDelServidor(
+                venueId, attemptId, requestId,
+                evidenciaDeLaDeclaracion(runCatching { respuesta?.attempt?.resolution?.get("kind")?.asString }.getOrNull()) ?: "OPERATOR_RECONCILED",
+            )
+
+        /**
+         * Ronda 20: qué liberación representa cada testimonio que publica el servidor. `NO_INSTRUMENT_PRESENTED` es la palabra del
+         * CAJERO; `NO_BANK_TRACE_AFTER_WINDOW` la de la TERMINAL (esperó el aviso del banco y no llegó, donde el servidor lo tiene
+         * comprobado). Una clase desconocida no libera nada.
+         */
+        fun evidenciaDeLaDeclaracion(kind: String?): String? = when (kind) {
+            "NO_INSTRUMENT_PRESENTED" -> "OPERATOR_RECONCILED"
+            "NO_BANK_TRACE_AFTER_WINDOW" -> "NO_EVIDENCE_AFTER_WINDOW"
+            else -> null
+        }
     }
 }

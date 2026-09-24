@@ -26,12 +26,14 @@ class LedgerServerRecoveryWorkerTest {
     private val secureStorage = mockk<SecureStorage>(relaxed = true).also { every { it.getVenueId() } returns "v1" }
     private val recovery = mockk<LedgerServerRecovery>()
     private val socketManager = mockk<SocketManager>(relaxed = true)
+    // Pieza D: el worker también concilia la BANDEJA (solicitudes huérfanas sin intento correlacionado).
+    private val bandejaRecovery = mockk<com.jaac.avoqado_tpv.core.remotepayment.BandejaServerRecovery>(relaxed = true)
 
     private fun worker(): LedgerServerRecoveryWorker =
         TestListenableWorkerBuilder<LedgerServerRecoveryWorker>(mockk<Context>(relaxed = true))
             .setWorkerFactory(object : WorkerFactory() {
                 override fun createWorker(appContext: Context, workerClassName: String, workerParameters: WorkerParameters): ListenableWorker =
-                    LedgerServerRecoveryWorker(appContext, workerParameters, secureStorage, recovery, socketManager)
+                    LedgerServerRecoveryWorker(appContext, workerParameters, secureStorage, recovery, bandejaRecovery, socketManager)
             })
             .build()
 
@@ -61,6 +63,26 @@ class LedgerServerRecoveryWorkerTest {
         val loQueDevolvio = desenlace.await()
         assertThat(loQueDevolvio).isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
         assertThat(loQueDevolvio).isNotInstanceOf(ListenableWorker.Result::class.java)
+    }
+
+    @Test fun `ronda 21 — una duda local que todavia no cumple su espera pide la pasada siguiente a tiempo`() {
+        val base = LedgerServerRecovery.Resultado(0, 0, 0, emptyList())
+        assertThat(LedgerServerRecoveryWorker.segundosParaSeguir(base.copy(proximaLiberacionSolaEnMs = 10_000))).isEqualTo(11L)
+        assertThat(LedgerServerRecoveryWorker.segundosParaSeguir(base.copy(proximaLiberacionSolaEnMs = 1))).isEqualTo(2L)
+        assertThat(LedgerServerRecoveryWorker.segundosParaSeguir(base)).isNull()
+    }
+
+    @Test fun `Codex r20 P3 · doWork() de verdad agenda la pasada siguiente cuando una duda local todavia espera`() = runTest {
+        coEvery { recovery.recover("v1", any()) } returns
+            LedgerServerRecovery.Resultado(0, 0, 0, emptyList(), proximaLiberacionSolaEnMs = 10_000)
+        io.mockk.mockkObject(LedgerSweepScheduler)
+        try {
+            every { LedgerSweepScheduler.runServerRecoveryNow(any(), any(), any()) } returns Unit
+            worker().doWork()
+            verify(exactly = 1) { LedgerSweepScheduler.runServerRecoveryNow(any(), 0L, 11L) }
+        } finally {
+            io.mockk.unmockkObject(LedgerSweepScheduler)
+        }
     }
 
     @Test fun `sin venue no hay nada que recuperar`() = runTest {

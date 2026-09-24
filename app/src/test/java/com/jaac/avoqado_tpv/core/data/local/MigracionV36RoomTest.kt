@@ -40,7 +40,10 @@ class MigracionV36RoomTest {
         }
 
         val db = DatabaseModule.provideDatabase(context)
+        // La versión a la que dejó la base el builder de producción (36 cuando nació esta prueba; hoy la cadena sigue: 37, 38…).
+        val versionTrasMigrar: Int
         try {
+            versionTrasMigrar = db.openHelper.readableDatabase.version
             val dao = db.paymentAttemptDao()
             for (id in listOf("indeterminada", "liberada")) {
                 val tras = dao.getById(id)!!
@@ -67,7 +70,10 @@ class MigracionV36RoomTest {
         val reabierta = DatabaseModule.provideDatabase(context)
         try {
             val dao = reabierta.paymentAttemptDao()
-            assertThat(reabierta.openHelper.readableDatabase.version).isEqualTo(36)
+            // 🔴 Antes decía `isEqualTo(36)` a secas: quedó en ROJO el día que la cadena subió a 37 (r5-4) y nadie corría
+            // esta clase. Lo que fija es que REABRIR no vuelve a migrar: la versión es la misma que dejó la primera apertura.
+            assertThat(versionTrasMigrar).isAtLeast(36)
+            assertThat(reabierta.openHelper.readableDatabase.version).isEqualTo(versionTrasMigrar)
             assertThat(dao.getById("indeterminada")!!.state).isEqualTo("INDETERMINADO")
             assertThat(dao.getById("indeterminada")!!.serverProcessorEvidence).isNull()
             val liberada = dao.getById("liberada")!!

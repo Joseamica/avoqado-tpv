@@ -41,9 +41,48 @@ class LedgerRecoveryTrigger @Inject constructor(
             }
         }
         Timber.d("🔎 [LedgerServer] hook de incertidumbre instalado")
+        // 🔴 Ronda 20 (founder, 23-sep): al ARRANCAR, lo que un proceso muerto dejó a medias pasa AL INSTANTE a «en duda», y la
+        // recuperación se agenda para cuando ya pasó la espera del aviso del banco: la terminal se libera SOLA, sin que nadie
+        // abra la pantalla de cobro. Sin red, el worker espera a la red (CONNECTED) y la duda se sigue viendo en el aviso.
+        scope.launch {
+            val n = ledger.cuarentenaDeHuerfanos()
+            // El worker (+12 s) sigue siendo el respaldo DURABLE —y el que consulta S6 por los cobros del POS—, pero no el camino
+            // de un Pago rápido: detrás de su cadena podía esperar minutos (Codex r19, P2-2).
+            if (n > 0) LedgerSweepScheduler.runServerRecoveryNow(appContext, initialDelaySeconds = SEGUNDOS_TRAS_ARRANCAR)
+            val venueId = secureStorage.getVenueId() ?: return@launch
+            if (liberarTrasArrancar(venueId)) LedgerSweepScheduler.runServerRecoveryNow(appContext)
+        }
+    }
+
+    /**
+     * 🔴 Ronda 21 (Codex r19, P2-2): libera las dudas LOCALES del arranque EN EL PROCESO — pide ya, espera lo que le falte a la
+     * siguiente y vuelve a pedir. La cadena de WorkManager (`APPEND_OR_REPLACE`) podía tener delante un reintento de otra
+     * pasada con minutos de backoff: la terminal seguía apartada con el servidor ya disponible. Devuelve `true` si hace falta
+     * el respaldo durable (sin red, un fallo, o dudas que siguen esperando tras [VUELTAS_AL_ARRANCAR] vueltas).
+     */
+    internal suspend fun liberarTrasArrancar(venueId: String): Boolean {
+        repeat(VUELTAS_AL_ARRANCAR) {
+            val r = try {
+                serverRecovery.get().liberarDudasLocales(venueId)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Timber.w(error, "🔎 [LedgerServer] la liberación de arranque falló — queda el worker")
+                return true
+            }
+            if (r.sinRespuesta > 0) return true
+            val falta = r.proximaEnMs ?: return false
+            kotlinx.coroutines.delay(falta + MARGEN_MS)
+        }
+        return true
     }
 
     companion object {
         const val RESPALDO_MINUTOS = 2L
+        /** Ronda 20: la espera del aviso del banco (10 s) más un margen para que la cuarentena ya esté escrita. */
+        const val SEGUNDOS_TRAS_ARRANCAR = 12L
+        /** Ronda 21: tope de vueltas de la liberación de arranque en el proceso; después, el worker. */
+        const val VUELTAS_AL_ARRANCAR = 3
+        const val MARGEN_MS = 500L
     }
 }

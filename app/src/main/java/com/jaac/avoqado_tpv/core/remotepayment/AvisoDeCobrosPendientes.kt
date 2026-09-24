@@ -75,6 +75,54 @@ object AvisoDeCobrosPendientes {
     fun importeYAntiguedad(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
         "${pesos(totalCentavos)}, ${antiguedad(ahoraMillis - desdeMillis)}"
 
+    /**
+     * 🔴 Lo que dice la terminal cuando la libreta NO admitió el intento.
+     *
+     * Antes decía «No se pudo guardar el intento **o** esta venta tiene un cobro pendiente»: dos causas
+     * muy distintas en una sola frase, sin nombrar la venta. El founder se lo topó el 21-sep en la TPV y
+     * no tenía forma de saber cuál le había tocado ni qué resolver.
+     *
+     * Son TRES desenlaces y cada uno pide algo distinto del cajero:
+     *  - **la VENTA está cercada** — hay un cobro sin confirmar de ESTA misma cuenta: resolverlo, porque
+     *    volver a cobrarla es el cobro doble que la cerca existe para impedir;
+     *  - **el APARATO está apartado** — la obligación es de OTRA venta: se resuelve, o se cobra en otra
+     *    terminal;
+     *  - **no se pudo guardar** — ni siquiera se llegó a la cerca: se reintenta.
+     *
+     * @param apartaLaVenta `"$120.00, hace 3 min"` de la fila que cerca ESTA venta, o null.
+     * @param apartaElAparato lo mismo para la fila que aparta la terminal, o null.
+     */
+    /**
+     * 🔴 Decisión del founder (23-sep, «corrige y avisa»): lo que ve el cajero cuando la terminal se enteró TARDE de que un
+     * cobro que dio por no cobrado SÍ pasó (el lector dijo «cancelado» y el banco aprobó un segundo después — Testarudo, 16-sep).
+     * Nombra importe y antigüedad para que lo reconozca, y dice lo único que importa: no volver a cobrarlo. Va con «Entendido».
+     */
+    fun cobroQueSiPaso(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
+        "El cobro de ${pesos(totalCentavos)} (${antiguedad(ahoraMillis - desdeMillis)}) SÍ pasó: Avoqado ya lo registró, " +
+            "así que no lo vuelvas a cobrar."
+
+    fun barreraDeLaLibreta(
+        apartaLaVenta: String?, apartaElAparato: String?, laVentaYaCobrada: Boolean = false, elAparatoYaCobrado: Boolean = false,
+    ): String = when {
+        // Decisión del founder (23-sep): un cobro que SÍ pasó se resuelve con el «Entendido» del aviso, no en otra terminal.
+        apartaLaVenta != null && laVentaYaCobrada ->
+            "Esta venta ya se cobró ($apartaLaVenta): Avoqado lo registró. NO se inició otro cobro. " +
+                "Toca «Entendido» en el aviso de arriba."
+        // La venta primero: es la más específica y la que de verdad puede cobrarse dos veces.
+        apartaLaVenta != null ->
+            "Esta venta ya tiene un cobro sin confirmar ($apartaLaVenta). NO se inició otro cobro. " +
+                "Revísalo en Transacciones antes de volver a cobrarla."
+        apartaElAparato != null && elAparatoYaCobrado ->
+            "La terminal está apartada por un cobro que SÍ pasó ($apartaElAparato). NO se inició este cobro. " +
+                "Toca «Entendido» en el aviso de arriba y vuelve a cobrar."
+        apartaElAparato != null ->
+            "La terminal está apartada por otro cobro sin confirmar ($apartaElAparato). NO se inició este cobro. " +
+                "Resuélvelo o cobra con otra terminal."
+        // 🔴 Nada que nombrar NO es «no hay cerca»: también es «no se pudo leer la libreta». Por eso el
+        // texto no afirma que la venta esté libre — sólo dice lo único que consta: no se cobró.
+        else -> "No se pudo guardar el intento en esta terminal. NO se cobró. Vuelve a intentarlo."
+    }
+
     private fun pesos(centavos: Long): String =
         CurrencyFormatter.format(BigDecimal(centavos).movePointLeft(2))
 

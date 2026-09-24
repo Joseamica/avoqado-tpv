@@ -4,7 +4,9 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsReposito
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.withContext
+import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,6 +31,79 @@ class PaymentAttemptLedger @Inject constructor(
 
     fun observeUnresolvedCount(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.observeUnresolvedCount(venueId)
 
+    /**
+     * 🔴 Ronda 20: los intentos que abrió ESTE proceso. En memoria A PROPÓSITO: muere con el proceso, que es justo lo que se
+     * quiere saber — una fila a media venta que NO está aquí la dejó un proceso muerto, y su llamada nativa murió con él (el
+     * SDK vive en el proceso de la app). Se anota ANTES de reservar: no existe el instante «fila viva que no está en la lista».
+     * Sin reloj: una hora del aparato que salta hacia atrás no puede convertir un cobro vivo en huérfano.
+     */
+    private val intentosDeEsteProceso: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Ronda 21 (Codex r19, P2-1): reloj MONOTÓNICO de este proceso — una corrección de la hora del aparato no lo mueve. */
+    @androidx.annotation.VisibleForTesting internal var relojMonotonico: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+
+    /**
+     * Ronda 21 (Codex r19, P2-1): desde cuándo está cada intento «en duda», en [relojMonotonico]. La espera del aviso del banco
+     * se medía con `updated_at` (reloj de pared): una corrección de la hora hacia adelante adelantaba la liberación, y hacia
+     * atrás la dejaba apartada. En memoria, como [intentosDeEsteProceso]: sólo este proceso sabe cuánto tiempo REAL lleva.
+     * ponytail: una entrada por intento en duda del proceso (decenas al día); si crecieran, podarlas al cerrar la fila.
+     */
+    private val enDudaDesde = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Empieza a contar la espera de esta duda (si ya contaba, conserva el inicio más antiguo). */
+    fun anotarEnDuda(attemptId: String) {
+        enDudaDesde.putIfAbsent(attemptId, relojMonotonico())
+    }
+
+    /**
+     * Ronda 21 (Codex r19, P2-1): cuánto falta, en el reloj monotónico, para que esta duda lleve [esperaMs] en duda. Una duda
+     * que este proceso no conocía empieza a contar AHORA: de un proceso anterior no se puede probar cuánto tiempo pasó.
+     */
+    fun faltaParaLiberarSola(attemptId: String, esperaMs: Long): Long {
+        val ahora = relojMonotonico()
+        val desde = enDudaDesde.putIfAbsent(attemptId, ahora) ?: ahora
+        return (esperaMs - (ahora - desde)).coerceAtLeast(0L)
+    }
+
+    /**
+     * 🔴 Ronda 20 (founder, 23-sep: «no debería trabarse nunca»). Al reabrir, lo que un proceso MUERTO dejó a medias pasa AL
+     * INSTANTE a «en duda» — antes esperaba la cuarentena por reloj (10 min) con la terminal apartada, y medido en la N86 eso
+     * era exactamente lo que el cajero veía: «resuélvelo o cobra con otra terminal», sin nada que tocar.
+     *  · KERNEL_ACTIVO / AUTORIZANDO ⇒ INDETERMINADO `proceso_terminado`: pudo cobrar; se consulta y, sin rastro, se libera.
+     *  · PREPARANDO ⇒ DESCARTADA: ninguna llamada capaz de cobrar empezó.
+     * Lo que abrió ESTE proceso no se toca. Nunca lanza: un fallo deja la limpieza para la siguiente.
+     */
+    suspend fun cuarentenaDeHuerfanos(now: Long = System.currentTimeMillis()): Int = try {
+        withContext(NonCancellable + Dispatchers.IO) {
+            var n = 0
+            for (fila in dao.posiblesHuerfanos()) {
+                if (fila.attemptId in intentosDeEsteProceso) continue
+                n += if (fila.state == PaymentAttemptEntity.STATE_PREPARANDO) dao.descartarPreparandoHuerfano(fila.attemptId, fila.stateVersion, now)
+                else dao.cuarentenarHuerfano(fila.attemptId, fila.state, fila.stateVersion, now).also { if (it == 1) anotarEnDuda(fila.attemptId) }
+            }
+            if (n > 0) Timber.w("📒 [Libreta] %d cobro(s) que dejó un proceso muerto pasan AL INSTANTE a «en duda»", n)
+            n
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo poner en duda lo que dejó un proceso muerto")
+        0
+    }
+
+    /**
+     * Ronda 20: ¿esta duda puede liberarse SOLA (si el servidor lo acepta)? Un Pago rápido de AngelPay en INDETERMINADO sin
+     * evidencia, sin veredicto y sin veto — las MISMAS condiciones que el CAS de la liberación local, que es quien decide de
+     * verdad — y NUNCA una duda por RELOJ de este proceso: esa fila puede tener todavía el lector dentro.
+     */
+    fun puedeLiberarseSola(fila: PaymentAttemptEntity, venueId: String): Boolean =
+        fila.venueId == venueId && !fila.legacyShadow && fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY &&
+            fila.kind == PaymentAttemptEntity.KIND_SALE && fila.terminalPaymentRequestId == null &&
+            fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.hostApproved != true && fila.serverOutcome == null &&
+            fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED && fila.serverVeto == null &&
+            !evidenciaSinGuardar.containsKey(fila.attemptId) &&
+            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.
 
@@ -48,6 +123,7 @@ class PaymentAttemptLedger @Inject constructor(
         esKiosco: Boolean = false,
     ): Boolean {
         if (!isEnabled()) return true
+        intentosDeEsteProceso += attemptId   // Ronda 20: ANTES de reservar (ver [intentosDeEsteProceso])
         // Cancellation propagates; a failed write cannot become permission to charge.
         return runCatching {
             withContext(Dispatchers.IO) {
@@ -335,6 +411,7 @@ class PaymentAttemptLedger @Inject constructor(
     @Volatile var onUncertaintyBorn: ((attemptId: String) -> Unit)? = null
 
     private fun avisarIncertidumbre(attemptId: String) {
+        anotarEnDuda(attemptId)   // Ronda 21: la espera del aviso del banco cuenta desde que nace la duda
         runCatching { onUncertaintyBorn?.invoke(attemptId) }
             .onFailure { Timber.e(it, "📒 [Libreta] el aviso de incertidumbre falló (attemptId=%s)", attemptId) }
     }
@@ -384,8 +461,18 @@ class PaymentAttemptLedger @Inject constructor(
      */
     suspend fun aplicarLiberacionDelServidor(l: LiberacionDelServidor, now: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
         val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
-        val n = dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia, now)
-        if (n == 1) Timber.w("📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada", l.attemptId, l.evidencia, l.requestId)
+        // 🔴 Pieza C (22-sep): sin `requestId` la liberación es de un cobro LOCAL y va a su propio CAS, que exige
+        // `terminal_payment_request_id IS NULL`. Las dos consultas son excluyentes por construcción: una fila del POS
+        // nunca la cierra la local, ni al revés — la pertenencia se comprueba dentro del UPDATE, no aquí.
+        val motivo = PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia
+        val n =
+            if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now)
+            else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now)
+        if (n == 1)
+            Timber.w(
+                "📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada",
+                l.attemptId, l.evidencia, l.requestId ?: "LOCAL (cobro en la terminal)",
+            )
         n == 1
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
@@ -398,15 +485,52 @@ class PaymentAttemptLedger @Inject constructor(
      * escribe también un ViewModel que muere. Nunca lanza; `Result` para que quien llama pueda decir si quedó escrita — pero un
      * fallo aquí NUNCA se lee como «sin evidencia»: el veto en RAM y la contradicción en pantalla no dependen de este retorno.
      */
+    /**
+     * 🔴 Codex r5-4 (22-sep): hace DURABLE un veto del servidor — pago no atribuible, evidencia de otra terminal o
+     * evidencia sin dueño. Los tres viajaban sólo en RAM, y con tres consumidores concurrentes (el sondeo de la
+     * pantalla, la recuperación inmediata y el worker) una respuesta LIMPIA y ATRASADA pasaba el CAS y liberaba la
+     * venta después de que otra ya había traído la contradicción. `NonCancellable`: lo escribe también un ViewModel
+     * que muere. Nunca lanza; un fallo al escribir NO se lee como «sin veto».
+     */
+    suspend fun marcarVetoDelServidor(venueId: String, attemptId: String, motivo: String, at: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val n = dao.marcarVetoDelServidor(attemptId, venueId, motivo, at)
+            if (n == 1) Timber.w("📒 [Libreta] VETO del servidor durable (%s) | attemptId=%s", motivo, attemptId)
+            n == 1
+        }
+    }.onFailure {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        Timber.e(it, "📒 [Libreta] no se pudo guardar el veto del servidor | attemptId=%s", attemptId)
+    }
+
     suspend fun marcarEvidenciaPositivaDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
         withContext(NonCancellable + Dispatchers.IO) {
             val n = dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, at)
             if (n == 1) Timber.w("📒 [Libreta] evidencia POSITIVA del servidor (sin Payment) durable | attemptId=%s", attemptId)
             n == 1
         }
+    }.onSuccess {
+        evidenciaSinGuardar.remove(attemptId)
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
-        Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor | attemptId=%s", attemptId)
+        // 🔴 Ronda 24 (Codex r22, P1-2): el servidor YA dijo que hay dinero; que la escritura falle no lo desdice. Se recuerda en
+        // memoria —bloquea las salidas negativas— y la pasada siguiente la vuelve a escribir.
+        evidenciaSinGuardar[attemptId] = venueId
+        Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
+    }
+
+    /**
+     * 🔴 Ronda 24 (Codex r22, P1-2): la evidencia positiva del servidor que NO se pudo escribir (intento → venue). En memoria a
+     * propósito: si la escritura falla, tampoco se podría guardar aquí. Mientras esté, ni el cierre sin red ni la liberación sola
+     * la tocan; [reintentarEvidenciaSinGuardar] la vuelve a escribir en cada pasada. ⚠️ Residual declarado: si además el proceso
+     * muere antes del reintento, se pierde — el servidor la conserva y la vuelve a dar en la consulta siguiente.
+     */
+    private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */
+    suspend fun reintentarEvidenciaSinGuardar(now: Long = System.currentTimeMillis()): Int {
+        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
+        return evidenciaSinGuardar.size
     }
 
     /**
@@ -558,6 +682,155 @@ class PaymentAttemptLedger @Inject constructor(
     } catch (error: Exception) {
         Timber.w(error, "📒 [Libreta] no se pudo leer qué aparta la terminal")
         null
+    }
+
+    /**
+     * La fila sin resolver de ESTA venta — la cerca 2 de `reserveTerminal`, leída para poder NOMBRARLA.
+     *
+     * Con esto la pantalla deja de decir «no se pudo guardar el intento **o** esta venta tiene un cobro
+     * pendiente»: son dos causas distintas y el cajero no podía saber cuál le tocó (founder, 21-sep).
+     * Un fallo de lectura devuelve null y quien llama cae al texto genérico: nunca se AFIRMA una cerca
+     * que no se pudo comprobar.
+     */
+    suspend fun retencionDeLaVenta(orderId: String): PaymentAttemptEntity? = try {
+        // Mismo fragmento que arma `openAttempt` para la sentencia de reserva: un formato distinto
+        // buscaría un texto que no existe en el JSON y siempre diría «no hay cerca».
+        dao.retencionDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId))
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer si la venta %s tiene un cobro sin resolver", orderId)
+        null
+    }
+
+    /**
+     * 🔴 Decisión del founder (23-sep, «corrige y avisa»): los cobros que la terminal dio por NO cobrados y el servidor SÍ
+     * registró, en su caso limpio ([PaymentAttemptEntity.SQL_COBRO_POR_RECONOCER]). Los pinta el aviso con «Entendido». Un
+     * fallo al leer no tumba la pantalla: se lee como «nada que confirmar» (la fila sigue apartando; no se libera nada).
+     */
+    fun observarCobrosPorReconocer(venueId: String): kotlinx.coroutines.flow.Flow<List<PaymentAttemptEntity>> =
+        dao.observarCobrosPorReconocer(venueId).catch { error ->
+            Timber.w(error, "📒 [Libreta] no se pudieron leer los cobros por confirmar")
+            emit(emptyList())
+        }
+
+    /**
+     * «Entendido» (Codex r17/r18, P1): la SALIDA de una terminal apartada por un cobro que SÍ pasó. Pasa la fila a REGISTRADO
+     * —sin invocar el SDK, sin otro intento y sin declarar «no se cobró»— conservando lo que dijo el lector y dejando quién y
+     * cuándo. La regla completa se revalida DENTRO del UPDATE. true = quedó confirmado; false = ya no era confirmable (otro
+     * aparato o una respuesta nueva lo cambió) o la escritura falló: la fila sigue apartando.
+     */
+    suspend fun reconocerCobroRegistrado(venueId: String, attemptId: String, quien: String, now: Long = System.currentTimeMillis()): Boolean =
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) { dao.reconocerCobroRegistrado(attemptId, venueId, quien, now) == 1 }
+        }.onSuccess { confirmado ->
+            if (confirmado) Timber.w("📒 [Libreta] %s confirmó que el cobro %s SÍ pasó (registrado por el servidor)", quien, attemptId)
+            else Timber.w("📒 [Libreta] el cobro %s ya no se podía confirmar", attemptId)
+        }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            Timber.e(it, "📒 [Libreta] no se pudo confirmar el cobro %s", attemptId)
+            false
+        }
+
+    /** ¿La fila que aparta es un cobro que SÍ pasó y el cajero puede confirmar? Un fallo de lectura es «no». */
+    private suspend fun esCobroPorReconocer(fila: PaymentAttemptEntity): Boolean =
+        runCatching { dao.esCobroPorReconocer(fila.attemptId) == true }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            false
+        }
+
+    /**
+     * 🔴 Por qué la libreta NO admitió el intento, en la frase que ve el cajero.
+     *
+     * Vive aquí —y no en cada variante del ViewModel— porque `PaymentViewModel` está DUPLICADO en
+     * `production/` y `sandbox/`: una copia por variante es una copia que se queda atrás.
+     *
+     * @param orderId la venta que se intentaba cobrar (null en un Pago rápido: ahí no hay cerca 2).
+     * @param attemptIdPropio el intento de ESTE cobro — nunca se nombra a sí mismo como lo que aparta.
+     */
+    suspend fun motivoDeLaBarrera(
+        orderId: String?,
+        attemptIdPropio: String?,
+        ahoraMillis: Long = System.currentTimeMillis(),
+    ): String {
+        fun describir(fila: PaymentAttemptEntity?): String? = fila
+            ?.takeUnless { it.attemptId == attemptIdPropio }
+            ?.let { AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, ahoraMillis) }
+        val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let { retencionDeLaVenta(it) }
+        val filaAparato = retencionDelAparato()
+        val laVenta = describir(filaVenta)
+        val elAparato = describir(filaAparato)
+        Timber.w(
+            "📒 [Libreta] barrera rechazó el intento %s | venta=%s aparato=%s",
+            attemptIdPropio ?: "-", laVenta ?: "sin cerca", elAparato ?: "sin cerca",
+        )
+        // Decisión del founder (23-sep): si lo que aparta es un cobro que SÍ pasó, la salida es el «Entendido», no otra terminal.
+        return AvisoDeCobrosPendientes.barreraDeLaLibreta(
+            laVenta, elAparato,
+            laVentaYaCobrada = laVenta != null && filaVenta != null && esCobroPorReconocer(filaVenta),
+            elAparatoYaCobrado = elAparato != null && filaAparato != null && esCobroPorReconocer(filaAparato),
+        )
+    }
+
+    /**
+     * 🔴 La SALIDA que faltaba para un cobro LOCAL trabado (founder, 21-sep: «los negocios normalmente cobran
+     * con tarjeta y no pueden quedar trabados»).
+     *
+     * Contesta si al cajero se le puede OFRECER «Ya revisé la terminal: no se cobró» sobre la fila que aparta
+     * el aparato. Sólo se ofrece cuando **ya se le preguntó al servidor y contestó sin dinero**: el testimonio
+     * de una persona nunca va por delante de la evidencia.
+     *
+     * Devuelve la fila declarable, o null. Un fallo de lectura devuelve null: no se ofrece una salida que no
+     * se pudo comprobar.
+     */
+    suspend fun retencionLocalDeclarable(): PaymentAttemptEntity? = try {
+        retencionDelAparato()?.takeIf { fila ->
+            !evidenciaSinGuardar.containsKey(fila.attemptId) &&   // Ronda 24: evidencia conocida sin escribir
+            fila.terminalPaymentRequestId == null &&
+                fila.state in setOf(PaymentAttemptEntity.STATE_AUTORIZANDO, PaymentAttemptEntity.STATE_INDETERMINADO) &&
+                fila.hostApproved != true &&
+                fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED &&
+                // Codex r6 (P1-3): el CAS es la garantía; no ofrecer el botón es lo que evita que el cajero toque algo
+                // que va a fallar. Las dos capas, como en el resto de la libreta.
+                fila.serverVeto == null &&
+                // Codex r8 (P2-4): que el servidor haya CONTESTADO, no que se le haya preguntado (un 503 también estampa el turno).
+                fila.serverAnsweredAt != null &&
+                fila.serverOutcome !in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer si hay una retención local declarable")
+        null
+    }
+
+    /**
+     * El cajero declara que MIRÓ la terminal y ese cobro local no pasó. La decisión real la toma el CAS
+     * ([PaymentAttemptDao.declararSinCobroLocal]), que revalida las cinco condiciones DENTRO del UPDATE:
+     * entre ofrecer el botón y tocarlo puede haber llegado el veredicto del servidor.
+     *
+     * @return true si la fila quedó cerrada y la terminal libre.
+     */
+    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?): Boolean = try {
+        // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada.
+        // (`containsKey`, no `in`: sobre un ConcurrentHashMap `in` busca en los VALORES — el venue —, no en las llaves.)
+        if (evidenciaSinGuardar.containsKey(attemptId)) {
+            Timber.w("📒 [Libreta] declaración sin cobro RECHAZADA: hay evidencia del servidor pendiente de guardar | attemptId=%s", attemptId)
+            false
+        } else declararSinCobroLocalYa(attemptId, venueId, quien)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo escribir la declaración de %s", attemptId)
+        false
+    }
+
+    private suspend fun declararSinCobroLocalYa(attemptId: String, venueId: String, quien: String?): Boolean {
+        val motivo = "declarado_sin_cobro:" + (quien?.takeIf { it.isNotBlank() } ?: "sin_identificar")
+        val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis())
+        if (filas == 1) Timber.w("📒 [Libreta] declarado SIN COBRO por el cajero | attemptId=%s motivo=%s", attemptId, motivo)
+        else Timber.w("📒 [Libreta] la declaración NO aplicó (evidencia o estado cambiaron) | attemptId=%s", attemptId)
+        return filas == 1
     }
 
     /** ONLY from PREPARANDO: a cancel during AUTORIZANDO has an unknown outcome — the row must live. */

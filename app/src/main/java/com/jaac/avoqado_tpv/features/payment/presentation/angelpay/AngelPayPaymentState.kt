@@ -181,6 +181,13 @@ sealed class AngelPayPaymentState {
         val pidePin: Boolean = false,
         val error: String? = null,
         val declarando: Boolean = false,
+        /**
+         * 🔴 El respaldo SIN RED (decisión del founder, 22-sep: «los dos caminos»). Se enciende sólo cuando la
+         * ventana se agotó sin que el servidor contestara Y el cobro es LOCAL con una retención declarable en la
+         * libreta. Es la salida de último recurso —la del aparato, con sus cinco candados— y la pantalla tiene que
+         * DECIR que es eso: el camino normal es preguntarle al servidor, que es quien ve el cobro real.
+         */
+        val puedeDeclararSinRed: Boolean = false,
     ) : AngelPayPaymentState()
 
     /**

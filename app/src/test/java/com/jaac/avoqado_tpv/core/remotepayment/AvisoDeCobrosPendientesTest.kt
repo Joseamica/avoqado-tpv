@@ -81,10 +81,10 @@ class AvisoDeCobrosPendientesTest {
         val pendiente = ObligacionPendiente(totalCentavos = 12050, desdeMillis = ahora - 3 * 60_000)
         val contradiccion = ObligacionPendiente(totalCentavos = 5000, desdeMillis = ahora - 60_000, contradiccion = 1)
         val texto = AvisoDeCobrosPendientes.texto(listOf(contradiccion, pendiente), ahora)!!
-        assertThat(texto).startsWith("Quedó un cobro de $120.50 sin confirmar")
+        assertThat(texto).startsWith("Quedó un cobro de \$120.50 sin confirmar")
         // Fix 4 (Codex, D3b): la contradicción puede nacer de una aprobación bancaria SIN Payment — el aviso admite
         // «tiene evidencia de cobro» y ya no afirma un registro que puede no existir.
-        assertThat(texto).contains("Avoqado tiene evidencia de cobro de un intento ($50.00)")
+        assertThat(texto).contains("Avoqado tiene evidencia de cobro de un intento (\$50.00)")
         assertThat(texto).doesNotContain("registró dinero")
         assertThat(texto).contains("no lo vuelvas a cobrar")
         // Sólo contradicción: no dice «sin confirmar».
@@ -94,4 +94,75 @@ class AvisoDeCobrosPendientesTest {
         assertThat(AvisoDeCobrosPendientes.texto(listOf(vieja), ahora)).isNull()
     }
 
+
+    // ── La barrera de la libreta: TRES desenlaces, no una frase con «o» (founder, 21-sep) ──
+
+    @Test
+    fun `P1 la venta cercada se nombra antes que el aparato`() {
+        // Es la más accionable: volver a cobrar ESTA venta es el cobro doble que la cerca impide.
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta(
+            apartaLaVenta = "\$120.00, hace 3 min", apartaElAparato = "\$50.00, hace 1 h",
+        )
+
+        assertThat(texto).contains("Esta venta ya tiene un cobro sin confirmar (\$120.00, hace 3 min)")
+        assertThat(texto).doesNotContain("\$50.00")
+    }
+
+    @Test
+    fun `P1 sin cerca de venta se nombra el aparato y se ofrece otra terminal`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta(null, "\$50.00, hace 1 h")
+
+        assertThat(texto).contains("La terminal está apartada por otro cobro sin confirmar (\$50.00, hace 1 h)")
+        assertThat(texto).contains("cobra con otra terminal")
+    }
+
+    @Test
+    fun `P1 sin nada que nombrar NO se afirma que la venta este libre`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta(null, null)
+
+        assertThat(texto).contains("NO se cobró")
+        assertThat(texto).doesNotContain("cobro sin confirmar")
+    }
+
+    @Test
+    fun `P1 los tres desenlaces son textos DISTINTOS`() {
+        // Si dos coincidieran, el cajero volvería a no poder distinguir qué le tocó — que es
+        // exactamente el defecto que esto cierra.
+        val textos = setOf(
+            AvisoDeCobrosPendientes.barreraDeLaLibreta("\$1.00, hace 1 min", null),
+            AvisoDeCobrosPendientes.barreraDeLaLibreta(null, "\$1.00, hace 1 min"),
+            AvisoDeCobrosPendientes.barreraDeLaLibreta(null, null),
+        )
+
+        assertThat(textos).hasSize(3)
+    }
+
+    // ── Decisión del founder (23-sep): un cobro que SÍ pasó se corrige y se avisa, con un toque de «Entendido» ──
+
+    @Test
+    fun `el cobro que si paso dice cuanto, cuando y que NO se vuelva a cobrar`() {
+        val texto = AvisoDeCobrosPendientes.cobroQueSiPaso(4000, ahora - 5 * 60_000, ahora)
+
+        assertThat(texto).contains("40.00")
+        assertThat(texto).contains("hace 5 min")
+        assertThat(texto).contains("SÍ")
+        assertThat(texto).contains("no lo vuelvas a cobrar")
+    }
+
+    @Test
+    fun `si lo que aparta es un cobro que si paso, la barrera manda al Entendido y no a otra terminal`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta(null, "\$40.00, hace 5 min", elAparatoYaCobrado = true)
+
+        assertThat(texto).contains("SÍ pasó")
+        assertThat(texto).contains("Entendido")
+        assertThat(texto).doesNotContain("otra terminal")
+    }
+
+    @Test
+    fun `si lo que cerca la venta es un cobro que si paso, la barrera dice que esa venta ya se cobro`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta("\$40.00, hace 5 min", null, laVentaYaCobrada = true)
+
+        assertThat(texto).contains("ya se cobró")
+        assertThat(texto).contains("Entendido")
+    }
 }

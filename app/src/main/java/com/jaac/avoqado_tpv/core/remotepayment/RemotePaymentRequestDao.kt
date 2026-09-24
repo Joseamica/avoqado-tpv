@@ -17,6 +17,9 @@ import org.json.JSONObject
  * él lo sabe. Nombrar el importe y la antigüedad es lo que convierte el aviso en una decisión
  * que alguien puede tomar (hallazgo de Codex sobre F0, 2026-09-12).
  */
+/** Una fila de bandeja PROCESSING sin intento correlacionado (pieza D). */
+data class HuerfanaDeBandeja(val requestId: String, val createdAt: Long)
+
 data class ObligacionPendiente(
     @ColumnInfo(name = "total_centavos") val totalCentavos: Long,
     @ColumnInfo(name = "desde_millis") val desdeMillis: Long,
@@ -74,13 +77,22 @@ interface RemotePaymentRequestDao {
         UNION ALL
         SELECT * FROM (
             SELECT (amount_cents + tip_cents) AS total_centavos,
-                CASE WHEN server_processor_evidence_at IS NOT NULL
+                -- 🔴 Codex r7 (P2-4): con VETO, la fecha más RECIENTE de las tres. El marcador del veto escribe `updated_at`
+                -- (sólo la primera vez: `server_veto IS NULL` en su WHERE), pero aquí mandaba la liberación vieja
+                -- (`server_verdict_at`): un veto recibido HOY sobre una liberación de hace 4 días nacía con 96 h y el filtro
+                -- de 72 h lo escondía al instante. `updated_at` sólo avanza, así que un toque posterior deja el aviso MÁS
+                -- visible, nunca menos.
+                CASE WHEN server_veto IS NOT NULL
+                     THEN MAX(COALESCE(server_verdict_at, 0), COALESCE(server_processor_evidence_at, 0), updated_at)
+                     WHEN server_processor_evidence_at IS NOT NULL
                           AND (server_verdict_at IS NULL OR server_processor_evidence_at > server_verdict_at)
                      THEN server_processor_evidence_at ELSE COALESCE(server_verdict_at, updated_at) END AS desde_millis,
                 1 AS contradiccion
             FROM payment_attempts
             WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
             AND """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_CONTRADICCION + """
+            -- Decisión del founder (23-sep): el cobro que SÍ pasó sale en su propio aviso, con «Entendido».
+            AND NOT """ + com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.SQL_COBRO_POR_RECONOCER + """
             ORDER BY desde_millis DESC LIMIT 50)
         ORDER BY desde_millis DESC""")
     fun observePendingObligations(venueId: String): kotlinx.coroutines.flow.Flow<List<ObligacionPendiente>>
@@ -88,6 +100,107 @@ interface RemotePaymentRequestDao {
     @Query("""UPDATE remote_payment_requests SET status = 'PROCESSING', updated_at = :now
         WHERE request_id = :requestId AND venue_id = :venueId AND status = 'RECEIVED'""")
     suspend fun markProcessingForVenue(requestId: String, venueId: String, now: Long): Int
+
+    // ── Pieza D (22-sep): las filas de bandeja HUÉRFANAS, que ninguna recuperación alcanzaba ──────────────
+    //
+    // 🔴 Medido en hardware: una N86 llevaba 25 h avisando de «un cobro de $50 sin confirmar» sobre una solicitud
+    // que el servidor ya había resuelto el día anterior. Su fila seguía PROCESSING y su libreta no tenía NINGÚN
+    // intento de esa solicitud — el caso que el propio repo ya describía como «requiere conciliación explícita».
+    // Toda la recuperación consulta por INTENTO, así que nada podía tocarla y el aviso no se podía quitar.
+    //
+    // El `NOT EXISTS` es EL MISMO de `observePendingObligations`: las candidatas son exactamente las filas que
+    // producen ese aviso, ni una más.
+
+    /** Filas PROCESSING de este venue SIN ningún intento correlacionado: las que hoy avisan para siempre. */
+    @Query(
+        """SELECT r.request_id AS requestId, r.created_at AS createdAt FROM remote_payment_requests r
+           WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
+           AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+               WHERE p.venue_id = :venueId
+               AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
+                               'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+               AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+           -- 🔴 Codex r6 (P2-11): por `created_at` las 20 más VIEJAS salían siempre, así que 20 que nunca se
+           -- resuelven —un 404 permanente, por ejemplo— dejaban a la 21 sin consultar nunca (reproducido en SQLite:
+           -- pasadas sucesivas devuelven las mismas 20). Por `updated_at` hay ROTACIÓN: `estamparConsultaHuerfana`
+           -- manda al final de la fila a la que se consultó y no se pudo cerrar, así que todas acaban pasando.
+           -- La ANTIGÜEDAD que el aviso muestra sigue saliendo de `created_at`, que no se toca.
+           ORDER BY r.updated_at ASC LIMIT 20""",
+    )
+    suspend fun candidatasHuerfanas(venueId: String): List<HuerfanaDeBandeja>
+
+    /** Codex r6 (P2-11): la consultada que NO se pudo cerrar va al final de la fila. Sólo mientras siga huérfana. */
+    @Query(
+        """UPDATE remote_payment_requests SET updated_at = :now
+           WHERE request_id = :requestId AND venue_id = :venueId AND status = 'PROCESSING'""",
+    )
+    suspend fun estamparConsultaHuerfana(requestId: String, venueId: String, now: Long): Int
+
+    /**
+     * Cierra una huérfana con el desenlace que el SERVIDOR acredita. 🔴 Sólo si el servidor la da por resuelta:
+     * `:status` tiene que ser uno de sus estados finales. Con una solicitud en vuelo (`SENT`, `PENDING`…) devuelve 0
+     * y la fila se conserva — cerrar la bandeja de un cobro que puede estar vivo es el defecto contrario, y ése
+     * cuesta dinero. Tampoco toca una fila ya resuelta ni una de otro venue.
+     */
+    @Query(
+        """UPDATE remote_payment_requests
+           -- 🔴 Codex r7 (P1-4): `final_emitted_at` es la CERCA que consulta la reserva (guarda 3 de `reserveTerminal`) y
+           -- el CAS del efectivo. Sin ella, tras cerrar la huérfana todavía se podía reservar un intento NUEVO de esta misma
+           -- solicitud y llegar al SDK. La escriben todos los caminos que cierran una solicitud; éste no la escribía.
+           SET status = 'RESOLVED', updated_at = :now, final_result_json = :resultadoReproducible, final_emitted_at = :now
+           WHERE request_id = :requestId AND venue_id = :venueId AND status = 'PROCESSING'
+             -- Una ejecución de efectivo/cripto ya arrancada tampoco es huérfana (misma guarda que el cancel tras reclamar).
+             AND execution_started_at IS NULL AND cancel_accepted_at IS NULL AND final_emitted_at IS NULL
+             -- 🔴 Codex r6 (P2-8): la orfandad se revalida AQUÍ, no sólo al seleccionar la candidata.
+             -- 🔴 Codex r7 (P1-4): y es MÁS ESTRICTA que la del selector y el aviso: CUALQUIER intento correlacionado, en
+             -- cualquier estado y de cualquier venue, impide cerrar. La lista vieja omitía PREPARANDO y KERNEL_ACTIVO, y
+             -- `KERNEL_ACTIVO` ya puede aprobar en local: D cerraba la bandeja de un cobro VIVO con un negativo del servidor.
+             -- Reproducido por Codex con el SQL real (cerraba y el intento pasaba a AUTORIZANDO). Un intento que sí existe
+             -- lo resuelve la libreta, que es la que sabe de dinero.
+             AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""",
+    )
+    suspend fun conciliarHuerfanaConElServidorConResultado(requestId: String, venueId: String, resultadoReproducible: String, now: Long): Int
+
+    /**
+     * 🔴 Codex r6 (P2-9): el resultado que se guarda tiene que ser REPRODUCIBLE, porque la bandeja lo emite tal cual en
+     * reentregas y sondas: sin `requestId` y con un vocabulario propio (`FAILED`), el servidor lo rechazaba. Dejarlo en
+     * NULL era peor — la reentrega contesta `Reject` y la sonda contesta **ACTIVE**, o sea que la ranura seguiría apartada
+     * por algo que el servidor YA cerró, que es justo el aviso que esta pieza viene a apagar.
+     *
+     * 🔴 Y sólo se conciliesan los desenlaces NEGATIVOS. Un `COMPLETED` significa que hay DINERO, y de eso no se encarga
+     * un limpiador de avisos: lo resuelve la libreta por INTENTO. Emitir `success` sin `paymentId` haría que el servidor
+     * lo degradara a `timeout` y volviera a retener la ranura — el defecto contrario.
+     */
+    suspend fun conciliarHuerfanaConElServidor(
+        requestId: String,
+        venueId: String,
+        status: String,
+        failureCode: String?,
+        now: Long,
+    ): Int {
+        val reproducible = when (status) {
+            "FAILED" -> "failed"
+            "CANCELLED" -> "cancelled"
+            else -> return 0 // COMPLETED y cualquier estado en vuelo: no es trabajo de la pieza D
+        }
+        val motivo = failureCode?.let { ",\"failureCode\":\"" + it.replace("\\", "").replace("\"", "") + "\"" } ?: ""
+        val json = "{\"requestId\":\"" + requestId + "\",\"status\":\"" + reproducible + "\"" + motivo +
+            ",\"conciliadaPorElServidor\":true}"
+        return conciliarHuerfanaConElServidorConResultado(requestId, venueId, json, now)
+    }
+
+    /** Cuántas obligaciones ve hoy el aviso de la pantalla. Para poder comprobar que una conciliación lo apaga. */
+    @Query(
+        """SELECT count(*) FROM remote_payment_requests r
+           WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
+           AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+               WHERE p.venue_id = :venueId
+               AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
+                               'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+               AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)""",
+    )
+    suspend fun observePendingObligationsCount(venueId: String): Int
 
     /** -1 = requestId ya existe; nunca reemplazar porque podría cambiar el dinero. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -156,10 +269,14 @@ interface RemotePaymentRequestDao {
      */
     // Fix 4 (D3a): también bloquea la evidencia positiva DURABLE del servidor (`server_processor_evidence IS 'APPROVED'`): una
     // DESCARTADA liberada cuyo banco aprobó después. Es el ÚNICO predicado — lo comparten el cancel y H.3.
+    // 🔴 Codex r8 (P1-1): y CUALQUIER contradicción con el servidor ([PaymentAttemptEntity.SQL_CONTRADICCION]: un veto durable,
+    // un veredicto con dinero sin promover). Una DESCARTADA cuyo veto llegó después del cierre dejaba al cancel y a
+    // `resolverDesenlaceNegativo` fabricar «no se cobró» con la contradicción conocida (Codex lo reprodujo: 1 fila, 0 bloqueadores).
     @Query("""SELECT COUNT(*) FROM payment_attempts
         WHERE instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0
         AND (legacy_shadow = 1 OR state NOT IN ('PREPARANDO', 'DESCARTADA') OR server_payment_id IS NOT NULL
-             OR server_processor_evidence IS 'APPROVED')""")
+             OR server_processor_evidence IS 'APPROVED'
+             OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """)""")
     suspend fun contarIntentosBloqueadores(requestId: String): Int
 
     @Query("""SELECT COUNT(*) FROM payment_attempts

@@ -581,9 +581,12 @@ class PaymentViewModelKernelDurabilityTest {
                 .that(vecesQueCorrioElKernelRecreado.get()).isEqualTo(0)
             // Y que sea EL error de la libreta, no cualquiera: un Error de otra guarda (cambio de
             // comercio en curso, sesión, conectividad) también dejaría el kernel en 0 sin probar nada.
+            // 🔴 El texto pasó a decir CUÁL de las cercas rechazó el intento (founder, 21-sep). Lo que
+            // hace que este aserto siga probando lo mismo es que ninguna OTRA guarda de la pantalla
+            // menciona un cobro sin confirmar: sólo la libreta lo hace.
             assertWithMessage("debe ser el rechazo de la LIBRETA; estado = ${recreated.state.value}")
                 .that((recreated.state.value as PaymentState.Error).message)
-                .contains("No se pudo guardar el intento")
+                .contains("cobro sin confirmar")
             coVerify(exactly = 0) { kernel.run(any()) }
             assertThat(dao.getById("previous-preparing")?.state).isEqualTo("PREPARANDO")
         } finally { recreated.viewModelScope.cancel(); db.close() }

@@ -292,6 +292,63 @@ class EvidenciaDurableDelServidorRoomTest {
         assertThat(dao.getById("c")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
     }
 
+    // ═══ Codex r7 · P1-2: un VETO tardío sobre una DESCARTADA liberada cerca SU venta — no el aparato ═══
+    // Reproducido por Codex con el SQL real del DAO: guardar veto = 1, contradicción = true, reservar B para la MISMA orden
+    // = 1 y autorizar B = 1. Las cercas de venta sólo reconocían la DESCARTADA con `server_processor_evidence='APPROVED'`.
+
+    private suspend fun vetar(attemptId: String) = assertThat(
+        ledger.marcarVetoDelServidor(venue, attemptId, PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION, now).getOrNull(),
+    ).isTrue()
+
+    @Test fun `r7 P1-2 veto tardio - una DESCARTADA liberada con veto cerca su orderId en la reserva y deja cobrar otra venta`() = runTest {
+        reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1"); liberar("a1", "req-1")
+        vetar("a1")
+
+        assertWithMessage("la misma venta (o1) con otra solicitud no entra").that(abrir("a2", "req-2", "o1")).isFalse()
+        assertWithMessage("la lectura gemela de la guarda 2 nombra la retención").that(dao.retencionDeLaVenta("\"orderId\":\"o1\"")?.attemptId).isEqualTo("a1")
+        assertWithMessage("otra venta (o2) sí: el negocio sigue cobrando").that(abrir("a3", "req-3", "o2")).isTrue()
+    }
+
+    @Test fun `r7 P1-2 carrera - B reserva la misma venta liberada, llega el VETO de A, y el CAS a AUTORIZANDO de B pierde - otra venta si autoriza`() = runTest {
+        reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1"); liberar("a1", "req-1")
+        assertThat(abrir("b", "req-2", "o1")).isTrue()   // antes del veto, la guarda 2 la deja pasar
+        vetar("a1")
+
+        assertWithMessage("el CAS a AUTORIZANDO tiene que ver el veto de la MISMA venta").that(ledger.markAuthorizing("b")).isFalse()
+        assertThat(ledger.markDiscardedBeforeCharge("b", "user_cancel")).isTrue()
+        assertThat(abrir("c", "req-3", "o2")).isTrue()
+        assertThat(ledger.markAuthorizing("c")).isTrue()
+    }
+
+    @Test fun `r7 P1-2 control - sin identidad de venta el veto NO aparta el aparato (decision de la r6 P1-4)`() = runTest {
+        reclamar("req-1", orderId = null); abrir("a1", "req-1", null); incierto("a1"); liberar("a1", "req-1")
+        vetar("a1")
+
+        assertThat(dao.findTerminalHold()).isNull()
+        assertThat(abrir("a2", "req-2", "o2")).isTrue()
+        assertThat(ledger.markAuthorizing("a2")).isTrue()
+    }
+
+    @Test fun `r7 P1-2 restauracion - al recrear la pantalla de ESA solicitud se adopta el intento con veto, no se abre otro cobro`() = runTest {
+        reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1"); liberar("a1", "req-1")
+        assertWithMessage("control: liberada y sin veto, no hay nada que adoptar").that(ledger.adoptarCobroDeLaSolicitud("req-1")).isNull()
+        vetar("a1")
+
+        assertThat(ledger.adoptarCobroDeLaSolicitud("req-1")?.attemptId).isEqualTo("a1")
+    }
+
+    @Test fun `r7 P2-4 - un veto nuevo sobre una liberacion de hace 4 dias se ve HOY en el aviso`() = runTest {
+        // Reproducido por Codex: veto recién escrito, antigüedad calculada 96 h, aviso INVISIBLE (filtro de 72 h).
+        reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1")
+        assertThat(liberar("a1", "req-1", at = now - 96 * h)).isEqualTo(1)
+        vetar("a1")   // hoy
+
+        val obligaciones = db.remotePaymentRequestDao().observePendingObligations(venue).first()
+        val contradiccion = obligaciones.single { it.contradiccion == 1 }
+        assertWithMessage("las 72 h cuentan desde el VETO, no desde la liberación").that(contradiccion.desdeMillis).isEqualTo(now)
+        assertWithMessage("el aviso tiene que verse").that(AvisoDeCobrosPendientes.texto(obligaciones, now)).isNotNull()
+    }
+
     // ═══ D3(e) · RECORDED posterior (controles: la marca no cambia aplicarVeredictoDelServidor) ═══
 
     @Test fun `D3e RECORDED posterior - una INDETERMINADO con evidencia se promueve a REGISTRADO y deja de ser contradiccion`() = runTest {

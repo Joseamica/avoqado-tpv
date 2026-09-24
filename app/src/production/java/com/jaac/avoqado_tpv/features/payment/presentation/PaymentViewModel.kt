@@ -3392,8 +3392,11 @@ class PaymentViewModel @Inject constructor(
                 // 🛑 La cerca de la solicitud remota se traduce a lo que pasó («el POS canceló este cobro»),
                 // nunca a «no se pudo guardar el intento», que manda a llamar a soporte por algo resuelto.
                 if (!traducirCercaDeSolicitud()) {
+                    // 🔴 Y de las DOS causas que quedan se dice CUÁL, nombrando importe y antigüedad de la
+                    // fila que estorba: «no se pudo guardar el intento O esta venta tiene un cobro pendiente»
+                    // dejaba al cajero sin saber qué resolver (founder, 21-sep, viéndolo en la TPV).
                     _state.value = PaymentState.Error(
-                        "No se pudo guardar el intento o esta venta tiene un cobro pendiente. No se inició otro cobro.",
+                        paymentAttemptLedger.motivoDeLaBarrera(getOrderIdForFlow(), sessionSnapshot.paymentAttemptId),
                         context = createPaymentContext(), canRetry = false,
                     )
                 }

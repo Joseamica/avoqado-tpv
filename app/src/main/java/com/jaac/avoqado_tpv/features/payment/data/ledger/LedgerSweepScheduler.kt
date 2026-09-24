@@ -54,10 +54,11 @@ object LedgerSweepScheduler {
      * la incertidumbre esperaría al periódico). `CONNECTED` (LTE vale): sin red no hay nada que consultar; el mantenimiento
      * local vive en [LedgerShadowSweepWorker], que sigue sin constraints. [initialDelayMinutes] es un MÍNIMO, no un plazo.
      */
-    fun runServerRecoveryNow(context: Context, initialDelayMinutes: Long = 0L) {
+    fun runServerRecoveryNow(context: Context, initialDelayMinutes: Long = 0L, initialDelaySeconds: Long = 0L) {
+        val retrasoSegundos = initialDelayMinutes * 60 + initialDelaySeconds
         val request = OneTimeWorkRequestBuilder<LedgerServerRecoveryWorker>()
             .setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build())
-            .apply { if (initialDelayMinutes > 0) setInitialDelay(initialDelayMinutes, TimeUnit.MINUTES) }
+            .apply { if (retrasoSegundos > 0) setInitialDelay(retrasoSegundos, TimeUnit.SECONDS) }
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             SERVER_RECOVERY_WORK_NAME,

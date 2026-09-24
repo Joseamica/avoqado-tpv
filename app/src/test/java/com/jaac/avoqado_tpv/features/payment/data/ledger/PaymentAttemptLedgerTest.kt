@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.data.ledger
 
+import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
@@ -297,5 +298,70 @@ class PaymentAttemptLedgerTest {
         every { settingsRepository.getCurrentSettings() } returns settingsWith(PaymentLedgerMode.OFF)
         ledger.markIndeterminate("a1", reason = "x")
         coVerify(exactly = 1) { dao.casWithError(any(), any(), any(), any(), any()) }
+    }
+
+    // ── Por qué la barrera rechazó el intento (founder, 21-sep) ──────────────────────────────
+
+    private fun fila(attemptId: String, totalCentavos: Long, creadaEn: Long) = PaymentAttemptEntity(
+        attemptId = attemptId, venueId = "venue", processor = "BLUMON", state = "INDETERMINADO",
+        amountCents = totalCentavos, tipCents = 0, recordingRoute = "ORDER",
+        paymentContextJson = "{}", createdAt = creadaEn, updatedAt = creadaEn,
+    )
+
+    @Test
+    fun `P1 la barrera NOMBRA la venta cercada, no el generico de guardar el intento`() = runTest {
+        coEvery { dao.retencionDeLaVenta(any()) } returns fila("otro", 12000, 0L)
+        coEvery { dao.findTerminalHold() } returns null
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 180_000L)
+
+        assertThat(motivo).contains("Esta venta ya tiene un cobro sin confirmar")
+        assertThat(motivo).contains("\$120.00")
+        assertThat(motivo).contains("hace 3 min")
+        assertThat(motivo).doesNotContain("No se pudo guardar el intento")
+    }
+
+    @Test
+    fun `P1 sin cerca de la venta se nombra lo que aparta el APARATO`() = runTest {
+        coEvery { dao.retencionDeLaVenta(any()) } returns null
+        coEvery { dao.findTerminalHold() } returns fila("de-otra-venta", 5000, 0L)
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 60_000L)
+
+        assertThat(motivo).contains("La terminal está apartada por otro cobro sin confirmar")
+        assertThat(motivo).contains("\$50.00")
+    }
+
+    @Test
+    fun `P1 el intento PROPIO nunca se nombra como lo que estorba`() = runTest {
+        // Si se nombrara a sí mismo, la pantalla mandaría al cajero a resolver el cobro que
+        // acaba de rechazarse — una instrucción imposible.
+        coEvery { dao.retencionDeLaVenta(any()) } returns fila("mio", 5000, 0L)
+        coEvery { dao.findTerminalHold() } returns fila("mio", 5000, 0L)
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 0L)
+
+        assertThat(motivo).isEqualTo("No se pudo guardar el intento en esta terminal. NO se cobró. Vuelve a intentarlo.")
+    }
+
+    @Test
+    fun `P1 sin venta (pago rapido) no se consulta la cerca de la venta`() = runTest {
+        coEvery { dao.findTerminalHold() } returns null
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = null, attemptIdPropio = "mio", ahoraMillis = 0L)
+
+        assertThat(motivo).contains("No se pudo guardar el intento")
+        coVerify(exactly = 0) { dao.retencionDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `P1 una libreta ilegible NO afirma que la venta este libre`() = runTest {
+        // El texto genérico dice «no se cobró», que es lo único que consta; nunca «no hay cerca».
+        coEvery { dao.retencionDeLaVenta(any()) } throws IllegalStateException("db caída")
+        coEvery { dao.findTerminalHold() } throws IllegalStateException("db caída")
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 0L)
+
+        assertThat(motivo).contains("NO se cobró")
     }
 }

@@ -11,6 +11,7 @@ import com.angelpay.angelpaysdk.models.MerchantSummary
 import com.angelpay.angelpaysdk.models.PaymentRequest
 import com.angelpay.angelpaysdk.models.PaymentResult
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
@@ -50,6 +51,7 @@ import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -209,6 +211,8 @@ class AngelPayPaymentViewModelTest {
             coEvery { leerIntento(any()) } returns null
             // Task 7 · fix 4: la evidencia positiva del servidor se hace DURABLE (un relajado devolvería un `Result` roto).
             coEvery { marcarEvidenciaPositivaDelServidor(any(), any(), any()) } returns Result.success(true)
+            // Codex r7 (P1-1): el veto durable también se escribe desde la declaración (un relajado devolvería un `Result` roto).
+            coEvery { marcarVetoDelServidor(any(), any(), any(), any()) } returns Result.success(true)
         }
         authAttemptTelemetryStore = mockk(relaxed = true)
         chargeVerifier = mockk(relaxed = true)
@@ -3121,7 +3125,8 @@ class AngelPayPaymentViewModelTest {
     }
     private fun respuestaDeclaracionOk() = Response.success(TerminalAttemptStatusResponse(success = true))
     private fun respuesta403() = Response.error<TerminalAttemptStatusResponse>(403, """{"success":false,"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""".toResponseBody("application/json".toMediaType()))
-    private fun respuesta409() = Response.error<TerminalAttemptStatusResponse>(409, """{"success":false,"code":"POSITIVE_EVIDENCE_EXISTS"}""".toResponseBody("application/json".toMediaType()))
+    // Ronda 23: un 409 GENÉRICO. `POSITIVE_EVIDENCE_EXISTS` ya no es genérico — veta desde que llega (ver «R23 la declaracion…»).
+    private fun respuesta409() = Response.error<TerminalAttemptStatusResponse>(409, """{"success":false,"code":"RESOLUTION_CONFLICT"}""".toResponseBody("application/json".toMediaType()))
 
     @Test fun `INCIERTO sin hallazgo en historial emite timeout al POS y se queda esperando al servidor con el boton de declarar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("historial vacío")
@@ -3189,13 +3194,32 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    @Test fun `r8 P1-2 - si guardar el veto FALLA, el veto de la respuesta manda igual - la liberacion VIEJA de la fila no se anuncia`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        // Codex r8: una respuesta limpia anterior dejó la fila LIBERADA; la consulta nueva trae la contradicción, pero guardarla
+        // en la libreta falló (la fila sigue sin `server_veto`). Leer la fila sí funciona. Sin reiniciar nada.
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns
+            LecturaDelIntento(null, servidorContesto = true, vetoDelServidor = PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+        val vm = vmConCobroDelPos("REQ-R8-P12")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("evidencia de cobro")
+            assertThat(s.message).doesNotContain("volver a cobrar")
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)   // sin reset automático
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `un 2xx cuyo cuerpo trae RECORDED aplica el veredicto del CUERPO (sin otro viaje de red) y termina en Success aunque S6 falle`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)   // S6 «sin red»
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W10",
             attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-body", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-body"))
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
-        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(mockk(relaxed = true))
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))   // real: «quedó en la fila» se lee de la decisión
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaRegistrada("att")   // null durante la espera; REGISTRADO tras guardar el cuerpo
         val vm = vmConCobroDelPos("REQ-W10")
         try {
@@ -3229,13 +3253,175 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── Codex r11 (P2-4): la respuesta de la DECLARACIÓN con dinero que no quedó en la fila deja la marca durable ──
+
+    @Test fun `r11 P2-4 - un 2xx de la declaracion con RECORDED que NO quedo en la fila (fallo o pertenencia) deja la evidencia durable`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val casos = listOf(
+            "falla la transacción" to Result.failure<com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto>(IllegalStateException("room caída")),
+            "otra solicitud" to Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false)),
+        )
+        for ((caso, resultado) in casos) {
+            val requestId = "REQ-P24-${caso.length}"
+            val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+                attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-body", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-body"))
+            coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+            coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns resultado
+            // La fila sólo trae una liberación VIEJA: si la pantalla se recrea, eso es lo único que quedaría sin la marca.
+            coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+            io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+            val vm = vmConCobroDelPos(requestId)
+            try {
+                vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+                val intento = vm.attemptIdForTest()!!
+                vm.declararSinTarjeta(); runCurrent()
+                coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any()) }
+                val s = vm.state.value as AngelPayPaymentState.Error
+                assertWithMessage(caso).that(s.canRetry).isFalse()
+                assertWithMessage(caso).that(s.message).contains("evidencia de cobro")
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test fun `r12 P2-1 - cerrar la pantalla mientras se guarda el veredicto de la declaracion no se lleva la marca de dinero`() = runTest(testDispatcher) {
+        // Codex r12: «aplicar» y «marcar» iban separados. Cancelada la pantalla mientras Room trabajaba, la cancelación saltaba
+        // en el regreso de «aplicar» y la marca nunca se escribía: la fila conservaba sólo su liberación vieja.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val requestId = "REQ-P21"
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-body", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-body"))
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        val guardando = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } coAnswers {
+            guardando.await()
+            Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false))
+        }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+        val vm = vmConCobroDelPos(requestId)
+        vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+        val intento = vm.attemptIdForTest()!!
+        vm.declararSinTarjeta(); runCurrent()          // detenida DENTRO de «aplicar el veredicto»
+        // Codex r14: la marca que aparta el aparato va ANTES del veredicto — ya está escrita cuando la pantalla se va.
+        coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any()) }
+        io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+
+        vm.viewModelScope.cancel(); runCurrent()       // la pantalla se va
+        guardando.complete(Unit); runCurrent()
+
+        // Codex r13 (P2-2): y la cancelación se PROPAGA al salir del tramo — la pantalla muerta no sigue leyendo ni pintando.
+        coVerify(exactly = 0) { paymentAttemptLedger.leerIntento(any()) }
+    }
+
+    @Test fun `r13 P1 - cerrar la pantalla entre el veto y la aprobacion de la MISMA respuesta no pierde la aprobacion`() = runTest(testDispatcher) {
+        // Codex r13: el veto solo NO aparta la terminal para un Pago rápido sin orden; la aprobación sí. Escritos por separado,
+        // cancelar entre los dos dejaba sólo el veto y la terminal podía apartarse para otro cobro.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val requestId = "REQ-R13P1"
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", processorEvidence = "APPROVED", evidenceContradiction = true))
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        val guardandoVeto = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { paymentAttemptLedger.marcarVetoDelServidor(any(), any(), any(), any()) } coAnswers { guardandoVeto.await(); Result.success(true) }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+        val vm = vmConCobroDelPos(requestId)
+        vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+        val intento = vm.attemptIdForTest()!!
+        vm.declararSinTarjeta(); runCurrent()          // detenida DENTRO de la escritura del veto
+        // Codex r14: la aprobación va ANTES que el veto — ya está escrita cuando la pantalla se va.
+        coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any()) }
+        io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+
+        vm.viewModelScope.cancel(); runCurrent()
+        guardandoVeto.complete(Unit); runCurrent()
+
+        coVerify(exactly = 0) { paymentAttemptLedger.leerIntento(any()) }
+    }
+
+    @Test fun `r14 P1-1 - veto y aprobacion de la MISMA respuesta - la aprobacion (lo que aparta el aparato) se escribe PRIMERO`() = runTest(testDispatcher) {
+        // Codex r14: «no cancelable» no es «atómico». Entre los dos commits otra pantalla podía reservar y autorizar; con la
+        // aprobación primero no existe el instante «veto sin aprobación».
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val requestId = "REQ-R14P11"
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", processorEvidence = "APPROVED", evidenceContradiction = true))
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val vm = vmConCobroDelPos(requestId)
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val intento = vm.attemptIdForTest()!!
+            io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+            vm.declararSinTarjeta(); runCurrent()
+            io.mockk.coVerifyOrder {
+                paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any())
+                paymentAttemptLedger.marcarVetoDelServidor("v1", intento, any(), any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r15 P1 - si la marca que aparta el aparato FALLA, no se aplica el veredicto y la pantalla no invita a cobrar`() = runTest(testDispatcher) {
+        // Codex r15: guardar el veredicto sin la marca dejaba la fila fuera de toda recuperación (RECORDED sale de las candidatas y una
+        // DESCARTADA no se reaplica) y la terminal aceptaba otro cobro. Sin marca, el veredicto queda para la consulta siguiente.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val requestId = "REQ-R15P1"
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "RECORDED", paymentId = "pay-r", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = true, winnerPaymentId = "pay-r"))
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        coEvery { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) } returns Result.failure(java.io.IOException("disco lleno"))
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val vm = vmConCobroDelPos(requestId)
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("evidencia de cobro")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r14 P1-2 - un veredicto GUARDADO_SIN_LIBERAR tambien deja la aprobacion, y ANTES de aplicarlo`() = runTest(testDispatcher) {
+        // Codex r14: «quedó en la fila» no es «aparta el aparato». Un veredicto guardado que no promueve la fila (colisión de
+        // referencia, RECORDED sobre una DESCARTADA) no escribe la aprobación, y la reserva de otro cobro no mira el Payment.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val requestId = "REQ-R14P12"
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = requestId,
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "REFERENCE_COLLISION_EVIDENCE", paymentId = "pay-col", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = false, processorEvidence = "APPROVED"))
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR, false, null, true))
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val vm = vmConCobroDelPos(requestId)
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val intento = vm.attemptIdForTest()!!
+            io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any()) }
+            io.mockk.coVerifyOrder {
+                paymentAttemptLedger.marcarEvidenciaPositivaDelServidor("v1", intento, any())
+                paymentAttemptLedger.aplicarVeredictoDelServidor(any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `un 2xx con RECORDED guardado pero con la fila sin promover (GUARDADO_SIN_LIBERAR) prohibe recobrar`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-W13",
             attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "SECOND_CAPTURE_EVIDENCE", paymentId = "pay-2", paymentStatus = "COMPLETED", recordedVia = "webhook", amountCents = 10000, tipCents = 0, isWinner = false, winnerPaymentId = "pay-1"))
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
-        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(mockk(relaxed = true))
+        coEvery { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR, false, null, true))
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaContradictoria("att")
         val vm = vmConCobroDelPos("REQ-W13")
         try {
@@ -3470,7 +3656,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             vm.declararSinTarjeta(); runCurrent()
             val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
-            assertThat(s.error).contains("POSITIVE_EVIDENCE_EXISTS")
+            assertThat(s.error).contains("RESOLUTION_CONFLICT")
             coVerify(exactly = 0) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
             coVerify(atLeast = 1) { ledgerServerRecovery.recoverOne("v1", any(), any(), any()) }
@@ -3494,9 +3680,11 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
-    @Test fun `un cobro INICIADO EN LA TERMINAL (sin solicitud del POS) no ofrece declarar ni espera al servidor — queda sin confirmar como antes`() = runTest(testDispatcher) {
-        // La ventana de 30 s y la declaración son de la SOLICITUD del POS; un cobro local no tiene ninguna. Esperar S6 aquí
-        // sería un reloj que nunca contesta (recoverOne descarta las filas sin solicitud) y un botón que el servidor rechazaría.
+    @Test fun `P1 un cobro INICIADO EN LA TERMINAL (sin solicitud del POS) SI entra a la ventana y SI puede declarar`() = runTest(testDispatcher) {
+        // 🔴 «Ninguna terminal muerta» (founder, 22-sep). Antes esta misma prueba fijaba lo contrario: un cobro local caía
+        // en «NO vuelvas a cobrar, pregúntale al supervisor», sin reloj, sin botón y sin reintento, con la fila apartando
+        // EL APARATO ENTERO — y la única salida medida fue escribir SQL en la base del aparato, tres veces. El servidor ya
+        // contesta por INTENTO aunque no haya vínculo (pieza A) y acepta la declaración sin `requestId` (pieza B).
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
@@ -3507,10 +3695,395 @@ class AngelPayPaymentViewModelTest {
             vm.primeSdkLaunch(); runCurrent()
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
-            assertThat(s.esperandoAlServidor).isFalse(); assertThat(s.puedeDeclarar).isFalse(); assertThat(s.verificando).isFalse()
+            assertThat(s.esperandoAlServidor).isTrue(); assertThat(s.puedeDeclarar).isTrue()
+            // Le PREGUNTA al servidor: es lo que convierte el callejón en una espera con desenlace.
+            coVerify(atLeast = 1) { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) }
+
             vm.declararSinTarjeta(); runCurrent()
-            coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }
-            coVerify(exactly = 0) { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) }
+            // 🔴 Y el POST viaja SIN solicitud: `requestId` nulo, que Gson omite del cuerpo. Mandar uno inventado sería
+            // declarar sobre una solicitud ajena.
+            coVerify(exactly = 1) { attemptApi.resolveNoInstrument(eq("v1"), any(), match { it.requestId == null }) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ----------------------------------------------------------------------
+    // El respaldo SIN RED (founder, 22-sep: «los dos — con internet decide el servidor; si no contesta, el aparato»).
+    // Se ofrece SÓLO para un cobro LOCAL, sólo si el servidor NO contestó en toda la ventana, sólo si la libreta dice
+    // que la fila es declarable (sus cinco candados) y sólo a quien tiene el MISMO permiso que el camino por servidor
+    // (`payments:resolve-no-instrument`, decisión de gerencia): sin eso, apagar el WiFi sería la forma de saltarse el PIN.
+    // ----------------------------------------------------------------------
+
+    private val permisoDeclarar = "payments:resolve-no-instrument"
+
+    /**
+     * Codex r7 (P2-1): el permiso sale de la última lista EFECTIVA guardada (la de `tpv/auth/permissions`), no de los permisos
+     * CRUDOS del login. Para que ninguna prueba vuelva a pasar por el motivo equivocado, los crudos dicen SIEMPRE lo contrario.
+     */
+    private fun permisoEfectivo(conPermiso: Boolean, duenoDeLaLista: String = "v1|s1") {
+        // Codex r8 (P1-3) / r9 (P2-8): la lista lleva su DUEÑO en el mismo valor (`venueId|staffId`, salto de línea, lista).
+        // La sesión es v1|s1: una lista de otra persona no vale.
+        every { secureStorage.getString("permissions_cache", null) } returns
+            "$duenoDeLaLista\n" + (if (conPermiso) "payments:read,$permisoDeclarar" else "payments:read")
+        every { secureStorage.getVenueId() } returns "v1"
+        every { secureStorage.getStaffId() } returns "s1"
+        every { authRepository.hasPermission(permisoDeclarar) } returns !conPermiso
+    }
+
+    /** Lo único que el ViewModel lee de la fila declarable es su id. */
+    private fun filaLocalDeclarable(attemptId: String) = mockk<PaymentAttemptEntity>(relaxed = true).also {
+        every { it.attemptId } returns attemptId
+        every { it.terminalPaymentRequestId } returns null
+        every { it.state } returns PaymentAttemptEntity.STATE_INDETERMINADO
+    }
+
+    /**
+     * Un Pago rápido que quedó incierto y una ventana en la que el servidor contesta (o no) según [servidorContesto]. El id
+     * del intento se captura de la consulta S6 —es el mismo que la libreta devolverá como declarable—.
+     */
+    private fun kotlinx.coroutines.test.TestScope.pagoRapidoInciertoTrasLaVentana(
+        servidorContesto: Boolean,
+        declarable: Boolean = true,
+        conPermiso: Boolean = true,
+        vm: AngelPayPaymentViewModel? = null,
+        /** De quién es la lista de permisos guardada (`venueId|staffId`). La sesión es siempre v1|s1. */
+        duenoDeLaLista: String = "v1|s1",
+    ): Pair<AngelPayPaymentViewModel, io.mockk.CapturingSlot<String>> {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val intento = slot<String>()
+        coEvery { ledgerServerRecovery.recoverOne(any(), capture(intento), any(), any()) } returns LecturaDelIntento(null, servidorContesto = servidorContesto)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        coEvery { paymentAttemptLedger.retencionLocalDeclarable() } answers { if (declarable) filaLocalDeclarable(intento.captured) else null }
+        permisoEfectivo(conPermiso, duenoDeLaLista)
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val elVm = vm ?: createViewModel().also {
+            it.initPayment(amount = "100.00"); runCurrent()
+            it.primeSdkLaunch(); runCurrent()
+        }
+        elVm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+        // Mientras espera al servidor, el respaldo NUNCA se ofrece: con internet manda el servidor.
+        assertThat((elVm.state.value as AngelPayPaymentState.ResultadoIncierto).puedeDeclararSinRed).isFalse()
+        advanceTimeBy(elVm.msEsperaAlServidor + elVm.msEntreConsultasS6); runCurrent()
+        return elVm to intento
+    }
+
+    @Test fun `P1 respaldo sin red - un Pago rapido al que el servidor NO contesto en toda la ventana ofrece cerrarlo en el aparato`() = runTest(testDispatcher) {
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false)
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.esperandoAlServidor).isFalse()
+            assertThat(s.puedeDeclararSinRed).isTrue()
+            assertThat(s.message).contains("El servidor no contesta")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - si el servidor SI contesto (sin veredicto) NO se ofrece, y el texto no dice que no contesta`() = runTest(testDispatcher) {
+        // Con el servidor vivo, la declaración va por él (bitácora del servidor, PIN de supervisor si hace falta). Ofrecer el
+        // atajo del aparato ahí sería ofrecer una forma de declarar SIN la regla de gerencia con internet funcionando.
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = true)
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isFalse()
+            assertThat(s.puedeDeclarar).isTrue()
+            assertThat(s.message).doesNotContain("no contesta")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - sin el permiso de gerencia NO se ofrece, y la pantalla dice a quien pedirselo`() = runTest(testDispatcher) {
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false, conPermiso = false)
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isFalse()
+            assertThat(s.message).contains("gerente")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r7 P2-1 - un MANAGER con el permiso por su ROL y sin permisos crudos en el login SI puede cerrarlo sin red`() = runTest(testDispatcher) {
+        // El caso de Codex: `StaffVenue.permissions = null` (lo normal) ⇒ los crudos del login no traen el permiso, pero la lista
+        // efectiva que resolvió el servidor (rol + agregados − negados) sí. Antes el botón miraba los crudos y lo rechazaba.
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false, conPermiso = true)
+        try {
+            verify(exactly = 0) { authRepository.hasPermission(permisoDeclarar) }
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isTrue()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r8 P1-3 - con la lista del GERENTE A guardada y la sesion del cajero B, el respaldo sin red NO se ofrece ni se deja tocar`() = runTest(testDispatcher) {
+        // Codex r8: A deja su lista, su sesión caduca, entra B y falla la descarga de SUS permisos. La lista de A seguía ahí
+        // sin dueño y B cerraba el pendiente sin red con el permiso del gerente.
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false, conPermiso = true, duenoDeLaLista = "v1|s-gerente-A")
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isFalse()
+            assertThat(s.message).contains("gerente")
+            vm.declararSinRed(); runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.declararSinCobroLocal(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r7 P2-1 - sin lista efectiva guardada NO se ofrece aunque los permisos crudos del login lo traigan`() = runTest(testDispatcher) {
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false, conPermiso = true)
+        try {
+            every { secureStorage.getString("permissions_cache", null) } returns null
+            every { authRepository.hasPermission(permisoDeclarar) } returns true
+            vm.declararSinRed(); runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.declararSinCobroLocal(any(), any(), any()) }
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).puedeDeclararSinRed).isFalse()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r7 P2-8 - con el servidor agotando cada consulta, la ventana dura lo que dice y no 5 minutos`() = runTest(testDispatcher) {
+        // Codex: `transcurrido` sumaba sólo las pausas. Con cada consulta agotando su tope de 30 s, diez consultas + nueve pausas
+        // eran 5 min 45 s mientras la pantalla contaba 45 — justo el caso del respaldo sin red, que hereda esa espera.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin red")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } coAnswers {
+            delay(30_000); LecturaDelIntento(null, servidorContesto = false)
+        }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        coEvery { paymentAttemptLedger.retencionLocalDeclarable() } returns null
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val vm = createViewModel().also { it.initPayment(amount = "100.00"); runCurrent(); it.primeSdkLaunch(); runCurrent() }
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).esperandoAlServidor).isTrue()
+            advanceTimeBy(vm.msEsperaAlServidor + vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).esperandoAlServidor).isFalse()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ----------------------------------------------------------------------
+    // 🔴 Ronda 20 (founder, 23-sep: «no debería trabarse nunca y todo es por webhook»). Un Pago rápido que quedó en duda
+    // ya no espera 45 s y un botón: espera el aviso del banco 10 s (medido: p99 3.4 s, máximo 4.5 s) y le pide al servidor
+    // liberarlo SOLO. El servidor decide si ese silencio vale (aviso comprobado del comercio) y sostiene el veto de dinero.
+    // Un cobro del POS NO: ése lo libera la ventana de 30 s del propio servidor.
+    // ----------------------------------------------------------------------
+
+    private fun kotlinx.coroutines.test.TestScope.pagoRapidoEnDuda(): Pair<AngelPayPaymentViewModel, io.mockk.CapturingSlot<String>> {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin veredicto")
+        val intento = slot<String>()
+        coEvery { ledgerServerRecovery.recoverOne(any(), capture(intento), any(), any()) } returns LecturaDelIntento(null, servidorContesto = true)
+        coEvery { paymentAttemptLedger.retencionLocalDeclarable() } returns null
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val vm = createViewModel()
+        vm.initPayment(amount = "100.00"); runCurrent()
+        vm.primeSdkLaunch(); runCurrent()
+        vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+        return vm to intento
+    }
+
+    @Test fun `R20 un Pago rapido en duda espera el aviso del banco 10 s y despues pide liberarlo SOLO, una vez`() = runTest(testDispatcher) {
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        coEvery { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) } returns LedgerServerRecovery.SinRastro.SIN_AVISO_COMPROBADO
+        val (vm, intento) = pagoRapidoEnDuda()
+        try {
+            assertThat(vm.msEsperaLocal).isEqualTo(10_000L)
+            advanceTimeBy(vm.msEsperaLocal - 1_000); runCurrent()
+            coVerify(exactly = 0) { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) }   // antes de los 10 s, no
+            advanceTimeBy(vm.msEntreConsultasS6 + 2_000); runCurrent()
+            coVerify(exactly = 1) { ledgerServerRecovery.liberarSinRastroDelBanco("v1", intento.captured, any()) }
+            // Ronda 21 (Codex r19, P2-1): la espera se cuenta desde que la pantalla la pone en duda, en el reloj monotónico.
+            coVerifyOrder {
+                paymentAttemptLedger.anotarEnDuda(intento.captured)
+                ledgerServerRecovery.liberarSinRastroDelBanco("v1", intento.captured, any())
+            }
+            // Sin aviso comprobado: el cajero decide, y la pantalla dice POR QUÉ no se liberó sola.
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.esperandoAlServidor).isFalse()
+            assertThat(s.puedeDeclarar).isTrue()
+            assertThat(s.message).contains("aviso del banco")
+            // «Consultar de nuevo» no vuelve a pedirla: el servidor ya contestó que ese silencio no prueba nada.
+            vm.consultarDeNuevo(); runCurrent(); advanceTimeBy(vm.msEsperaLocal + vm.msEntreConsultasS6 + 100); runCurrent()
+            coVerify(exactly = 1) { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `R20 si el servidor la libera sola, la pantalla dice que se puede volver a cobrar`() = runTest(testDispatcher) {
+        var liberada = false
+        coEvery { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) } coAnswers { liberada = true; LedgerServerRecovery.SinRastro.LIBERADA }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } answers { if (liberada) filaLiberada(firstArg(), "NO_EVIDENCE_AFTER_WINDOW") else null }
+        val (vm, _) = pagoRapidoEnDuda()
+        try {
+            advanceTimeBy(vm.msEsperaLocal + 100); runCurrent()   // la liberación se pinta al vencer los 10 s…
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("volver a cobrar")
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()   // …y a los 4 s la pantalla vuelve a cobrar
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `R20 si al pedirla aparece dinero, gana el dinero — nunca se puede volver a cobrar`() = runTest(testDispatcher) {
+        coEvery { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) } returns LedgerServerRecovery.SinRastro.CON_EVIDENCIA
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val (vm, _) = pagoRapidoEnDuda()
+        try {
+            advanceTimeBy(vm.msEsperaLocal + vm.msEntreConsultasS6 + 100); runCurrent()
+            val estado = vm.state.value
+            assertWithMessage("estado=%s", estado).that(estado is AngelPayPaymentState.Error && (estado as AngelPayPaymentState.Error).message.contains("NO lo vuelvas a cobrar")).isTrue()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ── Ronda 23 · Codex r21 ──
+
+    @Test fun `R23 una fila REGISTRADO con veto del servidor ensena la contradiccion, no cobrado`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null, servidorContesto = true)
+        val registradaConVeto = filaRegistrada("att").also { every { it.serverVeto } returns PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns registradaConVeto
+        val vm = vmConCobroDelPos("REQ-R23")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            val s = vm.state.value
+            assertWithMessage("estado=%s", s).that(s is AngelPayPaymentState.Error && s.message.contains("evidencia de cobro")).isTrue()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `R23 la declaracion del cajero rechazada con POSITIVE_EVIDENCE_EXISTS veta desde ahi y deja la marca durable`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)   // S6 sin red
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.error(
+            409, """{"success":false,"code":"POSITIVE_EVIDENCE_EXISTS"}""".toResponseBody("application/json".toMediaType()),
+        )
+        val vm = vmConCobroDelPos("REQ-R23b")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.declararSinTarjeta(); runCurrent()
+            val s = vm.state.value
+            assertWithMessage("estado=%s", s).that(s is AngelPayPaymentState.Error && s.message.contains("evidencia de cobro")).isTrue()
+            coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `R20 un cobro del POS NO se libera solo — sigue esperando la ventana del servidor`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null, servidorContesto = true)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val vm = vmConCobroDelPos("REQ-R20")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEsperaLocal + vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).esperandoAlServidor).isTrue()   // 10 s no bastan: son 45
+            advanceTimeBy(vm.msEsperaAlServidor + vm.msEntreConsultasS6); runCurrent()
+            coVerify(exactly = 0) { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ── Codex r7 · P2-7: tras reiniciar, el Pago rápido pendiente que aparta el aparato se ADOPTA, no se deja sin salida ──
+
+    private fun pendienteLocal(state: String = PaymentAttemptEntity.STATE_INDETERMINADO, requestId: String? = null) = PaymentAttemptEntity(
+        attemptId = "a-pendiente", venueId = "v1", processor = "ANGELPAY", state = state,
+        amountCents = 5_000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+        lastError = "AngelPay sin veredicto", terminalPaymentRequestId = requestId,
+        createdAt = System.currentTimeMillis() - 12 * 60_000L, updatedAt = System.currentTimeMillis() - 12 * 60_000L,
+    )
+
+    /** Un Pago rápido NUEVO de $80 cuya reserva choca con la barrera de la libreta (otro cobro aparta el aparato). */
+    private fun kotlinx.coroutines.test.TestScope.pagoRapidoQueChocaConLaBarrera(pendiente: PaymentAttemptEntity?): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
+        coEvery { paymentAttemptLedger.retencionDelAparato() } returns pendiente
+        coEvery { paymentAttemptLedger.motivoDeLaBarrera(any(), any(), any()) } returns "LO QUE DICE LA LIBRETA"
+        val vm = createViewModel()
+        vm.initPayment(amount = "80.00"); runCurrent()
+        vm.flujoSdkForzadoParaPruebas = true
+        vm.startCardPayment(); runCurrent()
+        return vm
+    }
+
+    @Test fun `r7 P2-7 - un Pago rapido nuevo que choca con un cobro LOCAL pendiente adopta ESE cobro y entra a su ventana`() = runTest(testDispatcher) {
+        // Codex: A queda retenido y el proceso muere. Al volver, las restauraciones adoptan por solicitud del POS y A no tiene;
+        // un cobro nuevo B choca con la barrera y la pantalla decía el importe de A… sin ninguna salida. Terminal muerta.
+        val consultados = mutableListOf<String>()
+        coEvery { ledgerServerRecovery.recoverOne(any(), capture(consultados), any(), any()) } returns LecturaDelIntento(null, servidorContesto = true)
+        val vm = pagoRapidoQueChocaConLaBarrera(pendienteLocal())
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.message).contains("$50.00")          // nombra el cobro ANTERIOR, no el nuevo de $80
+            assertThat(s.puedeDeclarar).isTrue()
+            assertThat(vm.attemptIdForTest()).isEqualTo("a-pendiente")
+            assertThat(consultados).contains("a-pendiente")
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }   // el cobro nuevo nunca llegó al SDK
+
+            coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(
+                TerminalAttemptStatusResponse(success = true, attemptId = "a-pendiente",
+                    attempt = TerminalAttemptResultDto(attemptId = "a-pendiente", outcome = "NOT_RECORDED")),
+            )
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 1) { attemptApi.resolveNoInstrument("v1", "a-pendiente", match { it.requestId == null }) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r7 P2-7 control - un pendiente en AUTORIZANDO (el SDK puede seguir dentro) NO se adopta, y la barrera se dice como siempre`() = runTest(testDispatcher) {
+        val vm = pagoRapidoQueChocaConLaBarrera(pendienteLocal(state = PaymentAttemptEntity.STATE_AUTORIZANDO))
+        try {
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("LO QUE DICE LA LIBRETA")
+            assertThat(vm.attemptIdForTest()).isNotEqualTo("a-pendiente")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `r7 P2-7 control - un pendiente DEL POS (con solicitud) no se adopta por aqui`() = runTest(testDispatcher) {
+        val vm = pagoRapidoQueChocaConLaBarrera(pendienteLocal(requestId = "req-del-pos"))
+        try {
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("LO QUE DICE LA LIBRETA")
+            assertThat(vm.attemptIdForTest()).isNotEqualTo("a-pendiente")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - un cobro del POS NUNCA lo ofrece aunque la libreta lo permita`() = runTest(testDispatcher) {
+        // La solicitud del POS tiene su camino, que además libera la ranura del servidor y avisa al POS.
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false, vm = vmConCobroDelPos("REQ-SINRED"))
+        try {
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).puedeDeclararSinRed).isFalse()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - declarar cierra la fila en el aparato SIN tocar la red y lo dice con honestidad`() = runTest(testDispatcher) {
+        val (vm, intento) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false)
+        coEvery { paymentAttemptLedger.declararSinCobroLocal(any(), any(), any()) } returns true
+        try {
+            vm.declararSinRed(); runCurrent()
+            coVerify(exactly = 1) { paymentAttemptLedger.declararSinCobroLocal(intento.captured, "v1", any()) }
+            coVerify(exactly = 0) { attemptApi.resolveNoInstrument(any(), any(), any()) }   // el respaldo no depende de la red
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("volver a cobrar")
+            assertThat(s.message).contains("este aparato")
+            assertThat(s.message).doesNotContain("30 s")   // no fue la ventana del servidor: fue el cajero
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - si el CAS de la libreta lo rechaza NUNCA se dice liberado`() = runTest(testDispatcher) {
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false)
+        coEvery { paymentAttemptLedger.declararSinCobroLocal(any(), any(), any()) } returns false
+        try {
+            vm.declararSinRed(); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isFalse()
+            assertThat(s.error).contains("No se pudo cerrar en el aparato")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `P1 respaldo sin red - el permiso se revisa OTRA vez al tocar - sin el, la libreta ni se toca`() = runTest(testDispatcher) {
+        // La oferta no es la garantía: entre pintar el botón y tocarlo puede cambiar la sesión.
+        val (vm, _) = pagoRapidoInciertoTrasLaVentana(servidorContesto = false)
+        permisoEfectivo(false)
+        try {
+            vm.declararSinRed(); runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.declararSinCobroLocal(any(), any(), any()) }
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.puedeDeclararSinRed).isFalse()
+            assertThat(s.error).contains("gerente")
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -4183,10 +4756,155 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    @Test fun `r8 P2-6 - el cobro ADOPTADO se registra con SU cuenta de cobro, no con la que el cajero eligio para el cobro nuevo`() = runTest(testDispatcher) {
+        // Codex r8: A quedó pendiente con la cuenta M1 (cma-001); el cajero preparó B con M2 (cma-002) y la pantalla adoptó A.
+        // Si llega el aprobado rezagado de A, el registro llevaba la referencia y el importe de A… con la cuenta de B.
+        merchantsFlow.value = listOf(angelPayMerchantB)   // la cuenta elegida AHORA es M2
+        val requestId = "REQ-R8-M"
+        val base = filaDeLaSolicitudConMarca(requestId)
+        val filaConM1 = base.copy(paymentContextJson = base.paymentContextJson.replace("\"venueId\":\"v1\",", "\"venueId\":\"v1\",\"merchantAccountId\":\"cma-001\","))
+        assertThat(filaConM1.paymentContextJson).contains("\"merchantAccountId\":\"cma-001\"")
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.intentoDeLaSolicitud(requestId) } returns filaConM1
+        coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns filaConM1
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-tardio", receiptUrl = "https://r/1", accessKey = "k", amount = java.math.BigDecimal("120.50"), tipAmount = java.math.BigDecimal("10.00")),
+        )
+        val vm = createViewModel(handleRecreado(requestId))
+        try {
+            runCurrent()
+            assertThat(vm.currentMerchant.value?.merchantAccountId).isEqualTo("cma-002")   // precondición: la cuenta elegida es M2
+            vm.setSocketPaymentSource("SOCKET", requestId)
+            vm.initPayment("100.00"); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+
+            vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
+            withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
+            }
+            val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
+            assertThat(ctx.idempotencyKey).isEqualTo("att-rc1")
+            assertThat(ctx.merchantAccountId).isEqualTo("cma-001")   // la cuenta con la que A viajó al SDK
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    // ── Codex r9 ─────────────────────────────────────────────────────────────────────────────────
+
+    private val parserAngelPay = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class
+
+    @Test fun `r9 P1-1 - app to app - un rechazo NORMAL del banco sobre un intento con el veto del worker es contradiccion, sin Reintentar`() = runTest(testDispatcher) {
+        // El worker guardó `server_veto` mientras AngelPay tenía la pantalla; la libreta ya no deja cerrar ESE intento y la fila
+        // lo delata. Sin mirarla, la pantalla ofrecía «Reintentar» (el veto en RAM estaba apagado).
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        io.mockk.mockkConstructor(parserAngelPay)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Transacción rechazada", "G500", "GATEWAY")
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00"); runCurrent()
+            // El intento de ESTA pantalla (initPayment ya lo acuñó): es el que el callback resuelve.
+            val intento = vm.attemptIdForTest()!!
+            coEvery { paymentAttemptLedger.markHostResponded(intento, false, any(), any(), any()) } returns false
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns PaymentAttemptEntity(
+                attemptId = intento, venueId = "v1", processor = "ANGELPAY", state = PaymentAttemptEntity.STATE_AUTORIZANDO,
+                amountCents = 10_000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}", createdAt = 1L, updatedAt = 2L,
+                serverVeto = PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION,
+            )
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing(intento)).isTrue()
+            vm.onAngelPayResult(android.app.Activity.RESULT_OK, null); runCurrent()
+
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("evidencia de cobro")
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(parserAngelPay)
+        }
+    }
+
+    @Test fun `r9 P2-5 - app to app - el aprobado de un cobro ADOPTADO sin evidencia se registra con SU cuenta, no con la elegida ahora`() = runTest(testDispatcher) {
+        // Codex r9: A quedó AUTORIZANDO con M1 (cma-001), sin evidencia del servidor; la pantalla murió y la nueva eligió M2.
+        // Llega el aprobado app a app de A: la adopción tomaba sólo el número de intento, y el registro llevaba la cuenta de M2.
+        merchantsFlow.value = listOf(angelPayMerchantB)
+        val requestId = "REQ-R9-A2A"
+        val base = filaDeLaSolicitudConMarca(requestId)
+        val filaA = base.copy(
+            state = PaymentAttemptEntity.STATE_AUTORIZANDO, serverProcessorEvidence = null, serverProcessorEvidenceAt = null,
+            paymentContextJson = base.paymentContextJson.replace("\"venueId\":\"v1\",", "\"venueId\":\"v1\",\"merchantAccountId\":\"cma-001\","),
+        )
+        assertThat(filaA.paymentContextJson).contains("\"merchantAccountId\":\"cma-001\"")
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.adoptarCobroDeLaSolicitud(requestId) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CobroSinResolver("att-rc1")
+        coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns filaA
+        io.mockk.mockkConstructor(parserAngelPay)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Success("A9", "R9", 13_050, "APROBADA", "S000", null)
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-a2a", receiptUrl = "https://r/1", accessKey = "k", amount = java.math.BigDecimal("120.50"), tipAmount = java.math.BigDecimal("10.00")),
+        )
+        val vm = createViewModel(handleRecreado(requestId))
+        try {
+            runCurrent()
+            assertThat(vm.currentMerchant.value?.merchantAccountId).isEqualTo("cma-002")   // precondición: la cuenta elegida es M2
+
+            vm.onAngelPayResult(android.app.Activity.RESULT_OK, null); runCurrent()
+            withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
+            }
+            val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
+            assertThat(ctx.idempotencyKey).isEqualTo("att-rc1")
+            assertThat(ctx.merchantAccountId).isEqualTo("cma-001")   // la cuenta con la que A salió al banco
+            assertThat(ctx.amount).isEqualTo(java.math.BigDecimal("120.50"))
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(parserAngelPay)
+        }
+    }
+
+    @Test fun `r9 - adoptar A local, rechazo confirmado y Reintentar - el cobro NUEVO se registra con la cuenta elegida, no con la de A`() = runTest(testDispatcher) {
+        // La secuencia que encontró Codex: `retryAfterError()` borra el número de intento y CONSERVA el contexto restaurado de A.
+        // Sin comparar el número de intento, el cobro B —que salió con M2— se registraría con la cuenta de A (M1).
+        merchantsFlow.value = listOf(angelPayMerchantB)
+        activeMerchantIdFlow.value = 22   // la sesión del SDK está en M2: sin esto la alineación bloquea el cobro antes de la barrera
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null, servidorContesto = true)
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-b", receiptUrl = "https://r/1", accessKey = "k", amount = java.math.BigDecimal("50.00"), tipAmount = java.math.BigDecimal.ZERO),
+        )
+        val vm = pagoRapidoQueChocaConLaBarrera(pendienteLocal().copy(paymentContextJson = """{"venueId":"v1","merchantAccountId":"cma-001"}"""))
+        try {
+            assertThat(vm.attemptIdForTest()).isEqualTo("a-pendiente")
+            vm.onAngelPaySdkResult(sdkFailureResult("G500", message = "Transacción rechazada por el gateway")); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).canRetry).isTrue()
+
+            coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+            vm.retryAfterError(); runCurrent()
+            vm.primeSdkLaunch(); runCurrent()
+            assertThat(vm.attemptIdForTest()).isNotEqualTo("a-pendiente")   // B es un intento nuevo
+            vm.onAngelPaySdkResult(approvedSdkResult("B9", "RB")); runCurrent()
+            withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
+            }
+            val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
+            assertThat(ctx.idempotencyKey).isNotEqualTo("a-pendiente")
+            assertThat(ctx.merchantAccountId).isEqualTo("cma-002")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `fix5 D5 - un ViewModel recreado adopta el intento con evidencia al recibir un callback VACIO - contradiccion con veto, nunca ResultadoIncierto ni declaracion`() = runTest(testDispatcher) {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
-        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("offline")
+        // Los SEIS parámetros: con cinco, la afiliación queda fija en null y el verificador sólo contesta a un intento sin afiliación.
+        // Desde Codex r9 (P2-5) la adopción restaura la afiliación REAL de la fila (AF-1) y el mock relajado contestaba otra cosa.
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("offline")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
         coEvery { paymentAttemptLedger.adoptarCobroDeLaSolicitud("REQ-AD1") } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CobroSinResolver("att-rc1")
         coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns filaDeLaSolicitudConMarca("REQ-AD1")
@@ -4821,6 +5539,65 @@ class AngelPayPaymentViewModelTest {
         } finally {
             vm.viewModelScope.cancel()
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    // Codex r7 · P1-1: la RESPUESTA de la declaración también trae los tres avisos — y se hacen DURABLES
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+
+    @Test fun `r7 P1-1 - el 2xx de la declaracion trae un aviso sin dinero propio tras una liberacion ya mostrada - veto durable y contradiccion`() = runTest(testDispatcher) {
+        // Escenario de Codex: mientras vuela el POST, un S6 LIMPIO libera la fila; el POST llega después con una contradicción
+        // (sin dinero propio). El parser de la declaración devuelve null, pero sin el veto la lectura de la fila volvía a anunciar
+        // la liberación limpia — y ningún otro consumidor se enteraba del aviso. Los tres avisos, uno por vuelta.
+        val avisos = listOf(
+            PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION to TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", paymentContradiction = true),
+            PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION to TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", evidenceContradiction = true),
+            PaymentAttemptEntity.VETO_UNATTRIBUTED_EVIDENCE to TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", unattributedEvidence = true),
+        )
+        for ((motivo, intento) in avisos) {
+            io.mockk.clearMocks(paymentAttemptLedger, answers = false, recordedCalls = true, verificationMarks = true)
+            coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+            coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+            val puertaPost = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var lecturas = 0
+            // 1ª lectura (consulta inmediata): nada · desde la 2ª: la fila YA liberada por la ventana (el S6 limpio ganó).
+            coEvery { paymentAttemptLedger.leerIntento(any()) } answers { lecturas++; if (lecturas == 1) null else filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW") }
+            val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-R7", attempt = intento,
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"}""").asJsonObject)
+            coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } coAnswers { puertaPost.await(); Response.success(cuerpo) }
+            val vm = vmConCobroDelPos("REQ-R7")
+            try {
+                vm.onIntentLaunched(); runCurrent()
+                vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+                vm.declararSinTarjeta(); runCurrent()   // POST en vuelo
+                advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()   // el sondeo lee la fila liberada y la anuncia
+                assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("volver a cobrar")
+                puertaPost.complete(Unit); runCurrent()   // el 2xx con el aviso
+                val final = vm.state.value as AngelPayPaymentState.Error
+                assertThat(final.message).contains("evidencia de cobro")
+                assertThat(final.canRetry).isFalse()
+                coVerify(exactly = 1) { paymentAttemptLedger.marcarVetoDelServidor("v1", any(), motivo, any()) }
+                coVerify(exactly = 0) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
+                advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+                assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)   // ningún reset automático de la liberación
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test fun `r7 P1-1 control - un 2xx limpio de la declaracion no escribe ningun veto`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-R7C",
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED"),
+            request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"}""").asJsonObject)
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
+        val vm = vmConCobroDelPos("REQ-R7C")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.declararSinTarjeta(); runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.marcarVetoDelServidor(any(), any(), any(), any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
     }
 
 }

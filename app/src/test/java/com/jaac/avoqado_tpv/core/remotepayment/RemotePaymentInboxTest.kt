@@ -112,12 +112,41 @@ class RemotePaymentInboxTest {
     }
 
     @Test
-    fun `sonda sobre una solicitud EN PROCESO contesta ACTIVE y no toca nada`() = runTest {
+    fun `sonda sobre una solicitud EN PROCESO DE ESTE PROCESO contesta ACTIVE y no toca nada`() = runTest {
         coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
-        val answer = inbox.probe("req-1", "venue-1")
+        val answer = inbox.probe("req-1", "venue-1", propiedadEnEsteProceso = true)
         assertThat(answer.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
         assertThat(answer.finalResultJson).isNull()
         coVerify(exactly = 0) { dao.resolveReceived(any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 una fila EN PROCESO de un proceso MUERTO que nunca ejecuto deja de contestar ACTIVE para siempre`() = runTest {
+        // 🔴 MEDIDO EN UNA NEXGO (21-sep): `PROCESSING` desde el 17-sep con `execution_started_at`
+        // VACÍO. La app la reclamó, murió antes de ejecutarla y al arrancar no la recuperaba: la sonda
+        // contestaba ACTIVE indefinidamente, el servidor conservaba la reserva y el cajero no podía
+        // cobrar NI declarar. El callejón sin salida del 18-sep por otra puerta.
+        coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+        coEvery { dao.resolverDesenlaceNegativo("req-1", any(), any()) } returns """{"requestId":"req-1","status":"cancelled","outcomeEvidence":"PRE_AUTHORIZATION"}"""
+
+        val answer = inbox.probe("req-1", "venue-1")
+
+        assertThat(answer.disposition).isEqualTo(RemotePaymentProbeDisposition.RECEIVED_CANCELLED)
+        assertThat(answer.finalResultJson).contains("PRE_AUTHORIZATION")
+    }
+
+    @Test
+    fun `P1 CONTROL una fila EN PROCESO que YA EMPEZO a ejecutar sigue siendo ACTIVE aunque el proceso no la reclame`() = runTest {
+        // 🔴 El control que protege el dinero: con `executionStartedAt` puesto, el SDK pudo haber pedido
+        // la tarjeta. Ahí la incertidumbre es REAL y la reserva se conserva — declarar sería mentir.
+        coEvery { dao.getById("req-1") } returns
+            RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+                .copy(executionStartedAt = 1_700_000_000_000L)
+
+        val answer = inbox.probe("req-1", "venue-1")
+
+        assertThat(answer.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+        coVerify(exactly = 0) { dao.resolverDesenlaceNegativo(any(), any(), any()) }
     }
 
     @Test

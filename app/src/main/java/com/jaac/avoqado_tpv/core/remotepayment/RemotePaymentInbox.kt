@@ -166,10 +166,10 @@ class RemotePaymentInbox @Inject constructor(
      * tenant de la lápida. Sin venue no hay lápida posible, y sin lápida escrita no se contesta NOT_FOUND: se lanza
      * y el servidor conserva la reserva (una respuesta que no consta no es una respuesta).
      */
-    suspend fun probe(requestId: String, venueId: String): RemotePaymentProbeAnswer {
+    suspend fun probe(requestId: String, venueId: String, propiedadEnEsteProceso: Boolean = false): RemotePaymentProbeAnswer {
         require(venueId.isNotBlank()) { "La sonda no puede dejar lápida sin venue" }
         val existing = dao.getById(requestId) ?: return answerAbsent(requestId, venueId)
-        return answerFor(existing)
+        return answerFor(existing, propiedadEnEsteProceso)
     }
 
     /**
@@ -188,11 +188,40 @@ class RemotePaymentInbox @Inject constructor(
         return answerFor(raced)
     }
 
-    private suspend fun answerFor(existing: RemotePaymentRequestEntity): RemotePaymentProbeAnswer = when (existing.status) {
+    private suspend fun answerFor(
+        existing: RemotePaymentRequestEntity,
+        propiedadEnEsteProceso: Boolean = false,
+    ): RemotePaymentProbeAnswer = when (existing.status) {
         RemotePaymentRequestEntity.STATUS_RESOLVED -> existing.finalResultJson
             ?.let { RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.RESOLVED, it) }
             ?: RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
-        RemotePaymentRequestEntity.STATUS_PROCESSING -> RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
+        // 🔴 MEDIDO EN UNA NEXGO (21-sep): una fila reclamada por un proceso que MURIÓ se quedaba en
+        // `PROCESSING` para siempre, y la sonda contestaba ACTIVE indefinidamente. Medido en la bandeja
+        // real: `PROCESSING` desde el 17-sep con `execution_started_at` VACÍO — nunca llegó a tocar el
+        // SDK. El servidor le creía, conservaba la reserva, y el cajero se quedaba sin poder cobrar NI
+        // declarar: el callejón sin salida del 18-sep por otra puerta. Es el defecto que la regla del
+        // repo nombra: «describe falsamente una ejecución».
+        //
+        // «Activo» es propiedad de un proceso VIVO, no de una fila en disco. Si este proceso no la
+        // reclamó, quien lo hizo ya no existe — y si además nunca empezó, es el MISMO caso que
+        // `STATUS_RECEIVED`: la tarjeta jamás se pasó. Se resuelve por el ÚNICO camino que ya protege el
+        // dinero (`resolverDesenlaceNegativo` exige `executionStartedAt == null` y cero intentos
+        // bloqueadores); si algo de eso no se cumple, devuelve null y se conserva ACTIVE.
+        RemotePaymentRequestEntity.STATUS_PROCESSING -> {
+            if (propiedadEnEsteProceso || existing.executionStartedAt != null) {
+                RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
+            } else {
+                val huerfana = JSONObject().put("requestId", existing.requestId).put("status", "cancelled")
+                    .put("errorMessage", "Cancelado por conciliación: la terminal nunca inició este cobro").toString()
+                val escrito = dao.resolverDesenlaceNegativo(existing.requestId, huerfana, System.currentTimeMillis())
+                if (escrito != null) {
+                    Timber.w("🧹 [RemotePaymentInbox] ${existing.requestId} quedó reclamada por un proceso muerto y NUNCA se ejecutó: se resuelve")
+                    RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.RECEIVED_CANCELLED, escrito)
+                } else {
+                    RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
+                }
+            }
+        }
         RemotePaymentRequestEntity.STATUS_RECEIVED -> {
             val cancelled = JSONObject().put("requestId", existing.requestId).put("status", "cancelled")
                 .put("outcomeEvidence", "PRE_AUTHORIZATION")

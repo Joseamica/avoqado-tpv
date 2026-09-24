@@ -637,6 +637,53 @@ class AngelPaySdk119ViewModelTest {
     }
 
     @Test
+    fun `final P1-1 un rechazo NORMAL del banco con el dinero del servidor SIN ESCRIBIR (en memoria) es contradiccion, nunca Reintentar`() = runTest(testDispatcher) {
+        // Codex (pasada final, P1-1): la escritura de la evidencia falló y quedó en la memoria de la libreta; la FILA está limpia,
+        // así que releerla no delata nada. La pantalla también tiene que mirar esa memoria.
+        for (requestId in listOf(null, "req-rechazo-memoria")) {
+            val (vm, intento) = cobroLanzado(requestId = requestId)
+            coEvery { paymentAttemptLedger.markHostResponded(intento, false, any(), any(), any()) } returns false
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns filaDelIntento(intento, PaymentAttemptEntity.STATE_AUTORIZANDO)
+            every { paymentAttemptLedger.tieneEvidenciaSinGuardar(intento) } returns true
+            try {
+                vm.onAngelPaySdkResult(delHost(intento, aprobado = false, codigo = AppErrorCatalog.Code.G500, codigoEmisor = "05"))
+                runCurrent()
+                val estado = vm.state.value as AngelPayPaymentState.Error
+                assertWithMessage("origen=$requestId: nunca «Reintentar» con dinero conocido").that(estado.canRetry).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.message).contains("NO lo vuelvas a cobrar")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `final P1-1 el dinero del servidor que quedo SIN ESCRIBIR tras el CAS de sin autorizacion termina en contradiccion, nunca en No se cobro`() = runTest(testDispatcher) {
+        // El CAS de «no se cobró» ganó el candado y DESPUÉS llegó la evidencia, que falló al escribirse: la fila queda DESCARTADA
+        // limpia y sólo la memoria de la libreta sabe del dinero. Los dos orígenes del cobro.
+        for (requestId in listOf(null, "req-sin-autorizacion-memoria")) {
+            val (vm, intento) = cobroLanzado(requestId = requestId)
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns filaDelIntento(intento, PaymentAttemptEntity.STATE_DESCARTADA)
+            every { paymentAttemptLedger.tieneEvidenciaSinGuardar(intento) } returns true
+            try {
+                vm.onAngelPaySdkResult(u101(intento))
+                runCurrent()
+                val estado = vm.state.value as AngelPayPaymentState.Error
+                assertWithMessage("origen=$requestId: nunca «no se cobró»").that(estado.noSeCobro).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.canRetry).isFalse()
+                assertWithMessage("origen=$requestId").that(estado.message).contains("NO lo vuelvas a cobrar")
+                // …y la fila vuelve a apartar la terminal mientras la evidencia se escribe.
+                coVerify { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any()) }
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+        verify(exactly = 0) {
+            socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+    }
+
+    @Test
     fun `P1 cobro del POS - si S5 REGISTRO el cobro DURANTE el CAS termina en exito`() = runTest(testDispatcher) {
         val (vm, intento) = cobroLanzado(requestId = "req-s5-registrado-cas")
         s5DuranteElCas(

@@ -2996,7 +2996,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         // null tampoco dice nada: en ninguno de los dos casos se sabe si S5/S6 dejaron dinero en ese hueco (abajo, se falla CERRADO).
         val fila = releerIntentoTrasElCierre(attemptId)
         val dineroEnLaFila = fila != null && hayDineroEnLaFila(fila)
-        if (vetoDeDineroDelIntento == attemptId || dineroEnLaFila) {
+        // 🔴 Codex, pasada final (P1-1): el CAS pudo ganar el candado de la libreta y la evidencia llegar DESPUÉS, sin poder
+        // escribirse: la fila queda DESCARTADA limpia y sólo la memoria de la libreta sabe del dinero.
+        val dineroSinEscribir = paymentAttemptLedger.tieneEvidenciaSinGuardar(attemptId)
+        if (vetoDeDineroDelIntento == attemptId || dineroEnLaFila || dineroSinEscribir) {
             vetoDeDineroDelIntento = attemptId
             reportarContradiccionDelSdk(
                 result, "sin autorización según el SDK, pero el servidor acreditó dinero de este intento mientras se escribía la libreta",
@@ -3162,6 +3165,12 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     private suspend fun rechazoDesmentidoPorLaFila(): Boolean {
         val attemptId = currentPaymentAttemptId ?: return false
+        // 🔴 Codex, pasada final (P1-1): el dinero que el servidor acreditó y la libreta NO pudo escribir vive en su memoria, no en
+        // la fila — releerla no lo delataba y la pantalla ofrecía «Reintentar» sobre un cobro que el banco aprobó.
+        if (paymentAttemptLedger.tieneEvidenciaSinGuardar(attemptId)) {
+            vetoDeDineroDelIntento = attemptId
+            return true
+        }
         val fila = releerIntentoTrasElCierre(attemptId) ?: return false
         if (!hayDineroEnLaFila(fila)) return false
         vetoDeDineroDelIntento = attemptId

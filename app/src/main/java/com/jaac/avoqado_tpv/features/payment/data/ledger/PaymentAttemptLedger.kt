@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import timber.log.Timber
@@ -144,12 +146,22 @@ class PaymentAttemptLedger @Inject constructor(
                 // 🔴 Comprobar-e-insertar en UNA sentencia. La versión anterior consultaba y
                 // luego insertaba por separado: dos intentos simultáneos leían «terminal libre»
                 // y los dos entraban (medido, 1 esperado y 2 obtenidos).
-                val rowId = dao.reserveTerminal(
-                    attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
-                    amountCents = amountCents, tipCents = tipCents, recordingRoute = recordingRoute,
-                    contextJson = contextJson, orderJsonFragment = fragment, now = now,
-                    terminalPaymentRequestId = solicitudRemota, esKiosco = esKiosco
-                )
+                val rowId = candadoDeEvidencia.withLock {
+                    // 🔴 Codex, pasada final (P1-1): dinero CONOCIDO de otro intento que la libreta no pudo escribir aparta el
+                    // aparato entero mientras no se escriba — la fila por sí sola ya no lo muestra (pudo quedar DESCARTADA).
+                    // ponytail: todo el aparato y no sólo su venta, porque cercar sólo la venta exigiría leer la fila, que es
+                    // justo lo que está fallando; dura hasta la siguiente pasada de la recuperación (≤ 31 s), que la reescribe.
+                    // Codex final-2: primero LA PUERTA — si la base ya puede, lo pendiente se escribe aquí y el cobro sigue.
+                    if (puertaBajoCandado()) {
+                        Timber.w("📒 [Libreta] reserva RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                        -1L
+                    } else dao.reserveTerminal(
+                        attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
+                        amountCents = amountCents, tipCents = tipCents, recordingRoute = recordingRoute,
+                        contextJson = contextJson, orderJsonFragment = fragment, now = now,
+                        terminalPaymentRequestId = solicitudRemota, esKiosco = esKiosco
+                    )
+                }
                 if (rowId > 0L) {
                     Timber.d("📒 [Libreta] PREPARANDO | attemptId=%s amount=%d+%d", attemptId, amountCents, tipCents)
                     true
@@ -262,12 +274,20 @@ class PaymentAttemptLedger @Inject constructor(
 
     /** Pre-SDK barrier: committed before the SDK call is allowed to start. */
     suspend fun markAuthorizing(attemptId: String): Boolean = try {
-        withContext(Dispatchers.IO) {
-            // KERNEL_ACTIVO entra aquí como continuación EXPLÍCITA (kernel → autorización
-            // online) y sólo por este camino: es del mismo intento, nunca de uno recreado.
-            dao.casTransition(attemptId,
-                listOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO),
-                PaymentAttemptEntity.STATE_AUTORIZANDO, System.currentTimeMillis()) == 1
+        // 🔴 Codex final-2 (P1-1): la entrada a autorización también pasa por LA PUERTA. B pudo reservar ANTES de que llegara
+        // el dinero de A (misma venta); si ese dinero quedó sin escribir, la fila de A no aparta nada y el SQL de aquí no lo ve.
+        // Primero se escribe lo pendiente (y entonces la cerca de la venta del CAS lo ve); si no se puede, no se autoriza.
+        candadoDeEvidencia.withLock {
+            if (puertaBajoCandado()) {
+                Timber.w("📒 [Libreta] autorización RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                false
+            } else withContext(Dispatchers.IO) {
+                // KERNEL_ACTIVO entra aquí como continuación EXPLÍCITA (kernel → autorización
+                // online) y sólo por este camino: es del mismo intento, nunca de uno recreado.
+                dao.casTransition(attemptId,
+                    listOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO),
+                    PaymentAttemptEntity.STATE_AUTORIZANDO, System.currentTimeMillis()) == 1
+            }
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
@@ -289,9 +309,16 @@ class PaymentAttemptLedger @Inject constructor(
      * Devuelve false si no se pudo comprometer: quien llama NO debe entrar al kernel.
      */
     suspend fun markKernelEntered(attemptId: String): Boolean = try {
-        withContext(Dispatchers.IO) {
-            dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
-                PaymentAttemptEntity.STATE_KERNEL_ACTIVO, System.currentTimeMillis()) == 1
+        // 🔴 Codex final-2 (P1-1): el lector puede aprobar SOLO (contactless offline, EMV local) y su CAS no lleva la cerca de la
+        // venta: con dinero del servidor sin escribir, tampoco se entra. Misma PUERTA que la autorización.
+        candadoDeEvidencia.withLock {
+            if (puertaBajoCandado()) {
+                Timber.w("📒 [Libreta] entrada al lector RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                false
+            } else withContext(Dispatchers.IO) {
+                dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO, System.currentTimeMillis()) == 1
+            }
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
@@ -319,29 +346,40 @@ class PaymentAttemptLedger @Inject constructor(
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
                 val to = if (approved) PaymentAttemptEntity.STATE_HOST_RESPONDIO else PaymentAttemptEntity.STATE_DESCARTADA
-                val n = dao.casHostResponded(
-                    attemptId,
-                    listOf(
-                        PaymentAttemptEntity.STATE_AUTORIZANDO,
-                        PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
-                        PaymentAttemptEntity.STATE_PREPARANDO,
-                        // The live verdict beats the sweep's guess: a charge stuck >quarantine
-                        // threshold in AUTORIZANDO (hung-then-recovering SaleIcc, AngelPay D308
-                        // relaunch) may get quarantined to INDETERMINADO by the sweep while still
-                        // alive — the real host answer (approve OR late explicit decline) must
-                        // still land, or the row is a permanent false "money moved, no record".
-                        PaymentAttemptEntity.STATE_INDETERMINADO
-                    ),
-                    to, System.currentTimeMillis(),
-                    operationId, referenceNumber, authCode, approved
-                )
-                logCas(n, attemptId, to)
-                n == 1
+                // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia; una
+                // aprobación es dinero y aterriza siempre.
+                if (approved) escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, true)
+                else salidaNegativa(attemptId, "rechazo del host") {
+                    escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, false)
+                }
             }
         }.getOrElse {
             Timber.e(it, "📒 [Libreta] markHostResponded failed — el desenlace NO quedó guardado")
             false
         }
+    }
+
+    private suspend fun escribirRespuestaDelHost(
+        attemptId: String, to: String, operationId: String?, referenceNumber: String?, authCode: String?, approved: Boolean,
+    ): Boolean {
+        val n = dao.casHostResponded(
+            attemptId,
+            listOf(
+                PaymentAttemptEntity.STATE_AUTORIZANDO,
+                PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
+                PaymentAttemptEntity.STATE_PREPARANDO,
+                // The live verdict beats the sweep's guess: a charge stuck >quarantine
+                // threshold in AUTORIZANDO (hung-then-recovering SaleIcc, AngelPay D308
+                // relaunch) may get quarantined to INDETERMINADO by the sweep while still
+                // alive — the real host answer (approve OR late explicit decline) must
+                // still land, or the row is a permanent false "money moved, no record".
+                PaymentAttemptEntity.STATE_INDETERMINADO
+            ),
+            to, System.currentTimeMillis(),
+            operationId, referenceNumber, authCode, approved
+        )
+        logCas(n, attemptId, to)
+        return n == 1
     }
 
     /** From-PREPARANDO covers contactless offline-approved (no online auth ever runs). */
@@ -465,15 +503,20 @@ class PaymentAttemptLedger @Inject constructor(
         // `terminal_payment_request_id IS NULL`. Las dos consultas son excluyentes por construcción: una fila del POS
         // nunca la cierra la local, ni al revés — la pertenencia se comprueba dentro del UPDATE, no aquí.
         val motivo = PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + l.evidencia
-        val n =
-            if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now)
-            else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now)
-        if (n == 1)
+        // 🔴 Codex, pasada final (P1-1): una respuesta limpia que ya estaba en vuelo no cierra lo que el servidor ya dijo que
+        // tiene dinero, aunque esa evidencia no se haya podido escribir todavía.
+        val cerrada = salidaNegativa(l.attemptId, "liberación del servidor") {
+            val n =
+                if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now)
+                else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now)
+            n == 1
+        }
+        if (cerrada)
             Timber.w(
                 "📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada",
                 l.attemptId, l.evidencia, l.requestId ?: "LOCAL (cobro en la terminal)",
             )
-        n == 1
+        cerrada
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
         Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
@@ -503,21 +546,29 @@ class PaymentAttemptLedger @Inject constructor(
         Timber.e(it, "📒 [Libreta] no se pudo guardar el veto del servidor | attemptId=%s", attemptId)
     }
 
-    suspend fun marcarEvidenciaPositivaDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
-        withContext(NonCancellable + Dispatchers.IO) {
-            val n = dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, at)
-            if (n == 1) Timber.w("📒 [Libreta] evidencia POSITIVA del servidor (sin Payment) durable | attemptId=%s", attemptId)
-            n == 1
+    suspend fun marcarEvidenciaPositivaDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> =
+        // 🔴 Codex, pasada final (P1-1): escritura y memoria bajo el candado de las salidas — ninguna de ellas puede mirar la
+        // memoria (vacía) y cerrar la fila mientras esta evidencia está a medio escribirse. `NonCancellable` también para esperar
+        // el candado: una pantalla que muere no puede dejar la evidencia sin escribir NI sin recordar.
+        withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val n = dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, at)
+                        if (n == 1) Timber.w("📒 [Libreta] evidencia POSITIVA del servidor (sin Payment) durable | attemptId=%s", attemptId)
+                        n == 1
+                    }
+                }.onSuccess {
+                    evidenciaSinGuardar.remove(attemptId)
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    // 🔴 Ronda 24 (Codex r22, P1-2): el servidor YA dijo que hay dinero; que la escritura falle no lo desdice. Se
+                    // recuerda en memoria —bloquea las salidas negativas y la reserva— y la pasada siguiente la vuelve a escribir.
+                    evidenciaSinGuardar[attemptId] = venueId
+                    Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
+                }
+            }
         }
-    }.onSuccess {
-        evidenciaSinGuardar.remove(attemptId)
-    }.onFailure {
-        if (it is kotlinx.coroutines.CancellationException) throw it
-        // 🔴 Ronda 24 (Codex r22, P1-2): el servidor YA dijo que hay dinero; que la escritura falle no lo desdice. Se recuerda en
-        // memoria —bloquea las salidas negativas— y la pasada siguiente la vuelve a escribir.
-        evidenciaSinGuardar[attemptId] = venueId
-        Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
-    }
 
     /**
      * 🔴 Ronda 24 (Codex r22, P1-2): la evidencia positiva del servidor que NO se pudo escribir (intento → venue). En memoria a
@@ -526,6 +577,51 @@ class PaymentAttemptLedger @Inject constructor(
      * muere antes del reintento, se pierde — el servidor la conserva y la vuelve a dar en la consulta siguiente.
      */
     private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * 🔴 Codex, pasada final (P1-1): [evidenciaSinGuardar] frenaba sólo la oferta del botón, la declaración y el inicio de la
+     * liberación sola. La liberación del servidor, el rechazo del SDK y la reserva del cobro siguiente la ignoraban — y una
+     * salida que ya la había mirado (vacía) cerraba igual si la evidencia llegaba antes de su escritura. Ahora la escritura de la
+     * evidencia, TODA salida que dice «no se cobró» y la reserva van bajo este candado, y cada una mira la memoria DENTRO de él,
+     * junto a su escritura. Serializa escrituras cortas y raras de la libreta; ninguna llama a otra estando dentro.
+     */
+    private val candadoDeEvidencia = Mutex()
+
+    /** ¿El servidor dijo que hay dinero de este intento y la libreta todavía no lo pudo escribir? También lo lee la pantalla. */
+    fun tieneEvidenciaSinGuardar(attemptId: String): Boolean = evidenciaSinGuardar.containsKey(attemptId)
+
+    /** Una salida «no se cobró» bajo [candadoDeEvidencia]: con dinero del intento sin escribir, [escribir] ni se llama y da false. */
+    private suspend fun salidaNegativa(attemptId: String, etiqueta: String, escribir: suspend () -> Boolean): Boolean =
+        candadoDeEvidencia.withLock {
+            // Codex final-2: primero LA PUERTA — si la base ya puede, el dinero pendiente se escribe aquí y el SQL de la salida
+            // ya lo ve; si no puede, la memoria frena.
+            puertaBajoCandado()
+            if (evidenciaSinGuardar.containsKey(attemptId)) {
+                Timber.w("📒 [Libreta] %s RECHAZADA: hay dinero del servidor sin escribir | attemptId=%s", etiqueta, attemptId)
+                false
+            } else escribir()
+        }
+
+    /**
+     * 🔴 LA PUERTA (Codex final-2, decisión del founder 23-sep): antes de decidir —reservar, EMPEZAR a cobrar o decir «no se
+     * cobró»— primero se intenta escribir la evidencia del servidor que quedó pendiente. Devuelve si quedó ALGUNA sin escribir:
+     * mientras sea así, nadie decide. Con la base sana la escribe en el acto y todo sigue — no traba nada que no estuviera ya
+     * trabado por la propia base rota. Se llama SÓLO con [candadoDeEvidencia] tomado (no lo toma: el `Mutex` no es reentrante).
+     */
+    private suspend fun puertaBajoCandado(now: Long = System.currentTimeMillis()): Boolean {
+        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) {
+            try {
+                withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, now) }
+                evidenciaSinGuardar.remove(attemptId)
+                Timber.w("📒 [Libreta] la puerta escribió el dinero pendiente del servidor | attemptId=%s", attemptId)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Timber.e(error, "📒 [Libreta] la puerta no pudo escribir el dinero pendiente | attemptId=%s", attemptId)
+            }
+        }
+        return evidenciaSinGuardar.isNotEmpty()
+    }
 
     /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */
     suspend fun reintentarEvidenciaSinGuardar(now: Long = System.currentTimeMillis()): Int {
@@ -602,13 +698,15 @@ class PaymentAttemptLedger @Inject constructor(
         if (!isEnabled()) return true
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
-                val n = dao.casWithError(
-                    attemptId,
-                    listOf(PaymentAttemptEntity.STATE_KERNEL_ACTIVO, PaymentAttemptEntity.STATE_PREPARANDO),
-                    PaymentAttemptEntity.STATE_DESCARTADA, System.currentTimeMillis(), reason.take(500)
-                )
-                logCas(n, attemptId, PaymentAttemptEntity.STATE_DESCARTADA)
-                n == 1
+                salidaNegativa(attemptId, "rechazo del kernel") {
+                    val n = dao.casWithError(
+                        attemptId,
+                        listOf(PaymentAttemptEntity.STATE_KERNEL_ACTIVO, PaymentAttemptEntity.STATE_PREPARANDO),
+                        PaymentAttemptEntity.STATE_DESCARTADA, System.currentTimeMillis(), reason.take(500)
+                    )
+                    logCas(n, attemptId, PaymentAttemptEntity.STATE_DESCARTADA)
+                    n == 1
+                }
             }
         }.getOrElse {
             Timber.e(it, "📒 [Libreta] markKernelRefused failed — la terminal sigue retenida")
@@ -636,9 +734,11 @@ class PaymentAttemptLedger @Inject constructor(
     suspend fun markSinAutorizacion(attemptId: String, venueId: String, motivo: String): Boolean {
         return try {
             withContext(NonCancellable + Dispatchers.IO) {
-                val n = dao.marcarSinAutorizacion(attemptId, venueId, motivo.take(500), System.currentTimeMillis())
-                logCas(n, attemptId, PaymentAttemptEntity.STATE_DESCARTADA)
-                n == 1
+                salidaNegativa(attemptId, "«no se cobró» del SDK") {
+                    val n = dao.marcarSinAutorizacion(attemptId, venueId, motivo.take(500), System.currentTimeMillis())
+                    logCas(n, attemptId, PaymentAttemptEntity.STATE_DESCARTADA)
+                    n == 1
+                }
             }
         } catch (error: Exception) {
             // Ni siquiera una cancelación puede convertirse en «no se cobró»: sin la fila escrita, quien llama sigue el
@@ -812,12 +912,9 @@ class PaymentAttemptLedger @Inject constructor(
      * @return true si la fila quedó cerrada y la terminal libre.
      */
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?): Boolean = try {
-        // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada.
-        // (`containsKey`, no `in`: sobre un ConcurrentHashMap `in` busca en los VALORES — el venue —, no en las llaves.)
-        if (evidenciaSinGuardar.containsKey(attemptId)) {
-            Timber.w("📒 [Libreta] declaración sin cobro RECHAZADA: hay evidencia del servidor pendiente de guardar | attemptId=%s", attemptId)
-            false
-        } else declararSinCobroLocalYa(attemptId, venueId, quien)
+        // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada. Pasada final
+        // (P1-1): se mira DENTRO del candado, junto al CAS — mirarla antes dejaba cerrar si la evidencia llegaba en medio.
+        salidaNegativa(attemptId, "declaración sin cobro") { declararSinCobroLocalYa(attemptId, venueId, quien) }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
@@ -837,10 +934,12 @@ class PaymentAttemptLedger @Inject constructor(
     suspend fun markDiscardedBeforeCharge(attemptId: String, reason: String): Boolean {
         return try {
             withContext(Dispatchers.IO) {
-                dao.casWithError(
-                    attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
-                    PaymentAttemptEntity.STATE_DESCARTADA, System.currentTimeMillis(), reason
-                ) == 1
+                salidaNegativa(attemptId, "descarte antes del cobro") {
+                    dao.casWithError(
+                        attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
+                        PaymentAttemptEntity.STATE_DESCARTADA, System.currentTimeMillis(), reason
+                    ) == 1
+                }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled

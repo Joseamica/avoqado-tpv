@@ -12,8 +12,12 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
@@ -710,6 +714,196 @@ class LiberacionSolaRoomTest {
         assertThat(dao.esContradiccion("d")).isTrue()
         assertWithMessage("el aparato sigue apartado").that(otroCobroEntra("otro")).isFalse()
         assertThat(ledger.reconocerCobroRegistrado(venue, "d", "yo", now)).isFalse()
+    }
+
+    // ── Codex, pasada final (P1-1): la evidencia de dinero que no se pudo escribir frena TODA salida y la reserva ────────
+    //
+    // La ronda 24 la hizo pasar por la oferta del botón, la declaración y el inicio de la liberación sola. Codex reprodujo (esquema
+    // 40, SQL real y este mismo disparador) que NO frenaba: una liberación del servidor atrasada, el rechazo del SDK, ni la reserva
+    // del cobro siguiente — y que una salida que ya había mirado la memoria cerraba igual. Sin muerte del proceso.
+
+    /** Mete la evidencia positiva del servidor en la memoria de [libreta]: su escritura falla por el disparador `marca_rota`. */
+    private suspend fun evidenciaQueNoSeEscribe(attemptId: String, libreta: PaymentAttemptLedger = ledger) {
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS marca_rota BEFORE UPDATE OF server_processor_evidence ON payment_attempts BEGIN SELECT RAISE(ABORT, 'escritura rota'); END",
+        )
+        assertWithMessage("control: la escritura de la evidencia sí falla").that(libreta.marcarEvidenciaPositivaDelServidor(venue, attemptId).isFailure).isTrue()
+        assertThat(libreta.tieneEvidenciaSinGuardar(attemptId)).isTrue()
+    }
+
+    private suspend fun cobroNuevoEntra(id: String, libreta: PaymentAttemptLedger = ledger) =
+        libreta.openAttempt(id, venue, "ANGELPAY", 5000, 0, "FAST", """{"amount":50.00}""")
+
+    @Test fun `final P1-1 a · una liberacion ATRASADA del servidor no cierra la duda con el dinero sin escribir — y el cobro siguiente no entra`() = runTest {
+        dudaDeclarableConMarcaRota("e")   // la duda declarable, con el disparador puesto
+        evidenciaQueNoSeEscribe("e")
+
+        val liberada = ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venue, "e", null, "NO_EVIDENCE_AFTER_WINDOW"), now + 1_000)
+
+        assertThat(liberada.getOrDefault(true)).isFalse()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertWithMessage("el cobro siguiente no entra").that(cobroNuevoEntra("b")).isFalse()
+    }
+
+    @Test fun `final P1-1 b · con dinero conocido y sin escribir NINGUN cobro nuevo entra, aunque la fila ya no aparte el aparato`() = runTest {
+        filaDeOtroProceso("e", PaymentAttemptEntity.STATE_DESCARTADA)   // cerrada y limpia: por sí sola no aparta nada
+        assertWithMessage("control: sin la evidencia, el cobro siguiente SÍ entra").that(cobroNuevoEntra("b0")).isTrue()
+        assertThat(ledger.markDiscardedBeforeCharge("b0", "prueba")).isTrue()
+
+        evidenciaQueNoSeEscribe("e")
+        assertWithMessage("con el dinero sólo en memoria, no entra").that(cobroNuevoEntra("b")).isFalse()
+
+        // Cuando la base se recupera, la marca se escribe y lo DURABLE toma el relevo (la DESCARTADA con dinero aparta).
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+        assertThat(ledger.reintentarEvidenciaSinGuardar()).isEqualTo(0)
+        assertThat(ledger.tieneEvidenciaSinGuardar("e")).isFalse()
+        assertWithMessage("…y sigue sin entrar, ahora por la fila").that(cobroNuevoEntra("c")).isFalse()
+    }
+
+    @Test fun `final P1-1 c · un RECHAZO del SDK con el dinero sin escribir no cierra el intento — una aprobacion si aterriza`() = runTest {
+        assertThat(cobroNuevoEntra("e")).isTrue()
+        assertThat(ledger.markAuthorizing("e")).isTrue()
+        evidenciaQueNoSeEscribe("e")
+
+        assertThat(ledger.markHostResponded("e", approved = false, operationId = null, referenceNumber = null, authCode = null)).isFalse()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+        assertThat(cobroNuevoEntra("b")).isFalse()
+
+        assertWithMessage("la aprobación es dinero: nunca se frena").that(ledger.markHostResponded("e", true, null, "ref", "auth")).isTrue()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_HOST_RESPONDIO)
+    }
+
+    @Test fun `final P1-1 c control · sin evidencia en memoria el rechazo del SDK SI cierra el intento`() = runTest {
+        assertThat(cobroNuevoEntra("e")).isTrue()
+        assertThat(ledger.markAuthorizing("e")).isTrue()
+        assertThat(ledger.markHostResponded("e", approved = false, operationId = null, referenceNumber = null, authCode = null)).isTrue()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+    }
+
+    @Test fun `final P1-1 d · el no se cobro del SDK (sin autorizacion) con el dinero sin escribir no cierra el intento`() = runTest {
+        assertThat(cobroNuevoEntra("e")).isTrue()
+        assertThat(ledger.markAuthorizing("e")).isTrue()
+        evidenciaQueNoSeEscribe("e")
+
+        assertThat(ledger.markSinAutorizacion("e", venue, "sin_autorizacion:prueba")).isFalse()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+    }
+
+    @Test fun `final P1-1 f · el rechazo del kernel y el descarte antes del cobro tampoco cierran con el dinero sin escribir`() = runTest {
+        assertThat(cobroNuevoEntra("k")).isTrue()
+        assertThat(ledger.markKernelEntered("k")).isTrue()
+        evidenciaQueNoSeEscribe("k")
+        assertThat(ledger.markKernelRefused("k", "prueba")).isFalse()
+        assertThat(dao.getById("k")!!.state).isEqualTo(PaymentAttemptEntity.STATE_KERNEL_ACTIVO)
+
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+        filaDeOtroProceso("p", PaymentAttemptEntity.STATE_PREPARANDO)
+        evidenciaQueNoSeEscribe("p")
+        assertThat(ledger.markDiscardedBeforeCharge("p", "prueba")).isFalse()
+        assertThat(dao.getById("p")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+    }
+
+    /** El DAO real, salvo la escritura de la evidencia: avisa que entró, espera la [puerta] y FALLA (la base se rompió). */
+    private class DaoQueSeRompeEnLaEvidencia(
+        private val real: PaymentAttemptDao,
+        val entro: CompletableDeferred<Unit>,
+        val puerta: CompletableDeferred<Unit>,
+    ) : PaymentAttemptDao by real {
+        override suspend fun marcarEvidenciaPositivaDelServidor(attemptId: String, venueId: String, at: Long): Int {
+            entro.complete(Unit)
+            puerta.await()
+            throw android.database.sqlite.SQLiteException("escritura rota")
+        }
+    }
+
+    @Test fun `final P1-1 e · la declaracion que llega MIENTRAS se escribe la evidencia la ESPERA y ya no cierra`() = runTest {
+        filaDeOtroProceso("e", PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        dao.estamparRespuestaDelServidor("e", now - 60_000)
+        val entro = CompletableDeferred<Unit>()
+        val puerta = CompletableDeferred<Unit>()
+        val libreta = PaymentAttemptLedger(DaoQueSeRompeEnLaEvidencia(dao, entro, puerta), settings).also { it.relojMonotonico = { mono } }
+        assertWithMessage("control: la duda es declarable").that(libreta.retencionLocalDeclarable()?.attemptId).isEqualTo("e")
+
+        val evidencia = async(Dispatchers.Default) { libreta.marcarEvidenciaPositivaDelServidor(venue, "e") }
+        entro.await()   // la evidencia ya está DENTRO de su escritura
+        val declaracion = async(Dispatchers.Default) { libreta.declararSinCobroLocal("e", venue, "gerente") }
+        // Sin el candado compartido, la declaración miraba la memoria (vacía todavía) y cerraba aquí mismo.
+        withContext(Dispatchers.Default) { Thread.sleep(400) }
+        puerta.complete(Unit)
+
+        assertThat(evidencia.await().isFailure).isTrue()
+        assertWithMessage("la declaración esperó a la evidencia y ya no cierra").that(declaracion.await()).isFalse()
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertThat(cobroNuevoEntra("b", libreta)).isFalse()
+    }
+
+    // ── 3b · LA PUERTA (Codex final-2, decisión del founder 23-sep): primero se guarda la nota, después se decide ─────
+    //
+    // Codex, con el SQL real y el esquema 40: B RESERVÓ la venta X antes de que llegara el dinero de A (DESCARTADA, misma venta);
+    // si ese dinero quedaba sólo en memoria, B autorizaba igual (1 con la evidencia en memoria, 0 con la misma evidencia escrita).
+    // Entre reservar y autorizar está la espera del vínculo N1. Ahora TODA transición hacia cobrar pasa por la puerta.
+
+    private suspend fun reservaDeLaVenta(id: String, orderId: String) =
+        ledger.openAttempt(id, venue, "ANGELPAY", 4000, 0, "FAST", "{\"amount\":40.00,\"orderId\":\"$orderId\"}")
+
+    @Test fun `final-2 a · B que reservo ANTES de que llegara el dinero de A no autoriza DESPUES ni entra al lector`() = runTest {
+        filaDeOtroProceso("a", PaymentAttemptEntity.STATE_DESCARTADA, orderId = "X")   // A liberada y limpia: no aparta la venta
+        assertThat(reservaDeLaVenta("b", "X")).isTrue()
+        evidenciaQueNoSeEscribe("a")   // llega el dinero de A y la libreta no lo puede escribir
+
+        assertWithMessage("B no autoriza").that(ledger.markAuthorizing("b")).isFalse()
+        assertWithMessage("ni entra al lector").that(ledger.markKernelEntered("b")).isFalse()
+        assertThat(dao.getById("b")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+    }
+
+    @Test fun `final-2 b · la PUERTA primero escribe el dinero pendiente de A, y entonces la cerca de la venta frena a B por la fila`() = runTest {
+        filaDeOtroProceso("a", PaymentAttemptEntity.STATE_DESCARTADA, orderId = "X")
+        assertThat(reservaDeLaVenta("b", "X")).isTrue()
+        evidenciaQueNoSeEscribe("a")
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")   // la base se recupera
+
+        assertThat(ledger.markAuthorizing("b")).isFalse()
+        assertWithMessage("la puerta la escribió").that(ledger.tieneEvidenciaSinGuardar("a")).isFalse()
+        assertThat(dao.getById("a")!!.serverProcessorEvidence).isEqualTo("APPROVED")
+    }
+
+    @Test fun `final-2 c · una salida no se cobro primero escribe el dinero pendiente, y no cierra`() = runTest {
+        dudaDeclarableConMarcaRota("e")
+        evidenciaQueNoSeEscribe("e")
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+
+        assertThat(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
+        assertThat(ledger.tieneEvidenciaSinGuardar("e")).isFalse()
+        assertThat(dao.getById("e")!!.serverProcessorEvidence).isEqualTo("APPROVED")
+        assertThat(dao.getById("e")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+    }
+
+    @Test fun `final-2 d · NO se traba — en cuanto la base vuelve, la puerta escribe lo pendiente y OTRA venta cobra`() = runTest {
+        filaDeOtroProceso("a", PaymentAttemptEntity.STATE_DESCARTADA, orderId = "X")
+        evidenciaQueNoSeEscribe("a")
+        assertWithMessage("con la base rota, nada entra").that(reservaDeLaVenta("y1", "Y")).isFalse()
+
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+        assertWithMessage("la venta de A sigue cercada, ahora por la fila").that(reservaDeLaVenta("x2", "X")).isFalse()
+        assertThat(ledger.tieneEvidenciaSinGuardar("a")).isFalse()
+        // Codex final-3: que OTRA venta pueda reservar no basta — tiene que poder llegar hasta el cobro.
+        assertWithMessage("la base volvió: otra venta reserva…").that(reservaDeLaVenta("y2", "Y")).isTrue()
+        // …entra al lector (la cerca nueva de KERNEL_ACTIVO no la frena: A es de OTRA venta) y autoriza desde ahí.
+        assertWithMessage("…entra al lector…").that(ledger.markKernelEntered("y2")).isTrue()
+        assertWithMessage("…y autoriza").that(ledger.markAuthorizing("y2")).isTrue()
+    }
+
+    @Test fun `final-2 e · cuando la base vuelve, B tampoco entra al LECTOR sobre la venta de A — la cerca durable tambien alli`() = runTest {
+        // Codex final-3 (esquema 40, SQL real): la puerta escribía lo de A y vaciaba la memoria, pero el CAS del lector sólo tenía la
+        // cerca para AUTORIZANDO: KERNEL_ACTIVO = 1, y el lector puede aprobar solo (offline) sin pasar por autorización.
+        filaDeOtroProceso("a", PaymentAttemptEntity.STATE_DESCARTADA, orderId = "X")
+        assertThat(reservaDeLaVenta("b", "X")).isTrue()
+        evidenciaQueNoSeEscribe("a")
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")   // la base se recupera
+
+        assertThat(ledger.markKernelEntered("b")).isFalse()
+        assertThat(ledger.tieneEvidenciaSinGuardar("a")).isFalse()
+        assertThat(dao.getById("b")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
     }
 
     // ── 4 · Lo que publica el servidor ─────────────────────────────────────────────────────────

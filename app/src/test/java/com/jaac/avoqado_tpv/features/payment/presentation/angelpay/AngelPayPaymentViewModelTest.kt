@@ -4827,6 +4827,36 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    @Test fun `final P1-1 - app to app - un rechazo NORMAL con el dinero del servidor SIN ESCRIBIR es contradiccion, sin Reintentar`() = runTest(testDispatcher) {
+        // Codex (pasada final, P1-1): la evidencia sólo vive en la memoria de la libreta (su escritura falló); la fila está limpia.
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        io.mockk.mockkConstructor(parserAngelPay)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Transacción rechazada", "G500", "GATEWAY")
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00"); runCurrent()
+            val intento = vm.attemptIdForTest()!!
+            coEvery { paymentAttemptLedger.markHostResponded(intento, false, any(), any(), any()) } returns false
+            coEvery { paymentAttemptLedger.leerIntento(intento) } returns PaymentAttemptEntity(
+                attemptId = intento, venueId = "v1", processor = "ANGELPAY", state = PaymentAttemptEntity.STATE_AUTORIZANDO,
+                amountCents = 10_000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}", createdAt = 1L, updatedAt = 2L,
+            )
+            every { paymentAttemptLedger.tieneEvidenciaSinGuardar(intento) } returns true
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing(intento)).isTrue()
+            vm.onAngelPayResult(android.app.Activity.RESULT_OK, null); runCurrent()
+
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("evidencia de cobro")
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(parserAngelPay)
+        }
+    }
+
     @Test fun `r9 P2-5 - app to app - el aprobado de un cobro ADOPTADO sin evidencia se registra con SU cuenta, no con la elegida ahora`() = runTest(testDispatcher) {
         // Codex r9: A quedó AUTORIZANDO con M1 (cma-001), sin evidencia del servidor; la pantalla murió y la nueva eligió M2.
         // Llega el aprobado app a app de A: la adopción tomaba sólo el número de intento, y el registro llevaba la cuenta de M2.

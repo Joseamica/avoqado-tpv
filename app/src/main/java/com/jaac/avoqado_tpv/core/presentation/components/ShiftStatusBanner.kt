@@ -225,8 +225,9 @@ private fun OnlineShiftBanner(
 /**
  * Offline Cached Banner - Shows last known state
  *
- * Displays cached shift info with "Último estado conocido" when offline.
- * Square/Toast prevention pattern: operations are blocked when offline.
+ * Displays cached shift info with "Último estado conocido" when offline — sin red en el aparato O
+ * con el servidor sin contestar. Un turno ABIERTO guardado deja vender en efectivo sin conexión
+ * (`turnoPermiteVender`); abrir o cerrar la caja sí necesita al servidor.
  */
 @Composable
 private fun OfflineCachedBanner(
@@ -297,25 +298,13 @@ private fun OfflineCachedBanner(
                     }
 
                     Text(
-                        text = "Último estado conocido ($minutesText)",
+                        text = "Sin conexión · último estado conocido ($minutesText)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.avoqadoColors.offlineOrange // Orange to match icon
                     )
                 }
             }
 
-            // Right: Offline badge
-            Column(
-                horizontalAlignment = Alignment.End
-            ) {
-                Text(
-                    text = "Offline",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Medium
-                    ),
-                    color = MaterialTheme.avoqadoColors.offlineOrange
-                )
-            }
         }
     }
 }
@@ -386,18 +375,6 @@ private fun OfflineUnknownBanner(
                 }
             }
 
-            // Right: Offline badge
-            Column(
-                horizontalAlignment = Alignment.End
-            ) {
-                Text(
-                    text = "Offline",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Medium
-                    ),
-                    color = MaterialTheme.avoqadoColors.offlineOrange
-                )
-            }
         }
     }
 }

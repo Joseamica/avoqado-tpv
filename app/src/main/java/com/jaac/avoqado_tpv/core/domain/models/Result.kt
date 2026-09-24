@@ -106,6 +106,15 @@ sealed class ApiException(
 ) : Exception(message) {
 
     /**
+     * El servidor NO contestó: sin red, conexión rechazada o timeout — o contestó el borde por él
+     * (502-504, y 520-527 de Cloudflare cuando Render no responde). De su estado no se sabe NADA,
+     * a diferencia de un 4xx, que sí es una respuesta. Arranque sin servidor en la N86 (23-sep-2026):
+     * leer esto como «no hay turno» dejaba al negocio sin vender con la caja abierta.
+     */
+    val servidorNoContesto: Boolean
+        get() = this is NetworkError || (this is HttpError && (code in 502..504 || code in 520..527))
+
+    /**
      * HTTP error (4xx, 5xx)
      *
      * @param code HTTP status code

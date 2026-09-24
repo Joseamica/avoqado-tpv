@@ -493,6 +493,12 @@ class AngelPayPaymentViewModel @Inject constructor(
     // llamar initPayment con el mismo skipReview y el flag se recompone solo.
     private var isSkipReviewFlow: Boolean = false
     private var cachedShiftId: String? = null
+    /**
+     * El turno de este cobro sólo se conoce por la caché: el servidor no contestó en [initPayment].
+     * El efectivo sigue (se encola); tarjeta y cripto NO se lanzan —igual que antes, que el gate
+     * leía el fallo de red como «sin turno»— pero ahora se dice por qué ([bloquearPorTurnoSinConfirmar]).
+     */
+    private var turnoSinConfirmar: Boolean = false
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
@@ -1312,19 +1318,44 @@ class AngelPayPaymentViewModel @Inject constructor(
             // to bypass the gate. Reproduced 2026-05-20 on `Avoqado Full`
             // venue with enableShifts=false (visible in TerminalConfig logs).
             val shiftsEnabled = tpvSettingsRepository.getCurrentSettings().enableShifts
+            turnoSinConfirmar = false
             val shift = if (shiftsEnabled) {
                 val shiftResult = withContext(Dispatchers.IO) {
                     shiftRepository.getCurrentShift(venueId)
                 }
+                // 💵 Sin servidor (N86, 23-sep-2026): el fallo de red se leía como «no hay turno» y
+                // bloqueaba hasta el EFECTIVO con la caja abierta y guardada. Si el servidor no
+                // contestó, vale el último turno abierto que ESTE aparato confirmó; el efectivo se
+                // encola y el servidor atribuye el turno al llegar. Tarjeta y cripto siguen
+                // esperando al servidor ([turnoSinConfirmar]).
+                val sinServidor = (shiftResult as? com.jaac.avoqado_tpv.core.domain.models.Result.Error)
+                    ?.exception?.servidorNoContesto == true
+                // Un cobro REMOTO del POS llegó por el socket: el servidor está ahí y el REST falló de
+                // paso (celda 15 de `cobro-remoto-pos-a-tpv.md`). Se conserva la guarda de siempre —
+                // la caché sólo abriría «Efectivo sobre un remoto», defecto conocido y sin cerrar.
+                val esCobroRemoto = _paymentSource == CobroRemotoDelPos.FUENTE_SOCKET
                 val resolved = shiftResult.getOrNull()
+                    ?: if (sinServidor && !esCobroRemoto) {
+                        withContext(Dispatchers.IO) { shiftRepository.getCachedOpenShift(venueId) }
+                    } else {
+                        null
+                    }
+                turnoSinConfirmar = sinServidor && resolved != null
                 if (resolved == null) {
+                    // Sin servidor y sin nada guardado no se inventa un turno, pero tampoco se culpa
+                    // a la caja: se dice que es la conexión (y abrir la caja también la necesita).
+                    val mensaje = if (sinServidor) {
+                        "Sin conexión con el servidor.\n\nNo se pudo confirmar que la caja esté abierta. Intenta de nuevo cuando regrese la conexión."
+                    } else {
+                        "Debes abrir un turno antes de cobrar"
+                    }
                     _state.value = AngelPayPaymentState.Error(
-                        message = "Debes abrir un turno antes de cobrar",
+                        message = mensaje,
                         canRetry = false,
-                        showOpenShiftButton = true,
+                        showOpenShiftButton = !sinServidor,
                     )
                     // 📡 POS→TPV: pre-charge gate (no open shift) — no money moved (no-op unless socket-sourced).
-                    emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Debes abrir un turno antes de cobrar", outcomeEvidence = "PRE_AUTHORIZATION".takeUnless { authorizationWasLaunched })
+                    emitSocketResultIfSocketSourced(status = "failed", errorMessage = mensaje, outcomeEvidence = "PRE_AUTHORIZATION".takeUnless { authorizationWasLaunched })
                     return@launch
                 }
                 resolved
@@ -1676,7 +1707,22 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // ── Card Payment (AngelPay SDK + App-to-App Fallback) ───────────
 
+    /**
+     * El turno sólo se conoce por la caché (el servidor no contestó en [initPayment]): tarjeta y
+     * cripto no se lanzan —como antes— pero se dice que es la conexión y que el efectivo sí sigue.
+     */
+    private fun bloquearPorTurnoSinConfirmar() {
+        val mensaje = "Sin conexión con el servidor.\n\nPuedes cobrar en efectivo. Tarjeta y cripto vuelven cuando regrese la conexión."
+        Timber.w("🔶 [AngelPay] Turno sin confirmar (servidor sin contestar): sólo efectivo")
+        _state.value = AngelPayPaymentState.Error(message = mensaje, canRetry = false)
+        emitSocketResultIfSocketSourced(status = "failed", errorMessage = mensaje, outcomeEvidence = "PRE_AUTHORIZATION".takeUnless { authorizationWasLaunched })
+    }
+
     fun startCardPayment() {
+        if (turnoSinConfirmar) {
+            bloquearPorTurnoSinConfirmar()
+            return
+        }
         viewModelScope.launch {
             // Per spec §4.5b, AngelPay PIN MUST NOT be persisted to SecureStorage —
             // it lives only in `TerminalConfigRepository.cachedAngelPayAuth` (in-memory,
@@ -4768,6 +4814,10 @@ class AngelPayPaymentViewModel @Inject constructor(
      * Initiate a B4Bit crypto payment. Caller must be in SelectingMerchant state.
      */
     fun processCryptoPayment(totalAmount: String) {
+        if (turnoSinConfirmar) {
+            bloquearPorTurnoSinConfirmar()
+            return
+        }
         authorizationWasLaunched = true // Prevent stale card proof from crossing payment methods.
         confirmedNegativeOutcome = false
         confirmedNegativeEvidence = null
@@ -5277,6 +5327,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         _isUploadingProofOfSale.value = false
         _proofOfSaleComplete.value = false
         cachedShiftId = null
+        turnoSinConfirmar = false
         cachedVenueId = null
         cachedStaffId = null
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one

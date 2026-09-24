@@ -832,6 +832,81 @@ class PaymentViewModelTest {
         viewModel.viewModelScope.cancel()
     }
 
+    // Arranque SIN servidor (23-sep-2026): el efectivo no necesita al servidor —se encola y el
+    // servidor atribuye el turno al llegar—, así que el flag de TARJETA no debe bloquearlo. Con el
+    // flag por defecto, la consulta fallida se leía como «No hay turno abierto» con la caja abierta.
+    @Test
+    fun `P1 efectivo sin servidor con el flag por defecto usa el ultimo turno abierto guardado`() = runTest {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns true
+        coEvery { mockShiftRepository.getCurrentShift(any()) } returns
+            AppResult.Error(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(RuntimeException("ECONNREFUSED")))
+        coEvery { mockShiftRepository.getCachedOpenShift(any()) } returns Shift(
+            id = testShiftId, venueId = testVenueId, staffId = testStaffId, staffName = "Cached Staff",
+            startTime = "2026-09-11T05:12:11Z", endTime = null, status = ShiftStatus.OPEN,
+            startingCash = BigDecimal.ZERO, endingCash = null, totalSales = BigDecimal.ZERO,
+            totalTips = BigDecimal.ZERO, totalOrders = 0, totalCashPayments = BigDecimal.ZERO,
+            totalCardPayments = BigDecimal.ZERO, totalVoucherPayments = BigDecimal.ZERO,
+            totalOtherPayments = BigDecimal.ZERO, totalProductsSold = 0, durationMinutes = null
+        )
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        every { mockConnectionStateManager.isFullyConnected() } returns false
+        val contextSlot = slot<PaymentContext>()
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contextSlot), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()
+            )
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-cash-offline", receiptUrl = "https://receipt.avoqado.io/x", accessKey = "k",
+                amount = BigDecimal("100.00"), tipAmount = BigDecimal.ZERO
+            )
+        )
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant("100.00")
+            viewModel.processCashPayment("100.00")
+
+            coVerify(timeout = 2000) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+            assertThat(contextSlot.captured.shiftId).isEqualTo(testShiftId)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 efectivo sin servidor y SIN turno guardado dice que es la conexion, no que falta abrir caja`() = runTest {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns true
+        coEvery { mockShiftRepository.getCurrentShift(any()) } returns
+            AppResult.Error(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(RuntimeException("ECONNREFUSED")))
+        coEvery { mockShiftRepository.getCachedOpenShift(any()) } returns null
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        every { mockConnectionStateManager.isFullyConnected() } returns false
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant("100.00")
+            viewModel.processCashPayment("100.00")
+            // El registro del efectivo espera en hilos reales: se espera al ESTADO, no al planificador.
+            val state = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(2_000) {
+                    while (viewModel.state.value !is PaymentState.Error) kotlinx.coroutines.delay(10)
+                    viewModel.state.value
+                }
+            }
+            assertThat(state).isInstanceOf(PaymentState.Error::class.java)
+            assertThat((state as PaymentState.Error).message).contains("Sin conexión")
+            assertThat(state.showOpenShiftButton).isFalse()
+            coVerify(exactly = 0) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `startPayment ensures SDK initialization`() = runTest {
         val viewModel = createViewModel()

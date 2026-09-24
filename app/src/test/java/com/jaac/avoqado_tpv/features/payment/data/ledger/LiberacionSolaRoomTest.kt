@@ -603,7 +603,8 @@ class LiberacionSolaRoomTest {
         val recuperacion = LedgerServerRecovery(dao, ledger, api)
 
         recuperacion.liberarDudasLocales(venue, now)
-        // 🔴 Codex r22 (P2): el worker real vuelve tras su backoff (30 s en WorkManager 2.9): para entonces las 25 esperas VENCIERON.
+        // 🔴 Codex r22 (P2): el worker real vuelve a los 31 s (su seguimiento; antes, el backoff de WorkManager): para entonces las
+        // 25 esperas VENCIERON.
         mono += LedgerServerRecovery.REINTENTO_SIN_RESPUESTA_MS + 1_000
         recuperacion.liberarDudasLocales(venue, now + 31_000)
 

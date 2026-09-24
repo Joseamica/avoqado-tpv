@@ -99,6 +99,16 @@ class ShiftViewModel @Inject constructor(
     private val _isOffline = MutableStateFlow(false)
     val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
 
+    // «Sin conexión» tiene DOS causas y el ConnectivityObserver sólo ve una: el aparato sin red, o
+    // con WiFi pero el servidor sin contestar (N86, 23-sep-2026: arrancar sin servidor dejaba «Sin
+    // turno de caja» con la caja abierta y guardada). `isOffline` es la suma; cada fuente escribe
+    // sólo la suya, así un «WiFi disponible» no borra un servidor que sigue callado.
+    private var sinRed = false
+    private var servidorSinContestar = false
+    private fun publicarSinConexion() {
+        _isOffline.value = sinRed || servidorSinContestar
+    }
+
     // Cached shift info for offline display
     private val _cachedShiftInfo = MutableStateFlow<CachedShiftInfo?>(null)
     val cachedShiftInfo: StateFlow<CachedShiftInfo?> = _cachedShiftInfo.asStateFlow()
@@ -156,7 +166,8 @@ class ShiftViewModel @Inject constructor(
         viewModelScope.launch {
             connectivityObserver.observe().collect { status ->
                 val wasOffline = _isOffline.value
-                _isOffline.value = status == NetworkStatus.Unavailable
+                sinRed = status == NetworkStatus.Unavailable
+                publicarSinConexion()
 
                 when (status) {
                     NetworkStatus.Unavailable -> {
@@ -164,7 +175,7 @@ class ShiftViewModel @Inject constructor(
                         loadCachedShiftInfo()
                     }
                     NetworkStatus.Available -> {
-                        if (wasOffline) {
+                        if (wasOffline && !_isOffline.value) {
                             Timber.i("✅ [ShiftViewModel] Network restored - clearing cached info")
                             _cachedShiftInfo.value = null
                             // Note: ConnectionEventManager handles auto-sync via listenToConnectionRestored()
@@ -185,20 +196,44 @@ class ShiftViewModel @Inject constructor(
     private fun loadCachedShiftInfo() {
         viewModelScope.launch {
             val venueId = secureStorage.getVenueId() ?: return@launch
-            val cached = cachedShiftDao.getCachedShift(venueId)
-
-            if (cached != null) {
-                _cachedShiftInfo.value = CachedShiftInfo(
-                    isOpen = cached.isOpen(),
-                    staffName = cached.staffName,
-                    cachedMinutesAgo = cached.minutesSinceCached()
-                )
-                Timber.d("📦 [ShiftViewModel] Loaded cached shift: isOpen=${cached.isOpen()}, cached ${cached.minutesSinceCached()}min ago")
-            } else {
-                Timber.d("📦 [ShiftViewModel] No cached shift data available")
-                _cachedShiftInfo.value = null
-            }
+            cargarUltimoTurnoConocido(venueId)
         }
+    }
+
+    private suspend fun cargarUltimoTurnoConocido(venueId: String) {
+        val cached = cachedShiftDao.getCachedShift(venueId)
+
+        if (cached != null) {
+            _cachedShiftInfo.value = CachedShiftInfo(
+                isOpen = cached.isOpen(),
+                staffName = cached.staffName,
+                cachedMinutesAgo = cached.minutesSinceCached()
+            )
+            Timber.d("📦 [ShiftViewModel] Loaded cached shift: isOpen=${cached.isOpen()}, cached ${cached.minutesSinceCached()}min ago")
+        } else {
+            Timber.d("📦 [ShiftViewModel] No cached shift data available")
+            _cachedShiftInfo.value = null
+        }
+    }
+
+    /** El servidor contestó: su palabra manda y el «último turno conocido» deja de mostrarse. */
+    private fun alContestarElServidor() {
+        servidorSinContestar = false
+        publicarSinConexion()
+        if (!_isOffline.value) _cachedShiftInfo.value = null
+    }
+
+    /**
+     * El servidor NO contestó (no es lo mismo que contestar «sin turno»): se dice «sin conexión» y se
+     * muestra el último turno que ESTE aparato confirmó, si lo hay. Un error que sí es respuesta del
+     * servidor (4xx) no entra aquí: ahí no se sabe menos, se sabe otra cosa.
+     */
+    private suspend fun alNoContestarElServidor(venueId: String, error: ApiException) {
+        if (!error.servidorNoContesto) return
+        cargarUltimoTurnoConocido(venueId)
+        servidorSinContestar = true
+        publicarSinConexion()
+        Timber.w("📦 [ShiftViewModel] Servidor sin contestar — último turno conocido: abierto=${_cachedShiftInfo.value?.isOpen}")
     }
 
     /**
@@ -326,6 +361,7 @@ class ShiftViewModel @Inject constructor(
             // Update state based on current shift result
             when (currentShiftResult) {
                 is Result.Success -> {
+                    alContestarElServidor()
                     val shift = currentShiftResult.data
                     // 💾 Cache shift state for offline access
                     cacheShiftState(shift, venueId)
@@ -339,6 +375,8 @@ class ShiftViewModel @Inject constructor(
                     }
                 }
                 is Result.Error -> {
+                    // Antes del estado: el Inicio no debe pintar ni un cuadro de «Sin turno» sin red.
+                    alNoContestarElServidor(venueId, currentShiftResult.exception)
                     val errorMessage = translateError(currentShiftResult.exception)
                     Timber.e("❌ Failed to load shift: $errorMessage")
                     _state.value = ShiftState.Error(errorMessage)
@@ -380,6 +418,7 @@ class ShiftViewModel @Inject constructor(
 
                 when (currentShiftResult) {
                     is Result.Success -> {
+                        alContestarElServidor()
                         val shift = currentShiftResult.data
                         _state.value = if (shift != null) {
                             ShiftState.ShiftActive(shift, shiftHistory)
@@ -388,6 +427,7 @@ class ShiftViewModel @Inject constructor(
                         }
                     }
                     is Result.Error -> {
+                        alNoContestarElServidor(venueId, currentShiftResult.exception)
                         Timber.e("❌ Refresh failed: ${currentShiftResult.exception}")
                     }
                 }
@@ -768,3 +808,12 @@ data class CachedShiftInfo(
     val staffName: String,
     val cachedMinutesAgo: Int
 )
+
+/**
+ * ¿Hay turno para vender? Lo confirma el servidor; y SIN conexión, el último turno ABIERTO que este
+ * aparato confirmó (se guarda en cada consulta buena y se borra cuando el servidor dice «sin turno»).
+ * Con conexión la caché nunca sustituye al servidor, y sin nada guardado no se inventa un turno.
+ */
+fun turnoPermiteVender(turno: Shift?, sinConexion: Boolean, ultimoConocido: CachedShiftInfo?): Boolean =
+    turno?.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN ||
+        (sinConexion && ultimoConocido?.isOpen == true)

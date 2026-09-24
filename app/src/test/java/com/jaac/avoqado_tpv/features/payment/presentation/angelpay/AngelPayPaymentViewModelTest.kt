@@ -5600,4 +5600,143 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── Arranque SIN servidor (Nexgo N86, 23-sep-2026) ─────────────────────────────────────
+    // `getCurrentShift` falla por red y `initPayment` lo leía como «no hay turno»: «Debes abrir
+    // un turno antes de cobrar», también en efectivo, con la caja ABIERTA en el servidor y
+    // guardada en el aparato. El efectivo no necesita al servidor: se encola con el último turno
+    // abierto conocido y el servidor atribuye el turno al llegar.
+
+    // `initPayment` consulta el turno en `Dispatchers.IO` REAL: `advanceUntilIdle` no lo espera y se
+    // leía el estado antes de tiempo. Se espera al ESTADO en tiempo real, como las pruebas vecinas.
+    private suspend fun esperarQueSalgaDeIdle(vm: AngelPayPaymentViewModel): AngelPayPaymentState =
+        withContext(Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(2_000) { vm.state.first { it !is AngelPayPaymentState.Idle } }
+        }
+
+    private fun sinServidor() = com.jaac.avoqado_tpv.core.domain.models.Result.Error(
+        com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.net.ConnectException("ECONNREFUSED")),
+    )
+
+    private fun turnoGuardado(id: String) = com.jaac.avoqado_tpv.features.shift.domain.Shift(
+        id = id, venueId = "v1", staffId = "s1", staffName = "Cajera", startTime = "2026-09-11T05:12:11Z",
+        endTime = null, status = com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN,
+        startingCash = java.math.BigDecimal.ZERO, endingCash = null, totalSales = java.math.BigDecimal.ZERO,
+        totalTips = java.math.BigDecimal.ZERO, totalOrders = 0, totalCashPayments = java.math.BigDecimal.ZERO,
+        totalCardPayments = java.math.BigDecimal.ZERO, totalVoucherPayments = java.math.BigDecimal.ZERO,
+        totalOtherPayments = java.math.BigDecimal.ZERO, totalProductsSold = 0, durationMinutes = null,
+    )
+
+    @Test
+    fun `P1 sin servidor, el efectivo se cobra con el ultimo turno abierto guardado`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { shiftRepository.getCurrentShift("v1") } returns sinServidor()
+        coEvery { shiftRepository.getCachedOpenShift("v1") } returns turnoGuardado("shift-guardado")
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns
+            Result.failure(java.net.ConnectException("ECONNREFUSED"))
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            esperarQueSalgaDeIdle(vm)
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Error::class.java)
+
+            vm.startCashPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            coVerify(timeout = 2000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            assertThat(ctxSlot.captured.shiftId).isEqualTo("shift-guardado")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 con el turno SIN confirmar, la tarjeta no se lanza y se dice por que`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { shiftRepository.getCurrentShift("v1") } returns sinServidor()
+        coEvery { shiftRepository.getCachedOpenShift("v1") } returns turnoGuardado("shift-guardado")
+        val vm = createViewModel()
+        try {
+            vm.flujoSdkForzadoParaPruebas = true
+            vm.initPayment(amount = "100.00")
+            esperarQueSalgaDeIdle(vm)
+
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).message).contains("Sin conexión")
+            assertThat(estado.message).contains("efectivo")
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 sin servidor y SIN turno guardado no se inventa un turno y se dice que es la conexion`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { shiftRepository.getCurrentShift("v1") } returns sinServidor()
+        coEvery { shiftRepository.getCachedOpenShift("v1") } returns null
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            esperarQueSalgaDeIdle(vm)
+
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).message).contains("Sin conexión")
+            // Abrir la caja sin servidor no es posible: ofrecer el botón sería mandarlo a otro error.
+            assertThat(estado.showOpenShiftButton).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 un cobro REMOTO con el REST caido no usa el turno guardado - no abre efectivo sobre un remoto`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { shiftRepository.getCurrentShift("v1") } returns sinServidor()
+        coEvery { shiftRepository.getCachedOpenShift("v1") } returns turnoGuardado("shift-guardado")
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-remoto-sin-rest")
+            vm.initPayment(amount = "100.00")
+            val estado = esperarQueSalgaDeIdle(vm)
+
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).message).contains("Sin conexión")
+            coVerify(exactly = 0) { shiftRepository.getCachedOpenShift(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `con servidor que dice sin turno se sigue pidiendo abrir la caja y no se mira la cache`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        coEvery { shiftRepository.getCurrentShift("v1") } returns com.jaac.avoqado_tpv.core.domain.models.Result.Success(null)
+        coEvery { shiftRepository.getCachedOpenShift("v1") } returns turnoGuardado("shift-guardado")
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            esperarQueSalgaDeIdle(vm)
+
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).showOpenShiftButton).isTrue()
+            coVerify(exactly = 0) { shiftRepository.getCachedOpenShift(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }

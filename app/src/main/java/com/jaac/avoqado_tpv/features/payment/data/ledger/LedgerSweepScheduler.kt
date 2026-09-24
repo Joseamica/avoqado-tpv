@@ -29,7 +29,13 @@ object LedgerSweepScheduler {
     private const val PERIODIC_WORK_NAME = "ledger_shadow_sweep"
     private const val ONE_SHOT_WORK_NAME = "ledger_shadow_sweep_once"
     private const val SWEEP_INTERVAL_HOURS = 6L
-    private const val SERVER_RECOVERY_WORK_NAME = "ledger_server_recovery"
+    /**
+     * 🔴 Hardware (23-sep): nombre NUEVO a propósito. Con el anterior, un aparato podía tener la cadena atorada detrás de un
+     * reintento con horas de espera (el `retry()` que ya no existe); reusar el nombre lo dejaría atorado aun con la versión
+     * nueva. La cadena vieja se cancela en cada petición (es idempotente: tras la primera ya no existe).
+     */
+    private const val SERVER_RECOVERY_WORK_NAME = "ledger_server_recovery_v2"
+    private const val SERVER_RECOVERY_WORK_NAME_ANTERIOR = "ledger_server_recovery"
 
     /** Enqueue the 6h periodic sweep (KEEP — no-op if already scheduled). */
     fun schedule(context: Context) {
@@ -60,12 +66,14 @@ object LedgerSweepScheduler {
             .setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build())
             .apply { if (retrasoSegundos > 0) setInitialDelay(retrasoSegundos, TimeUnit.SECONDS) }
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
+        val workManager = WorkManager.getInstance(context)
+        workManager.cancelUniqueWork(SERVER_RECOVERY_WORK_NAME_ANTERIOR)
+        workManager.enqueueUniqueWork(
             SERVER_RECOVERY_WORK_NAME,
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             request
         )
-        Timber.d("🔎 [LedgerServer] recuperación por servidor encolada (APPEND_OR_REPLACE, CONNECTED, +%d min)", initialDelayMinutes)
+        Timber.d("🔎 [LedgerServer] recuperación por servidor encolada (APPEND_OR_REPLACE, CONNECTED, +%d s)", retrasoSegundos)
     }
 
     /** One-shot catch-up sweep at login/startup (KEEP — repeated starts don't stack). */

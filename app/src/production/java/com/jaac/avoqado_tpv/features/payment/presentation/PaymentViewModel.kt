@@ -1992,19 +1992,23 @@ class PaymentViewModel @Inject constructor(
      * `getCurrentShift(...).getOrNull()`. Gating mirrors [cardPreflightBlocked].
      */
     private suspend fun resolveCurrentShiftForPayment(
-        venueId: String
+        venueId: String,
+        esEfectivo: Boolean = false,
     ): com.jaac.avoqado_tpv.features.shift.domain.Shift? {
         val settings = tpvSettingsRepository.getCurrentSettings()
         val isCobro = getOrderIdForFlow() == null &&
             !shouldSkipLocalValidation() &&
             sessionSnapshot.mode != PaymentMode.REFUND
+        // 💵 El EFECTIVO no necesita al servidor: se encola y el servidor atribuye el turno al llegar
+        // (`claimCapturedPaymentShift` no lee el shiftId del aparato). El flag de arriba es de TARJETA;
+        // con él por defecto, arrancar sin servidor decía «No hay turno abierto» con la caja abierta y
+        // guardada (N86, 23-sep-2026). Para efectivo vale el último turno abierto que ESTE aparato confirmó.
+        val permiteUltimoConocido = esEfectivo || (!settings.requireAvoqadoServerForCardPayment && isCobro)
         // Fast path: when we ALREADY know our backend is unreachable AND the venue opted into
         // offline cobro, skip the live getCurrentShift — it would hang ~30s on the socket timeout
         // (the cashier reads that delay as "the terminal is broken") before falling back anyway.
         // Go straight to the cached OPEN shift. Only this exact offline-cobro case is short-circuited.
-        if (!settings.requireAvoqadoServerForCardPayment && isCobro &&
-            !connectionStateManager.isFullyConnected()
-        ) {
+        if (permiteUltimoConocido && !connectionStateManager.isFullyConnected()) {
             return shiftRepository.getCachedOpenShift(venueId)?.also {
                 Timber.w("⚠️ [Payment] Backend known-unreachable — offline shift fallback (skipped live fetch) to cached OPEN shift ${it.id}")
             }
@@ -2013,7 +2017,11 @@ class PaymentViewModel @Inject constructor(
         return when (val result = shiftRepository.getCurrentShift(venueId)) {
             is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> result.data
             is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
-                if (settings.requireAvoqadoServerForCardPayment || !isCobro ||
+                if (esEfectivo && result.exception.servidorNoContesto) {
+                    shiftRepository.getCachedOpenShift(venueId)?.also {
+                        Timber.w("⚠️ [Payment] Servidor sin contestar — efectivo con el último turno abierto guardado ${it.id}")
+                    }
+                } else if (settings.requireAvoqadoServerForCardPayment || !isCobro ||
                     connectionStateManager.isFullyConnected()
                 ) {
                     null // legacy behavior: a failed fetch is treated as "no shift" → block
@@ -5471,17 +5479,25 @@ class PaymentViewModel @Inject constructor(
                 // isShiftSystemEnabled() y un socket medio muerto congelo "iniciar pago"
                 // 22s EN SILENCIO (bug real 2026-08-08) — esta fase no tiene vigilante.
                 // AngelPay hace el gate desde 2026-05-20; paridad nunca portada a Blumon.
-                val currentShift = if (shiftRepository.isShiftSystemEnabled()) resolveCurrentShiftForPayment(currentVenueId!!) else null
+                val currentShift = if (shiftRepository.isShiftSystemEnabled()) resolveCurrentShiftForPayment(currentVenueId!!, esEfectivo = true) else null
 
                 if (shiftRepository.isShiftSystemEnabled()) {
                     if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
                         Timber.w("⚠️ [Cash Payment] No active shift - cannot process payment")
                         Timber.w("   → Cash payments REQUIRE shift for reconciliation (starting cash + payments = expected cash)")
+                        // Sin servidor, «no hay turno» no es un hecho: es no poder confirmarlo (y abrir
+                        // la caja también necesita al servidor, así que no se ofrece el botón).
+                        val sinConexion = !connectionStateManager.isFullyConnected()
                         _state.value = PaymentState.Error(
-                            message = "No hay turno abierto.\n\n" +
-                                     "Abre un turno para procesar pagos.",
+                            message = if (sinConexion) {
+                                "Sin conexión con el servidor.\n\n" +
+                                    "No se pudo confirmar que la caja esté abierta. Intenta de nuevo cuando regrese la conexión."
+                            } else {
+                                "No hay turno abierto.\n\n" +
+                                    "Abre un turno para procesar pagos."
+                            },
                             context = null,
-                            showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
+                            showOpenShiftButton = !sinConexion  // ⭐ Show "Abrir Turno" button in dialog
                         )
                         return@launch
                     }

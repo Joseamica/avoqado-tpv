@@ -105,6 +105,7 @@ import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOver
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
+import com.jaac.avoqado_tpv.features.shift.presentation.turnoPermiteVender
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.core.presentation.components.TimeclockStatusCard
 import com.jaac.avoqado_tpv.features.messaging.presentation.TpvMessageUiModel
@@ -645,8 +646,13 @@ private fun WelcomeScreenContent(
     // ══════════════════════════════════════════════════════════════════════
 
     // ⭐ Check if shift is open for payment processing (Square/Toast pattern)
-    val hasOpenShift = currentShift?.status == ShiftStatus.OPEN
+    // Sin conexión vale el último turno abierto que ESTE aparato confirmó (N86, 23-sep-2026: arrancar
+    // sin servidor decía «Sin turno de caja» y apagaba Cobrar con la caja abierta y guardada).
+    val hasOpenShift = turnoPermiteVender(currentShift, isOffline, cachedShiftInfo)
     val canOperate = hasOpenShift || !isShiftSystemEnabled // Unlock if disabled
+    // Sin conexión y sin turno conocido el motivo es la conexión, no la caja: «Abre la caja primero»
+    // mandaba a una pantalla que tampoco puede abrirla sin servidor.
+    val motivoSinTurno = if (isOffline) "Sin conexión" else "Abre la caja primero"
 
     // ⏱ Attendance gating: require clock-in before operational buttons
     val isClockedIn = currentTimeEntry?.status == TimeEntryStatus.CLOCKED_IN
@@ -815,7 +821,7 @@ private fun WelcomeScreenContent(
             val quickPayEnabled = canOperate && canWork
             val quickPayBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre la caja primero"
+                !canOperate -> motivoSinTurno
                 else -> null
             }
             allButtons.add(
@@ -845,7 +851,7 @@ private fun WelcomeScreenContent(
             val tablesBadge = when {
                 tablesPlanLocked -> "Plan Pro"
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre la caja primero"
+                !canOperate -> motivoSinTurno
                 else -> null
             }
             allButtons.add(
@@ -865,7 +871,7 @@ private fun WelcomeScreenContent(
             val ordersEnabled = canOperate && canWork
             val ordersBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre la caja primero"
+                !canOperate -> motivoSinTurno
                 else -> null
             }
             allButtons.add(
@@ -886,7 +892,7 @@ private fun WelcomeScreenContent(
             val checkoutEnabled = canOperate && canWork
             val checkoutBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre la caja primero"
+                !canOperate -> motivoSinTurno
                 else -> null
             }
             allButtons.add(

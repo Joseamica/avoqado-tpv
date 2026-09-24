@@ -717,4 +717,125 @@ class ShiftViewModelTest {
         coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
         assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
     }
+
+    // ── Arranque SIN servidor (Nexgo N86, 23-sep-2026) ─────────────────────────────────────
+    // Con la caja abierta en el servidor y guardada en el aparato, `force-stop` + reabrir sin
+    // servidor dejaba el Inicio en «Sin turno de caja» con Pago rápido y Cobrar apagados («Abre
+    // la caja primero»): la consulta fallaba por red y el ViewModel ignoraba la caché. El WiFi
+    // seguía arriba, así que el ConnectivityObserver nunca dijo «sin red».
+
+    private fun sinServidor() = Result.Error(
+        ApiException.NetworkError(java.net.ConnectException("ECONNREFUSED (Connection refused)"))
+    )
+
+    @Test
+    fun `P1 sin servidor al arrancar, el ultimo turno abierto guardado se muestra y deja vender`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isTrue()
+        assertThat(viewModel.cachedShiftInfo.value?.isOpen).isTrue()
+        assertThat(
+            turnoPermiteVender(null, viewModel.isOffline.value, viewModel.cachedShiftInfo.value)
+        ).isTrue()
+    }
+
+    @Test
+    fun `P1 que el WiFi diga Disponible no borra el sin conexion si el servidor no contesto`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        fakeNetworkStatus.emit(NetworkStatus.Available)
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isTrue()
+        assertThat(viewModel.cachedShiftInfo.value?.isOpen).isTrue()
+    }
+
+    @Test
+    fun `P1 sin servidor y SIN turno guardado, no se inventa un turno abierto`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns null
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isTrue()
+        assertThat(viewModel.cachedShiftInfo.value).isNull()
+        assertThat(
+            turnoPermiteVender(null, viewModel.isOffline.value, viewModel.cachedShiftInfo.value)
+        ).isFalse()
+    }
+
+    @Test
+    fun `pull to refresh sin servidor tambien cae al ultimo turno guardado`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isFalse()
+
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isTrue()
+        assertThat(viewModel.cachedShiftInfo.value?.isOpen).isTrue()
+    }
+
+    @Test
+    fun `cuando el servidor vuelve a contestar se deja de usar el ultimo turno guardado`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        viewModel.loadCurrentShift()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isFalse()
+        assertThat(viewModel.cachedShiftInfo.value).isNull()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+    }
+
+    @Test
+    fun `un servidor que SI contesto con error no se toma como sin conexion`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns
+            Result.Error(ApiException.HttpError(403, "Forbidden"))
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isFalse()
+        assertThat(viewModel.cachedShiftInfo.value).isNull()
+    }
+
+    @Test
+    fun `turnoPermiteVender - confirmado, ultimo conocido sin conexion, y nunca inventado`() {
+        val abiertoGuardado = CachedShiftInfo(isOpen = true, staffName = "Maria", cachedMinutesAgo = 16)
+        // Confirmado por el servidor.
+        assertThat(turnoPermiteVender(testShift, sinConexion = false, ultimoConocido = null)).isTrue()
+        // Sin conexión: vale el último turno ABIERTO que el aparato guardó.
+        assertThat(turnoPermiteVender(null, sinConexion = true, ultimoConocido = abiertoGuardado)).isTrue()
+        // Con conexión, la caché NO sustituye al servidor: si dice «sin turno», no hay turno.
+        assertThat(turnoPermiteVender(null, sinConexion = false, ultimoConocido = abiertoGuardado)).isFalse()
+        // Sin conexión y sin nada guardado: no se inventa.
+        assertThat(turnoPermiteVender(null, sinConexion = true, ultimoConocido = null)).isFalse()
+        assertThat(
+            turnoPermiteVender(null, sinConexion = true, ultimoConocido = abiertoGuardado.copy(isOpen = false))
+        ).isFalse()
+    }
 }

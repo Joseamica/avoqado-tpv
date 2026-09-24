@@ -408,7 +408,10 @@ sealed interface SocketEvent {
         val requestedByName: String?, // Display name of requester
         val venueId: String,
         val timestamp: String,
-        val metadata: Map<String, Any>? = null
+        val metadata: Map<String, Any>? = null,
+        // Segundos que le quedan según el servidor: la caducidad se mide con esto, no con el
+        // reloj de pared de la terminal (ver CommandExpiry). Null en servidores viejos.
+        val expiresInSeconds: Long? = null
     ) : SocketEvent
 
     /**

@@ -191,7 +191,12 @@ data class PendingCommandDto(
     val requestedByName: String?,
 
     @SerializedName("createdAt")
-    val createdAt: String
+    val createdAt: String,
+
+    // Segundos que le quedan segun el servidor: la caducidad se mide con esto, no con el
+    // reloj de pared de la terminal (ver CommandExpiry). Null en servidores viejos.
+    @SerializedName("expiresInSeconds")
+    val expiresInSeconds: Long? = null
 )
 
 /**
@@ -361,16 +366,15 @@ fun PendingCommandDto.toTpvCommand(): com.jaac.avoqado_tpv.features.remote_comma
 
     val priority = com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority.fromString(priority)
 
-    // Parse expiry time (default to 5 minutes from now if not specified)
-    val expiresAtInstant = try {
-        if (expiresAt != null) {
-            java.time.Instant.parse(expiresAt)
-        } else {
-            java.time.Instant.now().plusSeconds(300) // 5 minutes default
-        }
-    } catch (e: Exception) {
-        java.time.Instant.now().plusSeconds(300) // Fallback on parse error
-    }
+    // Fecha limite con el reloj de ESTE aparato + lo que le queda segun el servidor: un reloj
+    // adelantado ya no da por vencido un comando vigente (N86, 24-sep-2026). Default 5 min.
+    val expiresAtInstant = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry.fechaLimite(
+        expiresInSeconds = expiresInSeconds,
+        expiresAt = expiresAt,
+        serverTimestamp = null, // el latido no trae la hora del servidor por comando
+        ahora = java.time.Instant.now(),
+        porDefectoSegundos = 300,
+    )
 
     // Convert JsonObject to Map<String, Any>? for domain model
     val payloadMap: Map<String, Any>? = payload?.let { jsonObj ->

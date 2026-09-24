@@ -22,6 +22,7 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
+import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandTarget
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
@@ -1301,11 +1302,15 @@ class HomeViewModel @Inject constructor(
                     payload = event.payload,
                     requiresPin = event.requiresPin,
                     priority = TpvCommandPriority.fromString(event.priority),
-                    expiresAt = try {
-                        Instant.parse(event.expiresAt)
-                    } catch (e: Exception) {
-                        Instant.now().plusSeconds(3600) // Default 1 hour if parse fails
-                    },
+                    // Medida con el reloj de ESTE aparato + lo que le queda según el servidor:
+                    // un reloj adelantado ya no da por vencido un comando vigente (N86, 24-sep-2026).
+                    expiresAt = CommandExpiry.fechaLimite(
+                        expiresInSeconds = event.expiresInSeconds,
+                        expiresAt = event.expiresAt,
+                        serverTimestamp = event.timestamp,
+                        ahora = Instant.now(),
+                        porDefectoSegundos = 3600, // Default 1 hour, como antes
+                    ),
                     requestedBy = event.requestedBy,
                     requestedByName = event.requestedByName
                 )

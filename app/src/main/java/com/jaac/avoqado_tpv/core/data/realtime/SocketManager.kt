@@ -1150,7 +1150,13 @@ class SocketManager @Inject constructor(
                     requestedByName = data.optString("requestedByName").takeIf { it.isNotEmpty() },
                     venueId = data.optString("venueId", ""),
                     timestamp = data.optString("timestamp", ""),
-                    metadata = data.optJSONObject("metadata")?.toMap()
+                    metadata = data.optJSONObject("metadata")?.toMap(),
+                    // optLong devolvería 0 si falta el campo = «ya vencido»: se distingue ausente de 0
+                    expiresInSeconds = if (data.has("expiresInSeconds") && !data.isNull("expiresInSeconds")) {
+                        data.optLong("expiresInSeconds")
+                    } else {
+                        null
+                    }
                 )
             )
         } catch (e: Exception) {

@@ -367,11 +367,14 @@ interface PaymentAttemptDao {
      * de `"orderId":"`, y termina en la comilla siguiente — la misma forma compacta que escribe Gson y que ya comparan
      * la guarda 2 y la migración 34→35.
      */
+    // 🔴 Codex final-3 (23-sep): la MISMA cerca también para entrar al LECTOR (KERNEL_ACTIVO). El lector puede aprobar SOLO
+    // (contactless offline, EMV local) sin pasar por AUTORIZANDO; con la cerca sólo en la autorización, B entraba al lector sobre
+    // la venta de A en cuanto la puerta escribía el dinero de A (KERNEL_ACTIVO = 1, reproducido con el esquema 40).
     @Query(
         """UPDATE payment_attempts
            SET state = :newState, state_version = state_version + 1, updated_at = :now
            WHERE attempt_id = :attemptId AND state IN (:expectedStates)
-           AND (:newState != 'AUTORIZANDO' OR NOT EXISTS (
+           AND (:newState NOT IN ('AUTORIZANDO','KERNEL_ACTIVO') OR NOT EXISTS (
                SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                AND other.legacy_shadow = 0
                AND (

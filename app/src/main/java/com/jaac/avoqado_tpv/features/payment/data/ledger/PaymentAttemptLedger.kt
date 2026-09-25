@@ -31,6 +31,8 @@ class PaymentAttemptLedger @Inject constructor(
     private val settingsRepository: TpvSettingsRepository
 ) {
 
+    fun observarIntento(attemptId: String, venueId: String) = dao.observeAttempt(attemptId, venueId)
+
     fun observeUnresolvedCount(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.observeUnresolvedCount(venueId)
 
     /**
@@ -104,6 +106,12 @@ class PaymentAttemptLedger @Inject constructor(
             fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.hostApproved != true && fila.serverOutcome == null &&
             fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED && fila.serverVeto == null &&
             !evidenciaSinGuardar.containsKey(fila.attemptId) &&
+            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+
+    /** PAX operator recovery is never offered for a call still alive in this process. */
+    fun puedeConciliarBlumon(fila: PaymentAttemptEntity, venueId: String): Boolean =
+        fila.venueId == venueId && !fila.legacyShadow && fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON &&
+            fila.kind == PaymentAttemptEntity.KIND_SALE && fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
 
     fun isEnabled(): Boolean =
@@ -775,8 +783,8 @@ class PaymentAttemptLedger @Inject constructor(
      * la NOMBRA —importe y antigüedad— cuando la barrera rechaza un cobro que mandó el POS. Un fallo de lectura es null:
      * sólo deja de nombrarse; nunca cambia la decisión, que ya tomó la barrera.
      */
-    suspend fun retencionDelAparato(): PaymentAttemptEntity? = try {
-        dao.findTerminalHold()
+    suspend fun retencionDelAparato(esKiosco: Boolean = false): PaymentAttemptEntity? = try {
+        dao.findTerminalHold(esKiosco)
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
@@ -852,12 +860,13 @@ class PaymentAttemptLedger @Inject constructor(
         orderId: String?,
         attemptIdPropio: String?,
         ahoraMillis: Long = System.currentTimeMillis(),
+        esKiosco: Boolean = false,
     ): String {
         fun describir(fila: PaymentAttemptEntity?): String? = fila
             ?.takeUnless { it.attemptId == attemptIdPropio }
             ?.let { AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, ahoraMillis) }
         val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let { retencionDeLaVenta(it) }
-        val filaAparato = retencionDelAparato()
+        val filaAparato = retencionDelAparato(esKiosco)
         val laVenta = describir(filaVenta)
         val elAparato = describir(filaAparato)
         Timber.w(

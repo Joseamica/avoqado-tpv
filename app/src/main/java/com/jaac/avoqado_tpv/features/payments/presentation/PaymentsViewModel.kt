@@ -804,7 +804,11 @@ class PaymentsViewModel @Inject constructor(
      * - Aggregate refunded amounts into the original payment if backend didn't provide it.
      * - Keep unmatched refunds visible (safety net).
      */
-    private fun mergeRefundsForDisplay(payments: List<Payment>): List<Payment> {
+    private fun mergeRefundsForDisplay(todos: List<Payment>): List<Payment> {
+        // 🔴 25-sep (PAX de pruebas): un reembolso FALLIDO no devolvió nada — no se suma ni se muestra. Antes contaba igual y
+        // el pago quedaba «Reembolsado» sin poderse reembolsar de verdad ($254 VISA tras anular en Avoqado un reembolso que
+        // Blumon nunca hizo). Un reembolso PENDIENTE sí cuenta: mientras está en curso no debe abrirse otro.
+        val payments = todos.filterNot { it.isRefund && it.status == PaymentStatus.FAILED }
         if (payments.none { it.isRefund }) return payments
 
         fun refundKey(payment: Payment): String? = payment.orderId ?: payment.orderNumber

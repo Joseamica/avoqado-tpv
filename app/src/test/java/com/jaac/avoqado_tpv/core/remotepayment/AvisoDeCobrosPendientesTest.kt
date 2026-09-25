@@ -94,6 +94,39 @@ class AvisoDeCobrosPendientesTest {
         assertThat(AvisoDeCobrosPendientes.texto(listOf(vieja), ahora)).isNull()
     }
 
+    // ── Decisión del founder (24-sep): en la PAX el aviso ES el cinturón y se quita solo a los 10 min ──
+    // La PAX no recibe el aviso del banco: sin comprobación, el mensaje se quedaría para siempre. A los 10 min el
+    // cliente ya se fue y el aviso ya no evita ningún cobro doble; la fila sigue guardada para conciliar.
+    // Se decide por APARATO (PAX o Nexgo), no por fila: en una PAX todo lo pendiente es de la PAX, incluida la
+    // solicitud del POS que nunca llegó a abrir intento.
+
+    @Test fun `P1 en la PAX el aviso de un cobro sin confirmar se quita solo a los 10 minutos`() {
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(obligacion(1000, 9 * 60_000)), ahora, esPax = true)).contains("10.00")
+        val pasados = obligacion(1000, AvisoDeCobrosPendientes.VENTANA_AVISO_PAX_MS)
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(pasados), ahora, esPax = true)).isNull()
+        assertThat(AvisoDeCobrosPendientes.VENTANA_AVISO_PAX_MS).isEqualTo(10L * 60 * 1000)
+    }
+
+    /** Se quita cada cobro a su tiempo: el viejo no se lleva al reciente, ni el reciente mantiene al viejo. */
+    @Test fun `P1 en la PAX sólo se quita el cobro que ya pasó los 10 minutos, el reciente sigue`() {
+        val texto = AvisoDeCobrosPendientes.texto(
+            listOf(obligacion(5000, 2 * 60_000), obligacion(1000, 11 * 60_000)), ahora, esPax = true)!!
+        assertThat(texto).contains("50.00")
+        assertThat(texto).doesNotContain("10.00")
+        assertThat(texto).doesNotContain("2 cobros")
+    }
+
+    @Test fun `P1 la Nexgo no cambia - su aviso sigue aunque pasen los 10 minutos`() {
+        val vieja = obligacion(1000, 30 * 60_000)
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(vieja), ahora, esPax = false)).contains("10.00")
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(vieja), ahora)).contains("10.00")
+    }
+
+    @Test fun `P1 una contradiccion de la PAX conserva su propia ventana de 72 h`() {
+        val contradiccion = ObligacionPendiente(totalCentavos = 1000, desdeMillis = ahora - 2 * 60 * 60_000, contradiccion = 1)
+        assertThat(AvisoDeCobrosPendientes.texto(listOf(contradiccion), ahora, esPax = true)).contains("evidencia de cobro")
+    }
+
 
     // ── La barrera de la libreta: TRES desenlaces, no una frase con «o» (founder, 21-sep) ──
 

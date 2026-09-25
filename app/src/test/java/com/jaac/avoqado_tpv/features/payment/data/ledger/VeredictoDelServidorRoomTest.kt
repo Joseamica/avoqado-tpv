@@ -243,7 +243,7 @@ class VeredictoDelServidorRoomTest {
 
     @Test fun `pertenencia antes de escribir — otro venue, otra solicitud, heredada, otro procesador o devolucion no se tocan`() = runTest {
         fila("e1", "HOST_RESPONDIO"); fila("e2", "HOST_RESPONDIO", legacy = true, requestId = "req-e2")
-        fila("e3", "HOST_RESPONDIO", processor = "BLUMON", requestId = "req-e3"); fila("e4", "HOST_RESPONDIO", kind = "REFUND", requestId = "req-e4")
+        fila("e3", "HOST_RESPONDIO", processor = "OTHER", requestId = "req-e3"); fila("e4", "HOST_RESPONDIO", kind = "REFUND", requestId = "req-e4")
         assertThat(dao.aplicarVeredictoDelServidor(s5("e1").copy(venueId = "otro-venue"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
         assertThat(dao.aplicarVeredictoDelServidor(s5("e1", requestId = "req-ajena"), now).decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
         // Codex (código, P1-2/P1-6): heredada, otro procesador o devolución NO son un rechazo — están FUERA del checkpoint

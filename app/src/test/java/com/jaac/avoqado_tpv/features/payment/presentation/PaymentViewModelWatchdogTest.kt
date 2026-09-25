@@ -150,6 +150,8 @@ class PaymentViewModelWatchdogTest {
             every { getCurrentMerchant() } returns null
             every { isMerchantActive(any()) } returns false
             coEvery { switchMerchant(any()) } returns Result.success(Unit)
+            // La venta alinea la cuenta efectiva del SDK antes de pedir tarjeta (24-sep); aqui ya esta alineada.
+            coEvery { ensureEffectivelyActive(any(), any()) } returns Result.success(Unit)
         }
 
         selectAppStateFlow = MutableStateFlow(null)
@@ -286,6 +288,7 @@ class PaymentViewModelWatchdogTest {
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
+            blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
             appContext = mockAppContext
@@ -370,7 +373,7 @@ class PaymentViewModelWatchdogTest {
             org.junit.Assert.assertFalse(state.canRetry)
             org.junit.Assert.assertTrue(state.message.contains("No vuelvas a pasar la tarjeta"))
             coVerify(exactly = 1) { mockSaleIccUseCase.run(any()) }
-            coVerify(exactly = 1) { mockPaymentAttemptLedger.markIndeterminate("test-attempt", "GenericFailure") }
+            coVerify(exactly = 1) { mockPaymentAttemptLedger.markIndeterminate("test-attempt", "Blumon sin veredicto: GenericFailure") }
             coVerify(exactly = 0) { mockPaymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()

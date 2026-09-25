@@ -25,12 +25,13 @@ object AvisoDeCobrosPendientes {
 
 
     /** null = no hay nada que avisar. La lista viene de la más reciente a la más vieja. */
-    fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long): String? {
+    fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long, esPax: Boolean = false): String? {
         // Checkpoint 2 (E1): una CONTRADICCIÓN con el servidor se avisa aparte y sólo durante VENTANA_CONTRADICCION_MS
         // después del veredicto — es evidencia que Avoqado concilia, no algo que el cajero pueda resolver; la fila se
         // conserva (nunca se poda) aunque el aviso deje de mostrarla.
         val contradicciones = todas.filter { it.contradiccion == 1 && ahoraMillis - it.desdeMillis < VENTANA_CONTRADICCION_MS }
-        val pendientes = todas.filter { it.contradiccion == 0 }
+        // En la PAX cada pendiente se quita solo a los VENTANA_AVISO_PAX_MS; la fila sigue en la libreta para conciliar.
+        val pendientes = todas.filter { it.contradiccion == 0 && !(esPax && ahoraMillis - it.desdeMillis >= VENTANA_AVISO_PAX_MS) }
         val textoPendientes = textoDePendientes(pendientes, ahoraMillis)
         val textoContradicciones = contradicciones.takeIf { it.isNotEmpty() }?.let { lista ->
             val enumeradas = lista.take(MAXIMO_ENUMERADO).joinToString(", ") { pesos(it.totalCentavos) }
@@ -64,6 +65,13 @@ object AvisoDeCobrosPendientes {
         return "Quedaron ${pendientes.size} cobros sin confirmar: $enumeradas$cola. " +
             "Si alguno es esta venta, no la cobres otra vez."
     }
+
+    /**
+     * 10 min (decisión del founder, 24-sep): en la PAX el aviso ES el cinturón y se quita solo. La PAX no recibe el aviso del
+     * banco, así que sin esto el mensaje se quedaría para siempre; a los 10 min el cliente ya se fue y el aviso ya no evita
+     * ningún cobro doble. La fila NO se toca: sigue guardada para conciliar. La Nexgo no cambia.
+     */
+    const val VENTANA_AVISO_PAX_MS = 10L * 60 * 1000
 
     /** 72 h: suficiente para que operaciones actúe; después la contradicción sigue en la libreta, no en el aviso. */
     const val VENTANA_CONTRADICCION_MS = 72L * 60 * 60 * 1000

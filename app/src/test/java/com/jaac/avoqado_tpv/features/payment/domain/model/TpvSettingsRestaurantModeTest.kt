@@ -61,10 +61,19 @@ class TpvSettingsRestaurantModeTest {
     }
 
     @Test
-    fun `modo restaurante OFF deja el tile de Ordenes como estaba`() {
-        val settings = TpvSettings(restaurantModeEnabled = false, showOrderManagement = true)
+    fun `sin Cobrar y con modo restaurante OFF, Ordenes queda de respaldo`() {
+        // Un negocio que apago «Cobrar» a proposito no se queda sin forma de tomar pedidos.
+        val settings = TpvSettings(restaurantModeEnabled = false, showOrderManagement = true, showCheckout = false)
         assertThat(shouldShowOrderManagementTile(settings)).isTrue()
         assertThat(shouldShowTablesTile(settings)).isFalse()
+    }
+
+    @Test
+    fun `P1 Cobrar sustituye a Ordenes, que es legacy (founder, 25-sep)`() {
+        // «Ordenar ya es legacy, no deberia ni de aparecer». Con los defaults, Cobrar esta prendido.
+        assertThat(shouldShowOrderManagementTile(TpvSettings())).isFalse()
+        val conCobrar = TpvSettings(restaurantModeEnabled = false, showOrderManagement = true, showCheckout = true)
+        assertThat(shouldShowOrderManagementTile(conCobrar)).isFalse()
     }
 
     // ─────────────────────────────────────────────────────────────────────

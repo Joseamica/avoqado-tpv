@@ -241,7 +241,7 @@ data class PaymentAttemptEntity(
          * UNA sola regla para la lista del aviso, el UPDATE que confirma, la barrera y la exclusión del aviso de contradicciones.
          * NULL-segura a propósito (sólo `IS`, `IN` y columnas NOT NULL): se usa también negada, y `NOT NULL` es NULL.
          */
-        const val SQL_COBRO_POR_RECONOCER = "(legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE' " +
+        const val SQL_COBRO_POR_RECONOCER = "(legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE' " +
             "AND state IN ('DESCARTADA','INDETERMINADO') AND server_outcome IS 'RECORDED' AND server_payment_id IS NOT NULL " +
             "AND server_amount_cents IS amount_cents AND server_tip_cents IS tip_cents AND server_veto IS NULL " +
             "AND acknowledged_at IS NULL " +

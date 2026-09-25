@@ -454,7 +454,9 @@ sealed class PaymentState {
         val context: RetryContext? = null,  // Preserved context for smart retry
         val canRetry: Boolean = true,
         val showOpenShiftButton: Boolean = false,  // Show "Abrir caja" button for shift validation errors
-        val showCashFallback: Boolean = false
+        val showCashFallback: Boolean = false,
+        /** Saved PAX attempt whose SDK call has ended; never offered during authorization. */
+        val unresolvedAttemptId: String? = null
     ) : PaymentState()
     data object Cancelled : PaymentState()
 

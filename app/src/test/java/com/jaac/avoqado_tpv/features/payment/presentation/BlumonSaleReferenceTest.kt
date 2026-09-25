@@ -44,6 +44,7 @@ import io.mockk.unmockkObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -157,6 +158,8 @@ class BlumonSaleReferenceTest {
             every { getCurrentMerchant() } returns null
             every { isMerchantActive(any()) } returns false
             coEvery { switchMerchant(any()) } returns Result.success(Unit)
+            // La venta alinea la cuenta efectiva del SDK antes de pedir tarjeta (24-sep); aqui ya esta alineada.
+            coEvery { ensureEffectivelyActive(any(), any()) } returns Result.success(Unit)
         }
 
         selectAppStateFlow = MutableStateFlow(null)
@@ -186,6 +189,7 @@ class BlumonSaleReferenceTest {
 
         mockSecureStorage = mockk(relaxed = true) {
             every { getSerialNumber() } returns "TEST-SERIAL"
+            every { getVenueId() } returns "venue-test-001"
         }
 
         mockSocketManager = mockk(relaxed = true) {
@@ -290,6 +294,9 @@ class BlumonSaleReferenceTest {
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
+            blumonAttemptResolver = com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver(
+                mockPaymentAttemptLedger, mockk(relaxed = true), mockk(relaxed = true), mockSecureStorage,
+            ),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
             appContext = mockAppContext
@@ -303,6 +310,7 @@ class BlumonSaleReferenceTest {
      */
     private fun viewModelReadyToAuthorize(): PaymentViewModel {
         val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("currentVenueId").apply { isAccessible = true }.set(vm, "venue-test-001")
         PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
             vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
         )
@@ -319,6 +327,185 @@ class BlumonSaleReferenceTest {
             PaymentState.Processing("Autorizando con banco...")
 
         return vm
+    }
+
+    @Test
+    fun `PAX offers recovery for the saved attempt after the SDK returns an unknown result`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            val state = vm.state.value as PaymentState.Error
+            assertEquals("test-attempt", state.unresolvedAttemptId)
+            assertEquals(false, state.canRetry)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /**
+     * 24-sep, PAX de pruebas: Blumon contestó `NO AUTORIZADO` con `code=000000` (no es un código del emisor, así que
+     * el cobro sigue sin veredicto) y la libreta guardó sólo «MomentumFailure»: la pantalla nunca pudo decir qué
+     * había contestado Blumon. Lo que contestó se guarda junto al intento, corto y sin el cuerpo del banco.
+     */
+    @Test
+    fun `P1 un NO AUTORIZADO sin codigo del banco queda guardado junto al intento sin veredicto`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            val datos = mockk<com.example.clean_lib_services.shared.core.domain.entity.sale_data.MomentumDataFailure>(relaxed = true)
+            every { datos.toString() } returns
+                "MomentumDataFailure(httpCode=403, code=000000, description=NO AUTORIZADO, membership=null)"
+            coEvery { mockSaleIccUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Left(
+                com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccFailure.MomentumFailure(datos)
+            )
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            io.mockk.coVerify {
+                mockPaymentAttemptLedger.markIndeterminate("test-attempt", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
+            }
+            assertEquals("test-attempt", (vm.state.value as PaymentState.Error).unresolvedAttemptId)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `PAX does not offer an operator release while the SDK can still charge`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        val bank = kotlinx.coroutines.CompletableDeferred<Unit>()
+        try {
+            coEvery { mockSaleIccUseCase.run(any()) } coAnswers {
+                bank.await()
+                throw java.io.IOException("unknown after bank call ended")
+            }
+            val authorization = kotlinx.coroutines.CoroutineScope(testDispatcher).launch {
+                vm.performOnlineAuthorization("100.00", "", "", "", false)
+            }
+            scheduler.runCurrent()
+            vm.resetPayment()
+            scheduler.runCurrent()
+            io.mockk.coVerify(exactly = 0) { mockPaymentAttemptLedger.leerIntento(any()) }
+            assertEquals(null, (vm.state.value as PaymentState.Error).unresolvedAttemptId)
+            bank.complete(Unit)
+            authorization.join()
+            assertEquals("test-attempt", (vm.state.value as PaymentState.Error).unresolvedAttemptId)
+        } finally { bank.complete(Unit); vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `PAX can reset a recovered attempt when the screen shares the kiosk ViewModel`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            coEvery { mockPaymentAttemptLedger.leerIntento("test-attempt") } returns
+                com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                    attemptId = "test-attempt", venueId = "venue-test-001", processor = "BLUMON", state = "DESCARTADA",
+                    amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+                    createdAt = 1, updatedAt = 2, serverOutcome = "OPERATOR_NO_INSTRUMENT",
+                )
+            vm.resetPayment()
+            scheduler.advanceUntilIdle()
+            assertEquals(PaymentState.Idle, vm.state.value)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `late money evidence prevents resetting a PAX even when its old row says released`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            coEvery { mockPaymentAttemptLedger.leerIntento("test-attempt") } returns
+                com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                    attemptId = "test-attempt", venueId = "venue-test-001", processor = "BLUMON", state = "DESCARTADA",
+                    amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+                    createdAt = 1, updatedAt = 2, serverOutcome = "OPERATOR_NO_INSTRUMENT", serverProcessorEvidence = "APPROVED",
+                )
+            vm.resetPayment()
+            scheduler.advanceUntilIdle()
+            assertEquals(true, vm.state.value is PaymentState.Error)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `a suspended recovery read cannot reset a newer payment session`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        val read = kotlinx.coroutines.CompletableDeferred<Unit>()
+        try {
+            coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            coEvery { mockPaymentAttemptLedger.leerIntento("test-attempt") } coAnswers {
+                read.await()
+                com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                    attemptId = "test-attempt", venueId = "venue-test-001", processor = "BLUMON", state = "DESCARTADA",
+                    amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+                    createdAt = 1, updatedAt = 2, serverOutcome = "OPERATOR_NO_INSTRUMENT",
+                )
+            }
+            vm.resetPayment()
+            scheduler.runCurrent()
+            PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+                vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "new-attempt")
+            )
+            read.complete(Unit)
+            scheduler.advanceUntilIdle()
+            assertEquals(true, vm.state.value is PaymentState.Error)
+            val session = PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.get(vm)
+                as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession
+            assertEquals("new-attempt", session.paymentAttemptId)
+        } finally { read.complete(Unit); vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `PAX reset keeps every unresolved or unrelated saved attempt protected`() = runTest(testDispatcher) {
+        val released = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+            attemptId = "test-attempt", venueId = "venue-test-001", processor = "BLUMON", state = "DESCARTADA",
+            amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+            createdAt = 1, updatedAt = 2, serverOutcome = "OPERATOR_NO_INSTRUMENT",
+        )
+        val unsafeRows = listOf(
+            released.copy(attemptId = "other-attempt"), released.copy(venueId = "other-venue"),
+            released.copy(processor = "ANGELPAY"), released.copy(kind = "REFUND"), released.copy(legacyShadow = true),
+            released.copy(state = "AUTORIZANDO"), released.copy(hostApproved = true),
+            released.copy(serverOutcome = "PENDING_EVIDENCE"), released.copy(serverVeto = "FOREIGN_EVIDENCE"),
+            released.copy(serverOutcome = null), released.copy(terminalPaymentRequestId = "other-request"),
+            released.copy(state = "REGISTRADO", serverPaymentId = null),
+        )
+        for (row in unsafeRows) {
+            val vm = viewModelReadyToAuthorize()
+            try {
+                coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+                vm.performOnlineAuthorization("100.00", "", "", "", false)
+                coEvery { mockPaymentAttemptLedger.leerIntento("test-attempt") } returns row
+                vm.resetPayment()
+                scheduler.advanceUntilIdle()
+                assertEquals("reset must retain protection for $row", true, vm.state.value is PaymentState.Error)
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test
+    fun `leaving recovered POS attempts never emits a second negative outcome`() = runTest(testDispatcher) {
+        for (recorded in listOf(false, true)) {
+            val vm = viewModelReadyToAuthorize()
+            try {
+                coEvery { mockSaleIccUseCase.run(any()) } throws java.io.IOException("unknown bank result")
+                vm.performOnlineAuthorization("100.00", "", "", "", false)
+                PaymentViewModel::class.java.getDeclaredField("_paymentSource").apply { isAccessible = true }.set(vm, "SOCKET")
+                PaymentViewModel::class.java.getDeclaredField("_socketRequestId").apply { isAccessible = true }.set(vm, "saved-request")
+                coEvery { mockPaymentAttemptLedger.leerIntento("test-attempt") } returns
+                    com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                        attemptId = "test-attempt", venueId = "venue-test-001", processor = "BLUMON",
+                        state = if (recorded) "REGISTRADO" else "DESCARTADA",
+                        amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
+                        createdAt = 1, updatedAt = 2, terminalPaymentRequestId = "saved-request",
+                        serverOutcome = if (recorded) "RECORDED" else "OPERATOR_NO_INSTRUMENT",
+                        serverPaymentId = if (recorded) "payment" else null,
+                    )
+                vm.resetPayment()
+                scheduler.advanceUntilIdle()
+                assertEquals(PaymentState.Idle, vm.state.value)
+                io.mockk.verify(exactly = 0) {
+                    mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), any())
+                }
+            } finally { vm.viewModelScope.cancel() }
+        }
     }
 
     @Test

@@ -61,6 +61,13 @@ interface PaymentAttemptDao {
      *      - Un `INDETERMINADO` marcado `cuarentena_por_antiguedad`: lo decidió el reloj, no el
      *        procesador.
      *      - Un `INDETERMINADO` sin `orderId`: no hay venta que cercar, así que se cerca el aparato.
+     *        🔴 **Salvo en la PAX (`processor = 'BLUMON'`) fuera del kiosco — decisión del founder, 24-sep:
+     *        «avisar y dejar cobrar».** La PAX no recibe el aviso del banco y su SDK no acepta nuestra
+     *        referencia, así que esa fila no se resolvía nunca sola: la terminal quedaba sin cobrar horas
+     *        (la de pruebas con un $10; Mindform con diez). Ahí el cinturón es el AVISO del mostrador
+     *        (`observePendingObligations`), que la sigue nombrando; la fila no se toca. La cuarentena por
+     *        reloj y la fila sin motivo SIGUEN apartando (el SDK pudo seguir vivo), y la Nexgo no cambia.
+     *        `esKiosco` también vive aquí para que el kiosco pueda NOMBRAR lo que [reserveTerminal] le negó.
      *
      * Fix 4 (D3c): una `DESCARTADA` con evidencia positiva DURABLE del servidor (`server_processor_evidence`) se trata
      * igual que un INDETERMINADO con motivo: sin identidad de venta (o en kiosco) aparta el aparato; con `orderId` cerca su
@@ -90,16 +97,18 @@ interface PaymentAttemptDao {
             state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO')
             OR state IN ('AUTORIZADO','REGISTRO_FALLIDO')
             OR (state = 'INDETERMINADO'
-                AND (last_error IS NULL
+                AND (:esKiosco = 1
+                     OR last_error IS NULL
                      OR last_error = 'cuarentena_por_antiguedad'
-                     OR instr(payment_context_json, '"orderId":"') = 0
-                     OR instr(payment_context_json, '"orderId":""') > 0))
+                     OR (processor <> 'BLUMON'
+                         AND (instr(payment_context_json, '"orderId":"') = 0
+                              OR instr(payment_context_json, '"orderId":""') > 0))))
             OR (state = 'DESCARTADA' AND server_processor_evidence IS 'APPROVED'
                 AND (instr(payment_context_json, '"orderId":"') = 0
                      OR instr(payment_context_json, '"orderId":""') > 0))
         )
         LIMIT 1""")
-    suspend fun findTerminalHold(): PaymentAttemptEntity?
+    suspend fun findTerminalHold(esKiosco: Boolean = false): PaymentAttemptEntity?
 
     /**
      * 🔴 ¿Hay un cobro cuyo desenlace financiero NO se conoce?
@@ -181,7 +190,12 @@ interface PaymentAttemptDao {
      *     pantalla la ve el cliente, así que ni se le puede preguntar ni se le puede enseñar el
      *     importe de la venta de otro. Sin esto, un kiosco que se reinicia pierde su orden en
      *     memoria, crea otra y cobra dos veces la misma compra (Codex, 2026-09-12).
-     *  2. **La venta**, por `orderId`, para TODO estado no resuelto — y para una DESCARTADA con evidencia positiva
+     *  2. **La venta**, por `orderId`, para TODO estado no resuelto — 🔴 **salvo la duda de la PAX sin dinero conocido**
+     *     (founder, 25-sep: «Cobrar» sólo avisa, igual que Pago rápido): un `INDETERMINADO` de Blumon con motivo, sin
+     *     aprobación del host, sin evidencia `APPROVED`, sin veto y sin desenlace del servidor con dinero YA NO cerca su venta;
+     *     el cajero ve el aviso y decide. Con dinero conocido no es duda: sigue cercada. La cuarentena y la fila sin motivo
+     *     también. Cada comparación es a prueba de NULL (`IS`, `IS NOT`): un `NOT (…)` con columnas nulas dejaría pasar filas
+     *     en silencio — y para una DESCARTADA con evidencia positiva
      *     DURABLE del servidor (fix 4, D3c): liberada por la ventana pero con el banco aprobando después, esa venta
      *     sigue cercada INCLUSO si la nueva solicitud del POS es otra. Codex r7 (P1-2): lo mismo con un VETO
      *     durable del servidor (`server_veto`) — la fila liberada NO se reabre (apartaría el aparato por una
@@ -217,8 +231,9 @@ interface PaymentAttemptDao {
                     AND (:esKiosco = 1
                          OR hold.last_error IS NULL
                          OR hold.last_error = 'cuarentena_por_antiguedad'
-                         OR instr(hold.payment_context_json, '"orderId":"') = 0
-                         OR instr(hold.payment_context_json, '"orderId":""') > 0))
+                         OR (hold.processor <> 'BLUMON'
+                             AND (instr(hold.payment_context_json, '"orderId":"') = 0
+                                  OR instr(hold.payment_context_json, '"orderId":""') > 0))))
                 OR (hold.state = 'DESCARTADA' AND hold.server_processor_evidence IS 'APPROVED'
                     AND (:esKiosco = 1
                          OR instr(hold.payment_context_json, '"orderId":"') = 0
@@ -228,7 +243,15 @@ interface PaymentAttemptDao {
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
             SELECT 1 FROM payment_attempts dup
             WHERE dup.legacy_shadow = 0
-            AND (dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+            AND (dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+                 OR (dup.state = 'INDETERMINADO'
+                     AND (dup.processor IS NOT 'BLUMON'
+                          OR dup.last_error IS NULL
+                          OR dup.last_error = 'cuarentena_por_antiguedad'
+                          OR dup.host_approved IS 1
+                          OR dup.server_processor_evidence IS 'APPROVED'
+                          OR dup.server_veto IS NOT NULL
+                          OR dup.server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE')))
                  OR (dup.state = 'DESCARTADA' AND dup.server_processor_evidence IS 'APPROVED')
                  OR (dup.state = 'DESCARTADA' AND dup.server_veto IS NOT NULL))
             AND instr(dup.payment_context_json, :orderJsonFragment) > 0
@@ -295,7 +318,15 @@ interface PaymentAttemptDao {
      */
     @Query("""SELECT * FROM payment_attempts dup
         WHERE dup.legacy_shadow = 0
-        AND (dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND (dup.state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+             OR (dup.state = 'INDETERMINADO'
+                 AND (dup.processor IS NOT 'BLUMON'
+                      OR dup.last_error IS NULL
+                      OR dup.last_error = 'cuarentena_por_antiguedad'
+                      OR dup.host_approved IS 1
+                      OR dup.server_processor_evidence IS 'APPROVED'
+                      OR dup.server_veto IS NOT NULL
+                      OR dup.server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE')))
              OR (dup.state = 'DESCARTADA' AND dup.server_processor_evidence IS 'APPROVED')
              OR (dup.state = 'DESCARTADA' AND dup.server_veto IS NOT NULL))
         AND instr(dup.payment_context_json, :orderJsonFragment) > 0 LIMIT 1""")
@@ -338,6 +369,9 @@ interface PaymentAttemptDao {
     @Query("SELECT * FROM payment_attempts WHERE attempt_id = :attemptId")
     suspend fun getById(attemptId: String): PaymentAttemptEntity?
 
+    @Query("SELECT * FROM payment_attempts WHERE attempt_id = :attemptId AND venue_id = :venueId")
+    fun observeAttempt(attemptId: String, venueId: String): kotlinx.coroutines.flow.Flow<PaymentAttemptEntity?>
+
     /**
      * The CAS everything rides on (spec §4.4): a transition only lands if the row
      * is still in one of the expected states. Returns 0 when it didn't match —
@@ -367,6 +401,9 @@ interface PaymentAttemptDao {
      * de `"orderId":"`, y termina en la comilla siguiente — la misma forma compacta que escribe Gson y que ya comparan
      * la guarda 2 y la migración 34→35.
      */
+    // 24-sep (founder, «la PAX avisa, no traba»): el INDETERMINADO de Blumon sin venta deja de cerrar el paso, igual que en
+    // [findTerminalHold] y la guarda 1 de [reserveTerminal]. ponytail: aquí no hay `esKiosco`; en el kiosco ya lo niega la
+    // reserva y sólo corre un flujo a la vez. Si algún día corren dos, pasar el kiosco también a este candado.
     // 🔴 Codex final-3 (23-sep): la MISMA cerca también para entrar al LECTOR (KERNEL_ACTIVO). El lector puede aprobar SOLO
     // (contactless offline, EMV local) sin pasar por AUTORIZANDO; con la cerca sólo en la autorización, B entraba al lector sobre
     // la venta de A en cuanto la puerta escribía el dinero de A (KERNEL_ACTIVO = 1, reproducido con el esquema 40).
@@ -383,8 +420,9 @@ interface PaymentAttemptDao {
                    OR (other.state = 'INDETERMINADO'
                        AND (other.last_error IS NULL
                             OR other.last_error = 'cuarentena_por_antiguedad'
-                            OR instr(other.payment_context_json, '"orderId":"') = 0
-                            OR instr(other.payment_context_json, '"orderId":""') > 0))
+                            OR (other.processor <> 'BLUMON'
+                                AND (instr(other.payment_context_json, '"orderId":"') = 0
+                                     OR instr(other.payment_context_json, '"orderId":""') > 0))))
                    OR (other.state = 'DESCARTADA' AND other.server_processor_evidence IS 'APPROVED'
                        AND (instr(other.payment_context_json, '"orderId":"') = 0
                             OR instr(other.payment_context_json, '"orderId":""') > 0))
@@ -440,7 +478,11 @@ interface PaymentAttemptDao {
     @Query(
         """UPDATE payment_attempts
            SET state = :newState, state_version = state_version + 1, updated_at = :now, last_error = :error
-           WHERE attempt_id = :attemptId AND state IN (:expectedStates)"""
+           WHERE attempt_id = :attemptId AND state IN (:expectedStates)
+             AND (:newState != 'DESCARTADA' OR (
+                 host_approved IS NOT 1 AND server_processor_evidence IS NOT 'APPROVED'
+                 AND server_veto IS NULL AND server_payment_id IS NULL
+                 AND server_outcome IS NULL))"""
     )
     suspend fun casWithError(attemptId: String, expectedStates: List<String>, newState: String, now: Long, error: String?): Int
 
@@ -709,14 +751,14 @@ interface PaymentAttemptDao {
      * dinero sin `paymentId`) se hace DURABLE. UPDATE idempotente por `attempt_id + venue_id`, en CUALQUIER estado (INDETERMINADO,
      * DESCARTADA, REGISTRO_FALLIDO…), sin tocar `state`, `state_version`, `host_approved`, `server_outcome` ni `updated_at`;
      * `server_processor_evidence_at` conserva la PRIMERA vez (repetir la evidencia no renueva las 72 h del aviso F0). Mismo alcance
-     * que el checkpoint: AngelPay, SALE, no heredada. La marca NUNCA se degrada a NULL ni se convierte en `host_approved`.
+     * que el checkpoint: AngelPay/Blumon, SALE, no heredada. La marca NUNCA se degrada a NULL ni se convierte en `host_approved`.
      */
     @Query(
         """UPDATE payment_attempts
            SET server_processor_evidence = 'APPROVED',
                server_processor_evidence_at = COALESCE(server_processor_evidence_at, :at)
            WHERE attempt_id = :attemptId AND venue_id = :venueId
-             AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'""",
+             AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'""",
     )
     suspend fun marcarEvidenciaPositivaDelServidor(attemptId: String, venueId: String, at: Long): Int
 
@@ -765,7 +807,7 @@ interface PaymentAttemptDao {
      */
     @Query(
         """SELECT * FROM payment_attempts
-           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
            AND state != 'CERRADA'
            AND (state NOT IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO') OR updated_at < :vivosAntesDe)
            AND (server_outcome IS NULL OR server_outcome IN ('REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE','RELEASED_NO_EVIDENCE','OPERATOR_NO_INSTRUMENT'))
@@ -809,7 +851,7 @@ interface PaymentAttemptDao {
     // ganador nunca sale de este conjunto por sí sola y, con 50 de ellas delante, el intento 51 no se reaplicaba jamás.
     @Query(
         """SELECT * FROM payment_attempts
-           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+           WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
            AND server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE')
            AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','ENTREGADA_A_COLA','INDETERMINADO')
            AND host_approved IS NOT 0
@@ -852,15 +894,15 @@ interface PaymentAttemptDao {
         // 🔴 Codex r16 (P1): la marca que APARTA el aparato va dentro de ESTA transacción. Todo veredicto trae dinero de este
         // intento, y bastaba con que UN llamador olvidara marcar antes (el respaldo de S5 de la pantalla) para dejar una
         // DESCARTADA con RECORDED que no apartaba nada. Aquí nadie la salta y no hay ventana entre las dos escrituras: si falla,
-        // falla todo. Su propio WHERE la acota (AngelPay · SALE · no heredada · ESTE venue); sin atribuir el Payment.
+        // falla todo. Su propio WHERE la acota (AngelPay/Blumon · SALE · no heredada · ESTE venue); sin atribuir el Payment.
         marcarEvidenciaPositivaDelServidor(v.attemptId, v.venueId, now)
         // 🔴 Ronda 21 (Codex r19, P1-1): el VETO que trajo la MISMA respuesta, en la MISMA transacción. Aplicado sin él, un
         // RECORDED con `evidenceContradiction` dejaba la fila limpia y el aviso ofrecía «Entendido» (confirmar y volver a cobrar).
         v.veto?.let { marcarVetoDelServidor(v.attemptId, v.venueId, it, now) }
         val requestId = v.requestId ?: fila.terminalPaymentRequestId
-        // Codex (código, P1-2/P1-6): fuera del checkpoint (heredada, Blumon/PAX, devolución) NO es un rechazo — quien llama
+        // Codex (código, P1-2/P1-6): fuera del checkpoint (heredada, procesador desconocido, devolución) NO es un rechazo — quien llama
         // sigue su camino anterior; un venue o una solicitud ajenos SÍ lo son (anomalía: no se pisa nada).
-        if (fila.legacyShadow || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY || fila.kind != PaymentAttemptEntity.KIND_SALE)
+        if (fila.legacyShadow || fila.processor !in setOf(PaymentAttemptEntity.PROCESSOR_ANGELPAY, PaymentAttemptEntity.PROCESSOR_BLUMON) || fila.kind != PaymentAttemptEntity.KIND_SALE)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE, false, null, false)
         if (fila.venueId != v.venueId ||
             (v.requestId != null && fila.terminalPaymentRequestId != null && fila.terminalPaymentRequestId != v.requestId)
@@ -938,8 +980,9 @@ interface PaymentAttemptDao {
         """UPDATE payment_attempts SET state = 'DESCARTADA', last_error = :motivo, server_outcome = :serverOutcome,
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
            WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id = :requestId
-             AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+             AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
              AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL
+             AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
              AND server_veto IS NULL""",
@@ -960,8 +1003,9 @@ interface PaymentAttemptDao {
         """UPDATE payment_attempts SET state = 'DESCARTADA', last_error = :motivo, server_outcome = :serverOutcome,
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
            WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id IS NULL
-             AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
+             AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
              AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL
+             AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
              AND server_veto IS NULL""",

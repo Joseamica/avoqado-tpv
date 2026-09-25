@@ -97,11 +97,10 @@ class MultiMerchantSDKManager @Inject constructor(
      * table (`InitData.getPosId()`), which this check never looks at — so two merchants that
      * share a serial, or an Init table left holding a previous merchant's posId, both pass here.
      *
-     * Kept cheap and synchronous **on purpose**: the sale route calls it before every charge,
-     * and making it read the SDK table would add a Room hit (and a false-negative → a 3-5s
-     * re-init) to every cobro. Sales accept that risk; money-OUT paths must not.
-     *
-     * For anything irreversible (refunds), use [isMerchantEffectivelyActive] instead.
+     * Sirve para decidir si hace falta un cambio de cuenta, NUNCA para decidir que se puede cobrar:
+     * la venta pasa por [ensureEffectivelyActive] y los reembolsos por [isMerchantEffectivelyActive].
+     * 24-sep-2026: en la PAX de pruebas esta revisión dijo «ya está» (misma serie) mientras el SDK
+     * cobraba con otra cuenta (376 en vez de 5729) y Blumon contestó NO AUTORIZADO.
      *
      * @param account Merchant account to check
      * @return true if this account's serial matches the runtime serial
@@ -126,8 +125,9 @@ class MultiMerchantSDKManager @Inject constructor(
      * **money guard**, so unknown ⇒ **not aligned** (fail-CLOSED). A false negative costs a 3-5s
      * re-init that re-asserts the correct posId; a false positive costs a misrouted refund.
      *
-     * **Cost:** one Room read on the SDK's Init table. Only call it on paths that can afford it
-     * (refunds) — never per-cobro. Callers that get `false` should switch with `force = true`,
+     * **Cost:** one Room read on the SDK's Init table. Corre en CADA venta (vía
+     * [ensureEffectivelyActive]) desde el 24-sep-2026: una lectura es barata; cobrar con la cuenta
+     * equivocada no. Callers that get `false` should switch with `force = true`,
      * otherwise [switchMerchant]'s serial-only fast path will no-op right back into the bug.
      *
      * @param account Merchant account the caller intends to transact with
@@ -173,6 +173,47 @@ class MultiMerchantSDKManager @Inject constructor(
                 "(posId=$effectivePosId, serial=${account.serialNumber})"
         )
         return true
+    }
+
+    /**
+     * Deja el SDK cobrando con ESTA cuenta —serie y posId efectivo de su tabla Init— o dice por qué
+     * no. Es la revisión que corre antes de pedir la tarjeta en una venta.
+     *
+     * **Por qué existe (24-sep-2026):** en la PAX de pruebas se eligió «Avoqado Full» (posId 5729) y
+     * el SDK cobró con 376, la cuenta de respaldo con la que el arranque lo había inicializado. La
+     * serie era la misma, así que [isMerchantActive] no vio nada y Blumon contestó NO AUTORIZADO.
+     *
+     * Si la tabla no trae esta cuenta (o no se puede leer) se reinicializa con ella UNA vez y se
+     * vuelve a leer: un re-init que dice «éxito» pero deja otra cuenta NO es éxito.
+     *
+     * @param onRepair se llama justo antes del re-init (3-5 s), para que la pantalla diga qué pasa
+     * @return éxito sólo si serie y posId efectivo coinciden; si no, el motivo para el cajero
+     */
+    suspend fun ensureEffectivelyActive(
+        account: MerchantAccount,
+        onRepair: () -> Unit = {},
+    ): Result<Unit> {
+        if (account.posId.isNullOrBlank()) {
+            return Result.failure(IllegalStateException(
+                "La cuenta «${account.displayName}» no tiene configurada su afiliación de cobro. Avisa a soporte."
+            ))
+        }
+        if (isMerchantEffectivelyActive(account)) {
+            currentMerchant = account
+            return Result.success(Unit)
+        }
+        onRepair()
+        switchMerchant(account, force = true).onFailure { return Result.failure(it) }
+        if (isMerchantEffectivelyActive(account)) return Result.success(Unit)
+
+        Timber.e("🚨 [MerchantCheck] El re-init no dejó el SDK con '${account.displayName}' — no se cobra")
+        val motivo = if (initializationManager.readEffectivePosId().isNullOrBlank()) {
+            "No se pudo confirmar con qué cuenta cobraría la terminal. Intenta de nuevo; si sigue, reinicia la app."
+        } else {
+            "La terminal sigue configurada con otra cuenta de cobro (se esperaba «${account.displayName}»). " +
+                "Reinicia la app; si sigue, avisa a soporte."
+        }
+        return Result.failure(IllegalStateException(motivo))
     }
 
     /**

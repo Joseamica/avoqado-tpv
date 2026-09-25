@@ -867,6 +867,7 @@ private fun WelcomeScreenContent(
 
         // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement, hidden
         // once restaurant mode is ON (spec D-4 — never shown alongside Mesas)
+        // and wherever "Cobrar" is on: it replaces this legacy tile (founder, 25-sep).
         if (shouldShowOrderManagementTile(tpvSettings)) {
             val ordersEnabled = canOperate && canWork
             val ordersBadge = when {

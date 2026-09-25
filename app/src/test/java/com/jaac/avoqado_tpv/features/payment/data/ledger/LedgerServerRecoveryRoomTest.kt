@@ -1084,7 +1084,7 @@ class LedgerServerRecoveryRoomTest {
         dao.cerrarPorLiberacionDelServidor("w2", venue, "req-w2", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1)
         val antes1 = dao.getById("w1")!!; val antes2 = dao.getById("w2")!!
         fila("legacy", "INDETERMINADO", requestId = "req-legacy", hostApproved = null)
-        dao.insert(PaymentAttemptEntity(attemptId = "blumon", venueId = venue, processor = "BLUMON", state = "INDETERMINADO", amountCents = 1, tipCents = 0,
+        dao.insert(PaymentAttemptEntity(attemptId = "unsupported", venueId = venue, processor = "OTHER", state = "INDETERMINADO", amountCents = 1, tipCents = 0,
             recordingRoute = "FAST", paymentContextJson = "{}", createdAt = now, updatedAt = now, terminalPaymentRequestId = "req-b"))
         db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET legacy_shadow = 1 WHERE attempt_id = 'legacy'")
 
@@ -1093,7 +1093,7 @@ class LedgerServerRecoveryRoomTest {
         assertThat(dao.marcarEvidenciaPositivaDelServidor("w1", venue, now + 5_000)).isEqualTo(1)   // idempotente…
         assertThat(dao.marcarEvidenciaPositivaDelServidor("w1", "otro-venue", now)).isEqualTo(0)      // pertenencia
         assertThat(dao.marcarEvidenciaPositivaDelServidor("legacy", venue, now)).isEqualTo(0)        // alcance del checkpoint
-        assertThat(dao.marcarEvidenciaPositivaDelServidor("blumon", venue, now)).isEqualTo(0)
+        assertThat(dao.marcarEvidenciaPositivaDelServidor("unsupported", venue, now)).isEqualTo(0)
 
         val w1 = dao.getById("w1")!!; val w2 = dao.getById("w2")!!
         assertThat(w1.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
@@ -1104,7 +1104,7 @@ class LedgerServerRecoveryRoomTest {
         assertThat(w2.copy(serverProcessorEvidence = null, serverProcessorEvidenceAt = null)).isEqualTo(antes2)
         assertThat(w2.state).isEqualTo("DESCARTADA"); assertThat(w2.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE"); assertThat(w2.hostApproved).isNull()
         assertThat(dao.getById("legacy")!!.serverProcessorEvidence).isNull()
-        assertThat(dao.getById("blumon")!!.serverProcessorEvidence).isNull()
+        assertThat(dao.getById("unsupported")!!.serverProcessorEvidence).isNull()
     }
 
     @Test fun `fix4 W1 recover - S6 APPROVED sin Payment deja la evidencia DURABLE en la fila, no libera y la fila sigue INDETERMINADO`() = runTest {

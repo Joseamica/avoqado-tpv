@@ -901,7 +901,23 @@ fun PaymentScreen(
                     }
                 }
                 is PaymentState.Error -> {
-                    PaymentErrorContent(
+                    val recoveryAttemptId = currentState.unresolvedAttemptId
+                    if (recoveryAttemptId != null && !isRefundMode) {
+                        val recovery: BlumonRecoveryViewModel = hiltViewModel()
+                        val recoveryState by recovery.state.collectAsStateWithLifecycle()
+                        LaunchedEffect(recoveryAttemptId) { recovery.start(recoveryAttemptId) }
+                        BlumonRecoveryContent(
+                            result = recoveryState.result,
+                            busy = recoveryState.busy,
+                            secondsRemaining = recoveryState.secondsRemaining,
+                            hasPermission = recoveryState.hasPermission,
+                            onConsult = recovery::consultAgain,
+                            onDeclare = { recovery.declare() },
+                            onDeclareChecked = { recovery.declare(checked = true) },
+                            onBack = { viewModel.resetPayment(); navigateBack() },
+                            hasCheckPermission = recoveryState.hasCheckPermission,
+                        )
+                    } else PaymentErrorContent(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
                         showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir caja" button

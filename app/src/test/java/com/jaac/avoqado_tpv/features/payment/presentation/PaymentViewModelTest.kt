@@ -195,6 +195,8 @@ class PaymentViewModelTest {
             every { getCurrentMerchant() } returns null
             every { isMerchantActive(any()) } returns false
             coEvery { switchMerchant(any()) } returns Result.success(Unit)
+            // La venta alinea la cuenta efectiva del SDK antes de pedir tarjeta (24-sep); aqui ya esta alineada.
+            coEvery { ensureEffectivelyActive(any(), any()) } returns Result.success(Unit)
         }
 
         // Configure TransProcessRepository with required flows
@@ -384,6 +386,7 @@ class PaymentViewModelTest {
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
+            blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
             appContext = mockAppContext
@@ -2550,7 +2553,9 @@ class PaymentViewModelTest {
     }
 
     @Test
-    fun `review actual offline kernel approval survives missing auth and cannot reset to PRE`() = runTest {
+    fun `P1 un aprobado offline del chip no es cobro - no se anota como aprobacion y no se resetea a PRE`() = runTest {
+        // 🔴 Founder, 25-sep: «ninguna transacción en Blumon ni AngelPay puede ser offline». Antes esta prueba exigía anotar
+        // el «aprobado» del chip como respuesta del host; ahora ese resultado va a autorizarse en línea con Blumon.
         val response = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
             every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_OFFLINE_APPROVED
         }
@@ -2569,11 +2574,15 @@ class PaymentViewModelTest {
             Thread.sleep(1500)
             testDispatcher.scheduler.advanceUntilIdle()
             coVerify(exactly = 1) { kernel.run(any()) }
-            // Approval must be durable even when the registration authentication guard returns.
-            coVerify(atLeast = 1) { mockPaymentAttemptLedger.markHostResponded(any(), true, any(), any(), any()) }
-            vm.resetPayment()
+            // El chip no cobra: sin respuesta de Blumon no hay aprobación que anotar ni éxito que publicar.
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markHostResponded(any(), true, any(), any(), any()) }
             verify(exactly = 0) {
-                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+                mockSocketManager.emitTerminalPaymentResult(any(), "success", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            vm.resetPayment()
+            // Cancelar a medias puede salir «en duda», nunca «seguro que no se cobró» (PRE_AUTHORIZATION).
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = "PRE_AUTHORIZATION")
             }
         } finally { vm.viewModelScope.cancel() }
     }

@@ -274,6 +274,7 @@ class PaymentViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never blocks a charge
     private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
+    private val blumonAttemptResolver: com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver,
     // 🚨 ObservabilityManager — structured telemetry for money-safety gaps (mirrors the field
     // AngelPayPaymentViewModel already carries); used by reportRecordingLost when a card charge
     // succeeds but neither the backend NOR the local offline queue can record it.
@@ -3411,9 +3412,16 @@ class PaymentViewModel @Inject constructor(
                     // 🔴 Y de las DOS causas que quedan se dice CUÁL, nombrando importe y antigüedad de la
                     // fila que estorba: «no se pudo guardar el intento O esta venta tiene un cobro pendiente»
                     // dejaba al cajero sin saber qué resolver (founder, 21-sep, viéndolo en la TPV).
+                    val blockedAttempt = paymentAttemptLedger.retencionDelAparato(sessionSnapshot.isKioskPayment)
+                        ?: getOrderIdForFlow()?.let { paymentAttemptLedger.retencionDeLaVenta(it) }
                     _state.value = PaymentState.Error(
-                        paymentAttemptLedger.motivoDeLaBarrera(getOrderIdForFlow(), sessionSnapshot.paymentAttemptId),
+                        paymentAttemptLedger.motivoDeLaBarrera(
+                            getOrderIdForFlow(), sessionSnapshot.paymentAttemptId, esKiosco = sessionSnapshot.isKioskPayment,
+                        ),
                         context = createPaymentContext(), canRetry = false,
+                        unresolvedAttemptId = blockedAttempt?.takeIf {
+                            paymentAttemptLedger.puedeConciliarBlumon(it, currentVenueId)
+                        }?.attemptId,
                     )
                 }
                 return@launch
@@ -3435,7 +3443,9 @@ class PaymentViewModel @Inject constructor(
      * Separated from startPayment() to allow coroutine launch for shift check
      */
     private fun continuePaymentFlow() {
+        val preparationAttemptId = sessionSnapshot.paymentAttemptId
         viewModelScope.launch(Dispatchers.IO) {
+            var authorizationRequested = false
             try {
                 // ═══════════════════════════════════════════════════════════════════════════
                 // PASO -1: Sync order to backend (LOCAL-FIRST CRITICAL STEP)
@@ -3467,12 +3477,12 @@ class PaymentViewModel @Inject constructor(
                         Timber.i("✅ [Local-First] Order synced successfully before payment")
                     } catch (e: Exception) {
                         Timber.e(e, "❌ [Local-First] Failed to sync order before payment")
-                        _state.value = PaymentState.Error(
+                        showPreparationError(preparationAttemptId, PaymentState.Error(
                             message = "Error sincronizando orden antes del pago.\n\n" +
                                      "La orden se guardó localmente pero no se pudo enviar al servidor.\n" +
                                      "Verifique su conexión e intente nuevamente.",
                             context = createPaymentContext()
-                        )
+                        ))
                         return@launch
                     }
                 } else if (orderIdForFlow != null && skipLocalValidation) {
@@ -3493,42 +3503,51 @@ class PaymentViewModel @Inject constructor(
                 // concurrent switches (queued by Mutex) leading to confusing UI states.
                 if (_merchantSwitchingLoading.value) {
                     Timber.w("⚠️ [Merchant Switch] Switch already in progress, blocking duplicate request")
-                    _state.value = PaymentState.Error(
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
                         message = "Ya hay un cambio de cuenta en progreso.\n\n" +
                                   "Por favor espere a que termine la operación actual.",
                         context = createPaymentContext()
-                    )
+                    ))
                     return@launch
                 }
 
                 val selectedMerchant = _currentMerchant.value
                 if (selectedMerchant == null) {
                     Timber.e("❌ [Merchant Switch] No merchant selected before payment")
-                    _state.value = PaymentState.Error(
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
                         message = "Debe seleccionar una cuenta de pago antes de continuar",
                         context = createPaymentContext()
-                    )
+                    ))
                     return@launch
                 }
 
-                // Check if we need to switch merchants (3-5 seconds if switching, 0ms if already active)
-                if (!multiMerchantSDKManager.isMerchantActive(selectedMerchant)) {
-                    Timber.i("🔄 [Merchant Switch] Switching SDK to: ${selectedMerchant.displayName} (${selectedMerchant.serialNumber})")
-                    _state.value = PaymentState.Processing("Configurando cuenta ${selectedMerchant.displayName}...")
-
-                    val switchResult = multiMerchantSDKManager.switchMerchant(selectedMerchant)
-                    if (switchResult.isFailure) {
-                        val error = switchResult.exceptionOrNull()
-                        Timber.e(error, "❌ [Merchant Switch] Failed to switch to: ${selectedMerchant.displayName}")
-                        _state.value = PaymentState.Error(
-                            message = "Error configurando cuenta:\n${error?.message ?: "Error desconocido"}",
-                            context = createPaymentContext()
-                        )
-                        return@launch
+                // 🔴 El SDK cobra con la cuenta de SU tabla Init, no con la serie. 24-sep, PAX de pruebas: se
+                // eligió 5729, la tabla traía 376 (misma serie) y Blumon contestó NO AUTORIZADO. Se repara
+                // aquí, ANTES de pedir la tarjeta; si no se puede, no se pide y la reserva se cierra.
+                val alineacion = multiMerchantSDKManager.ensureEffectivelyActive(selectedMerchant) {
+                    Timber.w("🔄 [Merchant Switch] El SDK no cobra con ${selectedMerchant.displayName} — se reinicializa")
+                    if (sessionSnapshot.paymentAttemptId == preparationAttemptId) {
+                        _state.value = PaymentState.Processing("Configurando cuenta ${selectedMerchant.displayName}...")
                     }
-                    Timber.i("✅ [Merchant Switch] Successfully switched to: ${selectedMerchant.displayName}")
-                } else {
-                    Timber.d("✅ [Merchant Switch] Already on correct merchant: ${selectedMerchant.displayName} (no switch needed)")
+                }
+                if (alineacion.isFailure) {
+                    val error = alineacion.exceptionOrNull()
+                    Timber.e(error, "❌ [Merchant Switch] El SDK no quedó con: ${selectedMerchant.displayName}")
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
+                        message = "No se pidió la tarjeta ni se hizo ningún cargo.\n\n" +
+                            (error?.message ?: "No se pudo preparar la cuenta de cobro."),
+                        context = createPaymentContext()
+                    ))
+                    return@launch
+                }
+                // Sincronizar la orden o reparar la cuenta puede terminar cuando la venta ya se canceló
+                // o cambió: esa venta ya no pide tarjeta, y su reserva no se queda apartando la terminal.
+                if (sessionSnapshot.paymentAttemptId != preparationAttemptId) {
+                    Timber.w("⬅️  [Payment Flow] La venta cambió mientras se preparaba — no se abre el lector")
+                    preparationAttemptId?.let { id ->
+                        withContext(NonCancellable) { paymentAttemptLedger.markDiscardedBeforeCharge(id, "preparation_abandoned") }
+                    }
+                    return@launch
                 }
 
                 stopCardPollingBeforeEmv("sale")
@@ -3594,7 +3613,8 @@ class PaymentViewModel @Inject constructor(
                 val detectResult = startDetectCardUseCase.run(detectParams)
                 paymentPhaseTracker.exitPhase(PaymentSdkPhase.DETECT_CARD, if (detectResult.isRight) PhaseOutcome.OK else PhaseOutcome.FAILED)
 
-                if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
+                if (sessionSnapshot.paymentAttemptId != preparationAttemptId ||
+                    !_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
                     Timber.d("⬅️  [Payment Flow] Detect card result ignored - payment cancelled/back")
                     return@launch
                 }
@@ -3612,10 +3632,10 @@ class PaymentViewModel @Inject constructor(
                         else ->
                             "Error detectando tarjeta.\n\nPor favor, intente de nuevo."
                     }
-                    _state.value = PaymentState.Error(
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
                         message = userMessage,
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                    )
+                    ))
                     return@launch
                 }
 
@@ -3624,7 +3644,8 @@ class PaymentViewModel @Inject constructor(
                 val detectedReaderType = pollingResult.readerType
                 val cardType = mapReaderTypeToCardType(detectedReaderType)
 
-                if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
+                if (sessionSnapshot.paymentAttemptId != preparationAttemptId ||
+                    !_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
                     Timber.d("⬅️  [Payment Flow] Card detected after cancel - ignoring result")
                     return@launch
                 }
@@ -3646,10 +3667,10 @@ class PaymentViewModel @Inject constructor(
                     }
                     CardType.UNKNOWN -> {
                         Timber.e("❌ [ROUTING] Unknown card type detected: $detectedReaderType")
-                        _state.value = PaymentState.Error(
+                        showPreparationError(preparationAttemptId, PaymentState.Error(
                             message = "Tipo de tarjeta no soportado",
                             context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                        )
+                        ))
                         return@launch
                     }
                 }
@@ -3689,10 +3710,10 @@ class PaymentViewModel @Inject constructor(
                         is StartEmvTransFailure.EMVFailure -> "Error al procesar la tarjeta. Por favor, intente de nuevo."
                         else -> "Error procesando tarjeta. Por favor, intente de nuevo."
                     }
-                    _state.value = PaymentState.Error(
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
                         message = friendlyMessage,
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                    )
+                    ))
                     return@launch
                 }
 
@@ -3826,6 +3847,8 @@ class PaymentViewModel @Inject constructor(
                 // Per Edgardo Olvera (2025-01-21): "Es float... Si tienes que poner un decimal"
                 // PreTrans uses cents (Long.parseLong), but SaleIcc uses decimal format
                 val amountForSaleIcc = formatAmountDecimal(calculateTotal(getAmountForFlow(), getTipForFlow()))
+                if (sessionSnapshot.paymentAttemptId != preparationAttemptId) return@launch
+                authorizationRequested = true
                 val authResult = performOnlineAuthorization(
                     amount = amountForSaleIcc,  // ✅ Total (subtotal + tip) in decimal format
                     track2 = sessionSnapshot.track2,  // Extracted from emvTagListStr above
@@ -3940,17 +3963,45 @@ class PaymentViewModel @Inject constructor(
                     blumonOperationNumber = operationNumber, // 💸 Pass for refunds without webhook
                 )
 
+            } catch (cancelled: CancellationException) {
+                // Cancelling a coroutine is not proof that a native SDK operation ended.
+                throw cancelled
             } catch (e: Exception) {
                 Timber.e(e, "❌ [BlumonPayment] Unexpected error in payment flow")
-                // ⭐ Clean up SDK state and release guard to allow retry
+                if (sessionSnapshot.paymentAttemptId != preparationAttemptId) return@launch
                 try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
-                _isPaymentInProgress.value = false
-                _state.value = PaymentState.Error(
+                val error = PaymentState.Error(
                     message = "Error inesperado: ${e.message}",
                     context = createPaymentContext(),
                     canRetry = true
                 )
+                if (!authorizationRequested) {
+                    showPreparationError(preparationAttemptId, error)
+                } else {
+                    _isPaymentInProgress.value = false
+                    _state.value = error
+                }
             }
+        }
+    }
+
+    /** A failed read never reached SaleIcc. Persist that fact BEFORE enabling retry/navigation. */
+    private suspend fun showPreparationError(attemptId: String?, error: PaymentState.Error) {
+        val discarded = attemptId != null && withContext(NonCancellable) {
+            paymentAttemptLedger.markDiscardedBeforeCharge(attemptId, "preparation_failed")
+        }
+        // A delayed write belongs to the original sale, never to a newer screen/session.
+        if (sessionSnapshot.paymentAttemptId != attemptId) return
+        _isPaymentInProgress.value = false
+        if (discarded) {
+            negativeOutcomeEvidence = "PRE_AUTHORIZATION"
+            _state.value = error
+        } else {
+            // Failed persistence or positive evidence must keep the original reservation intact.
+            _state.value = error.copy(
+                message = "No se pudo cerrar el intento anterior de forma segura. No vuelvas a pasar la tarjeta todavía.",
+                canRetry = false,
+            )
         }
     }
 
@@ -4353,6 +4404,16 @@ class PaymentViewModel @Inject constructor(
                     message = "Error inesperado en reembolso: ${e.message}",
                     canRetry = true
                 )
+            } finally {
+                // 🔴 25-sep (founder: «nunca trabe nada, sólo avise»). Un reembolso que YA TERMINÓ no deja su intento «en
+                // vuelo»: PREPARANDO/KERNEL_ACTIVO/AUTORIZANDO apartan la terminal hasta reiniciar la app. Lo que nunca
+                // entró al lector se descarta; lo que entró sin veredicto queda «en duda», que en la PAX fuera del kiosco
+                // avisa y no aparta. Las dos marcas sólo mueven filas SIN veredicto: nunca un reembolso aprobado. No corre
+                // si el flujo se canceló: ahí la llamada del SDK puede seguir viva.
+                if (isActive) {
+                    paymentAttemptLedger.markDiscardedBeforeCharge(refundAttemptId, "reembolso_terminado_antes_del_lector")
+                    paymentAttemptLedger.markIndeterminate(refundAttemptId, "reembolso_terminado_sin_veredicto")
+                }
             }
         }
     }
@@ -4579,35 +4640,14 @@ class PaymentViewModel @Inject constructor(
                     processContactlessRefundOnlineAuth(formatAmountDecimal(totalAmount))
                 }
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
-                    Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")
-                    // 🔒 The card chip approved this without calling the bank — money already
-                    // moved. Open the SAME money window as an online authorization, or a POS
-                    // cancel during the backend recording call would go unblocked and the refund
-                    // record would be lost (this one has NO offline queue — see handleRefundSuccess).
-                    // 🔴 La devolución se ANOTA antes de cantar éxito. Sin esto el dinero salía
-                    // y no quedaba registro en ninguna parte — y aquí duele más que en la venta,
-                    // porque el registro del reembolso no tiene cola offline que lo rescate: el
-                    // negocio devolvería el mismo importe otra vez.
-                    val obligacionDelReembolso = paymentAttemptLedger.markHostResponded(
-                        attemptId = refundKernelAttemptId, approved = true,
-                        operationId = null, referenceNumber = null, authCode = "OFFLINE_APPROVED",
-                    )
-                    if (!obligacionDelReembolso) {
-                        paymentStateHolder.setCharging(true)
-                        authorizationApproved = true
-                        authorizationUnresolved = true
-                        showUnresolvedAuthorization()
-                        return
-                    }
-                    paymentStateHolder.setCharging(true)
-                    recordingInFlight = true
-                    _state.value = PaymentState.Success(
-                        authCode = "OFFLINE_APPROVED",
-                        amount = getAmountForFlow(),
-                        isRefund = true
-                    )
-                    // Note: Offline refunds should still be recorded to backend
-                    handleRefundSuccess(saleData = null, entryMode = CardEntryMode.CONTACTLESS)
+                    // 🔴 25-sep (founder: «ninguna transacción en Blumon ni AngelPay puede ser offline, no tienen esa
+                    // función»). El «aprobado offline» es sólo del CHIP: el dinero lo devuelve Blumon (CancelIcc) o no se
+                    // devuelve. Antes aquí se anotaba el reembolso SIN llamar a Blumon: el dashboard decía «reembolsado» y
+                    // la tarjeta seguía cobrada (VISA en la PAX de pruebas, $254, operación Blumon 25238796). Va en línea
+                    // igual que REQ_ONLINE y OFFLINE_DENIED.
+                    Timber.w("[CONTACTLESS REFUND] RESULT_OFFLINE_APPROVED del chip → se autoriza en línea con Blumon (no existe reembolso offline)")
+                    val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
+                    processContactlessRefundOnlineAuth(formatAmountDecimal(totalAmount))
                 }
                 TransResultEnum.RESULT_OFFLINE_DENIED -> {
                     // 💸 EMV SPEC: Para REEMBOLSOS, OFFLINE_DENIED significa "requiero autorización online"
@@ -4735,6 +4775,7 @@ class PaymentViewModel @Inject constructor(
     // (Task 2, vigilante de autorización) and returns this type — Kotlin forbids a
     // less-visible return type on a more-visible function.
     @Volatile private var authorizationUnresolved = false
+    @Volatile private var authorizationReturned = false
     @Volatile private var authorizationApproved = false
     @Volatile private var negativeOutcomeEvidence: String? = null
     @Volatile private var financialOperationStarted = false
@@ -4891,6 +4932,9 @@ class PaymentViewModel @Inject constructor(
                 else "Estamos confirmando el cobro. No vuelvas a pasar la tarjeta.\n\n" +
                     "El intento está guardado para conciliación. No inicies otro cobro de esta venta.",
             context = createPaymentContext(), canRetry = false,
+            unresolvedAttemptId = sessionSnapshot.paymentAttemptId.takeIf {
+                authorizationReturned && !authorizationApproved && sessionSnapshot.refundContext == null
+            },
         )
     }
 
@@ -4917,6 +4961,7 @@ class PaymentViewModel @Inject constructor(
         // bank response → charge approved with nobody recording it). Closed by the init-block
         // collector on the next RESOLVED state (which is only reached AFTER recording), and
         // by onCleared() as a backstop.
+        authorizationReturned = false
         paymentStateHolder.setCharging(true)
         // 📒 [Libreta] Barrier: AUTORIZANDO is committed BEFORE the SDK may fire (spec §4.4).
         val durableAttemptId = sessionSnapshot.paymentAttemptId
@@ -5234,17 +5279,16 @@ class PaymentViewModel @Inject constructor(
                     // contactless limit or issuer-forced chip. Signal the caller to prompt chip
                     // insertion + retry instead of a hard decline. Match both the parsed
                     // description and the raw Momentum codeResponse.
+                    // El código del banco se lee del OBJETO del SDK (`momentumFailure`), no de `errorString`:
+                    // ahí nunca viene y todo rechazo del emisor quedaba "desconocido" (ver blumonIssuerCode).
+                    val issuerCode = blumonIssuerCode(failure)
                     val requiresChipInsertion = isContactless && (
                         (specificErrorDescription?.contains("INSERTE TARJETA", ignoreCase = true) == true) ||
-                            errorString.contains("\"codeResponse\":\"1A\"", ignoreCase = true) ||
-                            errorString.contains("codeResponse=1A", ignoreCase = true)
+                            issuerCode == "1A"
                     )
 
                     // Only an explicit issuer/EMV refusal resolves this authorization.
-                    val issuerCode = Regex("codeResponse[\\\"=:\\s]+([0-9A-Z]{2})").find(errorString)?.groupValues?.get(1)
-                    val definitive = failure.javaClass.simpleName != "GenericFailure" &&
-                        ((isContactless && issuerCode == "1A") ||
-                            issuerCode in setOf("05", "14", "41", "43", "51", "54", "55", "57", "58", "61", "62", "65"))
+                    val definitive = blumonRechazoDefinitivo(failure, isContactless)
                     if (definitive) {
                         negativeOutcomeEvidence = "PROCESSOR_DECLINED"
                         authorizationUnresolved = false
@@ -5252,8 +5296,10 @@ class PaymentViewModel @Inject constructor(
                             paymentAttemptLedger.markHostResponded(it, false, null, null, null)
                         }
                     } else {
+                        // Lo que contestó Blumon viaja con el intento: sin esto la pantalla sólo podía decir
+                        // «estamos confirmando» aunque Blumon hubiera dicho «NO AUTORIZADO» (PAX de pruebas, 24-sep).
                         sessionSnapshot.paymentAttemptId?.let {
-                            paymentAttemptLedger.markIndeterminate(it, failure.javaClass.simpleName)
+                            paymentAttemptLedger.markIndeterminate(it, blumonMotivoSinVeredicto(failure, specificErrorDescription))
                         }
                         showUnresolvedAuthorization()
                     }
@@ -5397,6 +5443,10 @@ class PaymentViewModel @Inject constructor(
             )
         }
         } finally {
+            // Finishing a cancelled coroutine is not proof that the native SDK stopped charging.
+            authorizationReturned = authAttemptOutcomeCode?.endsWith("CancellationException") == false &&
+                kotlinx.coroutines.currentCoroutineContext().isActive
+            if (authorizationUnresolved && !authorizationApproved && authorizationReturned) showUnresolvedAuthorization()
             // Cubre éxito, declinación, error y cancelación. Un observador que
             // no se apaga es una fuga que sigue escalando avisos sobre una
             // pantalla que ya cambió.
@@ -5590,6 +5640,11 @@ class PaymentViewModel @Inject constructor(
                     else ->
                         "No se pudo validar la cancelación.\n\nIntente nuevamente o contacte a soporte."
                 }
+                // 🔴 25-sep: si Blumon contestó que no (4xx), la cancelación nunca se mandó: se cierra el intento para
+                // que la terminal siga cobrando. Lo que no se sabe queda «en duda» por la red del final de startRefund.
+                if (blumonReembolsoRechazado(validateFailure)) {
+                    sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markHostResponded(it, false, null, null, null) }
+                }
                 return RefundAuthorizationResult(response = null, userFriendlyError = userMessage)
             }
             val validateData = validateResult.rightValue().validateCancelData
@@ -5659,7 +5714,9 @@ class PaymentViewModel @Inject constructor(
                     val refundErrorString = failure.toString()
                     val userMessage = when {
                         specificErrorDescription != null -> {
-                            "Reembolso rechazado:\n\n$specificErrorDescription"
+                            "Reembolso rechazado:\n\n$specificErrorDescription" +
+                                if (specificErrorDescription?.contains("TARJETA INVALIDA", ignoreCase = true) == true)
+                                    "\n\nEl reembolso se hace con la MISMA tarjeta con la que se cobró." else ""
                         }
                         refundErrorString.contains("NetworkConnection", ignoreCase = true) -> {
                             "Sin conexión a internet.\n\nVerifique su conexión e intente nuevamente."
@@ -5673,6 +5730,12 @@ class PaymentViewModel @Inject constructor(
                         }
                     }
 
+                    // 🔴 25-sep (PAX de pruebas): Blumon rechazó la cancelación (400, TX_010 TARJETA INVALIDA: otra
+                    // tarjeta) y el intento se quedaba AUTORIZANDO, apartando la terminal hasta reiniciar la app. Un 4xx de
+                    // Blumon es un «no»: nada se devolvió. Sin 4xx (red, 5xx) queda «en duda» por la red de startRefund.
+                    if (blumonReembolsoRechazado(failure)) {
+                        sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markHostResponded(it, false, null, null, null) }
+                    }
                     RefundAuthorizationResult(response = null, userFriendlyError = userMessage)
                 }
                 else -> {
@@ -5853,42 +5916,15 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
-                    // Card approved offline (no online authorization needed)
-                    Timber.i("🎉 [CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED → Payment approved offline!")
-                    // 🔒 The card chip approved this without calling the bank — money already
-                    // moved. Open the SAME money window as an online authorization, or a POS
-                    // cancel during the backend recording call would go unblocked and the sale
-                    // would be lost mid-record.
+                    // 🔴 25-sep (founder: «ninguna transacción en Blumon ni AngelPay puede ser offline»). Un «aprobado
+                    // offline» del CHIP no cobra nada: Blumon no tiene cobro offline. Antes aquí se anotaba la venta sin que
+                    // Blumon la viera (0 casos en producción al 25-sep; el mismo defecto sí pasó con un reembolso).
+                    Timber.w("[CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED del chip → se autoriza en línea con Blumon (no existe cobro offline)")
+                    // El kernel ya dio un veredicto: por la regla del cobro remoto (entrar al lector cuenta como operación
+                    // capaz de autorizar), un reset a medias NO puede afirmar PRE_AUTHORIZATION al POS — sale «en duda».
                     financialOperationStarted = true
-                    authorizationApproved = true
-                    authorizationUnresolved = false
-                    negativeOutcomeEvidence = null
-                    // 🔴 La obligación se GUARDA antes de cantar éxito. Si el disco falla, el
-                    // dinero YA se movió y no queda registro en ninguna parte: publicar Success
-                    // ahí dejaba al cajero cobrando de nuevo una venta ya pagada.
-                    val obligacionGuardada = sessionSnapshot.paymentAttemptId?.let {
-                        paymentAttemptLedger.markHostResponded(it, true, null, null, "OFFLINE_APPROVED")
-                    } ?: true
-                    if (!obligacionGuardada) {
-                        authorizationUnresolved = true
-                        paymentStateHolder.setCharging(true)
-                        showUnresolvedAuthorization()
-                        return
-                    }
-                    paymentStateHolder.setCharging(true)
-                    recordingInFlight = true
-                    // ✅ FIX: Display total (subtotal + tip)
-                    _state.value = PaymentState.Success(
-                        authCode = "OFFLINE_APPROVED",
-                        amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
-                        tipAmount = getTipForFlow()
-                    )
-
-                    // ⭐ Record offline payment to backend (same pattern as offline refunds)
-                    handlePaymentSuccess(
-                        saleData = null,
-                        entryMode = CardEntryMode.CONTACTLESS,
-                    )
+                    val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
+                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount))
                 }
 
                 TransResultEnum.RESULT_OFFLINE_DENIED -> {
@@ -7097,9 +7133,36 @@ class PaymentViewModel @Inject constructor(
      * Use retryPayment() instead to preserve user's entered data.
      */
     fun resetPayment() {
-        if (authorizationUnresolved) { showUnresolvedAuthorization(); return }
+        if (authorizationUnresolved) {
+            val attemptId = sessionSnapshot.paymentAttemptId
+            if (!authorizationReturned || authorizationApproved || attemptId == null || sessionSnapshot.refundContext != null) {
+                showUnresolvedAuthorization()
+                return
+            }
+            val venueId = currentVenueId
+            val requestId = _socketRequestId
+            viewModelScope.launch {
+                val resolution = blumonAttemptResolver.current(venueId, attemptId)
+                // The kiosk keeps this ViewModel alive. A suspended read must never reset a newer sale.
+                if (sessionSnapshot.paymentAttemptId != attemptId || currentVenueId != venueId ||
+                    _socketRequestId != requestId || !authorizationReturned || authorizationApproved) return@launch
+                val resolved = resolution.state == com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.State.RELEASED ||
+                    resolution.state == com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.State.RECORDED
+                if (!resolved || resolution.row?.terminalPaymentRequestId != requestId) {
+                    showUnresolvedAuthorization()
+                    return@launch
+                }
+                authorizationUnresolved = false
+                // Recovery already owns the durable POS result. Exiting must not invent a cancellation,
+                // PRE_AUTHORIZATION evidence or a second outcome for a payment already recorded.
+                _socketRequestId = null
+                resetPayment()
+            }
+            return
+        }
         val hadApprovedAuthorization = authorizationApproved
         authorizationApproved = false
+        authorizationReturned = false
         cancelMerchantSelectionPreparation("resetPayment")
         stopPhaseObserver()
         cancelarCierreDelCobroRemoto()
@@ -7426,6 +7489,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun returnToSelectingMerchantFromError(context: RetryContext?) {
+        if (authorizationUnresolved || authorizationApproved) { showUnresolvedAuthorization(); return }
         Timber.i("↩️ [Error Cancel] Returning to SelectingMerchant | context=$context")
 
         _isPaymentInProgress.value = false
@@ -7476,6 +7540,8 @@ class PaymentViewModel @Inject constructor(
 
         updateSessionSnapshot(
             reason = "error-cancel",
+            // Only a proven negative card outcome starts a new attempt. Cash recording keeps its key.
+            paymentAttemptIdClear = negativeOutcomeEvidence != null,
             amountOverride = context.amount,
             tipOverride = context.tipAmount,
             ratingOverride = context.rating,
@@ -7621,7 +7687,7 @@ class PaymentViewModel @Inject constructor(
             is PaymentState.ConfiguringKernel,
             is PaymentState.Processing -> {
                 Timber.w("⚠️  [Payment Flow] Back not allowed during payment processing")
-                false
+                true // Consumed: false tells PaymentScreen to reset and navigate away.
             }
 
             is PaymentState.DetectingCard -> {
@@ -7662,28 +7728,50 @@ class PaymentViewModel @Inject constructor(
     }
 
     private fun returnToSelectingMerchantFromCardDetection() {
+        val previous = sessionSnapshot
+        val attemptId = previous.paymentAttemptId
+        // Reject late detection callbacks immediately; keep new attempts out until the close is durable.
+        _state.value = PaymentState.Processing("Cancelando lectura de tarjeta...")
         viewModelScope.launch {
-            stopDetectCardUseCase.runInfallible(StopDetectCardParams())
+            try {
+                stopDetectCardUseCase.runInfallible(StopDetectCardParams())
+                val discarded = attemptId != null && withContext(NonCancellable) {
+                    paymentAttemptLedger.markDiscardedBeforeCharge(attemptId, "back_from_card_detection")
+                }
+                if (sessionSnapshot.paymentAttemptId != attemptId) return@launch
+                if (!discarded) {
+                    _isPaymentInProgress.value = false
+                    _state.value = PaymentState.Error(
+                        "No se pudo cerrar el intento anterior de forma segura. No vuelvas a pasar la tarjeta todavía.",
+                        context = createPaymentContext(), canRetry = false,
+                    )
+                    return@launch
+                }
+                negativeOutcomeEvidence = "PRE_AUTHORIZATION"
+                updateSessionSnapshot(
+                    reason = "back-from-detecting-card",
+                    paymentAttemptIdClear = true,
+                    track2Clear = true,
+                    emvIssuerCountryClear = true,
+                )
+                _isPaymentInProgress.value = false
+                _state.value = PaymentState.SelectingMerchant(
+                    subtotal = previous.amount.toPlainString(),
+                    tipAmount = previous.tip.toPlainString(),
+                    totalAmount = (previous.amount + previous.tip).toPlainString(),
+                    rating = previous.rating,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Timber.e(error, "No se pudo detener la lectura de tarjeta")
+                if (sessionSnapshot.paymentAttemptId != attemptId) return@launch
+                _state.value = PaymentState.Error(
+                    "No se pudo detener la lectura de tarjeta. No vuelvas a pasar la tarjeta todavía.",
+                    canRetry = false,
+                )
+            }
         }
-
-        _isPaymentInProgress.value = false  // 🚦 Release guard
-
-        updateSessionSnapshot(
-            reason = "back-from-detecting-card",
-            track2Clear = true,
-            emvIssuerCountryClear = true
-        )
-
-        val subtotal = sessionSnapshot.amount.toPlainString()
-        val tipAmount = sessionSnapshot.tip.toPlainString()
-        val totalAmount = (sessionSnapshot.amount + sessionSnapshot.tip).toPlainString()
-
-        _state.value = PaymentState.SelectingMerchant(
-            subtotal = subtotal,
-            tipAmount = tipAmount,
-            totalAmount = totalAmount,
-            rating = sessionSnapshot.rating
-        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -8450,9 +8538,7 @@ class PaymentViewModel @Inject constructor(
 
             // Mask PAN from Track2 or BIN
             val maskedPan = if (sessionSnapshot.track2.isNotEmpty()) {
-                val panEndIndex = sessionSnapshot.track2.indexOf('=')
-                val pan = if (panEndIndex > 0) sessionSnapshot.track2.substring(0, panEndIndex) else sessionSnapshot.track2
-                maskPan(pan)
+                maskPan(panDelTrack2(sessionSnapshot.track2))
             } else if (bin.isNotEmpty()) {
                 "$bin******XXXX" // Use BIN with masked suffix
             } else {
@@ -8506,9 +8592,8 @@ class PaymentViewModel @Inject constructor(
         entryMode: CardEntryMode,
     ): CardDetails {
         return try {
-            // Extract PAN (before '=' separator)
-            val panEndIndex = track2.indexOf('=')
-            val pan = if (panEndIndex > 0) track2.substring(0, panEndIndex) else track2
+            // El número va antes del separador: `D` en el tag 57 del chip, `=` en la banda (ver panDelTrack2).
+            val pan = panDelTrack2(track2)
 
             // Mask PAN (show first 6 and last 4 digits)
             val maskedPan = maskPan(pan)

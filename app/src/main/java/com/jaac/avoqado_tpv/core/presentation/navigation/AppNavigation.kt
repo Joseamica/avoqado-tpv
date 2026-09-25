@@ -934,7 +934,7 @@ fun AppNavigation(
                         }
                     }
                 }
-                val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
+                val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora, esPax = BuildConfig.ENABLE_PAX_SDK)
                 if (aviso != null) {
                     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
                         Row(
@@ -942,6 +942,7 @@ fun AppNavigation(
                             // ofrecía «Ayuda»: le decía al cajero que hay un cobro sin confirmar y lo dejaba
                             // sin ningún sitio donde comprobar si entró. No se puede descartar a propósito —
                             // desaparece cuando la obligación se resuelve, nunca porque alguien la tape.
+                            // En la PAX, además, se quita solo a los 10 min (founder, 24-sep): no recibe el aviso del banco.
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { navController.navigate(NavRoute.Payments.createRoute()) }

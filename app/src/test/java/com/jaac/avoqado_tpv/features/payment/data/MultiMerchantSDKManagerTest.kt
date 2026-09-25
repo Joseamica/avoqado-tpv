@@ -257,4 +257,91 @@ class MultiMerchantSDKManagerTest {
         assertThat(message).contains("Default Merchant")
         assertThat(message).contains(defaultSerial)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ensureEffectivelyActive — PAX de pruebas 24-sep: se eligió 5729, el SDK mandó 376 (misma serie)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val cuentaReal = MerchantAccount(
+        id = "avoqado_full",
+        serialNumber = "2841548417",
+        posId = "5729",
+        displayName = "Avoqado Full",
+        environment = MerchantEnvironment.PRODUCTION,
+        isActive = true
+    )
+
+    @Test
+    fun `ensureEffectivelyActive con la cuenta ya alineada no reinicializa`() = runTest {
+        coEvery { mockInitializationManager.readEffectivePosId() } returns "5729"
+        var reparo = false
+
+        val result = manager.ensureEffectivelyActive(cuentaReal) { reparo = true }
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(reparo).isFalse()
+        coVerify(exactly = 0) { mockInitializationManager.forceReinitialize(any()) }
+        assertThat(manager.getCurrentMerchant()).isEqualTo(cuentaReal)
+    }
+
+    @Test
+    fun `ensureEffectivelyActive con otra cuenta en el SDK reinicializa con la elegida y la verifica`() = runTest {
+        var efectivo = "376"
+        coEvery { mockInitializationManager.readEffectivePosId() } answers { efectivo }
+        coEvery { mockInitializationManager.forceReinitialize(any()) } answers {
+            efectivo = firstArg<String?>().orEmpty()
+            Result.success(Unit)
+        }
+        var reparo = false
+
+        val result = manager.ensureEffectivelyActive(cuentaReal) { reparo = true }
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(reparo).isTrue()
+        coVerify(exactly = 1) { mockInitializationManager.forceReinitialize(merchantPosId = "5729") }
+    }
+
+    @Test
+    fun `ensureEffectivelyActive propaga el motivo cuando el re-init falla`() = runTest {
+        coEvery { mockInitializationManager.readEffectivePosId() } returns "376"
+        coEvery { mockInitializationManager.forceReinitialize(any()) } returns
+            Result.failure(Exception("Network unreachable"))
+
+        val result = manager.ensureEffectivelyActive(cuentaReal)
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()?.message).contains("conectar")
+    }
+
+    @Test
+    fun `ensureEffectivelyActive no acepta un re-init que dice exito pero deja otra cuenta`() = runTest {
+        coEvery { mockInitializationManager.readEffectivePosId() } returns "376"
+
+        val result = manager.ensureEffectivelyActive(cuentaReal)
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()?.message).contains("otra cuenta")
+    }
+
+    @Test
+    fun `ensureEffectivelyActive sin poder leer la cuenta efectiva falla cerrado tras un intento`() = runTest {
+        coEvery { mockInitializationManager.readEffectivePosId() } returns null
+
+        val result = manager.ensureEffectivelyActive(cuentaReal)
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()?.message).contains("No se pudo confirmar")
+        coVerify(exactly = 1) { mockInitializationManager.forceReinitialize(merchantPosId = "5729") }
+    }
+
+    @Test
+    fun `ensureEffectivelyActive con una cuenta sin posId no toca el SDK`() = runTest {
+        val sinPosId = cuentaReal.copy(posId = null)
+
+        val result = manager.ensureEffectivelyActive(sinPosId)
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()?.message).contains("Avoqado Full")
+        coVerify(exactly = 0) { mockInitializationManager.forceReinitialize(any()) }
+    }
 }

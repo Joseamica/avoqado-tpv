@@ -183,6 +183,9 @@ fun shouldShowTablesTile(settings: TpvSettings): Boolean = settings.restaurantMo
  * never both point at the same table at once (spec D-4). `showOrderManagement`
  * itself stays `true` at the global default on purpose: terminals without
  * Mesas keep it.
+ *
+ * Founder, 25-sep: «Ordenar ya es legacy, no debería ni de aparecer». «Cobrar» la sustituye: donde «Cobrar»
+ * está prendido (el default), «Ordenes» no sale. Sólo queda de respaldo si un negocio apagó «Cobrar».
  */
 fun shouldShowOrderManagementTile(settings: TpvSettings): Boolean =
-    settings.showOrderManagement && !settings.restaurantModeEnabled
+    settings.showOrderManagement && !settings.restaurantModeEnabled && !settings.showCheckout

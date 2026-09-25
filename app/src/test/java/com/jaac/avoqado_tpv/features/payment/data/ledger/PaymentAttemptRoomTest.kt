@@ -63,12 +63,14 @@ class PaymentAttemptRoomTest {
             assertTrue("un rechazo del kernel no puede dejar la caja sin cobrar",
                 ledger.openAttempt("siguiente-venta", "venue", "BLUMON", 100, 0, "FAST", "{}"))
 
-            // En cambio un desenlace INCIERTO retiene: pudo haber cobro.
+            // En cambio un desenlace INCIERTO no se da por resuelto: pudo haber cobro.
             assertTrue(ledger.markKernelEntered("siguiente-venta"))
             ledger.markIndeterminate("siguiente-venta", "TIMEOUT")
             assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("siguiente-venta")?.state)
-            assertFalse("un TIMEOUT del kernel NO libera la terminal",
-                ledger.openAttempt("tercera", "venue", "BLUMON", 100, 0, "FAST", "{}"))
+            assertNotNull("un TIMEOUT del kernel NO acredita que no se cobró", db.paymentAttemptDao().findUnresolvedCharge())
+            // En la PAX eso se AVISA y la caja sigue (founder, 24-sep); en el kiosco, donde nadie lee el aviso, aparta.
+            assertFalse("en el kiosco un TIMEOUT del kernel NO libera la terminal",
+                ledger.openAttempt("tercera", "venue", "BLUMON", 100, 0, "FAST", "{}", esKiosco = true))
         } finally { db.close() }
     }
 
@@ -434,6 +436,149 @@ class PaymentAttemptRoomTest {
             assertEquals(1, dao.casTransition("pax", listOf("REGISTRO_FALLIDO"), "ENTREGADA_A_COLA", 50))
             assertTrue("con el cobro ya encolado el negocio sigue cobrando",
                 ledger.openAttempt("siguiente", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
+        } finally { db.close() }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Decisión del founder (24-sep): en la PAX un cobro que quedó sin veredicto AVISA, no traba.
+    // La PAX no recibe el aviso del banco y su SDK no acepta nuestra referencia: apartarla hasta
+    // tener evidencia la dejaba sin cobrar horas (la de pruebas, con un $10; Mindform, con diez).
+    // Lo que sigue apartando es lo que puede seguir EJECUTÁNDOSE: el lector en uso, la cuarentena
+    // por reloj, la fila sin motivo de una versión vieja; y en el kiosco, todo (no hay cajero que lea).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun ledgerEnMemoria(): Pair<AvoqadoDatabase, PaymentAttemptLedger> {
+        val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
+            .allowMainThreadQueries().build()
+        val settings = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository>(relaxed = true)
+        return db to PaymentAttemptLedger(db.paymentAttemptDao(), settings)
+    }
+
+    @Test fun `P1 en la PAX un Pago rapido sin veredicto avisa pero deja cobrar la siguiente venta`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            val dao = db.paymentAttemptDao()
+            assertTrue(ledger.openAttempt("dudoso", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+            assertTrue(ledger.markAuthorizing("dudoso"))
+            ledger.markIndeterminate("dudoso", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
+
+            assertNull("la PAX no queda apartada por un cobro que ya terminó sin veredicto", dao.findTerminalHold())
+            assertTrue("la siguiente venta entra", ledger.openAttempt("siguiente", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+            assertTrue("y llega al lector", ledger.markKernelEntered("siguiente"))
+
+            // El cinturón: el cobro dudoso sigue guardado y sigue en el aviso del mostrador.
+            assertEquals("INDETERMINADO", dao.getById("dudoso")?.state)
+            val aviso = db.remotePaymentRequestDao().observePendingObligations("venue").first()
+            assertEquals(listOf(1000L), aviso.map { it.totalCentavos })
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 la PAX con un cobro sin veredicto tambien deja AUTORIZAR la siguiente venta`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            assertTrue(ledger.openAttempt("dudoso", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+            assertTrue(ledger.markAuthorizing("dudoso"))
+            ledger.markIndeterminate("dudoso", "Blumon sin veredicto: GenericFailure")
+            assertTrue(ledger.openAttempt("siguiente", "venue", "BLUMON", 2500, 0, "FAST", "{}"))
+            assertTrue("la barrera de AUTORIZANDO dice lo mismo que la de reservar", ledger.markAuthorizing("siguiente"))
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 en el kiosco de la PAX el cobro sin veredicto sigue apartando el aparato`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            assertTrue(ledger.openAttempt("dudoso", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+            assertTrue(ledger.markAuthorizing("dudoso"))
+            ledger.markIndeterminate("dudoso", "Blumon sin veredicto: GenericFailure")
+            assertFalse("en autoservicio nadie lee el aviso: no se abre otro cobro",
+                ledger.openAttempt("kiosco", "venue", "BLUMON", 1000, 0, "FAST", "{}", esKiosco = true))
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 la Nexgo no cambia - su cobro sin veredicto y sin venta sigue apartando hasta el aviso del banco`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            assertTrue(ledger.openAttempt("dudoso", "venue", "ANGELPAY", 1000, 0, "FAST", "{}"))
+            assertTrue(ledger.markAuthorizing("dudoso"))
+            ledger.markIndeterminate("dudoso", "AngelPay sin veredicto: TIMEOUT")
+            assertNotNull(db.paymentAttemptDao().findTerminalHold())
+            assertFalse(ledger.openAttempt("siguiente", "venue", "ANGELPAY", 1000, 0, "FAST", "{}"))
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 en la PAX la cuarentena por reloj sigue apartando aunque sea un Pago rapido`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            val dao = db.paymentAttemptDao()
+            assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+            assertTrue(ledger.markKernelEntered("colgado"))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
+            assertNotNull("nadie acreditó que la llamada nativa terminara", dao.findTerminalHold())
+            assertFalse(ledger.openAttempt("otra", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
+        } finally { db.close() }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Decisión del founder (25-sep): «Cobrar» también AVISA, no traba — igual que Pago rápido.
+    // Una duda de la PAX SIN dinero conocido ya no cerca su venta: el cajero ve el aviso y decide.
+    // Si SÍ hay dinero (Avoqado lo confirmó, o hay veto), no es duda: esa venta sigue cercada.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test fun `P1 en la PAX una venta de Cobrar sin veredicto avisa pero se puede volver a cobrar`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            val dao = db.paymentAttemptDao()
+            assertTrue(ledger.openAttempt("dudoso", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
+            assertTrue(ledger.markAuthorizing("dudoso"))
+            ledger.markIndeterminate("dudoso", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
+
+            assertNull("una duda sin dinero ya no cerca su venta", ledger.retencionDeLaVenta("cuenta-1"))
+            assertTrue("la misma venta se puede volver a cobrar",
+                ledger.openAttempt("recobro", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
+            assertTrue("y llega al lector", ledger.markKernelEntered("recobro"))
+
+            // El cinturón: la duda sigue guardada y en el aviso del mostrador.
+            assertEquals("INDETERMINADO", dao.getById("dudoso")?.state)
+            val aviso = db.remotePaymentRequestDao().observePendingObligations("venue").first()
+            assertEquals(listOf(1000L), aviso.map { it.totalCentavos })
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 en la PAX la venta con dinero confirmado por Avoqado sigue cercada`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            assertTrue(ledger.openAttempt("cobrado", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
+            assertTrue(ledger.markAuthorizing("cobrado"))
+            ledger.markIndeterminate("cobrado", "Blumon sin veredicto: GenericFailure")
+            assertTrue(ledger.marcarEvidenciaPositivaDelServidor("venue", "cobrado").getOrThrow())
+
+            assertNotNull("con dinero confirmado no es duda: la venta sigue cercada", ledger.retencionDeLaVenta("cuenta-2"))
+            assertFalse("no se cobra dos veces lo seguro",
+                ledger.openAttempt("doble", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 en la PAX la venta con veto del servidor sigue cercada`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            assertTrue(ledger.openAttempt("vetado", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-3"}"""))
+            assertTrue(ledger.markAuthorizing("vetado"))
+            ledger.markIndeterminate("vetado", "Blumon sin veredicto: GenericFailure")
+            assertTrue(ledger.marcarVetoDelServidor("venue", "vetado", "UNATTRIBUTED_EVIDENCE").getOrThrow())
+
+            assertNotNull(ledger.retencionDeLaVenta("cuenta-3"))
+            assertFalse(ledger.openAttempt("otra-vez", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-3"}"""))
+        } finally { db.close() }
+    }
+
+    @Test fun `P1 en la PAX la cuarentena por reloj sigue cercando su venta`() = runTest {
+        val (db, ledger) = ledgerEnMemoria()
+        try {
+            val dao = db.paymentAttemptDao()
+            assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-4"}"""))
+            assertTrue(ledger.markKernelEntered("colgado"))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
+            assertNotNull("nadie acreditó que el lector terminara", ledger.retencionDeLaVenta("cuenta-4"))
         } finally { db.close() }
     }
 }

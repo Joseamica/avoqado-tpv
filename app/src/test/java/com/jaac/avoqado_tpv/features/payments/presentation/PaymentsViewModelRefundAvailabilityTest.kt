@@ -375,4 +375,37 @@ class PaymentsViewModelRefundAvailabilityTest {
 
         assertThat(location).isEqualTo(RefundLocation.Here)
     }
+
+    @Test
+    fun `P1 un reembolso FALLIDO no deja el pago como reembolsado ni se muestra`() = runTest {
+        // 🔴 25-sep, PAX de pruebas: se anuló en Avoqado un reembolso que Blumon nunca hizo (queda como fila FAILED) y la
+        // lista lo seguía sumando: el pago de $254 salía «Reembolsado» y la terminal no dejaba reembolsarlo de verdad.
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns true
+        coEvery { secureStorage.getVenueId() } returns "venue_1"
+        coEvery { secureStorage.getSerialNumber() } returns "2841548417"
+        fun pago(id: String, total: String, status: PaymentStatus, reembolso: Boolean) = Payment(
+            id = id, orderId = "ord_254", orderNumber = "955058", venueId = "venue_1",
+            amount = BigDecimal(total), tipAmount = BigDecimal.ZERO, totalAmount = BigDecimal(total),
+            method = PaymentMethod.CARD, processedBy = null, createdAt = Instant.now(), status = status,
+            tableName = null, isRefundTransaction = reembolso,
+        )
+        coEvery {
+            paymentRepository.getPaymentHistory(any(), any(), any(), any(), any(), any())
+        } returns Result.Success(PaginatedPayments(listOf(
+            pago("pay_visa", "254.00", PaymentStatus.COMPLETED, reembolso = false),
+            pago("ref_falso", "-254.00", PaymentStatus.FAILED, reembolso = true),
+        ), 2, 1, 20))
+
+        val viewModel = PaymentsViewModel(
+            paymentRepository = paymentRepository,
+            secureStorage = secureStorage,
+            permissionsRepository = permissionsRepository,
+            printerManager = printerManager,
+        )
+        advanceUntilIdle()
+
+        val mostrados = (viewModel.state.value as PaymentsState.Success).payments
+        assertThat(mostrados.map { it.id }).containsExactly("pay_visa")
+        assertThat(mostrados.single().isFullyRefunded).isFalse()
+    }
 }

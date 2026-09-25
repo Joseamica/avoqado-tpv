@@ -76,11 +76,37 @@ class PermissionsRepository @Inject constructor(
          * producción es un singleton; en pruebas cada una trae el suyo.
          */
         private val revocadas = java.util.WeakHashMap<SecureStorage, MutableSet<String>>()
+        private val revisionesDeRevocacion = java.util.WeakHashMap<SecureStorage, MutableMap<String, Long>>()
+
+        private fun revisionDeRevocacion(s: SecureStorage, owner: String?): Long = synchronized(revocadas) {
+            owner?.let { revisionesDeRevocacion[s]?.get(it) } ?: 0L
+        }
 
         /** 🔴 Codex r11 (P2-3): un CONJUNTO por almacenamiento — el 403 de B no puede levantar la revocación de A. */
         private fun estaRevocada(s: SecureStorage, dueno: String) = synchronized(revocadas) { revocadas[s]?.contains(dueno) == true }
-        private fun marcarRevocada(s: SecureStorage, dueno: String) { synchronized(revocadas) { revocadas.getOrPut(s) { mutableSetOf() }.add(dueno) } }
+        private fun marcarRevocada(s: SecureStorage, dueno: String) {
+            synchronized(revocadas) {
+                revocadas.getOrPut(s) { mutableSetOf() }.add(dueno)
+                val revisions = revisionesDeRevocacion.getOrPut(s) { mutableMapOf() }
+                revisions[dueno] = (revisions[dueno] ?: 0L) + 1L
+            }
+        }
         private fun levantarRevocacion(s: SecureStorage, dueno: String) { synchronized(revocadas) { revocadas[s]?.remove(dueno) } }
+
+        /** A denied declaration invalidates only the permission list of the session that sent it. */
+        fun invalidarListaTrasRechazo(secureStorage: SecureStorage, venueId: String, staffId: String?) {
+            val owner = dueno(venueId, staffId) ?: return
+            synchronized(revocadas) {
+                marcarRevocada(secureStorage, owner)
+                runCatching {
+                    val cachedOwner = secureStorage.getString(CACHE_KEY_PERMISSIONS, null)?.substringBefore(SEPARADOR_DUENO)
+                    if (cachedOwner == owner) {
+                        secureStorage.remove(CACHE_KEY_PERMISSIONS)
+                        secureStorage.remove(CACHE_KEY_TIMESTAMP)
+                    }
+                }
+            }
+        }
 
         private fun listaGuardada(secureStorage: SecureStorage): Set<String>? {
             val sesion = duenoDeLaSesion(secureStorage) ?: return null
@@ -149,6 +175,7 @@ class PermissionsRepository @Inject constructor(
         // 2. Fetch from backend
         Timber.d("🔐 Fetching permissions from backend (forceRefresh=$forceRefresh)")
         val sesionAlPedir = duenoDeLaSesion(secureStorage)
+        val revisionAlPedir = revisionDeRevocacion(secureStorage, sesionAlPedir)
         return try {
             val response = apiService.getStaffPermissions()
 
@@ -169,7 +196,13 @@ class PermissionsRepository @Inject constructor(
 
                 // Cache permissions — con su DUEÑO: la persona y el negocio para los que el servidor la calculó.
                 try {
-                    cachePermissions(permissions, duenoDeLaLista)
+                    synchronized(revocadas) {
+                        // A request begun before a denial is not a fresh grant, even if its 200 arrives last.
+                        if (revisionDeRevocacion(secureStorage, sesionAlPedir) != revisionAlPedir) {
+                            return Result.failure(IllegalStateException("Los permisos cambiaron durante la consulta"))
+                        }
+                        cachePermissions(permissions, duenoDeLaLista)
+                    }
                 } catch (e: Exception) {
                     // 🔴 Codex r11 (P2-2): la descarga SÍ trajo la lista vigente; lo que falló fue guardarla. No es «sin red»: la
                     // lista vieja del disco ya no vale (podría conservar un permiso que el servidor acaba de quitar).

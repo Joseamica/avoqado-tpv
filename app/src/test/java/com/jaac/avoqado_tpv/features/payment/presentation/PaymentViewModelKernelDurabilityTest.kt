@@ -52,6 +52,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -198,6 +199,8 @@ class PaymentViewModelKernelDurabilityTest {
             every { getCurrentMerchant() } returns null
             every { isMerchantActive(any()) } returns false
             coEvery { switchMerchant(any()) } returns Result.success(Unit)
+            // La venta alinea la cuenta efectiva del SDK antes de pedir tarjeta (24-sep); aqui ya esta alineada.
+            coEvery { ensureEffectivelyActive(any(), any()) } returns Result.success(Unit)
         }
 
         // Configure TransProcessRepository with required flows
@@ -337,12 +340,20 @@ class PaymentViewModelKernelDurabilityTest {
             mockk(relaxed = true),
         startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
             mockk(relaxed = true),
+        startEmvTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase =
+            mockk(relaxed = true),
+        stopDetectCardUseCase: com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase =
+            mockk(relaxed = true),
+        cancelIccUseCase: com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase =
+            mockk(relaxed = true),
+        validateCancelUseCase: com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase =
+            mockk(relaxed = true),
     ): PaymentViewModel {
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = startDetectCardUseCase,
-            stopDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true),
-            startEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>(relaxed = true),
+            stopDetectCardUseCase = stopDetectCardUseCase,
+            startEmvTransUseCase = startEmvTransUseCase,
             startCtlssTransUseCase = startCtlssTransUseCase,
             getEmvTagUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tags.GetEmvTagUseCase>(relaxed = true),
             completeEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.complete_emv_trans.CompleteEmvTransUseCase>(relaxed = true),
@@ -350,8 +361,8 @@ class PaymentViewModelKernelDurabilityTest {
             setSelectAppCodeUseCase = mockSetSelectAppCodeUseCase,
             saleIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase>(relaxed = true),
             saleCtlsUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase>(relaxed = true),
-            cancelIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase>(relaxed = true),
-            validateCancelUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase>(relaxed = true),
+            cancelIccUseCase = cancelIccUseCase,
+            validateCancelUseCase = validateCancelUseCase,
             transProcessRepository = mockTransProcessRepository,
             initializerUseCase = mockk<com.example.clean_lib_services.shared.initializer.domain.use_case.initializer.InitializerUseCase>(relaxed = true),
             getInitDataUseCase = mockk<com.example.clean_lib_services.shared.initializer.domain.use_case.get_init_data.GetInitDataUseCase>(relaxed = true),
@@ -384,6 +395,7 @@ class PaymentViewModelKernelDurabilityTest {
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
+            blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
             appContext = mockAppContext
@@ -423,101 +435,279 @@ class PaymentViewModelKernelDurabilityTest {
     }
 
     @Test
-    fun `offline approval write failure keeps durable obligation and cannot publish success or cancellation`() = runTest {
+    fun `Mindform detection failure closes its reservation before retry can open another reader`() =
+        checkFailedDetectionRetry(returnToMerchant = false)
+
+    @Test
+    fun `Mindform cancelling an error and choosing card again uses a fresh attempt`() =
+        checkFailedDetectionRetry(returnToMerchant = true)
+
+    private fun checkFailedDetectionRetry(returnToMerchant: Boolean) = runTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
         val dao = db.paymentAttemptDao()
-        val failingOutcomeDao = object : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by dao {
-            override suspend fun casHostResponded(attemptId: String, expectedStates: List<String>, newState: String,
-                now: Long, operationId: String?, referenceNumber: String?, authCode: String?, hostApproved: Boolean): Int {
-                throw java.io.IOException("approval persistence unavailable")
-            }
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val secondRead = CompletableDeferred<Unit>()
+        coEvery { detect.run(any()) } coAnswers {
+            if (calls.incrementAndGet() == 2) secondRead.await()
+            com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
         }
-        mockPaymentAttemptLedger = PaymentAttemptLedger(failingOutcomeDao, mockTpvSettingsRepository)
+        val vm = createViewModel(startDetectCardUseCase = detect)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat(calls.get()).isEqualTo(1)
+            val error = vm.state.value as PaymentState.Error
+            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(error.canRetry).isTrue()
+            if (returnToMerchant) {
+                vm.returnToSelectingMerchantFromError(error.context)
+                vm.startPayment("100.00")
+            } else vm.retryPayment(error.context)
+            esperarA { calls.get() == 2 || vm.state.value is PaymentState.Error }
+            assertWithMessage("retry must reach the reader without deleting storage: ${vm.state.value}")
+                .that(calls.get()).isEqualTo(2)
+            assertThat(dao.findTerminalHold()?.amountCents).isEqualTo(10000L)
+        } finally {
+            vm.viewModelScope.cancel()
+            secondRead.cancel()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `Mindform withdrawn chip before authorization leaves the next sale free`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.ICC
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        coEvery { detect.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(
+            com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap))
+        val emv = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>()
+        coEvery { emv.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(
+            mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure.WithdrawnCardFailure>(relaxed = true))
+        val vm = createViewModel(startDetectCardUseCase = detect, startEmvTransUseCase = emv)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat((vm.state.value as PaymentState.Error).message).contains("Tarjeta retirada")
+            assertThat(dao.findTerminalHold()).isNull()
+            vm.resetPayment()
+            assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isTrue()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `Mindform leaving detection closes the reservation and ignores its late card after a new sale`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val oldCard = CompletableDeferred<Unit>()
+        val nextCard = CompletableDeferred<Unit>()
+        val stopped = CompletableDeferred<Unit>()
+        val oldFlow = CompletableDeferred<kotlinx.coroutines.Job>()
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.PICC
+        coEvery { detect.run(any()) } coAnswers {
+            if (reads.incrementAndGet() == 1) {
+                oldFlow.complete(kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]!!)
+                oldCard.await()
+            } else nextCard.await()
+            com.blumonpay.pax.utils.clean.Either.Right(
+                com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap))
+        }
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
+        val stop = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true)
+        val stops = java.util.concurrent.atomic.AtomicInteger()
+        coEvery { stop.runInfallible(any()) } coAnswers {
+            // First call is preflight; the second is the user leaving detection.
+            if (stops.incrementAndGet() > 1) stopped.await()
+            mockk(relaxed = true)
+        }
+        val vm = createViewModel(startDetectCardUseCase = detect, startCtlssTransUseCase = kernel, stopDetectCardUseCase = stop)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { reads.get() == 1 }
+            val first = dao.findTerminalHold()!!
+            assertThat(vm.goBackOneStep()).isTrue()
+            assertThat(vm.state.value).isInstanceOf(PaymentState.Processing::class.java)
+            assertThat(vm.goBackOneStep()).isTrue() // Consumed: the screen must not reset/navigate away.
+            vm.startPayment("200.00")
+            assertThat(reads.get()).isEqualTo(1)
+            assertThat(dao.getById(first.attemptId)?.state).isEqualTo("PREPARANDO")
+            stopped.complete(Unit)
+            esperarA { vm.state.value is PaymentState.SelectingMerchant }
+            assertThat(dao.getById(first.attemptId)?.state).isEqualTo("DESCARTADA")
+            vm.startPayment("100.00")
+            esperarA { reads.get() == 2 || vm.state.value is PaymentState.Error }
+            assertThat(reads.get()).isEqualTo(2)
+            val next = dao.findTerminalHold()!!
+            assertThat(next.attemptId).isNotEqualTo(first.attemptId)
+            oldCard.complete(Unit)
+            esperarA { oldFlow.getCompleted().isCompleted }
+            assertThat(oldFlow.getCompleted().isCompleted).isTrue()
+            coVerify(exactly = 0) { kernel.run(any()) }
+            assertThat(dao.getById(next.attemptId)?.state).isEqualTo("PREPARANDO")
+            assertThat(vm.state.value).isInstanceOf(PaymentState.DetectingCard::class.java)
+        } finally {
+            vm.viewModelScope.cancel(); oldCard.cancel(); nextCard.cancel(); stopped.cancel(); db.close()
+        }
+    }
+
+    @Test
+    fun `Mindform exception before authorization releases only the failed preparation`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        coEvery { detect.run(any()) } throws java.io.IOException("reader failed")
+        val vm = createViewModel(startDetectCardUseCase = detect)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat((vm.state.value as PaymentState.Error).message).contains("reader failed")
+            assertThat(dao.findTerminalHold()).isNull()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `Mindform failed reservation close cannot offer retry or erase the pending attempt`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        val dao = db.paymentAttemptDao()
+        val broken = object : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by dao {
+            override suspend fun casWithError(attemptId: String, expectedStates: List<String>, newState: String, now: Long, error: String?): Int =
+                throw java.io.IOException("disk unavailable")
+        }
+        mockPaymentAttemptLedger = PaymentAttemptLedger(broken, mockTpvSettingsRepository)
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        coEvery { detect.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
+        val vm = createViewModel(startDetectCardUseCase = detect)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat((vm.state.value as PaymentState.Error).canRetry).isFalse()
+            assertThat(dao.findTerminalHold()?.state).isEqualTo("PREPARANDO")
+            assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isFalse()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 el aprobado offline del chip en una VENTA no se anota como cobro`() = runTest {
+        // 🔴 Founder, 25-sep: «ninguna transacción en Blumon ni AngelPay puede ser offline». Antes, un RESULT_OFFLINE_APPROVED
+        // del chip publicaba Success y registraba la venta sin que Blumon la cobrara. Ahora se autoriza en línea: sin la
+        // respuesta de Blumon no hay cobro que anotar (en este arnés la autorización en línea no tiene tarjeta y falla).
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
         val response = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
             every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_OFFLINE_APPROVED
         }
         val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
-        // Contador propio: `coVerify` sólo sirve al FINAL, y para esperar hace falta observar el
-        // hecho mientras ocurre. La aserción dura sigue siendo el `coVerify` de abajo.
         val vecesQueCorrioElKernel = java.util.concurrent.atomic.AtomicInteger(0)
         coEvery { kernel.run(any()) } answers {
             vecesQueCorrioElKernel.incrementAndGet()
-            every { mockAuthRepository.isAuthenticated() } returns false
             com.blumonpay.pax.utils.clean.Either.Right(response)
         }
         val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
         try {
             vm.selectMerchant(testMerchantA)
-            // El cambio de comercio corre en `Dispatchers.IO` REAL: se espera a su EFECTO
-            // (`_currentMerchant`), que es lo que `continuePaymentFlow()` exige, no a un reloj.
             esperarA { vm.currentMerchant.value != null }
-            vm.setSocketPaymentSource("SOCKET", "offline-write-failed")
+            vm.setSocketPaymentSource("SOCKET", "offline-no-es-cobro")
             vm.startPayment("100.00")
             esperarA { vecesQueCorrioElKernel.get() > 0 }
-            // 🔎 `was not called` NO distingue "el kernel corrió y falló" de "el arnés nunca llegó
-            // al kernel", y ésa fue la ambigüedad que costó la auditoría del 10-sep. Este aserto
-            // NOMBRA dónde se quedó el flujo en vez de decir sólo que el mock no se invocó.
-            assertWithMessage("el arnés debe ALCANZAR el kernel; estado final = ${vm.state.value}")
-                .that(vecesQueCorrioElKernel.get()).isEqualTo(1)
-            coVerify(exactly = 1) { kernel.run(any()) }
-            // 🔴 El contador sube al ENTRAR al mock del kernel, pero la VM procesa ese resultado
-            // DESPUÉS y en `Dispatchers.IO`: sin esperar a que ATERRICE, todo lo de abajo se evalúa
-            // en carrera con el comportamiento que dice guardar — un `Success` publicado por error
-            // llegaría microsegundos tarde y la prueba pasaría igual. Se espera al desenlace REAL
-            // (autorización sin resolver por el fallo de escritura) antes de afirmar nada.
             esperarA { vm.state.value is PaymentState.Error }
-            assertWithMessage("debe aterrizar en 'autorización sin resolver'; estado = ${vm.state.value}")
-                .that((vm.state.value as PaymentState.Error).message).contains("No vuelvas a pasar la tarjeta")
+            assertThat(vecesQueCorrioElKernel.get()).isEqualTo(1)
             assertThat(vm.state.value).isNotInstanceOf(PaymentState.Success::class.java)
-            val hold = dao.findTerminalHold()
-            assertThat(hold).isNotNull()
-            vm.resetPayment()
-            verify(exactly = 0) {
-                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
-            }
             verify(exactly = 0) {
                 mockSocketManager.emitTerminalPaymentResult(any(), "success", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
             }
-            val recreatedLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-            assertThat(recreatedLedger.openAttempt("next", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isFalse()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 
     @Test
-    fun `refund offline approval keeps the durable obligation and cannot publish success`() = runTest {
-        // 💸 El reembolso mueve dinero igual que la venta, pero AL REVÉS y sin red de seguridad:
-        // su registro NO tiene cola offline (ver handleRefundSuccess). Cantar éxito sobre una
-        // devolución que no quedó anotada deja al negocio devolviendo el mismo dinero dos veces.
+    fun `P1 el aprobado offline del chip en un reembolso no se anota y la terminal queda libre`() = runTest {
+        // 🔴 25-sep, PAX de pruebas con tarjetas reales: el chip de una VISA contestó RESULT_OFFLINE_APPROVED y la app
+        // anotó el reembolso de $254 SIN llamar a Blumon (no existe reembolso offline). Y cuando Blumon rechazó otro
+        // reembolso (400, TX_010 TARJETA INVALIDA) el intento se quedó AUTORIZANDO y la terminal no volvió a cobrar.
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
         val dao = db.paymentAttemptDao()
-        val failingOutcomeDao = object : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by dao {
-            override suspend fun casHostResponded(attemptId: String, expectedStates: List<String>, newState: String,
-                now: Long, operationId: String?, referenceNumber: String?, authCode: String?, hostApproved: Boolean): Int {
-                throw java.io.IOException("refund approval persistence unavailable")
-            }
-        }
-        mockPaymentAttemptLedger = PaymentAttemptLedger(failingOutcomeDao, mockTpvSettingsRepository)
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        coEvery { mockInitializationManager.readEffectivePosId() } returns testMerchantA.posId
         val response = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
             every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_OFFLINE_APPROVED
         }
         val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
         coEvery { kernel.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(response)
-        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
+        // Lo que contestó Blumon esa vez, con la forma del SDK: el código vive en el data class del campo.
+        val datos = mockk<com.example.clean_lib_services.shared.core.domain.entity.cancel_data.MomentumDataFailureCancel>()
+        every { datos.toString() } returns "MomentumDataFailureCancel(httpCode=400, code=TX_010, description=TARJETA INVALIDA)"
+        val rechazo = com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccFailure.MomentumFailure(datos)
+        val cancel = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase>()
+        val llamadasABlumon = java.util.concurrent.atomic.AtomicInteger(0)
+        coEvery { cancel.run(any()) } answers {
+            llamadasABlumon.incrementAndGet()
+            com.example.clean_lib_services.utils.clean.Either.Left(rechazo)
+        }
+        val validate = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase>()
+        coEvery { validate.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Right(
+            com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelResponse(mockk(relaxed = true))
+        )
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel,
+            cancelIccUseCase = cancel, validateCancelUseCase = validate)
+        // Timber no imprime en las pruebas: se junta el flujo para que una falla diga DÓNDE se detuvo.
+        val flujo = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) { flujo.add(message.take(160)) }
+        }
+        timber.log.Timber.plant(arbol)
         try {
             vm.selectMerchant(testMerchantA)
-            Thread.sleep(1000)
+            esperarA { vm.currentMerchant.value != null }
             vm.startRefund(createRefundContext())
-            Thread.sleep(1500)
-            testDispatcher.scheduler.advanceUntilIdle()
+            esperarA { vm.state.value is PaymentState.Error }
             coVerify(exactly = 1) { kernel.run(any()) }
+            // El «aprobado» del chip ya no es un reembolso: el flujo va a autorizar en línea (en este arnés la lectura de la
+            // tarjeta viene vacía y la autorización truena antes de Blumon — eso se prueba en la PAX con tarjeta real).
+            assertWithMessage("el aprobado offline debe ir en línea; flujo = ${flujo.takeLast(25)}")
+                .that(flujo.any { it.contains("se autoriza en línea con Blumon") }).isTrue()
             assertThat(vm.state.value).isNotInstanceOf(PaymentState.Success::class.java)
-            // La obligación sigue viva en la libreta: hay algo que recuperar.
-            assertThat(dao.findTerminalHold()).isNotNull()
-        } finally { vm.viewModelScope.cancel(); db.close() }
+            assertThat(llamadasABlumon.get()).isAtMost(1)
+            // Nada se anotó como devuelto…
+            coVerify(exactly = 0) { mockRecordRefundUseCase.invoke(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { mockRefundQueueRepository.enqueueClaimed(any(), any()) }
+            coVerify(exactly = 0) { mockRefundQueueRepository.enqueue(any()) }
+            // …y la terminal quedó libre para la siguiente operación.
+            esperarA { kotlinx.coroutines.runBlocking { dao.findTerminalHold() } == null }
+            assertThat(mockPaymentAttemptLedger.openAttempt("siguiente", testVenueId, "BLUMON", 1000, 0, "FAST", "{}")).isTrue()
+        } finally { timber.log.Timber.uproot(arbol); vm.viewModelScope.cancel(); db.close() }
     }
 
     @Test
@@ -744,7 +934,7 @@ class PaymentViewModelKernelDurabilityTest {
      * dos variantes.
      */
     @Test
-    fun `una fila con desenlace desconocido NO devuelve la terminal`() = runTest {
+    fun `una fila con desenlace desconocido NO se da por resuelta - en la PAX se avisa y la caja sigue`() = runTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
@@ -757,12 +947,208 @@ class PaymentViewModelKernelDurabilityTest {
             // El kernel devuelve algo que no se entiende (o un timeout): NO es prueba de que no se cobró.
             ledger.markIndeterminate("cobro-incierto", "RESULT_DESCONOCIDO")
 
+            // El desenlace del dinero sigue sin conocerse y la fila NO se toca: nadie la da por «no cobrada»...
             assertThat(dao.getById("cobro-incierto")?.state).isEqualTo("INDETERMINADO")
-            // La terminal SIGUE apartada y el desenlace del dinero sigue sin conocerse...
-            assertThat(dao.findTerminalHold()).isNotNull()
             assertThat(dao.findUnresolvedCharge()).isNotNull()
-            // ...así que la siguiente venta NO entra hasta que alguien resuelva ésta.
-            assertThat(ledger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isFalse()
+            assertThat(db.remotePaymentRequestDao().observePendingObligations(testVenueId).first()).isNotEmpty()
+            // ...pero en la PAX eso se AVISA y la caja sigue (founder, 24-sep); en el kiosco, donde nadie lee el aviso, aparta.
+            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(dao.findTerminalHold(esKiosco = true)).isNotNull()
+            assertThat(ledger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
         } finally { db.close() }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 24-sep, PAX de pruebas: se eligió «Avoqado Full» (posId 5729) y el SDK cobró con 376, la cuenta
+    // de respaldo con la que el arranque lo inicializó. Misma serie ⇒ la revisión sólo-serie no vio
+    // nada y Blumon contestó NO AUTORIZADO. Aquí el MultiMerchantSDKManager es el REAL: lo único
+    // simulado es la tabla Init del SDK (el posId que de verdad viaja) y su re-inicialización.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val cuentaElegida = MerchantAccount(
+        id = "avoqado_full", merchantAccountId = "cm-avoqado-full", serialNumber = "2841548417",
+        posId = "5729", displayName = "Avoqado Full", environment = MerchantEnvironment.PRODUCTION, isActive = true,
+    )
+
+    /** [efectivo] = lo que el SDK mandaría a Blumon; [reinicializar] decide qué deja escrito un re-init. */
+    private fun sdkConCuentaEfectiva(
+        efectivo: java.util.concurrent.atomic.AtomicReference<String?>,
+        eventos: MutableList<String>,
+        reinicializar: suspend (String?) -> Result<Unit> = { posId -> efectivo.set(posId); Result.success(Unit) },
+    ) {
+        every { TerminalConfig.serialNumber } returns cuentaElegida.serialNumber
+        coEvery { mockInitializationManager.readEffectivePosId() } answers { efectivo.get() }
+        coEvery { mockInitializationManager.forceReinitialize(any()) } coAnswers {
+            val posId = firstArg<String?>()
+            eventos += "reinit:$posId"
+            reinicializar(posId)
+        }
+        mockMultiMerchantSDKManager = MultiMerchantSDKManager(mockInitializationManager, mockCriticalNetworkOperationManager)
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(listOf(cuentaElegida))
+    }
+
+    /** Lector que anota con qué cuenta efectiva se abrió; termina sin tarjeta. */
+    private fun lectorQueAnota(
+        efectivo: java.util.concurrent.atomic.AtomicReference<String?>,
+        eventos: MutableList<String>,
+    ) = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>().also { detect ->
+        coEvery { detect.run(any()) } coAnswers {
+            eventos += "lector:${efectivo.get()}"
+            com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
+        }
+    }
+
+    private fun filas(db: com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase): List<Pair<String, String>> =
+        db.query("SELECT attempt_id, state FROM payment_attempts ORDER BY created_at, attempt_id", null).use { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0) to c.getString(1)) }
+        }
+
+    private fun baseEnMemoria() = androidx.room.Room.inMemoryDatabaseBuilder(
+        androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+        com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+
+    @Test
+    fun `P1 misma serie y otra cuenta en el SDK - se reinicializa con la elegida ANTES de abrir el lector`() = runTest {
+        val db = baseEnMemoria()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>("376")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        sdkConCuentaEfectiva(efectivo, eventos)
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { eventos.any { it.startsWith("lector") } || vm.state.value is PaymentState.Error }
+            assertWithMessage("la tarjeta sólo se pide con la cuenta elegida; estado = ${vm.state.value}")
+                .that(eventos).containsExactly("reinit:5729", "lector:5729").inOrder()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P2 cuenta ya alineada - no se reinicializa y el lector abre`() = runTest {
+        val db = baseEnMemoria()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>("5729")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        sdkConCuentaEfectiva(efectivo, eventos)
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { eventos.any { it.startsWith("lector") } || vm.state.value is PaymentState.Error }
+            // Un re-init de más cuesta 3-5 s y roza el límite de Blumon: sólo cuando hace falta.
+            assertThat(eventos).containsExactly("lector:5729")
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 si la cuenta no se puede reparar no se abre el lector y el reintento usa otra identidad`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>("376")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val sinRed = java.util.concurrent.atomic.AtomicBoolean(true)
+        sdkConCuentaEfectiva(efectivo, eventos) { posId ->
+            if (sinRed.get()) Result.failure(Exception("network unreachable"))
+            else { efectivo.set(posId); Result.success(Unit) }
+        }
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            val error = vm.state.value as PaymentState.Error
+            assertWithMessage("se intentó reparar y NUNCA se pidió tarjeta").that(eventos).containsExactly("reinit:5729")
+            assertThat(error.message).contains("No se pidió la tarjeta")
+            assertThat(error.canRetry).isTrue()
+            val primero = filas(db).single()
+            assertThat(primero.second).isEqualTo("DESCARTADA")
+            assertThat(dao.findTerminalHold()).isNull()
+
+            sinRed.set(false)
+            vm.retryPayment(error.context)
+            esperarA { eventos.any { it.startsWith("lector") } }
+            assertThat(eventos).containsExactly("reinit:5729", "reinit:5729", "lector:5729").inOrder()
+            val segundo = filas(db).last()
+            assertThat(segundo.first).isNotEqualTo(primero.first)
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 un re-init que dice exito pero deja otra cuenta no abre el lector`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>("376")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        sdkConCuentaEfectiva(efectivo, eventos) { Result.success(Unit) } // «éxito» sin tocar la tabla
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat(eventos).containsExactly("reinit:5729")
+            assertThat((vm.state.value as PaymentState.Error).message).contains("otra cuenta")
+            assertThat(filas(db).single().second).isEqualTo("DESCARTADA")
+            assertThat(dao.findTerminalHold()).isNull()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 sin poder leer la cuenta efectiva no se abre el lector`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        sdkConCuentaEfectiva(efectivo, eventos) { Result.success(Unit) } // la tabla sigue ilegible
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { vm.state.value is PaymentState.Error }
+            assertThat(eventos).containsExactly("reinit:5729")
+            assertThat((vm.state.value as PaymentState.Error).message).contains("No se pidió la tarjeta")
+            assertThat(filas(db).single().second).isEqualTo("DESCARTADA")
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `P1 cancelar mientras se repara la cuenta - al terminar el re-init no se abre el lector`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val efectivo = java.util.concurrent.atomic.AtomicReference<String?>("376")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val reparando = CompletableDeferred<Unit>()
+        val soltar = CompletableDeferred<Unit>()
+        sdkConCuentaEfectiva(efectivo, eventos) { posId ->
+            reparando.complete(Unit)
+            soltar.await()
+            efectivo.set(posId)
+            Result.success(Unit)
+        }
+        val vm = createViewModel(startDetectCardUseCase = lectorQueAnota(efectivo, eventos))
+        try {
+            vm.selectMerchant(cuentaElegida)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("10.00")
+            esperarA { reparando.isCompleted }
+            assertWithMessage("precondición: el re-init está en curso").that(reparando.isCompleted).isTrue()
+            vm.cancelPayment()
+            esperarA { vm.state.value is PaymentState.Cancelled }
+            soltar.complete(Unit)
+            esperarA(timeoutMs = 1_500) { eventos.any { it.startsWith("lector") } }
+            assertWithMessage("un re-init que termina tarde no abre el lector de una venta cancelada")
+                .that(eventos).containsExactly("reinit:5729")
+            assertThat(vm.state.value).isInstanceOf(PaymentState.Cancelled::class.java)
+            assertThat(filas(db).single().second).isEqualTo("DESCARTADA")
+        } finally { vm.viewModelScope.cancel(); soltar.cancel(); db.close() }
     }
 }

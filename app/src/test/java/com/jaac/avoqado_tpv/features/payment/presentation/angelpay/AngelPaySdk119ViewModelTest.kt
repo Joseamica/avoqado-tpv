@@ -152,7 +152,7 @@ class AngelPaySdk119ViewModelTest {
         every { merchantRepository.getActiveMerchants() } returns merchantsFlow
         every { socketManager.events } returns socketEventsFlow
         // 🔑 El candado de versión: el AAR que corre es el auditado.
-        every { sdkGateway.sdkVersion() } returns "1.0.19"
+        every { sdkGateway.sdkVersion() } returns com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA
         every { sdkGateway.isAuthenticated() } returns true
         every { sdkGateway.isInitialized() } returns true
         every { sdkGateway.ensureInitialized(any(), any()) } returns Result.success(Unit)
@@ -277,7 +277,7 @@ class AngelPaySdk119ViewModelTest {
             runCurrent()
 
             coVerify(exactly = 1) {
-                paymentAttemptLedger.markSinAutorizacion(intento, "v1", match { it.startsWith("sin_autorizacion:sdk=1.0.19;code=U101") })
+                paymentAttemptLedger.markSinAutorizacion(intento, "v1", match { it.startsWith("sin_autorizacion:sdk=${com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA};code=U101") })
             }
             val estado = vm.state.value as AngelPayPaymentState.Error
             assertThat(estado.noSeCobro).isTrue()
@@ -898,8 +898,9 @@ class AngelPaySdk119ViewModelTest {
 
     @Test
     fun `P1 T12 con otra version del SDK el MISMO U101 sigue incierto como hoy`() = runTest(testDispatcher) {
-        every { sdkGateway.sdkVersion() } returns "1.0.18"
-        val (vm, intento) = cobroLanzado(requestId = "req-v18")
+        // El 1.0.19 ya no está auditado para la regla: su Cancelar no se revisaba antes de enviar (diseño §4.2, W1/W2).
+        every { sdkGateway.sdkVersion() } returns "1.0.19"
+        val (vm, intento) = cobroLanzado(requestId = "req-v19")
         try {
             vm.onAngelPaySdkResult(u101(intento))
             runCurrent()

@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-09-26
+
+### **Changed**
+- **[Nexgo] SDK de AngelPay 1.0.19 → 1.0.20 (publicado el 22-sep; SHA-256 `7abbe8ea…2282`, el del portal de desarrolladores)**: re-auditado en bytecode antes de moverle el candado a la regla de «no se cobró» (`AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA = "1.0.20"`). Cierra el riesgo de cobro doble del botón Cancelar que el 1.0.19 tenía aceptado (diseño `diseno-nexgo-sdk-1.0.19.md` §4.2, ventanas W1/W2, «decisión U»): el orquestador ahora revisa el Cancelar justo antes de enviar al banco (`h0` 3636 chip, 4525 banda: «cancelado antes de enviar la autorizacion») y el botón sigue ignorando el Cancelar si ya se envió («Cancelar ignorado: la autorizacion ya fue enviada al procesador»). Sin cambios de API que rompan; los dos productores nuevos de `PaymentResult` quedan fijados en pruebas (banda ⇒ «no se cobró», chip con tarjeta leída ⇒ incierto). El 1.0.19 deja de estar auditado para la regla. La firma en pantalla sigue APAGADA (`captureSignature = false`, pendiente de decisión).
+- **[Nexgo] El historial de AngelPay expone `idOperation`** (`UnifiedTransaction.idOperation`) y el verificador lo escribe en el log al confirmar un cobro; todavía no decide nada: el SDK no trae la tabla de número → tipo, hay que medir qué número es «venta» con una venta real.
+
 ## [2.11.1] - 2026-09-25
 
 ### **Fixed**

@@ -76,6 +76,13 @@ data class UnifiedTransaction(
      * el historial sin adivinar por monto y hora. Opcional: Blumon no expone equivalente.
      */
     val integratorReference: String? = null,
+    /**
+     * Tipo de operación NUMÉRICO del procesador (AngelPay SDK 1.0.20: `TransactionItem.idOperation`, el
+     * `cisoOperationFk` de su servidor). Su documentación dice que distingue venta de check-in «de forma fiable»,
+     * a diferencia de `operationType`, que es texto libre. ⚠️ Todavía NO decide nada: el SDK no trae la tabla de
+     * número → tipo, así que sólo se registra en los logs hasta medir con una venta real qué número es «venta».
+     */
+    val idOperation: Int? = null,
 )
 
 data class PostOperationResult(

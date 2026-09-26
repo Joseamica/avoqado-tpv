@@ -521,7 +521,7 @@ class AngelPayPaymentReviewRoomTest {
             every { sdkGateway.ensureInitialized(any(), any()) } returns Result.success(Unit)
             every { sdkGateway.isInitialized() } returns true
             every { sdkGateway.validatePaymentIntent(any(), any()) } returns Result.success(Unit)
-            every { sdkGateway.sdkVersion() } returns "1.0.19"
+            every { sdkGateway.sdkVersion() } returns com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA
             coEvery { angelPayAuthRepository.ensureAuthenticated() } returns Result.success(Unit)
             // El CAS de «no se cobró» GANA de verdad (Room); dentro de su suspensión llega el aviso de S5 cuya PROPIA escritura
             // falló (`registrado = false` y la fila sin tocar): el dinero sólo consta en el veto de la pantalla. Se inyecta con un

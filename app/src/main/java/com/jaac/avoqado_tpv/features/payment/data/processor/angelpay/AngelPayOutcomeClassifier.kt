@@ -117,8 +117,15 @@ object AngelPayOutcomeClassifier {
      * El ÚNICO AAR de AngelPay auditado para [decidirSegunElSdk119] (`AngelPaySDK.version()`; SHA-256 del archivo
      * fijado en `AngelPaySdk119ReglaTest`). Con cualquier otra versión la regla NO corre y manda [clasificar] tal cual:
      * un SDK nuevo puede mover la frontera del envío, y eso se re-audita en el binario antes de volver a confiar.
+     *
+     * 🔴 **1.0.20 (26-sep), re-auditado en bytecode contra el 1.0.19:** el orquestador pasó de `b0.f0` a `b0.h0` con
+     * los mismos productores más DOS nuevos —«cancelado antes de enviar la autorizacion», chip (`h0` 3636→3761) y banda
+     * (`h0` 4525→4628)—: `if (l) return U100 CANCELLED` justo antes de `m = true` (3767 / 4636) y del envío (3828 /
+     * 4708). Es el «cambio de dos líneas» que pedía el diseño (§4.4) y cierra las ventanas W1/W2: en el 1.0.19 el
+     * Cancelar no se revisaba entre la lectura de la tarjeta y el envío, así que el U100 del botón (6d) podía decir «no
+     * se cobró» de un cobro que sí salió. Por eso el 1.0.19 ya NO está auditado para esta regla.
      */
-    const val VERSION_SDK_AUDITADA = "1.0.19"
+    const val VERSION_SDK_AUDITADA = "1.0.20"
 
     /**
      * 🔴 La regla del SDK 1.0.19 (diseño `diseno-nexgo-sdk-1.0.19.md` §2.1 + decisiones del founder del 18-sep).
@@ -153,8 +160,10 @@ object AngelPayOutcomeClassifier {
      *     c. Sin código de catálogo ⇒ INCIERTO: todo productor del 1.0.19 con nuestra referencia trae uno; sin él es un
      *        productor que el binario no tiene.
      *     d. En otro caso ⇒ [DecisionDelSdk.SIN_AUTORIZACION]: «no se cobró», cierto. Incluye el `U100` del botón
-     *        Cancelar y de la tecla atrás (**decisión U del founder, 18-sep: confiar en el SDK**; medido en la N86, llega
-     *        con `operationType = null`, así que ese campo NO se exige).
+     *        Cancelar y de la tecla atrás (medido en la N86, llega con `operationType = null`, así que ese campo NO se
+     *        exige). Con el 1.0.19 era una apuesta (**decisión U del founder, 18-sep**); con el 1.0.20 lo respalda el
+     *        binario: pantalla y orquestador comparten hilo, y el orquestador revisa el Cancelar antes de enviar. El nuevo
+     *        U100 del orquestador por banda cae aquí; el de chip trae tarjeta leída y queda INCIERTO (6b).
      *
      * Por qué 6d es cierto: un resultado que arma el orquestador o su `catch` con `m = false` significa que el único
      * hilo capaz de mandar ya terminó sin mandar; `m` sube de forma síncrona y pegada al envío, en el hilo principal; y

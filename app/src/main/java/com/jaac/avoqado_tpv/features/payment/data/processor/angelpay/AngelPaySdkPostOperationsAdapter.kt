@@ -53,6 +53,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
                     postOperationAuthorization = item.postOperation?.authorization,
                     postOperationStatus = item.postOperation?.status,
                     integratorReference = item.integratorReference,
+                    idOperation = item.idOperation,
                 )
             }
         }

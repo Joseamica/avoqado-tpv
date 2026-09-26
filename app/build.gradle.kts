@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 110
-        versionName = "2.11.1"
+        versionCode = 111
+        versionName = "2.11.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -612,18 +612,20 @@ dependencies {
     // - compileOnly for all flavors (types available at compile time in main/)
     // - packaged only in nexgo / nexgoProd to avoid duplicate transitive classes
     // 🔴 1.0.19 (18-sep-2026): trae `PaymentResult.authorizationAttempted`, la señal con la que la regla de
-    // `AngelPayOutcomeClassifier.decidirSegunElSdk119` afirma «no se cobró». Esa regla SÓLO corre con este
-    // AAR: `AngelPaySdk119ReglaTest` fija su SHA-256 (fe5ef768…e777) y `version() == "1.0.19"`. Cambiar el
-    // AAR sin re-auditar la regla tumba esa prueba A PROPÓSITO.
-    compileOnly(files("libs/angelpaySDK-v1.0.19-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.19-fat-release.aar"))
-    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.19-fat-release.aar"))
+    // `AngelPayOutcomeClassifier.decidirSegunElSdk119` afirma «no se cobró».
+    // 🔴 1.0.20 (26-sep-2026, re-auditado en bytecode): el orquestador revisa el Cancelar ANTES de enviar al
+    // host (cierra las ventanas W1/W2 del 1.0.19). La regla SÓLO corre con este AAR: `AngelPaySdk119ReglaTest`
+    // fija su SHA-256 (7abbe8ea…2282, el que publica AngelPay) y `version() == "1.0.20"`. Cambiar el AAR sin
+    // re-auditar la regla tumba esa prueba A PROPÓSITO.
+    compileOnly(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
     // AngelPay SDK types are referenced in unit tests (e.g., AngelPaySdkGatewayTest) for
     // mocking — Result<List<MerchantSummary>> return types and `AngelPaySDK` object need
     // the AAR on the test classpath at both compile time and runtime so MockK can mock
     // the singleton via `mockkObject(AngelPaySDK)`. Production code still uses compileOnly
     // for non-Nexgo flavors, so this affects unit tests only.
-    testImplementation(files("libs/angelpaySDK-v1.0.19-fat-release.aar"))
+    testImplementation(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
 
     // AngelPay SDK 1.0.7 fat-release.aar ships the full io.github.binaryfoo:emv-bertlv
     // bundle internally (AmexTags, DecodedData, CryptogramInformationDecoder,

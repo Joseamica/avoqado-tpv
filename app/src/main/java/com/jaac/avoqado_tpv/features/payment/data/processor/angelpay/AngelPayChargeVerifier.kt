@@ -97,9 +97,11 @@ class AngelPayChargeVerifier @Inject constructor(
                         (!affiliation.isNullOrBlank() && mia.affiliation == affiliation) &&
                         mia.operationType?.uppercase() in setOf("VENTA", "SALE") &&
                         mia.postOperationStatus.isNullOrBlank()) {
+                        // `idOperation` (SDK 1.0.20) va al log para MEDIR qué número usa AngelPay para «venta»;
+                        // mientras no se mida, la condición sigue siendo el texto de `operationType`.
                         Timber.i(
-                            "🔍 [AngelPay] Cobro CONFIRMADO en el historial | attemptId=%s auth=%s ref=%s",
-                            attemptId, mia.authorizationCode, mia.reference,
+                            "🔍 [AngelPay] Cobro CONFIRMADO en el historial | attemptId=%s auth=%s ref=%s op=%s idOperation=%s",
+                            attemptId, mia.authorizationCode, mia.reference, mia.operationType, mia.idOperation,
                         )
                         return VerificacionDelCobro.Cobrado(
                             authCode = mia.authorizationCode,

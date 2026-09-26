@@ -136,6 +136,47 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.20 — el Cancelar se revisa antes de enviar (26-sep-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.20-fat-release.aar` (SHA-256
+`7abbe8ea7f0cf12be6af3766c92a24c882acc3c2cd08d31bd034d2de572d2282`, el que publica AngelPay en
+`developers.angelpay-qa.com.mx/docs/sdk`; `AngelPaySDK.version() == "1.0.20"`). El archivo que se descarga del
+portal viene con el nombre equivocado (`angelpaySDK-v1.0.19-fat-release.aar.aar`): se identifica por el SHA y por
+`version()`, nunca por el nombre. `AngelPaySdk119ReglaTest` fija las dos cosas.
+
+**Re-auditoría en bytecode contra el 1.0.19** (reportes en `~/.claude/jobs/56954c8f/tmp/auditoria-productores-1.0.20.md`
+y `api-diff-1.0.20.md`):
+- El orquestador pasó de `b0.f0` a `b0.h0`; los productores de `PaymentResult` del 1.0.19 salen idénticos (diff
+  normalizado) y hay **dos nuevos**: «cancelado antes de enviar la autorizacion» por chip (`h0` 3636→3761) y por banda
+  (`h0` 4525→4628), `U100 CANCELLED` con `attempted = false` y nuestra referencia, **antes** de `m = true` (3767 /
+  4636) y del envío (3828 / 4708). Es el «cambio de dos líneas» del diseño §4.4.
+- El botón Cancelar (`PaymentActivity.onCreate$lambda$2`) ya ignoraba el Cancelar con `m = true` («Cancelar
+  ignorado: la autorizacion ya fue enviada al procesador») desde el 1.0.19. Con la revisión nueva del orquestador, la
+  carrera queda cerrada en las dos direcciones: pantalla y orquestador comparten hilo. **El U100 del botón deja de
+  ser una apuesta (decisión U) y pasa a ser prueba.**
+- 🔴 El 1.0.19 tenía la ventana abierta: entre la lectura de la tarjeta y el envío no se revisaba el Cancelar, así
+  que un U100 del botón podía decir «no se cobró» de un cobro que sí salió. Por eso el 1.0.19 ya **no** está auditado.
+- La regla (`decidirSegunElSdk119`, pasos 0-6d) no cambia de lógica: el U100 nuevo por banda cae en 6d (no se cobró),
+  el de chip trae tarjeta leída y queda INCIERTO (6b, conservador).
+- API: sólo se AGREGA (`getOperations()`, `MerchantInfo.aggregatorName`, 10 campos en `TransactionItem` —entre ellos
+  `idOperation`—, 4 en `TransactionPostOperation`). `PaymentResult`, `PaymentRequest` (defaults incluidos: la firma
+  sigue encendida por defecto), `AppErrorCatalog` y la base Room interna del SDK: sin cambios.
+- `idOperation` se expone en `UnifiedTransaction` y se registra en el log del verificador; **no decide nada** hasta
+  medir con una venta real qué número usa AngelPay para «venta» (el SDK no trae la tabla).
+
+**Medido en la N86 (26-sep, `nexgoDebug` contra AngelPay QA, `AVQD-N860W175781`):**
+- Cancelar sin tarjeta ⇒ «No se cobró», libreta `DESCARTADA` con `sin_autorizacion:sdk=1.0.20;code=U100`.
+- Tiempo agotado ⇒ «Tiempo agotado: nadie acercó una tarjeta» (U101), sin bloquear la terminal.
+- Chip + Cancelar en el NIP ⇒ kernel `-8020`, E699 con `attempted=false`, «No se cobró»; en el log del SDK no hay
+  `SALE.charge … op=SALE` (nunca salió al banco).
+- 🔴 Chip + NIP ⇒ el host APROBÓ (`SALE.charge ok code=00`) y el chip rechazó el cierre (`-8028`, TVR 0080008000): el
+  SDK entregó `approved=false`/E699 y el historial siguió mostrando la venta APROBADA (sin reverso). La app lo dejó
+  incierto, el verificador lo encontró en el historial y registró la venta una sola vez. Queda preguntarle a AngelPay
+  si ese caso debería revertirse solo.
+- `idOperation = 4` con `operationType = "VENTA"` (una muestra, QA): todavía no se usa para decidir.
+- Pendiente: pulsar Cancelar justo en la ventana entre la lectura y el envío (W1/W2) no se logró a mano; lo respalda
+  el bytecode.
+
 ## SDK 1.0.19 — «No se cobró» cierto (18-sep-2026)
 
 **El AAR:** `app/libs/angelpaySDK-v1.0.19-fat-release.aar` (SHA-256

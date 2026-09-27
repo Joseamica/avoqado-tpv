@@ -16,32 +16,33 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, application = Application::class, sdk = [28])
 class PaymentAttemptRoomTest {
-    @Test fun `two ledger instances cannot reserve preparing kernel work concurrently across venues`() = runTest {
+    // Founder, 25-sep: cada instancia de la libreta es un PROCESO (en la app es @Singleton). Dos procesos a la vez no existen
+    // en la app; lo que sí existe son dos cobros del MISMO proceso que llegan juntos — ésos son los que no pueden entrar los dos.
+    @Test fun `one ledger cannot reserve preparing kernel work twice concurrently across venues`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
             val settings = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository>(relaxed = true)
-            val first = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
-            val second = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
+            val ledger = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
             val start = kotlinx.coroutines.CompletableDeferred<Unit>()
             val one = async(kotlinx.coroutines.Dispatchers.IO) {
                 start.await()
-                first.openAttempt("one", "venue-a", "BLUMON", 100, 0, "FAST", "{}")
+                ledger.openAttempt("one", "venue-a", "BLUMON", 100, 0, "FAST", "{}")
             }
             val two = async(kotlinx.coroutines.Dispatchers.IO) {
                 start.await()
-                second.openAttempt("two", "venue-b", "ANGELPAY", 100, 0, "FAST", "{}")
+                ledger.openAttempt("two", "venue-b", "ANGELPAY", 100, 0, "FAST", "{}")
             }
             start.complete(Unit)
             val admitted = listOf(one.await(), two.await())
             assertEquals("A terminal has one durable pre-kernel reservation, independent of order/venue", 1, admitted.count { it })
             val winner = if (admitted[0]) "one" else "two"
-            assertTrue(first.markDiscardedBeforeCharge(winner, "confirmed_pre_sdk_cancel"))
-            assertTrue(second.openAttempt("after-safe-discard", "venue-b", "BLUMON", 100, 0, "FAST", "{}"))
+            assertTrue(ledger.markDiscardedBeforeCharge(winner, "confirmed_pre_sdk_cancel"))
+            assertTrue(ledger.openAttempt("after-safe-discard", "venue-b", "BLUMON", 100, 0, "FAST", "{}"))
         } finally { db.close() }
     }
 
-    @Test fun `P1 una negativa explicita del kernel libera la terminal, una incierta la retiene`() = runTest {
+    @Test fun `P1 una negativa explicita del kernel libera la terminal, una incierta queda guardada sin apartarla`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -68,9 +69,11 @@ class PaymentAttemptRoomTest {
             ledger.markIndeterminate("siguiente-venta", "TIMEOUT")
             assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("siguiente-venta")?.state)
             assertNotNull("un TIMEOUT del kernel NO acredita que no se cobró", db.paymentAttemptDao().findUnresolvedCharge())
-            // En la PAX eso se AVISA y la caja sigue (founder, 24-sep); en el kiosco, donde nadie lee el aviso, aparta.
-            assertFalse("en el kiosco un TIMEOUT del kernel NO libera la terminal",
-                ledger.openAttempt("tercera", "venue", "BLUMON", 100, 0, "FAST", "{}", esKiosco = true))
+            // Founder, 25-sep («ninguna duda apaga la terminal»): eso se AVISA y la caja sigue — también en el kiosco, que dejó
+            // de ser un caso especial. La duda sigue guardada para el aviso y la recuperación.
+            assertTrue("un TIMEOUT del kernel ya terminó: la siguiente venta entra",
+                ledger.openAttempt("tercera", "venue", "BLUMON", 100, 0, "FAST", "{}"))
+            assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("siguiente-venta")?.state)
         } finally { db.close() }
     }
 
@@ -82,12 +85,12 @@ class PaymentAttemptRoomTest {
      * falta acreditar o registrar) cerca SU venta; no puede apagar el aparato entero, porque
      * una venta distinta no tiene ninguna relación con la incierta.
      *
-     * Lo que sigue apartando el aparato es la EJECUCIÓN en curso (PREPARANDO/KERNEL_ACTIVO/
-     * AUTORIZANDO: el lector está ocupado) y una obligación pendiente SIN identidad de venta,
-     * que es el único caso en el que no hay nada más que la cerque — ése lo fijan las dos
-     * pruebas de arriba, que dicen «orderless» en su nombre a propósito.
+     * Lo que sigue apartando el aparato es la EJECUCIÓN en curso de ESTE proceso (PREPARANDO/
+     * KERNEL_ACTIVO/AUTORIZANDO: el lector está ocupado). Desde el 25-sep (founder, «ninguna duda
+     * apaga la terminal») una obligación pendiente SIN dinero conocido tampoco cerca su venta: se
+     * avisa, y la misma cuenta se puede volver a cobrar. Sólo el DINERO en juego cerca la venta.
      */
-    @Test fun `P1 una venta incierta CON identidad cerca su venta y deja cobrar las demas`() = runTest {
+    @Test fun `P1 una venta incierta sin dinero ya no cerca su venta - se avisa y el negocio sigue cobrando`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -106,9 +109,12 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markKernelEntered("otra-cuenta"))
             assertTrue(ledger.markKernelRefused("otra-cuenta", "DENIED_BY_KERNEL"))
 
-            // 🔴 …y la venta incierta SIGUE CERCADA: sobre ELLA no se cobra otra vez.
-            assertFalse("la cuenta con el cobro sin desenlace no admite un segundo cobro",
+            // 🔴 Founder, 25-sep: la duda SIN dinero se AVISA — la misma cuenta se puede volver a cobrar (el aviso la nombra)
+            // y la duda sigue guardada para el aviso y la recuperación.
+            assertTrue("la cuenta con el cobro sin desenlace se puede volver a cobrar",
                 ledger.openAttempt("recobro", "venue", "ANGELPAY", 1200, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
+            assertTrue(ledger.markDiscardedBeforeCharge("recobro", "fin de la prueba"))
+            assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("incierta")?.state)
 
             // Y la solicitud del POS cerca igual aunque la cuenta sea otra.
             assertTrue(ledger.openAttempt("remota", "venue", "ANGELPAY", 900, 0, "ORDER",
@@ -136,7 +142,7 @@ class PaymentAttemptRoomTest {
         } finally { db.close() }
     }
 
-    @Test fun `review recreated ledger rejects orderless authorization while terminal has unknown`() = runTest {
+    @Test fun `review recreated ledger admits orderless authorization while the old unknown stays saved`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -148,7 +154,8 @@ class PaymentAttemptRoomTest {
             val recreated = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
             val admitted = recreated.openAttempt("new", "venue", "BLUMON", 200, 0, "FAST", "{}") &&
                 recreated.markAuthorizing("new")
-            assertFalse("An orderless sale must retain the terminal execution hold across recreation", admitted)
+            // Founder, 25-sep: una duda guardada no apaga la terminal; la nueva venta entra y la vieja sigue para el aviso.
+            assertTrue("An orderless unknown is a warning, not a terminal hold", admitted)
             assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("old")?.state)
         } finally { db.close() }
     }
@@ -167,7 +174,7 @@ class PaymentAttemptRoomTest {
             assertEquals(1, dao.observeUnresolvedCount("venue").first())
             assertEquals("attempt", dao.findUnresolvedOrder("venue", "\"orderId\":\"order\"")?.attemptId)
             assertNull(dao.findUnresolvedOrder("other-venue", "\"orderId\":\"order\""))
-            dao.casTransition("attempt", listOf("INDETERMINADO"), "REGISTRADO", 2)
+            dao.casTransition("attempt", listOf("INDETERMINADO"), "REGISTRADO", 2, "proceso-de-la-prueba")
             assertEquals(0, dao.observeUnresolvedCount("venue").first())
         } finally { db.close() }
     }
@@ -257,7 +264,7 @@ class PaymentAttemptRoomTest {
                 """{"orderId":"OB","terminalPaymentRequestId":"RB"}"""))
             assertTrue(ledger.markAuthorizing("B"))
             // La recuperación cierra B antes de que llegue su callback: deja de estar pendiente.
-            db.paymentAttemptDao().casTransition("B", listOf("AUTORIZANDO"), "REGISTRADO", 99)
+            db.paymentAttemptDao().casTransition("B", listOf("AUTORIZANDO"), "REGISTRADO", 99, "proceso-de-la-prueba")
             assertEquals("REGISTRADO", db.paymentAttemptDao().getById("B")?.state)
 
             assertNull("la fila de A dice RA: nunca puede adoptarse como el cobro de RB",
@@ -266,7 +273,10 @@ class PaymentAttemptRoomTest {
         } finally { db.close() }
     }
 
-    /** 🔴 Un `orderId` de puros espacios no puede soltar el aparato Y quedarse sin cerca. */
+    /**
+     * 🔴 Un `orderId` de puros espacios es identidad de venta como cualquier otra: con dinero en juego no puede quedarse sin
+     * cerca. (Founder, 25-sep: sólo el DINERO cerca la venta — una duda sin dinero se avisa —, así que la prueba le da dinero.)
+     */
     @Test fun `P1 un orderId de espacios cerca su venta igual que cualquier otro`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
@@ -276,6 +286,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.openAttempt("rara", "venue", "ANGELPAY", 1200, 0, "ORDER", """{"orderId":"   "}"""))
             assertTrue(ledger.markAuthorizing("rara"))
             ledger.markIndeterminate("rara", "sin veredicto")
+            assertTrue(ledger.marcarEvidenciaPositivaDelServidor("venue", "rara").getOrThrow())
             assertFalse("la misma venta, por rara que sea su llave, no admite otro cobro",
                 ledger.openAttempt("recobro", "venue", "ANGELPAY", 1200, 0, "ORDER", """{"orderId":"   "}"""))
             assertTrue("y otra venta sí puede cobrarse",
@@ -292,19 +303,20 @@ class PaymentAttemptRoomTest {
             val ledger = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
             assertTrue(ledger.openAttempt("emv", "venue", "BLUMON", 1200, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
             assertTrue(ledger.markAuthorizing("emv"))
-            db.paymentAttemptDao().casTransition("emv", listOf("AUTORIZANDO"), "HOST_RESPONDIO", 50)
+            db.paymentAttemptDao().casTransition("emv", listOf("AUTORIZANDO"), "HOST_RESPONDIO", 50, "proceso-de-la-prueba")
             assertFalse("el kernel puede seguir dentro: nadie más entra",
                 ledger.openAttempt("otra", "venue", "BLUMON", 500, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
         } finally { db.close() }
     }
 
     /**
-     * 🔴 F0 se apoya en que el CAJERO distingue «reintento de la venta incierta» de «venta nueva
-     * idéntica». En autoservicio no hay cajero: la pantalla la ve el cliente. Ahí cualquier
-     * obligación pendiente vuelve a apartar el aparato (Codex, 12-sep: el kiosco que se reinicia
-     * pierde su orden en memoria, crea otra y cobra dos veces la misma compra).
+     * 🔴 Founder, 25-sep («ninguna duda apaga la terminal»): el kiosco DEJÓ de ser un caso especial. Hasta aquí una
+     * obligación pendiente apartaba el aparato sólo en autoservicio (Codex, 12-sep: el kiosco que se reinicia pierde su orden
+     * en memoria, crea otra y podría cobrar dos veces). Ahora la libreta ni siquiera sabe si es kiosco: una duda se avisa y
+     * la venta siguiente entra, igual que en el mostrador. (Absorbe a «en el kiosco de la PAX el cobro sin veredicto sigue
+     * apartando el aparato», que afirmaba la misma excepción con un Pago rápido.)
      */
-    @Test fun `P1 en el kiosco cualquier obligacion pendiente sigue apartando el aparato`() = runTest {
+    @Test fun `P1 el kiosco dejo de ser un caso especial - una duda tampoco aparta el aparato en autoservicio`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -314,13 +326,10 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markAuthorizing("incierta"))
             ledger.markIndeterminate("incierta", "murio el proceso")
 
-            assertFalse("en el kiosco nadie puede juzgar: no se abre otro cobro",
-                ledger.openAttempt("kiosco", "venue", "BLUMON", 5000, 0, "ORDER",
-                    """{"orderId":"compra-2"}""", esKiosco = true))
-
-            // En el mostrador, la MISMA situación sí deja cobrar: ahí hay quien distinga, y el aviso se lo dice.
-            assertTrue("con cajero enfrente el negocio sigue cobrando",
-                ledger.openAttempt("mostrador", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"compra-2"}"""))
+            assertTrue("la compra nueva entra: la duda se avisa, no apaga la terminal",
+                ledger.openAttempt("kiosco", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"compra-2"}"""))
+            assertEquals("la duda sigue guardada para el aviso y la recuperación",
+                "INDETERMINADO", db.paymentAttemptDao().getById("incierta")?.state)
         } finally { db.close() }
     }
 
@@ -348,12 +357,12 @@ class PaymentAttemptRoomTest {
             assertFalse("nadie acreditó que la llamada nativa terminara: el lector sigue tomado",
                 ledger.openAttempt("otra", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
 
-            // En cambio, una incierta que el PROCESADOR contestó sí libera el aparato y cerca su venta.
-            assertEquals(1, dao.casTransition("colgado", listOf("INDETERMINADO"), "REGISTRADO", 100))
+            // En cambio, una incierta con veredicto del procesador y sin dinero no aparta el aparato (ni cerca su venta).
+            assertEquals(1, dao.casTransition("colgado", listOf("INDETERMINADO"), "REGISTRADO", 100, "proceso-de-la-prueba"))
             assertTrue(ledger.openAttempt("contestada", "venue", "BLUMON", 7000, 0, "ORDER", """{"orderId":"cuenta-3"}"""))
             assertTrue(ledger.markAuthorizing("contestada"))
             ledger.markIndeterminate("contestada", "AngelPay E699")
-            assertTrue("una incierta con veredicto del procesador cerca su venta, no el aparato",
+            assertTrue("una incierta con veredicto del procesador y sin dinero no aparta el aparato (ni cerca su venta)",
                 ledger.openAttempt("siguiente", "venue", "BLUMON", 3000, 0, "ORDER", """{"orderId":"cuenta-4"}"""))
         } finally { db.close() }
     }
@@ -375,7 +384,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markKernelEntered("colgado"))
             assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 10))
             // La recuperación lo lleva a HOST_RESPONDIO y de ahí a REGISTRO_FALLIDO.
-            assertEquals(1, dao.casTransition("colgado", listOf("INDETERMINADO"), "HOST_RESPONDIO", 20))
+            assertEquals(1, dao.casTransition("colgado", listOf("INDETERMINADO"), "HOST_RESPONDIO", 20, "proceso-de-la-prueba"))
             assertEquals(1, dao.claimRecovery("colgado", "venue", now = 30, leaseUntil = 9_000))
             assertEquals(1, dao.completeRecovery("colgado", "venue", ownedLease = 9_000,
                 newState = "REGISTRO_FALLIDO", now = 40, error = "Cobrado; registro pendiente"))
@@ -388,10 +397,11 @@ class PaymentAttemptRoomTest {
     }
 
     /**
-     * 🔴 Las filas que YA viven en los aparatos instalados: la cuarentena de la versión anterior
-     * no dejaba marca. Ausencia de marca no acredita respuesta del procesador, así que apartan.
+     * 🔴 Las filas que YA viven en los aparatos instalados: la cuarentena de la versión anterior no dejaba marca, y hasta el
+     * 25-sep eso apartaba el aparato. Founder, 25-sep: toda fila anterior a la v41 es de un proceso que ya murió (no tiene
+     * `process_token`), y su llamada nativa murió con él — no aparta el aparato; queda guardada para el aviso.
      */
-    @Test fun `P1 un INDETERMINADO sin motivo, de una version anterior, sigue apartando el aparato`() = runTest {
+    @Test fun `P1 un INDETERMINADO sin motivo, de una version anterior, ya no aparta el aparato`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -400,8 +410,9 @@ class PaymentAttemptRoomTest {
             db.paymentAttemptDao().insert(PaymentAttemptEntity("vieja", "venue", "BLUMON",
                 state = "INDETERMINADO", amountCents = 12000, tipCents = 0, recordingRoute = "ORDER",
                 paymentContextJson = """{"orderId":"cuenta-1"}""", createdAt = 1, updatedAt = 1))
-            assertFalse("sin motivo no se sabe de dónde salió esa incertidumbre: el lector no se suelta",
+            assertTrue("la fila vieja no tiene proceso vivo: la otra venta entra",
                 ledger.openAttempt("otra", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
+            assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("vieja")?.state)
         } finally { db.close() }
     }
 
@@ -422,7 +433,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.openAttempt("pax", "venue", "BLUMON", 12000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
             assertTrue(ledger.markAuthorizing("pax"))
             // La PAX escribe el resultado del host ANTES de cerrar el EMV, y sin motivo.
-            assertEquals(1, dao.casTransition("pax", listOf("AUTORIZANDO"), "HOST_RESPONDIO", 20))
+            assertEquals(1, dao.casTransition("pax", listOf("AUTORIZANDO"), "HOST_RESPONDIO", 20, "proceso-de-la-prueba"))
             assertNull(dao.getById("pax")?.lastError)
             // La recuperación lo toma por antigüedad y el registro falla.
             assertEquals(1, dao.claimRecovery("pax", "venue", now = 30, leaseUntil = 9_000))
@@ -433,7 +444,7 @@ class PaymentAttemptRoomTest {
                 ledger.openAttempt("otra", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
 
             // Y en cuanto el cobro llega a la cola —el camino normal— el aparato queda libre.
-            assertEquals(1, dao.casTransition("pax", listOf("REGISTRO_FALLIDO"), "ENTREGADA_A_COLA", 50))
+            assertEquals(1, dao.casTransition("pax", listOf("REGISTRO_FALLIDO"), "ENTREGADA_A_COLA", 50, "proceso-de-la-prueba"))
             assertTrue("con el cobro ya encolado el negocio sigue cobrando",
                 ledger.openAttempt("siguiente", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
         } finally { db.close() }
@@ -443,8 +454,9 @@ class PaymentAttemptRoomTest {
     // Decisión del founder (24-sep): en la PAX un cobro que quedó sin veredicto AVISA, no traba.
     // La PAX no recibe el aviso del banco y su SDK no acepta nuestra referencia: apartarla hasta
     // tener evidencia la dejaba sin cobrar horas (la de pruebas, con un $10; Mindform, con diez).
-    // Lo que sigue apartando es lo que puede seguir EJECUTÁNDOSE: el lector en uso, la cuarentena
-    // por reloj, la fila sin motivo de una versión vieja; y en el kiosco, todo (no hay cajero que lea).
+    // Desde el 25-sep («ninguna duda apaga la terminal») vale para la PAX, la Nexgo y el kiosco: lo
+    // único que aparta es lo que ESTE proceso puede seguir EJECUTANDO — el lector en uso y su
+    // cuarentena por reloj.
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun ledgerEnMemoria(): Pair<AvoqadoDatabase, PaymentAttemptLedger> {
@@ -462,7 +474,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markAuthorizing("dudoso"))
             ledger.markIndeterminate("dudoso", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
 
-            assertNull("la PAX no queda apartada por un cobro que ya terminó sin veredicto", dao.findTerminalHold())
+            assertNull("la PAX no queda apartada por un cobro que ya terminó sin veredicto", ledger.retencionDelAparato())
             assertTrue("la siguiente venta entra", ledger.openAttempt("siguiente", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
             assertTrue("y llega al lector", ledger.markKernelEntered("siguiente"))
 
@@ -484,25 +496,17 @@ class PaymentAttemptRoomTest {
         } finally { db.close() }
     }
 
-    @Test fun `P1 en el kiosco de la PAX el cobro sin veredicto sigue apartando el aparato`() = runTest {
-        val (db, ledger) = ledgerEnMemoria()
-        try {
-            assertTrue(ledger.openAttempt("dudoso", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
-            assertTrue(ledger.markAuthorizing("dudoso"))
-            ledger.markIndeterminate("dudoso", "Blumon sin veredicto: GenericFailure")
-            assertFalse("en autoservicio nadie lee el aviso: no se abre otro cobro",
-                ledger.openAttempt("kiosco", "venue", "BLUMON", 1000, 0, "FAST", "{}", esKiosco = true))
-        } finally { db.close() }
-    }
-
-    @Test fun `P1 la Nexgo no cambia - su cobro sin veredicto y sin venta sigue apartando hasta el aviso del banco`() = runTest {
+    // Founder, 25-sep: la Nexgo YA cambia — igual que la PAX, su duda sin venta se avisa y no aparta el aparato. La recuperación
+    // (el aviso del banco, la liberación del servidor) la sigue cerrando por su lado.
+    @Test fun `P1 la Nexgo igual que la PAX - su cobro sin veredicto y sin venta ya no aparta el aparato`() = runTest {
         val (db, ledger) = ledgerEnMemoria()
         try {
             assertTrue(ledger.openAttempt("dudoso", "venue", "ANGELPAY", 1000, 0, "FAST", "{}"))
             assertTrue(ledger.markAuthorizing("dudoso"))
             ledger.markIndeterminate("dudoso", "AngelPay sin veredicto: TIMEOUT")
-            assertNotNull(db.paymentAttemptDao().findTerminalHold())
-            assertFalse(ledger.openAttempt("siguiente", "venue", "ANGELPAY", 1000, 0, "FAST", "{}"))
+            assertNull(ledger.retencionDelAparato())
+            assertTrue(ledger.openAttempt("siguiente", "venue", "ANGELPAY", 1000, 0, "FAST", "{}"))
+            assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("dudoso")?.state)
         } finally { db.close() }
     }
 
@@ -513,7 +517,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
             assertTrue(ledger.markKernelEntered("colgado"))
             assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
-            assertNotNull("nadie acreditó que la llamada nativa terminara", dao.findTerminalHold())
+            assertNotNull("nadie acreditó que la llamada nativa terminara", ledger.retencionDelAparato())
             assertFalse(ledger.openAttempt("otra", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
         } finally { db.close() }
     }

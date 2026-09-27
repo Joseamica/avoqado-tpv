@@ -71,12 +71,13 @@ class CobroQueSiPasoRoomTest {
     }
 
     private suspend fun otroCobroEntra(id: String = "otro"): Boolean =
-        dao.reserveTerminal(id, venue, "ANGELPAY", "SALE", 5000, 0, "FAST", """{"amount":50.00}""", null, now + 10_000, null, false) != -1L
+        dao.reserveTerminal(id, venue, "ANGELPAY", "SALE", 5000, 0, "FAST", """{"amount":50.00}""", null, now + 10_000, null, "proceso-de-la-prueba") != -1L
 
-    @Test fun `el caso limpio - aparece para confirmar, Entendido lo registra y la terminal vuelve a cobrar`() = runTest {
+    @Test fun `el caso limpio - aparece para confirmar, Entendido lo registra y la terminal sigue cobrando`() = runTest {
         cobroLocalDescartado("a")
         elServidorDice("a", VeredictoDelServidor.RECORDED)
-        assertWithMessage("antes de confirmar, el aparato está apartado").that(otroCobroEntra("antes")).isFalse()
+        // Founder, 25-sep («ninguna duda apaga la terminal»): el dinero conocido se AVISA; ya no aparta el aparato mientras espera.
+        assertWithMessage("antes de confirmar, el aparato NO está apartado").that(ledger.retencionDelAparato()).isNull()
         assertThat(ledger.observarCobrosPorReconocer(venue).first().map { it.attemptId }).containsExactly("a")
 
         val ok = ledger.reconocerCobroRegistrado(venue, "a", "Ana López (stf-1)", now + 5_000)
@@ -106,14 +107,15 @@ class CobroQueSiPasoRoomTest {
         assertThat(otroCobroEntra()).isTrue()
     }
 
-    @Test fun `con otros importes NO se ofrece ni se deja confirmar - sigue apartado`() = runTest {
+    @Test fun `con otros importes NO se ofrece ni se deja confirmar - sigue como contradiccion, sin apartar el aparato`() = runTest {
         cobroLocalDescartado("m")
         elServidorDice("m", VeredictoDelServidor.RECORDED, amountCents = 4500)
 
         assertThat(ledger.observarCobrosPorReconocer(venue).first()).isEmpty()
         assertThat(ledger.reconocerCobroRegistrado(venue, "m", "Ana (stf-1)", now + 5_000)).isFalse()
         assertThat(dao.getById("m")!!.state).isEqualTo("DESCARTADA")
-        assertThat(otroCobroEntra()).isFalse()
+        assertWithMessage("se avisa como contradicción").that(dao.esContradiccion("m")).isTrue()
+        assertWithMessage("y la terminal sigue cobrando (founder, 25-sep)").that(otroCobroEntra()).isTrue()
     }
 
     @Test fun `una evidencia sin registro final (PENDING) NO se deja confirmar`() = runTest {
@@ -122,7 +124,8 @@ class CobroQueSiPasoRoomTest {
 
         assertThat(ledger.observarCobrosPorReconocer(venue).first()).isEmpty()
         assertThat(ledger.reconocerCobroRegistrado(venue, "p", "Ana (stf-1)", now + 5_000)).isFalse()
-        assertThat(otroCobroEntra()).isFalse()
+        assertWithMessage("se avisa como contradicción").that(dao.esContradiccion("p")).isTrue()
+        assertWithMessage("y la terminal sigue cobrando (founder, 25-sep)").that(otroCobroEntra()).isTrue()
     }
 
     @Test fun `con un veto del servidor NO se deja confirmar`() = runTest {
@@ -174,14 +177,17 @@ class CobroQueSiPasoRoomTest {
         assertThat(f.acknowledgedAt).isEqualTo(now + 5_000)
     }
 
-    @Test fun `la barrera de la libreta nombra el Entendido cuando lo que aparta el APARATO es un cobro que si paso`() = runTest {
+    // Founder, 25-sep: un cobro que SÍ pasó (sin venta) ya no aparta el APARATO, así que la barrera no puede culparlo; su salida
+    // sigue siendo el «Entendido» del aviso (y la barrera ya no tiene rama «el aparato: SÍ pasó»).
+    @Test fun `un cobro que si paso ya no aparta el APARATO - la barrera no lo nombra y el Entendido sigue en el aviso`() = runTest {
         cobroLocalDescartado("a")
         elServidorDice("a", VeredictoDelServidor.RECORDED)
 
         val texto = ledger.motivoDeLaBarrera(orderId = null, attemptIdPropio = "nuevo", ahoraMillis = now)
 
-        assertThat(texto).contains("SÍ pasó")
-        assertThat(texto).contains("Entendido")
+        assertThat(ledger.retencionDelAparato()).isNull()
+        assertThat(texto).doesNotContain("SÍ pasó")
+        assertThat(ledger.observarCobrosPorReconocer(venue).first().map { it.attemptId }).containsExactly("a")
     }
 
     @Test fun `la barrera nombra que ESA venta ya se cobro cuando la cerca un cobro que si paso`() = runTest {

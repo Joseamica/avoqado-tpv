@@ -292,7 +292,9 @@ class VeredictoDelServidorRoomTest {
         assertThat(dao.getById("w1")!!.state).isEqualTo("REGISTRADO")
     }
 
-    @Test fun `P1-5 cincuenta contradicciones CADUCADAS (mas de 72 h) no dejan fuera del aviso a un cobro incierto mas antiguo`() = runTest {
+    // Founder, 25-sep: el aviso de una duda se quita a los 10 min en toda terminal. La fila vieja sigue en la LISTA de pendientes
+    // (para conciliar), que es lo que las 50 contradicciones caducadas no pueden desplazar; el aviso ya no la pinta, ni a ellas.
+    @Test fun `P1-5 cincuenta contradicciones CADUCADAS (mas de 72 h) no dejan fuera de la lista a un cobro incierto mas antiguo`() = runTest {
         val cuatroDias = 4L * 24 * 3600_000; val cincoDias = 5L * 24 * 3600_000
         for (i in 1..50) {
             fila("k$i", "AUTORIZADO", requestId = "req-k$i"); bandeja("req-k$i")
@@ -303,9 +305,9 @@ class VeredictoDelServidorRoomTest {
             createdAt = now - cincoDias, updatedAt = now - cincoDias, hostApproved = null))
         val todas = db.remotePaymentRequestDao().observePendingObligations(venue).first()
         assertThat(todas.filter { it.contradiccion == 0 }.map { it.totalCentavos }).containsExactly(12_050L)
-        val texto = com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.texto(todas, now)!!
-        assertThat(texto).contains("$120.50")
-        assertThat(texto).doesNotContain("posible cobro doble") // las 50 contradicciones ya caducaron: no se muestran
+        assertThat(todas.count { it.contradiccion == 1 }).isEqualTo(50)
+        // Ni la duda de hace 5 días (pasó los 10 min) ni las 50 contradicciones caducadas (72 h) se pintan.
+        assertThat(com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.texto(todas, now)).isNull()
     }
 
     @Test fun `la bandeja — un negativo previo lo reemplaza el exito, un exito sin paymentId se enriquece, el mismo ganador es no-op, RECEIVED y lapida no se tocan`() = runTest {

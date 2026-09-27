@@ -25,13 +25,13 @@ object AvisoDeCobrosPendientes {
 
 
     /** null = no hay nada que avisar. La lista viene de la más reciente a la más vieja. */
-    fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long, esPax: Boolean = false): String? {
+    fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long): String? {
         // Checkpoint 2 (E1): una CONTRADICCIÓN con el servidor se avisa aparte y sólo durante VENTANA_CONTRADICCION_MS
         // después del veredicto — es evidencia que Avoqado concilia, no algo que el cajero pueda resolver; la fila se
         // conserva (nunca se poda) aunque el aviso deje de mostrarla.
         val contradicciones = todas.filter { it.contradiccion == 1 && ahoraMillis - it.desdeMillis < VENTANA_CONTRADICCION_MS }
-        // En la PAX cada pendiente se quita solo a los VENTANA_AVISO_PAX_MS; la fila sigue en la libreta para conciliar.
-        val pendientes = todas.filter { it.contradiccion == 0 && !(esPax && ahoraMillis - it.desdeMillis >= VENTANA_AVISO_PAX_MS) }
+        // Cada pendiente se quita solo a los VENTANA_AVISO_MS; la fila sigue en la libreta para conciliar.
+        val pendientes = todas.filter { it.contradiccion == 0 && ahoraMillis - it.desdeMillis < VENTANA_AVISO_MS }
         val textoPendientes = textoDePendientes(pendientes, ahoraMillis)
         val textoContradicciones = contradicciones.takeIf { it.isNotEmpty() }?.let { lista ->
             val enumeradas = lista.take(MAXIMO_ENUMERADO).joinToString(", ") { pesos(it.totalCentavos) }
@@ -67,11 +67,10 @@ object AvisoDeCobrosPendientes {
     }
 
     /**
-     * 10 min (decisión del founder, 24-sep): en la PAX el aviso ES el cinturón y se quita solo. La PAX no recibe el aviso del
-     * banco, así que sin esto el mensaje se quedaría para siempre; a los 10 min el cliente ya se fue y el aviso ya no evita
-     * ningún cobro doble. La fila NO se toca: sigue guardada para conciliar. La Nexgo no cambia.
+     * 10 min, en TODA terminal (founder: 24-sep para la PAX, 25-sep para todas — «ninguna duda apaga la terminal»). A los
+     * 10 min el cliente ya se fue y el aviso ya no evita ningún cobro doble. La fila NO se toca: sigue para conciliar.
      */
-    const val VENTANA_AVISO_PAX_MS = 10L * 60 * 1000
+    const val VENTANA_AVISO_MS = 10L * 60 * 1000
 
     /** 72 h: suficiente para que operaciones actúe; después la contradicción sigue en la libreta, no en el aviso. */
     const val VENTANA_CONTRADICCION_MS = 72L * 60 * 60 * 1000
@@ -84,6 +83,15 @@ object AvisoDeCobrosPendientes {
         "${pesos(totalCentavos)}, ${antiguedad(ahoraMillis - desdeMillis)}"
 
     /**
+     * 🔴 Decisión del founder (23-sep, «corrige y avisa»): lo que ve el cajero cuando la terminal se enteró TARDE de que un
+     * cobro que dio por no cobrado SÍ pasó (el lector dijo «cancelado» y el banco aprobó un segundo después — Testarudo, 16-sep).
+     * Nombra importe y antigüedad para que lo reconozca, y dice lo único que importa: no volver a cobrarlo. Va con «Entendido».
+     */
+    fun cobroQueSiPaso(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
+        "El cobro de ${pesos(totalCentavos)} (${antiguedad(ahoraMillis - desdeMillis)}) SÍ pasó: Avoqado ya lo registró, " +
+            "así que no lo vuelvas a cobrar."
+
+    /**
      * 🔴 Lo que dice la terminal cuando la libreta NO admitió el intento.
      *
      * Antes decía «No se pudo guardar el intento **o** esta venta tiene un cobro pendiente»: dos causas
@@ -93,24 +101,14 @@ object AvisoDeCobrosPendientes {
      * Son TRES desenlaces y cada uno pide algo distinto del cajero:
      *  - **la VENTA está cercada** — hay un cobro sin confirmar de ESTA misma cuenta: resolverlo, porque
      *    volver a cobrarla es el cobro doble que la cerca existe para impedir;
-     *  - **el APARATO está apartado** — la obligación es de OTRA venta: se resuelve, o se cobra en otra
-     *    terminal;
+     *  - **el APARATO tiene otro cobro EN CURSO**: se espera a que termine, o se cobra en otra terminal;
      *  - **no se pudo guardar** — ni siquiera se llegó a la cerca: se reintenta.
      *
      * @param apartaLaVenta `"$120.00, hace 3 min"` de la fila que cerca ESTA venta, o null.
      * @param apartaElAparato lo mismo para la fila que aparta la terminal, o null.
      */
-    /**
-     * 🔴 Decisión del founder (23-sep, «corrige y avisa»): lo que ve el cajero cuando la terminal se enteró TARDE de que un
-     * cobro que dio por no cobrado SÍ pasó (el lector dijo «cancelado» y el banco aprobó un segundo después — Testarudo, 16-sep).
-     * Nombra importe y antigüedad para que lo reconozca, y dice lo único que importa: no volver a cobrarlo. Va con «Entendido».
-     */
-    fun cobroQueSiPaso(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
-        "El cobro de ${pesos(totalCentavos)} (${antiguedad(ahoraMillis - desdeMillis)}) SÍ pasó: Avoqado ya lo registró, " +
-            "así que no lo vuelvas a cobrar."
-
     fun barreraDeLaLibreta(
-        apartaLaVenta: String?, apartaElAparato: String?, laVentaYaCobrada: Boolean = false, elAparatoYaCobrado: Boolean = false,
+        apartaLaVenta: String?, apartaElAparato: String?, laVentaYaCobrada: Boolean = false,
     ): String = when {
         // Decisión del founder (23-sep): un cobro que SÍ pasó se resuelve con el «Entendido» del aviso, no en otra terminal.
         apartaLaVenta != null && laVentaYaCobrada ->
@@ -120,12 +118,10 @@ object AvisoDeCobrosPendientes {
         apartaLaVenta != null ->
             "Esta venta ya tiene un cobro sin confirmar ($apartaLaVenta). NO se inició otro cobro. " +
                 "Revísalo en Transacciones antes de volver a cobrarla."
-        apartaElAparato != null && elAparatoYaCobrado ->
-            "La terminal está apartada por un cobro que SÍ pasó ($apartaElAparato). NO se inició este cobro. " +
-                "Toca «Entendido» en el aviso de arriba y vuelve a cobrar."
+        // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
-            "La terminal está apartada por otro cobro sin confirmar ($apartaElAparato). NO se inició este cobro. " +
-                "Resuélvelo o cobra con otra terminal."
+            "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +
+                "Espera a que termine; si no ves ningún cobro en pantalla, cierra y vuelve a abrir la app."
         // 🔴 Nada que nombrar NO es «no hay cerca»: también es «no se pudo leer la libreta». Por eso el
         // texto no afirma que la venta esté libre — sólo dice lo único que consta: no se cobró.
         else -> "No se pudo guardar el intento en esta terminal. NO se cobró. Vuelve a intentarlo."

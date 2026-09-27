@@ -51,7 +51,7 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `missing durable authorizing transition refuses SDK entry`() = runTest {
-        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 0
+        coEvery { dao.casTransition(any(), any(), any(), any(), any()) } returns 0
         org.junit.Assert.assertEquals(false, ledger.markAuthorizing("a1"))
     }
 
@@ -68,7 +68,7 @@ class PaymentAttemptLedgerTest {
                 kind = any(), amountCents = 10000L, tipCents = 1000L,
                 recordingRoute = PaymentAttemptEntity.ROUTE_FAST, contextJson = any(),
                 orderJsonFragment = null, now = any(), terminalPaymentRequestId = null,
-                esKiosco = false,
+                processToken = any(),
             )
         }
     }
@@ -153,13 +153,13 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `markAuthorizing transitions exactly from PREPARANDO or KERNEL_ACTIVO to AUTORIZANDO`() = runTest {
-        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 1
+        coEvery { dao.casTransition(any(), any(), any(), any(), any()) } returns 1
         ledger.markAuthorizing("a1")
         coVerify {
             dao.casTransition(
                 "a1",
                 listOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO),
-                PaymentAttemptEntity.STATE_AUTORIZANDO, any()
+                PaymentAttemptEntity.STATE_AUTORIZANDO, any(), any()
             )
         }
     }
@@ -186,7 +186,7 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `markRecorded allows exactly AUTORIZADO, HOST_RESPONDIO and INDETERMINADO`() = runTest {
-        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 1
+        coEvery { dao.casTransition(any(), any(), any(), any(), any()) } returns 1
         ledger.markRecorded("a1")
         coVerify {
             dao.casTransition(
@@ -196,7 +196,7 @@ class PaymentAttemptLedgerTest {
                     PaymentAttemptEntity.STATE_HOST_RESPONDIO,
                     PaymentAttemptEntity.STATE_INDETERMINADO // live verdict beats the sweep's quarantine
                 ),
-                PaymentAttemptEntity.STATE_REGISTRADO, any()
+                PaymentAttemptEntity.STATE_REGISTRADO, any(), any()
             )
         }
     }
@@ -225,26 +225,26 @@ class PaymentAttemptLedgerTest {
         // SaleIcc, AngelPay D308 relaunch spanning the sweep). The real outcome must still
         // land — the CAS expected-states list MUST include INDETERMINADO, otherwise the row
         // rots as a permanent false "money moved, no record" signal.
-        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 1
+        coEvery { dao.casTransition(any(), any(), any(), any(), any()) } returns 1
         ledger.markRecorded("q1")
         coVerify {
             dao.casTransition(
                 "q1",
                 match { it.contains(PaymentAttemptEntity.STATE_INDETERMINADO) },
-                PaymentAttemptEntity.STATE_REGISTRADO, any()
+                PaymentAttemptEntity.STATE_REGISTRADO, any(), any()
             )
         }
     }
 
     @Test
     fun `markDeliveredToQueue allows exactly REGISTRO_FALLIDO`() = runTest {
-        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 1
+        coEvery { dao.casTransition(any(), any(), any(), any(), any()) } returns 1
         ledger.markDeliveredToQueue("a1")
         coVerify {
             dao.casTransition(
                 "a1",
                 listOf(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO),
-                PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, any()
+                PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, any(), any()
             )
         }
     }
@@ -310,8 +310,8 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `P1 la barrera NOMBRA la venta cercada, no el generico de guardar el intento`() = runTest {
-        coEvery { dao.retencionDeLaVenta(any()) } returns fila("otro", 12000, 0L)
-        coEvery { dao.findTerminalHold() } returns null
+        coEvery { dao.retencionDeLaVenta(any(), any()) } returns fila("otro", 12000, 0L)
+        coEvery { dao.findTerminalHold(any()) } returns null
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 180_000L)
 
@@ -323,12 +323,14 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `P1 sin cerca de la venta se nombra lo que aparta el APARATO`() = runTest {
-        coEvery { dao.retencionDeLaVenta(any()) } returns null
-        coEvery { dao.findTerminalHold() } returns fila("de-otra-venta", 5000, 0L)
+        coEvery { dao.retencionDeLaVenta(any(), any()) } returns null
+        // Founder, 25-sep: sólo un cobro CORRIENDO aparta el aparato; una duda ya no aparta nada.
+        coEvery { dao.findTerminalHold(any()) } returns
+            fila("de-otra-venta", 5000, 0L).copy(state = PaymentAttemptEntity.STATE_AUTORIZANDO)
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 60_000L)
 
-        assertThat(motivo).contains("La terminal está apartada por otro cobro sin confirmar")
+        assertThat(motivo).contains("Hay otro cobro en curso en esta terminal")
         assertThat(motivo).contains("\$50.00")
     }
 
@@ -336,8 +338,8 @@ class PaymentAttemptLedgerTest {
     fun `P1 el intento PROPIO nunca se nombra como lo que estorba`() = runTest {
         // Si se nombrara a sí mismo, la pantalla mandaría al cajero a resolver el cobro que
         // acaba de rechazarse — una instrucción imposible.
-        coEvery { dao.retencionDeLaVenta(any()) } returns fila("mio", 5000, 0L)
-        coEvery { dao.findTerminalHold() } returns fila("mio", 5000, 0L)
+        coEvery { dao.retencionDeLaVenta(any(), any()) } returns fila("mio", 5000, 0L)
+        coEvery { dao.findTerminalHold(any()) } returns fila("mio", 5000, 0L)
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 0L)
 
@@ -346,19 +348,19 @@ class PaymentAttemptLedgerTest {
 
     @Test
     fun `P1 sin venta (pago rapido) no se consulta la cerca de la venta`() = runTest {
-        coEvery { dao.findTerminalHold() } returns null
+        coEvery { dao.findTerminalHold(any()) } returns null
 
         val motivo = ledger.motivoDeLaBarrera(orderId = null, attemptIdPropio = "mio", ahoraMillis = 0L)
 
         assertThat(motivo).contains("No se pudo guardar el intento")
-        coVerify(exactly = 0) { dao.retencionDeLaVenta(any()) }
+        coVerify(exactly = 0) { dao.retencionDeLaVenta(any(), any()) }
     }
 
     @Test
     fun `P1 una libreta ilegible NO afirma que la venta este libre`() = runTest {
         // El texto genérico dice «no se cobró», que es lo único que consta; nunca «no hay cerca».
-        coEvery { dao.retencionDeLaVenta(any()) } throws IllegalStateException("db caída")
-        coEvery { dao.findTerminalHold() } throws IllegalStateException("db caída")
+        coEvery { dao.retencionDeLaVenta(any(), any()) } throws IllegalStateException("db caída")
+        coEvery { dao.findTerminalHold(any()) } throws IllegalStateException("db caída")
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 0L)
 

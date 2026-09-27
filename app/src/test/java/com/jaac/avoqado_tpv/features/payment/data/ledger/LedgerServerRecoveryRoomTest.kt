@@ -159,10 +159,10 @@ class LedgerServerRecoveryRoomTest {
         assertThat(dao.getById("local")!!.state).isEqualTo("INDETERMINADO")
     }
 
-    @Test fun `respaldo sin red - recoverOne dice si el servidor CONTESTO, y sin red, tope o 5xx NO es contestar`() = runTest {
-        // El respaldo del aparato (founder, 22-sep: «con internet decide el servidor; si no contesta, el aparato») se ofrece
-        // sólo si el servidor NO contestó en toda la ventana. «Contestar» es un 2xx: con un 5xx o un 401 la declaración por
-        // el servidor tampoco pasaría, así que para el cajero es lo mismo que no tener servidor.
+    @Test fun `sin red - recoverOne dice si el servidor CONTESTO, y sin red, tope o 5xx NO es contestar`() = runTest {
+        // La pantalla de la Nexgo dice «Sin conexión con Avoqado» sólo si el servidor NO contestó en toda la ventana (founder,
+        // 25-sep). «Contestar» es un 2xx: con un 5xx o un 401 la declaración por el servidor tampoco pasaría, así que para el
+        // cajero es lo mismo que no tener servidor.
         filaLocal("s1", "INDETERMINADO"); filaLocal("s2", "INDETERMINADO"); filaLocal("s3", "INDETERMINADO"); filaLocal("s4", "INDETERMINADO")
         coEvery { api.getAttemptStatus(venue, "s1") } returns notRecorded
         coEvery { api.getAttemptStatus(venue, "s2") } throws java.io.IOException("sin red")
@@ -470,6 +470,9 @@ class LedgerServerRecoveryRoomTest {
     }
 
     // ── Codex r13 (P1): lo que trae UNA respuesta (veto + aprobación) se escribe JUNTO — el veto solo NO aparta el aparato ──
+    // 🔴 Founder, 25-sep («ninguna duda apaga la terminal»): desde la v41 tampoco la aprobación de un Pago rápido aparta el
+    // aparato — el dinero conocido se AVISA (contradicción, «SÍ pasó»). Lo que estas pruebas siguen fijando es que la respuesta
+    // se escribe COMPLETA (veto + aprobación), pase lo que pase entre las dos escrituras.
 
     /** Pago rápido A (sin solicitud y sin orden), ya LIBERADO por el servidor: la fila conserva «se puede volver a cobrar». */
     private suspend fun cobroLocalLiberado(attemptId: String) {
@@ -495,9 +498,9 @@ class LedgerServerRecoveryRoomTest {
 
     /** ¿Un cobro NUEVO de Pago rápido puede apartar la terminal? -1 = la reserva se rechaza. */
     private suspend fun reservaDeOtroCobro(id: String = "otro-cobro"): Long =
-        dao.reserveTerminal(id, venue, "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, now + 10_000, null, false)
+        dao.reserveTerminal(id, venue, "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, now + 10_000, null, "proceso-de-la-prueba")
 
-    @Test fun `r13 P1 · sondeo - cerrar la pantalla entre el veto y la aprobacion no deja volver a cobrar`() = runTest {
+    @Test fun `r13 P1 · sondeo - cerrar la pantalla entre el veto y la aprobacion no pierde la aprobacion`() = runTest {
         cobroLocalLiberado("vp-s")
         coEvery { api.getAttemptStatus(venue, "vp-s") } returns aprobadoConContradiccion("vp-s")
         val entro = kotlinx.coroutines.CompletableDeferred<Unit>(); val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -512,10 +515,11 @@ class LedgerServerRecoveryRoomTest {
         val f = dao.getById("vp-s")!!
         assertThat(f.serverVeto).isNotNull()
         assertWithMessage("la aprobación de la MISMA respuesta queda durable").that(f.serverProcessorEvidence).isEqualTo("APPROVED")
-        assertWithMessage("otro cobro NO puede apartar la terminal").that(reservaDeOtroCobro()).isEqualTo(-1L)
+        assertWithMessage("y se avisa como contradicción").that(dao.esContradiccion("vp-s")).isTrue()
+        assertWithMessage("el dinero conocido ya no aparta el aparato (founder, 25-sep)").that(reservaDeOtroCobro()).isNotEqualTo(-1L)
     }
 
-    @Test fun `r13 P1 · worker - detenerlo entre el veto y la aprobacion no deja volver a cobrar`() = runTest {
+    @Test fun `r13 P1 · worker - detenerlo entre el veto y la aprobacion no pierde la aprobacion`() = runTest {
         cobroLocalLiberado("vp-w")
         coEvery { api.getAttemptStatus(venue, "vp-w") } returns aprobadoConContradiccion("vp-w")
         val entro = kotlinx.coroutines.CompletableDeferred<Unit>(); val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -530,17 +534,20 @@ class LedgerServerRecoveryRoomTest {
         val f = dao.getById("vp-w")!!
         assertThat(f.serverVeto).isNotNull()
         assertWithMessage("la aprobación de la MISMA respuesta queda durable").that(f.serverProcessorEvidence).isEqualTo("APPROVED")
-        assertWithMessage("otro cobro NO puede apartar la terminal").that(reservaDeOtroCobro()).isEqualTo(-1L)
+        assertWithMessage("y se avisa como contradicción").that(dao.esContradiccion("vp-w")).isTrue()
+        assertWithMessage("el dinero conocido ya no aparta el aparato (founder, 25-sep)").that(reservaDeOtroCobro()).isNotEqualTo(-1L)
     }
 
-    @Test fun `r13 P1 control - con la aprobacion durable la reserva se rechaza, con solo el veto no (lo que mide Codex con SQL)`() = runTest {
+    @Test fun `r13 P1 control - con solo el veto o con la aprobacion durable la reserva entra y el dinero se avisa`() = runTest {
         cobroLocalLiberado("ctl")
         dao.marcarVetoDelServidor("ctl", venue, PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION, now)
         assertWithMessage("sólo el veto: la terminal queda libre para otro cobro").that(reservaDeOtroCobro()).isNotEqualTo(-1L)
         db.clearAllTables(); cobroLocalLiberado("ctl")   // sin la reserva de arriba, que ya aparta la terminal por sí sola
         dao.marcarVetoDelServidor("ctl", venue, PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION, now)
         dao.marcarEvidenciaPositivaDelServidor("ctl", venue, now)
-        assertWithMessage("veto + aprobación: la terminal queda apartada").that(reservaDeOtroCobro("otro-cobro-2")).isEqualTo(-1L)
+        // Founder, 25-sep: antes «veto + aprobación» apartaba la terminal; ahora el dinero conocido se AVISA y no la aparta.
+        assertWithMessage("veto + aprobación: se avisa").that(dao.esContradiccion("ctl")).isTrue()
+        assertWithMessage("…y la terminal sigue cobrando").that(reservaDeOtroCobro("otro-cobro-2")).isNotEqualTo(-1L)
     }
 
     // ── Codex r14 (P1-1): entre las DOS escrituras de una respuesta nadie puede reservar ni autorizar otro cobro ──
@@ -555,7 +562,7 @@ class LedgerServerRecoveryRoomTest {
             }
         }
 
-    @Test fun `r14 P1-1 · worker - en plena ventana entre el veto y la aprobacion no se reserva otro cobro`() = runTest {
+    @Test fun `r14 P1-1 · worker - en plena ventana entre el veto y la aprobacion otro cobro entra y la respuesta aterriza completa`() = runTest {
         cobroLocalLiberado("win-w")
         coEvery { api.getAttemptStatus(venue, "win-w") } returns aprobadoConContradiccion("win-w")
         val entro = kotlinx.coroutines.CompletableDeferred<Unit>(); val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -566,10 +573,11 @@ class LedgerServerRecoveryRoomTest {
         val enLaVentana = reservaDeOtroCobro("en-la-ventana")
         soltar.complete(Unit); worker.join()
 
-        assertWithMessage("la marca que aparta el aparato ya estaba escrita cuando se escribió el veto").that(enLaVentana).isEqualTo(-1L)
+        assertWithMessage("el dinero de otro Pago rápido ya no aparta el aparato (founder, 25-sep)").that(enLaVentana).isNotEqualTo(-1L)
+        assertWithMessage("la aprobación de la MISMA respuesta queda durable").that(dao.getById("win-w")!!.serverProcessorEvidence).isEqualTo("APPROVED")
     }
 
-    @Test fun `r14 P1-1 · worker - en plena ventana un cobro ya reservado no puede pasar a AUTORIZANDO`() = runTest {
+    @Test fun `r14 P1-1 · worker - en plena ventana un cobro ya reservado de otro Pago rapido pasa a AUTORIZANDO`() = runTest {
         cobroLocalLiberado("win-a")
         coEvery { api.getAttemptStatus(venue, "win-a") } returns aprobadoConContradiccion("win-a")
         val entro = kotlinx.coroutines.CompletableDeferred<Unit>(); val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -581,14 +589,16 @@ class LedgerServerRecoveryRoomTest {
 
         val worker = launch { LedgerServerRecovery(d, libreta, api).recover(venue, now + 5_000) }
         entro.await()
-        val autorizo = dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000)
+        val autorizo = dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000, "proceso-de-la-prueba")
         soltar.complete(Unit); worker.join()
 
-        assertWithMessage("B no puede autorizar con la aprobación de A ya conocida").that(autorizo).isEqualTo(0)
-        assertWithMessage("…y no porque B se hubiera descartado").that(dao.getById("B-previo")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+        // Founder, 25-sep: la aprobación de A (un Pago rápido sin venta) se AVISA; no ata a B, que no tiene venta en común.
+        assertWithMessage("B autoriza aunque la aprobación de A ya se conozca").that(autorizo).isEqualTo(1)
+        assertThat(dao.getById("B-previo")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+        assertThat(dao.getById("win-a")!!.serverProcessorEvidence).isEqualTo("APPROVED")
     }
 
-    @Test fun `r14 P1-1 · sondeo - en plena ventana entre el veto y la aprobacion no se reserva otro cobro`() = runTest {
+    @Test fun `r14 P1-1 · sondeo - en plena ventana entre el veto y la aprobacion otro cobro entra y la respuesta aterriza completa`() = runTest {
         cobroLocalLiberado("win-s")
         coEvery { api.getAttemptStatus(venue, "win-s") } returns aprobadoConContradiccion("win-s")
         val entro = kotlinx.coroutines.CompletableDeferred<Unit>(); val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -599,10 +609,11 @@ class LedgerServerRecoveryRoomTest {
         val enLaVentana = reservaDeOtroCobro("en-la-ventana")
         soltar.complete(Unit); pantalla.join()
 
-        assertThat(enLaVentana).isEqualTo(-1L)
+        assertWithMessage("el dinero de otro Pago rápido ya no aparta el aparato (founder, 25-sep)").that(enLaVentana).isNotEqualTo(-1L)
+        assertThat(dao.getById("win-s")!!.serverProcessorEvidence).isEqualTo("APPROVED")
     }
 
-    // ── Codex r14 (P1-2): una aprobación que llega CON Payment tampoco puede dejar el aparato sin apartar ──
+    // ── Codex r14 (P1-2): una aprobación que llega CON Payment sobre una fila liberada — desde el 25-sep se AVISA y no aparta ──
 
     /** S6 con dinero Y Payment sobre el cobro LOCAL (sin solicitud): el veredicto se guarda, la fila sigue DESCARTADA. */
     private fun aprobadoConPago(attemptId: String, outcome: String) = Response.success(
@@ -611,31 +622,34 @@ class LedgerServerRecoveryRoomTest {
                 recordedVia = "webhook", amountCents = 4000, tipCents = 0, isWinner = true, processorEvidence = "APPROVED")),
     )
 
-    @Test fun `r14 P1-2 · worker - REFERENCE_COLLISION con Payment sobre la fila liberada aparta el aparato`() = runTest {
+    @Test fun `r14 P1-2 · worker - REFERENCE_COLLISION con Payment sobre la fila liberada se avisa sin apartar el aparato`() = runTest {
         cobroLocalLiberado("col-w")
         coEvery { api.getAttemptStatus(venue, "col-w") } returns aprobadoConPago("col-w", "REFERENCE_COLLISION_EVIDENCE")
 
         recovery.recover(venue, now + 5_000)
 
-        assertWithMessage("con dinero pendiente de conciliar, otro cobro NO aparta la terminal").that(reservaDeOtroCobro()).isEqualTo(-1L)
+        assertWithMessage("con dinero pendiente de conciliar, se avisa").that(dao.esContradiccion("col-w")).isTrue()
+        assertWithMessage("…y otro cobro entra (founder, 25-sep)").that(reservaDeOtroCobro()).isNotEqualTo(-1L)
     }
 
-    @Test fun `r14 P1-2 · worker - RECORDED sobre la fila liberada aparta el aparato`() = runTest {
+    @Test fun `r14 P1-2 · worker - RECORDED sobre la fila liberada se avisa sin apartar el aparato`() = runTest {
         cobroLocalLiberado("rec-w")
         coEvery { api.getAttemptStatus(venue, "rec-w") } returns aprobadoConPago("rec-w", "RECORDED")
 
         recovery.recover(venue, now + 5_000)
 
-        assertThat(reservaDeOtroCobro()).isEqualTo(-1L)
+        assertThat(dao.esContradiccion("rec-w")).isTrue()
+        assertThat(reservaDeOtroCobro()).isNotEqualTo(-1L)
     }
 
-    @Test fun `r14 P1-2 · sondeo - REFERENCE_COLLISION con Payment sobre la fila liberada aparta el aparato`() = runTest {
+    @Test fun `r14 P1-2 · sondeo - REFERENCE_COLLISION con Payment sobre la fila liberada se avisa sin apartar el aparato`() = runTest {
         cobroLocalLiberado("col-s")
         coEvery { api.getAttemptStatus(venue, "col-s") } returns aprobadoConPago("col-s", "REFERENCE_COLLISION_EVIDENCE")
 
         recovery.recoverOne(venue, "col-s", now, estampar = false)
 
-        assertThat(reservaDeOtroCobro()).isEqualTo(-1L)
+        assertThat(dao.esContradiccion("col-s")).isTrue()
+        assertThat(reservaDeOtroCobro()).isNotEqualTo(-1L)
     }
 
     // ── Codex r14 (P2-3, P2-4): la rotación entre PASADAS, y el fallo de una estampa también es atasco de escritura ──
@@ -701,7 +715,7 @@ class LedgerServerRecoveryRoomTest {
             if (primera.getAndSet(false)) throw java.io.IOException("disco lleno") else dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, at)
     }
 
-    @Test fun `r15 P1 · worker - si la marca falla NO se guarda el RECORDED, y la pasada siguiente deja el aparato apartado`() = runTest {
+    @Test fun `r15 P1 · worker - si la marca falla NO se guarda el RECORDED, y la pasada siguiente lo escribe con su marca`() = runTest {
         cobroLocalLiberado("mf-w")
         coEvery { api.getAttemptStatus(venue, "mf-w") } returns aprobadoConPago("mf-w", "RECORDED")
         val d = daoConMarcaQueFallaUnaVez()
@@ -721,9 +735,10 @@ class LedgerServerRecoveryRoomTest {
 
         worker.recover(venue, now + 6_000)
         assertThat(dao.getById("mf-w")!!.serverProcessorEvidence).isEqualTo("APPROVED")
-        assertWithMessage("recuperada la marca, B ya no puede autorizar").that(
-            dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000)).isEqualTo(0)
-        assertWithMessage("…y no porque B se hubiera descartado").that(dao.getById("B-previo")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+        assertWithMessage("recuperada la marca, el dinero de A se avisa").that(dao.esContradiccion("mf-w")).isTrue()
+        // Founder, 25-sep: el dinero de A (un Pago rápido sin venta) ya no aparta el aparato — B, sin venta en común, autoriza.
+        assertWithMessage("B autoriza").that(
+            dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000, "proceso-de-la-prueba")).isEqualTo(1)
     }
 
     @Test fun `r15 P1 · sondeo - si la marca falla NO se guarda el veredicto y la lectura dice que hay dinero`() = runTest {
@@ -764,7 +779,7 @@ class LedgerServerRecoveryRoomTest {
 
     // ── Codex r16 (P1): la marca va DENTRO de la transacción del veredicto — ningún llamador puede guardarlo sin ella ──
 
-    @Test fun `r16 P1 · el respaldo de S5 de la pantalla (aplica sin marcar antes) deja el aparato apartado`() = runTest {
+    @Test fun `r16 P1 · el respaldo de S5 de la pantalla (aplica sin marcar antes) deja el veredicto con su marca`() = runTest {
         // A: cobro remoto sin orden que el SDK cerró como «no se cobró». El listener de S5 no pudo marcar (y por eso no aplicó);
         // la pantalla ya anunció el negativo y deja durable el MISMO veredicto de S5 llamando a la libreta directamente.
         fila("s5-a", "DESCARTADA", hostApproved = null)
@@ -776,8 +791,10 @@ class LedgerServerRecoveryRoomTest {
 
         assertThat(r.decision).isEqualTo(ResultadoDelVeredicto.Decision.GUARDADO_SIN_LIBERAR)
         assertWithMessage("el veredicto con dinero se guardó CON la marca").that(dao.getById("s5-a")!!.serverProcessorEvidence).isEqualTo("APPROVED")
-        assertWithMessage("B ya no puede autorizar").that(
-            dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000)).isEqualTo(0)
+        assertWithMessage("y se avisa").that(dao.esContradiccion("s5-a")).isTrue()
+        // Founder, 25-sep: el dinero de A (sin venta) ya no aparta el aparato — B, sin venta en común, autoriza.
+        assertWithMessage("B autoriza").that(
+            dao.casTransition("B-previo", listOf("PREPARANDO", "KERNEL_ACTIVO"), "AUTORIZANDO", now + 20_000, "proceso-de-la-prueba")).isEqualTo(1)
     }
 
     // ── Codex r16 (P2): la rueda no puede desbordar las variables de SQLite, y un fallo de LECTURA no es «ya no hay más» ──

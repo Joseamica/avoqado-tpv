@@ -24,9 +24,9 @@ internal object CobroRemotoDelPos {
     //    dice AL INSTANTE (`failed + PRE_AUTHORIZATION`, verificado por la bandeja en su transacción) en vez de dejar a la
     //    tablet «esperando a la terminal» hasta que el servidor retenga la ranura como UNKNOWN (medido el 17-sep 21:45). ──
 
-    /** Lo que ve la tablet cuando la terminal está apartada por un cobro anterior sin confirmar. */
-    const val NO_INICIADO_POR_COBRO_PENDIENTE =
-        "La terminal tiene un cobro anterior sin confirmar: este cobro NO se inició. Resuélvelo en la terminal o cobra con otra."
+    /** Lo que ve la tablet cuando la terminal tiene otro cobro en curso (founder, 25-sep: sólo eso la aparta). */
+    const val NO_INICIADO_POR_COBRO_EN_CURSO =
+        "La terminal tiene otro cobro en curso: este cobro NO se inició. Espera a que termine y vuelve a enviarlo, o cobra con otra terminal."
 
     /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
     const val NO_INICIADO_SIN_DETALLE =
@@ -34,8 +34,8 @@ internal object CobroRemotoDelPos {
 
     /** La pantalla de la terminal, NOMBRANDO la fila que la aparta («$10.00, hace 2 min») cuando se conoce. */
     fun noIniciadoEnLaTerminal(queLaAparta: String?): String = if (queLaAparta != null) {
-        "Este cobro del POS NO se inició: la terminal tiene un cobro anterior sin confirmar ($queLaAparta). " +
-            "Resuélvelo o cobra con otra terminal."
+        "Este cobro del POS NO se inició: la terminal tiene otro cobro en curso ($queLaAparta). " +
+            "Espera a que termine o cobra con otra terminal."
     } else {
         "Este cobro del POS NO se inició: la terminal tiene un cobro pendiente o no pudo guardar el intento. No se cobró."
     }

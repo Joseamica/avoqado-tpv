@@ -274,7 +274,7 @@ class CancelTrasReclamarRoomTest {
         // En 2.9.2 esa fila no reservaba nada: la caja sigue pudiendo cobrar.
         assertThat(ledger.openAttempt("nueva", "venue-1", "BLUMON", 100, 0, "FAST", "{}")).isTrue()
         assertThat(ledger.markAuthorizing("nueva")).isTrue()
-        assertThat(db.paymentAttemptDao().findTerminalHold()?.attemptId).isEqualTo("nueva")
+        assertThat(ledger.retencionDelAparato()?.attemptId).isEqualTo("nueva")
         assertThat(db.paymentAttemptDao().findUnresolvedCharge()?.attemptId).isEqualTo("nueva")
         // …pero sigue visible como obligación que conciliar.
         assertThat(db.paymentAttemptDao().observeUnresolvedCount("venue-1").first()).isEqualTo(2)

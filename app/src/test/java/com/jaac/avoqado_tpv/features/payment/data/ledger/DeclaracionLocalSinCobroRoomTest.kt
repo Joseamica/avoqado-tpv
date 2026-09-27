@@ -20,15 +20,16 @@ import org.robolectric.annotation.Config
 import retrofit2.Response
 
 /**
- * 🔴 «Ya revisé la terminal: no se cobró» para un cobro LOCAL.
+ * 🔴 «Ya revisé la terminal: no se cobró» para un cobro LOCAL — la declaración de la LIBRETA
+ * ([PaymentAttemptLedger.declararSinCobroLocal]). Hoy la usa la PAX (`BlumonAttemptResolver.declareChecked`): el cajero
+ * deja constancia de que revisó la terminal, con o sin red.
  *
- * Decisión del founder (21-sep): *«los negocios normalmente cobran con tarjeta y no pueden quedar trabados»*.
- * Medido ese día en una N86: matar la app con el lector activo deja la fila `AUTORIZANDO` apartando el aparato,
- * y como un cobro local no tiene solicitud del POS, la declaración que ya existía **no aplicaba**. La terminal
- * se quedaba sin cobrar con tarjeta hasta que alguien escribía SQL — ocurrió tres veces.
+ * Nació el 21-sep para la Nexgo (founder: *«los negocios normalmente cobran con tarjeta y no pueden quedar trabados»*):
+ * una fila `AUTORIZANDO` de un proceso muerto apartaba el aparato. Desde el 25-sep («ninguna duda apaga la terminal») esa
+ * fila ya no aparta nada y la Nexgo ya no ofrece cerrar en el aparato; la declaración queda como constancia del cajero.
  *
- * Lo que fija esta suite es el CANDADO, no la pantalla: la salida existe, pero **nunca por delante de la
- * evidencia**.
+ * Lo que fija esta suite es el CANDADO: los cinco candados viven DENTRO del UPDATE, y la declaración **nunca va por
+ * delante de la evidencia**.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, application = Application::class, sdk = [28])
@@ -50,10 +51,13 @@ class DeclaracionLocalSinCobroRoomTest {
 
     @After fun cerrar() = db.close()
 
-    /** Una fila que aparta el aparato. Por defecto: LOCAL, el servidor ya CONTESTÓ sin dinero ⇒ declarable. */
+    /**
+     * Una duda. Por defecto: LOCAL, INDETERMINADO y el servidor ya CONTESTÓ sin dinero ⇒ declarable. INDETERMINADO y no
+     * AUTORIZANDO (M-4, 26-sep): una AUTORIZANDO puede ser un cobro en vuelo y ya no se declara nunca.
+     */
     private suspend fun fila(
         attemptId: String = "a1",
-        state: String = PaymentAttemptEntity.STATE_AUTORIZANDO,
+        state: String = PaymentAttemptEntity.STATE_INDETERMINADO,
         requestId: String? = null,
         hostApproved: Boolean? = null,
         serverCheckedAt: Long? = now - 1_000,
@@ -82,15 +86,17 @@ class DeclaracionLocalSinCobroRoomTest {
 
     // ── El camino que destraba ────────────────────────────────────────────────────────────────
 
-    @Test fun `P1 un cobro LOCAL consultado y sin dinero SE PUEDE declarar, y la terminal queda libre`() = runTest {
-        fila()
+    @Test fun `P1 un cobro LOCAL que dejo un proceso muerto no aparta el aparato - y declararlo sigue quedando anotado`() = runTest {
+        fila()   // la duda que dejó un proceso que ya no existe (sin `process_token`), consultada y sin dinero
 
-        assertThat(ledger.retencionLocalDeclarable()?.attemptId).isEqualTo("a1")
+        // ← lo que el cajero necesita, ya sin declarar nada: la siguiente venta entra y la duda sigue guardada.
+        assertThat(ledger.openAttempt("siguiente", venue, "ANGELPAY", 100, 0, "FAST", "{}")).isTrue()
+        assertThat(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
+
+        // La declaración no depende de eso: si alguien la hace, queda anotada con sus candados.
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Cajera Ana")).isTrue()
-
         assertThat(dao.getById("a1")!!.state).isEqualTo("DESCARTADA")
         assertThat(dao.getById("a1")!!.lastError).isEqualTo("declarado_sin_cobro:Cajera Ana")
-        assertThat(dao.findTerminalHold()).isNull()   // ← lo que el cajero necesita: poder volver a cobrar
     }
 
     // ── Los cinco candados: cada uno, por separado, impide la salida ──────────────────────────
@@ -98,52 +104,63 @@ class DeclaracionLocalSinCobroRoomTest {
     @Test fun `P1 NO se declara sin haberle preguntado antes al servidor`() = runTest {
         fila(serverCheckedAt = null, serverAnsweredAt = null)
 
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
-        assertThat(dao.getById("a1")!!.state).isEqualTo("AUTORIZANDO")
+        assertThat(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
     }
 
     @Test fun `P1 NO se declara si el servidor sabe de DINERO`() = runTest {
         fila(serverOutcome = PaymentAttemptEntity.SERVER_RECORDED)
 
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
     }
 
     @Test fun `P1 el veto DURABLE del procesador manda sobre el testimonio de una persona`() = runTest {
         fila(evidencia = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
 
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
     }
 
     @Test fun `P1 NUNCA sobre una aprobacion del host`() = runTest {
         fila(hostApproved = true)
 
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
     }
 
     @Test fun `P1 un cobro DEL POS no usa esta salida — conserva la suya, que ademas libera la ranura del servidor`() = runTest {
         fila(requestId = "req-1")
 
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
-        assertThat(dao.getById("a1")!!.state).isEqualTo("AUTORIZANDO")
+        assertThat(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
+    }
+
+    @Test fun `P1 M-4 solo se declara una duda INDETERMINADO - una AUTORIZANDO, que puede ser un cobro en vuelo, nunca`() = runTest {
+        // Revisión final (M-4, 26-sep): el SQL admitía también AUTORIZANDO. Su único llamador (la PAX) sólo pasa INDETERMINADO,
+        // pero la permisividad quedaba latente para un llamador futuro sobre una ejecución viva.
+        fila(attemptId = "en-vuelo", state = PaymentAttemptEntity.STATE_AUTORIZANDO)
+        val antes = dao.getById("en-vuelo")
+        assertThat(dao.declararSinCobroLocal("en-vuelo", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(0)
+        assertWithMessage("la fila queda intacta").that(dao.getById("en-vuelo")).isEqualTo(antes)
+
+        fila(attemptId = "duda")   // INDETERMINADO y todo lo demás igual: se declara como hoy
+        assertThat(dao.declararSinCobroLocal("duda", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(1)
+        assertThat(dao.getById("duda")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(dao.getById("duda")!!.lastError).isEqualTo("declarado_sin_cobro:Ana")
     }
 
     // ── La carrera: el veredicto llega entre ofrecer el botón y tocarlo ───────────────────────
 
-    @Test fun `P1 si la evidencia llega DESPUES de ofrecer el boton, el CAS lo rechaza igual`() = runTest {
-        // 🔑 Por esto las cinco condiciones viven DENTRO del UPDATE: entre que la pantalla ofrece la salida y
-        // el cajero la toca caben segundos, y en esos segundos puede aterrizar el veredicto del servidor.
+    @Test fun `P1 si la evidencia llega DESPUES de decidir declarar, el CAS lo rechaza igual`() = runTest {
+        // 🔑 Por esto las cinco condiciones viven DENTRO del UPDATE: entre decidir la salida y tocarla caben segundos, y en
+        // esos segundos puede aterrizar el veredicto del servidor. (Desde el 25-sep esta fila ya no se OFRECE —la dejó un
+        // proceso muerto y no aparta el aparato—; el CAS nunca dependió de la oferta.)
         fila()
-        assertThat(ledger.retencionLocalDeclarable()?.attemptId).isEqualTo("a1")   // se ofreció
+        fila(attemptId = "control")
+        assertThat(ledger.declararSinCobroLocal("control", venue, "Ana")).isTrue()   // una fila igual, sin evidencia, sí se declara
 
-        dao.marcarEvidenciaPositivaDelServidor("a1", venue, now)                   // …y llegó el dinero
+        dao.marcarEvidenciaPositivaDelServidor("a1", venue, now)                     // …y a ésta le llegó el dinero
 
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()
-        assertThat(dao.getById("a1")!!.state).isEqualTo("AUTORIZANDO")
+        assertThat(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
     }
 
     @Test fun `P1 una fila INDETERMINADO por cuarentena tambien se puede declarar`() = runTest {
@@ -151,7 +168,7 @@ class DeclaracionLocalSinCobroRoomTest {
         fila(state = PaymentAttemptEntity.STATE_INDETERMINADO)
 
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isTrue()
-        assertThat(dao.findTerminalHold()).isNull()
+        assertThat(ledger.retencionDelAparato()).isNull()
     }
 
     // ── Codex r7 · P2-5: la declaración sin red no se poda antes de conciliarse ─────────────────
@@ -179,12 +196,12 @@ class DeclaracionLocalSinCobroRoomTest {
     // ── Codex r8 · P2-4: «intenté consultar» no es «el servidor contestó» ─────────────────────────
 
     @Test fun `r8 P2-4 - un 503 que pasa por la recuperacion gasta el turno pero NO habilita la declaracion sin red`() = runTest {
-        fila(serverCheckedAt = null, serverAnsweredAt = null)   // nunca consultada
+        // AUTORIZANDO de un proceso muerto, nunca consultada: la recuperación la pone «en duda» (abajo).
+        fila(state = PaymentAttemptEntity.STATE_AUTORIZANDO, serverCheckedAt = null, serverAnsweredAt = null)
 
         recuperacionQueRecibe(http(503)).recover(venue, now)
 
         assertThat(dao.getById("a1")!!.serverCheckedAt).isEqualTo(now)   // el turno de la recuperación SÍ se gastó
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isFalse()   // …pero Avoqado no contestó
         // Ronda 20: una fila AUTORIZANDO que NO abrió este proceso la dejó un proceso muerto — la recuperación la pone «en duda» al
         // instante. Lo que fija esta prueba no cambia: NO quedó liberada.
@@ -210,7 +227,7 @@ class DeclaracionLocalSinCobroRoomTest {
 
         assertThat(dao.getById("a1")!!.serverAnsweredAt).isEqualTo(now)
         assertThat(ledger.declararSinCobroLocal("a1", venue, "Ana")).isTrue()
-        assertThat(dao.findTerminalHold()).isNull()
+        assertThat(ledger.retencionDelAparato()).isNull()
     }
 
     // ── Codex r9 · P1-3: la poda no puede colarse entre «contestó» y guardar lo que esa respuesta trae ─────────

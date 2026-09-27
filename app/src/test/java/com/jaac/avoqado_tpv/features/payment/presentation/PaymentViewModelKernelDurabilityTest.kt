@@ -463,7 +463,7 @@ class PaymentViewModelKernelDurabilityTest {
             esperarA { vm.state.value is PaymentState.Error }
             assertThat(calls.get()).isEqualTo(1)
             val error = vm.state.value as PaymentState.Error
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
             assertThat(error.canRetry).isTrue()
             if (returnToMerchant) {
                 vm.returnToSelectingMerchantFromError(error.context)
@@ -472,7 +472,7 @@ class PaymentViewModelKernelDurabilityTest {
             esperarA { calls.get() == 2 || vm.state.value is PaymentState.Error }
             assertWithMessage("retry must reach the reader without deleting storage: ${vm.state.value}")
                 .that(calls.get()).isEqualTo(2)
-            assertThat(dao.findTerminalHold()?.amountCents).isEqualTo(10000L)
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()?.amountCents).isEqualTo(10000L)
         } finally {
             vm.viewModelScope.cancel()
             secondRead.cancel()
@@ -502,7 +502,7 @@ class PaymentViewModelKernelDurabilityTest {
             vm.startPayment("100.00")
             esperarA { vm.state.value is PaymentState.Error }
             assertThat((vm.state.value as PaymentState.Error).message).contains("Tarjeta retirada")
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
             vm.resetPayment()
             assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isTrue()
         } finally { vm.viewModelScope.cancel(); db.close() }
@@ -545,7 +545,7 @@ class PaymentViewModelKernelDurabilityTest {
             esperarA { vm.currentMerchant.value != null }
             vm.startPayment("100.00")
             esperarA { reads.get() == 1 }
-            val first = dao.findTerminalHold()!!
+            val first = mockPaymentAttemptLedger.retencionDelAparato()!!
             assertThat(vm.goBackOneStep()).isTrue()
             assertThat(vm.state.value).isInstanceOf(PaymentState.Processing::class.java)
             assertThat(vm.goBackOneStep()).isTrue() // Consumed: the screen must not reset/navigate away.
@@ -558,7 +558,7 @@ class PaymentViewModelKernelDurabilityTest {
             vm.startPayment("100.00")
             esperarA { reads.get() == 2 || vm.state.value is PaymentState.Error }
             assertThat(reads.get()).isEqualTo(2)
-            val next = dao.findTerminalHold()!!
+            val next = mockPaymentAttemptLedger.retencionDelAparato()!!
             assertThat(next.attemptId).isNotEqualTo(first.attemptId)
             oldCard.complete(Unit)
             esperarA { oldFlow.getCompleted().isCompleted }
@@ -587,7 +587,7 @@ class PaymentViewModelKernelDurabilityTest {
             vm.startPayment("100.00")
             esperarA { vm.state.value is PaymentState.Error }
             assertThat((vm.state.value as PaymentState.Error).message).contains("reader failed")
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 
@@ -611,7 +611,7 @@ class PaymentViewModelKernelDurabilityTest {
             vm.startPayment("100.00")
             esperarA { vm.state.value is PaymentState.Error }
             assertThat((vm.state.value as PaymentState.Error).canRetry).isFalse()
-            assertThat(dao.findTerminalHold()?.state).isEqualTo("PREPARANDO")
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()?.state).isEqualTo("PREPARANDO")
             assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isFalse()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
@@ -705,7 +705,7 @@ class PaymentViewModelKernelDurabilityTest {
             coVerify(exactly = 0) { mockRefundQueueRepository.enqueueClaimed(any(), any()) }
             coVerify(exactly = 0) { mockRefundQueueRepository.enqueue(any()) }
             // …y la terminal quedó libre para la siguiente operación.
-            esperarA { kotlinx.coroutines.runBlocking { dao.findTerminalHold() } == null }
+            esperarA { kotlinx.coroutines.runBlocking { mockPaymentAttemptLedger.retencionDelAparato() } == null }
             assertThat(mockPaymentAttemptLedger.openAttempt("siguiente", testVenueId, "BLUMON", 1000, 0, "FAST", "{}")).isTrue()
         } finally { timber.log.Timber.uproot(arbol); vm.viewModelScope.cancel(); db.close() }
     }
@@ -716,9 +716,10 @@ class PaymentViewModelKernelDurabilityTest {
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
         val dao = db.paymentAttemptDao()
-        val previo = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-        assertThat(previo.openAttempt("venta-en-vuelo", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+        // Una sola libreta, como en la app (@Singleton): el intento en vuelo es de ESTE proceso. Dos libretas serían dos
+        // procesos, que no existen a la vez (founder, 25-sep: lo de un proceso muerto no aparta nada).
         mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        assertThat(mockPaymentAttemptLedger.openAttempt("venta-en-vuelo", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
         val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
         val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
         try {
@@ -738,10 +739,10 @@ class PaymentViewModelKernelDurabilityTest {
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
         val dao = db.paymentAttemptDao()
-        val firstLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-        assertThat(firstLedger.openAttempt("previous-preparing", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
-        assertThat(dao.getById("previous-preparing")?.state).isEqualTo("PREPARANDO")
+        // Un ViewModel recreado vive en el MISMO proceso: comparte la libreta (@Singleton) con la instancia anterior.
         mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        assertThat(mockPaymentAttemptLedger.openAttempt("previous-preparing", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+        assertThat(dao.getById("previous-preparing")?.state).isEqualTo("PREPARANDO")
         val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
         val vecesQueCorrioElKernelRecreado = java.util.concurrent.atomic.AtomicInteger(0)
         coEvery { kernel.run(any()) } answers {
@@ -771,12 +772,13 @@ class PaymentViewModelKernelDurabilityTest {
                 .that(vecesQueCorrioElKernelRecreado.get()).isEqualTo(0)
             // Y que sea EL error de la libreta, no cualquiera: un Error de otra guarda (cambio de
             // comercio en curso, sesión, conectividad) también dejaría el kernel en 0 sin probar nada.
-            // 🔴 El texto pasó a decir CUÁL de las cercas rechazó el intento (founder, 21-sep). Lo que
-            // hace que este aserto siga probando lo mismo es que ninguna OTRA guarda de la pantalla
-            // menciona un cobro sin confirmar: sólo la libreta lo hace.
+            // 🔴 El texto pasó a decir CUÁL de las cercas rechazó el intento (founder, 21-sep), y desde el
+            // 25-sep lo que aparta el aparato es un cobro EN CURSO (aquí, la reserva viva de la instancia
+            // anterior). Lo que hace que este aserto siga probando lo mismo es que ninguna OTRA guarda de
+            // la pantalla menciona «otro cobro en curso»: sólo la libreta lo hace.
             assertWithMessage("debe ser el rechazo de la LIBRETA; estado = ${recreated.state.value}")
                 .that((recreated.state.value as PaymentState.Error).message)
-                .contains("cobro sin confirmar")
+                .contains("otro cobro en curso")
             coVerify(exactly = 0) { kernel.run(any()) }
             assertThat(dao.getById("previous-preparing")?.state).isEqualTo("PREPARANDO")
         } finally { recreated.viewModelScope.cancel(); db.close() }
@@ -843,34 +845,35 @@ class PaymentViewModelKernelDurabilityTest {
             assertWithMessage("debe aterrizar en 'Tarjeta declinada'; estado = ${vm.state.value}")
                 .that((vm.state.value as PaymentState.Error).message).contains("Tarjeta declinada")
             // La rama del ViewModel resolvió la fila: DESCARTADA, sin reserva, y la siguiente venta entra.
-            esperarA { kotlinx.coroutines.runBlocking { dao.findTerminalHold() } == null }
-            assertThat(dao.findTerminalHold()).isNull()
+            esperarA { kotlinx.coroutines.runBlocking { mockPaymentAttemptLedger.retencionDelAparato() } == null }
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
             assertThat(dao.findUnresolvedCharge()).isNull()
-            val recreatedLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-            assertThat(recreatedLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+            assertThat(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 
     /**
-     * Resultado DESCONOCIDO del kernel (`RESULT_TRY_AGAIN` cae en el `else ->` «Resultado desconocido»):
-     * puede esconder una transacción que sí avanzó, así que la reserva se RETIENE y la siguiente venta
-     * queda bloqueada hasta que haya evidencia. Conducido por el ViewModel, no por la libreta a mano.
+     * Codex H4 (26-sep): el kernel YA regresó, pero SIN veredicto — un resultado que no se entiende (`RESULT_TRY_AGAIN` cae en
+     * el `else ->` «Resultado desconocido»), o `transResult` / su enum nulos. La llamada nativa TERMINÓ: ya no corre nada, así
+     * que la fila pasa a INDETERMINADO con un motivo que nombra el caso ANTES de pintar el error. Es una duda normal: nunca
+     * DESCARTADA (pudo esconder un cobro), nunca la cuarentena por reloj (ésa sí aparta), se avisa y la siguiente venta entra en
+     * el MISMO proceso. Antes se quedaba KERNEL_ACTIVO y apartaba la terminal hasta reiniciar la app.
+     * Conducido por el ViewModel real (variante sandbox); la de producción la fija `RechazoContactlessLiberaLaTerminalTest`.
      */
-    @Test
-    fun `un resultado DESCONOCIDO del kernel retiene la terminal por el ViewModel y bloquea la siguiente venta`() = runTest {
-        val db = androidx.room.Room.inMemoryDatabaseBuilder(
-            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
-            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+    private suspend fun kernelSinVeredicto(
+        respuesta: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse,
+        mensajeEsperado: String,
+        motivoEsperado: String,
+    ) {
+        val db = baseEnMemoria()
         val dao = db.paymentAttemptDao()
+        // Una sola libreta, como en la app (@Singleton): la venta siguiente es del MISMO proceso.
         mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-        val response = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
-            every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_TRY_AGAIN
-        }
         val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
         val vecesQueCorrioElKernel = java.util.concurrent.atomic.AtomicInteger(0)
         coEvery { kernel.run(any()) } answers {
             vecesQueCorrioElKernel.incrementAndGet()
-            com.blumonpay.pax.utils.clean.Either.Right(response)
+            com.blumonpay.pax.utils.clean.Either.Right(respuesta)
         }
         val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
         try {
@@ -881,14 +884,42 @@ class PaymentViewModelKernelDurabilityTest {
             esperarA { vecesQueCorrioElKernel.get() > 0 }
             assertWithMessage("el arnés debe ALCANZAR el kernel; estado = ${vm.state.value}").that(vecesQueCorrioElKernel.get()).isEqualTo(1)
             esperarA { vm.state.value is PaymentState.Error }
-            assertWithMessage("debe aterrizar en 'Resultado desconocido'; estado = ${vm.state.value}")
-                .that((vm.state.value as PaymentState.Error).message).contains("Resultado desconocido")
-            // La reserva sigue viva: nadie la resolvió, y la siguiente venta NO entra.
-            assertThat(dao.findTerminalHold()).isNotNull()
-            assertThat(dao.findUnresolvedCharge()).isNotNull()
-            val recreatedLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
-            assertThat(recreatedLedger.openAttempt("siguiente-bloqueada", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isFalse()
+            assertWithMessage("debe aterrizar en '$mensajeEsperado'; estado = ${vm.state.value}")
+                .that((vm.state.value as PaymentState.Error).message).contains(mensajeEsperado)
+            val duda = dao.findUnresolvedCharge()
+            assertWithMessage("la fila queda en duda, no KERNEL_ACTIVO").that(duda?.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+            assertWithMessage("con un motivo que nombra el caso").that(duda?.lastError).isEqualTo(motivoEsperado)
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
+            assertWithMessage("la siguiente venta entra en el mismo proceso")
+                .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+            val aviso = com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.texto(
+                db.remotePaymentRequestDao().observePendingObligations(testVenueId).first(), System.currentTimeMillis(),
+            )
+            assertWithMessage("el aviso la nombra; aviso = $aviso").that(aviso).contains("100.00")
+            assertWithMessage("el aviso la nombra; aviso = $aviso").that(aviso).contains("sin confirmar")
         } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `un resultado DESCONOCIDO del kernel deja la fila en duda, la siguiente venta entra y el aviso la nombra`() = runTest {
+        kernelSinVeredicto(
+            respuesta = mockk(relaxed = true) {
+                every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_TRY_AGAIN
+            },
+            mensajeEsperado = "Resultado desconocido",
+            motivoEsperado = "kernel_sin_veredicto:RESULT_TRY_AGAIN",
+        )
+    }
+
+    // `transResult` nulo no se prueba aquí: en los dos AAR de Blumon es `@NotNull` (el constructor lo exige), así que esa salida
+    // es inalcanzable y MockK no puede fabricarla; su escritura la fija `RechazoContactlessLiberaLaTerminalTest` por paridad.
+    @Test
+    fun `un kernel que regresa con el resultado nulo deja la fila en duda, la siguiente venta entra y el aviso la nombra`() = runTest {
+        kernelSinVeredicto(
+            respuesta = mockk(relaxed = true) { every { transResult!!.transResult } returns null },
+            mensajeEsperado = "Error procesando resultado contactless",
+            motivoEsperado = "kernel_sin_veredicto:resultado_nulo",
+        )
     }
 
     @Test
@@ -905,7 +936,7 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(ledger.markKernelEntered("cobro-rechazado")).isTrue()
 
             // Con esa fila viva la terminal está apartada y la siguiente venta NO entra.
-            assertThat(dao.findTerminalHold()).isNotNull()
+            assertThat(ledger.retencionDelAparato()).isNotNull()
             assertThat(dao.findUnresolvedCharge()).isNotNull()
             assertThat(ledger.openAttempt("siguiente-bloqueada", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isFalse()
 
@@ -913,7 +944,7 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(ledger.markKernelRefused("cobro-rechazado", "RESULT_OFFLINE_DENIED")).isTrue()
 
             assertThat(dao.getById("cobro-rechazado")?.state).isEqualTo("DESCARTADA")
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(ledger.retencionDelAparato()).isNull()
             assertThat(dao.findUnresolvedCharge()).isNull()
             // Lo que de verdad importa en el mostrador: la siguiente venta ya puede cobrar.
             assertThat(ledger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
@@ -951,9 +982,9 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(dao.getById("cobro-incierto")?.state).isEqualTo("INDETERMINADO")
             assertThat(dao.findUnresolvedCharge()).isNotNull()
             assertThat(db.remotePaymentRequestDao().observePendingObligations(testVenueId).first()).isNotEmpty()
-            // ...pero en la PAX eso se AVISA y la caja sigue (founder, 24-sep); en el kiosco, donde nadie lee el aviso, aparta.
-            assertThat(dao.findTerminalHold()).isNull()
-            assertThat(dao.findTerminalHold(esKiosco = true)).isNotNull()
+            // ...pero eso se AVISA y la caja sigue (founder, 24-sep en la PAX; 25-sep en toda terminal, también en el kiosco,
+            // que dejó de ser un caso especial).
+            assertThat(ledger.retencionDelAparato()).isNull()
             assertThat(ledger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
         } finally { db.close() }
     }
@@ -1067,7 +1098,7 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(error.canRetry).isTrue()
             val primero = filas(db).single()
             assertThat(primero.second).isEqualTo("DESCARTADA")
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
 
             sinRed.set(false)
             vm.retryPayment(error.context)
@@ -1095,7 +1126,7 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(eventos).containsExactly("reinit:5729")
             assertThat((vm.state.value as PaymentState.Error).message).contains("otra cuenta")
             assertThat(filas(db).single().second).isEqualTo("DESCARTADA")
-            assertThat(dao.findTerminalHold()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 

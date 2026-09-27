@@ -34,7 +34,8 @@ import retrofit2.Response
  *  - la cancelación remota (`cancelarTrasReclamar` ⇒ false ⇒ ACTIVE) y el CAS de negativos H.3 (no se escribe nada);
  *  - el CAS de liberación (una respuesta atrasada sin evidencia NO descarta una INDETERMINADO con evidencia);
  *  - la contradicción derivada (`SQL_CONTRADICCION`), el aviso F0 fechado desde la evidencia, el cierre y la poda;
- *  - las cercas de VENTA (por `orderId`, incluso con otra solicitud) y de APARATO (sin identidad / kiosco);
+ *  - la cerca de VENTA (por `orderId`, incluso con otra solicitud, también en el kiosco); el APARATO ya no lo aparta
+ *    (founder, 25-sep: «ninguna duda apaga la terminal» — el dinero conocido sin venta se AVISA);
  *  - y un RECORDED posterior: promueve la INDETERMINADO, conserva la DESCARTADA como contradicción.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -84,8 +85,8 @@ class EvidenciaDurableDelServidorRoomTest {
         append("}")
     }
 
-    private suspend fun abrir(attemptId: String, requestId: String?, orderId: String?, esKiosco: Boolean = false) =
-        ledger.openAttempt(attemptId, venue, "ANGELPAY", 10_000, 0, "FAST", contexto(requestId, orderId), esKiosco = esKiosco)
+    private suspend fun abrir(attemptId: String, requestId: String?, orderId: String?) =
+        ledger.openAttempt(attemptId, venue, "ANGELPAY", 10_000, 0, "FAST", contexto(requestId, orderId))
 
     /** El SDK entró y volvió sin veredicto: INDETERMINADO con motivo (del procesador, no del reloj). */
     private suspend fun incierto(attemptId: String) {
@@ -244,17 +245,16 @@ class EvidenciaDurableDelServidorRoomTest {
         assertWithMessage("otra venta (o2) sí: el negocio sigue cobrando").that(abrir("a3", "req-3", "o2")).isTrue()
     }
 
-    @Test fun `D3c cerca de aparato - sin identidad de venta la evidencia retiene el aparato en la reserva, en findTerminalHold y en el CAS a AUTORIZANDO`() = runTest {
+    // 🔴 Founder, 25-sep («ninguna duda apaga la terminal»): el dinero conocido SIN venta ya no aparta el aparato — se AVISA
+    // (la fila es contradicción y sale en el aviso de Inicio). Antes esta prueba afirmaba lo contrario en las tres guardas.
+    @Test fun `D3c aparato - sin identidad de venta la evidencia ya no aparta el aparato en la reserva, en retencionDelAparato ni en el CAS a AUTORIZANDO`() = runTest {
         reclamar("req-1", orderId = null); abrir("a1", "req-1", null); incierto("a1"); liberar("a1", "req-1")
-        // Control: liberada y SIN marca, el aparato está libre.
-        assertThat(dao.findTerminalHold()).isNull()
-        assertThat(abrir("ctl", "req-ctl", "o2")).isTrue()
-        assertThat(ledger.markDiscardedBeforeCharge("ctl", "user_cancel")).isTrue()
-
         marcar("a1")
 
-        assertWithMessage("guarda 1 de reserveTerminal").that(abrir("a2", "req-2", "o2")).isFalse()
-        assertWithMessage("findTerminalHold").that(dao.findTerminalHold()?.attemptId).isEqualTo("a1")
+        assertWithMessage("guarda 1 de reserveTerminal").that(abrir("a2", "req-2", "o2")).isTrue()
+        assertWithMessage("retencionDelAparato: sólo la reserva propia de ESTE proceso")
+            .that(ledger.retencionDelAparato()?.attemptId).isEqualTo("a2")
+        assertThat(ledger.markDiscardedBeforeCharge("a2", "user_cancel")).isTrue()
         dao.insert(
             PaymentAttemptEntity(
                 attemptId = "p", venueId = venue, processor = "ANGELPAY", state = PaymentAttemptEntity.STATE_PREPARANDO,
@@ -262,14 +262,20 @@ class EvidenciaDurableDelServidorRoomTest {
                 createdAt = now, updatedAt = now, terminalPaymentRequestId = "req-p",
             ),
         )
-        assertWithMessage("CAS a AUTORIZANDO").that(dao.casTransition("p", listOf(PaymentAttemptEntity.STATE_PREPARANDO), PaymentAttemptEntity.STATE_AUTORIZANDO, now)).isEqualTo(0)
+        assertWithMessage("CAS a AUTORIZANDO").that(
+            dao.casTransition("p", listOf(PaymentAttemptEntity.STATE_PREPARANDO), PaymentAttemptEntity.STATE_AUTORIZANDO, now, "proceso-de-la-prueba"),
+        ).isEqualTo(1)
+        assertWithMessage("el dinero sigue guardado y se avisa").that(dao.esContradiccion("a1")).isTrue()
+        assertThat(dao.getById("a1")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
     }
 
-    @Test fun `D3c kiosco - con identidad de venta la evidencia aparta el aparato solo en autoservicio`() = runTest {
+    // Founder, 25-sep: el kiosco dejó de ser un caso especial. Lo que protege SU venta es la cerca de la venta, igual que en el mostrador.
+    @Test fun `D3c kiosco - con identidad de venta la evidencia cerca SU venta tambien en autoservicio, no el aparato`() = runTest {
         reclamar("req-1"); abrir("a1", "req-1", "o1"); incierto("a1"); liberar("a1", "req-1"); marcar("a1")
 
-        assertWithMessage("kiosco: sin cajero, cualquier obligación aparta el aparato").that(abrir("k", null, "o2", esKiosco = true)).isFalse()
-        assertWithMessage("mostrador: otra venta entra").that(abrir("c", null, "o2", esKiosco = false)).isTrue()
+        assertWithMessage("otra venta entra, sin cajero o con él").that(abrir("k", null, "o2")).isTrue()
+        assertThat(ledger.markDiscardedBeforeCharge("k", "user_cancel")).isTrue()
+        assertWithMessage("la venta con dinero conocido sigue cercada").that(abrir("k2", null, "o1")).isFalse()
     }
 
     // ═══ Fix 5 · P1-A (Codex r5): la cerca de la MISMA venta también en el CAS a AUTORIZANDO ═══
@@ -305,7 +311,7 @@ class EvidenciaDurableDelServidorRoomTest {
         vetar("a1")
 
         assertWithMessage("la misma venta (o1) con otra solicitud no entra").that(abrir("a2", "req-2", "o1")).isFalse()
-        assertWithMessage("la lectura gemela de la guarda 2 nombra la retención").that(dao.retencionDeLaVenta("\"orderId\":\"o1\"")?.attemptId).isEqualTo("a1")
+        assertWithMessage("la lectura gemela de la guarda 2 nombra la retención").that(dao.retencionDeLaVenta("\"orderId\":\"o1\"", processToken = "otro-proceso")?.attemptId).isEqualTo("a1")
         assertWithMessage("otra venta (o2) sí: el negocio sigue cobrando").that(abrir("a3", "req-3", "o2")).isTrue()
     }
 
@@ -324,7 +330,7 @@ class EvidenciaDurableDelServidorRoomTest {
         reclamar("req-1", orderId = null); abrir("a1", "req-1", null); incierto("a1"); liberar("a1", "req-1")
         vetar("a1")
 
-        assertThat(dao.findTerminalHold()).isNull()
+        assertThat(ledger.retencionDelAparato()).isNull()
         assertThat(abrir("a2", "req-2", "o2")).isTrue()
         assertThat(ledger.markAuthorizing("a2")).isTrue()
     }

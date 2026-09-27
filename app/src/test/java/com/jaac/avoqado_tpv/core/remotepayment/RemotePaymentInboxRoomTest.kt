@@ -179,12 +179,12 @@ class RemotePaymentInboxRoomTest {
             paymentContextJson = """{"terminalPaymentRequestId":"req-1"}""", createdAt = 1, updatedAt = 1)
         db.paymentAttemptDao().insert(row.copy(state = "PREPARANDO"))
         assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(1)
-        db.paymentAttemptDao().casTransition("attempt-1", listOf("PREPARANDO"), "INDETERMINADO", 2)
+        db.paymentAttemptDao().casTransition("attempt-1", listOf("PREPARANDO"), "INDETERMINADO", 2, "proceso-de-la-prueba")
         db.paymentAttemptDao().insert(row.copy(attemptId = "other", venueId = "other-venue"))
         assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(1)
         db.paymentAttemptDao().insert(row.copy(attemptId = "manual", paymentContextJson = "{}"))
         assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(2)
-        db.paymentAttemptDao().casTransition("attempt-1", listOf("INDETERMINADO"), "REGISTRADO", 2)
+        db.paymentAttemptDao().casTransition("attempt-1", listOf("INDETERMINADO"), "REGISTRADO", 2, "proceso-de-la-prueba")
         assertThat(inbox.observePendingObligationCount("venue-1").first()).isEqualTo(1)
     }
 

@@ -412,7 +412,7 @@ if (currentRoute == NavRoute.Payment.route) {
         socketManager.emitTerminalPaymentResult(
             requestId = request.socketRequestId!!,
             status = "failed",
-            errorMessage = "Ya hay un pago en proceso"
+            errorMessage = CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO // el mismo texto que la barrera de la libreta
         )
     }
     return@collect

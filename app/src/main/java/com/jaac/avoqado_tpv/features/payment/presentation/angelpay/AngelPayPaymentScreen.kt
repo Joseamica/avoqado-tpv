@@ -756,7 +756,6 @@ fun AngelPayPaymentScreen(
                     ResultadoInciertoContent(
                         state = currentState,
                         onDeclarar = { pin -> viewModel.declararSinTarjeta(pin) },
-                        onDeclararSinRed = { viewModel.declararSinRed() },
                         onConsultarDeNuevo = { viewModel.consultarDeNuevo() },
                         onGoBack = onNavigateBack,
                     )
@@ -899,7 +898,6 @@ private fun LoadingContent(
 private fun ResultadoInciertoContent(
     state: AngelPayPaymentState.ResultadoIncierto,
     onDeclarar: (pin: String?) -> Unit,
-    onDeclararSinRed: () -> Unit,
     onConsultarDeNuevo: () -> Unit,
     onGoBack: () -> Unit,
 ) {
@@ -969,16 +967,7 @@ private fun ResultadoInciertoContent(
                 }
                 Spacer(modifier = Modifier.height(24.dp))
                 if (state.puedeDeclarar) {
-                    if (state.puedeDeclararSinRed) {
-                        // 🔴 El respaldo SIN RED (founder, 22-sep: «con internet decide el servidor; si no contesta, el
-                        // aparato»). Sólo llega aquí si el servidor NO contestó en toda la ventana —la declaración por el
-                        // servidor fallaría— y la sesión tiene el permiso de gerencia. Por eso SUSTITUYE al botón del
-                        // servidor en vez de sumarse: dos botones que parecen iguales, y uno condenado a fallar, confunden.
-                        // Cierra la fila en la libreta con sus cinco candados dentro del UPDATE; apagado mientras corre.
-                        OutlinedButton(onClick = onDeclararSinRed, enabled = !state.declarando, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (state.declarando) "Confirmando…" else "Ya revisé la terminal: no se cobró")
-                        }
-                    } else if (state.pidePin) {
+                    if (state.pidePin) {
                         AvoqadoTextField(
                             value = pin,
                             onValueChange = { nuevo -> if (nuevo.length <= 8 && nuevo.all { it.isDigit() }) pin = nuevo },
@@ -1240,7 +1229,7 @@ private fun AngelPayResultadoInciertoVerificandoPreview() {
                     "verificar. Estamos consultando con AngelPay si el pago pasó.",
                 verificando = true,
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
@@ -1256,7 +1245,7 @@ private fun AngelPayResultadoInciertoSinVerificarPreview() {
                     "revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
                 verificando = false,
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
@@ -1272,7 +1261,7 @@ private fun AngelPayResultadoInciertoEsperandoAlServidorPreview() {
                 message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
                 verificando = false, esperandoAlServidor = true, segundos = 15, puedeDeclarar = true,
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
@@ -1287,7 +1276,7 @@ private fun AngelPayResultadoInciertoDeclarandoPreview() {
                 message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
                 verificando = false, esperandoAlServidor = true, segundos = 10, puedeDeclarar = true, declarando = true,
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
@@ -1303,7 +1292,7 @@ private fun AngelPayResultadoInciertoPidePinPreview() {
                 verificando = false, esperandoAlServidor = true, segundos = 20, puedeDeclarar = true, pidePin = true,
                 error = "Ese código no tiene permiso para confirmarlo.",
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
@@ -1319,23 +1308,23 @@ private fun AngelPayResultadoInciertoTrasLaEsperaPreview() {
                 verificando = false, esperandoAlServidor = false, segundos = 45, puedeDeclarar = true,
                 error = "Sin conexión. Se sigue esperando al servidor.",
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }
 
-/** El respaldo SIN RED: el servidor no contestó en toda la ventana y la sesión tiene el permiso de gerencia. */
+/** Sin red (founder, 25-sep): el servidor no contestó en toda la ventana. La duda queda en el aviso y la terminal sigue libre. */
 @Preview(widthDp = 360, heightDp = 640)
 @Composable
-private fun AngelPayResultadoInciertoRespaldoSinRedPreview() {
+private fun AngelPayResultadoInciertoSinConexionPreview() {
     AvoqadoTheme {
         ResultadoInciertoContent(
             state = AngelPayPaymentState.ResultadoIncierto(
-                message = "El servidor no contesta. Si ya revisaste la terminal y NO se cobró, ciérralo aquí: queda anotado en " +
-                    "este aparato y, si el banco sí lo cobró, la terminal te avisa al volver la conexión.",
-                verificando = false, esperandoAlServidor = false, segundos = 45, puedeDeclarar = true, puedeDeclararSinRed = true,
+                message = "Sin conexión con Avoqado: este cobro queda sin confirmar y se revisa solo al volver la red. La terminal " +
+                    "sigue libre; antes de volver a cobrarle a este cliente, revisa el aviso.",
+                verificando = false, esperandoAlServidor = false, segundos = 10, puedeDeclarar = true,
             ),
-            onDeclarar = {}, onDeclararSinRed = {}, onConsultarDeNuevo = {}, onGoBack = {},
+            onDeclarar = {}, onConsultarDeNuevo = {}, onGoBack = {},
         )
     }
 }

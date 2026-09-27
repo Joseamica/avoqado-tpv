@@ -583,11 +583,13 @@ class AngelPayPaymentReviewRoomTest {
 
             // «Muere el proceso»: sólo queda lo durable. 🔴 Ronda 19 (founder, 23-sep: «corrige y avisa»): un cobro LIMPIO —su
             // Payment, mismos importes, ganador de la solicitud— ya no queda como contradicción para siempre en el aviso F0: sale
-            // en el aviso «ese cobro SÍ pasó · Entendido», y el aparato SIGUE apartado hasta que una persona lo confirme.
+            // en el aviso «ese cobro SÍ pasó · Entendido». Founder, 25-sep («ninguna duda apaga la terminal»): el aparato ya NO
+            // queda apartado mientras nadie lo confirma — el proceso nuevo cobra y el aviso sigue ahí.
             val obligaciones = db.remotePaymentRequestDao().observePendingObligations("v1").first()
             assertThat(obligaciones.count { it.contradiccion == 1 }).isEqualTo(0)
             assertThat(db.paymentAttemptDao().observarCobrosPorReconocer("v1").first()).hasSize(1)
-            assertThat(db.paymentAttemptDao().findTerminalHold()).isNotNull()
+            assertThat(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+                .retencionDelAparato()).isNull()
             // …y un proceso NUEVO no la cierra como «no se cobró»: el cancel del POS y la sonda contestan con el COBRO.
             val bandejaTrasReiniciar = RemotePaymentInbox(db.remotePaymentRequestDao())
             val cancel = bandejaTrasReiniciar.cancel(requestId)

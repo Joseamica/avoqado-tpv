@@ -591,14 +591,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var declaracionJob: Job? = null     // single-flight: nunca dos POST de declaración en vuelo (Codex, Task 0 R4, P5)
     private var resolutionId: String? = null   // UNA vez por intento: el replay es idempotente en el servidor
     /**
-     * Codex r7 (P2-7): el cobro que la pantalla ADOPTÓ porque apartaba el aparato («$50.00, hace 12 min»), o null. Encabeza
-     * los textos de la ventana: el cajero pidió cobrar OTRA venta y tiene que saber que lo que está resolviendo es la anterior.
-     * Se limpia en `resetPayment()`.
-     */
-    private var cobroAnteriorQueAparta: String? = null
-    /**
-     * 🔴 Codex r8 (P2-6): la cuenta de cobro con la que viajó al SDK un intento RESTAURADO de su fila (adopción por la barrera
-     * o recreación de la pantalla). El registro la leía de [_currentMerchant] —la cuenta elegida AHORA, quizá para OTRO cobro—:
+     * 🔴 Codex r8 (P2-6): la cuenta de cobro con la que viajó al SDK un intento RESTAURADO de su fila (recreación de la
+     * pantalla). El registro la leía de [_currentMerchant] —la cuenta elegida AHORA, quizá para OTRO cobro—:
      * el aprobado rezagado de A (cuenta M1) se registraba con la referencia y el importe de A… y la cuenta M2 de B.
      * Va atada al NÚMERO de intento ([intentoRestaurado]), no a una bandera: un intento nuevo trae otro número y vuelve solo a
      * la cuenta elegida, sin depender de que alguien se acuerde de limpiar.
@@ -3022,6 +3016,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             // INCIERTO — nunca «No se cobró», nunca `failed`.
             val reabierta = paymentAttemptLedger.reabrirSinAutorizacion(
                 attemptId, venueId, motivo, "AngelPay sin veredicto: no se pudo releer la fila tras sin_autorizacion (code=${codigo ?: "?"})",
+                veto = null,
             )
             Timber.e("🚨 [AngelPay SDK] «no se cobró» escrito pero la fila no se pudo releer (%s) | attemptId=%s reabierta=%s", fila?.state, attemptId, reabierta)
             observability.logError(
@@ -3119,9 +3114,10 @@ class AngelPayPaymentViewModel @Inject constructor(
     /**
      * Codex r2 (P1-2 residual b): deja DURABLE el dinero de este intento que sólo consta en el VETO en memoria — S5 publica su
      * aviso aunque su propia escritura haya fallado (`SocketManager.onTerminalPaymentConfirmed`). Primero, la MISMA evidencia
-     * que S5 habría escrito ([dejarDuraderoElAvisoS5]); si tampoco así queda, se reabre la fila de ESE cierre (incierta: el
-     * aviso F0 la muestra, la bandeja no acepta un negativo ni un cancel, y la recuperación le pregunta al servidor) y se
-     * REPORTA. Si también eso falla, queda el reporte y la contradicción en pantalla: nunca en silencio.
+     * que S5 habría escrito ([dejarDuraderoElAvisoS5]); si tampoco así queda, se reabre la fila de ESE cierre CON el veto
+     * durable en el mismo UPDATE (Codex H3: muerto el proceso, su venta sigue cercada; el aviso F0 la muestra como
+     * contradicción, la bandeja no acepta un negativo ni un cancel, y la recuperación le pregunta al servidor) y se REPORTA.
+     * Si también eso falla, queda el reporte y la contradicción en pantalla: nunca en silencio.
      */
     private suspend fun dejarDuraderoElVeto(attemptId: String, venueId: String, motivoDelCierre: String) {
         val aviso = avisoS5DelIntento?.takeIf { it.attemptId == attemptId }
@@ -3129,6 +3125,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         val reabierta = paymentAttemptLedger.reabrirSinAutorizacion(
             attemptId, venueId, motivoDelCierre,
             "AngelPay: el servidor acreditó dinero de este intento (S5) que no quedó escrito tras sin_autorizacion",
+            veto = PaymentAttemptEntity.VETO_SDK_CONTRADICTION,
         )
         Timber.e("🚨 [AngelPay SDK] dinero del servidor sin evidencia durable | attemptId=%s reabierta=%s", attemptId, reabierta)
         observability.logError(
@@ -3349,10 +3346,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             )
             return
         }
-        // Codex r7 (P2-7): si la pantalla adoptó el cobro ANTERIOR que apartaba el aparato, se dice de cuál se trata.
-        val deCual = cobroAnteriorQueAparta?.let { "Quedó un cobro anterior sin confirmar ($it) y aparta la terminal: NO se inició el cobro nuevo. " }.orEmpty()
         _state.value = AngelPayPaymentState.ResultadoIncierto(
-            message = deCual + "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
+            message = "Confirmando con el banco si el cobro pasó. Si el cliente NO acercó ninguna tarjeta, celular ni reloj, dilo aquí.",
             verificando = false, esperandoAlServidor = true, segundos = 0, puedeDeclarar = true,
             // El último aviso de la declaración (409, «no se pudo confirmar en este aparato»…) sobrevive a la consulta nueva:
             // es lo que explica POR QUÉ se vuelve a consultar. Una declaración nueva lo limpia.
@@ -3361,12 +3356,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         esperaAlServidorJob?.cancel()
         esperaAlServidorJob = viewModelScope.launch {
             var transcurrido = 0L
-            // ¿Contestó el servidor (2xx) ALGUNA vez en esta ventana? Decide el respaldo del aparato: con el servidor vivo, la
-            // declaración va por él (su bitácora y su PIN de supervisor), aunque todavía no tenga veredicto.
+            // ¿Contestó el servidor (2xx) ALGUNA vez en esta ventana? Decide el texto del final: sin ninguna respuesta, la
+            // pantalla dice que no hay conexión con Avoqado (founder, 25-sep).
             var servidorContesto = false
             // 🔴 Codex r7 (P2-8): `transcurrido` sólo suma las pausas, no lo que tarda cada consulta — y con el servidor sin
             // contestar cada una agota su tope de 30 s: diez consultas + nueve pausas eran 5 min 45 s mientras la pantalla
-            // contaba 45. Justo el caso del respaldo sin red. El TOTAL se acota con un plazo del propio reloj de las corrutinas
+            // contaba 45. Justo el caso sin red. El TOTAL se acota con un plazo del propio reloj de las corrutinas
             // (real en el aparato, virtual en las pruebas): una consulta que se pasa del plazo se cancela, que para el cajero es
             // lo mismo que «no contestó».
             // 🔴 Ronda 20: un cobro LOCAL espera el aviso del banco 10 s; uno del POS, la ventana de 30 s de su servidor (45 s).
@@ -3412,7 +3407,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     .onFailure { if (it is CancellationException) throw it }
                     .getOrNull()
                 when (sola) {
-                    LedgerServerRecovery.SinRastro.LIBERADA -> if (aplicarLoQueDigaLaLibreta(attemptId)) return@launch
+                    // El servidor aceptó (2xx): si la fila no trae qué aplicar, el final NO puede decir «Sin conexión».
+                    LedgerServerRecovery.SinRastro.LIBERADA -> { servidorContesto = true; if (aplicarLoQueDigaLaLibreta(attemptId)) return@launch }
                     LedgerServerRecovery.SinRastro.CON_EVIDENCIA -> {
                         vetoDeDineroDelIntento = attemptId
                         if (!aplicarLoQueDigaLaLibreta(attemptId)) mostrarContradiccion()
@@ -3424,29 +3420,16 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
             // Servidor caído o sin veredicto en 45 s: se deja de girar, pero sin Reintentar. El watchdog del servidor
             // libera por su cuenta y la recuperación por servidor (N3) lo aplica al reconectar.
-            // 🔴 El respaldo SIN RED (founder, 22-sep: «los dos caminos»). Con internet manda el SERVIDOR, que ve el
-            // cobro real; pero si no contesta —y es justo cuando el aparato se queda trabado— queda la salida LOCAL
-            // que ya vive en la libreta, con sus cinco candados dentro del UPDATE. Sólo se ofrece para un cobro LOCAL
-            // con retención declarable: la del POS conserva su camino, que además libera la ranura del servidor.
-            // Y sólo si el servidor NO contestó en toda la ventana: si contestó (aunque sin veredicto) la declaración va por
-            // él. Sin ese candado el texto mentía («el servidor no contesta» con el servidor vivo) y se ofrecía declarar
-            // saltándose la regla de gerencia con internet funcionando.
-            val respaldoLocal = requestId == null && !servidorContesto &&
-                runCatching { paymentAttemptLedger.retencionLocalDeclarable()?.attemptId == attemptId }.getOrDefault(false)
-            // El MISMO permiso que el camino por servidor (`payments:resolve-no-instrument`, decisión de gerencia). Sin red no
-            // hay PIN de supervisor que validar, así que sin el permiso no se ofrece: apagar el WiFi no puede ser la forma de
-            // saltárselo. Apagado se VE y se EXPLICA: la pantalla dice a quién pedírselo.
-            val conPermiso = respaldoLocal && tienePermisoParaDeclarar()
             actualizarIncierto {
                 it.copy(
                     esperandoAlServidor = false,
-                    message = deCual + when {
-                        conPermiso ->
-                            "El servidor no contesta. Si ya revisaste la terminal y NO se cobró, ciérralo aquí: queda anotado en " +
-                                "este aparato y, si el banco sí lo cobró, la terminal te avisa al volver la conexión."
-                        respaldoLocal ->
-                            "El servidor no contesta. Sin conexión, sólo un gerente puede cerrar este cobro en el aparato: " +
-                                "pídeselo, o consulta de nuevo cuando vuelva la red."
+                    message = when {
+                        // 🔴 Sin red (founder, 25-sep): una duda ya no aparta la terminal, así que no queda nada que cerrar a mano
+                        // en el aparato. Se dice que el cobro queda sin confirmar y se revisa solo; el aviso de Inicio lo sigue
+                        // mostrando. `sinAviso` pone `servidorContesto = true`: las dos ramas no se pisan.
+                        requestId == null && !servidorContesto ->
+                            "Sin conexión con Avoqado: este cobro queda sin confirmar y se revisa solo al volver la red. La terminal " +
+                                "sigue libre; antes de volver a cobrarle a este cliente, revisa el aviso."
                         // Ronda 20: dice POR QUÉ no se liberó solo, y qué hacer.
                         sinAviso ->
                             "Este comercio no tiene comprobado el aviso del banco, así que el cobro no se libera solo. " +
@@ -3454,7 +3437,6 @@ class AngelPayPaymentViewModel @Inject constructor(
                         else ->
                             "El servidor todavía no confirma este cobro. Consulta de nuevo o, si no se presentó tarjeta, dilo aquí."
                     },
-                    puedeDeclararSinRed = conPermiso,
                 )
             }
         }
@@ -3608,9 +3590,6 @@ class AngelPayPaymentViewModel @Inject constructor(
         val mostrado = AngelPayPaymentState.Error(
             message = when (evidencia) {
                 "OPERATOR_RECONCILED" -> "Confirmado: no se presentó tarjeta. Se puede volver a cobrar."
-                // El respaldo SIN RED: no fue la ventana del servidor, fue el cajero en el aparato. Decirlo así.
-                "OPERATOR_LOCAL_NO_CHARGE" ->
-                    "Cerrado en este aparato: no se cobró. Se puede volver a cobrar. Si el banco sí lo aprobó, la terminal avisa al volver la conexión."
                 else -> "No se confirmó el cobro en 30 s. Se puede volver a cobrar. Si el banco lo aprueba tarde, se registra solo y la terminal avisa."
             },
             canRetry = false,
@@ -3643,58 +3622,6 @@ class AngelPayPaymentViewModel @Inject constructor(
         Timber.i("🚪 [AngelPay] %s: reinicio hecho — la pantalla sale sola, como con «Regresar»", motivo)
         _salidaAutomatica.trySend(Unit)
     }
-
-    /**
-     * 🔴 El respaldo SIN RED: el cajero declara en el APARATO que no se cobró (founder, 22-sep). Sólo se llega aquí
-     * cuando la ventana se agotó sin veredicto del servidor y el cobro es LOCAL — con internet manda siempre el
-     * servidor, que es quien ve el cobro real. Los cinco candados viven DENTRO del UPDATE de la libreta (sólo cobros
-     * locales, estado que aparta, nunca sobre una aprobación del host, nunca con evidencia durable del procesador, y
-     * sólo si ya se le preguntó al servidor alguna vez), así que un veredicto que llegue entre ofrecer el botón y
-     * tocarlo lo rechaza igual. Si el CAS no transiciona, la pantalla NO dice que se liberó.
-     */
-    fun declararSinRed() {
-        val attemptId = currentPaymentAttemptId ?: return
-        val venueId = authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return
-        if (vetoDeDineroDelIntento == attemptId) { mostrarContradiccion(); return }
-        if (declaracionJob?.isActive == true) return
-        // La oferta no es la garantía: entre pintar el botón y tocarlo puede cambiar la sesión. Se revisa OTRA vez aquí.
-        if (!tienePermisoParaDeclarar()) {
-            actualizarIncierto {
-                it.copy(puedeDeclararSinRed = false, error = "Sin conexión, sólo un gerente puede cerrar este cobro en el aparato.")
-            }
-            return
-        }
-        actualizarIncierto { it.copy(error = null, declarando = true) }
-        declaracionJob = viewModelScope.launch {
-            val quien = runCatching { authRepository.getStaffName() }.getOrNull()
-            val cerrada = paymentAttemptLedger.declararSinCobroLocal(attemptId, venueId, quien)
-            actualizarIncierto { it.copy(declarando = false) }
-            if (cerrada) {
-                Timber.w("🗣️ [AngelPay] declarado SIN RED en el aparato | attemptId=%s", attemptId)
-                mostrarLiberada("OPERATOR_LOCAL_NO_CHARGE")
-            } else {
-                // El CAS lo rechazó: algo cambió (llegó evidencia, o la fila ya no aparta). Nunca se dice «liberado».
-                actualizarIncierto {
-                    it.copy(error = "No se pudo cerrar en el aparato: algo cambió. Consulta de nuevo antes de volver a cobrar.", puedeDeclararSinRed = false)
-                }
-            }
-        }
-    }
-
-    /**
-     * El permiso del respaldo SIN RED: el MISMO que exige el servidor para declarar «no se presentó tarjeta»
-     * (`NO_INSTRUMENT_PERMISSION` en avoqado-server, decisión de gerencia). Se lee de la última lista de permisos
-     * EFECTIVOS guardada en el aparato, que no necesita red — justo el caso. Un fallo de lectura es «sin permiso».
-     *
-     * 🔴 Codex r7 (P2-1): NO de `authRepository.hasPermission`, que mira los permisos CRUDOS del login
-     * (`StaffVenue.permissions`, casi siempre vacíos). Con ésos, un MANAGER con el permiso por defecto de su rol era
-     * rechazado aunque acabara de iniciar sesión; y las pruebas lo tapaban sustituyendo justo esa llamada.
-     */
-    private fun tienePermisoParaDeclarar(): Boolean =
-        runCatching {
-            com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
-                .enLaUltimaListaEfectiva(secureStorage, "payments:resolve-no-instrument")
-        }.getOrDefault(false)
 
     /** «Consultar de nuevo» tras los 45 s: vuelve a esperar al servidor (sin re-emitir el `timeout` al POS). */
     fun consultarDeNuevo() { if (_state.value is AngelPayPaymentState.ResultadoIncierto) esperarVeredictoDelServidor("consulta manual") }
@@ -4104,10 +4031,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             CercaDeSolicitud.LIBRE -> {
                 if (_paymentSource == CobroRemotoDelPos.FUENTE_SOCKET && _socketRequestId != null && !_socketResultEmitted) {
                     cerrarCobroDelPosNoIniciado()
-                } else if (!adoptarCobroLocalQueAparta()) {
-                    // 🔴 De las DOS causas que quedan se dice CUÁL, nombrando importe y antigüedad de la fila
-                    // que estorba: «no se pudo guardar el intento O esta venta tiene un cobro pendiente» dejaba
-                    // al cajero sin saber qué resolver (founder, 21-sep). Mismo texto que el riel Blumon.
+                } else {
+                    // 🔴 Se dice CUÁL de las causas fue, con importe y antigüedad (founder, 21-sep). Desde el 25-sep sólo
+                    // puede ser la venta con dinero en juego, un cobro corriendo o la base del aparato.
                     _state.value = AngelPayPaymentState.Error(
                         paymentAttemptLedger.motivoDeLaBarrera(pendingOrderId, currentPaymentAttemptId),
                         canRetry = false,
@@ -4118,52 +4044,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     /**
-     * 🔴 Codex r7 (P2-7): tras reiniciar, un **Pago rápido** que quedó sin confirmar aparta el APARATO entero (no tiene venta
-     * que cercar) y nada lo adoptaba — las restauraciones buscan por solicitud del POS y este cobro no tiene. Un cobro nuevo
-     * chocaba con la barrera y la pantalla nombraba el pendiente… sin ninguna salida: la terminal muerta que este trabajo
-     * elimina. Ahora la pantalla ADOPTA ese cobro y entra a SU ventana de confirmación: reloj, S6, declaración por el
-     * servidor y, si no contesta, el respaldo del aparato. El cobro nuevo nunca se reservó (la barrera lo rechazó antes de
-     * escribir nada): no hay nada que deshacer, y al resolver el pendiente se vuelve a empezar.
-     *
-     * Sólo un cobro LOCAL de este aparato: AngelPay, venta, no heredado, del negocio en turno, sin solicitud del POS (ése
-     * tiene su propia restauración) y en `INDETERMINADO`. 🔴 `AUTORIZANDO` NO: el SDK puede seguir dentro (app a app), y
-     * declarar «no se presentó tarjeta» mientras el cliente acerca la tarjeta es el cobro doble; esa fila la pasa a
-     * INDETERMINADO la cuarentena por antigüedad y entonces sí se adopta. Nunca en un cobro que vino del POS: su
-     * `requestId` se mezclaría con el intento ajeno.
-     */
-    private suspend fun adoptarCobroLocalQueAparta(): Boolean {
-        if (_paymentSource == CobroRemotoDelPos.FUENTE_SOCKET) return false
-        val fila = paymentAttemptLedger.retencionDelAparato() ?: return false
-        val venueId = authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return false
-        if (fila.attemptId == currentPaymentAttemptId || fila.terminalPaymentRequestId != null || fila.legacyShadow ||
-            fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY || fila.kind != PaymentAttemptEntity.KIND_SALE ||
-            fila.state != PaymentAttemptEntity.STATE_INDETERMINADO || fila.venueId != venueId
-        ) return false
-        Timber.w("📒 [AngelPay] La barrera rechazó un cobro nuevo por el cobro local pendiente %s: se adopta para resolverlo", fila.attemptId)
-        restaurarContextoDesdeLaFila(fila)
-        currentPaymentAttemptId = fila.attemptId
-        ledgerOpenedAttemptId = fila.attemptId
-        ledgerOpenedAmountCents = fila.amountCents
-        ledgerOpenedTipCents = fila.tipCents
-        authorizationWasLaunched = true
-        confirmedNegativeOutcome = false
-        confirmedNegativeEvidence = null
-        resolutionId = null
-        cobroAnteriorQueAparta = AvisoDeCobrosPendientes.importeYAntiguedad(fila.amountCents + fila.tipCents, fila.createdAt, System.currentTimeMillis())
-        if (tieneEvidenciaDurableSinPromover(fila)) {
-            vetoDeDineroDelIntento = fila.attemptId
-            mostrarContradiccion()
-            return true
-        }
-        // `verificando = false`: la espera no le re-emite nada a nadie (no hay POS en un cobro local).
-        _state.value = AngelPayPaymentState.ResultadoIncierto(message = "", verificando = false)
-        esperarVeredictoDelServidor("cobro local pendiente que aparta la terminal")
-        return true
-    }
-
-    /**
      * §3.8 (rechazo MUDO, medido el 17-sep 21:45): la barrera de la libreta rechazó un cobro que mandó el POS —la
-     * terminal está apartada por un cobro anterior sin confirmar, o no pudo guardar el intento—. Nada capaz de autorizar
+     * terminal tiene otro cobro en curso, o no pudo guardar el intento—. Nada capaz de autorizar
      * empezó para ESTA solicitud, pero antes no se decía NADA: la tablet se quedaba «esperando a la terminal» hasta que
      * el servidor retenía la ranura como UNKNOWN.
      *
@@ -4178,7 +4060,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         val queLaAparta = retencion?.let {
             AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, System.currentTimeMillis())
         }
-        val paraElPos = if (retencion != null) CobroRemotoDelPos.NO_INICIADO_POR_COBRO_PENDIENTE
+        val paraElPos = if (retencion != null) CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO
             else CobroRemotoDelPos.NO_INICIADO_SIN_DETALLE
         Timber.w(
             "📡 [AngelPay Socket] La barrera rechazó el cobro del POS %s — failed + PRE_AUTHORIZATION (la aparta: %s)",
@@ -5345,7 +5227,6 @@ class AngelPayPaymentViewModel @Inject constructor(
         esperaAlServidorJob?.cancel(); esperaAlServidorJob = null
         declaracionJob?.cancel(); declaracionJob = null
         resolutionId = null
-        cobroAnteriorQueAparta = null
         intentoRestaurado = null
         cuentaDelIntentoRestaurado = null
         vetoDeDineroDelIntento = null

@@ -92,7 +92,7 @@ class LiberacionLocalDelServidorRoomTest {
 
         assertThat(ledger.aplicarLiberacionDelServidor(liberacion, now).getOrNull()).isTrue()
         assertThat(dao.getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
-        assertThat(dao.findTerminalHold()).isNull()   // ← lo que el cajero necesita: poder volver a cobrar
+        assertThat(ledger.retencionDelAparato()).isNull()   // ← lo que el cajero necesita: poder volver a cobrar
     }
 
     @Test fun `sin declaracion no hay liberacion - NOT_RECORDED es «no se» y nunca «no se cobro»`() = runTest {
@@ -211,25 +211,9 @@ class LiberacionLocalDelServidorRoomTest {
 
         assertThat(ledger.declararSinCobroLocal("d1", venue, "Cajera Ana")).isFalse()
         assertThat(dao.getById("d1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
-        assertThat(dao.findTerminalHold()).isNotNull()   // sigue apartada, que es lo correcto con dinero en duda
-    }
-
-    @Test fun `P1 r6 P1-3b · y el boton ni se ofrece`() = runTest {
-        // Revalidar dentro del CAS es la garantía; no ofrecerlo es lo que evita que el cajero toque un botón que va
-        // a fallar. Las dos capas, como en el resto de la libreta.
-        dao.insert(
-            PaymentAttemptEntity(
-                attemptId = "d2", venueId = venue, processor = "ANGELPAY", state = PaymentAttemptEntity.STATE_INDETERMINADO,
-                amountCents = 4000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
-                serverCheckedAt = now - 60_000,
-                serverAnsweredAt = now - 60_000,
-                createdAt = now - 600_000, updatedAt = now - 600_000,
-            ),
-        )
-        assertThat(ledger.retencionLocalDeclarable()?.attemptId).isEqualTo("d2")   // control: sin veto sí se ofrece
-
-        ledger.marcarVetoDelServidor(venue, "d2", PaymentAttemptEntity.VETO_PAYMENT_CONTRADICTION)
-        assertThat(ledger.retencionLocalDeclarable()).isNull()
+        // Founder, 25-sep: con dinero en duda la fila se AVISA (contradicción) — ya no aparta el aparato.
+        assertThat(dao.esContradiccion("d1")).isTrue()
+        assertThat(ledger.retencionDelAparato()).isNull()
     }
 
     // ── Codex r6 (P1-4): un veto que llega DESPUÉS de una liberación no la deshace, pero SÍ se ve ─────
@@ -255,13 +239,13 @@ class LiberacionLocalDelServidorRoomTest {
         ledger.marcarVetoDelServidor(venue, "p2", PaymentAttemptEntity.VETO_UNATTRIBUTED_EVIDENCE)
         assertThat(dao.esContradiccion("p2")).isTrue()
 
-        dao.casTransition("p2", listOf(PaymentAttemptEntity.STATE_INDETERMINADO), PaymentAttemptEntity.STATE_REGISTRADO, now)
+        dao.casTransition("p2", listOf(PaymentAttemptEntity.STATE_INDETERMINADO), PaymentAttemptEntity.STATE_REGISTRADO, now, "proceso-de-la-prueba")
         // 🔴 Codex r21 (P1-1): la «escapatoria» de r6 (REGISTRADO deja de ser contradicción) hacía DESAPARECER un veto que llegaba
         // después del registro. Ahora sigue a la vista (aviso de Inicio, fuera de la poda) — pero no aparta el aparato: el cobro
         // está registrado, y apartarlo sin salida acreditada sería la terminal muerta.
         assertThat(dao.esContradiccion("p2")).isTrue()
         assertWithMessage("no aparta el aparato").that(
-            dao.reserveTerminal("otro", venue, "ANGELPAY", "SALE", 5000, 0, "FAST", """{"amount":50.00}""", null, now + 10_000, null, false),
+            dao.reserveTerminal("otro", venue, "ANGELPAY", "SALE", 5000, 0, "FAST", """{"amount":50.00}""", null, now + 10_000, null, "proceso-de-la-prueba"),
         ).isNotEqualTo(-1L)
     }
 

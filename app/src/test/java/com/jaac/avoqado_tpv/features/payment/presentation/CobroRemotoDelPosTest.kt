@@ -26,4 +26,20 @@ class CobroRemotoDelPosTest {
         assertThat(CobroRemotoDelPos.OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO).isTrue()
         assertThat(CobroRemotoDelPos.FUENTE_SOCKET).isEqualTo("SOCKET")
     }
+
+    /**
+     * H8 (Codex, 26-sep; medido en QA-1): con el lector abierto, la guarda de la navegación rechazaba el cobro del POS con su
+     * propio texto («Ya hay un pago en proceso en el terminal») y la tablet leía «rechazado». La terminal dice UNA sola verdad
+     * para «este aparato ya está cobrando»: la misma que la barrera de la libreta. Estática, como las demás de `AppNavigation`.
+     */
+    @Test fun `la guarda de la navegacion rechaza con el MISMO texto de cobro en curso`() {
+        val navegacion = java.io.File(
+            "src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt",
+        ).readText()
+        val inicio = navegacion.indexOf("if (terminalGenuinelyBusy) {")
+        assertThat(inicio).isAtLeast(0)
+        val guarda = navegacion.substring(inicio, navegacion.indexOf("return@collect", inicio))
+        assertThat(guarda).contains("errorMessage = CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO")
+        assertThat(navegacion).doesNotContain("Ya hay un pago en proceso")
+    }
 }

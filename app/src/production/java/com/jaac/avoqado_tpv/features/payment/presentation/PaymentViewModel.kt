@@ -3388,9 +3388,6 @@ class PaymentViewModel @Inject constructor(
                     com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
                     context.amount.movePointRight(2).longValueExact(), context.tip.movePointRight(2).longValueExact(),
                     if (context is PaymentContext.OrderPayment) "ORDER" else "FAST", json.toString(),
-                    // 🔴 En autoservicio no hay cajero que distinga un reintento de una venta nueva,
-                    // así que cualquier obligación pendiente vuelve a apartar el aparato (Codex, 12-sep).
-                    esKiosco = sessionSnapshot.isKioskPayment,
                 )
             }.getOrElse { error ->
                 if (error is CancellationException) throw error
@@ -3404,11 +3401,11 @@ class PaymentViewModel @Inject constructor(
                     // 🔴 Y de las DOS causas que quedan se dice CUÁL, nombrando importe y antigüedad de la
                     // fila que estorba: «no se pudo guardar el intento O esta venta tiene un cobro pendiente»
                     // dejaba al cajero sin saber qué resolver (founder, 21-sep, viéndolo en la TPV).
-                    val blockedAttempt = paymentAttemptLedger.retencionDelAparato(sessionSnapshot.isKioskPayment)
+                    val blockedAttempt = paymentAttemptLedger.retencionDelAparato()
                         ?: getOrderIdForFlow()?.let { paymentAttemptLedger.retencionDeLaVenta(it) }
                     _state.value = PaymentState.Error(
                         paymentAttemptLedger.motivoDeLaBarrera(
-                            getOrderIdForFlow(), sessionSnapshot.paymentAttemptId, esKiosco = sessionSnapshot.isKioskPayment,
+                            getOrderIdForFlow(), sessionSnapshot.paymentAttemptId,
                         ),
                         context = createPaymentContext(), canRetry = false,
                         unresolvedAttemptId = blockedAttempt?.takeIf {
@@ -5110,6 +5107,8 @@ class PaymentViewModel @Inject constructor(
             Timber.i("[CONTACTLESS PHASE 2] Extracting transaction result...")
             val transResult = ctlssResponse.transResult ?: run {
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResult is null in SDK response")
+                // 🔴 Codex H4: el kernel YA regresó, sin veredicto — nada corre. En duda ANTES del error, no KERNEL_ACTIVO.
+                sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:transResult_nulo") }
                 _state.value = PaymentState.Error(
                     message = "Error procesando resultado contactless",
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -5119,6 +5118,7 @@ class PaymentViewModel @Inject constructor(
             val transResultEnum = transResult.transResult
             if (transResultEnum == null) {
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResultEnum is null (resultCode=${transResult.resultCode})")
+                sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:resultado_nulo") }
                 _state.value = PaymentState.Error(
                     message = "Error procesando resultado contactless",
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -5160,8 +5160,8 @@ class PaymentViewModel @Inject constructor(
                     // en KERNEL_ACTIVO, que `findTerminalHold` cuenta como terminal apartada y
                     // `findUnresolvedCharge` como dinero de desenlace desconocido: la caja no vuelve a
                     // cobrar hasta el barrido. Testarudo 2026-09-07: nueve rechazos en tres ventas.
-                    // El `else ->` de abajo NO se toca a propósito: un resultado desconocido o un timeout
-                    // sí pueden esconder una transacción que avanzó, y ésos deben quedarse retenidos.
+                    // El `else ->` de abajo NO libera: un resultado desconocido o un timeout sí pueden esconder
+                    // una transacción que avanzó; queda en duda (INDETERMINADO, Codex H4), nunca DESCARTADA.
                     sessionSnapshot.paymentAttemptId?.let { durableId ->
                         paymentAttemptLedger.markKernelRefused(durableId, "RESULT_OFFLINE_DENIED")
                     }
@@ -5174,6 +5174,7 @@ class PaymentViewModel @Inject constructor(
                 else -> {
                     // Unknown result
                     Timber.e("❌ [CONTACTLESS PHASE 3] Unknown transaction result: $transResultEnum")
+                    sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:$transResultEnum") }
                     _state.value = PaymentState.Error(
                         message = "Resultado desconocido: $transResultEnum",
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -10062,7 +10063,7 @@ class PaymentViewModel @Inject constructor(
         criticalNetworkOperationManager.setPaymentFlowInProgress(false)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
-        // charge-active flag would refuse every future POS CHARGE ("Ya hay un pago en proceso")
+        // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)
         // until an app restart — the exact bug this signal exists to fix.
         recordingInFlight = false
         paymentStateHolder.setCharging(false)

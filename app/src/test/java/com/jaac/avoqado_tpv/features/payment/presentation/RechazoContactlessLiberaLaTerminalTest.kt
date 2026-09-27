@@ -90,6 +90,27 @@ class RechazoContactlessLiberaLaTerminalTest {
     }
 
     /**
+     * Codex H4 (26-sep): el kernel YA regresó pero sin veredicto (`transResult` nulo, su enum nulo, o uno desconocido como
+     * `RESULT_TRY_AGAIN`). Nada corre: la fila pasa a INDETERMINADO con su motivo antes del error, en las DOS variantes. Sin
+     * esto se quedaba KERNEL_ACTIVO y apartaba la terminal hasta reiniciar la app. La prueba de comportamiento
+     * (`PaymentViewModelKernelDurabilityTest`) sólo alcanza la sandbox; esto es lo que cubre producción.
+     */
+    @Test
+    fun `las salidas sin veredicto del kernel dejan la fila en duda en las dos variantes`() {
+        for ((nombre, archivo) in variantes) {
+            val fuente = archivo.readText()
+            assertTrue(
+                "[$nombre] la rama del resultado DESCONOCIDO no deja la fila en duda (markIndeterminate)",
+                ramaDesconocida(fuente).contains("markIndeterminate"),
+            )
+            for (motivo in listOf("kernel_sin_veredicto:transResult_nulo", "kernel_sin_veredicto:resultado_nulo",
+                    "kernel_sin_veredicto:\$transResultEnum")) {
+                assertTrue("[$nombre] falta la salida «$motivo»", fuente.contains(motivo))
+            }
+        }
+    }
+
+    /**
      * El defecto CONTRARIO: soltar la fila en el reembolso, donde «denegado offline» sólo
      * significa «hay que ir online» y la operación sigue viva.
      */

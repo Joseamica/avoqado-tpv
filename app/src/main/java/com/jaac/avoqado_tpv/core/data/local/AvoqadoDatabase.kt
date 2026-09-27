@@ -166,7 +166,13 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // gana `legacy_shadow` (las filas que dejó la libreta SHADOW de 2.9.x no reservan la terminal).
     // 🔴 Cruza versión de esquema: un regreso a 2.9.2 (v33) sería un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`). El retroceso exige un APK de retroceso con v34.
-    version = 40,
+    //
+    // ⭐ Version 41 (25-sep-2026): `payment_attempts.process_token`, qué proceso abrió cada cobro («ninguna duda apaga la
+    // terminal»: sólo un cobro que ESTE proceso tiene corriendo aparta el aparato). Aditiva y nullable (MIGRATION_40_41).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v40 (p. ej. la 2.11.2) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v41.
+    version = 41,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2053,6 +2059,19 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 if (!columnaExiste("payment_attempts", "server_answered_at")) {
                     db.execSQL("ALTER TABLE payment_attempts ADD COLUMN server_answered_at INTEGER")
                 }
+            }
+        }
+
+        /** 🔴 Founder 25-sep: qué proceso abrió cada cobro — sólo un cobro VIVO de este proceso aparta el aparato. */
+        val MIGRATION_40_41 = object : Migration(40, 41) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.query("PRAGMA table_info(payment_attempts)").use { cursor ->
+                    val indiceNombre = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        if (cursor.getString(indiceNombre) == "process_token") return
+                    }
+                }
+                db.execSQL("ALTER TABLE payment_attempts ADD COLUMN process_token TEXT")
             }
         }
 

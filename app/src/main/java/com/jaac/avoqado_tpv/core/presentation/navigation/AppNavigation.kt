@@ -78,6 +78,7 @@ import com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
@@ -433,7 +434,8 @@ fun AppNavigation(
                     rejectRemotePaymentBeforeAuthorization(
                         socketManager = socketManager,
                         requestId = durableRequestId,
-                        errorMessage = "Ya hay un pago en proceso en el terminal"
+                        // H8: UNA sola verdad para «este aparato ya está cobrando», la misma que dice la barrera de la libreta.
+                        errorMessage = CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO
                     )
                     Timber.i("📡 [Socket] Sent rejection for requestId=${request.socketRequestId}")
                 }
@@ -934,7 +936,7 @@ fun AppNavigation(
                         }
                     }
                 }
-                val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora, esPax = BuildConfig.ENABLE_PAX_SDK)
+                val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
                 if (aviso != null) {
                     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
                         Row(
@@ -942,7 +944,7 @@ fun AppNavigation(
                             // ofrecía «Ayuda»: le decía al cajero que hay un cobro sin confirmar y lo dejaba
                             // sin ningún sitio donde comprobar si entró. No se puede descartar a propósito —
                             // desaparece cuando la obligación se resuelve, nunca porque alguien la tape.
-                            // En la PAX, además, se quita solo a los 10 min (founder, 24-sep): no recibe el aviso del banco.
+                            // Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { navController.navigate(NavRoute.Payments.createRoute()) }

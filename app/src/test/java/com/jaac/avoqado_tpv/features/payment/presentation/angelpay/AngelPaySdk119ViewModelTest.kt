@@ -126,7 +126,7 @@ class AngelPaySdk119ViewModelTest {
             // Tras el CAS de «no se cobró» la relectura devuelve la fila tal como la dejó: DESCARTADA, sin evidencia.
             coEvery { leerIntento(any()) } answers { filaDelIntento(firstArg(), PaymentAttemptEntity.STATE_DESCARTADA) }
             coEvery { marcarEvidenciaPositivaDelServidor(any(), any(), any()) } returns Result.success(true)
-            coEvery { reabrirSinAutorizacion(any(), any(), any(), any()) } returns true
+            coEvery { reabrirSinAutorizacion(any(), any(), any(), any(), any()) } returns true
             // El CAS nuevo gana por defecto; la prueba que quiere que pierda lo dice.
             coEvery { markSinAutorizacion(any(), any(), any()) } returns true
             coEvery { retencionDelAparato() } returns null
@@ -672,8 +672,8 @@ class AngelPaySdk119ViewModelTest {
                 assertWithMessage("origen=$requestId: nunca «no se cobró»").that(estado.noSeCobro).isFalse()
                 assertWithMessage("origen=$requestId").that(estado.canRetry).isFalse()
                 assertWithMessage("origen=$requestId").that(estado.message).contains("NO lo vuelvas a cobrar")
-                // …y la fila vuelve a apartar la terminal mientras la evidencia se escribe.
-                coVerify { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any()) }
+                // …y la fila se reabre CON el veto durable (Codex H3): muerto el proceso, su venta sigue cercada.
+                coVerify { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any(), PaymentAttemptEntity.VETO_SDK_CONTRADICTION) }
             } finally {
                 vm.viewModelScope.cancel()
             }
@@ -727,8 +727,9 @@ class AngelPaySdk119ViewModelTest {
             runCurrent()
 
             coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(intento, "v1", any()) }
+            // Codex H3: la reapertura por simple fallo de relectura sigue SIN veto (no se sabe de dinero).
             coVerify(exactly = 1) {
-                paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", match { it.startsWith("sin_autorizacion:") }, any())
+                paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", match { it.startsWith("sin_autorizacion:") }, any(), null)
             }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
             verificarSinEmision()
@@ -745,7 +746,7 @@ class AngelPaySdk119ViewModelTest {
             vm.onAngelPaySdkResult(u101(intento))
             runCurrent()
 
-            coVerify(exactly = 1) { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any(), null) }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
             verify(exactly = 0) {
                 socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
@@ -767,7 +768,7 @@ class AngelPaySdk119ViewModelTest {
                 vm.onAngelPaySdkResult(u101(intento))
                 runCurrent()
                 assertWithMessage(caso).that(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
-                coVerify(exactly = 1) { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any()) }
+                coVerify(exactly = 1) { paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", any(), any(), null) }
             } finally {
                 vm.viewModelScope.cancel()
             }
@@ -801,7 +802,7 @@ class AngelPaySdk119ViewModelTest {
             coVerify(exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(match { esElVeredictoDeS5(it, intento, "req-veto-durable") }) }
             // La bandeja resuelta se EMITE, como la emitiría S5 tras su commit.
             verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(bandeja) }
-            coVerify(exactly = 0) { paymentAttemptLedger.reabrirSinAutorizacion(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.reabrirSinAutorizacion(any(), any(), any(), any(), any()) }
             verificarContradiccionSinNoSeCobro(vm)
         } finally {
             vm.viewModelScope.cancel()
@@ -824,8 +825,11 @@ class AngelPaySdk119ViewModelTest {
                 vm.onAngelPaySdkResult(u101(intento))
                 runCurrent()
 
+                // Codex H3: el dinero de S5 que no quedó escrito deja el VETO durable en la misma reapertura.
                 coVerify(exactly = 1) {
-                    paymentAttemptLedger.reabrirSinAutorizacion(intento, "v1", match { it.startsWith("sin_autorizacion:") }, any())
+                    paymentAttemptLedger.reabrirSinAutorizacion(
+                        intento, "v1", match { it.startsWith("sin_autorizacion:") }, any(), PaymentAttemptEntity.VETO_SDK_CONTRADICTION,
+                    )
                 }
                 val estado = vm.state.value as AngelPayPaymentState.Error
                 assertWithMessage(caso).that(estado.noSeCobro).isFalse()
@@ -887,7 +891,7 @@ class AngelPaySdk119ViewModelTest {
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("req-nuevo", nuevo, "pay-2", 10_000, 0, registrado = false))
             runCurrent()
 
-            coVerify(exactly = 0) { paymentAttemptLedger.reabrirSinAutorizacion(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.reabrirSinAutorizacion(any(), any(), any(), any(), any()) }
             coVerify(exactly = 0) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
         } finally {
             vm.viewModelScope.cancel()
@@ -1080,10 +1084,11 @@ class AngelPaySdk119ViewModelTest {
         return vm
     }
 
+    // Founder, 25-sep: lo único que `retencionDelAparato()` puede devolver ya es un cobro CORRIENDO en este proceso.
     private fun retencion(centavos: Long, haceMs: Long) = PaymentAttemptEntity(
-        attemptId = "incierta", venueId = "v1", processor = "ANGELPAY", state = "INDETERMINADO",
+        attemptId = "incierta", venueId = "v1", processor = "ANGELPAY", state = "AUTORIZANDO",
         amountCents = centavos, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}",
-        lastError = "AngelPay sin veredicto", createdAt = System.currentTimeMillis() - haceMs,
+        lastError = null, createdAt = System.currentTimeMillis() - haceMs,
         updatedAt = System.currentTimeMillis() - haceMs,
     )
 
@@ -1096,13 +1101,14 @@ class AngelPaySdk119ViewModelTest {
             vm.startCardPayment()
             runCurrent()
 
-            verificarUnFailedPreAutorizacion("req-barrera", CobroRemotoDelPos.NO_INICIADO_POR_COBRO_PENDIENTE)
+            verificarUnFailedPreAutorizacion("req-barrera", CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
             val estado = vm.state.value as AngelPayPaymentState.Error
             assertThat(estado.canRetry).isFalse()
             assertThat(estado.message).contains("NO se inició")
+            assertThat(estado.message).contains("en curso")
             assertThat(estado.message).contains("$5.00")
             assertThat(estado.message).contains("hace 2 min")
-            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_PENDIENTE)
+            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
             verify(exactly = 0) { sdkGateway.validatePaymentIntent(any(), any()) }
         } finally {
             vm.viewModelScope.cancel()

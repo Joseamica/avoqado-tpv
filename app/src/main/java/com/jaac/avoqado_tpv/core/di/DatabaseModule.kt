@@ -130,7 +130,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_36_37,  // 🧾 r5-4: el VETO del servidor, durable (los otros tres avisos)
                 AvoqadoDatabase.MIGRATION_37_38,  // 🧾 r8 P2-4: «el servidor CONTESTÓ» no es «se le preguntó»
                 AvoqadoDatabase.MIGRATION_38_39,  // 🧾 r17 P1: el dinero que la versión anterior guardó sin la marca que aparta el aparato
-                AvoqadoDatabase.MIGRATION_39_40   // 🧾 founder 23-sep: quién confirmó que un cobro dado por no cobrado SÍ pasó
+                AvoqadoDatabase.MIGRATION_39_40,  // 🧾 founder 23-sep: quién confirmó que un cobro dado por no cobrado SÍ pasó
+                AvoqadoDatabase.MIGRATION_40_41   // 🔴 founder 25-sep: qué proceso abrió cada cobro (ninguna duda apaga la terminal)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

@@ -216,8 +216,11 @@ Dos precisiones de Codex r2 sobre esa revalidación:
   (`registrado = false` sin nada en la fila). En ese caso la pantalla aplica, ANTES de pintar, el MISMO veredicto que
   S5 habría escrito (`VeredictoDeIntento.desdeAvisoS5`, libreta y bandeja en una transacción: DESCARTADA + RECORDED es
   contradicción, y la bandeja queda resuelta con su ganador y se emite). Lo mismo si ese S5 llega con el «No se cobró»
-  del POS ya en pantalla. Si tampoco así queda escrito, reabre la fila a INDETERMINADO y lo reporta
-  (`AngelPaySdkContradiccion`).
+  del POS ya en pantalla. Si tampoco así queda escrito, reabre la fila a INDETERMINADO **con el veto durable en el
+  MISMO UPDATE** (`server_veto = VETO_SDK_CONTRADICTION`, Codex H3, 26-sep) y lo reporta (`AngelPaySdkContradiccion`):
+  aunque la app se reinicie, esa venta sigue cercada (`SQL_CERCA_LA_VENTA`), el aviso de Inicio la muestra como
+  contradicción y la fila ya no se promueve a REGISTRADO (Avoqado la concilia). La reapertura por una relectura
+  fallida (punto anterior) va SIN veto: ahí no se sabe de dinero.
 
 El mismo CAS tiene un segundo llamador, y sólo ése: la invocación que pasó el intento a AUTORIZANDO y sabe que NUNCA
 lanzó el SDK — la validación (`createPaymentIntent`) falló y ni el fallback de propina ni el de app-a-app van a
@@ -235,9 +238,11 @@ manda `false` en la ruta normal y en el fallback de propina (comportamiento del 
 
 **Sin interruptor remoto** en esta entrega: el candado de versión es la salida (con otro AAR, la regla no corre).
 
-**§3.8 — la barrera ya no es muda:** si la libreta rechaza un cobro que mandó el POS (la terminal está apartada
-por un cobro anterior sin confirmar), la TPV emite `failed + PRE_AUTHORIZATION` al instante y nombra lo que la
-aparta. La bandeja sólo lo escribe si ningún intento de ESA solicitud quedó fuera de PREPARANDO/DESCARTADA.
+**§3.8 — la barrera ya no es muda:** si la libreta rechaza un cobro que mandó el POS, la TPV emite
+`failed + PRE_AUTHORIZATION` al instante y nombra lo que la aparta. Desde el 25-sep («ninguna duda apaga la
+terminal») la barrera sólo rechaza por tres causas: otro cobro EN CURSO en esta terminal, la MISMA venta con dinero
+en juego, o que no se pudo guardar el intento; una duda anterior sin dinero conocido ya no aparta la terminal. La
+bandeja sólo lo escribe si ningún intento de ESA solicitud quedó fuera de PREPARANDO/DESCARTADA.
 
 ### Sin red — las cuatro preguntas (`.claude/rules/todo-funciona-sin-red.md`), con las precisiones de Codex r1 y r2
 
@@ -259,7 +264,7 @@ aparta. La bandeja sólo lo escribe si ningún intento de ESA solicitud quedó f
 4. **Qué pasa si vuelve la red y el servidor ya cambió.** La evidencia positiva durable veta el negativo (la bandeja no
    lo escribe) y una bandeja ya resuelta conserva y reproduce su ganador. Si S5 llega durante el CAS o con el
    «No se cobró» del POS ya en pantalla, la pantalla pasa a la contradicción o al cobro, y ese dinero queda en la fila
-   (su veredicto; si no se puede, la fila vuelve a INDETERMINADO): el aviso F0 lo muestra, y el cancel del POS y la
+   (su veredicto; si no se puede, la fila vuelve a INDETERMINADO con el veto `VETO_SDK_CONTRADICTION`): el aviso F0 lo muestra, y el cancel del POS y la
    sonda nunca contestan «limpio» **cuando la bandeja todavía no tiene final**: con el veredicto aplicado
    queda RESOLVED con el cobro, y con la reapertura sigue PROCESSING ⇒ ACTIVE. 🔴 **Si el negativo YA se había
    persistido en la bandeja, la reapertura de la libreta NO la cambia** (Codex r3): la bandeja conserva su

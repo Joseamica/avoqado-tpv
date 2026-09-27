@@ -72,15 +72,21 @@ class MigracionV39RoomTest {
         }
     }
 
-    @Test fun `el caso de Codex - tras actualizar, la DESCARTADA con RECORDED de la version anterior vuelve a apartar la terminal`() = runTest {
+    // 🔴 Founder, 25-sep («ninguna duda apaga la terminal», v41): antes la marca de esta fila apartaba la terminal. Ahora el dinero
+    // conocido de un Pago rápido se AVISA (contradicción, «SÍ pasó») y la terminal sigue cobrando; la marca sigue sirviendo para
+    // cercar SU venta y vetar cualquier «no se cobró».
+    @Test fun `el caso de Codex - tras actualizar, la DESCARTADA con RECORDED de la version anterior queda marcada y se avisa, sin apartar la terminal`() = runTest {
         crearBaseV36 { db -> fila(db, "a-descartada", "DESCARTADA", outcome = "RECORDED", paymentId = "pay-a", verdictAt = 700L) }
 
         val db = DatabaseModule.provideDatabase(context)
         try {
-            val otro = db.paymentAttemptDao().reserveTerminal(
-                "otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 900L, null, false,
+            val dao = db.paymentAttemptDao()
+            assertThat(dao.getById("a-descartada")!!.serverProcessorEvidence).isEqualTo("APPROVED")
+            assertWithMessage("el dinero pendiente de conciliar se avisa").that(dao.esContradiccion("a-descartada")).isTrue()
+            val otro = dao.reserveTerminal(
+                "otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 900L, null, "proceso-de-la-prueba",
             )
-            assertWithMessage("otro cobro no aparta la terminal con dinero pendiente de conciliar").that(otro).isEqualTo(-1L)
+            assertWithMessage("…y la terminal sigue cobrando").that(otro).isNotEqualTo(-1L)
         } finally {
             db.close()
         }
@@ -88,7 +94,7 @@ class MigracionV39RoomTest {
 
     // ── Codex r18 (P3): los estados con el SDK dentro, los otros dos desenlaces con dinero y los controles ──
 
-    @Test fun `r18 · una AUTORIZANDO con RECORDED queda marcada, y si despues el host la rechaza la terminal sigue apartada`() = runTest {
+    @Test fun `r18 · una AUTORIZANDO con RECORDED queda marcada, y si despues el host la rechaza el dinero sigue marcado y se avisa`() = runTest {
         crearBaseV36 { db -> fila(db, "sdk-dentro", "AUTORIZANDO", outcome = "RECORDED", paymentId = "pay-s", verdictAt = 700L) }
 
         val db = DatabaseModule.provideDatabase(context)
@@ -97,8 +103,11 @@ class MigracionV39RoomTest {
             assertThat(dao.getById("sdk-dentro")!!.serverProcessorEvidence).isEqualTo("APPROVED")
             // El lector regresa con un rechazo (el CAS del host no mira el veredicto guardado): la fila pasa a DESCARTADA.
             assertThat(dao.casHostResponded("sdk-dentro", listOf("AUTORIZANDO"), "DESCARTADA", 900L, null, null, null, false)).isEqualTo(1)
-            val otro = dao.reserveTerminal("otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 950L, null, false)
-            assertWithMessage("con la marca, el rechazo del host no deja cobrar encima del dinero").that(otro).isEqualTo(-1L)
+            assertWithMessage("el rechazo del host no borra la marca").that(dao.getById("sdk-dentro")!!.serverProcessorEvidence).isEqualTo("APPROVED")
+            assertWithMessage("…y el dinero se avisa").that(dao.esContradiccion("sdk-dentro")).isTrue()
+            // Founder, 25-sep: la fila de una versión anterior no es de ningún proceso vivo — ya no aparta la terminal.
+            val otro = dao.reserveTerminal("otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 950L, null, "proceso-de-la-prueba")
+            assertThat(otro).isNotEqualTo(-1L)
         } finally {
             db.close()
         }
@@ -134,8 +143,22 @@ class MigracionV39RoomTest {
             val dao = db.paymentAttemptDao()
             val ledger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(dao, io.mockk.mockk(relaxed = true))
             assertThat(ledger.reconocerCobroRegistrado("v1", "a-descartada", "Ana (stf-1)", 1_000L)).isTrue()
-            val otro = dao.reserveTerminal("otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 1_100L, null, false)
+            val otro = dao.reserveTerminal("otro-cobro", "v1", "ANGELPAY", "SALE", 4000, 0, "FAST", """{"amount":40.00}""", null, 1_100L, null, "proceso-de-la-prueba")
             assertWithMessage("confirmado, la terminal vuelve a cobrar").that(otro).isNotEqualTo(-1L)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun `la cadena hasta la v41 agrega process_token vacio a las filas que ya existian`() = runTest {
+        crearBaseV36 { db -> fila(db, "vieja", "INDETERMINADO", outcome = null, paymentId = null, verdictAt = null) }
+
+        val db = DatabaseModule.provideDatabase(context)
+        try {
+            val vieja = db.paymentAttemptDao().getById("vieja")!!
+            assertWithMessage("una fila de antes de la v41 no pertenece a ningún proceso vivo")
+                .that(vieja.processToken).isNull()
+            assertThat(vieja.state).isEqualTo("INDETERMINADO") // la migración sólo agrega la columna
         } finally {
             db.close()
         }

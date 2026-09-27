@@ -265,11 +265,14 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
   ACTIVE, y el servidor deja la solicitud UNKNOWN al vencer y suelta la ranura por tiempo (`AUTO_RELEASED`, 20 min tras
   el regreso de la terminal) con la venta protegida. Arreglo pendiente: commit conjunto o una obligación durable de
   completar ese final. Detalle: `docs/ANGELPAY_INTEGRATION.md` › «SDK 1.0.19».
-- ⚠️ **Residual declarado del veto durable (AngelPay 1.0.19, Codex r2):** si el proceso muere entre el aviso de S5 (con su
-  propia escritura fallida) y la escritura de su veredicto desde la pantalla, o si fallan esa escritura Y la reapertura de
-  la fila, la terminal pierde la evidencia de ese dinero (el servidor conserva su Payment). Queda el reporte
-  `AngelPaySdkContradiccion` cuando la pantalla alcanzó a escribirlo. El arreglo de raíz sería que S5 reintentara su
-  propia escritura antes de publicar. Detalle: `docs/ANGELPAY_INTEGRATION.md` › «Sin red», pregunta 4.
+- ⚠️ **Residual declarado del veto durable (AngelPay 1.0.19, Codex r2; acotado por Codex H3, 26-sep):** si falla la
+  escritura del veredicto de S5 desde la pantalla pero la reapertura pasa, la fila vuelve a INDETERMINADO **con el veto
+  durable en el MISMO UPDATE** (`server_veto = VETO_SDK_CONTRADICTION`, `dejarDuraderoElVeto`): tras un reinicio la
+  venta sigue cercada, el aviso de Inicio la muestra como contradicción y la fila no se promueve a REGISTRADO. Sigue el
+  residual: si el proceso muere entre el aviso de S5 (con su propia escritura fallida) y esa escritura, o si fallan la
+  escritura Y la reapertura, la terminal pierde la evidencia de ese dinero (el servidor conserva su Payment). Queda el
+  reporte `AngelPaySdkContradiccion` cuando la pantalla alcanzó a escribirlo. El arreglo de raíz sería que S5
+  reintentara su propia escritura antes de publicar. Detalle: `docs/ANGELPAY_INTEGRATION.md` › «Sin red», pregunta 4.
 - 🔴 **Efectivo en un cobro remoto (medido en hardware el 10-sep, N86 HEAD 2.9.2 + servidor del árbol).** La
   pantalla «Método de Pago» del remoto ofrece **Efectivo** sin condición (`AngelPayPaymentScreen.kt`, HEAD :595, árbol :603,
   `showCashOption = true`); el cajero lo confirma, la terminal registra una venta rápida CASH propia y emite

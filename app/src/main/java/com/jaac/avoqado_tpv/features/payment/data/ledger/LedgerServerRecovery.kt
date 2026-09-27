@@ -456,8 +456,8 @@ class LedgerServerRecovery @Inject constructor(
         val evidenciaPositivaSinRegistro: Boolean = false,
         /**
          * El servidor CONTESTÓ (2xx) esta consulta. Sin red, sin respuesta a tiempo o con un error del servidor es `false`:
-         * para el cajero es lo mismo, porque su declaración por el servidor tampoco pasaría. Es lo que decide si se ofrece
-         * el respaldo del aparato (founder, 22-sep: «con internet decide el servidor; si no contesta, el aparato»).
+         * para el cajero es lo mismo, porque su declaración por el servidor tampoco pasaría. En la Nexgo decide si, al agotar
+         * la ventana, la pantalla dice «Sin conexión con Avoqado» (founder, 25-sep; antes ofrecía el respaldo del aparato).
          */
         val servidorContesto: Boolean = false,
         /**

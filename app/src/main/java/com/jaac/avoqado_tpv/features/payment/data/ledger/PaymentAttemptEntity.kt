@@ -140,6 +140,13 @@ data class PaymentAttemptEntity(
      */
     @ColumnInfo(name = "acknowledged_at") val acknowledgedAt: Long? = null,
     @ColumnInfo(name = "acknowledged_by") val acknowledgedBy: String? = null,
+    /**
+     * 🔴 Founder, 25-sep-2026 («ninguna duda apaga la terminal», Room v41): qué PROCESO abrió este cobro. Lo escribe la
+     * reserva con el token de la libreta viva ([PaymentAttemptLedger]). Sólo un cobro de ESTE proceso puede tener todavía
+     * el lector dentro; el de un proceso muerto no, porque el SDK vive en el proceso de la app. NULL en toda fila anterior
+     * a la v41: nunca aparta el aparato.
+     */
+    @ColumnInfo(name = "process_token") val processToken: String? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -180,7 +187,8 @@ data class PaymentAttemptEntity(
         /**
          * 🔴 Ronda 20 (founder, 23-sep): la duda que deja un proceso MUERTO a media venta. A diferencia de
          * [CUARENTENA_POR_ANTIGUEDAD] SÍ acredita que la llamada nativa terminó —el SDK vive en el proceso de la app (su
-         * manifiesto no declara `android:process`), así que murió con él—: por eso, con orden, sólo cerca SU venta.
+         * manifiesto no declara `android:process`), así que murió con él—: por eso no aparta el aparato, y sin dinero conocido
+         * tampoco cerca su venta (founder, 25-sep; ver [SQL_CERCA_LA_VENTA]): se avisa.
          */
         const val LAST_ERROR_PROCESO_TERMINADO = "proceso_terminado"
 
@@ -248,6 +256,36 @@ data class PaymentAttemptEntity(
             "AND (terminal_payment_request_id IS NULL OR server_winner_payment_id IS server_payment_id))"
 
         /**
+         * 🔴 Founder, 25-sep-2026: «ninguna duda apaga la terminal». Un cobro que ESTE proceso tiene CORRIENDO — lo único que
+         * aparta el aparato, porque el lector es uno. No cuenta una duda guardada, ni dinero ya conocido (eso cerca SU venta,
+         * ver [SQL_CERCA_LA_VENTA]), ni lo que dejó un proceso muerto: su llamada nativa murió con él. La única duda que sí
+         * cuenta es la cuarentena POR RELOJ de este mismo proceso: nadie comprobó que la llamada nativa terminara, y de ahí
+         * se sale reiniciando la app. Sin alias: va en subconsultas cuyo FROM es la fila candidata. Usa `:processToken`.
+         * `PREPARANDO` queda fuera: la usa también el CAS a autorizar, donde una reserva sola no mueve dinero.
+         */
+        const val SQL_EJECUCION_VIVA = "(legacy_shadow = 0 AND process_token IS :processToken " +
+            "AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') " +
+            "OR (state = 'INDETERMINADO' AND last_error = 'cuarentena_por_antiguedad')))"
+
+        /** [SQL_EJECUCION_VIVA] más la reserva que ESTE proceso acaba de hacer: para no admitir dos cobros basta estar en la fila. */
+        const val SQL_APARTA_EL_APARATO = "(" + SQL_EJECUCION_VIVA +
+            " OR (legacy_shadow = 0 AND process_token IS :processToken AND state = 'PREPARANDO'))"
+
+        /**
+         * 🔴 Founder, 25-sep-2026: la VENTA queda cercada sólo con DINERO en juego — un cobro corriendo o ya respondido, la
+         * evidencia del servidor o su veto, y la cuarentena por reloj de ESTE proceso (la llamada pudo seguir viva). Una duda
+         * sin dinero conocido ya no cerca nada, ni en la PAX ni en la Nexgo: se AVISA y decide el cajero (igual que la PAX
+         * desde el 25-sep). Sin alias; usa `:processToken`. Comparaciones a prueba de NULL (`IS`, `IN`).
+         */
+        const val SQL_CERCA_LA_VENTA = "(legacy_shadow = 0 AND (" +
+            "state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') " +
+            "OR (state = 'INDETERMINADO' AND (host_approved IS 1 OR server_processor_evidence IS 'APPROVED' " +
+                "OR server_veto IS NOT NULL " +
+                "OR server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
+                "OR (last_error = 'cuarentena_por_antiguedad' AND process_token IS :processToken))) " +
+            "OR (state = 'DESCARTADA' AND (server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
+
+        /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el
          * servidor acredita dinero de ESTE intento (lo mismo que `VeredictoDeIntento.desdeConsultaS6` devuelve como veredicto).
          * Una fila con cualquiera de ellos que NO esté en REGISTRADO es «Avoqado tiene evidencia de cobro»: nunca «se puede
@@ -261,6 +299,12 @@ data class PaymentAttemptEntity(
         const val VETO_PAYMENT_CONTRADICTION = "PAYMENT_CONTRADICTION"
         const val VETO_EVIDENCE_CONTRADICTION = "EVIDENCE_CONTRADICTION"
         const val VETO_UNATTRIBUTED_EVIDENCE = "UNATTRIBUTED_EVIDENCE"
+        /**
+         * Codex H3 (26-sep): éste no lo publica el servidor. El SDK dijo «no salió al banco» y el servidor acreditó dinero de ESE
+         * intento (S5) que la libreta no pudo escribir. Lo deja la reapertura de ese cierre ([PaymentAttemptDao.reabrirSinAutorizacion])
+         * en el MISMO UPDATE: sin él la fila reabierta era una duda más, y muerto el proceso [SQL_CERCA_LA_VENTA] dejaba pasar su venta.
+         */
+        const val VETO_SDK_CONTRADICTION = "SDK_CONTRADICTION"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [2.11.3] - 2026-09-27
+
 ### **Changed**
 - **Ninguna duda apaga la terminal (founder, 25-sep)**: sólo un cobro que la app tiene corriendo aparta el aparato. Una duda sin dinero conocido ya no aparta la terminal ni cerca su venta (PAX y Nexgo): se avisa con importe y hora, y el aviso se quita solo a los 10 min. Lo que deja una app que se cerró a media venta ya no aparta nada. El kiosco dejó de ser un caso especial. Columna nueva `process_token` (Room 41).
   - 🔴 **Room 41 cruza versión de esquema**: instalar encima cualquier APK con base v40 (p. ej. la 2.11.2) BORRA la base local por `fallbackToDestructiveMigrationOnDowngrade()` (libreta, cola de pagos, reembolsos pendientes y bandeja de cobros remotos). El retroceso exige un APK con v41.

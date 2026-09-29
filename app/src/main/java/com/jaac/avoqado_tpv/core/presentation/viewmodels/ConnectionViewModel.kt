@@ -616,6 +616,10 @@ class ConnectionViewModel @Inject constructor(
         if (!isLatest(version)) return
 
         if (reconnectionAttempts > 0) {
+            // Refresh paid access after recovery without delaying the connection banner or checkout.
+            viewModelScope.launch {
+                tpvSettingsRepository.refreshFromTerminalConfig(deviceInfoManager.getSerialNumber())
+            }
             Timber.i("🔄 [Connection] Connection restored after $reconnectionAttempts attempts")
 
             connectionEventManager.emitConnectionRestored(

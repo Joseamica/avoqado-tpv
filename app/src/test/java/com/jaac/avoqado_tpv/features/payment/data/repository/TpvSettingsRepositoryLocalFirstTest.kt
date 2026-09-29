@@ -62,6 +62,7 @@ class TpvSettingsRepositoryLocalFirstTest {
         every { secureStorage.getTpvSettings() } returns TpvSettings.DEFAULT
         every { secureStorage.saveTpvSettings(any()) } returns Unit
         every { secureStorage.getSerialNumber() } returns "SN-001"
+        every { secureStorage.getVenueId() } returns "venue-1"
         every { secureStorage.getRestaurantModePendingSync() } returns false
         every { secureStorage.setRestaurantModePendingSync(any()) } returns Unit
         every { secureStorage.setShiftSystemEnabled(any()) } returns Unit

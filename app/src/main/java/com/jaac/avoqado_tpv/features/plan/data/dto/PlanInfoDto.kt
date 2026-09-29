@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.plan.data.dto
 
 import com.google.gson.annotations.SerializedName
+import java.time.Instant
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
 import com.jaac.avoqado_tpv.features.plan.domain.model.VenuePlanInfo
 
@@ -15,7 +16,7 @@ import com.jaac.avoqado_tpv.features.plan.domain.model.VenuePlanInfo
  * ```
  *
  * All fields nullable: old servers omit the whole object, and a partial/
- * malformed object must degrade to "no plan info" (fail open), never crash.
+ * malformed object is ignored, preserving the last complete observation.
  */
 data class PlanInfoDto(
     @SerializedName("tier")
@@ -26,17 +27,23 @@ data class PlanInfoDto(
 
     @SerializedName("exempt")
     val exempt: Boolean? = null,
+    @SerializedName("accessSchemaVersion") val accessSchemaVersion: Int? = null,
+    @SerializedName("accessObservedAt") val accessObservedAt: String? = null,
+    @SerializedName("grantedFeatureCodes") val grantedFeatureCodes: List<String>? = null,
 )
 
 /**
  * Convert to domain, or null when the tier is absent/unknown — callers treat
- * null as "no plan info" and FAIL OPEN (no gates, app behaves as today).
+ * null as an invalid observation and retain the last known plan.
  */
-fun PlanInfoDto.toDomainOrNull(): VenuePlanInfo? {
-    val parsedTier = PlanTier.fromRaw(tier) ?: return null
-    return VenuePlanInfo(
-        tier = parsedTier,
-        grandfathered = grandfathered == true,
-        exempt = exempt == true,
-    )
-}
+fun PlanInfoDto.toDomainOrNull(): VenuePlanInfo? = runCatching {
+    val parsedTier = PlanTier.fromRaw(tier) ?: return@runCatching null
+    if (accessSchemaVersion != null) {
+        if (accessSchemaVersion != 1) return@runCatching null
+        Instant.parse(accessObservedAt)
+        val codes = grantedFeatureCodes ?: return@runCatching null
+        if (codes.size > 100 || codes.distinct().size != codes.size || codes.any { !it.matches(Regex("[A-Z][A-Z0-9_]{0,63}")) }) return@runCatching null
+    }
+    VenuePlanInfo(tier = parsedTier, grandfathered = grandfathered == true, exempt = exempt == true,
+        accessSchemaVersion = accessSchemaVersion, accessObservedAt = accessObservedAt, grantedFeatureCodes = grantedFeatureCodes)
+}.getOrNull()

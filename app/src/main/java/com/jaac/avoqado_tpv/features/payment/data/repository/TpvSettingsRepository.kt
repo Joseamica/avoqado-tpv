@@ -67,17 +67,15 @@ class TpvSettingsRepository @Inject constructor(
     suspend fun refreshFromTerminalConfig(serialNumber: String): Result<TpvSettings> {
         return try {
             Timber.d("🔄 Fetching TPV settings for terminal: $serialNumber")
+            val requestedVenueId = secureStorage.getVenueId()
             val response = apiService.getTerminalConfig(serialNumber)
 
             if (response.isSuccessful) {
                 val configData = response.body()?.data
                 val tpvSettingsDto = configData?.tpvSettings
 
-                // Plan-tier gating (additive 2026-06): cache the optional `plan`
-                // object alongside the settings. Absent (old server) → null →
-                // PlanManager clears its cache and the app FAILS OPEN (no gates).
-                // Only updated on SUCCESSFUL fetches — offline keeps the cache.
-                planManager.update(configData?.plan)
+                // Retain the last complete snapshot and ignore responses for a previous venue.
+                planManager.update(configData?.plan, venueId = requestedVenueId)
 
                 var settings = if (tpvSettingsDto != null) {
                     tpvSettingsDto.toDomain()

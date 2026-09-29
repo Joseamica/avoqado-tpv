@@ -292,6 +292,27 @@ class ConnectionViewModelTest {
     // ========================================
 
     @Test
+    fun `recovered connection refreshes paid access once without a settings polling loop`() = runTest(testDispatcher) {
+        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
+        coEvery { tpvSettingsRepository.refreshFromTerminalConfig(any()) } returns kotlin.Result.success(TpvSettings.DEFAULT)
+        val viewModel = createViewModel()
+        try {
+            advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
+            coVerify(exactly = 0) { tpvSettingsRepository.refreshFromTerminalConfig(any()) }
+            every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+            viewModel.forceCheck()
+            runCurrent()
+            coVerify(exactly = 1) { tpvSettingsRepository.refreshFromTerminalConfig("TEST-SERIAL") }
+            advanceTimeBy(2100)
+            viewModel.forceCheck()
+            runCurrent()
+            coVerify(exactly = 1) { tpvSettingsRepository.refreshFromTerminalConfig("TEST-SERIAL") }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `skip heartbeat when terminal not activated`() = runTest(testDispatcher) {
         every { deviceInfoManager.isDeviceActivated() } returns false
         val viewModel = createViewModel()

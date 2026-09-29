@@ -1012,6 +1012,11 @@ class SecureStorage @Inject constructor(
      * @param key Storage key
      * @param value String value to save
      */
+    /** Complete access snapshots must reach disk before the UI observes them. */
+    fun putStringDurably(key: String, value: String) {
+        check(encryptedPrefs.edit().putString(key, value).commit()) { "Could not persist the access snapshot" }
+    }
+
     fun putString(key: String, value: String) {
         encryptedPrefs.edit().putString(key, value).apply()
     }

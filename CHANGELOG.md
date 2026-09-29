@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **Planes y funciones**: acceso por funciones confirmadas por el servidor, guardado atómico por sucursal y conservado sin conexión o ante respuestas antiguas/incompletas. La recuperación de conexión refresca el acceso sin reiniciar el cobro.
+  - Las pruebas de configuración local declaran la sucursal del almacenamiento simulado, conservando sus verificaciones de persistencia y sincronización.
+
 ## [2.11.3] - 2026-09-27
 
 ### **Changed**

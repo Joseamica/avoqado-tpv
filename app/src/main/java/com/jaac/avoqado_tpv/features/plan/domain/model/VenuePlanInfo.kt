@@ -39,6 +39,9 @@ data class VenuePlanInfo(
     val tier: PlanTier,
     val grandfathered: Boolean,
     val exempt: Boolean,
+    val accessSchemaVersion: Int? = null,
+    val accessObservedAt: String? = null,
+    val grantedFeatureCodes: List<String>? = null,
 )
 
 /**
@@ -86,11 +89,13 @@ object PlanFeatureCatalog {
  *   → **true** (FAIL OPEN — the app behaves exactly as today)
  * - `exempt == true` (grandfathered legacy / demo venue) → **true** (no gates)
  * - unknown feature code → **true** (fail open)
- * - otherwise → venue tier rank >= the feature's minimum tier rank
+ * - v1 snapshot → exact capability membership
+ * - legacy snapshot → venue tier rank >= the feature's minimum tier rank
  */
 fun VenuePlanInfo?.allowsFeature(code: String): Boolean {
     val info = this ?: return true
     if (info.exempt) return true
     val required = PlanFeatureCatalog.minTierFor(code) ?: return true
+    if (info.accessSchemaVersion == 1) return code in info.grantedFeatureCodes.orEmpty()
     return info.tier.ordinal >= required.ordinal
 }

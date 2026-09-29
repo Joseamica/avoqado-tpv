@@ -27,6 +27,8 @@ class PlanManagerTest {
         strings = mutableMapOf()
         booleans = mutableMapOf()
         secureStorage = mockk {
+            every { getVenueId() } returns "venue-a"
+            every { putStringDurably(any(), any()) } answers { strings[firstArg()] = secondArg() }
             every { putString(any(), any()) } answers { strings[firstArg()] = secondArg() }
             every { getString(any(), any()) } answers { strings[firstArg()] ?: secondArg() }
             every { putBoolean(any(), any()) } answers { booleans[firstArg()] = secondArg() }
@@ -39,6 +41,28 @@ class PlanManagerTest {
     }
 
     private fun manager() = PlanManager(secureStorage)
+
+    @Test
+    fun `exact grants survive restart reject stale responses and stay with their venue`() {
+        val paid = PlanInfoDto(tier = "FREE", accessSchemaVersion = 1,
+            accessObservedAt = "2026-09-27T10:00:00.000Z", grantedFeatureCodes = listOf("CFDI"))
+        manager().update(paid)
+        val restarted = manager()
+        assertThat(restarted.hasFeature("CFDI")).isTrue()
+        assertThat(restarted.hasFeature("INVENTORY_TRACKING")).isFalse()
+        assertThat(restarted.hasFeature("CHARGING")).isTrue()
+        listOf(null, PlanInfoDto(tier = "PREMIUM"), paid.copy(accessSchemaVersion = 2),
+            paid.copy(accessObservedAt = "2026-09-27T09:00:00.000Z", grantedFeatureCodes = emptyList()),
+            paid.copy(accessObservedAt = "invalid")).forEach { restarted.update(it) }
+        assertThat(restarted.hasFeature("CFDI")).isTrue()
+        restarted.update(paid.copy(tier = "PREMIUM", accessObservedAt = "2026-09-27T11:00:00.000Z", grantedFeatureCodes = emptyList()))
+        assertThat(restarted.hasFeature("CFDI")).isFalse()
+        every { secureStorage.getVenueId() } returns "venue-b"
+        restarted.update(paid, venueId = "venue-a")
+        assertThat(manager().planInfo.value).isNull()
+        manager().update(PlanInfoDto(tier = "FREE"))
+        assertThat(manager().hasFeature("CFDI")).isFalse()
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // Fail open (null plan / unknown tier / unknown code)
@@ -55,27 +79,27 @@ class PlanManagerTest {
     }
 
     @Test
-    fun `update with null dto clears plan info - fail open`() {
+    fun `missing dto preserves the last known plan`() {
         val planManager = manager()
         planManager.update(PlanInfoDto(tier = "FREE"))
         assertThat(planManager.hasFeature(PlanFeatureCatalog.PROMOTIONS)).isFalse()
 
-        // Old server stopped sending `plan` → back to no gating
+        // Old server stopped sending `plan`: keep the complete known observation.
         planManager.update(null)
 
-        assertThat(planManager.planInfo.value).isNull()
-        assertThat(planManager.hasFeature(PlanFeatureCatalog.PROMOTIONS)).isTrue()
+        assertThat(planManager.planInfo.value?.tier).isEqualTo(PlanTier.FREE)
+        assertThat(planManager.hasFeature(PlanFeatureCatalog.PROMOTIONS)).isFalse()
     }
 
     @Test
-    fun `update with unknown tier clears plan info - fail open`() {
+    fun `unknown tier preserves the last known plan`() {
         val planManager = manager()
         planManager.update(PlanInfoDto(tier = "FREE"))
 
         planManager.update(PlanInfoDto(tier = "PLATINUM"))
 
-        assertThat(planManager.planInfo.value).isNull()
-        assertThat(planManager.hasFeature(PlanFeatureCatalog.PROMOTIONS)).isTrue()
+        assertThat(planManager.planInfo.value?.tier).isEqualTo(PlanTier.FREE)
+        assertThat(planManager.hasFeature(PlanFeatureCatalog.PROMOTIONS)).isFalse()
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
+import com.jaac.avoqado_tpv.core.util.EstadoWifiSinSalida
 import com.jaac.avoqado_tpv.core.util.MemoryInfo
 import com.jaac.avoqado_tpv.core.util.NetworkInfo
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
@@ -308,6 +309,40 @@ class DeviceHealthViewModelTest {
 
         val alerts = viewModel.activeAlerts.value
         assertThat(alerts.any { it is DeviceAlert.NoInternet }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    // WiFi «conectado pero sin datos» (Testarudo, 29-sep-2026): el banner dice QUÉ se cayó.
+
+    @Test
+    fun `wifi sin salida reemplaza a sin conexion al servidor`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = false,
+            wifiSinSalida = EstadoWifiSinSalida.DETECTADO
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.WifiSinSalida && !it.reiniciando }).isTrue()
+        assertThat(alerts.any { it is DeviceAlert.ServerDown }).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `reiniciando con el wifi apagado no dice sin conexion a internet`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = false,
+            hasServer = false,
+            wifiSinSalida = EstadoWifiSinSalida.REINICIANDO
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.WifiSinSalida && it.reiniciando }).isTrue()
+        assertThat(alerts.any { it is DeviceAlert.NoInternet }).isFalse()
         viewModel.viewModelScope.cancel()
     }
 

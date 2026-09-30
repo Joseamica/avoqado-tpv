@@ -44,10 +44,21 @@ class WifiFailoverController @Inject constructor(
 
     fun isWifiEnabled(): Boolean = wifiManager().isWifiEnabled
 
+    /** `WifiManager.wifiState`: distingue `WIFI_STATE_ENABLED`/`DISABLED` de las transiciones, cosa que [isWifiEnabled] no hace. */
+    fun estadoDelRadio(): Int = wifiManager().wifiState
+
+    /**
+     * @param antesDelCanalPax Se evalúa justo antes del canal DAL de la PAX, 1.5 s después del primer intento: si en ese
+     *   lapso empezó un cobro o cambió el modo o las señales, no se apaga por ese canal.
+     * @param forzar Salta el retorno temprano «ya está en ese estado»: hace falta para pedir PRENDER cuando la lectura
+     *   todavía dice prendido pero un apagado aceptado sigue pendiente.
+     */
     @Suppress("DEPRECATION")
     suspend fun setWifiEnabled(
         enabled: Boolean,
-        source: String
+        source: String,
+        antesDelCanalPax: () -> Boolean = { true },
+        forzar: Boolean = false,
     ): WifiToggleResult {
         val manager = wifiManager()
         val hasChangeWifiPermission = ContextCompat.checkSelfPermission(
@@ -56,7 +67,7 @@ class WifiFailoverController @Inject constructor(
         ) == PackageManager.PERMISSION_GRANTED
 
         val before = manager.isWifiEnabled
-        if (before == enabled) {
+        if (before == enabled && !forzar) {
             return WifiToggleResult(
                 requestedEnabled = enabled,
                 before = before,
@@ -77,6 +88,8 @@ class WifiFailoverController @Inject constructor(
             requestResult = manager.setWifiEnabled(enabled)
             delay(1500L)
             after = manager.isWifiEnabled
+        } catch (cancelado: kotlinx.coroutines.CancellationException) {
+            throw cancelado
         } catch (securityException: SecurityException) {
             paxChannelError = "SecurityException: ${securityException.message}"
             Timber.w(
@@ -93,7 +106,9 @@ class WifiFailoverController @Inject constructor(
 
         // Fallback probe: PAX DAL channel-level toggle.
         if (after != enabled && BuildConfig.ENABLE_PAX_SDK) {
-            try {
+            if (!enabled && !antesDelCanalPax()) {
+                paxChannelError = "omitido: empezó una operación crítica"
+            } else try {
                 val dal = NeptuneLiteUser.getInstance().getDal(appContext)
                 val wifiChannel = dal?.commManager?.getChannel(EChannelType.WIFI)
                 if (wifiChannel != null) {
@@ -104,6 +119,8 @@ class WifiFailoverController @Inject constructor(
                 } else if (paxChannelError == null) {
                     paxChannelError = "wifiChannel=null"
                 }
+            } catch (cancelado: kotlinx.coroutines.CancellationException) {
+                throw cancelado
             } catch (error: Throwable) {
                 paxChannelAttempted = true
                 paxChannelError = "${error.javaClass.simpleName}: ${error.message}"

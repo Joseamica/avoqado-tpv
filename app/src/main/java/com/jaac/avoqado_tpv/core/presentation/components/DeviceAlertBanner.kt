@@ -115,6 +115,37 @@ fun DeviceAlertBanner(
 }
 
 /**
+ * Mensaje y descripción del banner. El reemplazo de «Reintentar» sólo aplica a NoInternet/ServerDown.
+ *
+ * 🔴 Mientras hay un reintento en curso, el banner CUENTA cómo va: antes el único aviso era un Toast que
+ * anunciaba el intento y jamás decía cómo terminó. Acotado a las alertas de CONEXIÓN: `onRetry` también
+ * existe en el banner de pagos pendientes, y sin el filtro «No se pudo conectar» quedaba pegado sobre un
+ * banner que hablaba de dinero. WifiSinSalida tampoco lo lleva: su texto ya dice qué hacer.
+ */
+internal fun textoDelBanner(alert: DeviceAlert, retryState: ConnectionRetryState): Pair<String, String> {
+    val base = when (alert) {
+        is DeviceAlert.UpdateAvailable -> alert.message to alert.description
+        is DeviceAlert.NoInternet -> alert.message to alert.description
+        is DeviceAlert.BatteryCritical -> alert.message to alert.description
+        is DeviceAlert.ServerDown -> alert.message to alert.description
+        is DeviceAlert.WifiSinSalida -> alert.message to alert.description
+        is DeviceAlert.SlowConnection -> alert.message to alert.description
+        is DeviceAlert.PendingPayments -> alert.message to alert.description
+        is DeviceAlert.BatteryLow -> alert.message to alert.description
+        is DeviceAlert.StorageLow -> alert.message to alert.description
+        is DeviceAlert.WeakWifi -> alert.message to alert.description
+        is DeviceAlert.MemoryLow -> alert.message to alert.description
+    }
+    val esDeConexion = alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown
+    return when {
+        retryState is ConnectionRetryState.Retrying && esDeConexion -> "Reconectando..." to "Verificando la conexion con el servidor"
+        // Decir explícitamente que los cobros NO se pierden: es verdad, la cola los guarda.
+        retryState is ConnectionRetryState.Failed && esDeConexion -> "No se pudo conectar" to "Los cobros se guardan y se envian al reconectar"
+        else -> base
+    }
+}
+
+/**
  * Single alert banner row
  */
 @Composable
@@ -142,6 +173,7 @@ private fun AlertBannerRow(
         is DeviceAlert.NoInternet -> Icons.Default.WifiOff
         is DeviceAlert.BatteryCritical -> Icons.Default.BatteryAlert
         is DeviceAlert.ServerDown -> Icons.Default.CloudOff
+        is DeviceAlert.WifiSinSalida -> Icons.Default.SignalWifiStatusbarConnectedNoInternet4
         is DeviceAlert.SlowConnection -> Icons.Default.Speed
         is DeviceAlert.PendingPayments -> Icons.Default.Sync
         is DeviceAlert.BatteryLow -> Icons.Default.Battery2Bar
@@ -150,53 +182,10 @@ private fun AlertBannerRow(
         is DeviceAlert.MemoryLow -> Icons.Default.Memory
     }
 
-    val baseMessage = when (alert) {
-        is DeviceAlert.UpdateAvailable -> alert.message
-        is DeviceAlert.NoInternet -> alert.message
-        is DeviceAlert.BatteryCritical -> alert.message
-        is DeviceAlert.ServerDown -> alert.message
-        is DeviceAlert.SlowConnection -> alert.message
-        is DeviceAlert.PendingPayments -> alert.message
-        is DeviceAlert.BatteryLow -> alert.message
-        is DeviceAlert.StorageLow -> alert.message
-        is DeviceAlert.WeakWifi -> alert.message
-        is DeviceAlert.MemoryLow -> alert.message
-    }
-
-    val baseDescription = when (alert) {
-        is DeviceAlert.UpdateAvailable -> alert.description
-        is DeviceAlert.NoInternet -> alert.description
-        is DeviceAlert.BatteryCritical -> alert.description
-        is DeviceAlert.ServerDown -> alert.description
-        is DeviceAlert.SlowConnection -> alert.description
-        is DeviceAlert.PendingPayments -> alert.description
-        is DeviceAlert.BatteryLow -> alert.description
-        is DeviceAlert.StorageLow -> alert.description
-        is DeviceAlert.WeakWifi -> alert.description
-        is DeviceAlert.MemoryLow -> alert.description
-    }
-
-    // 🔴 Mientras hay un reintento en curso, el banner CUENTA como va. Antes el unico
-    // aviso era un Toast abajo que anunciaba el intento y jamas decia como termino: si
-    // fallaba, la pantalla quedaba exactamente igual que antes de tocar el boton.
-    // Acotado a las alertas de CONEXION: `onRetry` tambien existe en el banner de pagos
-    // pendientes, asi que sin este filtro un fallo de conexion dejaba "No se pudo
-    // conectar" pegado sobre un banner que hablaba de dinero.
-    val isConnectionAlert = alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown
-    val isRetrying = retryState is ConnectionRetryState.Retrying && isConnectionAlert
-    val retryFailed = retryState is ConnectionRetryState.Failed && isConnectionAlert
-    val message = when {
-        isRetrying -> "Reconectando..."
-        retryFailed -> "No se pudo conectar"
-        else -> baseMessage
-    }
-    val description = when {
-        isRetrying -> "Verificando la conexion con el servidor"
-        // Decir explicitamente que los cobros NO se pierden: es lo que el cajero
-        // necesita saber en ese segundo, y es verdad — la cola los guarda.
-        retryFailed -> "Los cobros se guardan y se envian al reconectar"
-        else -> baseDescription
-    }
+    // Spinner del botón: sólo en las alertas de CONEXIÓN (ver textoDelBanner).
+    val isRetrying = retryState is ConnectionRetryState.Retrying &&
+        (alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown)
+    val (message, description) = textoDelBanner(alert, retryState)
 
     Row(
         modifier = Modifier
@@ -429,6 +418,19 @@ private fun DeviceAlertBannerStoragePreview() {
         DeviceAlertBanner(
             alerts = listOf(DeviceAlert.StorageLow(0.3f))
         )
+    }
+}
+
+// PAX A910S (360x640 dp): el texto largo del WiFi sin salida tiene que caber sin botón de reintento.
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun DeviceAlertBannerWifiSinSalidaPreview() {
+    AvoqadoTheme {
+        Column {
+            DeviceAlertBanner(alerts = listOf(DeviceAlert.WifiSinSalida(reiniciando = false)))
+            Spacer(modifier = Modifier.height(8.dp))
+            DeviceAlertBanner(alerts = listOf(DeviceAlert.WifiSinSalida(reiniciando = true)))
+        }
     }
 }
 

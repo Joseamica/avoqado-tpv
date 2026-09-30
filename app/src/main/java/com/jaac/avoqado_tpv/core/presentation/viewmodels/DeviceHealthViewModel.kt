@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
+import com.jaac.avoqado_tpv.core.util.EstadoWifiSinSalida
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.core.util.NetworkType
@@ -352,14 +353,21 @@ class DeviceHealthViewModel @Inject constructor(
         // CONNECTION ALERTS (P0, P2) - Highest priority
         // ══════════════════════════════════════════════════════════════════════
 
-        // P0: No internet
+        val wifi = connectionState.wifiSinSalida
+        // P0: No internet — salvo que la app esté reiniciando el WiFi a propósito.
         if (!connectionState.hasInternet) {
-            alerts.add(DeviceAlert.NoInternet)
+            alerts.add(if (wifi == EstadoWifiSinSalida.REINICIANDO) DeviceAlert.WifiSinSalida(reiniciando = true) else DeviceAlert.NoInternet)
         }
 
-        // P2: Server down (only if we have internet but no server)
+        // P2: Server down — si el detector confirmó que es el WiFi de la terminal, se dice ESO.
         if (connectionState.hasInternet && !connectionState.hasServer) {
-            alerts.add(DeviceAlert.ServerDown)
+            alerts.add(
+                when (wifi) {
+                    EstadoWifiSinSalida.NO -> DeviceAlert.ServerDown
+                    EstadoWifiSinSalida.DETECTADO -> DeviceAlert.WifiSinSalida(reiniciando = false)
+                    EstadoWifiSinSalida.REINICIANDO -> DeviceAlert.WifiSinSalida(reiniciando = true)
+                }
+            )
         }
 
         // P3: Slow connection (only if connected but latency >5s)
@@ -523,6 +531,7 @@ enum class DeviceAlertType {
     NO_INTERNET,       // P0 - Most critical
     BATTERY_CRITICAL,  // P1
     SERVER_DOWN,       // P2
+    WIFI_SIN_SALIDA,   // P2 - WiFi enlazado sin pasar datos
     SLOW_CONNECTION,   // P3 - Slow internet (latency >5s)
     BATTERY_LOW,       // P3
     STORAGE_LOW,       // P4
@@ -600,6 +609,16 @@ sealed class DeviceAlert(
     data object ServerDown : DeviceAlert(2, DeviceAlertType.SERVER_DOWN) {
         val message: String get() = "Sin conexión al servidor"
         val description: String get() = "Reintentando conexión..."
+    }
+
+    /**
+     * WiFi de ESTA terminal enlazado sin pasar datos (P2): Google tampoco contesta. Testarudo, 29-sep-2026.
+     * Sin botón «Reintentar» (fuera de [isRetryable]): su texto ya dice qué hacer.
+     */
+    data class WifiSinSalida(val reiniciando: Boolean) : DeviceAlert(2, DeviceAlertType.WIFI_SIN_SALIDA) {
+        val message: String get() = "El WiFi de esta terminal no está pasando datos"
+        val description: String get() =
+            if (reiniciando) "Reiniciando el WiFi…" else "Apaga y prende el WiFi de la terminal, o usa el chip"
     }
 
     /**

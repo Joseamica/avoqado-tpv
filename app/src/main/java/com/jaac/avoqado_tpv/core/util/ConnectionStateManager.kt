@@ -94,7 +94,9 @@ class ConnectionStateManager @Inject constructor() {
             hasInternet = hasInternet,
             hasServer = hasServer,
             latencyMs = latencyMs,
-            isSlowConnection = effectiveSlow
+            isSlowConnection = effectiveSlow,
+            // Lo publica WifiSinSalidaMonitor; un heartbeat no lo borra.
+            wifiSinSalida = _connectionState.value.wifiSinSalida,
         )
         if (_connectionState.value != newState) {
             val latencyStr = if (latencyMs != null) ", latency=${latencyMs}ms" else ""
@@ -114,6 +116,15 @@ class ConnectionStateManager @Inject constructor() {
                     if (latencyMs != null) setCustomKey("network_latency_ms", latencyMs)
                 }
             } catch (_: Exception) { /* Firebase not initialized yet during early startup */ }
+        }
+    }
+
+    /** Lo publican [WifiSinSalidaMonitor] (DETECTADO / NO) y [ControlDeWifi] vía el VM (REINICIANDO). */
+    fun setWifiSinSalida(estado: EstadoWifiSinSalida) {
+        val current = _connectionState.value
+        if (current.wifiSinSalida != estado) {
+            Timber.i("📶 [ConnectionState] WiFi sin salida: $estado")
+            _connectionState.value = current.copy(wifiSinSalida = estado)
         }
     }
 
@@ -152,7 +163,8 @@ data class ConnectionState(
     val hasInternet: Boolean = true,
     val hasServer: Boolean = true,
     val latencyMs: Long? = null,
-    val isSlowConnection: Boolean = false
+    val isSlowConnection: Boolean = false,
+    val wifiSinSalida: EstadoWifiSinSalida = EstadoWifiSinSalida.NO,
 ) {
     val isFullyConnected: Boolean get() = hasInternet && hasServer
     val hasAnyIssue: Boolean get() = !hasInternet || !hasServer

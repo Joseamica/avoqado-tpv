@@ -16,15 +16,18 @@ import com.jaac.avoqado_tpv.core.util.NetworkInfo
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.core.util.NetworkType
-import com.jaac.avoqado_tpv.core.util.WifiToggleResult
-import com.jaac.avoqado_tpv.core.util.WifiFailoverController
 import com.jaac.avoqado_tpv.core.util.SystemHealth
-import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
+import com.jaac.avoqado_tpv.core.util.ControlDeWifi
+import com.jaac.avoqado_tpv.core.util.EstadoWifiSinSalida
+import com.jaac.avoqado_tpv.core.util.ResultadoReinicio
+import com.jaac.avoqado_tpv.core.util.VeredictoWifi
+import com.jaac.avoqado_tpv.core.util.WifiSinSalidaMonitor
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -60,8 +63,8 @@ class ConnectionViewModelTest {
     private lateinit var commandExecutor: CommandExecutor
     private lateinit var connectionStateManager: ConnectionStateManager
     private lateinit var tpvSettingsRepository: TpvSettingsRepository
-    private lateinit var wifiFailoverController: WifiFailoverController
-    private lateinit var criticalNetworkOperationManager: CriticalNetworkOperationManager
+    private lateinit var wifiSinSalidaMonitor: WifiSinSalidaMonitor
+    private lateinit var controlDeWifi: ControlDeWifi
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
     private lateinit var connectionSnapshotState: MutableStateFlow<com.jaac.avoqado_tpv.core.util.ConnectionState>
@@ -78,13 +81,6 @@ class ConnectionViewModelTest {
         isMetered = false,
         isConnected = false,
         signalStrength = null
-    )
-
-    private val cellularConnectedNetworkInfo = NetworkInfo(
-        type = NetworkType.CELLULAR,
-        isMetered = true,
-        isConnected = true,
-        signalStrength = 3
     )
 
     private val fakeSystemHealth = SystemHealth(
@@ -121,8 +117,8 @@ class ConnectionViewModelTest {
         commandExecutor = mockk(relaxed = true)
         connectionStateManager = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
-        wifiFailoverController = mockk(relaxed = true)
-        criticalNetworkOperationManager = mockk(relaxed = true)
+        wifiSinSalidaMonitor = mockk(relaxed = true)
+        controlDeWifi = mockk(relaxed = true)
 
         connectionSnapshotState = MutableStateFlow(
             com.jaac.avoqado_tpv.core.util.ConnectionState(
@@ -147,7 +143,12 @@ class ConnectionViewModelTest {
             )
         }
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
-        every { criticalNetworkOperationManager.isAnyCriticalOperationInProgress() } returns false
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.SANO
+        coEvery { controlDeWifi.reiniciar(any(), any()) } returns ResultadoReinicio.NoSeReinicio("prueba")
+        coEvery { controlDeWifi.restaurarSiQuedoApagado() } returns true
+        every { connectionStateManager.setWifiSinSalida(any()) } answers {
+            connectionSnapshotState.value = connectionSnapshotState.value.copy(wifiSinSalida = firstArg())
+        }
 
         coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Success(fakeHeartbeatResponse)
     }
@@ -158,7 +159,14 @@ class ConnectionViewModelTest {
         unmockkAll()
     }
 
-    private fun createViewModel(): ConnectionViewModel {
+    /**
+     * [esPax] = false describe la Nexgo (las pruebas corren en sandboxDebug, que ES PAX). Con [UnconfinedTestDispatcher]
+     * el `init` evalúa DENTRO del constructor: se retiene esa primera evaluación en su primera suspensión
+     * (`restaurarSiQuedoApagado`) hasta fijar la costura, para que ninguna evaluación lea el BuildConfig.
+     */
+    private fun createViewModel(esPax: Boolean = false): ConnectionViewModel {
+        val costuraFijada = CompletableDeferred<Unit>()
+        coEvery { controlDeWifi.restaurarSiQuedoApagado() } coAnswers { costuraFijada.await(); true }
         return ConnectionViewModel(
             networkMonitor = networkMonitor,
             connectivityObserver = connectivityObserver,
@@ -169,9 +177,12 @@ class ConnectionViewModelTest {
             commandExecutor = commandExecutor,
             connectionStateManager = connectionStateManager,
             tpvSettingsRepository = tpvSettingsRepository,
-            wifiFailoverController = wifiFailoverController,
-            criticalNetworkOperationManager = criticalNetworkOperationManager,
-        )
+            wifiSinSalidaMonitor = wifiSinSalidaMonitor,
+            controlDeWifi = controlDeWifi,
+        ).also {
+            it.esPax = esPax
+            costuraFijada.complete(Unit)
+        }
     }
 
     // ========================================
@@ -436,193 +447,122 @@ class ConnectionViewModelTest {
     }
 
     // ========================================
-    // PHASE 1 FAILOVER SAFETY TESTS
+    // WIFI SIN SALIDA (29-sep-2026): detectar siempre, reiniciar sólo en AUTO_ENFORCED fuera de PAX
     // ========================================
 
-    @Test
-    fun `auto enforced disables wifi after threshold when wifi is degraded`() = runTest(testDispatcher) {
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
-            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
-            cellularFailoverBadReadingsThreshold = 1,
-            cellularFailoverCooldownSeconds = 0
-        )
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = false,
-            hasServer = false,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
-        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
-            requestedEnabled = false,
-            before = true,
-            after = false,
-            requestResult = true,
-            paxChannelAttempted = false,
-            paxChannelError = null,
-            hasChangeWifiPermission = true
-        )
-
-        val viewModel = createViewModel()
-        runCurrent()
-
-        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
-        viewModel.viewModelScope.cancel()
+    private fun modo(m: CellularFailoverMode) {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(cellularFailoverMode = m)
     }
 
     @Test
-    fun `auto enforced does not toggle wifi during critical operations`() = runTest(testDispatcher) {
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
-            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
-            cellularFailoverBadReadingsThreshold = 1,
-            cellularFailoverCooldownSeconds = 0
-        )
-        every { criticalNetworkOperationManager.isAnyCriticalOperationInProgress() } returns true
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = false,
-            hasServer = false,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
-
-        val viewModel = createViewModel()
-        runCurrent()
-
-        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(any(), any()) }
-        viewModel.viewModelScope.cancel()
+    fun `P1 wifi sin salida en enforced pide el reinicio y avisa REINICIANDO`() = runTest(testDispatcher) {
+        modo(CellularFailoverMode.AUTO_ENFORCED)
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.WIFI_SIN_SALIDA
+        coEvery { controlDeWifi.reiniciar(any(), any()) } returns ResultadoReinicio.Reiniciado
+        val vm = createViewModel(); runCurrent()
+        coVerifyOrder {
+            connectionStateManager.setWifiSinSalida(EstadoWifiSinSalida.REINICIANDO)
+            controlDeWifi.reiniciar(any(), any())
+            connectionStateManager.setWifiSinSalida(EstadoWifiSinSalida.DETECTADO)
+        }
+        coVerify { wifiSinSalidaMonitor.trasReiniciar() }
+        vm.viewModelScope.cancel()
     }
 
     @Test
-    fun `auto enforced does not restore wifi while cellular remains unhealthy`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
-            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
-            cellularFailoverBadReadingsThreshold = 1,
-            cellularFailoverCooldownSeconds = 0,
-            cellularFailoverMinCellHoldSeconds = 0
-        )
-        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = true,
-            hasServer = true,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
-
-        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
-            requestedEnabled = false,
-            before = true,
-            after = false,
-            requestResult = true,
-            paxChannelAttempted = false,
-            paxChannelError = null,
-            hasChangeWifiPermission = true
-        )
-        coEvery { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) } returns WifiToggleResult(
-            requestedEnabled = true,
-            before = false,
-            after = true,
-            requestResult = true,
-            paxChannelAttempted = false,
-            paxChannelError = null,
-            hasChangeWifiPermission = true
-        )
-        every { wifiFailoverController.isWifiEnabled() } returns false
-
-        val viewModel = createViewModel()
-        runCurrent()
-        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
-
-        every { networkMonitor.getCurrentNetworkInfo() } returns cellularConnectedNetworkInfo
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = true,
-            hasServer = false,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
-
-        advanceTimeBy(30_000)
-        runCurrent()
-
-        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) }
-        viewModel.viewModelScope.cancel()
+    fun `P2 si el incidente se cerro durante el reinicio no se resucita DETECTADO`() = runTest(testDispatcher) {
+        // Otra evaluación cerró el incidente (publicó NO) mientras el reinicio estaba suspendido (Codex código #4).
+        modo(CellularFailoverMode.AUTO_ENFORCED)
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.WIFI_SIN_SALIDA
+        coEvery { controlDeWifi.reiniciar(any(), any()) } coAnswers {
+            connectionSnapshotState.value = connectionSnapshotState.value.copy(wifiSinSalida = EstadoWifiSinSalida.NO)
+            ResultadoReinicio.NoSeReinicio("el_enlace_volvio")
+        }
+        val vm = createViewModel(); runCurrent()
+        // finally: si una aserción falla sin cancelar, runTest drena el while(true) del VM hasta agotar la memoria.
+        try {
+            coVerify { controlDeWifi.reiniciar(any(), any()) }
+            verify(exactly = 0) { connectionStateManager.setWifiSinSalida(EstadoWifiSinSalida.DETECTADO) }
+            assertThat(connectionSnapshotState.value.wifiSinSalida).isEqualTo(EstadoWifiSinSalida.NO)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
     }
 
     @Test
-    fun `auto enforced restores wifi when cellular is healthy`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
-            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
-            cellularFailoverBadReadingsThreshold = 1,
-            cellularFailoverCooldownSeconds = 0,
-            cellularFailoverMinCellHoldSeconds = 0
-        )
-        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = true,
-            hasServer = true,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
-
-        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
-            requestedEnabled = false,
-            before = true,
-            after = false,
-            requestResult = true,
-            paxChannelAttempted = false,
-            paxChannelError = null,
-            hasChangeWifiPermission = true
-        )
-        coEvery { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) } returns WifiToggleResult(
-            requestedEnabled = true,
-            before = false,
-            after = true,
-            requestResult = true,
-            paxChannelAttempted = false,
-            paxChannelError = null,
-            hasChangeWifiPermission = true
-        )
-        every { wifiFailoverController.isWifiEnabled() } returns false
-
-        val viewModel = createViewModel()
-        runCurrent()
-        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
-
-        every { networkMonitor.getCurrentNetworkInfo() } returns cellularConnectedNetworkInfo
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = true,
-            hasServer = true,
-            latencyMs = 200,
-            isSlowConnection = false
-        )
-
-        advanceTimeBy(30_000)
-        runCurrent()
-
-        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) }
-        viewModel.viewModelScope.cancel()
+    fun `P1 sin veredicto no se reinicia aunque no haya internet`() = runTest(testDispatcher) {
+        // Codex v3 #4: sin red real (no sólo el estado), porque con red y heartbeat OK el arranque reescribe ambos a true.
+        modo(CellularFailoverMode.AUTO_ENFORCED)
+        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(hasInternet = false, hasServer = false)
+        val vm = createViewModel(); runCurrent()
+        assertThat(connectionSnapshotState.value.hasInternet).isFalse()
+        coVerify(exactly = 0) { controlDeWifi.reiniciar(any(), any()) }
+        vm.viewModelScope.cancel()
     }
 
     @Test
-    fun `auto shadow never toggles wifi`() = runTest(testDispatcher) {
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
-            cellularFailoverMode = CellularFailoverMode.AUTO_SHADOW,
-            cellularFailoverBadReadingsThreshold = 1,
-            cellularFailoverCooldownSeconds = 0
-        )
-        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
-            hasInternet = false,
-            hasServer = false,
-            latencyMs = 8_000,
-            isSlowConnection = true
-        )
+    fun `P1 si el modo cambia antes de actuar no se reinicia`() = runTest(testDispatcher) {
+        every { tpvSettingsRepository.getCurrentSettings() } returnsMany listOf(
+            TpvSettings.DEFAULT.copy(cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED),
+        ) andThen TpvSettings.DEFAULT   // OFF desde la segunda lectura
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.WIFI_SIN_SALIDA
+        every { wifiSinSalidaMonitor.sigueSinSalida() } returns true
+        coEvery { controlDeWifi.reiniciar(any(), any()) } coAnswers {
+            val puedeActuar = secondArg<() -> Boolean>()
+            if (puedeActuar()) ResultadoReinicio.Reiniciado else ResultadoReinicio.NoSeReinicio("ya_no_aplica")
+        }
+        val vm = createViewModel(); runCurrent()
+        coVerify { wifiSinSalidaMonitor.registrarAccion("no_se_reinicio:ya_no_aplica") }
+        vm.viewModelScope.cancel()
+    }
 
-        val viewModel = createViewModel()
-        runCurrent()
+    @Test
+    fun `sombra detecta y anota una vez pero nunca reinicia`() = runTest(testDispatcher) {
+        modo(CellularFailoverMode.AUTO_SHADOW)
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.WIFI_SIN_SALIDA
+        val vm = createViewModel(); runCurrent()
+        vm.forceCheck(); runCurrent()
+        coVerify(exactly = 0) { controlDeWifi.reiniciar(any(), any()) }
+        coVerify(exactly = 1) { wifiSinSalidaMonitor.registrarAccion("habria_reiniciado_wifi") }
+        vm.viewModelScope.cancel()
+    }
 
-        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(any(), any()) }
-        viewModel.viewModelScope.cancel()
+    @Test
+    fun `al arrancar y en cada evaluacion restaura una marca heredada`() = runTest(testDispatcher) {
+        modo(CellularFailoverMode.OFF)
+        val vm = createViewModel(); runCurrent()
+        coVerify(atLeast = 1) { controlDeWifi.restaurarSiQuedoApagado() }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `la causa guardada es la raiz, no el envoltorio`() = runTest(testDispatcher) {
+        modo(CellularFailoverMode.OFF)
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returns
+            Result.Error(ApiException.NetworkError(java.net.UnknownHostException("api.avoqado.io")))
+        val vm = createViewModel(); runCurrent()
+        vm.forceCheck(); runCurrent()
+        coVerify { wifiSinSalidaMonitor.evaluar(any(), "UnknownHostException", any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 en PAX enforced se comporta como sombra y nunca reinicia`() = runTest(testDispatcher) {
+        modo(CellularFailoverMode.AUTO_ENFORCED)
+        coEvery { wifiSinSalidaMonitor.evaluar(any(), any(), any()) } returns VeredictoWifi.WIFI_SIN_SALIDA
+        val vm = createViewModel(esPax = true); runCurrent()
+        coVerify(exactly = 0) { controlDeWifi.reiniciar(any(), any()) }
+        coVerify(exactly = 1) { wifiSinSalidaMonitor.registrarAccion("habria_reiniciado_wifi") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `modoEfectivoWifi degrada solo enforced y solo en PAX`() {
+        CellularFailoverMode.values().forEach { m ->
+            assertThat(modoEfectivoWifi(m, esPax = false)).isEqualTo(m)
+            val esperado = if (m == CellularFailoverMode.AUTO_ENFORCED) CellularFailoverMode.AUTO_SHADOW else m
+            assertThat(modoEfectivoWifi(m, esPax = true)).isEqualTo(esperado)
+        }
     }
 }

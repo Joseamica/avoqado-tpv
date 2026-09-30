@@ -63,6 +63,10 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     @Inject
     lateinit var ledgerRecoveryTrigger: com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerRecoveryTrigger
 
+    /** WiFi sin salida (30-sep-2026): si el proceso murió a mitad de un reinicio del WiFi, se prende al arrancar. */
+    @Inject
+    lateinit var controlDeWifi: com.jaac.avoqado_tpv.core.util.ControlDeWifi
+
     override fun onCreate() {
         // ⚠️ CRITICAL: Prepare Blumon's `AppManager.dal` BEFORE super.onCreate().
         // super.onCreate() triggers Hilt's `hiltInternalInject()` which eagerly
@@ -101,6 +105,13 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
 
         // Checkpoint 2 · N4: la libreta avisa al nacer una incertidumbre; sin esto sólo cubren el barrido y la reconexión.
         runCatching { ledgerRecoveryTrigger.instalar() }.onFailure { timber.log.Timber.e(it, "No se pudo instalar el hook de recuperación por servidor") }
+
+        // Proceso muerto a mitad de un reinicio del WiFi: se prende YA, sin esperar al primer heartbeat de
+        // ConnectionViewModel (en la N86 eran ~27 s sin WiFi al volver a abrir la app).
+        applicationScope.launch {
+            runCatching { controlDeWifi.restaurarSiQuedoApagado() }
+                .onFailure { timber.log.Timber.e(it, "No se pudo restaurar el WiFi al arrancar") }
+        }
 
         initializeAngelPaySdkIfEnabled()
 

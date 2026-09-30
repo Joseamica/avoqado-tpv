@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+import com.jaac.avoqado_tpv.features.payment.domain.processor.AngelPayCorte
 import com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationResult
 import com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationsAdapterFactory
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
@@ -60,7 +61,45 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
     /** 📒 La libreta write-ahead, ABIERTA antes del SDK (auditoría de Codex F1): igual que en la PAX. */
     private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
+    /** ⏰ La hora del corte de AngelPay se decide con este reloj (inyectable para las pruebas). */
+    private val clock: java.time.Clock,
+    /** 🔴 «Devolución en curso» mientras se habla con AngelPay (founder, 29-sep: nada detiene las ventas). */
+    private val paymentStateHolder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
 ) {
+
+    /**
+     * ¿Este pago tiene una devolución que ya salió hacia AngelPay y falta confirmar o registrar? Son los MISMOS dos candados
+     * que [processSdkRefund] revisa primero (la cola de `pending_refunds` y la libreta): la lista de pagos lo pregunta para no
+     * esconder tras el corte un pago que todavía tiene algo por resolver, ni decir de él «no se reembolsó nada».
+     */
+    suspend fun tieneDevolucionPorResolver(originalPaymentId: String): Boolean = devolucionPendiente(originalPaymentId) != null
+
+    /** Lo que ya salió hacia AngelPay por un pago y falta confirmar o registrar. */
+    private sealed interface DevolucionPendiente {
+        /** Aprobada por el SDK y encolada para registrarse (`pending_refunds`). */
+        data class EnCola(val fila: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund, val cuantas: Int) :
+            DevolucionPendiente
+        /** En la libreta: aprobada sin llegar a la cola, o en duda. */
+        data class EnLibreta(val fila: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity) : DevolucionPendiente
+    }
+
+    /**
+     * 🔒 Los dos candados contra devolver dos veces, en UN solo lugar (re-auditoría del 29-sep): los usan el intento de
+     * devolución y la lista de pagos, así que nunca pueden discrepar. Si la cola no se puede leer se sigue con la libreta,
+     * como antes; una cancelación se propaga.
+     */
+    private suspend fun devolucionPendiente(originalPaymentId: String): DevolucionPendiente? {
+        val enCola = try {
+            refundQueueRepository.unresolvedForPayment(originalPaymentId)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.w(error, "💸 [AngelPay Direct Refund] No se pudo leer la cola de devoluciones del pago %s", originalPaymentId)
+            emptyList()
+        }
+        enCola.firstOrNull()?.let { return DevolucionPendiente.EnCola(it, enCola.size) }
+        return paymentAttemptLedger.devolucionSinResolver(originalPaymentId)?.let { DevolucionPendiente.EnLibreta(it) }
+    }
 
     /** Lo que devuelve el SDK cuando aprueba: el mensaje para el cajero y la llave que ya nació para este intento. */
     data class AngelPayRefundApproval(val message: String, val idempotencyKey: String)
@@ -119,72 +158,387 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             return Result.failure(IllegalStateException(PARTIAL_REFUND_UNSUPPORTED_MESSAGE))
         }
 
-        // 💸 CANDADO (auditoría de Codex F7): si este pago ya tiene una devolución aprobada por el SDK y sin
-        // registrar en Avoqado, NO se lanza otra — el servidor aún lo ve reembolsable y una segunda llave
-        // devolvería el dinero dos veces.
-        val sinRegistrar = runCatching { refundQueueRepository.unresolvedForPayment(originalPaymentId) }.getOrDefault(emptyList())
-        if (sinRegistrar.isNotEmpty()) {
-            Timber.w("⛔ [AngelPay Direct Refund] Bloqueado: el pago %s ya tiene %s devolución(es) sin registrar", originalPaymentId, sinRegistrar.size)
-            return Result.failure(IllegalStateException(mensajeDelCandado(sinRegistrar.first())))
+        val ahora = clock.instant()
+
+        when (val pendiente = devolucionPendiente(originalPaymentId)) {
+            // 💸 CANDADO DE LA COLA (auditoría de Codex F7): este pago ya tiene una devolución aprobada por el SDK y sin
+            // registrar en Avoqado. NO se lanza otra — el servidor aún lo ve reembolsable y una segunda llave devolvería el
+            // dinero dos veces.
+            is DevolucionPendiente.EnCola -> {
+                Timber.w("⛔ [AngelPay Direct Refund] Bloqueado: el pago %s ya tiene %s devolución(es) sin registrar", originalPaymentId, pendiente.cuantas)
+                return Result.failure(IllegalStateException(mensajeDelCandado(pendiente.fila)))
+            }
+            // 📒 CANDADO DE LA LIBRETA (founder, 29-sep-2026): una devolución anterior de ESTE pago salió hacia AngelPay y no
+            // se supo en qué quedó —o AngelPay la aprobó y no alcanzó a registrarse—. Otra devolvería dos veces: primero se
+            // resuelve ésa. Sólo cerca ESTE pago: las ventas y las devoluciones de otros pagos siguen normales.
+            is DevolucionPendiente.EnLibreta -> return resolverDevolucionAnterior(pendiente.fila, paymentReference, createdAt, ahora)
+            null -> Unit
         }
+
+        // ⏰ EL CORTE (founder y AngelPay, 29-sep-2026): AngelPay sólo CANCELA una venta completa antes de las 11 pm del día en
+        // que se cobró, y tiene apagadas las devoluciones posteriores para todos los comercios. Pasado el corte no se abre la
+        // libreta ni se llama a AngelPay, y el cajero sabe a quién pedírsela. 🔴 Va DESPUÉS de los dos candados (auditoría del
+        // 29-sep, P1): una devolución que AngelPay ya aprobó o que quedó en duda se tiene que poder confirmar y registrar
+        // aunque ya haya pasado el corte — confirmarla no le pide nada nuevo a AngelPay.
+        if (!AngelPayCorte.sePuedeIntentarDesdeLaTerminal(createdAt, ahora)) {
+            Timber.w(
+                "⛔ [AngelPay Direct Refund] Fuera del corte | cobrado=%s corte=%s ahora=%s",
+                createdAt, AngelPayCorte.corteDeLaVenta(createdAt), ahora,
+            )
+            return Result.failure(IllegalStateException(AngelPayCorte.MENSAJE_FUERA_DE_CORTE_SIN_INTENTO))
+        }
+        val useCancellation = AngelPayCorte.sePuedeCancelar(createdAt, ahora)
+        val operationLabel = if (useCancellation) "cancelación" else "devolución"
 
         // 🔑 La llave nace AQUÍ, ANTES del SDK, y viaja con la aprobación hasta `recordInBackend`: es la
         // misma en la libreta, en la fila write-ahead y en el POST (Fase 0 del servidor deduplica con ella).
         val idempotencyKey = java.util.UUID.randomUUID().toString()
-        // 📒 [Libreta] write-ahead ANTES de que corra el SDK (auditoría F1): si el proceso muere entre la
-        // aprobación y la fila de la cola, queda evidencia con la MISMA llave. Nunca bloquea el reembolso.
-        runCatching {
-            paymentAttemptLedger.openAttempt(
-                attemptId = idempotencyKey,
-                venueId = paymentVenueId,
-                processor = "angelpay",
-                amountCents = requestedAmount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
-                tipCents = 0L,
-                recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
-                contextJson = "{\"originalPaymentId\":\"$originalPaymentId\",\"reference\":\"$paymentReference\",\"processor\":\"angelpay\"}",
-                kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND,
-            )
-        }.onFailure { Timber.w(it, "📒 [AngelPay Direct Refund] La libreta no pudo abrir el intento (no bloquea)") }
-
-        val adapter = postOperationsAdapterFactory.get(ProcessorType.ANGELPAY)
-        val zone = ZoneId.of("America/Mexico_City")
-        val formatter = DateTimeFormatter.ISO_LOCAL_DATE
-        val operationDate = createdAt.atZone(zone).toLocalDate()
-        val startDate = operationDate.minusDays(1).format(formatter)
-        val endDate = LocalDate.now(zone).plusDays(1).format(formatter)
-
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] Resolving reference=%s reason=%s window=%s..%s",
-            paymentReference,
-            requestedReason.name,
-            startDate,
-            endDate,
+        // 📒 [Libreta] write-ahead ANTES de que corra el SDK (auditoría F1): si el proceso muere entre la aprobación y la fila de
+        // la cola, queda evidencia con la MISMA llave. 🔴 29-sep: si la fila NO queda escrita, no se llama a AngelPay — una
+        // devolución sin fila no tiene quién la cierre ni quién impida repetirla.
+        val abierta = paymentAttemptLedger.openAttempt(
+            attemptId = idempotencyKey,
+            venueId = paymentVenueId,
+            processor = "angelpay",
+            amountCents = requestedAmount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+            tipCents = 0L,
+            recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
+            contextJson = contextoDeLaDevolucion(originalPaymentId, paymentReference),
+            kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND,
         )
+        if (!abierta) {
+            Timber.w("📒 [AngelPay Direct Refund] La libreta no abrió el intento: no se llama a AngelPay | pago=%s", originalPaymentId)
+            return Result.failure(IllegalStateException(MENSAJE_NO_SE_GUARDO))
+        }
 
-        val history = adapter.getTransactionHistory(
-            TransactionHistoryQuery(
-                startDate = startDate,
-                endDate = endDate,
-                reference = paymentReference,
+        // 🔴 Founder, 29-sep-2026: «nada puede detener las ventas», «ni trabar nada», «ni reiniciar». Desde aquí la fila existe
+        // y TODA salida la cierra con lo que de verdad pasó: antes de llegar a AngelPay ⇒ descartada; rechazo explícito ⇒
+        // rechazada; sin veredicto ⇒ en duda. Ninguna aparta la terminal; la duda sólo impide repetir la devolución de ESTE
+        // pago. El `finally` es la red para lo que salga por una excepción o una cancelación.
+        var cerrada = false
+        try {
+            val adapter = postOperationsAdapterFactory.get(ProcessorType.ANGELPAY)
+            val (startDate, endDate) = ventanaDelHistorial(createdAt, ahora)
+
+            // Nada salió hacia AngelPay: la fila se descarta y el cajero puede volver a intentarlo.
+            suspend fun noSalio(motivo: String, mensaje: String): Result<AngelPayRefundApproval> {
+                cerrada = paymentAttemptLedger.markDiscardedBeforeCharge(idempotencyKey, "antes_del_sdk:$motivo")
+                return Result.failure(IllegalStateException("$mensaje No se reembolsó nada."))
+            }
+
+            Timber.i(
+                "🔶 [AngelPay Direct Refund] Resolving reference=%s reason=%s window=%s..%s",
+                paymentReference, requestedReason.name, startDate, endDate,
             )
-        ).getOrElse { error ->
-            return Result.failure(
-                IllegalStateException(
-                    "No se pudo consultar la transacción AngelPay: ${error.message}",
-                    error,
+            val target = buscarLaVenta(adapter, paymentReference, startDate, endDate).getOrElse { error ->
+                return noSalio("historial", "No se pudo consultar la venta en AngelPay (${error.message ?: "sin detalle"}).")
+            } ?: return noSalio("sin_venta", "No se encontró la venta en AngelPay con la referencia $paymentReference.")
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkPostOperationsAdapter
+                .validarCamposDePostOperacion(target)?.let { motivo ->
+                    return noSalio("campos", "La venta en AngelPay está incompleta ($motivo).")
+                }
+            // ⏰ AngelPay corta por SU lote, y su hora puede ser anterior a la de Avoqado (un cobro que se registró tarde, desde
+            // la cola sin red). Su hora sólo puede CERRAR el corte, nunca abrirlo (auditoría del 29-sep, P2).
+            instanteEnAngelPay(target)?.let { cobradoEnAngelPay ->
+                if (!AngelPayCorte.sePuedeIntentarDesdeLaTerminal(cobradoEnAngelPay, ahora)) {
+                    Timber.w(
+                        "⛔ [AngelPay Direct Refund] Fuera del corte según AngelPay | angelpay=%s avoqado=%s ahora=%s",
+                        cobradoEnAngelPay, createdAt, ahora,
+                    )
+                    cerrada = paymentAttemptLedger.markDiscardedBeforeCharge(idempotencyKey, "antes_del_sdk:corte_angelpay")
+                    return Result.failure(IllegalStateException(AngelPayCorte.MENSAJE_FUERA_DE_CORTE_SIN_INTENTO))
+                }
+            }
+
+            val alternativas = referenciasAlternativas(
+                venta = target,
+                sdkCandidates = resolveAngelPaySdkReferenceCandidates(appContext = appContext, transaction = target),
+                historyCandidates = resolveAngelPayHistoryReferenceCandidates(
+                    adapterFactory = postOperationsAdapterFactory,
+                    target = target,
+                    startDate = startDate,
+                    endDate = endDate,
+                    zone = AngelPayCorte.ZONA_MEXICO,
+                ),
+            )
+
+            // 🔴 La terminal sólo espera MIENTRAS se habla con AngelPay (unos segundos): un cobro del POS que llegue ahora se
+            // rechaza con motivo en vez de arrancarle la pantalla a la devolución, y la sesión de AngelPay no se cambia a media
+            // llamada (`isCharging()` la incluye). Se renueva antes de CADA llamada y caduca sola a los 120 s de la última:
+            // aunque algo la dejara puesta, jamás traba las ventas. La bandera de cobro de las VENTAS no se toca: soltarla aquí
+            // podía dejar sin protección a una venta que arrancó después (auditoría del 29-sep, P2).
+            paymentStateHolder.marcarDevolucionEnCurso()
+
+            // 📒 AUTORIZANDO justo antes de tocar el SDK: a partir de aquí el dinero puede moverse.
+            if (!paymentAttemptLedger.markAuthorizing(idempotencyKey)) {
+                Timber.w("📒 [AngelPay Direct Refund] La libreta no dejó autorizar: no se llama a AngelPay | key=%s", idempotencyKey)
+                cerrada = paymentAttemptLedger.markDiscardedBeforeCharge(idempotencyKey, "antes_del_sdk:libreta")
+                return Result.failure(IllegalStateException(MENSAJE_NO_SE_GUARDO))
+            }
+
+            Timber.i(
+                "🔶 [AngelPay Direct Refund] Executing %s ref=%s cobrado=%s corte=%s alternativas=%s",
+                operationLabel, target.reference, createdAt, AngelPayCorte.corteDeLaVenta(createdAt), alternativas.size,
+            )
+            var desenlace = intentarConRespaldos(target, alternativas, operationLabel) { tx, manual ->
+                if (useCancellation) adapter.cancelTransaction(transaction = tx, isManual = manual)
+                else adapter.refundTransaction(transaction = tx, isManual = manual)
+            }
+            // La devolución de respaldo sólo tras un RECHAZO explícito de la cancelación (nunca tras una duda: pudo aplicarse), y
+            // sólo si AngelPay vuelve a habilitar las devoluciones — hoy las tiene apagadas para todos los comercios.
+            if (useCancellation && AngelPayCorte.DEVOLUCION_POSTERIOR_HABILITADA &&
+                desenlace is DesenlaceDeDevolucion.Rechazada && !desenlace.referenciaInvalida
+            ) {
+                Timber.w("⚠️ [AngelPay Direct Refund] Cancelación rechazada ref=%s: se prueba la devolución", target.reference)
+                desenlace = intentarConRespaldos(target, emptyList(), "devolución") { tx, manual ->
+                    adapter.refundTransaction(transaction = tx, isManual = manual)
+                }
+            }
+
+            return when (val final = desenlace) {
+                is DesenlaceDeDevolucion.Aprobada -> {
+                    val ref = final.resultado.reference ?: paymentReference
+                    cerrada = anotarAprobacion(idempotencyKey, ref, final.resultado.authorizationCode)
+                    Result.success(
+                        AngelPayRefundApproval(
+                            message = "${final.operacion} aprobada${final.resultado.reference?.let { " (ref: $it)" } ?: ""}",
+                            idempotencyKey = idempotencyKey,
+                        )
+                    )
+                }
+                is DesenlaceDeDevolucion.Rechazada -> {
+                    cerrada = paymentAttemptLedger.markHostResponded(idempotencyKey, false, null, null, null)
+                    Result.failure(IllegalStateException(mensajeDeRechazo(final)))
+                }
+                is DesenlaceDeDevolucion.EnDuda -> {
+                    Timber.e(
+                        "💸🔴 [AngelPay Direct Refund] Sin veredicto de AngelPay: la devolución queda EN DUDA | key=%s pago=%s detalle=%s",
+                        idempotencyKey, originalPaymentId, final.detalle,
+                    )
+                    paymentAttemptLedger.markIndeterminate(idempotencyKey, "devolucion_sin_veredicto:${final.detalle}")
+                    cerrada = true
+                    Result.failure(IllegalStateException(MENSAJE_DEVOLUCION_EN_DUDA))
+                }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                if (!cerrada) {
+                    // Los dos CAS se excluyen: PREPARANDO (nada salió) ⇒ descartada; AUTORIZANDO (pudo salir) ⇒ en duda.
+                    runCatching { paymentAttemptLedger.markDiscardedBeforeCharge(idempotencyKey, "devolucion_terminada_antes_del_sdk") }
+                    runCatching { paymentAttemptLedger.markIndeterminate(idempotencyKey, "devolucion_terminada_sin_veredicto") }
+                }
+                paymentStateHolder.terminarDevolucionEnCurso()
+            }
+        }
+    }
+
+    /** Lo que AngelPay dijo de una cancelación o devolución, clasificado con la MISMA tabla que los cobros. */
+    private sealed interface DesenlaceDeDevolucion {
+        data class Aprobada(val resultado: PostOperationResult, val operacion: String) : DesenlaceDeDevolucion
+        /** Rechazo explícito: nada se devolvió. [referenciaInvalida] = AngelPay no reconoce esa referencia. */
+        data class Rechazada(val resultado: PostOperationResult, val operacion: String, val referenciaInvalida: Boolean) :
+            DesenlaceDeDevolucion
+        /** La llamada salió y no volvió un veredicto: pudo aplicarse. */
+        data class EnDuda(val detalle: String) : DesenlaceDeDevolucion
+    }
+
+    /**
+     * 🔴 Sólo un rechazo EXPLÍCITO dice «no se devolvió nada» (`.claude/rules/cobro-remoto-pos-a-tpv.md`): un código del
+     * catálogo de rechazos, un rechazo del emisor, o «referencia inválida» (AngelPay no encontró esa venta, así que no pudo
+     * cancelarla). Todo lo demás —G505/G506, un timeout, un código desconocido— queda EN DUDA.
+     */
+    private fun clasificarRespuesta(r: PostOperationResult, operacion: String): DesenlaceDeDevolucion {
+        if (r.approved) return DesenlaceDeDevolucion.Aprobada(r, operacion)
+        val codigo = r.errorCode?.trim()?.takeIf { it.isNotEmpty() }
+        val desenlace = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.clasificar(
+            aprobado = false,
+            status = r.status,
+            // `errorCode` junta los dos: el del catálogo de AngelPay (4 caracteres, «G500») o el del emisor (2, «05»).
+            codigoSdk = codigo?.takeUnless { it.length == 2 },
+            codigoGateway = codigo?.takeIf { it.length == 2 },
+        )
+        val referenciaInvalida = looksLikeInvalidReference(r.message)
+        return when {
+            desenlace == com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DesenlaceDelCobro.RECHAZADO_CONFIRMADO ->
+                DesenlaceDeDevolucion.Rechazada(r, operacion, referenciaInvalida)
+            referenciaInvalida -> DesenlaceDeDevolucion.Rechazada(r, operacion, referenciaInvalida = true)
+            else -> DesenlaceDeDevolucion.EnDuda("${codigo ?: "sin_codigo"}/${r.status ?: "sin_estado"}")
+        }
+    }
+
+    /**
+     * Intenta la operación con la referencia de la venta y, SÓLO si AngelPay contesta que no la conoce, con sus variantes
+     * (manual, referencias del SDK y del historial). 🔴 Se detiene en la primera aprobación, en el primer rechazo que no es de
+     * referencia y en la primera DUDA: otra llamada tras una duda podría devolver dos veces la misma venta.
+     */
+    private suspend fun intentarConRespaldos(
+        venta: UnifiedTransaction,
+        alternativas: List<String>,
+        operacion: String,
+        llamar: suspend (UnifiedTransaction, Boolean) -> Result<PostOperationResult>,
+    ): DesenlaceDeDevolucion {
+        val intentos = buildList {
+            add(venta.reference to false)
+            add(venta.reference to true)
+            alternativas.forEach { add(it to false); add(it to true) }
+        }
+        var ultimoRechazo: DesenlaceDeDevolucion.Rechazada? = null
+        for ((referencia, manual) in intentos) {
+            val tx = if (referencia.equals(venta.reference, ignoreCase = true)) venta else venta.copy(reference = referencia)
+            // Una variante que el SDK rechazaría antes de salir no se manda: no aporta nada y no es una llamada a AngelPay.
+            if (com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkPostOperationsAdapter
+                    .validarCamposDePostOperacion(tx) != null
+            ) continue
+            paymentStateHolder.marcarDevolucionEnCurso()   // la marca cubre ESTA llamada, no la primera
+            val respuesta = try {
+                llamar(tx, manual).getOrThrow()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Timber.e(error, "💸 [AngelPay Direct Refund] %s ref=%s manual=%s: el SDK falló sin veredicto", operacion, referencia, manual)
+                return DesenlaceDeDevolucion.EnDuda("excepcion:${error.javaClass.simpleName}:${error.message.orEmpty().take(120)}")
+            }
+            val desenlace = clasificarRespuesta(respuesta, operacion)
+            Timber.i(
+                "🔶 [AngelPay Direct Refund] %s ref=%s manual=%s ⇒ %s (code=%s status=%s msg=%s)",
+                operacion, referencia, manual, desenlace.javaClass.simpleName,
+                respuesta.errorCode ?: "-", respuesta.status ?: "-", respuesta.message ?: "-",
+            )
+            when (desenlace) {
+                is DesenlaceDeDevolucion.Aprobada, is DesenlaceDeDevolucion.EnDuda -> return desenlace
+                is DesenlaceDeDevolucion.Rechazada -> {
+                    if (!desenlace.referenciaInvalida) return desenlace
+                    ultimoRechazo = desenlace
+                }
+            }
+        }
+        // Inalcanzable en la práctica: la venta se validó antes, así que el primer intento siempre sale.
+        return ultimoRechazo ?: DesenlaceDeDevolucion.EnDuda("sin_intentos")
+    }
+
+    private fun mensajeDeRechazo(r: DesenlaceDeDevolucion.Rechazada): String {
+        val operacion = r.operacion.replaceFirstChar { it.uppercase() }
+        if (r.referenciaInvalida) {
+            return "$operacion rechazada: AngelPay no encontró esta venta con ninguna de sus referencias. No se devolvió nada."
+        }
+        val detalle = listOfNotNull(r.resultado.errorCode?.takeIf { it.isNotBlank() }, r.resultado.message?.takeIf { it.isNotBlank() })
+            .joinToString(" · ").ifBlank { "sin detalle" }
+        return "$operacion rechazada por AngelPay ($detalle). No se devolvió nada."
+    }
+
+    /** El SDK aprobó: la libreta lo anota (HOST_RESPONDIO). Devuelve si quedó escrito; el dinero ya salió pase lo que pase. */
+    private suspend fun anotarAprobacion(idempotencyKey: String, reference: String, authCode: String?): Boolean =
+        runCatching {
+            paymentAttemptLedger.markHostResponded(
+                attemptId = idempotencyKey,
+                approved = true,
+                operationId = null,
+                referenceNumber = reference,
+                authCode = authCode,
+            )
+        }.onFailure { Timber.w(it, "📒 [AngelPay Direct Refund] La libreta no pudo anotar la aprobación (no bloquea)") }
+            .getOrDefault(false)
+
+    /**
+     * 📒 Una devolución anterior de ESTE pago que la libreta no ha cerrado ([PaymentAttemptLedger.devolucionSinResolver]).
+     *  - AngelPay ya la APROBÓ y no se registró (el proceso murió antes de la cola): se entrega otra vez con SU llave —el
+     *    servidor deduplica— y AngelPay no se vuelve a tocar.
+     *  - Quedó EN DUDA: si el historial de AngelPay ya muestra la cancelación aplicada sobre la venta, se da por aprobada con
+     *    SU llave; si no, no se intenta otra.
+     */
+    private suspend fun resolverDevolucionAnterior(
+        anterior: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity,
+        paymentReference: String,
+        createdAt: Instant,
+        ahora: Instant,
+    ): Result<AngelPayRefundApproval> {
+        val aprobadaSinRegistrar = anterior.state in setOf(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_HOST_RESPONDIO,
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_AUTORIZADO,
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
+        )
+        if (aprobadaSinRegistrar) {
+            Timber.w(
+                "💸 [AngelPay Direct Refund] La devolución %s ya la aprobó AngelPay y no se registró: se entrega con SU llave, sin llamar a AngelPay",
+                anterior.attemptId,
+            )
+            return Result.success(
+                AngelPayRefundApproval(
+                    message = "La devolución ya estaba aprobada por AngelPay${anterior.referenceNumber?.let { " (ref: $it)" } ?: ""}; se registra en Avoqado",
+                    idempotencyKey = anterior.attemptId,
                 )
             )
         }
 
-        val candidates = history.filter {
-            it.reference.equals(paymentReference, ignoreCase = true)
+        val (startDate, endDate) = ventanaDelHistorial(createdAt, ahora)
+        val venta = buscarLaVenta(postOperationsAdapterFactory.get(ProcessorType.ANGELPAY), paymentReference, startDate, endDate).getOrNull()
+        val referenciaDeLaCancelacion = venta?.postOperationReference?.takeIf { it.isNotBlank() }
+        if (venta != null && referenciaDeLaCancelacion != null && isAngelPayApprovedStatus(venta.postOperationStatus)) {
+            Timber.w(
+                "💸 [AngelPay Direct Refund] El historial de AngelPay muestra aplicada la devolución en duda %s (ref=%s tipo=%s)",
+                anterior.attemptId, referenciaDeLaCancelacion, venta.postOperationType ?: "-",
+            )
+            anotarAprobacion(anterior.attemptId, referenciaDeLaCancelacion, venta.postOperationAuthorization)
+            return Result.success(
+                AngelPayRefundApproval(
+                    message = "La cancelación ya está aplicada en AngelPay (ref: $referenciaDeLaCancelacion); se registra en Avoqado",
+                    idempotencyKey = anterior.attemptId,
+                )
+            )
         }
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] Candidate count for ref=%s: %s",
-            paymentReference,
-            candidates.size,
+        Timber.w(
+            "⛔ [AngelPay Direct Refund] El pago tiene una devolución en duda (%s, %s) que el historial no confirma: no se intenta otra",
+            anterior.attemptId, anterior.state,
         )
+        return Result.failure(IllegalStateException(MENSAJE_DEVOLUCION_EN_DUDA_PREVIA))
+    }
 
+    /**
+     * La hora del cobro según AngelPay. Con zona si la trae; sin zona se lee como hora de México: si en realidad fuera UTC,
+     * la hora leída sale MÁS TARDE que la real, así que el corte sólo se vuelve más permisivo y nunca cierra de más. Una
+     * fecha sin hora no sirve (una venta de las 23:30 caería en el lote equivocado): `null` y manda la hora de Avoqado.
+     */
+    private fun instanteEnAngelPay(tx: UnifiedTransaction): Instant? {
+        val crudo = tx.creationDate.trim()
+        runCatching { return Instant.parse(crudo) }
+        runCatching { return java.time.OffsetDateTime.parse(crudo).toInstant() }
+        if (crudo.length >= 16) runCatching {
+            return java.time.LocalDateTime.parse(crudo.replace(' ', 'T').take(19)).toInstant(AngelPayCorte.ZONA_MEXICO)
+        }
+        val fecha = tx.date?.trim().orEmpty()
+        val hora = tx.time?.trim().orEmpty()
+        if (fecha.length >= 10 && hora.length >= 5) runCatching {
+            return java.time.LocalDateTime.parse("${fecha.take(10)}T$hora").toInstant(AngelPayCorte.ZONA_MEXICO)
+        }
+        return null
+    }
+
+    /** Días de la consulta al historial de AngelPay, en la hora de México (desfase fijo: el ICU de la N86 es viejo). */
+    private fun ventanaDelHistorial(createdAt: Instant, ahora: Instant): Pair<String, String> {
+        val formatter = DateTimeFormatter.ISO_LOCAL_DATE
+        val startDate = createdAt.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().minusDays(1).format(formatter)
+        val endDate = ahora.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().plusDays(1).format(formatter)
+        return startDate to endDate
+    }
+
+    /** La venta en el historial de AngelPay: `success(null)` si no aparece, `failure` si no se pudo consultar. */
+    private suspend fun buscarLaVenta(
+        adapter: com.jaac.avoqado_tpv.features.payment.domain.processor.PaymentPostOperationsAdapter,
+        paymentReference: String,
+        startDate: String,
+        endDate: String,
+    ): Result<UnifiedTransaction?> {
+        val history = try {
+            adapter.getTransactionHistory(
+                TransactionHistoryQuery(startDate = startDate, endDate = endDate, reference = paymentReference)
+            ).getOrElse { return Result.failure(it) }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return Result.failure(error)
+        }
+        val candidates = history.filter { it.reference.equals(paymentReference, ignoreCase = true) }
+        Timber.i("🔶 [AngelPay Direct Refund] Candidate count for ref=%s: %s", paymentReference, candidates.size)
         val target = candidates
             .sortedWith(
                 compareByDescending<UnifiedTransaction> {
@@ -194,418 +548,39 @@ class RecordAngelPayRefundUseCase @Inject constructor(
                 }
             )
             .firstOrNull()
-            ?: return Result.failure(
-                IllegalStateException("No se encontró la transacción AngelPay con referencia $paymentReference")
-            )
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] Selected target ref=%s folio=%s postOpRef=%s opType=%s status=%s creation=%s date=%s auth=%s",
-            target.reference,
-            target.folio,
-            target.postOperationReference ?: "-",
-            target.operationType ?: "-",
-            target.status,
-            target.creationDate,
-            target.date ?: "-",
-            target.authorizationCode,
-        )
-        val sdkReferenceCandidates = resolveAngelPaySdkReferenceCandidates(
-            appContext = appContext,
-            transaction = target,
-        )
-        val historyReferenceCandidates = resolveAngelPayHistoryReferenceCandidates(
-            adapterFactory = postOperationsAdapterFactory,
-            target = target,
-            startDate = startDate,
-            endDate = endDate,
-            zone = zone,
-        )
-
-        val targetDate = parseAngelPayTransactionDate(target.creationDate, zone) ?: operationDate
-        val today = LocalDate.now(zone)
-        val useCancellation = targetDate == today
-        val operationLabel = if (useCancellation) "cancelación" else "devolución"
-
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] Executing %s ref=%s txDate=%s today=%s",
-            operationLabel,
-            target.reference,
-            targetDate,
-            today,
-        )
-
-        suspend fun runCancel(tx: UnifiedTransaction, isManual: Boolean): Result<PostOperationResult> {
-            return adapter.cancelTransaction(transaction = tx, isManual = isManual)
-        }
-
-        data class CancellationResolution(
-            val result: PostOperationResult,
-            val attemptedReferences: List<String>,
-            val hadInvalidReference: Boolean,
-        )
-
-        suspend fun attemptCancellationWithFallbacks(
-            tx: UnifiedTransaction,
-            sdkCandidates: List<String>,
-            historyCandidates: List<String>,
-        ): Result<CancellationResolution> {
-            val attempts = mutableListOf<String>()
-            var hadInvalidReference = false
-
-            suspend fun attempt(reference: String, isManual: Boolean): PostOperationResult {
-                attempts += "$reference|manual=$isManual"
-                val txToUse = if (reference.equals(tx.reference, ignoreCase = true)) {
-                    tx
-                } else {
-                    tx.copy(reference = reference)
-                }
-                val result = runCancel(tx = txToUse, isManual = isManual).getOrElse { error ->
-                    throw error
-                }
-                if (looksLikeInvalidReference(result.message)) {
-                    hadInvalidReference = true
-                }
-                return result
-            }
-
-            val first = runCatching { attempt(reference = tx.reference, isManual = false) }
-                .getOrElse { error -> return Result.failure(error) }
-            if (first.approved) {
-                return Result.success(
-                    CancellationResolution(
-                        result = first,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            if (!looksLikeInvalidReference(first.message)) {
-                return Result.success(
-                    CancellationResolution(
-                        result = first,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            Timber.w(
-                "⚠️ [AngelPay Direct Refund] Retrying cancel as manual with same reference=%s",
-                tx.reference,
-            )
-            val manualSameRef = runCatching { attempt(reference = tx.reference, isManual = true) }
-                .getOrElse { error -> return Result.failure(error) }
-            if (manualSameRef.approved) {
-                return Result.success(
-                    CancellationResolution(
-                        result = manualSameRef,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            val alternativeReferences = distinctCaseInsensitive(
-                buildList<String> {
-                    addAll(sdkCandidates)
-                    addAll(historyCandidates)
-                    tx.folio.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.postOperationReference?.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.authorizationCode.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.postOperationAuthorization?.takeIf { it.isNotBlank() }?.let(::add)
-                }.filterNot { it.equals(tx.reference, ignoreCase = true) }
-                    .flatMap(::expandAngelPayReferenceVariants)
-            )
-
-            for (altReference in alternativeReferences) {
-                Timber.w(
-                    "⚠️ [AngelPay Direct Refund] Retrying cancel with alternate reference=%s (orig=%s)",
-                    altReference,
-                    tx.reference,
-                )
-
-                val altAttempt = runCatching { attempt(reference = altReference, isManual = false) }
-                    .getOrElse { error -> return Result.failure(error) }
-                if (altAttempt.approved) {
-                    return Result.success(
-                        CancellationResolution(
-                            result = altAttempt,
-                            attemptedReferences = attempts.toList(),
-                            hadInvalidReference = hadInvalidReference,
-                        )
-                    )
-                }
-
-                Timber.w(
-                    "⚠️ [AngelPay Direct Refund] Retrying manual cancel with alternate reference=%s",
-                    altReference,
-                )
-                val altManualAttempt = runCatching { attempt(reference = altReference, isManual = true) }
-                    .getOrElse { error -> return Result.failure(error) }
-                if (altManualAttempt.approved) {
-                    return Result.success(
-                        CancellationResolution(
-                            result = altManualAttempt,
-                            attemptedReferences = attempts.toList(),
-                            hadInvalidReference = hadInvalidReference,
-                        )
-                    )
-                }
-            }
-
-            return Result.success(
-                CancellationResolution(
-                    result = manualSameRef,
-                    attemptedReferences = attempts.toList(),
-                    hadInvalidReference = hadInvalidReference,
-                )
+        target?.let {
+            Timber.i(
+                // Los textos crudos de fecha/hora y del estado de la post-operación van al log a propósito: su formato real no está
+                // medido y de él dependen el corte por la hora de AngelPay y la confirmación por historial (re-auditoría 29-sep).
+                "🔶 [AngelPay Direct Refund] Selected target ref=%s folio=%s postOpType=%s postOpRef=%s postOpStatus=%s opType=%s status=%s creation=[%s] date=[%s] time=[%s] auth=%s",
+                it.reference, it.folio, it.postOperationType ?: "-", it.postOperationReference ?: "-", it.postOperationStatus ?: "-",
+                it.operationType ?: "-", it.status, it.creationDate, it.date ?: "-", it.time ?: "-", it.authorizationCode,
             )
         }
-
-        data class RefundResolution(
-            val result: PostOperationResult,
-            val attemptedReferences: List<String>,
-            val hadInvalidReference: Boolean,
-        )
-
-        suspend fun attemptRefundWithFallbacks(
-            tx: UnifiedTransaction,
-            sdkCandidates: List<String>,
-            historyCandidates: List<String>,
-        ): Result<RefundResolution> {
-            val attempts = mutableListOf<String>()
-            var hadInvalidReference = false
-
-            suspend fun attempt(reference: String, isManual: Boolean): PostOperationResult {
-                attempts += "$reference|manual=$isManual"
-                val txToUse = if (reference.equals(tx.reference, ignoreCase = true)) {
-                    tx
-                } else {
-                    tx.copy(reference = reference)
-                }
-                val result = adapter.refundTransaction(transaction = txToUse, isManual = isManual)
-                    .getOrElse { error -> throw error }
-                if (looksLikeInvalidReference(result.message)) {
-                    hadInvalidReference = true
-                }
-                return result
-            }
-
-            val first = runCatching { attempt(reference = tx.reference, isManual = false) }
-                .getOrElse { error -> return Result.failure(error) }
-            if (first.approved) {
-                return Result.success(
-                    RefundResolution(
-                        result = first,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            if (!looksLikeInvalidReference(first.message)) {
-                return Result.success(
-                    RefundResolution(
-                        result = first,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            Timber.w(
-                "⚠️ [AngelPay Direct Refund] Retrying refund as manual with same reference=%s",
-                tx.reference,
-            )
-            val manualSameRef = runCatching { attempt(reference = tx.reference, isManual = true) }
-                .getOrElse { error -> return Result.failure(error) }
-            if (manualSameRef.approved) {
-                return Result.success(
-                    RefundResolution(
-                        result = manualSameRef,
-                        attemptedReferences = attempts.toList(),
-                        hadInvalidReference = hadInvalidReference,
-                    )
-                )
-            }
-
-            val alternativeReferences = distinctCaseInsensitive(
-                buildList<String> {
-                    addAll(sdkCandidates)
-                    addAll(historyCandidates)
-                    tx.folio.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.postOperationReference?.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.authorizationCode.takeIf { it.isNotBlank() }?.let(::add)
-                    tx.postOperationAuthorization?.takeIf { it.isNotBlank() }?.let(::add)
-                }.filterNot { it.equals(tx.reference, ignoreCase = true) }
-                    .flatMap(::expandAngelPayReferenceVariants)
-            )
-
-            for (altReference in alternativeReferences) {
-                Timber.w(
-                    "⚠️ [AngelPay Direct Refund] Retrying refund with alternate reference=%s (orig=%s)",
-                    altReference,
-                    tx.reference,
-                )
-
-                val altAttempt = runCatching { attempt(reference = altReference, isManual = false) }
-                    .getOrElse { error -> return Result.failure(error) }
-                if (altAttempt.approved) {
-                    return Result.success(
-                        RefundResolution(
-                            result = altAttempt,
-                            attemptedReferences = attempts.toList(),
-                            hadInvalidReference = hadInvalidReference,
-                        )
-                    )
-                }
-
-                Timber.w(
-                    "⚠️ [AngelPay Direct Refund] Retrying manual refund with alternate reference=%s",
-                    altReference,
-                )
-                val altManualAttempt = runCatching { attempt(reference = altReference, isManual = true) }
-                    .getOrElse { error -> return Result.failure(error) }
-                if (altManualAttempt.approved) {
-                    return Result.success(
-                        RefundResolution(
-                            result = altManualAttempt,
-                            attemptedReferences = attempts.toList(),
-                            hadInvalidReference = hadInvalidReference,
-                        )
-                    )
-                }
-            }
-
-            return Result.success(
-                RefundResolution(
-                    result = manualSameRef,
-                    attemptedReferences = attempts.toList(),
-                    hadInvalidReference = hadInvalidReference,
-                )
-            )
-        }
-
-        // 📒 AUTORIZANDO justo antes de tocar el SDK: a partir de aquí el dinero puede moverse.
-        runCatching { paymentAttemptLedger.markAuthorizing(idempotencyKey) }
-
-        val cancellationResolution = if (useCancellation) {
-            attemptCancellationWithFallbacks(
-                tx = target,
-                sdkCandidates = sdkReferenceCandidates,
-                historyCandidates = historyReferenceCandidates,
-            )
-        } else null
-
-        val refundResolution = if (useCancellation) {
-            null
-        } else {
-            attemptRefundWithFallbacks(
-                tx = target,
-                sdkCandidates = sdkReferenceCandidates,
-                historyCandidates = historyReferenceCandidates,
-            )
-        }
-
-        val firstAttempt = if (useCancellation) {
-            cancellationResolution?.map { it.result } ?: Result.failure(
-                IllegalStateException("No se pudo preparar cancelación AngelPay")
-            )
-        } else {
-            refundResolution?.map { it.result } ?: Result.failure(
-                IllegalStateException("No se pudo preparar devolución AngelPay")
-            )
-        }
-
-        val firstResult = firstAttempt.getOrElse { error ->
-            return Result.failure(
-                IllegalStateException(
-                    "Falló $operationLabel AngelPay: ${error.message}",
-                    error,
-                )
-            )
-        }
-
-        if (firstResult.approved) {
-            return aprobada(idempotencyKey, "$operationLabel aprobada${firstResult.reference?.let { " (ref: $it)" } ?: ""}", firstResult.reference ?: paymentReference)
-        }
-
-        // Same-day cancellation may fail for some processor responses.
-        // If cancellation is rejected, try refund before surfacing error.
-        if (useCancellation) {
-            val cancelMeta = cancellationResolution?.getOrNull()
-            if (cancelMeta?.hadInvalidReference == true) {
-                val attempted = cancelMeta.attemptedReferences.joinToString(separator = ", ")
-                Timber.w(
-                    "⚠️ [AngelPay Direct Refund] Invalid reference after attempts=%s",
-                    attempted,
-                )
-                return Result.failure(
-                    IllegalStateException(
-                        "Cancelación rechazada (${firstResult.message ?: "sin detalle"}). " +
-                            "No se encontró una referencia válida en AngelPay para este pago."
-                    )
-                )
-            }
-
-            Timber.w(
-                "⚠️ [AngelPay Direct Refund] Cancellation rejected ref=%s msg=%s. Trying refund fallback...",
-                target.reference,
-                firstResult.message ?: "-",
-            )
-
-            val fallback = adapter.refundTransaction(target).getOrElse { error ->
-                return Result.failure(
-                    IllegalStateException(
-                        "Cancelación rechazada (${firstResult.message ?: "sin detalle"}) y devolución falló: ${error.message}",
-                        error,
-                    )
-                )
-            }
-
-            if (fallback.approved) {
-                return aprobada(idempotencyKey, "devolución aprobada${fallback.reference?.let { " (ref: $it)" } ?: ""}", fallback.reference ?: paymentReference)
-            }
-
-            return Result.failure(
-                IllegalStateException(
-                    "Cancelación rechazada (${firstResult.message ?: "sin detalle"}) y devolución rechazada (${fallback.message ?: "sin detalle"})"
-                )
-            )
-        }
-
-        val refundMeta = refundResolution?.getOrNull()
-        if (refundMeta?.hadInvalidReference == true) {
-            val attempted = refundMeta.attemptedReferences.joinToString(separator = ", ")
-            Timber.w(
-                "⚠️ [AngelPay Direct Refund] Invalid reference after refund attempts=%s",
-                attempted,
-            )
-            return Result.failure(
-                IllegalStateException(
-                    "Devolución rechazada (${firstResult.message ?: "sin detalle"}). " +
-                        "No se encontró una referencia válida en AngelPay para este pago."
-                )
-            )
-        }
-
-        return Result.failure(
-            IllegalStateException("$operationLabel rechazada: ${firstResult.message ?: "sin detalle"}")
-        )
+        return Result.success(target)
     }
 
-    /** El SDK aprobó: la libreta lo anota (HOST_RESPONDIO) y la llave viaja con la aprobación. */
-    private suspend fun aprobada(idempotencyKey: String, message: String, reference: String): Result<AngelPayRefundApproval> {
-        runCatching {
-            paymentAttemptLedger.markHostResponded(
-                attemptId = idempotencyKey,
-                approved = true,
-                operationId = null,
-                referenceNumber = reference,
-                authCode = null,
-            )
-        }.onFailure { Timber.w(it, "📒 [AngelPay Direct Refund] La libreta no pudo anotar la aprobación (no bloquea)") }
-        return Result.success(AngelPayRefundApproval(message = message, idempotencyKey = idempotencyKey))
+    /** Las referencias con que se reintenta si AngelPay no reconoce la de la venta (mismo orden que antes del 29-sep). */
+    private fun referenciasAlternativas(
+        venta: UnifiedTransaction,
+        sdkCandidates: List<String>,
+        historyCandidates: List<String>,
+    ): List<String> = distinctCaseInsensitive(
+        buildList {
+            addAll(sdkCandidates)
+            addAll(historyCandidates)
+            venta.folio.takeIf { it.isNotBlank() }?.let(::add)
+            venta.postOperationReference?.takeIf { it.isNotBlank() }?.let(::add)
+            venta.authorizationCode.takeIf { it.isNotBlank() }?.let(::add)
+            venta.postOperationAuthorization?.takeIf { it.isNotBlank() }?.let(::add)
+        }.filterNot { it.equals(venta.reference, ignoreCase = true) }
+            .flatMap(::expandAngelPayReferenceVariants)
+    )
+
+    /** El contexto de la fila: `originalPaymentId` va escapado porque [PaymentAttemptLedger.devolucionSinResolver] lo busca así. */
+    private fun contextoDeLaDevolucion(originalPaymentId: String, paymentReference: String): String {
+        val gson = com.google.gson.Gson()
+        return "{\"originalPaymentId\":${gson.toJson(originalPaymentId)},\"reference\":${gson.toJson(paymentReference)},\"processor\":\"angelpay\"}"
     }
 
     /**
@@ -801,6 +776,21 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             "El reembolso parcial no está disponible en terminales AngelPay: la terminal " +
                 "devolvería el monto COMPLETO de la venta original. Realiza el reembolso " +
                 "total o gestiona el parcial con soporte."
+
+        /** La libreta no pudo apartar el intento (una venta ocupa el lector, o la base falló): no se llama a AngelPay. */
+        const val MENSAJE_NO_SE_GUARDO =
+            "No se pudo iniciar la devolución en este momento. No se reembolsó nada. Vuelve a intentarlo en unos segundos."
+
+        /** La llamada a AngelPay salió y no volvió un veredicto: pudo aplicarse. */
+        const val MENSAJE_DEVOLUCION_EN_DUDA =
+            "No se pudo confirmar la devolución con AngelPay. NO la repitas: pudo haberse aplicado. " +
+                "Este pago queda bloqueado para otra devolución hasta confirmarlo con el historial o con soporte de AngelPay. " +
+                "Las ventas siguen normales."
+
+        /** Una devolución anterior de ESTE pago sigue sin confirmarse y el historial todavía no la muestra aplicada. */
+        const val MENSAJE_DEVOLUCION_EN_DUDA_PREVIA =
+            "Este pago tiene una devolución anterior que no se pudo confirmar con AngelPay. No se intentó otra para no " +
+                "devolver dos veces. Confírmala con el historial o con soporte de AngelPay. Las ventas siguen normales."
     }
 
     // ─── Private helpers (extracted from AppNavigation.kt) ────────────────────

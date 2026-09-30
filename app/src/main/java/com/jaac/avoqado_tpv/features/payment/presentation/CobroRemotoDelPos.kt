@@ -28,6 +28,21 @@ internal object CobroRemotoDelPos {
     const val NO_INICIADO_POR_COBRO_EN_CURSO =
         "La terminal tiene otro cobro en curso: este cobro NO se inició. Espera a que termine y vuelve a enviarlo, o cobra con otra terminal."
 
+    /** Lo que ve la tablet cuando la terminal está terminando una devolución con AngelPay (unos segundos, founder 29-sep). */
+    const val NO_INICIADO_POR_DEVOLUCION_EN_CURSO =
+        "La terminal está terminando una devolución: este cobro NO se inició. Vuelve a enviarlo en unos segundos, o cobra con otra terminal."
+
+    /**
+     * ¿Por qué la terminal NO inicia AHORA un cobro que mandó el POS? `null` = puede iniciarlo. Una sola regla para las dos
+     * pantallas: sólo la aparta lo que está ejecutándose en ese instante — un cobro en su pantalla, o una devolución hablando
+     * con AngelPay (marca con tope de 2 min). Nada guardado ni en duda detiene un cobro (founder, 25 y 29-sep).
+     */
+    fun motivoParaNoIniciar(enPantallaDeCobro: Boolean, cobroActivo: Boolean, devolucionEnCurso: Boolean): String? = when {
+        devolucionEnCurso -> NO_INICIADO_POR_DEVOLUCION_EN_CURSO
+        enPantallaDeCobro && cobroActivo -> NO_INICIADO_POR_COBRO_EN_CURSO
+        else -> null
+    }
+
     /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
     const val NO_INICIADO_SIN_DETALLE =
         "La terminal no pudo iniciar este cobro (tiene un cobro pendiente o no pudo guardar el intento): este cobro NO se inició."

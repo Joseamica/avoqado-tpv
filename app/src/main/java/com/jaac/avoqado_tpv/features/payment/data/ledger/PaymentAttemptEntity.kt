@@ -262,14 +262,21 @@ data class PaymentAttemptEntity(
          * cuenta es la cuarentena POR RELOJ de este mismo proceso: nadie comprobó que la llamada nativa terminara, y de ahí
          * se sale reiniciando la app. Sin alias: va en subconsultas cuyo FROM es la fila candidata. Usa `:processToken`.
          * `PREPARANDO` queda fuera: la usa también el CAS a autorizar, donde una reserva sola no mueve dinero.
+         *
+         * 🔴 Founder, 29-sep-2026: «nada puede detener las ventas». Sólo una VENTA (`kind = 'SALE'`) aparta el aparato. Una
+         * DEVOLUCIÓN no usa el lector de nadie y, en cualquier estado, nunca aparta: la que falló sin red, la que AngelPay
+         * rechazó o la que quedó en duda dejaban la terminal sin poder cobrar hasta reiniciar la app (medido en la N86, 29-sep).
+         * Mientras una devolución habla con el procesador, lo que espera es la pantalla (el marcador en RAM de
+         * `PaymentStateHolder`, con tope de 2 min), no la libreta; y una en duda sólo cerca OTRA devolución del mismo pago
+         * ([PaymentAttemptDao.devolucionSinResolver]).
          */
-        const val SQL_EJECUCION_VIVA = "(legacy_shadow = 0 AND process_token IS :processToken " +
+        const val SQL_EJECUCION_VIVA = "(legacy_shadow = 0 AND kind = 'SALE' AND process_token IS :processToken " +
             "AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') " +
             "OR (state = 'INDETERMINADO' AND last_error = 'cuarentena_por_antiguedad')))"
 
         /** [SQL_EJECUCION_VIVA] más la reserva que ESTE proceso acaba de hacer: para no admitir dos cobros basta estar en la fila. */
         const val SQL_APARTA_EL_APARATO = "(" + SQL_EJECUCION_VIVA +
-            " OR (legacy_shadow = 0 AND process_token IS :processToken AND state = 'PREPARANDO'))"
+            " OR (legacy_shadow = 0 AND kind = 'SALE' AND process_token IS :processToken AND state = 'PREPARANDO'))"
 
         /**
          * 🔴 Founder, 25-sep-2026: la VENTA queda cercada sólo con DINERO en juego — un cobro corriendo o ya respondido, la

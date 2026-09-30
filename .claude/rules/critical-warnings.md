@@ -61,7 +61,7 @@ AngelPay is a **completely separate** payment flow from Blumon. Never mix them.
 | Screen | `PaymentScreen` | `AngelPayPaymentScreen` |
 | Route | `NavRoute.Payment` | `NavRoute.AngelPayPayment` |
 | Routing | `ENABLE_PAX_SDK=true` | `ENABLE_PAX_SDK=false` |
-| Refunds | CancelIcc via SDK | Not available (admin only) |
+| Refunds | CancelIcc via SDK | Cancelación completa el mismo día antes de las 23:00 (post-operación del SDK); después, soporte de AngelPay. Nunca aparta la terminal (`docs/ANGELPAY_INTEGRATION.md` › SDK 1.0.21) |
 
 **Rules:**
 - NEVER modify `PaymentViewModel` for AngelPay changes — use `AngelPayPaymentViewModel`

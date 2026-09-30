@@ -7,7 +7,20 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Nexgo] Una devolución que falla ya no deja la terminal sin poder cobrar (N86 QA, 29-sep: «Hay otro cobro en curso ($1.00, hace 3 min)» hasta reiniciar la app)**: la devolución abría su fila en la libreta y ninguna salida de error la cerraba (sin red, venta no encontrada, rechazo de AngelPay, excepción), y la barrera la tomaba por un cobro corriendo. Founder: «¡nada puede detener las ventas!».
+  - Sólo una VENTA aparta el aparato: `kind = 'SALE'` en la barrera, en «cobro sin resolver» y en las tres recuperaciones con forma de venta. Cubre también la devolución de la PAX.
+  - Cada salida cierra su fila con lo que pasó: antes de llegar a AngelPay ⇒ descartada («No se reembolsó nada»); rechazo explícito ⇒ rechazada («No se devolvió nada»); sin veredicto ⇒ en duda («NO la repitas»). Sin fila escrita no se llama a AngelPay, y tras una duda no se prueba otra referencia.
+  - Una devolución en duda sólo impide OTRA devolución del mismo pago; al reintentarla se resuelve con el historial de AngelPay (o, si ya estaba aprobada y sin registrar, se entrega con su llave sin volver a llamar a AngelPay).
+- **[Nexgo] Pasado el corte de las 11 pm ya no se intenta la devolución**: AngelPay sólo cancela completa antes del corte del día de la venta y tiene apagadas las devoluciones posteriores para todos los comercios (Norman, 29-sep). La lista de pagos deja de ofrecer «Reembolsar» y dice «La devolución se gestiona con soporte de AngelPay»; decide con la hora de Avoqado y, tras leer el historial, también con la de AngelPay (la más estricta). El corte va con desfase fijo −06:00: el ICU de la N86 aún aplica el horario de verano abolido.
+  - Una devolución que AngelPay ya aprobó sin registrarse, o que quedó en duda, se puede confirmar y registrar aunque haya pasado el corte (confirmarla no le pide nada nuevo a AngelPay): la lista deja abrir esos pagos.
+- **[PAX y Nexgo] La cuarentena por reloj se levanta cuando el SDK regresa**: un cobro que el barrido apartó por antigüedad mientras el SDK seguía dentro mantenía la terminal sin cobrar hasta reiniciar la app, aunque la llamada ya hubiera terminado. Si el SDK regresa sin veredicto, la duda se queda con su motivo real y la terminal vuelve a cobrar.
+- **[Nexgo] Un cobro del POS ya no le arranca la pantalla a una devolución en curso**: mientras la devolución habla con AngelPay (marca en RAM renovada en cada llamada, con tope de 2 min desde la última), la terminal contesta «La terminal está terminando una devolución: este cobro NO se inició…» en vez de navegar al cobro a media llamada. La devolución no escribe la bandera de cobro de las ventas.
+- **[Inicio] La caja ya no se queda en $0 al volver de un cobro**: la pantalla de Inicio se vuelve a crear al regresar y su primer resume se saltaba la recarga del turno.
+
 ### **Changed**
+- **[Nexgo] SDK de AngelPay 1.0.20 → 1.0.21 (29-sep; SHA-256 `2cacce2b…fa8d`, el del portal)**: re-auditado en bytecode antes de mover `VERSION_SDK_AUDITADA`. El orquestador pasó a `b0.v0` y conserva la frontera del envío y el Cancelar antes de enviar. `D312` (registro fallido antes del cobro) es rechazo cierto; `G506` (intermitencia del servidor de AngelPay) queda en duda; `C230`-`C232` (AMEX) no son rechazo confirmado; el `-8028` llega aprobado. El país emisor del chip (`cardCountryCode`, 5F28) viaja al servidor como evidencia, igual que en la PAX.
+- **[Nexgo] Firma en pantalla encendida (recomendación de AngelPay, 29-sep)**: el SDK la pide sólo después de aprobar, con tope de 60 s, y no cambia el resultado; ningún temporizador nuestro la corta.
 - **Planes y funciones**: acceso por funciones confirmadas por el servidor, guardado atómico por sucursal y conservado sin conexión o ante respuestas antiguas/incompletas. La recuperación de conexión refresca el acceso sin reiniciar el cobro.
   - Las pruebas de configuración local declaran la sucursal del almacenamiento simulado, conservando sus verificaciones de persistencia y sincronización.
 

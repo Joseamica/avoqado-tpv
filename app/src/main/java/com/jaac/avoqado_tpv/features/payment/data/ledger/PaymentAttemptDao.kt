@@ -18,13 +18,17 @@ interface PaymentAttemptDao {
      * HOST_RESPONDIO de este proceso aparta el aparato. Va en el SQL y no en quien llama: filtrada después del `LIMIT`, 50 filas
      * vetadas taparían para siempre a la 51.
      */
-    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId
+    // 🔴 29-sep-2026: sólo VENTAS. Una devolución la verifica su propio flujo; hoy sólo la dejaba fuera que su `processor`
+    // se escribe en minúsculas, una coincidencia que no protege nada.
+    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
         AND processor = 'ANGELPAY' AND state IN ('AUTORIZANDO','INDETERMINADO')
         AND host_approved IS NULL AND server_veto IS NULL AND created_at < :olderThan AND verify_attempts < 5
         AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
     suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
-    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId
+    // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
+    // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
+    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
         AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
         AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND verify_attempts < 5
         AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
@@ -60,8 +64,11 @@ interface PaymentAttemptDao {
      * tapen para siempre un «no se cobró» legítimo sería un bloqueo que en 2.9.2 no existía. Siguen
      * contadas en [observeUnresolvedCount].
      */
+    // 🔴 29-sep-2026: sólo VENTAS. Una devolución sin resolver no es «un cobro»: contarla aquí la hacía pasar por el cobro
+    // pendiente de una solicitud del POS o de un callback vacío. Las devoluciones tienen su propia consulta, por pago
+    // ([devolucionSinResolver]).
     @Query("""SELECT * FROM payment_attempts
-        WHERE legacy_shadow = 0
+        WHERE legacy_shadow = 0 AND kind = 'SALE'
         AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
              OR (state = 'DESCARTADA' AND server_processor_evidence IS 'APPROVED'))
         ORDER BY updated_at DESC LIMIT 1""")
@@ -95,9 +102,21 @@ interface PaymentAttemptDao {
      * adivinar sería atribuir dinero. Sin venue: la terminal es UNA.
      */
     @Query("""SELECT COUNT(*) FROM payment_attempts
-        WHERE legacy_shadow = 0
+        WHERE legacy_shadow = 0 AND kind = 'SALE'
         AND state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')""")
     suspend fun countUnresolvedCharges(): Int
+
+    /**
+     * 🔴 Founder, 29-sep-2026: una devolución SIN RESOLVER de ESTE pago —la llamada salió y no se supo el desenlace, o
+     * AngelPay la aprobó y falta registrarla— impide intentar OTRA devolución del MISMO pago: sería devolver dos veces.
+     * Nunca detiene una venta ni la devolución de otro pago. El fragmento lo arma [PaymentAttemptLedger.devolucionSinResolver].
+     */
+    @Query("""SELECT * FROM payment_attempts
+        WHERE legacy_shadow = 0 AND kind = 'REFUND'
+        AND state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND instr(payment_context_json, :fragmentoDelPago) > 0
+        ORDER BY updated_at DESC LIMIT 1""")
+    suspend fun devolucionSinResolver(fragmentoDelPago: String): PaymentAttemptEntity?
 
 
     /**
@@ -450,6 +469,18 @@ interface PaymentAttemptDao {
            WHERE venue_id = :venueId AND state = 'AUTORIZANDO' AND updated_at < :olderThan"""
     )
     suspend fun quarantineStaleAuthorizing(venueId: String, olderThan: Long, now: Long): Int
+
+    /**
+     * 🔴 Founder, 29-sep-2026 («eso de reiniciar está pésimo»): la cuarentena POR RELOJ aparta el aparato porque nadie sabe si
+     * la llamada nativa sigue viva. Cuando el SDK REGRESA sin veredicto ya se sabe: terminó. La fila sigue en duda, ahora con
+     * su motivo real, y deja de apartar el aparato — antes sólo se salía reiniciando la app. No toca otra duda.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET last_error = :error, state_version = state_version + 1, updated_at = :now
+           WHERE attempt_id = :attemptId AND state = 'INDETERMINADO' AND last_error = 'cuarentena_por_antiguedad'"""
+    )
+    suspend fun levantarCuarentenaPorReloj(attemptId: String, now: Long, error: String): Int
 
     /**
      * 🔴 KERNEL_ACTIVO colgado = el proceso murió DENTRO de una llamada capaz de aprobar.

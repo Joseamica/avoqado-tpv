@@ -136,6 +136,103 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.21 — devoluciones que no traban, corte de las 11 pm y firma encendida (29-sep-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.21-fat-release.aar` (SHA-256
+`2cacce2b482d64726386479b7a10fadd092e9e048a60827c598997efa125fa8d`, el que publica AngelPay en su portal;
+`AngelPaySDK.version() == "1.0.21"`). `AngelPaySdk119ReglaTest` fija las dos cosas; el 1.0.20 se queda en `libs/`
+como los anteriores, pero ya no está auditado para la regla.
+
+**Re-auditoría en bytecode contra el 1.0.20 (29-sep):**
+- El orquestador pasó de `b0.h0` a `b0.v0`. `m` (`authorizationAttempted`) sigue naciendo `false` en cada cobro y
+  subiendo a `true` pegado al envío; `l` (Cancelar) se sigue revisando antes de enviar. La regla
+  (`decidirSegunElSdk119`) no cambia de lógica.
+- Códigos nuevos: `D312` (falló el registro de la terminal ANTES del cobro; lo arma un paso previo al orquestador, sin
+  referencia y con `attempted = false`; mismo texto que el D308 ⇒ paso 2 de la regla y rechazo cierto en
+  `CODIGOS_RECHAZO_CONFIRMADO`), `G506` (no concluyente por intermitencia del servidor de AngelPay; sale DESPUÉS del
+  envío ⇒ INCIERTO, en `CODIGOS_SIN_VEREDICTO`), `C230`-`C232` (AMEX/hotelería; no son rechazo confirmado).
+- `-8028` (el chip rechaza el cierre de un cobro que el host aprobó) ahora llega `approved = true` / `S000`, sin reversa.
+  Antes era el E699 incierto que el verificador tenía que rescatar del historial.
+- Firma en pantalla (`captureSignature`): el SDK la pide SÓLO después de aprobar, con tope de 60 s, y no cambia el
+  resultado. **Va encendida desde 2.12.0** (lo recomendó AngelPay el 29-sep). Ningún temporizador nuestro la corta: el
+  vigilante de autorización sólo avisa en pantalla, nunca cancela.
+- `PaymentResult.cardCountryCode` (EMV 5F28, parámetro 29): viaja al servidor como `issuerCountryCode` +
+  `issuerCountrySource = EMV_5F28`, sólo evidencia para el clasificador sombra, igual que en la PAX. El historial de
+  AngelPay no lo trae, así que un cobro confirmado por verificación va sin él.
+
+### Devoluciones (Nexgo): lo que dijo AngelPay y cómo queda
+
+**AngelPay (Norman, 29-sep):** no hay idempotencia de su lado; las **devoluciones están apagadas para todos los
+comercios** (se piden a su soporte); sólo existe la **cancelación completa antes del corte de las 11 pm del día de la
+venta**. La zona horaria del corte se le preguntó; mientras contesta se usa −06:00 fijo (`AngelPayCorte`).
+
+**El defecto medido en la N86 (29-sep, 2.11.3):** una devolución que falló sin red dejó su fila de la libreta en
+`PREPARANDO` con el token del proceso vivo, y la venta siguiente murió en la barrera («Hay otro cobro en curso en esta
+terminal ($1.00, hace 3 min)») hasta reiniciar la app. Con un rechazo de AngelPay la fila quedaba en `AUTORIZANDO`, igual.
+
+**Cómo queda (founder: «¡nada puede detener las ventas!», «ni trabar nada», «ni reiniciar»):**
+- **Sólo una VENTA aparta el aparato** (`kind = 'SALE'` en `SQL_EJECUCION_VIVA` / `SQL_APARTA_EL_APARATO`, en
+  `findUnresolvedCharge` / `countUnresolvedCharges`, y en las tres recuperaciones con forma de venta). Una devolución,
+  en cualquier estado y de cualquier procesador —también la de la PAX—, nunca detiene un cobro.
+- **Antes del corte:** cancelación. **Después:** primero se revisan los dos candados (la cola `pending_refunds` y la
+  libreta): una devolución que AngelPay ya aprobó y no se registró, o que quedó en duda, se puede confirmar y registrar
+  aunque haya pasado el corte, porque confirmarla no le pide nada nuevo a AngelPay (auditoría del 29-sep, P1). Si no hay
+  nada pendiente, no se abre la libreta ni se llama a AngelPay y se dice «Ya pasó el corte de AngelPay (11 pm del día de
+  la venta). La devolución se gestiona con soporte de AngelPay. No se reembolsó nada.». La lista de pagos apaga
+  «Reembolsar» pasado el corte, salvo en los pagos con algo pendiente (`tieneDevolucionPorResolver`: los mismos dos
+  candados, en un solo lugar). `AngelPayCorte.DEVOLUCION_POSTERIOR_HABILITADA` se cambia a `true` sólo si AngelPay
+  reactiva la devolución.
+- **La hora de AngelPay también cuenta:** tras leer la venta en su historial, si SU hora dice que el corte ya pasó (la venta
+  pudo registrarse tarde en Avoqado, desde la cola sin red), no se llama a AngelPay. Sólo puede cerrar el corte, nunca
+  abrirlo; una hora sin zona se lee como hora de México (si fuera UTC, el corte sólo se vuelve más permisivo).
+- **Cada salida cierra su fila con lo que pasó:** falla antes de AngelPay (historial sin red, venta no encontrada, campos
+  incompletos, la libreta no deja autorizar) ⇒ `DESCARTADA` y «No se reembolsó nada»; rechazo explícito (catálogo, emisor
+  o «referencia inválida») ⇒ `DESCARTADA` por `markHostResponded(false)` y «No se devolvió nada»; sin veredicto (G505,
+  G506, timeout, excepción, código desconocido) ⇒ `INDETERMINADO` y «NO la repitas: pudo haberse aplicado». Un `finally`
+  no cancelable cierra lo que salga por excepción o por cancelación.
+- **Sin fila escrita no se llama a AngelPay** (el `Boolean` de `openAttempt` y el de `markAuthorizing` se respetan).
+- **Tras una duda no se prueba otra referencia** ni la devolución de respaldo: sólo tras «referencia inválida».
+- **Una devolución en duda sólo cerca OTRA devolución del MISMO pago** (`devolucionSinResolver`). Al intentarla de nuevo:
+  si AngelPay ya la había aprobado y no se registró, se entrega con SU llave sin volver a llamar a AngelPay; si el
+  historial ya muestra la cancelación aplicada (`postOperation` aprobada), se da por aprobada con SU llave; si no, no se
+  intenta otra.
+- **La terminal sólo espera mientras la devolución habla con AngelPay:** marca en RAM (`PaymentStateHolder`, reloj
+  monotónico) que se renueva antes de CADA llamada al SDK y vence sola a los 2 min de la última. `isCharging()` la incluye
+  (no se cambia de sesión ni de comercio a media llamada) sin que la devolución escriba la bandera de las ventas: soltarla
+  al terminar podía dejar sin protección a una venta que arrancó después (auditoría del 29-sep, P2). Un cobro del POS que
+  llegue en ese rato recibe «La terminal está terminando una devolución: este cobro NO se inició…»
+  (`failed + PRE_AUTHORIZATION`) en vez de arrancarle la pantalla.
+- **La cuarentena por reloj se levanta cuando el SDK regresa** (PAX y Nexgo): si el barrido puso un cobro en cuarentena
+  por antigüedad mientras el SDK seguía dentro y el SDK regresa sin veredicto, la duda se queda con su motivo real y la
+  terminal vuelve a cobrar sin reiniciar.
+- La recuperación inmediata (S6) ya no pregunta por una devolución: una «liberación» soltaría el candado que impide
+  devolver dos veces.
+
+### Medido en la N86 (29-sep, `nexgoDebug` 2.12.0 contra AngelPay QA, `AVQD-N860W175781`)
+- **Devolución sin red** (WiFi y datos apagados, sin ruta): «No se pudo consultar la venta en AngelPay (Sin conexión a
+  internet o servidor no disponible). No se reembolsó nada.»; la fila quedó `DESCARTADA · antes_del_sdk:historial`. En
+  2.11.3 esa misma salida dejaba la fila en `PREPARANDO` y la venta siguiente moría en la barrera hasta reiniciar.
+- **Cancelación del mismo día** (venta de $1 de las 17:00, cancelada a las 21:24, antes del corte de las 23:00):
+  `S000 · APPROVED · «APROBADA»` al primer intento → libreta `HOST_RESPONDIO` → cola → `POST /tpv/venues/:id/refunds` 201
+  (428 ms en el servidor, sin errores en su log) → libreta `REGISTRADO` → la lista la muestra «Reembolsado».
+- **Formato real del historial:** `creationDate = "2026-09-29T23:00:41.000Z"` (instante con zona: `instanteEnAngelPay` lo
+  lee con `Instant.parse`), `date` y `time` nulos; en una venta sin cancelar, `postOperation` viene nulo.
+- ⬜ **Sin medir todavía:** cómo muestra el historial una venta YA cancelada (`postOperation.status`, del que depende
+  confirmar una duda por historial — sólo se ve desde SuperAdmin, que pide TOTP); el `-8028` con el chip retirado; la firma
+  (ninguna tarjeta de QA la pide: se prueba en el piloto); «la venta siguiente entra» en el aparato (la caja de QA estaba
+  cerrada; lo cubren las pruebas Room).
+
+### Sin red — las cuatro preguntas
+1. **Qué ve el cajero:** «No se pudo consultar la venta en AngelPay (…). No se reembolsó nada.» — y puede seguir
+   cobrando en el acto. Con N400 de AngelPay: «Cancelación rechazada por AngelPay (N400 · …). No se devolvió nada.»
+2. **Si el proceso muere entre el toque y la llamada:** la fila ya está escrita; si murió antes de AngelPay queda en
+   `PREPARANDO` (no aparta nada; el barrido la descarta), si murió durante la llamada queda `AUTORIZANDO` y cuenta como
+   duda de ESE pago (nunca aparta la terminal).
+3. **Orden de lo encolado:** la devolución aprobada sigue la cola de `pending_refunds` con la MISMA llave; nada nuevo
+   se encola.
+4. **Cuando vuelve la red:** una duda se resuelve con el historial de AngelPay al intentarlo de nuevo, o con su soporte;
+   nunca se libera sola ni la libera el servidor.
+
 ## SDK 1.0.20 — el Cancelar se revisa antes de enviar (26-sep-2026)
 
 **El AAR:** `app/libs/angelpaySDK-v1.0.20-fat-release.aar` (SHA-256
@@ -350,7 +447,7 @@ features/payment/
 
 ## Limitations & Future Work
 
-1. **No refunds** — AngelPay doesn't expose refund intent to merchants. Cancellations (same-day before 23:00) coming in 1-2 weeks
+1. **Devoluciones** — sólo la CANCELACIÓN completa, el mismo día y antes del corte de las 23:00 (post-operación del SDK). Las devoluciones posteriores las tiene apagadas AngelPay para todos los comercios (29-sep): se piden a su soporte. Ver «SDK 1.0.21».
 2. **No card details in response** — AngelPay doesn't return maskedPan, cardBrand, or entryMode. Backend records with UNKNOWN
 3. **No ticket printing from TPV** — AngelPay auto-prints its own ticket. We set `timeOutApproved=0` to skip it. Future: use their BroadcastReceiver print API for our own receipts
 4. **QA creds hardcoded** — Need backend terminal config or SuperAdmin UI for production credential management

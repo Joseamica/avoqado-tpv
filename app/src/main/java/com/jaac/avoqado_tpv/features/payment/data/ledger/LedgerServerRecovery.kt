@@ -318,6 +318,9 @@ class LedgerServerRecovery @Inject constructor(
         // de 27). El barrido (`candidatasDeConsultaAlServidor`) ya los dejaba entrar desde el 21-sep; faltaba aquí.
         // S6 contesta por INTENTO desde la pieza A, y lo que se aplique sigue pasando por los CAS de siempre.
         if (fila.legacyShadow || fila.venueId != venueId) return LecturaDelIntento(null)
+        // 🔴 29-sep-2026: S6 contesta por el intento de una VENTA. Preguntarle por una devolución es preguntar por una llave
+        // que el servidor no conoce como cobro, y una «liberación» soltaría el candado que impide devolver dos veces.
+        if (fila.kind != PaymentAttemptEntity.KIND_SALE) return LecturaDelIntento(null)
         val outcomeGuardado = fila.serverOutcome
         if (outcomeGuardado == PaymentAttemptEntity.SERVER_RECORDED || outcomeGuardado == PaymentAttemptEntity.SERVER_SECOND_CAPTURE_EVIDENCE) return LecturaDelIntento(null)
         return try {

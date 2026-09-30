@@ -36,7 +36,7 @@ enum class DesenlaceDelCobro {
  *
  * Los códigos vienen del catálogo `AppErrorCatalog$Code` **leído del bytecode del AAR
  * v1.0.18** (`javap`, 2026-09-08), no de memoria — con su `status`, su `category` y su
- * política de reintento. Los cinco de [CODIGOS_SIN_VEREDICTO] son los que describen una
+ * política de reintento. Los seis de [CODIGOS_SIN_VEREDICTO] son los que describen una
  * salida en la que la autorización pudo haber llegado al emisor.
  *
  * 🔴 **Con el SDK 1.0.19 hay una pregunta ANTERIOR: ¿salió la petición al host?** El AAR 1.0.19 la contesta él mismo
@@ -62,6 +62,8 @@ object AngelPayOutcomeClassifier {
      *    autorización pudo alcanzar al emisor.
      *  - `G505` («Resultado no concluyente, verifique el historial de transacciones») — el
      *    propio vendor pide verificar; tratarlo como rechazo es hacer lo contrario.
+     *  - `G506` (SDK 1.0.21: «no concluyente por intermitencia del servidor de AngelPay… consulte el historial antes de
+     *    reintentar») — sale DESPUÉS del envío (`authorizationAttempted = true`, auditado en el binario el 29-sep).
      *  - `I999` («Error desconocido»).
      *
      * 🔴 Es una lista EXPLÍCITA, no un rango ni una categoría. Un `N400` («Sin conexión a
@@ -69,7 +71,7 @@ object AngelPayOutcomeClassifier {
      * salió. Sobre-atrapar aquí bloquea ventas buenas; el criterio es la evidencia del
      * catálogo, código por código.
      */
-    val CODIGOS_SIN_VEREDICTO = setOf("U101", "N402", "G502", "G505", "I999")
+    val CODIGOS_SIN_VEREDICTO = setOf("U101", "N402", "G502", "G505", "G506", "I999")
 
     /**
      * 🔴 La ÚNICA tabla de rechazos confirmados (P2-13, auditoría del 11-sep). El ViewModel tenía una
@@ -84,7 +86,9 @@ object AngelPayOutcomeClassifier {
     internal val CODIGOS_RECHAZO_CONFIRMADO = setOf(
         "G500", "G504", "E605", "E606",
         "C200", "C201", "C202", "C203", "C204", "C206", "C207", "C208", "C209", "C210", "C211", "C212",
-        "D302", "D303", "D304", "D305", "D306", "D307", "D308", "N400",
+        // D312 (SDK 1.0.21): falló el registro de la terminal ANTES del cobro — lo arma un paso previo al orquestador, sin
+        // referencia y con `authorizationAttempted = false` (auditado el 29-sep). Mismo texto que el D308 de sesión.
+        "D302", "D303", "D304", "D305", "D306", "D307", "D308", "D312", "N400",
         "E601", "E602", "E604", "E608", "E610", "E613", "E614", "E615", "E619", "E621", "E622", "E623", "E624", "E625",
     )
     internal val CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51", "54", "55", "57", "58", "61", "62", "65", "1A")
@@ -124,8 +128,16 @@ object AngelPayOutcomeClassifier {
      * 4708). Es el «cambio de dos líneas» que pedía el diseño (§4.4) y cierra las ventanas W1/W2: en el 1.0.19 el
      * Cancelar no se revisaba entre la lectura de la tarjeta y el envío, así que el U100 del botón (6d) podía decir «no
      * se cobró» de un cobro que sí salió. Por eso el 1.0.19 ya NO está auditado para esta regla.
+     *
+     * 🔴 **1.0.21 (29-sep), re-auditado en bytecode contra el 1.0.20:** el orquestador pasó de `b0.h0` a `b0.v0`. `m`
+     * (`authorizationAttempted`) sigue naciendo `false` en cada cobro y subiendo a `true` pegado al envío, y `l` (Cancelar)
+     * se sigue revisando antes de enviar: la frontera de la regla no se movió. Lo nuevo: `D312` (registro fallido antes del
+     * orquestador, sin referencia ⇒ rechazo cierto por el paso 2), `G506` (después del envío ⇒ incierto), `C230`-`C232`
+     * (AMEX/hotelería), el `-8028` que ahora llega aprobado (`S000`) sin reversa, la firma en pantalla —sólo después de
+     * aprobar, con tope de 60 s, y no cambia el resultado— y `PaymentResult.cardCountryCode` (5F28). El 1.0.20 ya NO está
+     * auditado para esta regla: se audita el binario que se empaqueta.
      */
-    const val VERSION_SDK_AUDITADA = "1.0.20"
+    const val VERSION_SDK_AUDITADA = "1.0.21"
 
     /**
      * 🔴 La regla del SDK 1.0.19 (diseño `diseno-nexgo-sdk-1.0.19.md` §2.1 + decisiones del founder del 18-sep).

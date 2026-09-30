@@ -271,12 +271,14 @@ fun WelcomeScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 // Always refresh pending verifications (lightweight, no delay needed)
                 viewModel.refreshPendingVerifications()
+                // 🔴 29-sep (N86): la caja se recarga en TODO resume. Al volver de un cobro la pantalla se vuelve a crear, así
+                // que ese «primer» resume ES el regreso, y la tarjeta del turno se quedaba en $0 hasta reiniciar la app.
+                shiftViewModel.loadCurrentShift()
                 if (isFirstResume) {
                     isFirstResume = false
                 } else {
                     viewModel.refreshSalesGoal()
                     viewModel.refreshAttendance()
-                    shiftViewModel.loadCurrentShift()
                 }
             }
         }

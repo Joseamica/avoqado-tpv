@@ -67,6 +67,8 @@ fun PaymentsScreen(
     onNavigateToRefund: (Payment) -> Unit = {}
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // 📒 Leído aquí para que el detalle se recomponga cuando la libreta conteste (devolución por confirmar tras el corte).
+    val devolucionesPorConfirmar by viewModel.devolucionesPorConfirmar.collectAsStateWithLifecycle()
     val filterDateRange by viewModel.filterDateRange.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
@@ -277,7 +279,7 @@ fun PaymentsScreen(
 
         // Payment Detail Bottom Sheet (for refund initiation)
         if (showPaymentDetailSheet && selectedPaymentForDetail != null) {
-            val refundAvailability = viewModel.getRefundAvailability(selectedPaymentForDetail!!)
+            val refundAvailability = viewModel.getRefundAvailability(selectedPaymentForDetail!!, devolucionesPorConfirmar)
             val refundLocation = viewModel.getRefundLocation(selectedPaymentForDetail!!)
             val processor = viewModel.getPaymentProcessor(selectedPaymentForDetail!!)
             PaymentDetailBottomSheet(

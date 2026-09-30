@@ -140,9 +140,23 @@ class AngelPayErrorMapperTest {
             ),
         )
 
+        // SDK 1.0.21 (textos leídos del AAR el 29-sep): el registro previo ahora falla como D312, o como N400 con su
+        // propio texto cuando la terminal no tiene red. Los dos siguen siendo «antes del cobro».
+        assertTrue(
+            AngelPayErrorMapper.isPreChargeRegisterFailure(
+                "No fue posible registrar la terminal antes del cobro. Intente de nuevo; si persiste, contacte a soporte.",
+            ),
+        )
+        assertTrue(
+            AngelPayErrorMapper.isPreChargeRegisterFailure(
+                "No fue posible registrar la terminal antes del cobro: la terminal no tiene conexión a internet.",
+            ),
+        )
+
         // A genuine mid-charge network error (same hardcoded N400 family) must NOT
         // trigger re-auth — the charge may have reached the gateway.
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Sin conexión a internet"))
+        assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Sin conexion a internet"))
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Pago rechazado"))
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(null))
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(""))

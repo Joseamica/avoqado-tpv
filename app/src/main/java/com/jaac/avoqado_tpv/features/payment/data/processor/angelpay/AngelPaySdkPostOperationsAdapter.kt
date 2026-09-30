@@ -179,8 +179,15 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
         }
     }
 
-    private fun validatePostOperationFields(transaction: UnifiedTransaction): String? {
-        return when {
+    private fun validatePostOperationFields(transaction: UnifiedTransaction): String? = validarCamposDePostOperacion(transaction)
+
+    companion object {
+        /**
+         * Lo que el SDK exige de la venta para cancelarla o devolverla. Vive aquí y lo consulta también la devolución
+         * ANTES de marcar la libreta (29-sep): un faltante detectado aquí nunca sale hacia AngelPay, así que la fila se puede
+         * descartar con «no se reembolsó nada» en vez de quedar en duda.
+         */
+        internal fun validarCamposDePostOperacion(transaction: UnifiedTransaction): String? = when {
             transaction.reference.isBlank() -> "La transacción no tiene referencia"
             transaction.authorizationCode.isBlank() -> "La transacción no tiene código de autorización"
             transaction.entryMode.isBlank() -> "La transacción no tiene entry mode"

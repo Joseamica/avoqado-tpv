@@ -229,6 +229,20 @@ class PaymentAttemptLedger @Inject constructor(
     }
 
     /**
+     * 🔴 Founder, 29-sep-2026: ¿hay una devolución SIN RESOLVER de este pago? Si la hay, no se intenta otra del MISMO pago
+     * (sería devolver dos veces); las ventas y las devoluciones de otros pagos siguen. Null si no hay, o si la libreta no se
+     * pudo leer: en ese caso la apertura del intento ([openAttempt]) es la segunda puerta, y sin ella no se devuelve nada.
+     */
+    suspend fun devolucionSinResolver(originalPaymentId: String): PaymentAttemptEntity? = try {
+        dao.devolucionSinResolver("\"originalPaymentId\":" + com.google.gson.Gson().toJson(originalPaymentId))
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo leer si el pago %s tiene una devolución sin resolver", originalPaymentId)
+        null
+    }
+
+    /**
      * 🔴 ¿Cuál es MI cobro pendiente? Adopción por IDENTIDAD, nunca «el último».
      *
      * Un ViewModel recreado necesita recuperar el intento que dejó en vuelo. Hasta el 2026-09-12
@@ -688,6 +702,12 @@ class PaymentAttemptLedger @Inject constructor(
                 )
                 logCas(n, attemptId, PaymentAttemptEntity.STATE_INDETERMINADO)
                 if (n == 1) avisarIncertidumbre(attemptId)
+                // 🔴 29-sep: el barrido pudo ponerla en cuarentena POR RELOJ mientras el SDK seguía dentro. Si el SDK regresa sin
+                // veredicto, la llamada nativa ya terminó: la duda se queda con su motivo real y el aparato vuelve a cobrar.
+                else if (dao.levantarCuarentenaPorReloj(attemptId, System.currentTimeMillis(), reason.take(500)) == 1) {
+                    Timber.w("📒 [Libreta] el SDK regresó sin veredicto: la cuarentena por reloj se cambia por «%s» | attemptId=%s", reason, attemptId)
+                    avisarIncertidumbre(attemptId)
+                }
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markIndeterminate failed") }
     }

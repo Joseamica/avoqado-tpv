@@ -36,4 +36,12 @@ object AppModule {
     fun provideCellLocationApi(apiService: ApiService): CellLocationApi {
         return CellLocationApiImpl(apiService)
     }
+
+    /**
+     * El reloj de pared, inyectable para que las reglas de fecha se prueben con una hora fija (corte de AngelPay, 29-sep).
+     * UTC a propósito: cada regla elige su zona explícitamente, nunca la del aparato.
+     */
+    @Provides
+    @Singleton
+    fun provideClock(): java.time.Clock = java.time.Clock.systemUTC()
 }

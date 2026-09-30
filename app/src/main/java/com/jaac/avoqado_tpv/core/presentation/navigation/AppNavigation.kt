@@ -425,17 +425,22 @@ fun AppNavigation(
             // The server's per-terminal arbitration already prevents a second socket charge from
             // arriving while one is truly in flight (incl. an E608-held retry, whose row stays
             // open), so a socket charge only reaches here when the slot is free.
-            val terminalGenuinelyBusy = (onBlumonPayment || onAngelPayPayment) &&
-                paymentStateProvider.isChargeAttemptActive()
-            if (terminalGenuinelyBusy) {
-                Timber.w("⚠️ [Remote] Payment already in progress - ignoring amount: ${request.amountCents}")
+            // 🔴 29-sep-2026: también una DEVOLUCIÓN que está hablando con AngelPay (unos segundos): navegar al cobro le
+            // arrancaba la pantalla a media llamada. La marca caduca sola a los 2 min, así que nunca traba las ventas.
+            val motivoParaNoIniciar = CobroRemotoDelPos.motivoParaNoIniciar(
+                enPantallaDeCobro = onBlumonPayment || onAngelPayPayment,
+                cobroActivo = paymentStateProvider.isChargeAttemptActive(),
+                devolucionEnCurso = paymentStateProvider.isRefundInFlight(),
+            )
+            if (motivoParaNoIniciar != null) {
+                Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
                 // If this came via socket, send rejection back so iOS doesn't hang
                 if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET) {
                     rejectRemotePaymentBeforeAuthorization(
                         socketManager = socketManager,
                         requestId = durableRequestId,
                         // H8: UNA sola verdad para «este aparato ya está cobrando», la misma que dice la barrera de la libreta.
-                        errorMessage = CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO
+                        errorMessage = motivoParaNoIniciar
                     )
                     Timber.i("📡 [Socket] Sent rejection for requestId=${request.socketRequestId}")
                 }

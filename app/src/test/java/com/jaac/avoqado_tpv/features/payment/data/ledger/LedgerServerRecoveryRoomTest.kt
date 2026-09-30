@@ -1225,4 +1225,22 @@ class LedgerServerRecoveryRoomTest {
         assertThat(r.liberadas).isEqualTo(0)
         assertThat(dao.getById("loc3")!!.state).isEqualTo("INDETERMINADO")
     }
+
+    @Test fun `P1 29-sep una DEVOLUCION en duda no se consulta a S6 como si fuera una venta`() = runTest {
+        // S6 contesta por INTENTO DE COBRO: un veredicto de venta aterrizando en la fila de una devolución (un veto, un
+        // «RECORDED») sería dinero atribuido al revés. La duda de una devolución se resuelve con el historial de AngelPay.
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "dev", venueId = venue, processor = "angelpay", kind = PaymentAttemptEntity.KIND_REFUND,
+                state = "INDETERMINADO", amountCents = 10000, tipCents = 0, recordingRoute = PaymentAttemptEntity.ROUTE_REFUND,
+                paymentContextJson = """{"originalPaymentId":"pago-1"}""", createdAt = now - 600_000, updatedAt = now - 600_000,
+            ),
+        )
+
+        val lectura = recovery.recoverOne(venue, "dev", now)
+
+        assertThat(lectura.bandejaResueltaJson).isNull()
+        coVerify(exactly = 0) { api.getAttemptStatus(any(), any()) }
+        assertThat(dao.getById("dev")!!.state).isEqualTo("INDETERMINADO")
+    }
 }

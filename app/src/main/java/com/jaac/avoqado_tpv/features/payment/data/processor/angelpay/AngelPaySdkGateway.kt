@@ -36,7 +36,7 @@ class AngelPaySdkGateway @Inject constructor() {
 
     /**
      * La versión del AAR de AngelPay que está corriendo (`AngelPaySDK.version()`: una constante del binario, no pide
-     * inicializar). Es el candado de la regla del SDK ([AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA], hoy 1.0.20): con otra
+     * inicializar). Es el candado de la regla del SDK ([AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA], hoy 1.0.21): con otra
      * versión —o si no se puede leer— la regla no corre y el cobro se clasifica como siempre.
      */
     fun sdkVersion(): String? = runCatching { AngelPaySDK.version() }.getOrNull()
@@ -196,10 +196,11 @@ class AngelPaySdkGateway @Inject constructor() {
             // We use the same value as `reference` (the TPV's paymentAttemptId /
             // idempotencyKey) so the webhook receiver can match it to the Payment row.
             integratorReference = reference,
-            // 🔴 SDK 1.0.19: el panel de FIRMA nuevo va APAGADO (decisión del founder, 18-sep). El AAR lo trae ENCENDIDO
-            // por defecto (`captureSignature = true`): sin esta línea la pantalla del SDK pide firmar con el dedo después
-            // de aprobar, una pantalla que el cajero nunca ha visto, en medio del cobro. Va igual en el fallback.
-            captureSignature = false,
+            // 🔴 Firma en pantalla ENCENDIDA (founder, 29-sep; lo recomendó AngelPay el mismo día). Auditado en el 1.0.21: el
+            // SDK la pide SÓLO después de aprobar, con tope de 60 s, y no cambia el resultado — el cobro ya está hecho. Ningún
+            // temporizador nuestro corta ahí: el vigilante de autorización sólo avisa en pantalla, nunca cancela. (Del 18 al
+            // 29-sep iba apagada porque era una pantalla que el cajero nunca había visto.) Va igual en el fallback.
+            captureSignature = true,
             approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
             errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )
@@ -228,8 +229,8 @@ class AngelPaySdkGateway @Inject constructor() {
             // See buildPaymentRequest — integratorReference triggers + is echoed
             // in the AngelPay webhook. Must be set on the tip-fallback path too.
             integratorReference = reference,
-            // SDK 1.0.19: panel de firma APAGADO, igual que en buildPaymentRequest.
-            captureSignature = false,
+            // Firma en pantalla ENCENDIDA, igual que en buildPaymentRequest.
+            captureSignature = true,
             approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
             errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )

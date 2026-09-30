@@ -83,6 +83,28 @@ class AngelPayOutcomeClassifierTest {
     // ── RECHAZO CONFIRMADO: hay veredicto, el dinero NO se movió ─────
 
     @Test
+    fun `SDK 1_0_21 D312 falla del registro de terminal antes del cobro es rechazo confirmado`() {
+        // Nace en la compuerta de registro, ANTES del orquestador (auditoría de bytecode del 29-sep): nada salió al banco.
+        // Sin esta fila, el segundo fallo del registro caía en INCIERTO y ponía 45 s de «cobro sin confirmar» sobre un
+        // «no se cobró» cierto.
+        assertThat(desenlace(status = "ERROR", codigoSdk = "D312")).isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)
+    }
+
+    @Test
+    fun `SDK 1_0_21 G506 intermitencia del servidor de AngelPay es incierto - nunca rechazo`() {
+        // En el cobro se arma DESPUÉS del envío (authorizationAttempted = true): el dinero pudo moverse. El 1.0.20 lo
+        // reportaba como G500/DECLINED, que es justo el rechazo falso que este código corrige.
+        assertThat(desenlace(status = "ERROR", codigoSdk = "G506")).isEqualTo(DesenlaceDelCobro.INCIERTO)
+    }
+
+    @Test
+    fun `SDK 1_0_21 C230 a C232 de AMEX no son rechazo confirmado`() {
+        for (codigo in listOf("C230", "C231", "C232")) {
+            assertThat(desenlace(status = "ERROR", codigoSdk = codigo)).isEqualTo(DesenlaceDelCobro.INCIERTO)
+        }
+    }
+
+    @Test
     fun `G500 rechazada por el gateway es rechazo confirmado`() {
         assertThat(desenlace(status = "DECLINED", codigoSdk = "G500"))
             .isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)

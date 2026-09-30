@@ -12,6 +12,23 @@ import org.junit.Test
  */
 class CobroRemotoDelPosTest {
 
+    // 🔴 Founder, 29-sep-2026: sólo aparta lo que se está ejecutando EN ESE INSTANTE.
+    @Test fun `P1 una devolucion hablando con AngelPay rechaza el cobro del POS con su motivo`() {
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = false, cobroActivo = false, devolucionEnCurso = true))
+            .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_DEVOLUCION_EN_CURSO)
+    }
+
+    @Test fun `un cobro activo en su pantalla sigue rechazando otro cobro del POS`() {
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = true, cobroActivo = true, devolucionEnCurso = false))
+            .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
+    }
+
+    @Test fun `P1 sin nada ejecutandose el cobro del POS entra - la pantalla de un resultado viejo no aparta`() {
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = true, cobroActivo = false, devolucionEnCurso = false)).isNull()
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = false, cobroActivo = true, devolucionEnCurso = false)).isNull()
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = false, cobroActivo = false, devolucionEnCurso = false)).isNull()
+    }
+
     @Test fun `un cobro que pidio el POS no ofrece efectivo ni cripto`() {
         assertThat(CobroRemotoDelPos.permiteEfectivoYCripto("SOCKET")).isFalse()
     }
@@ -33,13 +50,17 @@ class CobroRemotoDelPosTest {
      * para «este aparato ya está cobrando»: la misma que la barrera de la libreta. Estática, como las demás de `AppNavigation`.
      */
     @Test fun `la guarda de la navegacion rechaza con el MISMO texto de cobro en curso`() {
+        // 29-sep: la guarda ya no escribe el texto a mano — lo decide `motivoParaNoIniciar` (cobro en curso o devolución en
+        // curso), y para «el lector está cobrando» devuelve la MISMA constante de la barrera de la libreta.
         val navegacion = java.io.File(
             "src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt",
         ).readText()
-        val inicio = navegacion.indexOf("if (terminalGenuinelyBusy) {")
+        val inicio = navegacion.indexOf("val motivoParaNoIniciar = CobroRemotoDelPos.motivoParaNoIniciar(")
         assertThat(inicio).isAtLeast(0)
         val guarda = navegacion.substring(inicio, navegacion.indexOf("return@collect", inicio))
-        assertThat(guarda).contains("errorMessage = CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO")
+        assertThat(guarda).contains("errorMessage = motivoParaNoIniciar")
+        assertThat(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = true, cobroActivo = true, devolucionEnCurso = false))
+            .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
         assertThat(navegacion).doesNotContain("Ya hay un pago en proceso")
     }
 }

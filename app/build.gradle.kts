@@ -617,15 +617,18 @@ dependencies {
     // host (cierra las ventanas W1/W2 del 1.0.19). La regla SÓLO corre con este AAR: `AngelPaySdk119ReglaTest`
     // fija su SHA-256 (7abbe8ea…2282, el que publica AngelPay) y `version() == "1.0.20"`. Cambiar el AAR sin
     // re-auditar la regla tumba esa prueba A PROPÓSITO.
-    compileOnly(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
-    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
+    // 🔴 1.0.21 (29-sep-2026, re-auditado en bytecode contra el 1.0.20): el orquestador pasa a `b0.v0` y conserva la
+    // frontera del envío (`authorizationAttempted`) y el Cancelar antes de enviar. Trae G506 / D312 / C230-C232, el país de
+    // la tarjeta (5F28) y el -8028 aprobado. SHA-256 2cacce2b…fa8d, el que publica AngelPay.
+    compileOnly(files("libs/angelpaySDK-v1.0.21-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.21-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.21-fat-release.aar"))
     // AngelPay SDK types are referenced in unit tests (e.g., AngelPaySdkGatewayTest) for
     // mocking — Result<List<MerchantSummary>> return types and `AngelPaySDK` object need
     // the AAR on the test classpath at both compile time and runtime so MockK can mock
     // the singleton via `mockkObject(AngelPaySDK)`. Production code still uses compileOnly
     // for non-Nexgo flavors, so this affects unit tests only.
-    testImplementation(files("libs/angelpaySDK-v1.0.20-fat-release.aar"))
+    testImplementation(files("libs/angelpaySDK-v1.0.21-fat-release.aar"))
 
     // AngelPay SDK 1.0.7 fat-release.aar ships the full io.github.binaryfoo:emv-bertlv
     // bundle internally (AmexTags, DecodedData, CryptogramInformationDecoder,

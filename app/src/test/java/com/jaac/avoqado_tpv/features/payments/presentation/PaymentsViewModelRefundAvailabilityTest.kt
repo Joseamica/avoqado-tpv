@@ -408,4 +408,84 @@ class PaymentsViewModelRefundAvailabilityTest {
         assertThat(mostrados.map { it.id }).containsExactly("pay_visa")
         assertThat(mostrados.single().isFullyRefunded).isFalse()
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🔴 Founder, 29-sep-2026: AngelPay sólo CANCELA completa antes del corte de las 11 pm del día de la venta; las
+    // devoluciones posteriores las tiene apagadas para todos los comercios. Pasado el corte, la lista no ofrece
+    // «Reembolsar»: dice a quién pedírselo, en vez de dejar que el cajero lo intente y falle.
+    // ═══════════════════════════════════════════════════════════════════
+
+    private fun vmConReloj(
+        ahora: String,
+        devoluciones: com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase? = null,
+    ): PaymentsViewModel {
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns true
+        coEvery { secureStorage.getVenueId() } returns "venue_1"
+        coEvery { secureStorage.getSerialNumber() } returns "NEXGO-A"
+        coEvery {
+            paymentRepository.getPaymentHistory(
+                venueId = any(), pageNumber = any(), pageSize = any(), fromDate = any(), toDate = any(), staffId = any()
+            )
+        } returns Result.Success(PaginatedPayments(payments = emptyList(), total = 0, page = 1, pageSize = 20))
+        return PaymentsViewModel(
+            paymentRepository = paymentRepository,
+            secureStorage = secureStorage,
+            permissionsRepository = permissionsRepository,
+            printerManager = printerManager,
+            clock = java.time.Clock.fixed(Instant.parse(ahora), java.time.ZoneOffset.UTC),
+            recordAngelPayRefundUseCase = devoluciones,
+        )
+    }
+
+    private fun ventaAngelPay(cobradaEn: String) = Payment(
+        id = "pay_corte", orderId = "ord_corte", orderNumber = "88", venueId = "venue_1",
+        amount = BigDecimal("1.00"), tipAmount = BigDecimal.ZERO, totalAmount = BigDecimal("1.00"),
+        method = PaymentMethod.CARD, processedBy = null, createdAt = Instant.parse(cobradaEn),
+        status = PaymentStatus.COMPLETED, tableName = null, merchantAccountId = "merchant_1",
+        processor = "ANGELPAY", deviceSerialNumber = "NEXGO-A",
+    )
+
+    @Test
+    fun `P1 en Nexgo una venta de AngelPay de AYER no ofrece reembolsar y dice a quien pedirselo`() = runTest {
+        assumeFalse("Este test aplica para variante Nexgo (ENABLE_PAX_SDK=false)", BuildConfig.ENABLE_PAX_SDK)
+        // Venta a las 18:00 del 28-sep (CDMX); ahora son las 12:00 del 29-sep: ya pasó el corte de las 23:00 del 28.
+        val viewModel = vmConReloj("2026-09-29T18:00:00Z")
+        advanceUntilIdle()
+
+        val availability = viewModel.getRefundAvailability(ventaAngelPay("2026-09-29T00:00:00Z"))
+
+        assertThat(availability.canRefund).isFalse()
+        assertThat(availability.reason)
+            .isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.processor.AngelPayCorte.MENSAJE_FUERA_DE_CORTE)
+    }
+
+    @Test
+    fun `P1 en Nexgo pasado el corte una devolucion POR CONFIRMAR si se deja abrir - se confirma y se registra`() = runTest {
+        assumeFalse("Este test aplica para variante Nexgo (ENABLE_PAX_SDK=false)", BuildConfig.ENABLE_PAX_SDK)
+        val devoluciones = mockk<com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase>()
+        coEvery { devoluciones.tieneDevolucionPorResolver("pay_corte") } returns true
+        val viewModel = vmConReloj("2026-09-29T18:00:00Z", devoluciones)
+        advanceUntilIdle()
+        val venta = ventaAngelPay("2026-09-29T00:00:00Z")
+
+        viewModel.showPaymentDetail(venta)
+        advanceUntilIdle()
+
+        val availability = viewModel.getRefundAvailability(venta)
+        assertThat(availability.canRefund).isTrue()
+        assertThat(availability.reason).isNull()
+    }
+
+    @Test
+    fun `en Nexgo una venta de AngelPay de HOY antes del corte si se puede reembolsar`() = runTest {
+        assumeFalse("Este test aplica para variante Nexgo (ENABLE_PAX_SDK=false)", BuildConfig.ENABLE_PAX_SDK)
+        // Venta a las 12:00 del 29-sep (CDMX); ahora son las 22:59 del mismo día.
+        val viewModel = vmConReloj("2026-09-30T04:59:00Z")
+        advanceUntilIdle()
+
+        val availability = viewModel.getRefundAvailability(ventaAngelPay("2026-09-29T18:00:00Z"))
+
+        assertThat(availability.canRefund).isTrue()
+        assertThat(availability.reason).isNull()
+    }
 }

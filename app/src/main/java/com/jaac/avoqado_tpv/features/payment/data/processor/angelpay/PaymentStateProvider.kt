@@ -26,4 +26,12 @@ interface PaymentStateProvider {
      * (the route-only guard conflated "on the payment screen" with "busy").
      */
     fun isChargeAttemptActive(): Boolean
+
+    /**
+     * 🔴 Founder, 29-sep-2026: «nada puede detener las ventas». Verdadero SÓLO mientras una devolución de AngelPay está
+     * hablando con AngelPay (segundos): un cobro del POS que llegue en ese instante se contesta «terminal ocupada,
+     * reintenta» en vez de arrancar encima y dejar la devolución a medias. Vence SOLA
+     * ([PaymentStateHolder.TOPE_DEVOLUCION_EN_CURSO_MS]): aunque algo no la soltara, nunca puede trabar las ventas.
+     */
+    fun isRefundInFlight(): Boolean = false
 }

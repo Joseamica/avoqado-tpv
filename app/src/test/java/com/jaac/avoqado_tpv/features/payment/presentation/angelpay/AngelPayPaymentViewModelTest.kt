@@ -910,6 +910,80 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `SDK 1_0_21 D312 el registro previo al cobro fallo - relanza una vez`() = runTest(testDispatcher) {
+        // D312 (1.0.21) nace ANTES del orquestador, sin referencia y con `authorizationAttempted = false`, con el mismo texto
+        // del registro previo: no se movió dinero y se relanza igual que el N400 de antes.
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(
+                    sdkCode = "D312",
+                    message = "No fue posible registrar la terminal antes del cobro. Intente de nuevo; si persiste, contacte a soporte.",
+                ),
+            )
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `SDK 1_0_21 el N400 del registro previo sin internet relanza una vez`() = runTest(testDispatcher) {
+        // Pin del texto nuevo del 1.0.21 (plan 7e): «…antes del cobro: la terminal no tiene conexión a internet.» sigue siendo
+        // el registro previo (no salió dinero) y se relanza una vez, igual que el texto de antes.
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(
+                    sdkCode = "N400",
+                    message = "No fue posible registrar la terminal antes del cobro: la terminal no tiene conexión a internet.",
+                ),
+            )
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `SDK 1_0_21 un segundo D312 es rechazo cierto - nunca un cobro en duda`() = runTest(testDispatcher) {
+        // Candado de REGRESIÓN, no la guardia de la tabla: aquí el D312 ya es rechazo por la FORMA de su mensaje (registro
+        // previo al cobro, `ledgerExpiryShapedDecline`), con o sin D312 en `CODIGOS_RECHAZO_CONFIRMADO`. La guardia de la
+        // tabla (un D312 con OTRO texto) es `AngelPayOutcomeClassifierTest`. Fija que el segundo fallo nunca sea «en duda».
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+            val d312 = "No fue posible registrar la terminal antes del cobro. Intente de nuevo; si persiste, contacte a soporte."
+
+            vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
+            runCurrent()
+            vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `mid-charge N400 network error does NOT trigger re-auth`() = runTest(testDispatcher) {
         // Same N400 code but a normal network message: the charge may have reached the
         // gateway, so re-auth + relaunch is forbidden (double-charge risk).

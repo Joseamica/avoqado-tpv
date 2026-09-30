@@ -303,20 +303,21 @@ class AngelPaySdkGatewayContratoDeCobroTest {
     }
 
     /**
-     * T14 (SDK 1.0.19, decisión del founder del 18-sep): el panel de FIRMA nuevo del SDK va APAGADO.
-     *
-     * `PaymentRequest.captureSignature` vale `true` POR DEFECTO en el AAR 1.0.19 (`copy$default`, bit 8192): sin
-     * mandarlo explícito, la pantalla del SDK pide firmar con el dedo después de aprobar — una pantalla que el cajero
-     * nunca vio, en medio del cobro. Van las DOS rutas: si una lo olvida, un tipo de comercio vuelve a ver el panel.
+     * T14 (founder, 29-sep, APK 2.12.0): el panel de FIRMA del SDK va ENCENDIDO. Estuvo apagado desde el 18-sep hasta
+     * saber si servía: AngelPay contestó (Norman, 29-sep) que la firma capturada SÍ es evidencia en contracargos, que la
+     * piden menos del 10 % de los cobros (Amex nuevas sin NIP, algunas tarjetas de vales, extranjeras) y recomienda dejarla
+     * encendida — es el default del SDK. La auditoría del 1.0.21 confirmó que el panel sale SÓLO después de que el banco
+     * aprobó, con tope de 60 s, y que no puede cambiar el cobro. Van las DOS rutas: si una lo olvida, un tipo de comercio
+     * se queda sin firma.
      */
     @Test
-    fun `P1 T14 el panel de firma del SDK va apagado en la ruta normal y en el fallback`() {
+    fun `P1 T14 el panel de firma del SDK va encendido en la ruta normal y en el fallback`() {
         val subtotal = java.math.BigDecimal("100.00")
         val tip = java.math.BigDecimal("10.00")
         val normal = gateway.buildPaymentRequest(subtotal, tip, "Ana", "ref-firma")
         val fallback = gateway.buildQaTipFallbackRequest(subtotal, tip, "Ana", "ref-firma")
 
-        assertEquals(false, normal.captureSignature)
-        assertEquals(false, fallback.captureSignature)
+        assertEquals(true, normal.captureSignature)
+        assertEquals(true, fallback.captureSignature)
     }
 }

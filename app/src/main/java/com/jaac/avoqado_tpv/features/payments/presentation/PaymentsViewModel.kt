@@ -19,6 +19,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
@@ -63,8 +64,18 @@ class PaymentsViewModel @Inject constructor(
     private val paymentRepository: PaymentRepository,
     private val secureStorage: SecureStorage,
     private val permissionsRepository: PermissionsRepository,
-    private val printerManager: PrinterManager
+    private val printerManager: PrinterManager,
+    /** ⏰ Decide el corte de AngelPay (11 pm del día de la venta); inyectable para las pruebas. */
+    private val clock: java.time.Clock = java.time.Clock.systemUTC(),
+    /** 📒 Dice si un pago tiene una devolución de AngelPay por confirmar o registrar. `null` en pruebas que no lo usan. */
+    private val recordAngelPayRefundUseCase: com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase? = null,
 ) : ViewModel() {
+
+    // 📒 Pagos con una devolución que ya salió hacia AngelPay y no se ha confirmado (o que se aprobó y falta registrarla).
+    // Pasado el corte ÉSTOS sí se dejan abrir: no se le vuelve a pedir nada a AngelPay, sólo se confirma con su historial y
+    // se registra (auditoría del 29-sep, P1: sin esto quedaban sin salida y la venta seguía contando como ingreso).
+    private val _devolucionesPorConfirmar = MutableStateFlow<Set<String>>(emptySet())
+    val devolucionesPorConfirmar: StateFlow<Set<String>> = _devolucionesPorConfirmar.asStateFlow()
 
     // ══════════════════════════════════════════════════════════════════════
     // STATE
@@ -561,6 +572,17 @@ class PaymentsViewModel @Inject constructor(
         Timber.d("📋 [PaymentsViewModel] Showing payment detail: ${payment.id}")
         _selectedPaymentForDetail.value = payment
         _showPaymentDetailSheet.value = true
+        revisarDevolucionPorConfirmar(payment.id)
+    }
+
+    /** ¿Este pago tiene una devolución de AngelPay por confirmar o registrar? Se lee al abrir su detalle (por pago). */
+    private fun revisarDevolucionPorConfirmar(paymentId: String) {
+        val devoluciones = recordAngelPayRefundUseCase ?: return
+        if (currentProcessorType() != ProcessorType.ANGELPAY) return
+        viewModelScope.launch {
+            val porConfirmar = devoluciones.tieneDevolucionPorResolver(paymentId)
+            _devolucionesPorConfirmar.update { if (porConfirmar) it + paymentId else it - paymentId }
+        }
     }
 
     /**
@@ -631,7 +653,10 @@ class PaymentsViewModel @Inject constructor(
         val reason: String? = null,
     )
 
-    fun getRefundAvailability(payment: Payment): RefundAvailability {
+    fun getRefundAvailability(
+        payment: Payment,
+        porConfirmar: Set<String> = _devolucionesPorConfirmar.value,
+    ): RefundAvailability {
         if (!_canProcessRefund.value) {
             return RefundAvailability(
                 canRefund = false,
@@ -674,6 +699,11 @@ class PaymentsViewModel @Inject constructor(
                 payment.method == PaymentMethod.CASH -> "Los pagos en efectivo no pueden reembolsarse con tarjeta"
                 payment.method != PaymentMethod.CARD -> "Este método de pago no admite reembolso"
                 payment.merchantAccountId.isNullOrBlank() -> "Información de comercio no disponible"
+                // ⏰ Founder y AngelPay, 29-sep: pasado el corte de las 11 pm ya no se puede cancelar desde la terminal, y las
+                // devoluciones posteriores están apagadas. Se dice aquí, antes de que el cajero lo intente y falle.
+                payment.id !in porConfirmar && !com.jaac.avoqado_tpv.features.payment.domain.processor.AngelPayCorte
+                    .sePuedeIntentarDesdeLaTerminal(payment.createdAt, clock.instant()) ->
+                    com.jaac.avoqado_tpv.features.payment.domain.processor.AngelPayCorte.MENSAJE_FUERA_DE_CORTE
                 else -> null
             }
             return RefundAvailability(

@@ -4313,6 +4313,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         authCode = result.authCode ?: "",
         reference = result.reference ?: "",
         cardBin = result.cardBin,
+        // SDK 1.0.21: el país emisor del chip (EMV 5F28). El historial de AngelPay no lo trae: la verificación va sin él.
+        issuerCountryCode = result.cardCountryCode,
     )
 
     /**
@@ -4324,7 +4326,12 @@ class AngelPayPaymentViewModel @Inject constructor(
      * [AngelPayChargeVerifier]. El camino de registro tiene que ser el MISMO en los dos: un
      * cobro confirmado por verificación se registra exactamente igual que uno normal.
      */
-    private suspend fun recordCardPayment(authCode: String, reference: String, cardBin: String?) {
+    private suspend fun recordCardPayment(
+        authCode: String,
+        reference: String,
+        cardBin: String?,
+        issuerCountryCode: String? = null,
+    ) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
         // 💰 Money moved (card charged). Recover venue/staff from the most reliable source so this
@@ -4340,10 +4347,14 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
 
         val detectedBrand = cardBin?.let { CardBrand.fromBin(it) } ?: CardBrand.UNKNOWN
+        val paisDelEmisor = issuerCountryCode?.trim()?.takeIf { it.isNotEmpty() }
         val cardDetails = CardDetails(
             maskedPan = "",
             cardBrand = detectedBrand,
             entryMode = CardEntryMode.OTHER,
+            // Sólo evidencia para el clasificador sombra del servidor; `isInternational` no cambia (mismo trato que la PAX).
+            issuerCountryCode = paisDelEmisor,
+            issuerCountrySource = paisDelEmisor?.let { com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource.EMV_5F28 },
         )
 
         val merchantAccountId = cuentaParaRegistrar()

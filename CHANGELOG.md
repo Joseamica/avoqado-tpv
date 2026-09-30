@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-09-30
+
 ### **Fixed**
 - **[Nexgo] Una devolución que falla ya no deja la terminal sin poder cobrar (N86 QA, 29-sep: «Hay otro cobro en curso ($1.00, hace 3 min)» hasta reiniciar la app)**: la devolución abría su fila en la libreta y ninguna salida de error la cerraba (sin red, venta no encontrada, rechazo de AngelPay, excepción), y la barrera la tomaba por un cobro corriendo. Founder: «¡nada puede detener las ventas!».
   - Sólo una VENTA aparta el aparato: `kind = 'SALE'` en la barrera, en «cobro sin resolver» y en las tres recuperaciones con forma de venta. Cubre también la devolución de la PAX.

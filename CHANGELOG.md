@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-09-30
+
+### **Fixed**
+- **[PAX] [Nexgo] WiFi «conectado pero sin datos»**: la terminal lo detecta (~2 min: servidor y socket caídos y Google sin transporte), lo dice claro («El WiFi de esta terminal no está pasando datos») y deja evidencia `WifiSinSalida` al confirmarlo y al resolverse. Con la conmutación en «Auto (aplicar)» hace sola lo que arregló a Testarudo: apaga el WiFi ~3 s y lo vuelve a prender, con un solo dueño (`ControlDeWifi`), nunca encima de un cobro o una devolución, con una marca en disco antes de apagar y máximo 3 veces por hora. Caso: Nexgo de Testarudo 38 min muda con el WiFi del local sano (29-sep).
+  - **En PAX el reinicio automático queda en sombra** (detecta, avisa y anota «habría reiniciado»): Android 10 bloquea `setWifiEnabled` y el canal DAL de PAX no se ha probado en hardware (founder, 30-sep: «Nexgo primero»).
+  - Si la app muere a mitad del reinicio, el WiFi se prende en cuanto vuelve a arrancar (antes esperaba al primer heartbeat: ~27 s en la N86), y el tope de 3 por hora y los 60 s entre reinicios se guardan en disco (sobreviven a la muerte del proceso; una hora guardada en el futuro se ignora).
+  - Probado en una Nexgo N86 real con un hotspot sin salida: detecta en ~60 s, reinicia en ~4 s, reintenta cada ~95 s y se recupera sola al volver el internet; con Avoqado caído e internet sano, NO reinicia.
+- **[Nexgo] La guarda de «operación crítica» no veía los cobros ni las devoluciones de AngelPay**: `CriticalNetworkOperationManager` lee `PaymentStateProvider`.
+- **[PAX] [Nexgo] `WifiFailoverController` se tragaba la cancelación** y devolvía «no se apagó» aunque el apagado ya había salido hacia Android.
+
+### **Removed**
+- **[PAX] [Nexgo] Conmutación automática a celular por WiFi lento**: nunca corrió en la calle y, sin chip con datos, dejaba el WiFi apagado para siempre. `cellularFailoverBadReadingsThreshold`, `cellularFailoverCooldownSeconds` y `cellularFailoverMinCellHoldSeconds` dejan de usarse en la app.
+
 ## [2.12.0] - 2026-09-30
 
 ### **Fixed**

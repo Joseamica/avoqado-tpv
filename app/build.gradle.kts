@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -37,7 +39,8 @@ android {
             ?: "https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/"
         buildConfigField("String", "API_BASE_URL_DEV", "\"$devBaseUrl\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
+        val devOrigin = URI(devBaseUrl).let { "${it.scheme}://${it.rawAuthority}" }
+        buildConfigField("String", "SOCKET_URL_DEV", "\"$devOrigin\"")
         buildConfigField("boolean", "ENABLE_PAX_SDK", "true")
         buildConfigField("boolean", "ENABLE_BLUMON_INIT", "true")
         buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "false")

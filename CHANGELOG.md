@@ -11,6 +11,9 @@
 
 ### Fixed
 
+- **[PAX] Impresora sin papel tras un cobro aprobado**: al volver del aviso ya no se repite la animación de «Pago aprobado» (parecía un segundo cobro). El aviso dice «No se pudo imprimir — El cobro sí quedó aprobado» en vez de «Error en el Pago», y su botón es «Volver al recibo» (el «Reintentar» de esa pantalla no hacía nada: se reimprime desde el recibo).
+- **Desarrollo aislado**: `avoqado.devBaseUrl` configura también el origen de Socket.IO; la API y los comandos usan el mismo servidor de pruebas.
+- **Pruebas [PAX/Nexgo]**: la activación remota verifica el cierre de sesión AngelPay sólo en el flavor que usa ese procesador.
 - [PAX/Nexgo] Comandos administrativos por eventos, identidad de dispositivo y recibos cifrados durables. Esperan Inicio/Activación sin cobros ni devoluciones; preparación del SDK reserva la ventana. Reinicio/borrado se confirman al abrir la app nuevamente; borrado conserva evidencia financiera y espera a resolver operaciones pendientes. Comandos no implementados responden rechazo.
 
 ## [2.12.1] - 2026-09-30

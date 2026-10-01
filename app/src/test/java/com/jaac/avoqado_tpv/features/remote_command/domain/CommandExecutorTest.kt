@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.remote_command.domain
 import android.content.Context
 import android.content.pm.PackageManager
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
@@ -628,7 +629,7 @@ class CommandExecutorTest {
         assertThat(CommandInbox(mockSecureStorage).previousResult(command.commandId)?.data?.get("venueId")).isEqualTo("venue-NEW")
         verify { mockSecureStorage.saveVenueId("venue-NEW") }
         verify { mockSecureStorage.saveVenueSlug("venue-nuevo") }
-        verify(exactly = 0) { mockAngelPayAuthRepository.logout() }
+        verify(exactly = if (BuildConfig.SUPPORTED_PROCESSOR == "ANGELPAY") 1 else 0) { mockAngelPayAuthRepository.logout() }
     }
 
     @Test

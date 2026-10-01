@@ -172,6 +172,11 @@ class ConnectionViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
 
     init {
+        viewModelScope.launch {
+            com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.events.collect {
+                if (com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.isSafe()) commandExecutor.recoverPending()
+            }
+        }
         // Send immediate heartbeat when app starts/restarts
         // This ensures dashboard knows terminal is back online quickly after RESTART command
         // The startMonitoring() function calls checkConnection() BEFORE any delay
@@ -625,6 +630,7 @@ class ConnectionViewModel @Inject constructor(
         if (!isLatest(version)) return
 
         if (reconnectionAttempts > 0) {
+            viewModelScope.launch { commandExecutor.recoverPending() }
             // Refresh paid access after recovery without delaying the connection banner or checkout.
             viewModelScope.launch {
                 tpvSettingsRepository.refreshFromTerminalConfig(deviceInfoManager.getSerialNumber())
@@ -758,49 +764,8 @@ class ConnectionViewModel @Inject constructor(
      * @param pendingCommands List of commands from heartbeat response
      */
     private suspend fun processPendingCommands(pendingCommands: List<PendingCommandDto>) {
-        // Get terminal serial number for security validation in ACKs
-        val terminalId = deviceInfoManager.getSerialNumber()
-
-        for (commandDto in pendingCommands) {
-            try {
-                Timber.i("🔄 [Connection] Processing command: ${commandDto.type} (id=${commandDto.commandId})")
-
-                // 1. Convert DTO to domain model
-                val command = commandDto.toTpvCommand()
-                if (command == null) {
-                    Timber.w("⚠️ [Connection] Unknown command type: ${commandDto.type}, skipping")
-                    // Send REJECTED ACK for unknown command (with terminalId for security)
-                    val rejectResult = CommandResult.rejected("Unknown command type: ${commandDto.type}")
-                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, rejectResult)
-                    continue
-                }
-
-                // 2. Execute command via CommandExecutor
-                val result = commandExecutor.execute(command)
-
-                // 3. Send HTTP ACK to backend (primary acknowledgment for polling pattern)
-                val ackResult = heartbeatRepository.sendCommandAck(command.commandId, terminalId, result)
-                if (ackResult is Result.Success) {
-                    Timber.i("✅ [Connection] Command completed and ACK sent: ${command.type.name} → ${result.status.name}")
-                } else {
-                    Timber.w("⚠️ [Connection] Command executed but ACK failed: ${command.commandId}")
-                }
-
-            } catch (e: CancellationException) {
-                throw e  // Don't send false FAILED ACK on cancellation
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [Connection] Failed to process command: ${commandDto.commandId}")
-                // Try to send FAILED ACK (with terminalId for security)
-                try {
-                    val failResult = CommandResult.failed("Execution error: ${e.message}")
-                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, failResult)
-                } catch (ackError: CancellationException) {
-                    throw ackError
-                } catch (ackError: Exception) {
-                    Timber.e(ackError, "❌ [Connection] Failed to send FAILED ACK: ${commandDto.commandId}")
-                }
-            }
-        }
+        commandExecutor.rememberCommands(pendingCommands.mapNotNull { it.toTpvCommand() })
+        commandExecutor.recoverPending()
     }
 
     /**

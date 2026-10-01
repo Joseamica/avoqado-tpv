@@ -642,6 +642,13 @@ private fun WelcomeScreenContent(
     var showAmountBottomSheet by remember { mutableStateOf(false) }
     var showSettingsModal by remember { mutableStateOf(false) }
     var showRestartConfirmDialog by remember { mutableStateOf(false) }
+    val editingHome = showAmountBottomSheet || showSettingsModal || showRestartConfirmDialog
+    androidx.compose.runtime.DisposableEffect(editingHome) {
+        val window = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+        if (editingHome) window.reserveAction()
+        onDispose { if (editingHome) window.endAction() }
+    }
+
 
     // ══════════════════════════════════════════════════════════════════════
     // ACTION BUTTONS CONFIGURATION

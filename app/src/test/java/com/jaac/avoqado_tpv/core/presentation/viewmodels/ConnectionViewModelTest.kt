@@ -357,7 +357,7 @@ class ConnectionViewModelTest {
 
         val viewModel = createViewModel()
 
-        coVerify { commandExecutor.execute(any()) }
+        coVerify { commandExecutor.recoverPending() }
         viewModel.viewModelScope.cancel()
     }
 

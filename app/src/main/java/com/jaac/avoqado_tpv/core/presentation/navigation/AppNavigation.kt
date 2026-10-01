@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -373,6 +374,9 @@ fun AppNavigation(
     // 📡 REMOTE PAYMENTS (Socket.IO) - another POS asks this terminal to charge; start payment flow from any screen
     LaunchedEffect(remotePaymentCoordinator) {
         remotePaymentCoordinator.paymentRequests.collect { request ->
+            val commandWindow = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+            commandWindow.beginAction()
+            try {
             if (request.amountCents <= 0) {
                 Timber.w("⚠️ [Remote] Ignoring non-positive amount: ${request.amountCents}")
                 return@collect
@@ -500,6 +504,7 @@ fun AppNavigation(
             navController.navigate(getPaymentRoute()) {
                 launchSingleTop = true
             }
+            } finally { commandWindow.endAction() }
         }
     }
 
@@ -510,6 +515,9 @@ fun AppNavigation(
     // del pago y NO se dispara la devolución sola.
     LaunchedEffect(remotePaymentCoordinator) {
         remotePaymentCoordinator.refundRequests.collect { request ->
+            val commandWindow = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+            commandWindow.beginAction()
+            try {
             // Nunca se le quita la pantalla a un cobro en curso: el cliente que
             // está pagando manda sobre una devolución que puede esperar.
             if (paymentStateProvider.isCharging()) {
@@ -520,6 +528,7 @@ fun AppNavigation(
             navController.navigate(NavRoute.Payments.createRoute(autoOpenPaymentId = request.paymentId)) {
                 launchSingleTop = true
             }
+            } finally { commandWindow.endAction() }
         }
     }
 
@@ -602,6 +611,21 @@ fun AppNavigation(
     var kioskClearCart by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // 🥝 KIOSK SUCCESS SCREEN - Render directly when payment completed
+    DisposableEffect(navController, isKioskMode) {
+        val window = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+        val listener = androidx.navigation.NavController.OnDestinationChangedListener { _, destination, _ ->
+            window.setRoute(if (isKioskMode) null else destination.route)
+        }
+        navController.addOnDestinationChangedListener(listener)
+        onDispose { navController.removeOnDestinationChangedListener(listener); window.setRoute(null) }
+    }
+    val applyingCommand by com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.executing.collectAsStateWithLifecycle()
+    if (applyingCommand) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = {}, properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false)) {
+            AvoqadoLoadingOverlay(message = "Aplicando comando de la terminal…")
+        }
+    }
     // This bypasses the staff NavHost to avoid navigation race conditions
     if (isKioskMode && isKioskSuccessInProgress) {
         // 🖨️ Get printer and API service from EntryPoint for receipt printing/email
@@ -1153,6 +1177,12 @@ fun AppNavigation(
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
             val homeContext = LocalContext.current
             val homeCoroutineScope = rememberCoroutineScope()
+            fun launchHomeAction(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) = homeCoroutineScope.launch {
+                val window = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+                window.beginAction()
+                try { block() } finally { window.endAction() }
+            }
+
 
             // Refresh attendance when returning from TimeclockScreen
             val refreshAttendance = homeBackStackEntry.savedStateHandle
@@ -1201,9 +1231,9 @@ fun AppNavigation(
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
                 onStartPaymentWithAmount = { amount ->
-                    homeCoroutineScope.launch {
+                    launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
-                            return@launch
+                            return@action
                         }
                         Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
                         navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
@@ -1217,9 +1247,9 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToOrdering = {
-                    homeCoroutineScope.launch {
+                    launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome ordering")) {
-                            return@launch
+                            return@action
                         }
                         Timber.d("[PERF] NAV: Welcome → Ordering START")
                         navController.navigate(NavRoute.OrderingWelcome.route)
@@ -1243,9 +1273,9 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Reports.route)
                 },
                 onNavigateToPayments = {
-                    homeCoroutineScope.launch {
+                    launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome payments/refunds")) {
-                            return@launch
+                            return@action
                         }
                         navController.navigate(NavRoute.Payments.route)
                     }
@@ -1268,13 +1298,13 @@ fun AppNavigation(
                 onNavigateToSerializedSale = {
                     // 📱 Vender flow: Await Blumon SDK initialization, then navigate
                     // This ensures SDK is ready before user scans barcode and proceeds to payment
-                    homeCoroutineScope.launch {
+                    launchHomeAction action@ {
                         isInitializingSdk = true
                         Timber.d("🔧 [Vender] Awaiting Blumon SDK initialization...")
 
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Serialized sale entry")) {
                             isInitializingSdk = false
-                            return@launch
+                            return@action
                         }
 
                         Timber.d("✅ [Vender] SDK ready - navigating to SerializedSale")

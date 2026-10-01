@@ -1287,6 +1287,10 @@ class HomeViewModel @Inject constructor(
     private fun executeRemoteCommand(event: SocketEvent.TPVCommand) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                if ((event.payload?.get("_deliveryProtocol") as? Number)?.toInt() == 2) {
+                    commandExecutor.recoverPending()
+                    return@launch
+                }
                 // Parse command type
                 val commandType = TpvCommandType.fromString(event.commandType)
                 if (commandType == null) {
@@ -1315,28 +1319,11 @@ class HomeViewModel @Inject constructor(
                     requestedByName = event.requestedByName
                 )
 
-                // Execute via CommandExecutor
-                val result = commandExecutor.execute(command)
-
-                Timber.i("✅ [Command] Executed ${command.type.name}: ${result.status.name} - ${result.message}")
-
-                // **CRITICAL FIX (2025-12-01):**
-                // Send HTTP ACK to server so it can update command status and sync terminal state.
-                // Without this, commands received via Socket.IO would execute locally but server
-                // would never know the result, causing dashboard/TPV state desync.
-                val terminalId = secureStorage.getSerialNumber() ?: run {
-                    Timber.e("❌ [Command] Cannot send ACK - no terminal serial number")
-                    return@launch
-                }
-
-                val ackResult = heartbeatRepository.sendCommandAck(command.commandId, terminalId, result)
-                ackResult.onSuccess {
-                    Timber.i("✅ [Command] ACK sent for ${command.type.name}")
-                }.onError { exception ->
-                    Timber.w("⚠️ [Command] ACK failed for ${command.commandId}: ${exception.message}")
-                }
+                commandExecutor.rememberCommands(listOf(command))
+                commandExecutor.recoverPending()
 
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Timber.e(e, "❌ [Command] Failed to execute command: ${event.commandType}")
             }
         }

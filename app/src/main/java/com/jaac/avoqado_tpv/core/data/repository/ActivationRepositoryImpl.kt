@@ -53,6 +53,10 @@ class ActivationRepositoryImpl @Inject constructor(
             // Handle response
             if (response.isSuccessful && response.body() != null) {
                 val dto = response.body()!!
+                dto.commandToken?.let {
+                    secureStorage.putStringDurably("tpv_command_token", it)
+                    secureStorage.putStringDurably("tpv_command_enrolled", "true")
+                }
                 Timber.i("✅ Terminal activated successfully: venueId=${dto.venueId}")
 
                 // Store venueId, venueSlug, serialNumber AND terminalId permanently in SecureStorage

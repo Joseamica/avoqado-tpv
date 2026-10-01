@@ -54,7 +54,8 @@ data class ActivationResponse(
     val venueSlug: String,
 
     @SerializedName("activatedAt")
-    val activatedAt: String
+    val activatedAt: String,
+    @SerializedName("commandToken") val commandToken: String? = null
 )
 
 /**

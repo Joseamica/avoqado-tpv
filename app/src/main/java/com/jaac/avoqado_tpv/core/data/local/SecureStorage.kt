@@ -1003,7 +1003,17 @@ class SecureStorage @Inject constructor(
      * ⚠️ USE WITH CAUTION - This will delete everything
      */
     fun clearAll() {
-        encryptedPrefs.edit().clear().apply()
+        // Device command identity and unacknowledged receipts survive the wipe;
+        // neither grants staff, venue or payment access.
+        val serial = getSerialNumber()
+        val enrolled = getString("tpv_command_enrolled")
+        val commandToken = getString("tpv_command_token")
+        val commandInbox = getString("tpv_command_inbox")
+        check(encryptedPrefs.edit().clear()
+            .putString(KEY_SERIAL_NUMBER, serial)
+            .putString("tpv_command_enrolled", enrolled)
+            .putString("tpv_command_token", commandToken)
+            .putString("tpv_command_inbox", commandInbox).commit()) { "Could not clear terminal data" }
         Timber.w("All secure storage data cleared")
     }
 

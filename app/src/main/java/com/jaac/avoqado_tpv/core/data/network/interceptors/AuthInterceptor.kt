@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.core.data.network.interceptors
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import okhttp3.Interceptor
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Response
 import timber.log.Timber
 import javax.inject.Inject
@@ -41,6 +42,14 @@ class AuthInterceptor @Inject constructor(
         val requestBuilder = originalRequest.newBuilder()
             .header("X-App-Version-Code", BuildConfig.VERSION_CODE.toString())
             .header("X-App-Version-Name", BuildConfig.VERSION_NAME)
+
+        val apiOrigin = (if (BuildConfig.DEBUG) BuildConfig.API_BASE_URL_DEV else BuildConfig.API_BASE_URL).toHttpUrl()
+        if (originalRequest.url.host == apiOrigin.host && originalRequest.url.port == apiOrigin.port &&
+            originalRequest.url.encodedPath.startsWith(apiOrigin.encodedPath + "tpv/")) {
+            secureStorage.getString("tpv_command_token")?.let { requestBuilder.header("X-TPV-Command-Token", it) }
+            secureStorage.getSerialNumber()?.let { requestBuilder.header("X-Terminal-Serial", it) }
+            requestBuilder.header("X-TPV-Processor", if (BuildConfig.ENABLE_PAX_SDK) "PAX" else "NEXGO")
+        }
 
         // Get JWT token from secure storage
         val token = secureStorage.getToken()

@@ -334,54 +334,7 @@ class HeartbeatWorker @AssistedInject constructor(
      * @param pendingCommands List of commands from heartbeat response
      */
     private suspend fun processPendingCommands(pendingCommands: List<PendingCommandDto>) {
-        // Get terminal serial number for security validation in ACKs
-        val terminalId = deviceInfoManager.getSerialNumber()
-
-        for (commandDto in pendingCommands) {
-            try {
-                Timber.i("🔄 [Heartbeat] Processing command: ${commandDto.type} (id=${commandDto.commandId})")
-
-                // 1. Convert DTO to domain model
-                val command = commandDto.toTpvCommand()
-                if (command == null) {
-                    Timber.w("⚠️ [Heartbeat] Unknown command type: ${commandDto.type}, skipping")
-                    // Send REJECTED ACK for unknown command (with terminalId for security)
-                    val rejectResult = CommandResult.rejected("Unknown command type: ${commandDto.type}")
-                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, rejectResult)
-                    continue
-                }
-
-                // 2. Execute command via CommandExecutor
-                // Note: CommandExecutor also sends socket ACKs (which may fail silently if not connected)
-                // The HTTP ACK below ensures backend always gets the result
-                val result = commandExecutor.execute(command)
-
-                // 3. Send HTTP ACK to backend (primary acknowledgment for polling pattern)
-                // This is more reliable than socket ACK and works even from login screen
-                // terminalId is required for security validation (backend verifies ownership)
-                val ackResult = heartbeatRepository.sendCommandAck(command.commandId, terminalId, result)
-                if (ackResult is Result.Success) {
-                    Timber.i("✅ [Heartbeat] Command completed and ACK sent: ${command.type.name} → ${result.status.name}")
-                } else {
-                    // ACK failed but command was executed - backend will eventually timeout
-                    // and mark as failed, dashboard will show "no response"
-                    Timber.w("⚠️ [Heartbeat] Command executed but ACK failed: ${command.commandId}")
-                }
-
-            } catch (e: CancellationException) {
-                throw e  // Don't send false FAILED ACK on cancellation
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [Heartbeat] Failed to process command: ${commandDto.commandId}")
-                // Try to send FAILED ACK (with terminalId for security)
-                try {
-                    val failResult = CommandResult.failed("Execution error: ${e.message}")
-                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, failResult)
-                } catch (ackError: CancellationException) {
-                    throw ackError
-                } catch (ackError: Exception) {
-                    Timber.e(ackError, "❌ [Heartbeat] Failed to send FAILED ACK: ${commandDto.commandId}")
-                }
-            }
-        }
+        commandExecutor.rememberCommands(pendingCommands.mapNotNull { it.toTpvCommand() })
+        commandExecutor.recoverPending()
     }
 }

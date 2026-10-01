@@ -368,7 +368,8 @@ fun PendingCommandDto.toTpvCommand(): com.jaac.avoqado_tpv.features.remote_comma
 
     // Fecha limite con el reloj de ESTE aparato + lo que le queda segun el servidor: un reloj
     // adelantado ya no da por vencido un comando vigente (N86, 24-sep-2026). Default 5 min.
-    val expiresAtInstant = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry.fechaLimite(
+    val expiresAtInstant = if (payload?.get("_deliveryProtocol")?.asInt == 2) java.time.Instant.MAX
+    else com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry.fechaLimite(
         expiresInSeconds = expiresInSeconds,
         expiresAt = expiresAt,
         serverTimestamp = null, // el latido no trae la hora del servidor por comando

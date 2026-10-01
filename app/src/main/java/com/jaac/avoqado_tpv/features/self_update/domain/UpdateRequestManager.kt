@@ -2,6 +2,10 @@ package com.jaac.avoqado_tpv.features.self_update.domain
 
 import android.content.Context
 import android.os.Build
+import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
+import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
+import javax.inject.Provider
+import kotlinx.coroutines.CancellationException
 import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
@@ -43,7 +47,8 @@ class UpdateRequestManager @Inject constructor(
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
     private val apkInstaller: ApkInstaller,
     private val observability: ObservabilityManager,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val databaseProvider: Provider<AvoqadoDatabase>
 ) {
     companion object {
         private const val TAG = "UpdateRequestManager"
@@ -140,6 +145,18 @@ class UpdateRequestManager @Inject constructor(
             return
         }
 
+        if (!CommandExecutionWindow.tryBeginCommand()) {
+            _updateRequestState.value = UpdateRequestState.Error("Vuelve a Inicio sin cobros ni devoluciones para actualizar")
+            return
+        }
+        try {
+        val db = databaseProvider.get()
+        if (db.pendingPaymentDao().getPendingCount() > 0 || db.pendingPaymentDao().getFailedCount() > 0 ||
+            db.pendingRefundDao().getPendingCount() > 0 || db.pendingRefundDao().getFailedCount() > 0 ||
+            db.paymentAttemptDao().countUnresolvedCharges() > 0) {
+            _updateRequestState.value = UpdateRequestState.Error("Hay pagos o devoluciones pendientes de resolver")
+            return
+        }
         Timber.i("📥 [$TAG] User accepted update - starting download")
         _updateRequestState.value = UpdateRequestState.Downloading(progress = 0)
 
@@ -166,11 +183,16 @@ class UpdateRequestManager @Inject constructor(
                 }
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Timber.e(e, "❌ [$TAG] Download exception")
             _updateRequestState.value = UpdateRequestState.Error(
                 message = "Download error: ${e.message}"
             )
         }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            _updateRequestState.value = UpdateRequestState.Error("No se pudo verificar la seguridad de la actualización")
+        } finally { CommandExecutionWindow.setExecuting(false) }
     }
 
     /**
@@ -228,6 +250,7 @@ class UpdateRequestManager @Inject constructor(
             cleanupApk()
 
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             val durationMs = System.currentTimeMillis() - startTime
             observability.logCritical(TAG, "Install exception via remote command", e, mapOf(
                 "versionName" to versionName,

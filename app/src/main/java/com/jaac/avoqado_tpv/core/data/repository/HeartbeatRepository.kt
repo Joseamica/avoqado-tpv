@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.repository
 
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.dto.AuthAttemptDto
 import com.jaac.avoqado_tpv.core.data.network.dto.CommandAckRequestDto
@@ -56,6 +58,8 @@ private fun AuthAttemptRecord.toDto(): AuthAttemptDto = AuthAttemptDto(
 @Singleton
 class HeartbeatRepository @Inject constructor(
     private val apiService: ApiService,
+    private val secureStorage: SecureStorage,
+    private val commandInbox: com.jaac.avoqado_tpv.features.remote_command.domain.CommandInbox,
     // 📊 Task 6 — local batch of card-authorization-attempt telemetry, attached below
     // ONLY when no charge is in flight. Never its own network call — purely additive
     // to the heartbeat this repository already sends.
@@ -82,6 +86,41 @@ class HeartbeatRepository @Inject constructor(
      * @param heartbeat Domain model with health metrics
      * @return Result with server response or error
      */
+    private val commandSessionId = java.util.UUID.randomUUID().toString()
+
+    suspend fun permitCommand(commandId: String, terminalId: String): Result<Boolean> = try {
+        val response = apiService.permitCommand(mapOf("commandId" to commandId, "terminalId" to terminalId, "sessionId" to commandSessionId))
+        when {
+            response.isSuccessful -> Result.Success(response.body()?.permitted == true)
+            response.code() in listOf(403, 404, 409) -> Result.Success(false)
+            else -> Result.Error(ApiException.HttpError(response.code(), "No se pudo autorizar el comando"))
+        }
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        Result.Error(ApiException.NetworkError(e))
+    }
+
+    // Event-triggered only: safe foreground, network recovery or socket notification.
+    suspend fun commandsReady(terminalId: String): Result<List<PendingCommandDto>> = try {
+        if (secureStorage.getString("tpv_command_enrolled") != "true" && secureStorage.getToken() != null) {
+            if (secureStorage.getString("tpv_command_token") == null) {
+                val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                secureStorage.putStringDurably("tpv_command_token", bytes.joinToString("") { "%02x".format(it) })
+            }
+            val credential = apiService.provisionCommandCredential(mapOf("terminalId" to terminalId))
+            credential.body()?.commandToken?.let {
+                secureStorage.putStringDurably("tpv_command_token", it)
+                secureStorage.putStringDurably("tpv_command_enrolled", "true")
+            }
+        }
+        val response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
+        if (response.isSuccessful && response.body() != null) Result.Success(response.body()!!.pendingCommands)
+        else Result.Error(ApiException.HttpError(response.code(), "No se pudieron recuperar los comandos"))
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        Result.Error(ApiException.NetworkError(e))
+    }
+
     suspend fun sendHeartbeat(heartbeat: Heartbeat): Result<HeartbeatResponseDto> {
         return try {
             Timber.d("📡 Sending heartbeat for terminal ${heartbeat.terminalId}")
@@ -170,6 +209,8 @@ class HeartbeatRepository @Inject constructor(
      * @return Result indicating success or error
      */
     suspend fun sendCommandAck(commandId: String, terminalId: String, result: CommandResult): Result<Unit> {
+        if (result.status == com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED)
+            return Result.Error(ApiException.HttpError(425, result.message ?: "Comando pendiente"))
         return try {
             Timber.d("📤 Sending command ACK: $commandId → ${result.status.name} (terminal: $terminalId)")
 
@@ -182,6 +223,7 @@ class HeartbeatRepository @Inject constructor(
             )
 
             val response = apiService.sendCommandAck(request)
+            if (response.isSuccessful) commandInbox.acknowledge(commandId)
 
             if (response.isSuccessful) {
                 Timber.d("✅ Command ACK accepted for: $commandId")

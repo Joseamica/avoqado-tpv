@@ -52,6 +52,7 @@ class CommandExecutorTest {
     private lateinit var mockHeartbeatRepository: HeartbeatRepository
 
     // System under test
+    private val mockDatabase = mockk<com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase>(relaxed = true)
     private lateinit var commandExecutor: CommandExecutor
 
     // Test terminal ID
@@ -70,12 +71,14 @@ class CommandExecutorTest {
         mockAngelPayAuthRepository = mockk(relaxed = true)
         mockHeartbeatRepository = mockk(relaxed = true)
 
+        coEvery { mockHeartbeatRepository.permitCommand(any(), any()) } returns com.jaac.avoqado_tpv.core.domain.models.Result.Success(true)
         // Setup secure storage to return test terminal ID
         every { mockSecureStorage.getSerialNumber() } returns testTerminalId
 
         // Setup context mocks
         every { mockContext.packageName } returns "com.jaac.avoqado_tpv"
         every { mockContext.packageManager } returns mockPackageManager
+        every { mockPackageManager.getLaunchIntentForPackage(any()) } returns mockk(relaxed = true)
         every { mockContext.cacheDir } returns File("/tmp/cache")
         every { mockContext.externalCacheDir } returns null
 
@@ -84,9 +87,23 @@ class CommandExecutorTest {
         every { mockPackageManager.getPackageInfo(any<String>(), any<Int>()) } throws
             android.content.pm.PackageManager.NameNotFoundException("Mocked for testing")
 
+        coEvery { mockDatabase.pendingPaymentDao().getPendingCount() } returns 0
+        coEvery { mockDatabase.pendingPaymentDao().getFailedCount() } returns 0
+        coEvery { mockDatabase.pendingRefundDao().getPendingCount() } returns 0
+        coEvery { mockDatabase.pendingRefundDao().getFailedCount() } returns 0
+        coEvery { mockDatabase.paymentAttemptDao().countUnresolvedCharges() } returns 0
+        CommandExecutionWindow.setForeground(true)
+        CommandExecutionWindow.setRoute("home")
+        val persisted = mutableMapOf<String, String>()
+        every { mockSecureStorage.getString(any(), any()) } answers { persisted[firstArg()] }
+        every { mockSecureStorage.putStringDurably(any(), any()) } answers { persisted[firstArg()] = secondArg(); Unit }
+
         // Create CommandExecutor (updateRequestManager is Provider<> in production code)
         commandExecutor = CommandExecutor(
             context = mockContext,
+            commandInbox = CommandInbox(mockSecureStorage),
+            databaseProvider = Provider { mockDatabase },
+            paymentStateProvider = mockk(relaxed = true),
             lockScreenManager = mockLockScreenManager,
             maintenanceManager = mockMaintenanceManager,
             secureStorage = mockSecureStorage,
@@ -99,7 +116,54 @@ class CommandExecutorTest {
 
     @After
     fun tearDown() {
+        CommandExecutionWindow.setForeground(false)
+        CommandExecutionWindow.setRoute(null)
         unmockkAll()
+    }
+
+    @Test fun `recovery drains a full page only after confirmed progress without a timer`() = runTest {
+        val page = (1..10).map { id -> com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto(
+            commandId = "page-$id", correlationId = "corr-$id", type = "LOCK", payload = null,
+            priority = "NORMAL", requiresPin = false, expiresAt = null, requestedBy = "sa",
+            requestedByName = null, createdAt = java.time.Instant.now().toString()
+        ) }
+        coEvery { mockHeartbeatRepository.commandsReady(any()) } returnsMany listOf(
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(page),
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(emptyList())
+        )
+        coEvery { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) } answers {
+            CommandInbox(mockSecureStorage).acknowledge(firstArg())
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(Unit)
+        }
+        commandExecutor.recoverPending()
+        coVerify(exactly = 2) { mockHeartbeatRepository.commandsReady(any()) }
+        assertThat(CommandInbox(mockSecureStorage).pending()).isEmpty()
+    }
+
+    @Test fun `P1 duplicate command replays its receipt instead of executing twice`() = runTest {
+        val command = createCommand(TpvCommandType.LOCK)
+        val first = commandExecutor.execute(command)
+        assertThat(commandExecutor.execute(command)).isEqualTo(first)
+        verify(exactly = 1) { mockLockScreenManager.lock(any(), any(), any()) }
+    }
+    @Test fun `P1 command received on a payment screen waits in durable storage`() = runTest {
+        val command = createCommand(TpvCommandType.LOCK)
+        CommandExecutionWindow.setRoute("payment")
+        assertThat(commandExecutor.execute(command).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+        verify(exactly = 0) { mockLockScreenManager.lock(any(), any(), any()) }
+        CommandExecutionWindow.setRoute("home")
+        assertThat(commandExecutor.execute(command).status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+    }
+    @Test fun `P1 factory reset preserves the financial database`() = runTest {
+        every { mockContext.databaseList() } returns arrayOf(com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase.DATABASE_NAME)
+        commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET))
+        verify(exactly = 0) { mockContext.deleteDatabase(com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase.DATABASE_NAME) }
+    }
+
+    @Test fun `factory reset defers while a financial record is unresolved`() = runTest {
+        coEvery { mockDatabase.pendingPaymentDao().getPendingCount() } returns 1
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET)).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+        verify(exactly = 0) { mockSecureStorage.clearAll() }
     }
 
     // ========================================
@@ -124,84 +188,11 @@ class CommandExecutorTest {
         )
     }
 
-    // ========================================
-    // SELF-DESTRUCTIVE COMMAND ACK TESTS
-    // ========================================
-    //
-    // RESTART / SHUTDOWN / FACTORY_RESET end in Process.killProcess(myPid()), so the
-    // `return CommandResult.success(...)` below them is unreachable and so is the caller's
-    // sendCommandAck(). FACTORY_RESET also wipes, via clearAll(), the credentials the ACK
-    // needs. Result in prod: 67 RESTART and 65 FACTORY_RESET frozen in SENT, zero
-    // COMPLETED ever — an operator could not tell a wiped terminal from an ignored order.
-    //
-    // These tests pin the ONE thing that makes the difference: the ACK goes out first.
-
-    @Test
-    fun `FACTORY_RESET acknowledges the server BEFORE wiping its own credentials`() = runTest {
-        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
-
-        commandExecutor.execute(command)
-
-        // The ACK must have gone out; clearAll() destroys the serial it needs.
-        coVerify(exactly = 1) {
-            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
-        }
-    }
-
-    @Test
-    fun `FACTORY_RESET reports SUCCESS, not the unreachable return value`() = runTest {
-        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
-        val reported = slot<CommandResult>()
-
-        commandExecutor.execute(command)
-
-        coVerify { mockHeartbeatRepository.sendCommandAck(any(), any(), capture(reported)) }
-        assertThat(reported.captured.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
-    }
-
-    @Test
-    fun `RESTART acknowledges before killing the process`() = runTest {
-        val command = createCommand(type = TpvCommandType.RESTART)
-
-        commandExecutor.execute(command)
-
-        coVerify(exactly = 1) {
-            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
-        }
-    }
-
-    @Test
-    fun `SHUTDOWN acknowledges before killing the process`() = runTest {
-        val command = createCommand(type = TpvCommandType.SHUTDOWN)
-
-        commandExecutor.execute(command)
-
-        coVerify(exactly = 1) {
-            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
-        }
-    }
-
-    @Test
-    fun `a failing ACK never blocks the command the operator asked for`() = runTest {
-        // Offline, or the token is already gone. Refusing here would mean a wipe ordered
-        // for a stolen terminal silently does not happen — worse than an unrecorded wipe.
-        coEvery { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) } throws
-            RuntimeException("network down")
-
-        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
-
-        // Must not propagate out of execute().
-        commandExecutor.execute(command)
-
-        coVerify { mockSecureStorage.clearAll() }
-    }
-
-    @Test
-    fun `a non-destructive command is not acknowledged twice`() = runTest {
-        // Only the self-destructive ones ACK early; everything else is acknowledged by the
-        // caller after execute(), exactly as before.
-        commandExecutor.execute(createCommand(type = TpvCommandType.LOCK))
-
+    @Test fun `restart stores a receipt and reports only on the next app boot`() = runTest {
+        commandExecutor.stopProcess = { throw kotlinx.coroutines.CancellationException("process stopped") }
+        val command = createCommand(TpvCommandType.RESTART)
+        try { commandExecutor.execute(command) } catch (_: kotlinx.coroutines.CancellationException) {}
+        assertThat(CommandInbox(mockSecureStorage).previousResult(command.commandId)?.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
         coVerify(exactly = 0) { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) }
     }
 
@@ -415,7 +406,7 @@ class CommandExecutorTest {
     // ========================================
 
     @Test
-    fun `SYNC_DATA command should return success`() = runTest {
+    fun `SYNC_DATA command should reject an unsupported action`() = runTest {
         // Given
         val command = createCommand(TpvCommandType.SYNC_DATA)
 
@@ -423,7 +414,7 @@ class CommandExecutorTest {
         val result = commandExecutor.execute(command)
 
         // Then
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
     // ========================================
@@ -431,7 +422,7 @@ class CommandExecutorTest {
     // ========================================
 
     @Test
-    fun `EXPORT_LOGS command should return success with terminal info`() = runTest {
+    fun `EXPORT_LOGS command should reject an unsupported action with terminal info`() = runTest {
         // Given
         val command = createCommand(TpvCommandType.EXPORT_LOGS)
 
@@ -439,9 +430,7 @@ class CommandExecutorTest {
         val result = commandExecutor.execute(command)
 
         // Then
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
-        assertThat(result.data).containsKey("terminalId")
-        assertThat(result.data?.get("terminalId")).isEqualTo(testTerminalId)
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
     // ========================================
@@ -474,7 +463,7 @@ class CommandExecutorTest {
     }
 
     @Test
-    fun `UPDATE_CONFIG command should return success with valid payload`() = runTest {
+    fun `UPDATE_CONFIG command should reject an unsupported action with valid payload`() = runTest {
         // Given
         val command = createCommand(
             TpvCommandType.UPDATE_CONFIG,
@@ -485,8 +474,7 @@ class CommandExecutorTest {
         val result = commandExecutor.execute(command)
 
         // Then
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
-        assertThat(result.data).containsKey("configKeys")
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
     // ========================================
@@ -494,7 +482,7 @@ class CommandExecutorTest {
     // ========================================
 
     @Test
-    fun `REFRESH_MENU command should return success`() = runTest {
+    fun `REFRESH_MENU command should reject an unsupported action`() = runTest {
         // Given
         val command = createCommand(TpvCommandType.REFRESH_MENU)
 
@@ -502,7 +490,7 @@ class CommandExecutorTest {
         val result = commandExecutor.execute(command)
 
         // Then
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
     // ========================================
@@ -523,7 +511,7 @@ class CommandExecutorTest {
     }
 
     @Test
-    fun `UPDATE_MERCHANT command should return success with valid payload`() = runTest {
+    fun `UPDATE_MERCHANT command should reject an unsupported action with valid payload`() = runTest {
         // Given
         val command = createCommand(
             TpvCommandType.UPDATE_MERCHANT,
@@ -534,7 +522,7 @@ class CommandExecutorTest {
         val result = commandExecutor.execute(command)
 
         // Then
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
     // ========================================
@@ -627,27 +615,19 @@ class CommandExecutorTest {
     )
 
     @Test
-    fun `REMOTE_ACTIVATE saves venue, schedules restart and succeeds`() = runTest {
-        // Given — capture the restart instead of touching Handler/Process on JVM
-        var scheduledDelayMs: Long? = null
-        commandExecutor.restartScheduler = { delayMs -> scheduledDelayMs = delayMs }
+    fun `REMOTE_ACTIVATE restarts while holding the safe window and preserves its receipt`() = runTest {
+        var stopped = false
+        commandExecutor.stopProcess = {
+            assertThat(CommandExecutionWindow.executing.value).isTrue()
+            stopped = true
+        }
         val command = createCommand(TpvCommandType.REMOTE_ACTIVATE, remoteActivatePayload())
-
-        // When
         val result = commandExecutor.execute(command)
-
-        // Then
         assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        assertThat(stopped).isTrue()
+        assertThat(CommandInbox(mockSecureStorage).previousResult(command.commandId)?.data?.get("venueId")).isEqualTo("venue-NEW")
         verify { mockSecureStorage.saveVenueId("venue-NEW") }
         verify { mockSecureStorage.saveVenueSlug("venue-nuevo") }
-        verify { mockSecureStorage.saveSerialNumber("AVQD-TEST-001") }
-        // The money-safety core of the fix: a restart IS scheduled…
-        assertThat(scheduledDelayMs).isNotNull()
-        // …with a delay (not immediate) so the HTTP ACK goes out before the kill.
-        assertThat(scheduledDelayMs).isGreaterThan(0L)
-        assertThat(result.data?.get("restartScheduledMs")).isEqualTo(scheduledDelayMs)
-        // Unit tests build under sandbox (SUPPORTED_PROCESSOR=BLUMON): the AngelPay
-        // graph must never be touched on non-AngelPay builds.
         verify(exactly = 0) { mockAngelPayAuthRepository.logout() }
     }
 
@@ -655,7 +635,7 @@ class CommandExecutorTest {
     fun `REMOTE_ACTIVATE with missing venue info is rejected and does NOT restart`() = runTest {
         // Given
         var restartScheduled = false
-        commandExecutor.restartScheduler = { restartScheduled = true }
+        commandExecutor.stopProcess = { restartScheduled = true }
         val command = createCommand(
             TpvCommandType.REMOTE_ACTIVATE,
             payload = mapOf("venueName" to "Sin venueId ni slug"),

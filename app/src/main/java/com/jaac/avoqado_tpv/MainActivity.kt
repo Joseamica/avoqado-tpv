@@ -268,6 +268,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.setForeground(true)
         AppUpdateReceiver.isActivityResumed = true
         ForegroundRecoveryGate.disarm(reason = "activity_resumed")
         applyTpvImmersiveMode(window)
@@ -325,6 +326,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.setForeground(false)
         AppUpdateReceiver.isActivityResumed = false
         scheduleForegroundRecoveryIfNeeded()
     }

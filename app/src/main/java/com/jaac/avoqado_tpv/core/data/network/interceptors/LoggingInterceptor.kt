@@ -31,7 +31,7 @@ object LoggingInterceptor {
 
     private val CUERPO_SENSIBLE = Regex(
         // "clave"  :  "cadena con \" escapadas"  |  -12.5
-        "\"(supervisorPin|pin|password|newPin|currentPin)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
+        "\"(supervisorPin|pin|password|newPin|currentPin|commandToken|token|accessToken|refreshToken)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
     )
 
     /**
@@ -45,6 +45,8 @@ object LoggingInterceptor {
         }
 
         return HttpLoggingInterceptor(logger).apply {
+            redactHeader("Authorization")
+            redactHeader("X-TPV-Command-Token")
             level = if (BuildConfig.DEBUG) {
                 // Log full request/response in DEBUG
                 HttpLoggingInterceptor.Level.BODY

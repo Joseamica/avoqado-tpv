@@ -2,12 +2,11 @@ package com.jaac.avoqado_tpv.features.remote_command.domain
 
 import android.app.Activity
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import androidx.annotation.VisibleForTesting
 import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.google.firebase.appdistribution.FirebaseAppDistributionException
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.network.dto.toTpvCommand
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
@@ -21,6 +20,9 @@ import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult as Avoqa
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestResult
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import timber.log.Timber
@@ -36,8 +38,8 @@ import kotlin.coroutines.resume
  * **WHY**: Central orchestrator for executing remote commands from dashboard.
  * Handles the command execution logic only - ACKs are handled by ConnectionViewModel.
  *
- * **Design Pattern**: Similar to Square Terminal API's polling pattern
- * and enterprise MDM (Mobile Device Management) patterns.
+ * **Delivery**: Foreground, safe-screen and reconnect events trigger bounded recovery.
+ * No command polling timer is added.
  *
  * **ACK Flow (HTTP via ConnectionViewModel)**:
  * ```
@@ -62,6 +64,9 @@ import kotlin.coroutines.resume
 @Singleton
 class CommandExecutor @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val commandInbox: CommandInbox,
+    private val databaseProvider: Provider<com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase>,
+    private val paymentStateProvider: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider,
     private val lockScreenManager: LockScreenManager,
     private val maintenanceManager: MaintenanceManager,
     private val secureStorage: SecureStorage,
@@ -71,45 +76,49 @@ class CommandExecutor @Inject constructor(
     // (where the AngelPay graph is never constructed at runtime) cheap — the
     // .get() call inside the handler is gated by BuildConfig check.
     private val angelPayAuthRepositoryProvider: Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>,
-    // Needed by [ackSelfDestructiveCommand]: RESTART / SHUTDOWN / FACTORY_RESET kill this
-    // process, so the caller's ACK after execute() is unreachable and the server never
-    // learns they ran. Provider<T> defers construction so this stays off the graph until a
-    // self-destructive command actually fires.
+    // Resolve lazily to keep credential enrollment and command delivery outside the DI cycle.
     private val heartbeatRepositoryProvider: Provider<com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository>,
 ) {
+    private val executionMutex = Mutex()
+    private val recoveryMutex = Mutex()
+
+    suspend fun recoverPending() {
+        if (!CommandExecutionWindow.isSafe() || !recoveryMutex.tryLock()) return
+        try {
+            val repository = heartbeatRepositoryProvider.get()
+            val serial = secureStorage.getSerialNumber() ?: return
+            do {
+                val ready = repository.commandsReady(serial)
+                var acknowledged = true
+                if (ready is com.jaac.avoqado_tpv.core.domain.models.Result.Success) {
+                    for (dto in ready.data) {
+                        val command = dto.toTpvCommand()
+                        if (command == null) {
+                            if (repository.sendCommandAck(dto.commandId, serial, CommandResult.rejected("Comando no soportado por esta app"))
+                                !is com.jaac.avoqado_tpv.core.domain.models.Result.Success) acknowledged = false
+                        } else if (!commandInbox.remember(command)) acknowledged = false
+                    }
+                }
+                // Restore receipts, including an ACK lost before the previous process died.
+                for (command in commandInbox.pending()) {
+                    val receipt = commandInbox.previousResult(command.commandId)
+                    if (receipt != null || ready is com.jaac.avoqado_tpv.core.domain.models.Result.Success) {
+                        if (repository.sendCommandAck(command.commandId, serial, receipt ?: execute(command))
+                            !is com.jaac.avoqado_tpv.core.domain.models.Result.Success) acknowledged = false
+                    } else acknowledged = false
+                }
+                // Drain bounded pages only after progress; a busy/offline TPV waits for its next event.
+            } while (ready is com.jaac.avoqado_tpv.core.domain.models.Result.Success && ready.data.size == 10 &&
+                acknowledged && CommandExecutionWindow.isSafe())
+
+        } finally { recoveryMutex.unlock() }
+    }
+
+    fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { commandInbox.remember(it) } }
+
     companion object {
         private const val TAG = "CommandExecutor"
 
-        /**
-         * REMOTE_ACTIVATE restart delay. Must exceed the HTTP ACK round-trip:
-         * ConnectionViewModel sends the ACK AFTER execute() returns, so killing
-         * the process immediately would leave the command un-ACKed and the
-         * backend would re-deliver it on every heartbeat (restart loop).
-         */
-        private const val REMOTE_ACTIVATE_RESTART_DELAY_MS = 5_000L
-    }
-
-    /**
-     * Restart hook for REMOTE_ACTIVATE — replaceable in unit tests (the default
-     * touches Handler/Looper/Process, unavailable on the JVM). Relaunches the
-     * app so startup refetches the terminal config for this serial and loads
-     * the NEW venue's merchant credentials into memory.
-     */
-    @VisibleForTesting
-    internal var restartScheduler: (delayMs: Long) -> Unit = { delayMs ->
-        Handler(Looper.getMainLooper()).postDelayed({
-            Timber.w("🔄 [$TAG] REMOTE_ACTIVATE restart firing — reloading config for the new venue")
-            try {
-                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                intent?.addFlags(
-                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
-                )
-                context.startActivity(intent)
-            } finally {
-                android.os.Process.killProcess(android.os.Process.myPid())
-            }
-        }, delayMs)
     }
 
     /**
@@ -125,27 +134,68 @@ class CommandExecutor @Inject constructor(
      * @param command The command to execute
      * @return CommandResult with status and message
      */
-    suspend fun execute(command: TpvCommand): CommandResult {
-        Timber.i("📥 [$TAG] Executing command: ${command.type.name} (id=${command.commandId})")
-
-        // 1. Check if command has expired
-        if (Instant.now().isAfter(command.expiresAt)) {
-            Timber.w("⏰ [$TAG] Command expired: ${command.commandId}")
-            return CommandResult.rejected("Command expired before execution")
+    suspend fun execute(command: TpvCommand): CommandResult = executionMutex.withLock {
+        if (!commandInbox.remember(command)) return@withLock CommandResult(
+            com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Hay confirmaciones pendientes")
+        commandInbox.previousResult(command.commandId)?.let { return@withLock it }
+        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
+            paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight()) {
+            return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
+                "Pendiente hasta volver a Inicio sin pagos ni devoluciones")
         }
-
-        // 2. Execute command logic
-        // Note: ACKs are sent via HTTP by ConnectionViewModel after execute() returns
-        // This avoids race conditions between Socket.IO and HTTP ACK paths
+        if (Instant.now().isAfter(command.expiresAt)) {
+            val result = CommandResult.rejected("Command expired before execution")
+            commandInbox.complete(command.commandId, result)
+            return@withLock result
+        }
+        if (command.type in setOf(TpvCommandType.FACTORY_RESET, TpvCommandType.REMOTE_ACTIVATE,
+                TpvCommandType.RESTART, TpvCommandType.SHUTDOWN, TpvCommandType.INSTALL_VERSION,
+                TpvCommandType.REQUEST_UPDATE, TpvCommandType.FORCE_UPDATE)) {
+            val unresolved = try {
+                val db = databaseProvider.get()
+                db.pendingPaymentDao().getPendingCount() > 0 || db.pendingPaymentDao().getFailedCount() > 0 ||
+                    db.pendingRefundDao().getPendingCount() > 0 || db.pendingRefundDao().getFailedCount() > 0 ||
+                    db.paymentAttemptDao().countUnresolvedCharges() > 0
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                true // A storage error cannot grant permission to discard financial evidence.
+            }
+            if (unresolved) return@withLock CommandResult(
+                com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
+                "Hay pagos o devoluciones pendientes de resolver")
+        }
+        if (!CommandExecutionWindow.tryBeginCommand()) return@withLock CommandResult(
+            com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
+        try {
+        run {
+            val serial = secureStorage.getSerialNumber() ?: return@withLock CommandResult(
+                com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Identidad de terminal pendiente")
+            when (val permit = kotlinx.coroutines.withTimeoutOrNull(10_000L) { heartbeatRepositoryProvider.get().permitCommand(command.commandId, serial) }) {
+                is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> return@withLock CommandResult(
+                    com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Pendiente de conexión para autorizar el comando")
+                is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> if (!permit.data) {
+                    val cancelled = CommandResult.rejected("El comando fue cancelado o ya no está pendiente")
+                    commandInbox.complete(command.commandId, cancelled)
+                    return@withLock cancelled
+                }
+                else -> return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Autorización pendiente")
+            }
+        }
+        // Recheck after the network suspension, before starting any device effect.
+        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())
+            return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
+        commandInbox.begin(command.commandId)
         val result = try {
             executeCommand(command)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Timber.e(e, "❌ [$TAG] Command execution failed: ${command.type.name}")
+            Timber.e(e, "Command execution failed")
             CommandResult.failed("Execution error: ${e.message}")
         }
-
-        Timber.i("✅ [$TAG] Command completed: ${command.type.name} → ${result.status.name}")
-        return result
+        commandInbox.complete(command.commandId, result)
+        result
+        } finally { CommandExecutionWindow.setExecuting(false) }
     }
 
     /**
@@ -159,11 +209,11 @@ class CommandExecutor @Inject constructor(
             TpvCommandType.MAINTENANCE_MODE -> executeMaintenanceMode(command.payload, command.requestedByName)
             TpvCommandType.EXIT_MAINTENANCE -> executeExitMaintenance()
             TpvCommandType.REACTIVATE -> executeReactivate()
-            TpvCommandType.REMOTE_ACTIVATE -> executeRemoteActivate(command.payload)
+            TpvCommandType.REMOTE_ACTIVATE -> executeRemoteActivate(command)
 
             // App Lifecycle Commands
-            // RESTART/SHUTDOWN/FACTORY_RESET receive the command so they can acknowledge
-            // it before killing the process — see [ackSelfDestructiveCommand].
+            // RESTART/SHUTDOWN/FACTORY_RESET receive the command so they can persist a receipt
+            // before killing the process — see [recordSelfDestructiveResult].
             TpvCommandType.RESTART -> executeRestart(command)
             TpvCommandType.SHUTDOWN -> executeShutdown(command)
             TpvCommandType.CLEAR_CACHE -> executeClearCache()
@@ -316,7 +366,8 @@ class CommandExecutor @Inject constructor(
      * @param payload Contains: venueId, venueName, venueSlug, venueTimezone,
      *                         terminalId, terminalName, serialNumber
      */
-    private suspend fun executeRemoteActivate(payload: Map<String, Any>?): CommandResult {
+    private suspend fun executeRemoteActivate(command: TpvCommand): CommandResult {
+        val payload = command.payload
         Timber.w("⚡ [$TAG] Executing REMOTE_ACTIVATE command")
 
         if (payload.isNullOrEmpty()) {
@@ -372,7 +423,7 @@ class CommandExecutor @Inject constructor(
             // money misrouting (documented in serialized-inventory-and-sim-custody.md:
             // merchant credentials/sessions load in-memory at startup only; the
             // heartbeat never refreshes them). Fix: clear the AngelPay session on
-            // Nexgo builds and schedule a full app restart on BOTH processors —
+            // Nexgo builds and restart under the same safe window on BOTH processors —
             // boot refetches the terminal config and loads the new venue's merchants.
             val angelPaySessionCleared = if (BuildConfig.SUPPORTED_PROCESSOR == "ANGELPAY") {
                 runCatching { angelPayAuthRepositoryProvider.get().logout() }
@@ -382,10 +433,7 @@ class CommandExecutor @Inject constructor(
                 false
             }
 
-            restartScheduler(REMOTE_ACTIVATE_RESTART_DELAY_MS)
-            Timber.i("🔄 [$TAG] App restart scheduled in ${REMOTE_ACTIVATE_RESTART_DELAY_MS}ms (ACK goes out first)")
-
-            return CommandResult.success(
+            val restarted = executeRestart(command, CommandResult.success(
                 message = "Terminal activated remotely by SUPERADMIN — restarting to load new venue's merchants",
                 data = mapOf(
                     "venueId" to venueId,
@@ -395,11 +443,15 @@ class CommandExecutor @Inject constructor(
                     "serialNumber" to serialNumber,
                     "activatedAt" to Instant.now().toString(),
                     "activationType" to "REMOTE",
-                    "restartScheduledMs" to REMOTE_ACTIVATE_RESTART_DELAY_MS,
                     "angelpaySessionCleared" to angelPaySessionCleared
                 )
-            )
+            ))
+            if (restarted.status != com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.SUCCESS)
+                lockScreenManager.lock("Activación incompleta", "Reinicia la aplicación antes de cobrar en el nuevo venue", "SUPERADMIN")
+            return restarted
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            lockScreenManager.lock("Activación incompleta", "Reinicia la aplicación antes de cobrar en el nuevo venue", "SUPERADMIN")
             Timber.e(e, "❌ [$TAG] Failed to save activation data")
             return CommandResult.failed("Failed to save activation data: ${e.message}")
         }
@@ -412,64 +464,38 @@ class CommandExecutor @Inject constructor(
     /**
      * RESTART - Restart the application
      *
-     * Uses a delayed restart to allow result emission.
+     * Keeps the execution window until the restart and receipt are persisted.
      */
-    /**
-     * Acknowledge a self-destructive command BEFORE it destroys the process that would
-     * report it.
-     *
-     * RESTART, SHUTDOWN and FACTORY_RESET all end in `Process.killProcess(myPid())`, which
-     * makes the `return CommandResult.success(...)` beneath them unreachable — and with it
-     * the caller's `sendCommandAck(...)`. FACTORY_RESET is worse still: `clearAll()` wipes
-     * the very credentials the ACK needs. So the server never learned any of them ran:
-     * prod had 67 RESTART and 65 FACTORY_RESET frozen in SENT, and not one COMPLETED in the
-     * platform's whole history. A stuck SENT reads identically to "the command never
-     * landed", so an operator cannot tell a wiped terminal from an ignored order.
-     *
-     * Best-effort by design. The command arrived over the network milliseconds ago (it came
-     * in on a heartbeat response), so the ACK lands in practically every real case. When it
-     * does not, we still destroy: refusing would mean a wipe ordered for a stolen terminal
-     * silently does not happen, and an unrecorded wipe beats a wipe that never occurs.
-     */
-    private suspend fun ackSelfDestructiveCommand(command: TpvCommand, result: CommandResult) {
-        try {
-            val terminalId = secureStorage.getSerialNumber()
-            if (terminalId.isNullOrBlank()) {
-                Timber.e("❌ [$TAG] Cannot ACK ${command.type.name} before self-destruct — no terminal serial")
-                return
-            }
-            heartbeatRepositoryProvider.get().sendCommandAck(command.commandId, terminalId, result)
-            Timber.i("📤 [$TAG] ACK sent for ${command.type.name} BEFORE self-destruct (id=${command.commandId})")
-        } catch (e: Exception) {
-            // Never let a reporting failure stop the command the operator actually asked for.
-            Timber.w(e, "⚠️ [$TAG] ACK before self-destruct failed for ${command.type.name} — proceeding anyway")
-        }
+    // Store after the effect and before process death. Next boot reports this receipt.
+    private fun recordSelfDestructiveResult(command: TpvCommand, result: CommandResult) {
+        commandInbox.complete(command.commandId, result)
     }
 
-    private suspend fun executeRestart(command: TpvCommand): CommandResult {
-        Timber.w("🔄 [$TAG] Executing RESTART command - app will restart in 500ms")
+    @VisibleForTesting
+    internal var stopProcess: () -> Unit = { android.os.Process.killProcess(android.os.Process.myPid()) }
 
-        // Report first: everything below this line dies with the process.
-        ackSelfDestructiveCommand(command, CommandResult.success("Restarting application..."))
+    private suspend fun executeRestart(command: TpvCommand, result: CommandResult = CommandResult.success("Aplicación reiniciada")): CommandResult {
+        Timber.w("🔄 [$TAG] Executing RESTART command - app will restart")
 
-        // Delay to allow result emission before restart
-        delay(500)
+
 
         // Use Activity.recreate() pattern - gets activity from context
         // Note: ProcessPhoenix would be better but requires additional dependency
         try {
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                ?: return CommandResult.failed("No se pudo abrir la aplicación para reiniciar")
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
 
-            // Kill the current process after starting new instance
-            android.os.Process.killProcess(android.os.Process.myPid())
+            recordSelfDestructiveResult(command, result)
+            stopProcess()
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Timber.e(e, "❌ [$TAG] Restart failed")
             return CommandResult.failed("Restart failed: ${e.message}")
         }
 
-        return CommandResult.success("Restarting application...")
+        return result
     }
 
     /**
@@ -478,16 +504,12 @@ class CommandExecutor @Inject constructor(
      * High-risk action - requires PIN verification (handled by server)
      */
     private suspend fun executeShutdown(command: TpvCommand): CommandResult {
-        Timber.w("⏻ [$TAG] Executing SHUTDOWN command - app will close in 500ms")
+        Timber.w("⏻ [$TAG] Executing SHUTDOWN command - app will close")
 
-        // Report first: everything below this line dies with the process.
-        ackSelfDestructiveCommand(command, CommandResult.success("Application shutting down..."))
 
-        // Delay to allow result emission
-        delay(500)
 
-        // Close the application
-        android.os.Process.killProcess(android.os.Process.myPid())
+        recordSelfDestructiveResult(command, CommandResult.success("Aplicación cerrada"))
+        stopProcess()
 
         return CommandResult.success("Application shutting down...")
     }
@@ -1021,18 +1043,7 @@ class CommandExecutor @Inject constructor(
      * Currently just triggers a refresh signal - individual orders sync on demand.
      */
     private suspend fun executeSyncData(): CommandResult {
-        Timber.i("🔄 [$TAG] Executing SYNC_DATA command")
-
-        // Note: OrderSyncCoordinator currently supports single order sync only.
-        // Full sync would need to iterate through all cached orders or add a bulk sync method.
-        // For now, we mark this as successful and let individual order screens handle their sync.
-        return CommandResult.success(
-            message = "Data sync initiated - orders will sync on access",
-            data = mapOf(
-                "syncedAt" to Instant.now().toString(),
-                "note" to "Individual orders sync on demand"
-            )
-        )
+        return CommandResult.rejected("Este comando remoto aún no está implementado en la TPV")
     }
 
     /**
@@ -1050,9 +1061,6 @@ class CommandExecutor @Inject constructor(
     private suspend fun executeFactoryReset(command: TpvCommand): CommandResult {
         Timber.e("🔥 [$TAG] Executing FACTORY_RESET command - CRITICAL OPERATION")
 
-        // Report BEFORE clearAll(): the ACK needs the serial and auth token that the very
-        // next line destroys. This is the only window in which the server can be told.
-        ackSelfDestructiveCommand(command, CommandResult.success("Factory reset completed"))
 
         try {
             // Clear all secure storage (including activation)
@@ -1065,7 +1073,7 @@ class CommandExecutor @Inject constructor(
             // Clear databases
             // Note: Some databases (like pax-database from Blumon SDK) may be locked
             // if they have active connections. This is OK - the app restart will clean them up.
-            context.databaseList().forEach { dbName ->
+            context.databaseList().filter { it != com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase.DATABASE_NAME }.forEach { dbName ->
                 try {
                     context.deleteDatabase(dbName)
                     Timber.d("✅ [$TAG] Deleted database: $dbName")
@@ -1082,15 +1090,17 @@ class CommandExecutor @Inject constructor(
 
             Timber.w("✅ [$TAG] Factory reset completed - terminal will restart")
 
+            recordSelfDestructiveResult(command, CommandResult.success("Borrado completado; evidencia financiera conservada"))
             // Delay then restart
             delay(1000)
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
             intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
-            android.os.Process.killProcess(android.os.Process.myPid())
+            stopProcess()
 
             return CommandResult.success("Factory reset completed")
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Timber.e(e, "❌ [$TAG] Factory reset failed")
             return CommandResult.failed("Factory reset failed: ${e.message}")
         }
@@ -1103,18 +1113,7 @@ class CommandExecutor @Inject constructor(
      * TODO: Implement actual log export (Firebase Crashlytics, custom endpoint, etc.)
      */
     private fun executeExportLogs(): CommandResult {
-        Timber.i("📋 [$TAG] Executing EXPORT_LOGS command")
-
-        // TODO: Implement log export when logging infrastructure is enhanced
-        // This would collect Timber logs, system logs, and upload to backend
-        return CommandResult.success(
-            message = "Log export initiated",
-            data = mapOf(
-                "terminalId" to getTerminalId(),
-                "appVersion" to getAppVersion(),
-                "exportedAt" to Instant.now().toString()
-            )
-        )
+        return CommandResult.rejected("Este comando remoto aún no está implementado en la TPV")
     }
 
     // ========================================
@@ -1127,21 +1126,8 @@ class CommandExecutor @Inject constructor(
      * @param payload Configuration updates to apply
      */
     private fun executeUpdateConfig(payload: Map<String, Any>?): CommandResult {
-        if (payload.isNullOrEmpty()) {
-            return CommandResult.rejected("No configuration provided")
-        }
-
-        Timber.i("⚙️ [$TAG] Executing UPDATE_CONFIG command")
-
-        // Apply configuration updates
-        // TODO: Implement actual config update when config management is enhanced
-        return CommandResult.success(
-            message = "Configuration updated",
-            data = mapOf(
-                "updatedAt" to Instant.now().toString(),
-                "configKeys" to payload.keys.toList()
-            )
-        )
+        if (payload.isNullOrEmpty()) return CommandResult.rejected("No configuration provided")
+        return CommandResult.rejected("Este comando remoto aún no está implementado en la TPV")
     }
 
     /**
@@ -1150,14 +1136,7 @@ class CommandExecutor @Inject constructor(
      * Triggers menu data refresh from backend.
      */
     private suspend fun executeRefreshMenu(): CommandResult {
-        Timber.i("📋 [$TAG] Executing REFRESH_MENU command")
-
-        // TODO: Implement menu refresh when ProductRepository has refresh method
-        // This would clear cached menu and fetch fresh from backend
-        return CommandResult.success(
-            message = "Menu refresh initiated",
-            data = mapOf("refreshedAt" to Instant.now().toString())
-        )
+        return CommandResult.rejected("Este comando remoto aún no está implementado en la TPV")
     }
 
     /**
@@ -1168,20 +1147,8 @@ class CommandExecutor @Inject constructor(
      * @param payload New merchant configuration
      */
     private fun executeUpdateMerchant(payload: Map<String, Any>?): CommandResult {
-        if (payload.isNullOrEmpty()) {
-            return CommandResult.rejected("No merchant data provided")
-        }
-
-        Timber.w("💳 [$TAG] Executing UPDATE_MERCHANT command")
-
-        // TODO: Implement merchant update when multi-merchant switching is enhanced
-        // This would update Blumon merchant credentials and re-initialize SDK
-        return CommandResult.success(
-            message = "Merchant update initiated",
-            data = mapOf(
-                "updatedAt" to Instant.now().toString()
-            )
-        )
+        if (payload.isNullOrEmpty()) return CommandResult.rejected("No merchant data provided")
+        return CommandResult.rejected("Este comando remoto aún no está implementado en la TPV")
     }
 
     // ========================================

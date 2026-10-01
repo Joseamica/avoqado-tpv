@@ -99,7 +99,8 @@ enum class TpvCommandResultStatus {
     PARTIAL_SUCCESS,
     FAILED,
     TIMEOUT,
-    REJECTED
+    REJECTED,
+    DEFERRED // Local only: remains in the durable inbox, never sent as a final ACK.
 }
 
 /**

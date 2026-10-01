@@ -30,4 +30,9 @@ class LoggingInterceptorTest {
         assertThat(LoggingInterceptor.censurarCuerpoSensible(cabecera)).isEqualTo(cabecera)
         assertThat(LoggingInterceptor.censurarCuerpoSensible("")).isEqualTo("")
     }
+    @Test fun `device command credentials are redacted from activation responses`() {
+        val body = """{"commandToken":"never-log-this","venueId":"v1"}"""
+        assertThat(LoggingInterceptor.censurarCuerpoSensible(body)).isEqualTo("""{"commandToken":"***","venueId":"v1"}""")
+    }
+
 }

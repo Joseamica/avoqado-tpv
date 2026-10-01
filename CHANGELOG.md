@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+- Seguridad de comandos TPV: el reinicio de activación permanece dentro de la ventana segura; la descarga/instalación solicitada vuelve a comprobar pagos pendientes. Inicio ocupado con monto, ajustes o preparación del SDK tampoco admite comandos. Las credenciales de dispositivo se censuran en cuerpos y cabeceras de los logs.
+
+### Fixed
+
+- [PAX/Nexgo] Comandos administrativos por eventos, identidad de dispositivo y recibos cifrados durables. Esperan Inicio/Activación sin cobros ni devoluciones; preparación del SDK reserva la ventana. Reinicio/borrado se confirman al abrir la app nuevamente; borrado conserva evidencia financiera y espera a resolver operaciones pendientes. Comandos no implementados responden rechazo.
+
 ## [2.12.1] - 2026-09-30
 
 ### **Fixed**

@@ -118,6 +118,15 @@ interface ApiService {
      * @param request Heartbeat data with health metrics
      * @return Heartbeat response with server status and pending commands
      */
+    @POST("tpv/command-credential")
+    suspend fun provisionCommandCredential(@Body body: Map<String, String>): Response<com.jaac.avoqado_tpv.core.data.network.dto.CommandCredentialDto>
+
+    @POST("tpv/commands/permit")
+    suspend fun permitCommand(@Body body: Map<String, String>): Response<com.jaac.avoqado_tpv.core.data.network.dto.CommandPermitDto>
+
+    @POST("tpv/commands/ready")
+    suspend fun commandsReady(@Body body: Map<String, String>): Response<com.jaac.avoqado_tpv.core.data.network.dto.CommandsReadyDto>
+
     @POST("tpv/heartbeat")
     suspend fun sendHeartbeat(
         @Body request: com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatRequestDto

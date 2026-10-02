@@ -2014,6 +2014,37 @@ class PaymentViewModelTest {
         }
     }
 
+    // PAX en producción (1-oct-2026): cobro aprobado → «Imprimir» sin papel → «No se pudo
+    // imprimir» → al volver, la pantalla repetía la animación de «Pago aprobado» como si se
+    // hubiera cobrado otra vez. El cobro de ESTA venta ya se celebró: volver al recibo no se anima.
+    @Test
+    fun `P2 volver del error de impresion no repite la animacion de pago aprobado`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            val stateField = PaymentViewModel::class.java.getDeclaredField("_state")
+            stateField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val stateFlow = stateField.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+            val exito = PaymentState.Success(authCode = "F628CL", amount = "25.00", referenceNumber = "873257481453")
+            assertThat(exito.approvedAnimationShown).isFalse()
+            stateFlow.value = PaymentState.PrintError(
+                message = "Sin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
+                previousState = exito
+            )
+
+            viewModel.dismissPrintError()
+
+            val regreso = viewModel.state.value
+            assertThat(regreso).isInstanceOf(PaymentState.Success::class.java)
+            regreso as PaymentState.Success
+            assertThat(regreso.approvedAnimationShown).isTrue()
+            // Es el MISMO cobro: nada más cambia.
+            assertThat(regreso.copy(approvedAnimationShown = false)).isEqualTo(exito)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // 🔴 Hueco 2 (2026-09-07): el registro del cobro se cortó (timeout de 25 s con la red VIVA, o
     // caída de red) y el cobro entró a la cola — pero en el camino Blumon nadie pedía el sync
     // inmediato: la fila esperaba al periódico de 15 min mientras el servidor mantenía la

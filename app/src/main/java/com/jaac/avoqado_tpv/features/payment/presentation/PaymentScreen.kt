@@ -739,8 +739,14 @@ fun PaymentScreen(
                     // alarm must be the first thing the cashier sees, not buried behind a
                     // "success" celebration (mirrors AngelPay's Queued-state confetti skip,
                     // escalated here since this case has no local queue fallback at all).
+                    // `approvedAnimationShown`: al volver de «No se pudo imprimir» esta rama se
+                    // compone de nuevo y este `remember` nace otra vez — sin la marca repetía la
+                    // animación como si se hubiera cobrado dos veces (PAX, 1-oct-2026).
                     var showApprovedAnimation by remember(currentState.authCode) {
-                        mutableStateOf(currentState.recordingLostMessage == null && currentState.pendingSyncMessage == null)
+                        mutableStateOf(
+                            !currentState.approvedAnimationShown &&
+                                currentState.recordingLostMessage == null && currentState.pendingSyncMessage == null
+                        )
                     }
                     // 🔴 Fix round 1 (Important): the check above is NEVER actually true when it
                     // matters — Success publishes the INSTANT the card is approved, seconds
@@ -956,12 +962,19 @@ fun PaymentScreen(
                 is PaymentState.Printing -> {
                     // No separate UI - printing happens in background while on Success screen
                 }
-                // 🆕 NEW: Print error state (show error dialog, can retry or dismiss)
+                // 🖨️ Print error: back to the receipt (no retry here — see below)
+                // 🔴 El cobro YA se aprobó: esto no es «Error en el Pago» (invita a cobrar otra vez).
+                // Sin «Reintentar»: `printReceipt` sólo imprime desde Success y aquí no hacía nada;
+                // se reimprime desde el recibo, que además sabe si era recibo o comanda.
                 is PaymentState.PrintError -> {
+                    val yaPaso = if (currentState.previousState.isRefund) "La devolución sí se hizo." else "El cobro sí quedó aprobado."
                     PaymentErrorContent(
-                        message = currentState.message,
-                        canRetry = true,
-                        onRetry = viewModel::printReceipt,  // Retry printing
+                        message = "$yaPaso\n\n${currentState.message}",
+                        canRetry = false,
+                        title = "No se pudo imprimir",
+                        icon = "🖨️",
+                        cancelText = "Volver al recibo",
+                        onRetry = {},
                         onCancel = viewModel::dismissPrintError  // Return to success screen
                     )
                 }
@@ -2600,6 +2613,9 @@ private fun PaymentErrorContent(
     showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir caja" instead of "Reintentar"
     showCashFallback: Boolean = false,
     isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
+    title: String? = null,  // 🖨️ Errores que NO son del cobro (impresora): no decir «Error en el Pago»
+    icon: String = "❌",
+    cancelText: String = "Cancelar",
     onRetry: () -> Unit,
     onOpenShift: () -> Unit = {},  // 🆕 Navigate to Shifts screen
     onCashFallback: () -> Unit = {},
@@ -2632,7 +2648,7 @@ private fun PaymentErrorContent(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "❌",
+                        text = icon,
                         style = MaterialTheme.typography.displayLarge,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -2640,7 +2656,7 @@ private fun PaymentErrorContent(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = if (isRefund) "Error en el Reembolso" else "Error en el Pago",
+                        text = title ?: if (isRefund) "Error en el Reembolso" else "Error en el Pago",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center
@@ -2689,7 +2705,7 @@ private fun PaymentErrorContent(
                         }
 
                         AvoqadoButton(
-                            text = "Cancelar",
+                            text = cancelText,
                             onClick = onCancel,
                             fullWidth = true
                         )
@@ -3116,6 +3132,22 @@ private fun PaymentLoadingContentPinPreview() {
             message = "Procesando pago...",
             pinState = "**",
             showPinSection = true
+        )
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Print error - sin papel (PAX A910S)", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun PaymentPrintErrorPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentErrorContent(
+            message = "El cobro sí quedó aprobado.\n\nSin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
+            canRetry = false,
+            title = "No se pudo imprimir",
+            icon = "🖨️",
+            cancelText = "Volver al recibo",
+            onRetry = {},
+            onCancel = {}
         )
     }
 }

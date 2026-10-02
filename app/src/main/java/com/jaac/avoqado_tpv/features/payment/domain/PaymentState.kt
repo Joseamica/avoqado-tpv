@@ -425,7 +425,15 @@ sealed class PaymentState {
          * branches (`onSuccess`/`onFailure`) of the SAME queue-enqueue call in
          * `handleOfflineQueueOutcome` — never both non-null on the same instance.
          */
-        val pendingSyncMessage: String? = null
+        val pendingSyncMessage: String? = null,
+        /**
+         * La animación de «Pago aprobado» ya se vio para ESTE cobro. Sólo `dismissPrintError`
+         * lo prende: al volver de «No se pudo imprimir» la pantalla del recibo se arma de nuevo
+         * (su `remember` murió mientras se veía el error) y, sin esto, repetía la animación como
+         * si se hubiera cobrado otra vez (PAX en producción, 1-oct-2026, impresora sin papel).
+         * Cada cobro nuevo nace en `false`; `.copy()` lo conserva cuando llega el recibo tarde.
+         */
+        val approvedAnimationShown: Boolean = false
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.

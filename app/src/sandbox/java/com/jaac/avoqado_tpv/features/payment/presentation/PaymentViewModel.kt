@@ -9021,7 +9021,8 @@ class PaymentViewModel @Inject constructor(
     fun dismissPrintError() {
         val currentState = _state.value
         if (currentState is PaymentState.PrintError) {
-            _state.value = currentState.previousState
+            // El recibo se arma de nuevo al volver: sin la marca repetía «Pago aprobado».
+            _state.value = currentState.previousState.copy(approvedAnimationShown = true)
             Timber.d("🔙 [Print] Dismissed print error, returned to Success state")
         }
     }

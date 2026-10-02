@@ -7,10 +7,11 @@
 
 ## [Unreleased]
 
-- Seguridad de comandos TPV: el reinicio de activación permanece dentro de la ventana segura; la descarga/instalación solicitada vuelve a comprobar pagos pendientes. Inicio ocupado con monto, ajustes o preparación del SDK tampoco admite comandos. Las credenciales de dispositivo se censuran en cuerpos y cabeceras de los logs.
+## [2.12.2] - 2026-10-02
 
 ### Fixed
 
+- **[PAX/Nexgo] Seguridad de comandos**: el reinicio de activación permanece dentro de la ventana segura; la descarga/instalación solicitada vuelve a comprobar pagos pendientes. Inicio ocupado con monto, ajustes o preparación del SDK tampoco admite comandos. Las credenciales de dispositivo se censuran en cuerpos y cabeceras de los logs.
 - **[PAX] Impresora sin papel tras un cobro aprobado**: al volver del aviso ya no se repite la animación de «Pago aprobado» (parecía un segundo cobro). El aviso dice «No se pudo imprimir — El cobro sí quedó aprobado» en vez de «Error en el Pago», y su botón es «Volver al recibo» (el «Reintentar» de esa pantalla no hacía nada: se reimprime desde el recibo).
 - **Desarrollo aislado**: `avoqado.devBaseUrl` configura también el origen de Socket.IO; la API y los comandos usan el mismo servidor de pruebas.
 - **Pruebas [PAX/Nexgo]**: la activación remota verifica el cierre de sesión AngelPay sólo en el flavor que usa ese procesador.

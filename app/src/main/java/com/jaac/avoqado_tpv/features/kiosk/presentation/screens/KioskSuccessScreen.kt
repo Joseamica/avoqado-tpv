@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.kiosk.presentation.screens
 
+import com.jaac.avoqado_tpv.core.printer.QrDelRecibo
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -239,7 +240,7 @@ fun KioskSuccessScreen(
                             shape = RoundedCornerShape(24.dp)
                         )
                 ) {
-                    receipt?.receiptUrl?.let { qrUrl ->
+                    receipt?.receiptUrl?.takeIf { QrDelRecibo.debeIntentarse(it) }?.let { qrUrl ->
                         // Receipt arrived → Show QR code
                         Image(
                             painter = rememberQrBitmapPainter(
@@ -253,8 +254,8 @@ fun KioskSuccessScreen(
                                 .align(Alignment.Center)
                         )
                     } ?: run {
-                        // Receipt pending → Show shimmer
-                        ShimmerBox(
+                        // Receipt pending → Show shimmer. Si llegó sin dirección, no viene otro: nada.
+                        if (receipt == null) ShimmerBox(
                             modifier = Modifier
                                 .size(140.dp)
                                 .align(Alignment.Center),

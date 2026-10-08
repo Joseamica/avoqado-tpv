@@ -617,7 +617,7 @@ fun AngelPayPaymentScreen(
                         // covered or `startCardPayment` can beat the in-flight
                         // `selectMerchant` and trigger SwitchBlockedDuringCharge:
                         //   1. `inFlightSwitch != null` — SDK `switchMerchant`
-                        //      is mid-call (the merchant-level switch, ≤ 8s)
+                        //      is mid-call (the merchant-level switch, ≤ ANGELPAY_SWITCH_TIMEOUT_MS)
                         //   2. `authState is Authenticating` — `switchAccount`
                         //      is mid-call (the account-level swap, can take
                         //      30-60s under AngelPay QA timeouts with the

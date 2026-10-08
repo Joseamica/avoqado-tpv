@@ -404,7 +404,7 @@ class DeviceHealthViewModel @Inject constructor(
         }
 
         // P6: Memory low
-        if (health.memoryInfo.freeMB in 0..100) {
+        if (health.memoryInfo.isLow) {
             alerts.add(DeviceAlert.MemoryLow(health.memoryInfo.freeMB))
         }
 

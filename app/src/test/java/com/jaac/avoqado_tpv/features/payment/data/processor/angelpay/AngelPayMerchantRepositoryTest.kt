@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -113,9 +114,25 @@ class AngelPayMerchantRepositoryTest {
     }
 
     @Test
-    fun `switchActiveMerchant times out at 8 seconds`() = runTest(dispatcher) {
+    fun `switchActiveMerchant waits for a slow AngelPay switch instead of cutting it at 8 s`() = runTest(dispatcher) {
+        // SDK 1.0.20+: el cambio en el servidor tarda ~1 s, pero la preparación posterior del SDK
+        // (GetOperations + runPostAuthSetup) pasó de 7 s en la N86 con red lenta (7-oct). Cortarla
+        // a los 8 s dejaba a AngelPay en B y a la terminal anotando A.
         coEvery { sdkGateway.switchMerchant(merchantB.id) } coAnswers {
-            delay(10_000)
+            delay(20_000)
+            Result.success(Unit)
+        }
+
+        val result = repo.switchActiveMerchant(merchantB.id)
+
+        assertTrue("a slow switch must complete, got ${result.exceptionOrNull()}", result.isSuccess)
+        assertEquals(merchantB.id, repo.activeAngelPayMerchantId.value)
+    }
+
+    @Test
+    fun `switchActiveMerchant gives up only after the long cap when AngelPay never answers`() = runTest(dispatcher) {
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } coAnswers {
+            delay(ANGELPAY_SWITCH_TIMEOUT_MS + 1_000)
             Result.success(Unit)
         }
 
@@ -125,6 +142,81 @@ class AngelPayMerchantRepositoryTest {
         val err = result.exceptionOrNull()
         assertTrue("expected SwitchTimeoutError, got $err", err is SwitchTimeoutError)
         assertEquals(merchantB.id, (err as SwitchTimeoutError).targetMerchantId)
+    }
+
+    @Test
+    fun `switch rejected because AngelPay is already on the target counts as success`() = runTest(dispatcher) {
+        // N86, 7-oct: un cambio anterior sí terminó en AngelPay; la terminal seguía anotando A y
+        // AngelPay contestó 409 E409 «Ya está operando con este comercio» a cada reintento.
+        coEvery { sdkGateway.selectMerchant(merchantA.id, any()) } returns Result.success(Unit)
+        repo.completeInitialSelection(merchantA.id, "init")
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } returns
+            Result.failure(RuntimeException("Conflicto con el estado actual del recurso"))
+        coEvery { sdkGateway.getUserMerchants() } returns
+            Result.success(listOf(merchantA.copy(isActive = false), merchantB.copy(isActive = true)))
+
+        val result = repo.switchActiveMerchant(merchantB.id)
+
+        assertTrue("AngelPay already on B ⇒ the switch is done", result.isSuccess)
+        assertEquals(merchantB.id, repo.activeAngelPayMerchantId.value)
+        coVerify { cacheDao.markActive(merchantB.id) }
+    }
+
+    @Test
+    fun `switch cut by the cap that AngelPay did complete reconciles to the target`() = runTest(dispatcher) {
+        coEvery { sdkGateway.selectMerchant(merchantA.id, any()) } returns Result.success(Unit)
+        repo.completeInitialSelection(merchantA.id, "init")
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } coAnswers {
+            delay(ANGELPAY_SWITCH_TIMEOUT_MS + 1_000)
+            Result.success(Unit)
+        }
+        coEvery { sdkGateway.getUserMerchants() } returns
+            Result.success(listOf(merchantA.copy(isActive = false), merchantB.copy(isActive = true)))
+
+        val result = repo.switchActiveMerchant(merchantB.id)
+
+        assertTrue(result.isSuccess)
+        assertEquals(merchantB.id, repo.activeAngelPayMerchantId.value)
+    }
+
+    @Test
+    fun `switch cancelled midway records where AngelPay really ended`() = runTest(dispatcher) {
+        // N86, 7-oct-2026: el cajero salió de la pantalla (Atrás) a mitad del cambio a B. La petición ya había llegado
+        // a AngelPay (sesión en B) pero el caché se quedó en A: la siguiente pantalla de cobro arrancaba en A y el
+        // candado bloqueaba con «quedó en otro comercio».
+        coEvery { sdkGateway.selectMerchant(merchantA.id, any()) } returns Result.success(Unit)
+        repo.completeInitialSelection(merchantA.id, "init")
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } coAnswers {
+            delay(10_000)
+            Result.success(Unit)
+        }
+        coEvery { sdkGateway.getUserMerchants() } returns
+            Result.success(listOf(merchantA.copy(isActive = false), merchantB.copy(isActive = true)))
+
+        val job = launch { repo.switchActiveMerchant(merchantB.id) }
+        dispatcher.scheduler.advanceTimeBy(2_000)
+        job.cancel()
+        job.join()
+
+        assertEquals(merchantB.id, repo.activeAngelPayMerchantId.value)
+        coVerify { cacheDao.markActive(merchantB.id) }
+        assertNull("no switch may stay marked in flight", repo.inFlightSwitch.value)
+    }
+
+    @Test
+    fun `failed switch records the merchant AngelPay is really on, not the previous one`() = runTest(dispatcher) {
+        val merchantC = MerchantSummary(id = 3, name = "C", affiliationNumber = "1003", isActive = false)
+        coEvery { sdkGateway.selectMerchant(merchantA.id, any()) } returns Result.success(Unit)
+        repo.completeInitialSelection(merchantA.id, "init")
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } returns Result.failure(AngelPayNetworkError())
+        coEvery { sdkGateway.getUserMerchants() } returns
+            Result.success(listOf(merchantA.copy(isActive = false), merchantB, merchantC.copy(isActive = true)))
+
+        val result = repo.switchActiveMerchant(merchantB.id)
+
+        assertTrue(result.isFailure)
+        assertEquals(merchantC.id, repo.activeAngelPayMerchantId.value)
+        coVerify { cacheDao.markActive(merchantC.id) }
     }
 
     @Test
@@ -138,6 +230,7 @@ class AngelPayMerchantRepositoryTest {
 
         val result = repo.switchActiveMerchant(merchantB.id)
 
+        // getUserMerchants() devuelve vacío (setup): sin saber dónde quedó AngelPay, se conserva A.
         assertTrue(result.isFailure)
         assertEquals(
             "active merchant should remain A after failed switch to B",

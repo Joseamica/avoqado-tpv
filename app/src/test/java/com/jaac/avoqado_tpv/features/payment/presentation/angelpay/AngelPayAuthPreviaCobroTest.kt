@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAut
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ANGELPAY_SWITCH_TIMEOUT_MS
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AuthErrorKind
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DisparadorRecuperacion
@@ -445,7 +446,7 @@ class AngelPayAuthPreviaCobroTest {
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Switching::class.java)
 
-            advanceTimeBy(8_500L)
+            advanceTimeBy(ANGELPAY_SWITCH_TIMEOUT_MS + 2_500L)
             runCurrent()
 
             verificarSinEmision()
@@ -455,6 +456,34 @@ class AngelPayAuthPreviaCobroTest {
             vm.resetPayment()
             runCurrent()
             verificarUnSoloFailedPreAutorizacion("req-espera")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 un cambio de comercio lento que termina bien deja cobrar aunque pase de 8 s`() = runTest(testDispatcher) {
+        // N86, 7-oct-2026 (SDK 1.0.21, red lenta): la preparación posterior del cambio pasó de 8 s y
+        // la espera fija de 8 s cortaba un cambio sano con «Cambio de merchant no se completó».
+        sesionViva = true
+        authStateFlow.value = AngelPayAuthState.Authenticated
+        activeMerchantIdFlow.value = 99
+        inFlightSwitchFlow.value = 11
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Switching::class.java)
+
+            advanceTimeBy(20_000L)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Switching::class.java)
+
+            activeMerchantIdFlow.value = 11
+            inFlightSwitchFlow.value = null
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -624,7 +653,7 @@ class AngelPayAuthPreviaCobroTest {
             vm.startCardPayment()
             runCurrent()
 
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otra cuenta")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
             coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
             verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
         } finally {

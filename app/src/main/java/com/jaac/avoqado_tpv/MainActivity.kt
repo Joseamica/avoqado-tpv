@@ -172,6 +172,15 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        // El launcher de AngelPay (Nexgo) abre la app con FLAG_ACTIVITY_NEW_TASK sin RESET_TASK_IF_NEEDED: si la app
+        // ya estaba abierta, Android apila una SEGUNDA MainActivity encima — y esconde el cobro del SDK que seguía
+        // esperando tarjeta debajo (N86, 7-oct-2026). Esta copia se cierra y queda al frente la tarea que ya existía.
+        if (!isTaskRoot && intent?.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) {
+            Timber.i("🧭 [MainActivity] Ícono del launcher con la app ya abierta — se vuelve a la tarea existente")
+            finish()
+            return
+        }
+
         // Edge-to-edge: content draws behind system bars (status bar, nav bar)
         // This allows ModalBottomSheet scrim to cover the entire screen seamlessly
         enableEdgeToEdge()

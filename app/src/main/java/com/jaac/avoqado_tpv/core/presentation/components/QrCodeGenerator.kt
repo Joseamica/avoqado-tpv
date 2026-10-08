@@ -85,6 +85,11 @@ fun rememberQrBitmapPainter(
             } catch (ex: WriterException) {
                 Timber.e(ex, "❌ Failed to encode QR code")
                 null
+            } catch (ex: IllegalArgumentException) {
+                // ZXing lanza esto con contenido vacío («Found empty contents»): tumbaba la app en la
+                // pantalla de cobro aprobado cuando el servidor no mandaba recibo (7-oct-2026).
+                Timber.w(ex, "⚠️ QR sin contenido — no se dibuja")
+                null
             }
 
             val matrixWidth = bitmapMatrix?.width ?: sizePx

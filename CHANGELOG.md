@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **[Nexgo] Cambio de comercio que se quedaba desincronizado**: desde el SDK 1.0.20 `switchMerchant` hace una preparación posterior (GetOperations + runPostAuthSetup) que con red lenta pasa de 8 s; nuestro tope de 8 s la cortaba a la mitad, AngelPay quedaba en el comercio nuevo y la terminal anotaba el anterior. De ahí salían «timed out after 8s», el 409 «Ya está operando con este comercio» en cada reintento y el bloqueo «La sesión quedó en otra cuenta» (medido en la N86 el 7-oct). Ahora el tope es de 45 s (sólo para un SDK colgado), un cambio fallido le pregunta a la sesión viva dónde quedó y anota eso (si ya está en el destino, cuenta como hecho), la espera previa al cobro termina cuando acaba el cambio en curso, y el aviso dice «otro comercio».
+- **[PAX/Nexgo] La app se cerraba en «Pago aprobado» cuando el servidor no mandaba recibo digital**: el recibo faltante se guarda como `""` (`22975b0f`) y las pantallas de éxito (Nexgo, PAX, kiosco) sólo revisaban `!= null`, así que ZXing recibía un texto vacío y tumbaba la app con el cobro ya registrado. En la Nexgo además la recuperación por S5/S6 siempre deja `""`. Ahora las tres usan la misma regla del ticket (`QrDelRecibo.debeIntentarse`): la carga sólo mientras el recibo no ha llegado, el QR si trae dirección, y nada si llegó vacío; el generador de QR ya no truena con texto vacío.
+- **[Nexgo] Salir a mitad del cambio de comercio**: si la pantalla se cerraba (Atrás) mientras AngelPay cambiaba de comercio, la sesión quedaba en el nuevo y el caché en el viejo; la siguiente pantalla de cobro arrancaba en el viejo y el candado bloqueaba con «quedó en otro comercio». Ahora la cancelación también lee la sesión viva y anota dónde quedó.
+- **[PAX/Nexgo] El ícono del launcher abría una segunda copia de la app**: con la app abierta (p. ej. el cobro del SDK esperando tarjeta), el launcher de AngelPay (`FLAG_ACTIVITY_NEW_TASK` sin `RESET_TASK_IF_NEEDED`) apilaba otra `MainActivity` que escondía el cobro vivo; el cajero veía «Hay otro cobro en curso» sin poder resolverlo. Ahora esa copia se cierra y vuelve la tarea existente.
+- **[PAX/Nexgo] «Memoria baja» falsa**: la alarma se disparaba con ≤ 100 MB libres del heap de la app, cuyo tope en la Nexgo es 128 MB — o sea en cuanto la app usaba 28 MB. Ahora se mide como proporción del tope: crítico con 15 % o menos, aviso con 30 % o menos.
+
 ## [2.12.2] - 2026-10-02
 
 ### Fixed

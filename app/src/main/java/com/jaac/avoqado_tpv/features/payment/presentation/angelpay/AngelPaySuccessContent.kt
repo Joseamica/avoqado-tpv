@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
+import com.jaac.avoqado_tpv.core.printer.QrDelRecibo
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -281,7 +282,10 @@ fun AngelPaySuccessContent(
             ) {
                 // ── QR Code Receipt (normal) OR proof-of-sale photo (serialized SIM sale) ──
                 if (!isSerializedFlow) {
-                    if (showReceiptScreen && state.receipt?.receiptUrl != null) {
+                    // Una dirección vacía no es dirección (misma regla que el ticket, QrDelRecibo): el
+                    // servidor puede contestar sin recibo y la recuperación por S5/S6 lo deja en "".
+                    val qrUrl = state.receipt?.receiptUrl?.takeIf { QrDelRecibo.debeIntentarse(it) }
+                    if (showReceiptScreen && qrUrl != null) {
                         Box(
                             modifier = Modifier
                                 .size(160.dp)
@@ -295,7 +299,7 @@ fun AngelPaySuccessContent(
                         ) {
                             Image(
                                 painter = rememberQrBitmapPainter(
-                                    content = state.receipt.receiptUrl,
+                                    content = qrUrl,
                                     size = 120.dp,
                                     padding = 0.dp,
                                 ),

@@ -46,6 +46,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.paraLaRegla
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ANGELPAY_SWITCH_TIMEOUT_MS
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
@@ -85,6 +86,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
@@ -1776,7 +1778,7 @@ class AngelPayPaymentViewModel @Inject constructor(
 
                 // ── Task 32 — D2 payment-time guard (spec §18.1) ─────────────
                 // If the Avoqado-selected merchant differs from the SDK-side
-                // active merchant (e.g. switch still in flight), wait up to 8s
+                // active merchant (e.g. switch still in flight), wait for that switch to end
                 // for the merchant repository to settle on the target. Without
                 // this, an SDK call could route a charge to the previous merchant.
                 if (!waitForMerchantToSettle()) {
@@ -1935,7 +1937,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     /**
      * Task 32 (spec §18.1) — wait until `AngelPayMerchantRepository.activeAngelPayMerchantId`
      * equals the cashier-selected merchant's AngelPay id. Returns false (and
-     * emits an [AngelPayPaymentState.Error]) if the switch never settles in 8s.
+     * emits an [AngelPayPaymentState.Error]) if the in-flight switch ends elsewhere or hits its cap.
      *
      * Short-circuits to `true` when:
      *   - There is no current AngelPay-targeted merchant (defensive — happens
@@ -1957,16 +1959,27 @@ class AngelPayPaymentViewModel @Inject constructor(
             previousMerchantId = currentActive,
         )
 
-        val settled = withTimeoutOrNull(8_000L) {
-            angelPayMerchantRepository.activeAngelPayMerchantId.first { it == targetId }
-            true
+        // Ya no es un reloj fijo de 8 s: desde el SDK 1.0.20 un cambio sano puede tardar más (ver
+        // ANGELPAY_SWITCH_TIMEOUT_MS). Termina al asentarse el comercio elegido o, si había un cambio
+        // en vuelo, en cuanto ese cambio acaba — el repositorio deja anotado dónde quedó la sesión.
+        val settled = withTimeoutOrNull(ANGELPAY_SWITCH_TIMEOUT_MS + 2_000L) {
+            var huboCambioEnVuelo = false
+            combine(
+                angelPayMerchantRepository.activeAngelPayMerchantId,
+                angelPayMerchantRepository.inFlightSwitch,
+                ::Pair,
+            ).first { (activo, enVuelo) ->
+                if (enVuelo != null) huboCambioEnVuelo = true
+                activo == targetId || (huboCambioEnVuelo && enVuelo == null)
+            }
+            angelPayMerchantRepository.activeAngelPayMerchantId.value == targetId
         }
 
         return if (settled == true) {
             Timber.i("🔶 [AngelPay] Merchant switch settled (target=$targetId)")
             true
         } else {
-            Timber.e("❌ [AngelPay] Merchant switch did not settle in 8s | target=$targetId")
+            Timber.e("❌ [AngelPay] Merchant switch did not settle | target=$targetId settled=$settled")
             // 📡 T26 / H.3: se sigue ofreciendo «Reintentar» sobre ESTA solicitud, así que el final
             // NO sale aquí: se retiene y sale (failed + PRE_AUTHORIZATION) sólo al cancelar/salir o
             // al vencer el reloj de abandono — antes no salía nunca y la tablet terminaba en UNKNOWN
@@ -2105,7 +2118,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         if (!sessionAlignedWithSelectedMerchant()) {
             // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
             fallaAntesDeAutorizar(
-                base = "La sesión de AngelPay quedó en otra cuenta. Vuelve a seleccionar el comercio.",
+                base = "La sesión de AngelPay quedó en otro comercio. Vuelve a seleccionar el comercio.",
                 mensajeParaPos = "La terminal no pudo preparar el comercio",
             )
             clearChargingOnTerminal()

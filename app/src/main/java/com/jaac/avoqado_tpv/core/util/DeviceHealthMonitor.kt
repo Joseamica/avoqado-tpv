@@ -174,13 +174,13 @@ class DeviceHealthMonitor @Inject constructor(
      * Critical conditions (Toast/Square pattern):
      * - Battery <10% and not charging
      * - Storage <1GB
-     * - Memory <100MB free
+     * - Memory: 15 % or less of the app heap cap left
      */
     fun isCriticalHealth(): Boolean {
         val health = getSystemHealth()
         return (health.batteryLevel in 0..10 && !health.batteryCharging) ||
                (health.storageAvailableGB in 0f..1f) ||
-               (health.memoryInfo.freeMB in 0..100)
+               health.memoryInfo.isLow
     }
 
     /**
@@ -189,13 +189,13 @@ class DeviceHealthMonitor @Inject constructor(
      * Warning conditions:
      * - Battery <20% and not charging
      * - Storage <5GB
-     * - Memory <500MB free
+     * - Memory: 30 % or less of the app heap cap left
      */
     fun isWarningHealth(): Boolean {
         val health = getSystemHealth()
         return (health.batteryLevel in 0..20 && !health.batteryCharging) ||
                (health.storageAvailableGB in 0f..5f) ||
-               (health.memoryInfo.freeMB in 0..500)
+               health.memoryInfo.isTight
     }
 }
 
@@ -209,7 +209,15 @@ data class MemoryInfo(
     val totalMB: Long,  // Total memory available to app
     val usedMB: Long,   // Currently used memory
     val freeMB: Long    // Free memory
-)
+) {
+    // Proporción del TOPE del heap de la app, no MB fijos: en la Nexgo el tope es 128 MB y «≤ 100 MB libres»
+    // disparaba la alarma con sólo 28 MB usados (7-oct-2026). Sin lectura (-1) no hay alarma.
+    /** Crítico: queda 15 % o menos del tope. */
+    val isLow: Boolean get() = totalMB > 0 && freeMB in 0..(totalMB * 15 / 100)
+
+    /** Aviso: queda 30 % o menos del tope. */
+    val isTight: Boolean get() = totalMB > 0 && freeMB in 0..(totalMB * 30 / 100)
+}
 
 /**
  * System health metrics data class
@@ -234,10 +242,10 @@ data class SystemHealth(
         return when {
             batteryLevel in 0..10 && !batteryCharging -> "CRITICAL: Battery low"
             storageAvailableGB in 0f..1f -> "CRITICAL: Storage low"
-            memoryInfo.freeMB in 0..100 -> "CRITICAL: Memory low"
+            memoryInfo.isLow -> "CRITICAL: Memory low"
             batteryLevel in 0..20 && !batteryCharging -> "WARNING: Battery low"
             storageAvailableGB in 0f..5f -> "WARNING: Storage low"
-            memoryInfo.freeMB in 0..500 -> "WARNING: Memory low"
+            memoryInfo.isTight -> "WARNING: Memory low"
             else -> "HEALTHY"
         }
     }

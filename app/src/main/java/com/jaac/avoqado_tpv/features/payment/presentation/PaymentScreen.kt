@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import com.jaac.avoqado_tpv.core.printer.QrDelRecibo
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -1927,7 +1928,8 @@ private fun PaymentSuccessContent(
                                 shape = RoundedCornerShape(24.dp)
                             )
                     ) {
-                        receipt?.receiptUrl?.let { qrUrl ->
+                        // Recibo con dirección vacía = el servidor contestó SIN recibo: ni QR ni carga infinita.
+                        receipt?.receiptUrl?.takeIf { QrDelRecibo.debeIntentarse(it) }?.let { qrUrl ->
                             Image(
                                 painter = com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter(
                                     content = qrUrl,
@@ -1975,7 +1977,8 @@ private fun PaymentSuccessContent(
                                         )
                                     }
                                 }
-                                recordingLostMessage == null -> {
+                                // La carga sólo mientras el recibo NO ha llegado; si llegó sin dirección, no viene otro.
+                                recordingLostMessage == null && receipt == null -> {
                                     com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
                                         modifier = Modifier
                                             .size(140.dp)

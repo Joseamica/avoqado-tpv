@@ -34,6 +34,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAut
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ANGELPAY_SWITCH_TIMEOUT_MS
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
@@ -365,7 +366,7 @@ class AngelPayPaymentViewModelTest {
     // 4. startPayment waits for in-flight switch (success path)
     // ----------------------------------------------------------------------
     @Test
-    fun `startCardPayment waits for in-flight switch up to 8s when active merchant differs from selected`() = runTest(testDispatcher) {
+    fun `startCardPayment waits for in-flight switch when active merchant differs from selected`() = runTest(testDispatcher) {
         // Cashier has selected merchant 11, but SDK is still on a different one.
         activeMerchantIdFlow.value = 99
         authStateFlow.value = AngelPayAuthState.Authenticated
@@ -405,10 +406,10 @@ class AngelPayPaymentViewModelTest {
     }
 
     // ----------------------------------------------------------------------
-    // 5. startPayment errors after 8s if switch never completes
+    // 5. startPayment errors after the switch cap if the switch never completes
     // ----------------------------------------------------------------------
     @Test
-    fun `startCardPayment errors after 8s if switch never completes`() = runTest(testDispatcher) {
+    fun `startCardPayment errors after the switch cap if switch never completes`() = runTest(testDispatcher) {
         activeMerchantIdFlow.value = 99
         authStateFlow.value = AngelPayAuthState.Authenticated
         every { secureStorage.getAngelPayCredentials() } returns mockk(relaxed = true)
@@ -427,8 +428,8 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Switching::class.java)
 
-            // Advance past the 8s watchdog without the active id ever flipping.
-            advanceTimeBy(8_500L)
+            // Advance past the switch cap without the active id ever flipping.
+            advanceTimeBy(ANGELPAY_SWITCH_TIMEOUT_MS + 2_500L)
             runCurrent()
 
             val state = vm.state.value

@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import com.angelpay.angelpaysdk.models.MerchantSummary
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
@@ -18,7 +19,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -107,8 +111,10 @@ class AngelPayMerchantRepository @Inject constructor(
      *   - [SwitchBlockedDuringChargeError] if a payment is in flight (D2)
      *
      * Failure cases (call SDK, fail):
-     *   - [SwitchTimeoutError] if SDK call > 8s
+     *   - [SwitchTimeoutError] if SDK call > [ANGELPAY_SWITCH_TIMEOUT_MS]
      *   - Pass-through of SDK errors (categorized by [AngelPaySdkGateway])
+     *   Either way the live session is re-read first ([conciliarTrasCambioFallido]): if AngelPay is
+     *   already on the target, it's a success.
      *
      * Success: update [_activeAngelPayMerchantId] + [cacheDao.markActive].
      *
@@ -151,10 +157,7 @@ class AngelPayMerchantRepository @Inject constructor(
             // blindly switching. Only runs when the repo has no tracked active
             // merchant, so it never adds latency to a normal switch.
             if (previousActive == null) {
-                val sdkMerchants = sdkGateway.getUserMerchants().getOrNull()
-                val sdkActiveId = sdkMerchants?.firstOrNull { it.isActive }?.id
-                    ?: sdkMerchants?.singleOrNull()?.id
-                if (sdkActiveId == merchantId) {
+                if (comercioActivoEnSdk() == merchantId) {
                     _activeAngelPayMerchantId.value = merchantId
                     cacheDao.markActive(merchantId)
                     return@withLock Result.success(Unit)
@@ -163,7 +166,7 @@ class AngelPayMerchantRepository @Inject constructor(
             _inFlightSwitch.value = merchantId
 
             val deferred: Deferred<Result<Unit>> = async {
-                withTimeoutOrNull(8_000L) {
+                withTimeoutOrNull(ANGELPAY_SWITCH_TIMEOUT_MS) {
                     sdkGateway.switchMerchant(merchantId)
                 } ?: Result.failure(SwitchTimeoutError(merchantId))
             }
@@ -171,21 +174,68 @@ class AngelPayMerchantRepository @Inject constructor(
 
             try {
                 val result = deferred.await()
-                result
-                    .onSuccess {
-                        _activeAngelPayMerchantId.value = merchantId
-                        cacheDao.markActive(merchantId)
-                    }
-                    .onFailure {
-                        // Keep previous active in cache + state. Don't surface false confidence.
-                        if (previousActive != null) cacheDao.markActive(previousActive)
-                    }
-                result
+                if (result.isSuccess) {
+                    _activeAngelPayMerchantId.value = merchantId
+                    cacheDao.markActive(merchantId)
+                    result
+                } else {
+                    conciliarTrasCambioFallido(merchantId, previousActive, result)
+                }
+            } catch (cancelled: CancellationException) {
+                // La pantalla se cerró (Atrás) o llegó otro toque a mitad del cambio: la petición pudo haber llegado
+                // ya a AngelPay. Se anota dónde quedó la sesión antes de soltar, o la siguiente pantalla arranca en el
+                // comercio viejo y el candado bloquea el cobro (N86, 7-oct-2026).
+                withContext(NonCancellable) {
+                    conciliarTrasCambioFallido(merchantId, previousActive, Result.failure(cancelled))
+                }
+                throw cancelled
             } finally {
                 _inFlightSwitch.value = null
                 currentSwitchJob = null
             }
         }
+    }
+
+    /** El comercio activo según la sesión viva del SDK; null si no se puede saber. */
+    private suspend fun comercioActivoEnSdk(): Int? {
+        val merchants = try {
+            sdkGateway.getUserMerchants().getOrNull()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            null
+        } ?: return null
+        return merchants.firstOrNull { it.isActive }?.id ?: merchants.singleOrNull()?.id
+    }
+
+    /**
+     * Un cambio fallido NO prueba que AngelPay siga en el comercio anterior (N86, 7-oct-2026): el
+     * servidor cambia en ~1 s y lo lento es la preparación posterior del SDK, así que un corte por
+     * tiempo o un error tardío pueden dejar la sesión YA en el destino — y entonces cada reintento
+     * recibe 409 «Ya está operando con este comercio». Se le pregunta a la sesión viva y se anota
+     * la verdad:
+     *  - en el destino ⇒ el cambio está hecho;
+     *  - en otro comercio ⇒ se anota ése (no el anterior) y se devuelve el error;
+     *  - sin poder saberlo ⇒ se conserva el anterior.
+     * Antes de cobrar, `sessionAlignedWithSelectedMerchant` vuelve a preguntar de todos modos.
+     */
+    private suspend fun conciliarTrasCambioFallido(
+        targetId: Int,
+        previousActive: Int?,
+        failed: Result<Unit>,
+    ): Result<Unit> {
+        val enSdk = comercioActivoEnSdk()
+        Timber.w(
+            failed.exceptionOrNull(),
+            "🔶 [AngelPay] switchMerchant(%d) falló; la sesión viva está en %s (anterior=%s)",
+            targetId, enSdk ?: "desconocido", previousActive ?: "ninguno",
+        )
+        val verdad = enSdk ?: previousActive
+        if (verdad != null) {
+            _activeAngelPayMerchantId.value = verdad
+            cacheDao.markActive(verdad)
+        }
+        return if (enSdk == targetId) Result.success(Unit) else failed
     }
 
     /** Start the periodic 15-min refresh job (D6). Idempotent — restarting cancels the previous job. */
@@ -271,7 +321,15 @@ object SwitchBlockedDuringChargeError : RuntimeException(
     "Cannot switch merchant while a payment is in progress"
 )
 
-/** Returned when the SDK switch call doesn't complete within 8 seconds. */
+/**
+ * Tope de `switchMerchant`. Era 8 s; desde el SDK 1.0.20 el cambio incluye una preparación posterior
+ * (GetOperations + runPostAuthSetup) que en la N86 con red lenta pasó de 7 s (7-oct-2026). Cortarla
+ * a la mitad deja la sesión del SDK en el comercio nuevo con la preparación incompleta, así que el
+ * tope sólo protege de un SDK colgado: la pantalla muestra «Cambiando cuenta…» mientras tanto.
+ */
+internal const val ANGELPAY_SWITCH_TIMEOUT_MS = 45_000L
+
+/** Returned when the SDK switch call doesn't complete within [ANGELPAY_SWITCH_TIMEOUT_MS]. */
 data class SwitchTimeoutError(val targetMerchantId: Int) : RuntimeException(
-    "Merchant switch to $targetMerchantId timed out after 8s"
+    "AngelPay no terminó de cambiar al comercio $targetMerchantId en ${ANGELPAY_SWITCH_TIMEOUT_MS / 1000} s"
 )

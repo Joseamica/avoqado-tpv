@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.12.3] - 2026-10-07
+
 ### **Fixed**
 
 - **[Nexgo] Cambio de comercio que se quedaba desincronizado**: desde el SDK 1.0.20 `switchMerchant` hace una preparación posterior (GetOperations + runPostAuthSetup) que con red lenta pasa de 8 s; nuestro tope de 8 s la cortaba a la mitad, AngelPay quedaba en el comercio nuevo y la terminal anotaba el anterior. De ahí salían «timed out after 8s», el 409 «Ya está operando con este comercio» en cada reintento y el bloqueo «La sesión quedó en otra cuenta» (medido en la N86 el 7-oct). Ahora el tope es de 45 s (sólo para un SDK colgado), un cambio fallido le pregunta a la sesión viva dónde quedó y anota eso (si ya está en el destino, cuenta como hecho), la espera previa al cobro termina cuando acaba el cambio en curso, y el aviso dice «otro comercio».

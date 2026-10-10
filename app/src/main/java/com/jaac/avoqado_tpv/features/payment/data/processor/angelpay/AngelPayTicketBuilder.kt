@@ -13,10 +13,10 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import com.jaac.avoqado_tpv.core.printer.LeyendaIva
 import com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction
 import java.io.ByteArrayOutputStream
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -102,12 +102,6 @@ class AngelPayTicketBuilder @Inject constructor() {
 
         val total = amount + tipAmount
 
-        // Fiscal IVA breakdown (Mexico): prices include IVA 16%.
-        // Base = Total / 1.16, IVA = Total - Base. Matches PAX receipt.
-        val ivaRate = BigDecimal("1.16")
-        val baseBeforeIva = total.divide(ivaRate, 2, RoundingMode.HALF_UP)
-        val ivaAmount = total - baseBeforeIva
-
         // Current date/time in venue timezone (matches PAX printReceipt).
         val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale("es", "MX"))
             .apply { timeZone = venueTimeZone }
@@ -187,17 +181,19 @@ class AngelPayTicketBuilder @Inject constructor() {
             }
             add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))
 
-            // ── Amounts (subtotal / propina / total) ───────────────────
-            // Show subtotal explicitly only if tip > 0 (matches PAX).
-            if (tipAmount > BigDecimal.ZERO) {
-                add(
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Subtotal",
-                        right = "${formatMoney(amount)} MXN",
-                        style = normal,
-                    )
+            // ── Totales, en el orden de las apps (IVA por producto, plan 7a, A7-R6): Subtotal → leyenda del IVA → Propina →
+            // TOTAL. Subtotal = lo cobrado sin propina: la Nexgo no recibe descuento ni renglones, así que no hay renglón de
+            // descuento y siempre cuadra. La leyenda sustituye al «IVA 16 %» que se calculaba sobre el total CON propina.
+            add(
+                PrintTicketItemRequest(
+                    type = PrintTicketItemType.TWO_COLUMNS,
+                    left = "Subtotal",
+                    right = "${formatMoney(amount)} MXN",
+                    style = normal,
                 )
+            )
+            add(PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = LeyendaIva.TEXTO, style = normal))
+            if (tipAmount > BigDecimal.ZERO) {
                 add(
                     PrintTicketItemRequest(
                         type = PrintTicketItemType.TWO_COLUMNS,
@@ -207,38 +203,13 @@ class AngelPayTicketBuilder @Inject constructor() {
                     )
                 )
             }
+            add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))
             add(
                 PrintTicketItemRequest(
                     type = PrintTicketItemType.TWO_COLUMNS,
                     left = "TOTAL",
                     right = "${formatMoney(total)} MXN",
                     style = totalStyle,
-                )
-            )
-
-            // ── IVA breakdown (Mexican fiscal format) ──────────────────
-            add(PrintTicketItemRequest(type = PrintTicketItemType.SPACER, lines = 1))
-            add(
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TEXT,
-                    text = "Desglose IVA (incluido):",
-                    style = normal,
-                )
-            )
-            add(
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TWO_COLUMNS,
-                    left = "  Base",
-                    right = "${formatMoney(baseBeforeIva)} MXN",
-                    style = normal,
-                )
-            )
-            add(
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TWO_COLUMNS,
-                    left = "  IVA 16%",
-                    right = "${formatMoney(ivaAmount)} MXN",
-                    style = normal,
                 )
             )
             add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))

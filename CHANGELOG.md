@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **[PAX] [Nexgo] El ticket ya no inventa el IVA**: en lugar de «Desglose IVA / Base / IVA 16 %» (16 % calculado sobre el total CON propina, falso para productos al 0 % o exentos) imprime «IVA incluido cuando aplica». El precio ya trae el IVA y la cantidad exacta por tasa vive en la factura (IVA por producto, plan 7, D3). Aplica también al ticket que manda el POS.
+- **[PAX] [Nexgo] Totales del ticket en el orden de las apps**: Subtotal → «IVA incluido cuando aplica» → Propina → TOTAL (la PAX además el Descuento, entre el Subtotal y la leyenda; la Nexgo no lo recibe ni lo imprime); el Subtotal sale también sin propina.
+
+### **Fixed**
+- **[PAX] El ticket con descuento no sumaba**: imprimía «Subtotal» ya con el descuento restado, luego «DESC. C/IMP.» (también en $0.00) y el TOTAL, así que Subtotal − Descuento no daba el TOTAL. Ahora el Subtotal es el bruto de los renglones y «Descuento -$X» sale sólo si es mayor que 0 y la cuenta cuadra exacto con lo cobrado; si no (pago dividido, sin renglones, cargo o IVA aparte), Subtotal = lo cobrado y sin renglón de descuento. Nunca se prorratea. También en el ticket que manda el POS.
+
 ---
 
 ## [2.12.3] - 2026-10-07

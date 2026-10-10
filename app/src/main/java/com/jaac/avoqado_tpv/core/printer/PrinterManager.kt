@@ -159,14 +159,11 @@ class PrinterManager @Inject constructor(
      * --------------------------------
      *
      * Subtotal:              $665.00 MXN
+     * IVA incluido cuando aplica
      * Propina:                $66.50 MXN
+     * --------------------------------
+     *                  TOTAL: $731.50
      * ================================
-     * TOTAL:                 $731.50 MXN
-     * ================================
-     *
-     * Desglose IVA (incluido):
-     *   Base:                $630.60 MXN
-     *   IVA 16%:             $100.90 MXN
      *
      * Forma de pago: Mastercard ****7182
      * Autorizacion: ABC123
@@ -335,14 +332,9 @@ class PrinterManager @Inject constructor(
             // TRANSACTION DETAILS (Fixed: amount ALREADY includes tip)
             // ========================================
             // ⚠️ CRITICAL FIX: 'amount' is the TOTAL (already includes tip from calculateTotal())
-            // We calculate subtotal by SUBTRACTING tip from total
             val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
             val discountValue = discountAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-
-            // Calculate subtotal (base amount before tip)
-            // Subtotal = Total - Tip
-            val subtotalValue = totalValue - tipValue
 
             // 💸 Different display for refunds vs sales
             if (isRefund) {
@@ -350,38 +342,24 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("================================\n", null)
                 printerInstance.printStr("TOTAL REEMBOLSO:".padEnd(16, ' ') + "\$${formatDecimal(totalValue)} MXN\n", null)
             } else {
-                // Show subtotal if there's a tip or discount
-                if (tipValue > java.math.BigDecimal.ZERO || discountValue > java.math.BigDecimal.ZERO) {
-                    printerInstance.printStr("Subtotal:".padEnd(22, ' ') + "\$${formatDecimal(subtotalValue)} MXN\n", null)
-                }
-
-                // Propina (if applicable)
-                if (tipValue > java.math.BigDecimal.ZERO) {
-                    printerInstance.printStr("Propina:".padEnd(22, ' ') + "\$${formatDecimal(tipValue)} MXN\n", null)
-                }
-                printerInstance.printStr(rightAlign("DESC. C/IMP.: \$${formatDecimal(discountValue)}") + "\n", null)
+                // IVA por producto, plan 7a (A7-R6): Subtotal BRUTO → Descuento (sólo si > 0) → leyenda del IVA → Propina →
+                // TOTAL = lo cobrado, como el papel de las apps. Antes el subtotal ya era neto y «DESC. C/IMP.» salía siempre: con
+                // descuento no sumaba. El descuento sólo se desglosa si la cuenta cuadra EXACTO con lo cobrado (TotalesDelCobro).
+                val papel = TotalesDelCobro.desdeLoCobrado(
+                    total = totalValue,
+                    propina = tipValue,
+                    descuento = discountValue,
+                    renglones = orderItems.orEmpty().map { it.totalPrice },
+                )
+                TotalesDelCobro.renglonesPax(papel, leyenda = LeyendaIva.renglonesDelTicket(esDevolucion = isRefund))
+                    .forEach { printerInstance.printStr("$it\n", null) }
+                printerInstance.printStr("--------------------------------\n", null)
                 printerInstance.printStr(rightAlign("TOTAL: \$${formatDecimal(totalValue)}") + "\n", null)
             }
             printerInstance.printStr("================================\n\n", null)
 
             if (!isRefund) {
                 printerInstance.printStr("${amountToWordsEs(totalValue)}\n\n", null)
-            }
-
-            // ========================================
-            // IVA BREAKDOWN (Mexican fiscal format)
-            // In Mexico, prices INCLUDE IVA. Calculate breakdown.
-            // IVA rate = 16%, so: Base = Total / 1.16, IVA = Total - Base
-            // ========================================
-            if (!isRefund) {
-                val ivaRate = java.math.BigDecimal("1.16")
-                val baseBeforeIva = totalValue.divide(ivaRate, 2, java.math.RoundingMode.HALF_UP)
-                val ivaAmount = totalValue - baseBeforeIva
-
-                printerInstance.printStr("Desglose IVA (incluido):\n", null)
-                printerInstance.printStr("  Base:".padEnd(20, ' ') + "\$${formatDecimal(baseBeforeIva)} MXN\n", null)
-                printerInstance.printStr("  IVA 16%:".padEnd(20, ' ') + "\$${formatDecimal(ivaAmount)} MXN\n", null)
-                printerInstance.printStr("\n", null)
             }
 
             // ========================================

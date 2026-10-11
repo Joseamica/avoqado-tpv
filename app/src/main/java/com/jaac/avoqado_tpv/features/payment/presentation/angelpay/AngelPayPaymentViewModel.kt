@@ -4685,6 +4685,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                             receiptUrl = receipt.receiptUrl,
                             appVersionName = BuildConfig.VERSION_NAME,
                             autofacturaAvailable = receipt.autofacturaAvailable,
+                            isCash = state?.isCash == true,
                         )
                         // 🖨️ A6 (SDK 1.0.16): `printTicket` RETURNS `kotlin.Result`
                         // instead of throwing (javap: `printTicket-IoAF18A`).

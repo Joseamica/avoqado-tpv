@@ -82,6 +82,7 @@ class AngelPayTicketBuilder @Inject constructor() {
         maskedPan: String? = null,
         entryMode: String? = null,
         autofacturaAvailable: Boolean = false,
+        isCash: Boolean = false,
     ): PrintTicketRequest {
         val centerBold = PrintStyleRequest(
             alignment = PrintAlignmentRequest.CENTER,
@@ -215,7 +216,8 @@ class AngelPayTicketBuilder @Inject constructor() {
             add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))
 
             // ── Payment method + auth/reference ────────────────────────
-            val paymentMethodText = buildPaymentMethodText(cardBrand, maskedPan, entryMode)
+            // Efectivo = lo mismo que la PAX (PrinterManager.printReceipt): «EFECTIVO» y sin autorización ni referencia.
+            val paymentMethodText = if (isCash) "EFECTIVO" else buildPaymentMethodText(cardBrand, maskedPan, entryMode)
             add(
                 PrintTicketItemRequest(
                     type = PrintTicketItemType.TEXT,
@@ -223,23 +225,25 @@ class AngelPayTicketBuilder @Inject constructor() {
                     style = normal,
                 )
             )
-            add(
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TWO_COLUMNS,
-                    left = "Autorizacion",
-                    right = authCode.ifBlank { "-" },
-                    style = normal,
-                )
-            )
-            if (!referenceNumber.isNullOrBlank()) {
+            if (!isCash) {
                 add(
                     PrintTicketItemRequest(
                         type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Referencia",
-                        right = referenceNumber,
+                        left = "Autorizacion",
+                        right = authCode.ifBlank { "-" },
                         style = normal,
                     )
                 )
+                if (!referenceNumber.isNullOrBlank()) {
+                    add(
+                        PrintTicketItemRequest(
+                            type = PrintTicketItemType.TWO_COLUMNS,
+                            left = "Referencia",
+                            right = referenceNumber,
+                            style = normal,
+                        )
+                    )
+                }
             }
         }
 

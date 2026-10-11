@@ -13,6 +13,7 @@
 
 ### **Fixed**
 - **[PAX] El ticket con descuento no sumaba**: imprimía «Subtotal» ya con el descuento restado, luego «DESC. C/IMP.» (también en $0.00) y el TOTAL, así que Subtotal − Descuento no daba el TOTAL. Ahora el Subtotal es el bruto de los renglones y «Descuento -$X» sale sólo si es mayor que 0 y la cuenta cuadra exacto con lo cobrado; si no (pago dividido, sin renglones, cargo o IVA aparte), Subtotal = lo cobrado y sin renglón de descuento. Nunca se prorratea. También en el ticket que manda el POS.
+- **[Nexgo] El ticket de un cobro en efectivo decía «Forma de pago: TARJETA»**: sin datos de tarjeta el renglón caía a «TARJETA» y además imprimía «Autorizacion EFECTIVO» y la referencia interna `CASH-…` (visto en papel en la N86 el 11-oct). Ahora dice «Forma de pago: EFECTIVO» y, como la PAX, sin autorización ni referencia; el cobro con tarjeta no cambia.
 
 ---
 

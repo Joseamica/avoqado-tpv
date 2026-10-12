@@ -3997,8 +3997,20 @@ class AngelPayPaymentViewModelTest {
         createdAt = System.currentTimeMillis() - 12 * 60_000L, updatedAt = System.currentTimeMillis() - 12 * 60_000L,
     )
 
+    /**
+     * La Nexgo compila con el SDK prendido y SIN respaldo app-a-app: con el SDK «no inicializado» del mock relajado, el cobro
+     * se detenía antes de la barrera (sólo en `testNexgoDebugUnitTest`; en Sandbox caía al respaldo y llegaba). SDK listo ⇒
+     * las dos variantes recorren el camino de la Nexgo real.
+     */
+    private fun sdkListo() {
+        every { sdkGateway.ensureInitialized(any(), any()) } returns Result.success(Unit)
+        every { sdkGateway.isInitialized() } returns true
+        coEvery { angelPayAuthRepository.ensureAuthenticated() } returns Result.success(Unit)
+    }
+
     /** Un Pago rápido NUEVO de $80 cuya reserva choca con la barrera de la libreta (otro cobro aparta el aparato). */
     private fun kotlinx.coroutines.test.TestScope.pagoRapidoQueChocaConLaBarrera(pendiente: PaymentAttemptEntity?): AngelPayPaymentViewModel {
+        sdkListo()
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
@@ -5207,6 +5219,7 @@ class AngelPayPaymentViewModelTest {
     fun `la cerca de la libreta se traduce a - el POS cancelo este cobro - y no a un error de disco`() = runTest(testDispatcher) {
         coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
         coEvery { paymentAttemptLedger.cercaDeSolicitud(any()) } returns CercaDeSolicitud.CANCELADA_POR_EL_POS
+        sdkListo()
         val vm = vmConCobroDelPos("req-cercado")
         try {
             vm.flujoSdkForzadoParaPruebas = true

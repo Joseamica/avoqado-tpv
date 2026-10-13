@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Mesas] [PAX/Nexgo] Cargo del recibo y recuperación de impresión**: el recibo enviado por el POS conserva cargo, descuento, extras y propina sin alterar el total cobrado ni repartir descuentos de una cuenta completa entre abonos. En Nexgo, recibos, rechazos y reimpresiones usan la misma impresora; el éxito espera su callback final, un fallo se informa y un resultado pendiente no se reimprime automáticamente.
+
 ---
 
 ## [2.12.4] - 2026-10-12

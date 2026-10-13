@@ -72,4 +72,61 @@ class PaymentTicketIvaTest {
         assertThat(t).contains("$15.00 MXN")
         assertThat(t).contains("$115.00 MXN")
     }
+
+    private fun remotoT11(total: String, tip: String = "0.00", cargo: String = "15.00", descuento: String = "0.00", items: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem> = emptyList()): PrintTicketRequest =
+        builder.buildPaymentTicket(
+            amount = BigDecimal(total) - BigDecimal(tip), tipAmount = BigDecimal(tip), authCode = "A1", referenceNumber = "ref-A",
+            venueName = "Negocio A", staffName = "Ana", orderNumber = "42", orderItems = items,
+            discountAmount = BigDecimal(descuento), serviceChargeAmount = BigDecimal(cargo), paymentMethod = "Efectivo",
+        )
+
+    @Test
+    fun `T11 Nexgo base y cargo no duplican propina`() {
+        val lines = remotoT11("120.00", tip = "5.00").body.filter { it.left != null }.associate { it.left to it.right }
+        assertThat(lines["Subtotal"]).isEqualTo("$100.00 MXN")
+        assertThat(lines["Cargo"]).isEqualTo("$15.00 MXN")
+        assertThat(lines["Propina"]).isEqualTo("$5.00 MXN")
+        assertThat(lines["TOTAL"]).isEqualTo("$120.00 MXN")
+        assertThat(textoDe(remotoT11("120.00", tip = "5.00"))).contains("Forma de pago: Efectivo")
+    }
+
+    @Test
+    fun `T11 Nexgo cargo antes de leyenda y propina`() {
+        val t = remotoT11("120.00", tip = "5.00")
+        val lines = t.body.flatMap { listOfNotNull(it.text, it.left) }
+        val positions = listOf("Subtotal", "Cargo", LeyendaIva.TEXTO, "Propina", "TOTAL").map(lines::indexOf)
+        assertThat(positions).doesNotContain(-1)
+        assertThat(positions).isInStrictOrder()
+        assertThat(textoDe(t)).doesNotContain("IVA 16%")
+    }
+
+    @Test
+    fun `T11 Nexgo cargo total produce subtotal cero sin descuento inventado`() {
+        val lines = remotoT11("15.00", descuento = "20.00").body.filter { it.left != null }.associate { it.left to it.right }
+        assertThat(lines["Subtotal"]).isEqualTo("$0.00 MXN")
+        assertThat(lines["Cargo"]).isEqualTo("$15.00 MXN")
+        assertThat(lines["TOTAL"]).isEqualTo("$15.00 MXN")
+        assertThat(lines).doesNotContainKey("Descuento")
+    }
+
+    @Test
+    fun `T11 Nexgo builder tambien rechaza cargo inconsistente`() {
+        for (cargo in listOf("-0.01", "100.01", "0.001")) {
+            val error = runCatching { remotoT11("100.00", cargo = cargo) }.exceptionOrNull()
+            assertThat(error).isNotNull()
+        }
+    }
+
+    @Test
+    fun `T11 Nexgo cero mantiene cuerpo legacy exacto con mismos defaults`() {
+        val legacy = ticket(propina = "15.00")
+        val explicitZero = builder.buildPaymentTicket(
+            amount = BigDecimal("100.00"), tipAmount = BigDecimal("15.00"), authCode = "A1B2C3",
+            referenceNumber = "000123", venueName = "Testarudo Cafe", staffName = "Ana", orderNumber = "42",
+            serviceChargeAmount = BigDecimal.ZERO,
+        )
+        // Sólo se elimina FECHA, que el renderer obtiene del reloj al construir cada request.
+        fun stable(t: PrintTicketRequest) = (t.header + t.body.filter { it.left != "FECHA" } + t.footer).map { listOf(it.type, it.text, it.left, it.right, it.style) }
+        assertThat(stable(explicitZero)).isEqualTo(stable(legacy))
+    }
 }

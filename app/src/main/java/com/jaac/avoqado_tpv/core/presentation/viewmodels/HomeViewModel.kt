@@ -715,6 +715,10 @@ class HomeViewModel @Inject constructor(
         _blumonInitElapsedSeconds.value = 0
 
         blumonInitJob?.cancel()
+        // 🔄 Start initialization - show loader
+        _isBlumonInitializing.value = true
+        _isBlumonReady.value = false
+        _blumonInitError.value = null
         blumonInitJob = viewModelScope.launch(Dispatchers.IO) {
             val timerJob = launch {
                 while (true) {
@@ -726,11 +730,6 @@ class HomeViewModel @Inject constructor(
             try {
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.initBlumonSDK START")
-
-                // 🔄 Start initialization - show loader
-                _isBlumonInitializing.value = true
-                _isBlumonReady.value = false
-                _blumonInitError.value = null
 
                 var attempt = 1
                 while (attempt <= BLUMON_INIT_MAX_ATTEMPTS) {
@@ -1144,11 +1143,20 @@ class HomeViewModel @Inject constructor(
         socketManager.emitTerminalRefundResult(requestId = event.requestId, status = "opened")
     }
 
+    // Default de producción por flavor; sólo permite ejercitar ambos receivers en pruebas JVM.
+    @VisibleForTesting
+    internal var usaPaxParaReciboRemoto: Boolean = BuildConfig.ENABLE_PAX_SDK
+
+    private val remoteAngelPayTicketBuilder by lazy {
+        com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayTicketBuilder()
+    }
+
     private fun printRemoteReceipt(event: SocketEvent.TerminalReceiptPrintRequest) {
         viewModelScope.launch {
             val result: kotlin.Result<Unit> = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val receipt = event.receipt
+                    val serviceChargeAmount = receipt.serviceChargeForReceipt()
                     val items = (receipt["items"] as? List<*>)
                         ?.mapNotNull { it as? Map<*, *> }
                         ?.mapIndexed { index, item ->
@@ -1202,6 +1210,7 @@ class HomeViewModel @Inject constructor(
                         }
                     }
 
+                    if (usaPaxParaReciboRemoto) {
                     printerManager.printReceipt(
                         receiptUrl = receipt.stringValue("receiptUrl"),
                         amount = receipt.centsValue("total").toMoneyString(),
@@ -1221,10 +1230,48 @@ class HomeViewModel @Inject constructor(
                         orderNumber = receipt.stringValue("orderNumber"),
                         orderItems = items,
                         discountAmount = receipt.optionalCentsValue("discountAmount")?.toMoneyString(),
+                        serviceChargeAmount = serviceChargeAmount,
                         // 🔴 La bandera venía en el payload y se tiraba: la terminal imprimía
                         // siempre «…y factura», también para negocios sin autofacturación.
                         autofacturaAvailable = receipt.booleanValue("autofacturaAvailable")
                     )
+                    } else {
+                        // El builder recibe importe SIN propina; el payload remoto trae el TOTAL.
+                        val total = receipt.centsValue("total").toMoney()
+                        val tip = (receipt.optionalCentsValue("tipAmount") ?: 0).toMoney()
+                        val ticket = remoteAngelPayTicketBuilder.buildPaymentTicket(
+                            amount = total - tip,
+                            tipAmount = tip,
+                            authCode = receipt.stringValue("authCode") ?: receipt.stringValue("transactionId")?.takeLast(6) ?: "",
+                            referenceNumber = receipt.stringValue("transactionId"),
+                            venueName = receipt.stringValue("venueName") ?: secureStorage.getVenueName(),
+                            venueLegalName = secureStorage.getVenueLegalName(),
+                            venueRfc = secureStorage.getVenueRfc(),
+                            venueAddress = receipt.stringValue("venueAddress") ?: secureStorage.getVenueAddress(),
+                            venueCity = secureStorage.getVenueCity(),
+                            venueState = secureStorage.getVenueState(),
+                            venueZipCode = secureStorage.getVenueZipCode(),
+                            venueTimeZone = java.util.TimeZone.getTimeZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)),
+                            staffName = receipt.stringValue("cashierName") ?: secureStorage.getStaffName(),
+                            orderNumber = receipt.stringValue("orderNumber"),
+                            receiptUrl = receipt.stringValue("receiptUrl"),
+                            appVersionName = BuildConfig.VERSION_NAME,
+                            maskedPan = receipt.stringValue("cardLastFour")?.let { "****$it" },
+                            autofacturaAvailable = receipt.booleanValue("autofacturaAvailable"),
+                            orderItems = items,
+                            discountAmount = (receipt.optionalCentsValue("discountAmount") ?: 0).toMoney(),
+                            serviceChargeAmount = serviceChargeAmount?.toBigDecimal() ?: java.math.BigDecimal.ZERO,
+                            paymentMethod = when {
+                                paymentMethod.equals("CASH", ignoreCase = true) || paymentMethod.equals("Efectivo", ignoreCase = true) -> "Efectivo"
+                                paymentMethod.equals("CARD", ignoreCase = true) || paymentMethod.equals("Tarjeta", ignoreCase = true) -> null
+                                else -> paymentMethod
+                            },
+                            isCash = paymentMethod.equals("CASH", ignoreCase = true) ||
+                                paymentMethod.equals("Efectivo", ignoreCase = true),
+                        )
+                        // Gateway lazy sólo en Nexgo: el ACK espera el callback público final.
+                        angelPaySdkGatewayProvider.get().printTicket(ticket)
+                    }
                 } catch (e: Exception) {
                     kotlin.Result.failure(e)
                 }
@@ -1240,6 +1287,21 @@ class HomeViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /** Cargo nuevo: centavos íntegros del snapshot; nunca truncar ni inferir desde la cuenta. */
+    private fun Map<*, *>.serviceChargeForReceipt(): String? {
+        if (!containsKey("serviceChargeAmount")) return null
+        fun exactCents(key: String): Int {
+            val value = this[key]
+            require(value is Number || value is String) { "Cargo del recibo inválido" }
+            return java.math.BigDecimal(value.toString()).intValueExact()
+        }
+        val charge = exactCents("serviceChargeAmount")
+        val total = exactCents("total")
+        val tip = if (containsKey("tipAmount")) exactCents("tipAmount") else 0
+        require(charge >= 0 && tip >= 0 && total >= tip && charge <= total - tip) { "Cargo del recibo inválido" }
+        return charge.toMoneyString()
     }
 
     private fun Map<*, *>.stringValue(key: String): String? =

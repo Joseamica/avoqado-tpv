@@ -4611,8 +4611,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                 )
                 // Igual que la impresión de recibo: el SDK 1.0.16 DEVUELVE `Result` en vez
                 // de lanzar, así que hay que abrirlo o un fallo pasa por éxito.
-                com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket).getOrThrow()
+                sdkGateway.printTicket(ticket).getOrThrow()
             }.onFailure {
+                if (it is kotlinx.coroutines.CancellationException) throw it
                 // Se registra y se sigue. El cajero ya está viendo el motivo en pantalla.
                 Timber.w(it, "🔶 [AngelPay] No se pudo imprimir el ticket de rechazo")
             }.onSuccess {
@@ -4692,7 +4693,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                         // Discarding it meant a FAILED print fell straight through
                         // to the "printed successfully" log below. Rethrow the SDK's
                         // real error so the catch — and the log — tell the truth.
-                        com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket)
+                        sdkGateway.printTicket(ticket)
                             .getOrElse { err ->
                                 // `getOrThrow()` would rethrow a raw Throwable, which
                                 // the `catch (e: Exception)` below would NOT catch.
@@ -4704,6 +4705,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                             }
                     }
                     Timber.i("🔶 [AngelPay] Receipt printed successfully")
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
                 } catch (e: Exception) {
                     Timber.e(e, "🔶 [AngelPay] Failed to print receipt")
                 }

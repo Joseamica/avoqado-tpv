@@ -31,7 +31,7 @@ interface PaymentPostOperationsAdapter {
 
     suspend fun getTicketUrl(transaction: UnifiedTransaction): Result<String>
 
-    fun printTicket(transaction: UnifiedTransaction): Result<Unit>
+    suspend fun printTicket(transaction: UnifiedTransaction): Result<Unit>
 }
 
 data class TransactionHistoryQuery(

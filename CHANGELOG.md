@@ -12,6 +12,13 @@
 
 ---
 
+## [2.12.5] - 2026-10-13
+
+### **Fixed**
+- **[Nexgo] El corte y todo lo demás ya imprimen en la N86**: hasta ahora sólo salía el recibo del cobro; el corte, los reportes (hoy, 7 días, historial), la reimpresión y el resumen de pagos, la comanda de cocina, el ticket del kiosco, el comprobante de efectivo, la reimpresión que pide el POS y la hoja de prueba contestaban «Esta terminal no imprime desde Avoqado. Pídele el corte a una terminal PAX». Ahora el mismo dictado de la PAX se junta y sale como un solo ticket por el SDK de AngelPay (`ImpresoraAngelPay`), con las columnas de dinero, los centrados y los divisores traducidos a las piezas de AngelPay (su letra no es de ancho fijo: copiar los espacios las dejaba chuecas). En una Nexgo sin impresora (N62) el aviso dice «Esta terminal no tiene impresora». [PAX] sin cambios: la impresora de Neptune recibe las mismas órdenes, una por una, a través de `ImpresoraPax`.
+
+---
+
 ## [2.12.4] - 2026-10-12
 
 ### **Changed**

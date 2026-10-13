@@ -66,9 +66,12 @@ class PrinterManagerLeyendaIvaTest {
         io.mockk.every { device.start() } returns printerCode
         val manager = PrinterManager(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         // Se evita cargar Neptune. Se ejecuta íntegro printReceipt, incluidos sus totales y printStr.
-        val field = PrinterManager::class.java.getDeclaredField("printer\$delegate")
+        // Desde la 2.12.5 la PAX imprime por `ImpresoraPax` y el camino se elige con `esHardwarePax`;
+        // se fija a PAX para que el renglón sea el mismo también en la variante Nexgo.
+        val field = PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate")
         field.isAccessible = true
-        field.set(manager, lazyOf(device))
+        field.set(manager, lazyOf(ImpresoraPax(device)))
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)
         val items = itemTotal?.let {
             listOf(com.jaac.avoqado_tpv.features.ordering.domain.OrderItem(
                 id = "item", orderId = "order", productId = "product", productName = "Producto", productSku = null,

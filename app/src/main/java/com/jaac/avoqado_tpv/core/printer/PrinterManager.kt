@@ -7,7 +7,6 @@ import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.pax.dal.IDAL
-import com.pax.dal.IPrinter
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
@@ -73,10 +72,8 @@ class PrinterManager @Inject constructor(
      * es un `Error`, no una `Exception`, así que `catch (e: Exception)` no lo atrapa y el
      * fallo escapaba del `lazy` hasta matar el proceso. Por eso se atrapa `Throwable`.
      *
-     * Y antes de eso, el corte de raíz: en las Nexgo ni siquiera se intenta. La impresión ahí
-     * va por otro camino (`AngelPaySDK.printTicket`, ver `AngelPaySdkPostOperationsAdapter`),
-     * nunca por aquí. Devolver `null` es seguro: cada llamador ya lo maneja
-     * (`val printerInstance = printer ?: return Result.failure(...)`).
+     * Y antes de eso, el corte de raíz: en las Nexgo Neptune ni siquiera se toca. Ahí la
+     * impresora es [ImpresoraAngelPay] (SDK de AngelPay), que recibe el mismo dictado que la PAX.
      *
      * Mismo criterio que `UpdateCheckManager`: el corte va por **procesador**
      * (`ENABLE_PAX_SDK`), no por modelo de dispositivo ni por package.
@@ -94,13 +91,13 @@ class PrinterManager @Inject constructor(
      * Estaba copiado en 10 sitios, que es como se fabrica un arreglo a medias: se
      * corrigen unos y los otros siguen mintiendo. Ahora vive aquí y sólo aquí.
      *
-     * ⚠️ En una Nexgo los RECIBOS sí salen — van por `AngelPaySDK.printTicket`
-     * (`AngelPaySdkPostOperationsAdapter`), no por esta clase. Lo que no tiene ese
-     * camino todavía es el reporte de ventas, y eso es lo que el texto dice.
+     * En una Nexgo todo imprime por [ImpresoraAngelPay]; sólo falta impresora en los modelos
+     * que no la traen (N62). Hasta la 2.12.4 el texto decía «Esta terminal no imprime desde
+     * Avoqado. Pídele el corte a una terminal PAX», porque el corte no tenía camino en la Nexgo.
      */
     internal val motivoSinImpresora: String
         get() = if (!esHardwarePax) {
-            "Esta terminal no imprime desde Avoqado. Pidele el corte a una terminal PAX."
+            "Esta terminal no tiene impresora."
         } else {
             "Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado."
         }
@@ -121,19 +118,27 @@ class PrinterManager @Inject constructor(
         }
     }
 
-    private val printer: IPrinter? by lazy {
+    private val impresoraPax: ImpresoraTermica? by lazy {
         if (!esHardwarePax) return@lazy null
         try {
             dal?.getPrinter()?.also {
                 it.init()
                 Timber.d("✅ Printer initialized successfully")
-            }
+            }?.let(::ImpresoraPax)
         } catch (t: Throwable) {
             // Ver `dal`: `it.init()` es la línea que tumbaba la app en Nexgo.
             Timber.e(t, "❌ Failed to initialize printer")
             null
         }
     }
+
+    /**
+     * La impresora de ESTA terminal. En PAX, la de Neptune (la misma de siempre). En Nexgo, una
+     * [ImpresoraAngelPay] NUEVA por impresión: junta el dictado y lo manda como un ticket por el
+     * SDK de AngelPay. Las impresiones de abajo no saben cuál les tocó.
+     */
+    private val printer: ImpresoraTermica?
+        get() = if (esHardwarePax) impresoraPax else ImpresoraAngelPay.paraEstaTerminal()
 
     /**
      * Print Mexican fiscal-style receipt (Toast/Square/Clip adapted for Mexico).
@@ -485,7 +490,7 @@ class PrinterManager @Inject constructor(
     }
 
     private fun printVenueInfo(
-        printerInstance: IPrinter,
+        printerInstance: ImpresoraTermica,
         venueName: String?,
         venueLegalName: String?,
         venueRfc: String?,
@@ -677,7 +682,7 @@ class PrinterManager @Inject constructor(
         return centerBitmap(logoWithWhiteBg, targetWidth = PAPER_WIDTH)
     }
 
-    private fun printLogo(printerInstance: IPrinter, venueLogoUrl: String?) {
+    private fun printLogo(printerInstance: ImpresoraTermica, venueLogoUrl: String?) {
         try {
             val venueLogoBitmap = venueLogoUrl?.takeIf { it.isNotBlank() }?.let { loadBitmapFromUrl(it) }
             val fallbackLogo = android.graphics.BitmapFactory.decodeResource(
@@ -719,7 +724,7 @@ class PrinterManager @Inject constructor(
      * historial): tenerlo copiado tres veces es cómo se llegó a que sólo uno supiera dibujarlo.
      */
     private fun imprimirQrDelRecibo(
-        printerInstance: IPrinter,
+        printerInstance: ImpresoraTermica,
         receiptUrl: String?,
         autofacturaAvailable: Boolean,
     ): Boolean {
@@ -2004,7 +2009,7 @@ class PrinterManager @Inject constructor(
      */
     fun getPrinterStatus(): String {
         return when {
-            dal == null -> "SDK no disponible"
+            esHardwarePax && dal == null -> "SDK no disponible"
             printer == null -> "Impresora no disponible"
             else -> "Impresora lista"
         }

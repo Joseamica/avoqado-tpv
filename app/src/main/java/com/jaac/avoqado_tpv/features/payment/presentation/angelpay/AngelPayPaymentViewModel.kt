@@ -5400,7 +5400,7 @@ class AngelPayPaymentViewModel @Inject constructor(
          * Add new entries here when deploying additional Nexgo SKUs.
          * Leave OUT models that ship without a printer (e.g. N62).
          */
-        private val NEXGO_MODELS_WITH_PRINTER = listOf("N86")
+        private val NEXGO_MODELS_WITH_PRINTER = com.jaac.avoqado_tpv.core.printer.ImpresoraAngelPay.MODELOS_CON_IMPRESORA
     }
 }
 

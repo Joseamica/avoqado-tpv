@@ -85,10 +85,28 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             // - MISMA idempotencyKey cuando ambos lados la tienen — mismo venue+reference
             //   con idempotencyKey distinta es un pago DISTINTO, no un doble-submit seguro.
             val existing = pendingPaymentDao.findByReference(payment.referenceNumber, payment.venueId)
-            val sameIdentity = existing != null &&
-                (payment.idempotencyKey == null || existing.idempotencyKey == null ||
-                    payment.idempotencyKey == existing.idempotencyKey)
-            val stillQueued = sameIdentity &&
+            val isCash = payment.toCardDetails().isCash
+            val sameIdentity = existing != null && if (isCash) {
+                // Un UUID nuevo no puede acreditarse por una fila legacy sin UUID.
+                !payment.idempotencyKey.isNullOrBlank() && payment.idempotencyKey == existing.idempotencyKey
+            } else {
+                payment.idempotencyKey == null || existing.idempotencyKey == null ||
+                    payment.idempotencyKey == existing.idempotencyKey
+            }
+            // El fallback de efectivo no puede acreditar otra venta sólo porque comparte
+            // referencia/UUID. Se compara el dinero por valor, no por formato decimal.
+            val sameCashPayload = !payment.toCardDetails().isCash || (existing != null &&
+                entity.amount.toBigDecimal().compareTo(existing.amount.toBigDecimal()) == 0 &&
+                entity.tip.toBigDecimal().compareTo(existing.tip.toBigDecimal()) == 0 &&
+                entity.staffId == existing.staffId && entity.shiftId == existing.shiftId &&
+                entity.orderId == existing.orderId && entity.deviceSerialNumber == existing.deviceSerialNumber &&
+                entity.terminalPaymentRequestId == existing.terminalPaymentRequestId &&
+                entity.paymentProcessor == existing.paymentProcessor &&
+                entity.isPortabilidad == existing.isPortabilidad && entity.serialNumbers == existing.serialNumbers &&
+                entity.splitType == existing.splitType && entity.paidProductIds == existing.paidProductIds &&
+                entity.equalPartsPartySize == existing.equalPartsPartySize &&
+                entity.equalPartsPayedFor == existing.equalPartsPayedFor)
+            val stillQueued = sameIdentity && sameCashPayload &&
                 (existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_PENDING ||
                     existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_SYNCING)
 
@@ -118,6 +136,25 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             Result.failure(e)
         }
     }
+
+    override suspend fun enqueueAndClaim(payment: QueuedPayment): Result<QueuedPayment> =
+        withContext(NonCancellable + Dispatchers.IO) {
+            try {
+                require(!payment.idempotencyKey.isNullOrBlank()) { "El efectivo necesita su llave de reintento" }
+                val token = java.util.UUID.randomUUID().toString()
+                val now = System.currentTimeMillis()
+                val entity = payment.toEntity().copy(
+                    syncStatus = PendingPaymentEntity.SYNC_STATUS_SYNCING,
+                    claimToken = token,
+                    claimedAt = now,
+                )
+                val id = pendingPaymentDao.insert(entity)
+                check(id > 0) { "El pago ya está guardado; no se enviará otra vez desde esta pantalla" }
+                Result.success(entity.copy(id = id).toDomain())
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
 
     override suspend fun getAllPending(): List<QueuedPayment> = withContext(Dispatchers.IO) {
         try {

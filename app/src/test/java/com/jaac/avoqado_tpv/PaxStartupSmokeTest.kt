@@ -1,6 +1,8 @@
 package com.jaac.avoqado_tpv
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -28,6 +30,9 @@ class PaxStartupSmokeTest {
 
     @Test
     fun `sandboxDebug BuildConfig SUPPORTED_PROCESSOR is BLUMON`() {
+        // Scope por flavor, NO por el selector bajo prueba: una regresión ANGELPAY
+        // en PAX debe seguir fallando en el assert original.
+        assumeTrue("Comprobación PAX; Nexgo tiene su control positivo ANGELPAY", BuildConfig.FLAVOR !in setOf("nexgo", "nexgoProd"))
         assertEquals(
             "PAX (sandboxDebug) flavor must not have ANGELPAY as SUPPORTED_PROCESSOR — that " +
                 "would cause AngelPay init to run on PAX startup and either crash with " +
@@ -37,5 +42,13 @@ class PaxStartupSmokeTest {
             "BLUMON",
             BuildConfig.SUPPORTED_PROCESSOR,
         )
+    }
+
+    @Test
+    fun `Nexgo BuildConfig SUPPORTED_PROCESSOR is ANGELPAY and Blumon startup is disabled`() {
+        assumeTrue("Comprobación Nexgo; PAX conserva su control BLUMON", BuildConfig.FLAVOR in setOf("nexgo", "nexgoProd"))
+        assertEquals("Nexgo debe resolver el procesador AngelPay", "ANGELPAY", BuildConfig.SUPPORTED_PROCESSOR)
+        assertFalse("Nexgo no debe iniciar el SDK nativo PAX", BuildConfig.ENABLE_PAX_SDK)
+        assertFalse("Nexgo no debe ejecutar inicialización Blumon", BuildConfig.ENABLE_BLUMON_INIT)
     }
 }

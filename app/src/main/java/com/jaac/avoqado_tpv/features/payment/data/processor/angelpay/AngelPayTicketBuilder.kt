@@ -82,6 +82,10 @@ class AngelPayTicketBuilder @Inject constructor() {
         maskedPan: String? = null,
         entryMode: String? = null,
         autofacturaAvailable: Boolean = false,
+        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,
+        discountAmount: BigDecimal = BigDecimal.ZERO,
+        serviceChargeAmount: BigDecimal = BigDecimal.ZERO,
+        paymentMethod: String? = null,
         isCash: Boolean = false,
     ): PrintTicketRequest {
         val centerBold = PrintStyleRequest(
@@ -102,6 +106,10 @@ class AngelPayTicketBuilder @Inject constructor() {
         val totalStyle = PrintStyleRequest(isBold = true, fontSize = PrintFontSizeRequest.LARGE)
 
         val total = amount + tipAmount
+        val papel = com.jaac.avoqado_tpv.core.printer.TotalesDelCobro.desdeLoCobrado(
+            total = total, propina = tipAmount, descuento = discountAmount,
+            renglones = orderItems.orEmpty().map { it.totalPrice }, cargo = serviceChargeAmount,
+        )
 
         // Current date/time in venue timezone (matches PAX printReceipt).
         val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale("es", "MX"))
@@ -182,17 +190,28 @@ class AngelPayTicketBuilder @Inject constructor() {
             }
             add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))
 
-            // ── Totales, en el orden de las apps (IVA por producto, plan 7a, A7-R6): Subtotal → leyenda del IVA → Propina →
-            // TOTAL. Subtotal = lo cobrado sin propina: la Nexgo no recibe descuento ni renglones, así que no hay renglón de
-            // descuento y siempre cuadra. La leyenda sustituye al «IVA 16 %» que se calculaba sobre el total CON propina.
-            add(
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TWO_COLUMNS,
-                    left = "Subtotal",
-                    right = "${formatMoney(amount)} MXN",
-                    style = normal,
-                )
-            )
+            // Sólo el remoto aporta artículos; los callers locales conservan los defaults.
+            orderItems.orEmpty().forEach { item ->
+                add(PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS,
+                    left = "${item.quantity} x ${item.productName}", right = "${formatMoney(item.totalPrice)} MXN", style = normal))
+                item.modifiers.forEach { modifier ->
+                    add(PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "  ${modifier.name}", style = normal))
+                }
+                item.notes?.takeIf { it.isNotBlank() }?.let { note ->
+                    add(PrintTicketItemRequest(type = PrintTicketItemType.PARAGRAPH, text = note, style = normal))
+                }
+            }
+            // Un solo cálculo para PAX/Nexgo: bruto - descuento + cargo + propina = cobrado.
+            add(PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS,
+                left = "Subtotal", right = "${formatMoney(papel.subtotal)} MXN", style = normal))
+            if (papel.descuento > BigDecimal.ZERO) {
+                add(PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS,
+                    left = "Descuento", right = "-${formatMoney(papel.descuento)} MXN", style = normal))
+            }
+            if (papel.cargo > BigDecimal.ZERO) {
+                add(PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS,
+                    left = "Cargo", right = "${formatMoney(papel.cargo)} MXN", style = normal))
+            }
             add(PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = LeyendaIva.TEXTO, style = normal))
             if (tipAmount > BigDecimal.ZERO) {
                 add(
@@ -216,8 +235,7 @@ class AngelPayTicketBuilder @Inject constructor() {
             add(PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER))
 
             // ── Payment method + auth/reference ────────────────────────
-            // Efectivo = lo mismo que la PAX (PrinterManager.printReceipt): «EFECTIVO» y sin autorización ni referencia.
-            val paymentMethodText = if (isCash) "EFECTIVO" else buildPaymentMethodText(cardBrand, maskedPan, entryMode)
+            val paymentMethodText = if (isCash) "EFECTIVO" else paymentMethod?.takeIf { it.isNotBlank() } ?: buildPaymentMethodText(cardBrand, maskedPan, entryMode)
             add(
                 PrintTicketItemRequest(
                     type = PrintTicketItemType.TEXT,

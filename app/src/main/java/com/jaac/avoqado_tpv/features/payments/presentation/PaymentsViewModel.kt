@@ -84,6 +84,9 @@ class PaymentsViewModel @Inject constructor(
     private val _state = MutableStateFlow<PaymentsState>(PaymentsState.Loading)
     val state: StateFlow<PaymentsState> = _state.asStateFlow()
 
+    val venueZoneId: java.time.ZoneId
+        get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
+
     private val _filterDateRange = MutableStateFlow(DateRangeFilter.LAST_7_DAYS)
     val filterDateRange: StateFlow<DateRangeFilter> = _filterDateRange.asStateFlow()
 
@@ -133,6 +136,9 @@ class PaymentsViewModel @Inject constructor(
     // Pagination state
     private var currentPage = 1
     private var totalPages = 1
+    private var queryGeneration = 0
+    private var rawPayments = emptyList<Payment>()
+    private var pendingRefundOrders = emptySet<String>()
 
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
@@ -154,9 +160,12 @@ class PaymentsViewModel @Inject constructor(
      * Called when user changes filters or pulls to refresh.
      */
     fun loadPayments() {
+        val generation = ++queryGeneration
+        _isRefreshing.value = false
         refreshRefundPermission()
         viewModelScope.launch {
             try {
+                if (generation != queryGeneration) return@launch
                 Timber.d("💳 [PaymentsViewModel] Loading payments (page 1)")
 
                 _state.value = PaymentsState.Loading
@@ -180,13 +189,14 @@ class PaymentsViewModel @Inject constructor(
                 // Fetch payments
                 val result = paymentRepository.getPaymentHistory(
                     venueId = venueId,
-                    pageNumber = currentPage,
+                    pageNumber = 1,
                     pageSize = 20,
                     fromDate = fromDate,
                     toDate = toDate,
                     staffId = null  // TODO: Add staff filter in future
                 )
 
+                if (generation != queryGeneration) return@launch
                 when (result) {
                     is Result.Success -> {
                         val data = result.data
@@ -195,7 +205,9 @@ class PaymentsViewModel @Inject constructor(
                         totalPages = (data.total + 19) / 20  // Round up
 
                         Timber.i("✅ [PaymentsViewModel] Loaded ${data.payments.size} payments (page $currentPage/$totalPages)")
-                        val displayPayments = mergeRefundsForDisplay(data.payments)
+                        currentPage = 1
+                        rawPayments = data.payments.associateBy { it.id }.values.toList()
+                        val displayPayments = mergeRefundsForDisplay(rawPayments)
 
                         _state.value = PaymentsState.Success(
                             payments = displayPayments,
@@ -231,7 +243,7 @@ class PaymentsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [PaymentsViewModel] Unexpected error")
-                _state.value = PaymentsState.Error("Error inesperado.\nIntente nuevamente.")
+                if (generation == queryGeneration) _state.value = PaymentsState.Error("Error inesperado.\nIntente nuevamente.")
             }
         }
     }
@@ -243,8 +255,14 @@ class PaymentsViewModel @Inject constructor(
      * Shows only the pull-to-refresh indicator.
      */
     fun refresh() {
+        val generation = ++queryGeneration
+        val previous = _state.value
+        if (previous is PaymentsState.LoadingMore) {
+            _state.value = PaymentsState.Success(previous.payments, true, previous.currentPage, previous.totalPages, previous.totalCount)
+        }
+        _isRefreshing.value = true
         viewModelScope.launch {
-            _isRefreshing.value = true
+            if (generation != queryGeneration) return@launch
             try {
                 Timber.d("🔄 [PaymentsViewModel] Pull-to-refresh")
 
@@ -264,20 +282,23 @@ class PaymentsViewModel @Inject constructor(
                 // Fetch payments
                 val result = paymentRepository.getPaymentHistory(
                     venueId = venueId,
-                    pageNumber = currentPage,
+                    pageNumber = 1,
                     pageSize = 20,
                     fromDate = fromDate,
                     toDate = toDate,
                     staffId = null
                 )
 
+                if (generation != queryGeneration) return@launch
                 when (result) {
                     is Result.Success -> {
                         val data = result.data
                         totalPages = (data.total + 19) / 20
 
                         Timber.i("✅ [PaymentsViewModel] Refreshed ${data.payments.size} payments")
-                        val displayPayments = mergeRefundsForDisplay(data.payments)
+                        currentPage = 1
+                        rawPayments = data.payments.associateBy { it.id }.values.toList()
+                        val displayPayments = mergeRefundsForDisplay(rawPayments)
 
                         _state.value = PaymentsState.Success(
                             payments = displayPayments,
@@ -296,7 +317,7 @@ class PaymentsViewModel @Inject constructor(
             } catch (e: Exception) {
                 Timber.e(e, "❌ [PaymentsViewModel] Refresh failed")
             } finally {
-                _isRefreshing.value = false
+                if (generation == queryGeneration) _isRefreshing.value = false
             }
         }
     }
@@ -308,7 +329,9 @@ class PaymentsViewModel @Inject constructor(
      * Called when user scrolls to bottom or taps "Load More".
      */
     fun loadMore() {
+        val generation = queryGeneration
         viewModelScope.launch {
+            if (generation != queryGeneration || _isRefreshing.value) return@launch
             try {
                 val currentState = _state.value
                 if (currentState !is PaymentsState.Success || !currentState.hasMore) {
@@ -325,8 +348,7 @@ class PaymentsViewModel @Inject constructor(
                     totalCount = currentState.totalCount
                 )
 
-                // Increment page
-                currentPage++
+                val nextPage = currentState.currentPage + 1
 
                 // Get venue ID
                 val venueId = secureStorage.getVenueId()
@@ -342,19 +364,22 @@ class PaymentsViewModel @Inject constructor(
                 // Fetch next page
                 val result = paymentRepository.getPaymentHistory(
                     venueId = venueId,
-                    pageNumber = currentPage,
+                    pageNumber = nextPage,
                     pageSize = 20,
                     fromDate = fromDate,
                     toDate = toDate,
                     staffId = null
                 )
 
+                if (generation != queryGeneration) return@launch
                 when (result) {
                     is Result.Success -> {
                         val data = result.data
+                        currentPage = nextPage
 
                         // Append new payments to existing list
-                        val allPayments = mergeRefundsForDisplay(currentState.payments + data.payments)
+                        rawPayments = (rawPayments + data.payments).associateBy { it.id }.values.toList()
+                        val allPayments = mergeRefundsForDisplay(rawPayments)
 
                         Timber.i("✅ [PaymentsViewModel] Loaded ${data.payments.size} more payments (total: ${allPayments.size})")
 
@@ -667,6 +692,11 @@ class PaymentsViewModel @Inject constructor(
         val currentProcessor = currentProcessorType()
         val paymentProcessor = inferPaymentProcessor(payment)
 
+        val orderKey = payment.orderId ?: payment.orderNumber
+        if (orderKey in pendingRefundOrders && !(currentProcessor == ProcessorType.ANGELPAY && payment.id in porConfirmar)) {
+            return RefundAvailability(false, "Hay una devolución por confirmar. No vuelvas a reembolsar este pago.")
+        }
+
         if (paymentProcessor != null && paymentProcessor != currentProcessor) {
             val reason = when (paymentProcessor) {
                 ProcessorType.BLUMON ->
@@ -838,30 +868,30 @@ class PaymentsViewModel @Inject constructor(
         // 🔴 25-sep (PAX de pruebas): un reembolso FALLIDO no devolvió nada — no se suma ni se muestra. Antes contaba igual y
         // el pago quedaba «Reembolsado» sin poderse reembolsar de verdad ($254 VISA tras anular en Avoqado un reembolso que
         // Blumon nunca hizo). Un reembolso PENDIENTE sí cuenta: mientras está en curso no debe abrirse otro.
-        val payments = todos.filterNot { it.isRefund && it.status == PaymentStatus.FAILED }
-        if (payments.none { it.isRefund }) return payments
-
+        // Las páginas pueden solaparse mientras entran pagos nuevos; cada pago conserva su identidad.
         fun refundKey(payment: Payment): String? = payment.orderId ?: payment.orderNumber
 
+        val payments = todos.associateBy { it.id }.values.filterNot { it.isRefund && it.status == PaymentStatus.FAILED }
+        pendingRefundOrders = payments.filter { it.isRefund && it.status == PaymentStatus.PENDING }.mapNotNull(::refundKey).toSet()
+        if (payments.none { it.isRefund }) return payments
+        val originalsByKey = payments.filterNot { it.isRefund }.mapNotNull { payment -> refundKey(payment)?.let { it to payment } }.groupBy({ it.first }, { it.second })
+
         val refundedByKey = mutableMapOf<String, BigDecimal>()
-        payments.filter { it.isRefund }.forEach { refund ->
+        payments.filter { it.isRefund && it.status == PaymentStatus.COMPLETED }.forEach { refund ->
             val key = refundKey(refund) ?: return@forEach
             val amount = refund.totalAmount.abs()
             refundedByKey[key] = (refundedByKey[key] ?: BigDecimal.ZERO) + amount
         }
 
-        val updatedByKey = mutableMapOf<String, Payment>()
+        val updatedById = mutableMapOf<String, Payment>()
         payments.filterNot { it.isRefund }.forEach { payment ->
             val key = refundKey(payment) ?: return@forEach
             val aggregatedRefund = refundedByKey[key] ?: return@forEach
             val existingRefunded = payment.refundedAmount
-            val mergedRefunded = if (existingRefunded != null && existingRefunded > BigDecimal.ZERO) {
-                existingRefunded
-            } else {
-                aggregatedRefund
-            }
+            if (existingRefunded == null && originalsByKey[key]?.size != 1) return@forEach
+            val mergedRefunded = existingRefunded ?: aggregatedRefund
             val isFullyRefunded = payment.isFullyRefunded || mergedRefunded >= payment.totalAmount
-            updatedByKey[key] = payment.copy(
+            updatedById[payment.id] = payment.copy(
                 refundedAmount = mergedRefunded,
                 isFullyRefunded = isFullyRefunded
             )
@@ -871,16 +901,13 @@ class PaymentsViewModel @Inject constructor(
         payments.forEach { payment ->
             if (payment.isRefund) {
                 val key = refundKey(payment)
-                val hasOriginal = key != null && updatedByKey.containsKey(key)
+                val originals = originalsByKey[key]
+                val hasOriginal = payment.status == PaymentStatus.COMPLETED && originals != null &&
+                    (originals.size == 1 || originals.all { it.refundedAmount != null })
                 if (hasOriginal) return@forEach
                 result += payment
             } else {
-                val key = refundKey(payment)
-                result += if (key != null && updatedByKey.containsKey(key)) {
-                    updatedByKey.getValue(key)
-                } else {
-                    payment
-                }
+                result += updatedById[payment.id] ?: payment
             }
         }
         return result

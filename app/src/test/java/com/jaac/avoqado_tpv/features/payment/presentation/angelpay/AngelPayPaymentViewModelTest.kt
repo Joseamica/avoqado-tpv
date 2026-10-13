@@ -5757,4 +5757,116 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+
+
+    @Test
+    fun `P1 efectivo remoto sin registro ni cola no emite exito al POS`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.enqueue(any()) } returns
+            Result.failure(java.io.IOException("FULLTEST Room disk full"))
+        val context = angelPayContext().copy(
+            venueId = "FULLTEST-venue", staffId = "FULLTEST-staff", shiftId = "FULLTEST-shift",
+            cardDetails = com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH,
+            authorizationCode = "EFECTIVO-FULLTEST", referenceNumber = "CASH-FULLTEST-disk-failure",
+            idempotencyKey = "f14a42b0-d3a9-4c7e-8a51-83c48f98c1bf",
+            terminalPaymentRequestId = "FULLTEST-cash-disk-failure",
+        )
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "FULLTEST-cash-disk-failure")
+            val state = vm.handleRecordFailure(
+                paymentLabel = "El pago en efectivo", context = context,
+                error = java.io.IOException("FULLTEST prequeue y registro no disponibles"),
+            )
+
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((state as AngelPayPaymentState.Error).canRetry).isFalse()
+            coVerify(exactly = 1) {
+                paymentQueueRepository.enqueue(match {
+                    it.referenceNumber == "CASH-FULLTEST-disk-failure" &&
+                        it.idempotencyKey == "f14a42b0-d3a9-4c7e-8a51-83c48f98c1bf" &&
+                        it.terminalPaymentRequestId == "FULLTEST-cash-disk-failure"
+                })
+            }
+            coVerify(exactly = 0) { paymentAttemptLedger.markDeliveredToQueue(any()) }
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "FULLTEST-cash-disk-failure", status = "success",
+                    paymentId = any(), transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 efectivo remoto espera commit de cola antes de un unico exito al POS`() = runTest(testDispatcher) {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val committed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { paymentQueueRepository.enqueue(any()) } coAnswers {
+            entered.complete(Unit)
+            committed.await()
+            Result.success(Unit)
+        }
+        val context = angelPayContext().copy(
+            venueId = "FULLTEST-venue", staffId = "FULLTEST-staff", shiftId = "FULLTEST-shift",
+            cardDetails = com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH,
+            authorizationCode = "EFECTIVO-FULLTEST", referenceNumber = "CASH-FULLTEST-commit",
+            idempotencyKey = "25ed6905-50ae-4765-b0ae-d8a4fc90c5ea",
+            terminalPaymentRequestId = "FULLTEST-cash-commit",
+        )
+        val vm = createViewModel()
+        var state: AngelPayPaymentState? = null
+        vm.setSocketPaymentSource("SOCKET", "FULLTEST-cash-commit")
+        val action = launch {
+            state = vm.handleRecordFailure(
+                paymentLabel = "El pago en efectivo", context = context,
+                error = java.io.IOException("FULLTEST prequeue y registro no disponibles"),
+            )
+        }
+        try {
+            runCurrent()
+            assertThat(entered.isCompleted).isTrue()
+            assertThat(action.isCompleted).isFalse()
+            assertThat(state).isNull()
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "FULLTEST-cash-commit", status = "success",
+                    paymentId = any(), transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any(),
+                )
+            }
+            coVerify(exactly = 0) { paymentAttemptLedger.markDeliveredToQueue(any()) }
+
+            committed.complete(Unit)
+            action.join()
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Queued::class.java)
+            val queued = state as AngelPayPaymentState.Queued
+            assertThat(queued.referenceNumber).isEqualTo("CASH-FULLTEST-commit")
+            assertThat(queued.amount).isEqualTo("150.00")
+            assertThat(queued.tipAmount).isEqualTo("15.00")
+            assertThat(queued.message).contains("EN COLA")
+            coVerify(exactly = 1) {
+                paymentQueueRepository.enqueue(match {
+                    it.referenceNumber == "CASH-FULLTEST-commit" &&
+                        it.idempotencyKey == "25ed6905-50ae-4765-b0ae-d8a4fc90c5ea" &&
+                        it.terminalPaymentRequestId == "FULLTEST-cash-commit"
+                })
+            }
+            coVerify(exactly = 1) { paymentAttemptLedger.markDeliveredToQueue("25ed6905-50ae-4765-b0ae-d8a4fc90c5ea") }
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "FULLTEST-cash-commit", status = "success",
+                    paymentId = null, transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any(),
+                )
+            }
+        } finally {
+            committed.complete(Unit)
+            action.cancel()
+            action.join()
+            vm.viewModelScope.cancel()
+        }
+    }
 }

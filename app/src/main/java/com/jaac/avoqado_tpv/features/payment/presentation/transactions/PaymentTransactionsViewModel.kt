@@ -202,6 +202,7 @@ class PaymentTransactionsViewModel @Inject constructor(
     }
 
     fun printTicket(transaction: UnifiedTransaction) {
+        viewModelScope.launch {
         val result = adapter.printTicket(transaction)
         result.fold(
             onSuccess = {
@@ -211,6 +212,7 @@ class PaymentTransactionsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(message = "Error imprimiendo: ${error.message}")
             }
         )
+        }
     }
 
     fun clearMessage() {

@@ -100,4 +100,53 @@ class TotalesDelCobroTest {
         assertTrue("PrinterManager no imprime TotalesDelCobro.renglonesPax", codigo.contains("TotalesDelCobro.renglonesPax("))
         assertFalse("PrinterManager volvió a imprimir «DESC. C/IMP.»", codigo.contains("DESC. C/IMP."))
     }
+
+    @Test
+    fun `T11 cargo explicito se separa sin cambiar total`() {
+        val p = TotalesDelCobro.desdeLoCobrado(d("115"), d("0"), d("0"), listOf(d("100")), cargo = d("15"))
+        assertEquals(0, p.subtotal.compareTo(d("100")))
+        assertEquals(0, p.cargo.compareTo(d("15")))
+        assertEquals(0, (p.subtotal - p.descuento + p.cargo + p.propina).compareTo(p.total))
+        assertEquals(listOf("Subtotal:".padEnd(22) + "$100.00 MXN", "Cargo:".padEnd(22) + "$15.00 MXN", LeyendaIva.TEXTO), texto(p))
+    }
+
+    @Test
+    fun `T11 cargo descuento y propina conservan cifras originales`() {
+        val p = TotalesDelCobro.desdeLoCobrado(d("120"), d("5"), d("20"), listOf(d("120")), cargo = d("15"))
+        assertEquals(0, p.subtotal.compareTo(d("120")))
+        assertEquals(0, p.descuento.compareTo(d("20")))
+        assertEquals(0, p.propina.compareTo(d("5")))
+        assertEquals(0, (p.subtotal - p.descuento + p.cargo + p.propina).compareTo(p.total))
+        assertEquals(listOf("Subtotal:".padEnd(22) + "$120.00 MXN", "Descuento:".padEnd(22) + "-$20.00 MXN", "Cargo:".padEnd(22) + "$15.00 MXN", LeyendaIva.TEXTO, "Propina:".padEnd(22) + "$5.00 MXN"), texto(p))
+    }
+
+    @Test
+    fun `T11 sin articulos no inventa descuento y cargo igual total admite base cero`() {
+        for ((total, expectedBase) in listOf("115" to "100", "15" to "0")) {
+            val p = TotalesDelCobro.desdeLoCobrado(d(total), d("0"), d("20"), emptyList(), cargo = d("15"))
+            assertEquals(0, p.subtotal.compareTo(d(expectedBase)))
+            assertEquals(0, p.descuento.signum())
+            assertEquals(0, p.cargo.compareTo(d("15")))
+            assertEquals(0, (p.subtotal - p.descuento + p.cargo + p.propina).compareTo(p.total))
+        }
+    }
+
+    @Test
+    fun `T11 cargo cero conserva legado parcial sin repartir descuento`() {
+        val legacy = papel("50", descuento = "20")
+        val explicitZero = TotalesDelCobro.desdeLoCobrado(d("50"), d("0"), d("20"), listOf(d("90"), d("30")), cargo = d("0"))
+        assertEquals(legacy, explicitZero)
+        assertEquals(texto(legacy), texto(explicitZero))
+        assertEquals(0, explicitZero.subtotal.compareTo(d("50")))
+        assertEquals(0, explicitZero.descuento.signum())
+        assertFalse(texto(explicitZero).any { it.startsWith("Cargo") })
+    }
+
+    @Test
+    fun `T11 cargo invalido no produce papel`() {
+        for (cargo in listOf("-1", "115.01", "0.001")) {
+            val failure = runCatching { TotalesDelCobro.desdeLoCobrado(d("120"), d("5"), d("0"), emptyList(), cargo = d(cargo)) }.exceptionOrNull()
+            assertTrue("cargo invalido aceptado: $cargo", failure is IllegalArgumentException || failure is ArithmeticException)
+        }
+    }
 }

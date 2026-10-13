@@ -228,8 +228,22 @@ class PrinterManager @Inject constructor(
         serialNumber: String? = null,  // 📱 ICCID/serial number for serialized inventory receipt
         categoryName: String? = null,  // 📱 Category name for serialized inventory receipt
         autofacturaAvailable: Boolean = false,  // 🧾 Backend flag: same QR, caption mentions autofactura
+        serviceChargeAmount: String? = null,  // T11: importe explícito, opcional para llamadores anteriores
     ): Result<Unit> {
         return try {
+            val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
+            val discountValue = discountAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            // Validar antes de iniciar el dispositivo: un cargo ilegible no produce papel parcial.
+            val cargoValue = if (isRefund || serviceChargeAmount == null) java.math.BigDecimal.ZERO
+                else serviceChargeAmount.toBigDecimal()
+            val papel = if (isRefund) null else TotalesDelCobro.desdeLoCobrado(
+                total = totalValue,
+                propina = tipValue,
+                descuento = discountValue,
+                renglones = orderItems.orEmpty().map { it.totalPrice },
+                cargo = cargoValue,
+            )
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -332,9 +346,6 @@ class PrinterManager @Inject constructor(
             // TRANSACTION DETAILS (Fixed: amount ALREADY includes tip)
             // ========================================
             // ⚠️ CRITICAL FIX: 'amount' is the TOTAL (already includes tip from calculateTotal())
-            val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-            val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
-            val discountValue = discountAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
 
             // 💸 Different display for refunds vs sales
             if (isRefund) {
@@ -345,13 +356,7 @@ class PrinterManager @Inject constructor(
                 // IVA por producto, plan 7a (A7-R6): Subtotal BRUTO → Descuento (sólo si > 0) → leyenda del IVA → Propina →
                 // TOTAL = lo cobrado, como el papel de las apps. Antes el subtotal ya era neto y «DESC. C/IMP.» salía siempre: con
                 // descuento no sumaba. El descuento sólo se desglosa si la cuenta cuadra EXACTO con lo cobrado (TotalesDelCobro).
-                val papel = TotalesDelCobro.desdeLoCobrado(
-                    total = totalValue,
-                    propina = tipValue,
-                    descuento = discountValue,
-                    renglones = orderItems.orEmpty().map { it.totalPrice },
-                )
-                TotalesDelCobro.renglonesPax(papel, leyenda = LeyendaIva.renglonesDelTicket(esDevolucion = isRefund))
+                TotalesDelCobro.renglonesPax(requireNotNull(papel), leyenda = LeyendaIva.renglonesDelTicket(esDevolucion = isRefund))
                     .forEach { printerInstance.printStr("$it\n", null) }
                 printerInstance.printStr("--------------------------------\n", null)
                 printerInstance.printStr(rightAlign("TOTAL: \$${formatDecimal(totalValue)}") + "\n", null)

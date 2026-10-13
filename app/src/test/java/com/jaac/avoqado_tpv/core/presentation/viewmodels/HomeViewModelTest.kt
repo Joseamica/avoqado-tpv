@@ -28,8 +28,18 @@ import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import timber.log.Timber
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -51,6 +61,7 @@ import org.junit.Test
 class HomeViewModelTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
+    private val createdViewModels = mutableListOf<HomeViewModel>()
 
     private lateinit var authRepository: AuthRepository
     private lateinit var socketManager: SocketManager
@@ -128,6 +139,7 @@ class HomeViewModelTest {
         timeEntryRepository = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
         saleVerificationRepository = mockk(relaxed = true)
+        coEvery { saleVerificationRepository.getPendingVerifications() } returns Result.success(emptyList())
         printerManager = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
@@ -147,8 +159,16 @@ class HomeViewModelTest {
 
     @After
     fun tearDown() {
-        Dispatchers.resetMain()
-        unmockkAll()
+        try {
+            runBlocking {
+                createdViewModels.forEach { it.viewModelScope.cancel() }
+                createdViewModels.forEach { it.viewModelScope.coroutineContext[Job]?.cancelAndJoin() }
+            }
+        } finally {
+            createdViewModels.clear()
+            Dispatchers.resetMain()
+            unmockkAll()
+        }
     }
 
     private fun createViewModel(): HomeViewModel {
@@ -185,7 +205,7 @@ class HomeViewModelTest {
             timeEntryRepository = timeEntryRepository,
             tpvSettingsRepository = tpvSettingsRepository,
             saleVerificationRepository = saleVerificationRepository
-        )
+        ).also { createdViewModels.add(it) }
     }
 
     // ========================================
@@ -419,6 +439,7 @@ class HomeViewModelTest {
 
     @Test
     fun `P1 en PAX volver la red o el servidor jamas resuelve la recuperacion de AngelPay`() = runTest(testDispatcher) {
+        org.junit.Assume.assumeTrue("Caso PAX; Nexgo prueba su recuperación AngelPay", com.jaac.avoqado_tpv.BuildConfig.FLAVOR in setOf("sandbox", "production", "gymDemo"))
         // El sabor de pruebas es BLUMON (sandbox). Resolver el Provider cargaría clases de
         // AngelPay en una PAX: el candado de sabor va ANTES del get(), igual que el arranque.
         val viewModel = createViewModel()
@@ -435,5 +456,294 @@ class HomeViewModelTest {
         verify(exactly = 0) { angelPayAuthRecoveryProvider.get() }
         verify(exactly = 0) { angelPayAuthRepositoryProvider.get() }
         viewModel.viewModelScope.cancel()
+    }
+
+    private suspend fun remoteReceiptT11(
+        receipt: Map<String, Any>, expectedStatus: String,
+        expectedCargo: String? = null, printerFails: Boolean = false,
+    ) {
+        val ack = kotlinx.coroutines.CompletableDeferred<String>()
+        val printed = java.util.concurrent.CopyOnWriteArrayList<List<Any?>>()
+        every {
+            printerManager.printReceipt(
+                receiptUrl = any(),
+                amount = any(),
+                authCode = any(),
+                tipAmount = any(),
+                cardDetails = any(),
+                referenceNumber = any(),
+                venueName = any(),
+                venueLogoUrl = any(),
+                venueLegalName = any(),
+                venueRfc = any(),
+                venueAddress = any(),
+                venueCity = any(),
+                venueState = any(),
+                venueZipCode = any(),
+                staffName = any(),
+                orderNumber = any(),
+                orderItems = any(),
+                discountAmount = any(),
+                isRefund = any(),
+                isPortabilidad = any(),
+                serialNumber = any(),
+                categoryName = any(),
+                autofacturaAvailable = any(),
+                serviceChargeAmount = any()
+            )
+        } answers {
+            printed.add(args.toList())
+            if (printerFails) kotlin.Result.failure(IllegalStateException("papel agotado")) else kotlin.Result.success(Unit)
+        }
+        every { socketManager.emitTerminalReceiptPrintResult("receipt-T11", any(), any()) } answers {
+            ack.complete(secondArg())
+            Unit
+        }
+        val vm = createViewModel()
+        vm.usaPaxParaReciboRemoto = true
+        try {
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                kotlinx.coroutines.withTimeout(5_000) { fakeSocketEvents.subscriptionCount.first { it > 0 } }
+            }
+            fakeSocketEvents.emit(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalReceiptPrintRequest(
+                requestId = "receipt-T11", receipt = receipt, venueId = "venue-123", timestamp = "2026-10-10T12:00:00Z",
+            ))
+            // El renderer corre en IO real. Esperar su ACK, no asumir que runCurrent terminó IO.
+            val status = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                kotlinx.coroutines.withTimeout(5_000) { ack.await() }
+            }
+            assertThat(status).isEqualTo(expectedStatus)
+            if (expectedStatus == "success" || printerFails) {
+                assertThat(printed).hasSize(1)
+                assertThat(printed.single()[1]).isEqualTo("120.00")
+                assertThat(printed.single()[3]).isEqualTo("5.00")
+                assertThat(printed.single()[17]).isEqualTo("20.00")
+                assertThat(printed.single()[23]).isEqualTo(expectedCargo)
+                val items = printed.single()[16] as List<*>
+                assertThat(items).hasSize(1)
+                assertThat((items.single() as com.jaac.avoqado_tpv.features.ordering.domain.OrderItem).totalPrice.toPlainString()).isEqualTo("120.00")
+            } else {
+                assertThat(printed).isEmpty()
+            }
+            verify(exactly = 1) { socketManager.emitTerminalReceiptPrintResult("receipt-T11", expectedStatus, any()) }
+            if (expectedStatus == "failed") verify(exactly = 0) { socketManager.emitTerminalReceiptPrintResult("receipt-T11", "success", any()) }
+        } finally {
+            vm.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
+            clearMocks(socketManager, answers = false, recordedCalls = true)
+        }
+    }
+
+    private fun receiptT11(): Map<String, Any> = mapOf(
+        "total" to 12000, "tipAmount" to 500, "discountAmount" to 2000,
+        "venueName" to "Negocio A", "paymentMethod" to "Efectivo",
+        "items" to listOf(mapOf("name" to "Producto", "quantity" to 1, "unitPrice" to 12000, "totalPrice" to 12000)),
+    )
+
+    @Test
+    fun `T11 evento remoto pasa cargo original y demas cifras a impresora`() = runTest(testDispatcher) {
+        remoteReceiptT11(receiptT11() + ("serviceChargeAmount" to 1500), "success", "15.00")
+    }
+
+    @Test
+    fun `T11 evento remoto conserva cargo ausente y cero`() = runTest(testDispatcher) {
+        remoteReceiptT11(receiptT11(), "success")
+        remoteReceiptT11(receiptT11() + ("serviceChargeAmount" to 0), "success", "0.00")
+    }
+
+    @Test
+    fun `T11 evento remoto rechaza fraccion overflow negativo y cargo mayor a base`() = runTest(testDispatcher) {
+        for (value in listOf<Any>(1500.5, "1500.5", 2147483648L, "2147483648", -1, 11501, "NaN", true)) {
+            remoteReceiptT11(receiptT11() + ("serviceChargeAmount" to value), "failed")
+        }
+    }
+
+    @Test
+    fun `T11 evento remoto propaga fallo real de impresora sin success`() = runTest(testDispatcher) {
+        remoteReceiptT11(receiptT11() + ("serviceChargeAmount" to 1500), "failed", "15.00", printerFails = true)
+    }
+    private suspend fun remotePublicNexgoT11(
+        receipt: Map<String, Any>, expectedStatus: String,
+        callbackCode: Int = 0, statusCode: Int = 0, expectedStarts: Int = 1,
+    ): List<String> {
+        every {
+            printerManager.printReceipt(
+                receiptUrl = any(),
+                amount = any(),
+                authCode = any(),
+                tipAmount = any(),
+                cardDetails = any(),
+                referenceNumber = any(),
+                venueName = any(),
+                venueLogoUrl = any(),
+                venueLegalName = any(),
+                venueRfc = any(),
+                venueAddress = any(),
+                venueCity = any(),
+                venueState = any(),
+                venueZipCode = any(),
+                staffName = any(),
+                orderNumber = any(),
+                orderItems = any(),
+                discountAmount = any(),
+                isRefund = any(),
+                isPortabilidad = any(),
+                serialNumber = any(),
+                categoryName = any(),
+                autofacturaAvailable = any(),
+                serviceChargeAmount = any()
+            )
+        } returns kotlin.Result.success(Unit)
+        coEvery { saleVerificationRepository.getPendingVerifications() } returns kotlin.Result.success(emptyList())
+        val printer = mockk<com.nexgo.oaf.apiv3.device.printer.Printer>(relaxed = true)
+        val lines = java.util.concurrent.CopyOnWriteArrayList<String>()
+        every { printer.status } returns statusCode
+        every { printer.initPrinter() } returns 0
+        every { printer.appendPrnStr(any<String>(), any<Int>(), any<com.nexgo.oaf.apiv3.device.printer.AlignEnum>(), any<Boolean>()) } answers {
+            lines.add(firstArg()); 0
+        }
+        every { printer.appendPrnStr(any<String>(), any<String>(), any<Int>(), any<Boolean>()) } answers {
+            lines.add(firstArg<String>() + "|" + secondArg<String>()); 0
+        }
+        val started = kotlinx.coroutines.CompletableDeferred<com.nexgo.oaf.apiv3.device.printer.OnPrintListener>()
+        every { printer.startPrint(any(), any()) } answers { started.complete(secondArg()); 0 }
+        val gateway = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway()
+        gateway.receiptPrinterFactory = { printer }
+        every { angelPaySdkGatewayProvider.get() } returns gateway
+        val ack = kotlinx.coroutines.CompletableDeferred<Pair<String, String?>>()
+        every { socketManager.emitTerminalReceiptPrintResult("public-Nexgo", any(), any()) } answers {
+            ack.complete(secondArg<String>() to thirdArg<String?>()); Unit
+        }
+        val vm = createViewModel()
+        vm.usaPaxParaReciboRemoto = false
+        try {
+            fakeSocketEvents.subscriptionCount.first { it > 0 }
+            fakeSocketEvents.emit(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalReceiptPrintRequest(
+                requestId = "public-Nexgo", receipt = receipt, venueId = "venue-123", timestamp = "2026-10-10T12:00:00Z"))
+            if (expectedStarts > 0) {
+                val observed = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    kotlinx.coroutines.withTimeout(5_000) {
+                        kotlinx.coroutines.selects.select<String> {
+                            started.onAwait { "start" }
+                            ack.onAwait { "premature ack" }
+                        }
+                    }
+                }
+                assertThat(observed).isEqualTo("start")
+                verify(exactly = 0) { socketManager.emitTerminalReceiptPrintResult("public-Nexgo", any(), any()) }
+                started.await().onPrintResult(callbackCode)
+            }
+            val response = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                kotlinx.coroutines.withTimeout(5_000) { ack.await() }
+            }
+            assertThat(response.first).isEqualTo(expectedStatus)
+            verify(exactly = expectedStarts) { printer.startPrint(any(), any()) }
+            verify { printerManager wasNot Called }
+            verify(exactly = 0) { remotePaymentCoordinator.submitSocketPaymentRequest(any()) }
+            verify(exactly = 1) { socketManager.emitTerminalReceiptPrintResult("public-Nexgo", expectedStatus, any()) }
+            if (expectedStatus == "failed") {
+                assertThat(response.second).isNotEmpty()
+                verify(exactly = 0) { socketManager.emitTerminalReceiptPrintResult("public-Nexgo", "success", any()) }
+            }
+            return lines.toList()
+        } finally {
+            // Own fixture completion only: no live printer. Cancellation never manufactures success.
+            if (started.isCompleted) started.await().onPrintResult(callbackCode)
+            vm.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
+            clearMocks(socketManager, answers = false, recordedCalls = true)
+            clearMocks(printerManager, answers = false, recordedCalls = true)
+        }
+    }
+
+    @Test fun `T11 public Nexgo Home waits callback and renders discount charge tip cash`() = runTest(testDispatcher) {
+        val lines = remotePublicNexgoT11(receiptT11() + mapOf(
+            "serviceChargeAmount" to 1500, "paymentMethod" to "CASH", "cashierName" to "Ana",
+            "receiptUrl" to "", "items" to listOf(mapOf("name" to "Producto A", "quantity" to 2,
+                "unitPrice" to 6000, "totalPrice" to 12000, "modifiers" to listOf("Azul"), "note" to "Entregar junto"))), "success")
+        assertThat(lines).containsAtLeast("Subtotal|$120.00 MXN", "Descuento|-$20.00 MXN", "Cargo|$15.00 MXN", "Propina|$5.00 MXN", "TOTAL|$120.00 MXN")
+        assertThat(lines.joinToString("\n")).contains("Forma de pago: EFECTIVO")
+        assertThat(lines.joinToString("\n")).doesNotContain("Autorizacion|")
+        assertThat(lines.joinToString("\n")).doesNotContain("Referencia|")
+        assertThat(lines.joinToString("\n")).contains("2 x Producto A")
+        assertThat(lines.joinToString("\n")).contains("Azul")
+        assertThat(lines.joinToString("\n")).contains("Ana")
+        assertThat(lines).contains(com.jaac.avoqado_tpv.core.printer.LeyendaIva.TEXTO)
+    }
+
+    @Test fun `T11 public Nexgo partial never subtracts whole order discount`() = runTest(testDispatcher) {
+        val lines = remotePublicNexgoT11(receiptT11() + mapOf("total" to 5500, "serviceChargeAmount" to 1500, "receiptUrl" to ""), "success")
+        assertThat(lines).containsAtLeast("Subtotal|$35.00 MXN", "Cargo|$15.00 MXN", "Propina|$5.00 MXN", "TOTAL|$55.00 MXN")
+        assertThat(lines.joinToString("\n")).doesNotContain("Descuento")
+    }
+
+    @Test fun `T11 public Nexgo charge equal total has zero base`() = runTest(testDispatcher) {
+        val lines = remotePublicNexgoT11(receiptT11() + mapOf("total" to 1500, "tipAmount" to 0, "serviceChargeAmount" to 1500, "items" to emptyList<Any>(), "receiptUrl" to ""), "success")
+        assertThat(lines).containsAtLeast("Subtotal|$0.00 MXN", "Cargo|$15.00 MXN", "TOTAL|$15.00 MXN")
+        assertThat(lines.joinToString("\n")).doesNotContain("Propina")
+    }
+
+    @Test fun `T11 public Nexgo absent and zero charge preserve legacy totals`() = runTest(testDispatcher) {
+        for (cargo in listOf(emptyMap<String, Any>(), mapOf("serviceChargeAmount" to 0))) {
+            val lines = remotePublicNexgoT11(receiptT11() + cargo + ("receiptUrl" to ""), "success")
+            assertThat(lines).containsAtLeast("Subtotal|$115.00 MXN", "Propina|$5.00 MXN", "TOTAL|$120.00 MXN")
+            assertThat(lines.joinToString("\n")).doesNotContain("Cargo|")
+        }
+    }
+
+    @Test fun `T11 public Nexgo callback paper error is failed and never another payment`() = runTest(testDispatcher) {
+        for (code in listOf(-1005, -1001, -1008, -1009)) {
+            remotePublicNexgoT11(receiptT11() + mapOf("serviceChargeAmount" to 1500, "receiptUrl" to ""), "failed", callbackCode = code)
+        }
+    }
+
+    @Test fun `T11 public Nexgo invalid charge and busy never start printing`() = runTest(testDispatcher) {
+        for (cargo in listOf<Any>(1500.5, "1500.5", 2147483648L, -1, 11501)) {
+            remotePublicNexgoT11(receiptT11() + ("serviceChargeAmount" to cargo), "failed", expectedStarts = 0)
+        }
+        remotePublicNexgoT11(receiptT11() + mapOf("serviceChargeAmount" to 1500, "receiptUrl" to ""), "failed", statusCode = -1004, expectedStarts = 0)
+    }
+
+    @Test
+    fun `cancelBlumonInit remains cancelled after already entered IO initialization completes`() = runTest(testDispatcher) {
+        org.junit.Assume.assumeTrue("Caso PAX: inicialización Blumon", com.jaac.avoqado_tpv.BuildConfig.FLAVOR in setOf("sandbox", "production", "gymDemo"))
+        assertThat(com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK).isTrue()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val releasedNormally = AtomicBoolean(false)
+        val tree = object : Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                if (message == "[PERF] HomeVM.initBlumonSDK START") {
+                    entered.countDown()
+                    check(release.await(10, TimeUnit.SECONDS)) { "Initialization latch was not released" }
+                    releasedNormally.set(true)
+                }
+            }
+        }
+        Timber.plant(tree)
+        var viewModel: HomeViewModel? = null
+        try {
+            val vm = createViewModel()
+            viewModel = vm
+            assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue()
+            vm.cancelBlumonInit()
+            assertThat(vm.isBlumonInitializing.value).isFalse()
+            release.countDown()
+            // Join the actual scope: the blocked init must run through cancellation/finally.
+            vm.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+            assertThat(releasedNormally.get()).isTrue()
+            assertThat(vm.isBlumonInitializing.value).isFalse()
+            assertThat(vm.isBlumonReady.value).isFalse()
+            assertThat(vm.blumonInitError.value)
+                .isEqualTo("Inicialización cancelada. Puedes reintentar cuando la conexión mejore.")
+            coVerify(exactly = 0) { initializationManager.ensureInitialized(defaultMerchantPosId = any()) }
+        } finally {
+            release.countDown()
+            try {
+                withContext(NonCancellable) {
+                    viewModel?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin()
+                }
+            } finally {
+                Timber.uproot(tree)
+            }
+        }
     }
 }

@@ -4,8 +4,10 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Payment Domain Model
@@ -115,10 +117,10 @@ data class Payment(
      * Example: "15 Ene 2025, 14:30"
      */
     fun formatTimestamp(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
-        val formatter = DateTimeFormatter
-            .ofPattern("dd MMM yyyy, HH:mm", Locale("es", "MX"))
-            .withZone(zoneId)
-        return formatter.format(createdAt)
+        // Como el ticket: usa tzdata del sistema; algunos fabricantes dejan java.time/ICU antiguo.
+        return SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("es", "MX")).apply {
+            timeZone = systemTimeZone(zoneId)
+        }.format(Date.from(createdAt))
     }
 
     /**
@@ -126,10 +128,9 @@ data class Payment(
      * Example: "15 Ene 2025"
      */
     fun formatDate(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
-        val formatter = DateTimeFormatter
-            .ofPattern("dd MMM yyyy", Locale("es", "MX"))
-            .withZone(zoneId)
-        return formatter.format(createdAt)
+        return SimpleDateFormat("dd MMM yyyy", Locale("es", "MX")).apply {
+            timeZone = systemTimeZone(zoneId)
+        }.format(Date.from(createdAt))
     }
 
     /**
@@ -137,6 +138,18 @@ data class Payment(
      */
     fun getMethodLabel(): String {
         return method.label
+    }
+
+    private fun systemTimeZone(zoneId: ZoneId): TimeZone {
+        val id = zoneId.id
+        val systemId = when {
+            id == "Z" -> "GMT"
+            id.startsWith("UTC") -> "GMT" + id.removePrefix("UTC")
+            id == "UT" || id.startsWith("UT+") || id.startsWith("UT-") -> "GMT" + id.removePrefix("UT")
+            id.startsWith("+") || id.startsWith("-") -> "GMT$id"
+            else -> id
+        }
+        return TimeZone.getTimeZone(systemId)
     }
 
     /**

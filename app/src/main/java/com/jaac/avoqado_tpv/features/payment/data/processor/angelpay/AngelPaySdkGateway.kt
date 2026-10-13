@@ -14,9 +14,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.resume
 
 @Singleton
-class AngelPaySdkGateway @Inject constructor() {
+class AngelPaySdkGateway() {
+    @Inject constructor(@dagger.hilt.android.qualifiers.ApplicationContext context: Context) : this() {
+        receiptContext = context.applicationContext
+    }
+
 
     private companion object {
         // ⏱️ Auto-close of the SDK's result screen (AngelPay SDK >= 1.0.10).
@@ -30,6 +36,163 @@ class AngelPaySdkGateway @Inject constructor() {
         // confirmation visible before falling back to our own success screen.
         const val APPROVED_RESULT_DISPLAY_MILLIS = 3000L
         const val ERROR_RESULT_DISPLAY_MILLIS = 5000L
+    }
+
+    // Sólo impresión: no comparte estado con el cobro ni modifica el SDK financiero.
+    private val receiptPrintMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var receiptContext: Context? = null
+    internal var receiptPrinterFactory: (() -> com.nexgo.oaf.apiv3.device.printer.Printer)? = null
+    internal var receiptPrintDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
+
+    /** El inicio aceptado no equivale a impresión terminada. No reintenta papel automáticamente. */
+    suspend fun printTicket(ticket: com.angelpay.angelpaysdk.models.PrintTicketRequest): Result<Unit> =
+        withContext(receiptPrintDispatcher) {
+            val owner = Any()
+            if (!receiptPrintMutex.tryLock(owner)) {
+                return@withContext Result.failure(IllegalStateException("La impresora está ocupada"))
+            }
+            var callbackOwnsPrinter = false
+            try {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val rows = prepareReceiptRows(ticket) // Validate/decode everything BEFORE buffer writes.
+                val printer = receiptPrinterFactory?.invoke() ?: com.nexgo.oaf.apiv3.APIProxy
+                    .getDeviceEngine(checkNotNull(receiptContext) { "Impresora no inicializada" }).printer
+                checkPrinterResult(printer.status)
+                checkPrinterResult(printer.initPrinter())
+                for (row in rows) row(printer)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                kotlinx.coroutines.suspendCancellableCoroutine<Result<Unit>> { continuation ->
+                    if (!continuation.isActive) return@suspendCancellableCoroutine
+                    val completionLock = Any()
+                    var startReturned = false
+                    var outcome: Result<Unit>? = null
+                    var finished = false
+                    var consumerResolved = false
+                    fun finishIfReady() {
+                        synchronized(completionLock) {
+                            if (!startReturned || outcome == null || finished) return
+                            finished = true
+                            receiptPrintMutex.unlock(owner)
+                            if (!consumerResolved) {
+                                consumerResolved = true
+                                if (continuation.isActive) continuation.resume(outcome!!)
+                            }
+                        }
+                    }
+                    val listener = com.nexgo.oaf.apiv3.device.printer.OnPrintListener { code ->
+                        synchronized(completionLock) {
+                            if (outcome == null) outcome = runCatching { checkPrinterResult(code) }
+                        }
+                        finishIfReady()
+                    }
+                    // Cancellation cannot cancel the hardware through this public API. Keep
+                    // ownership until its callback; a late/duplicate callback cannot unlock B.
+                    callbackOwnsPrinter = true
+                    try {
+                        val started = printer.startPrint(true, listener)
+                        synchronized(completionLock) {
+                            if (started != com.nexgo.oaf.apiv3.SdkResult.Success) {
+                                outcome = runCatching { checkPrinterResult(started) }
+                            }
+                            startReturned = true
+                        }
+                    } catch (error: Exception) {
+                        synchronized(completionLock) {
+                            // A thrown start may already have reached hardware. Only a
+                            // received callback proves its owner may be released.
+                            if (outcome != null) outcome = Result.failure(error)
+                            startReturned = true
+                            if (!consumerResolved) {
+                                consumerResolved = true
+                                if (continuation.isActive) continuation.resume(Result.failure(error))
+                            }
+                        }
+                    }
+                    finishIfReady()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            } finally {
+                if (!callbackOwnsPrinter) receiptPrintMutex.unlock(owner)
+            }
+        }
+
+    private fun checkPrinterResult(code: Int) {
+        check(code == com.nexgo.oaf.apiv3.SdkResult.Success) {
+            if (code == com.nexgo.oaf.apiv3.SdkResult.Printer_PaperLack) "La impresora no tiene papel ($code)"
+            else "No se pudo imprimir en la TPV ($code)"
+        }
+    }
+
+    /** Public model emitted by our existing builder; no SDK internals or financial calculation. */
+    private fun prepareReceiptRows(ticket: com.angelpay.angelpaysdk.models.PrintTicketRequest):
+        List<(com.nexgo.oaf.apiv3.device.printer.Printer) -> Unit> {
+        require(ticket.paperWidthChars in 1..48) { "Ancho de ticket inválido" }
+        val items = ticket.header + ticket.body + ticket.footer
+        require(items.isNotEmpty()) { "Ticket vacío" }
+        return items.flatMap { item ->
+            val style = item.style ?: com.angelpay.angelpaysdk.models.PrintStyleRequest()
+            val size = when (style.fontSize) {
+                com.angelpay.angelpaysdk.models.PrintFontSizeRequest.SMALL -> 16
+                com.angelpay.angelpaysdk.models.PrintFontSizeRequest.MEDIUM -> 20
+                com.angelpay.angelpaysdk.models.PrintFontSizeRequest.LARGE -> 24
+                com.angelpay.angelpaysdk.models.PrintFontSizeRequest.XLARGE -> 32
+            }
+            val align = when (style.alignment) {
+                com.angelpay.angelpaysdk.models.PrintAlignmentRequest.LEFT -> com.nexgo.oaf.apiv3.device.printer.AlignEnum.LEFT
+                com.angelpay.angelpaysdk.models.PrintAlignmentRequest.CENTER -> com.nexgo.oaf.apiv3.device.printer.AlignEnum.CENTER
+                com.angelpay.angelpaysdk.models.PrintAlignmentRequest.RIGHT -> com.nexgo.oaf.apiv3.device.printer.AlignEnum.RIGHT
+            }
+            val rows = mutableListOf<(com.nexgo.oaf.apiv3.device.printer.Printer) -> Unit>()
+            fun text(value: String) {
+                rows.add { printer -> checkPrinterResult(printer.appendPrnStr(value, size, align, style.isBold)) }
+            }
+            when (item.type) {
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.TEXT -> text(requireNotNull(item.text))
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.PARAGRAPH -> {
+                    val width = item.maxCharsPerLine ?: ticket.paperWidthChars
+                    require(width in 1..48) { "Ancho de párrafo inválido" }
+                    requireNotNull(item.text).split('\n').forEach { line ->
+                        if (line.isEmpty()) text(" ") else line.chunked(width).forEach(::text)
+                    }
+                }
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.TWO_COLUMNS -> {
+                    val left = requireNotNull(item.left); val right = requireNotNull(item.right)
+                    rows.add { printer -> checkPrinterResult(printer.appendPrnStr(left, right, size, style.isBold)) }
+                }
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.DIVIDER -> {
+                    val character = item.dividerChar ?: "-"
+                    require(character.length == 1) { "Separador inválido" }
+                    text(character.repeat(ticket.paperWidthChars))
+                }
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.SPACER -> {
+                    val lines = item.lines ?: 1
+                    require(lines in 0..20) { "Espacio inválido" }
+                    repeat(lines) { text(" ") }
+                }
+                com.angelpay.angelpaysdk.models.PrintTicketItemType.IMAGE_BASE64 -> {
+                    val encoded = requireNotNull(item.imageBase64)
+                    require(encoded.length <= 2_000_000) { "Imagen demasiado grande" }
+                    val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    require(bounds.outWidth in 1..384 && bounds.outHeight in 1..4096) { "Imagen inválida" }
+                    val bitmap = requireNotNull(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                    val width = item.targetWidthPx ?: bitmap.width
+                    require(width in 1..384) { "Ancho de imagen inválido" }
+                    val rendered = if (width == bitmap.width) bitmap else android.graphics.Bitmap.createScaledBitmap(
+                        bitmap, width, (bitmap.height.toLong() * width / bitmap.width).toInt().coerceAtLeast(1), false)
+                    rows.add { printer -> checkPrinterResult(printer.appendImage(rendered, align)) }
+                }
+                else -> error("Tipo de ticket no soportado: ${item.type}")
+            }
+            val spacing = item.addSpacingAfter ?: 0
+            require(spacing in 0..20) { "Espacio posterior inválido" }
+            repeat(spacing) { text(" ") }
+            rows
+        }
     }
 
     fun isInitialized(): Boolean = AngelPaySDK.isInitialized()

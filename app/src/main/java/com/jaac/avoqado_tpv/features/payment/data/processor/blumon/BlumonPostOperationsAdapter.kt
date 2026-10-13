@@ -42,7 +42,7 @@ class BlumonPostOperationsAdapter @Inject constructor() : PaymentPostOperationsA
         return Result.failure(UnsupportedOperationException("URL de ticket Blumon no implementada en esta vista unificada"))
     }
 
-    override fun printTicket(transaction: UnifiedTransaction): Result<Unit> {
+    override suspend fun printTicket(transaction: UnifiedTransaction): Result<Unit> {
         return Result.failure(UnsupportedOperationException("Impresión Blumon no implementada en esta vista unificada"))
     }
 }

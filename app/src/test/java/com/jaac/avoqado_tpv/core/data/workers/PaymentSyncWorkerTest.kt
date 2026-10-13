@@ -51,7 +51,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-1")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(IOException("red caida"))
 
         val worker = buildWorker(repo, useCase)
@@ -59,7 +59,7 @@ class PaymentSyncWorkerTest {
         val wallClockMs = measureTimeMillis { worker.doWork() }
 
         // Un solo intento: el reintento lo hace WorkManager al volver la red.
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         // 🔴 Fix round 1 (test gap 1): las DOS señales son complementarias, no sustitutas.
         // Reloj VIRTUAL — cubre un delay() programado en el TestScope (runTest lo salta en
         // tiempo real, así que measureTimeMillis solo NO lo detecta — verificado
@@ -84,13 +84,13 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-2")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } throws IllegalStateException("boom inesperado")
+        coEvery { useCase(any(), any(), any(), any(), true) } throws IllegalStateException("boom inesperado")
 
         val worker = buildWorker(repo, useCase)
         val virtualBefore = currentTime
         val wallClockMs = measureTimeMillis { worker.doWork() }
 
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         // Ver nota sobre currentTime + measureTimeMillis (complementarios) en el test anterior.
         assertThat(currentTime - virtualBefore).isEqualTo(0L)
         assertThat(wallClockMs).isLessThan(2_000)
@@ -105,7 +105,7 @@ class PaymentSyncWorkerTest {
         val repo = mockk<PaymentQueueRepository>(relaxed = true)
         val useCase = mockk<RecordPaymentUseCase>()
         coEvery { repo.claimBatch(any()) } returns listOf(queuedPayment(reference = "ref-1"))
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(IOException("red caida"))
 
         val result = buildWorker(repo, useCase).doWork()
@@ -123,7 +123,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-3")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.success(mockk(relaxed = true))
 
         buildWorker(repo, useCase).doWork()
@@ -145,7 +145,7 @@ class PaymentSyncWorkerTest {
             paymentId = "pmt-e5", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal("5.00"),
             serverStatus = "PENDING", reconciliationKind = "POSSIBLE_SECOND_CAPTURE", winnerPaymentId = "pmt-ganador",
         )
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(receipt)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(receipt)
         val orden = mutableListOf<String>()
         val ledger = mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true)
         val veredictos = mutableListOf<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
@@ -177,7 +177,7 @@ class PaymentSyncWorkerTest {
         val payment = queuedPayment(reference = "ref-e5b", idempotencyKey = "k-e5b",
             processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY)
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(
             com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
                 paymentId = "pmt-e5b", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
                 serverStatus = "PENDING", reconciliationKind = "POSSIBLE_REFERENCE_COLLISION",
@@ -191,7 +191,7 @@ class PaymentSyncWorkerTest {
         coVerify(exactly = 0) { repo.markSynced(any(), any()) }
         coVerify(exactly = 1) { repo.release(payment.queueId, payment.claimToken.orEmpty(), payment.retryCount + 1, any()) }
         // El replay siguiente vuelve a registrar por REST (idempotente) — nunca vuelve al SDK: sólo UNA llamada aquí.
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
     }
 
     @Test
@@ -202,7 +202,7 @@ class PaymentSyncWorkerTest {
         val payment = queuedPayment(reference = "ref-e5c", idempotencyKey = "k-e5c",
             processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY)
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(
             com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
                 paymentId = "pmt-e5c", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
             ),
@@ -229,7 +229,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-e5d", idempotencyKey = "k-e5d")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(
             com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
                 paymentId = "pmt-e5d", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
             ),
@@ -251,7 +251,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-e5c", idempotencyKey = "k-e5c")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(
             com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
                 paymentId = "pmt-e5c", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("50.00"), tipAmount = java.math.BigDecimal.ZERO,
             ),
@@ -272,7 +272,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-4")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(409, "Duplicate payment"))
 
         buildWorker(repo, useCase).doWork()
@@ -290,7 +290,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-5")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(404, "Order not found"))
 
         buildWorker(repo, useCase).doWork()
@@ -317,7 +317,7 @@ class PaymentSyncWorkerTest {
         val repo = mockk<PaymentQueueRepository>(relaxed = true)
         val useCase = mockk<RecordPaymentUseCase>()
         coEvery { repo.claimBatch(any()) } returns listOf(queuedPayment(reference = "ref-6"))
-        coEvery { useCase(any(), any(), any(), any()) } throws CancellationException("worker cancelado")
+        coEvery { useCase(any(), any(), any(), any(), true) } throws CancellationException("worker cancelado")
 
         val worker = buildWorker(repo, useCase)
 
@@ -357,7 +357,7 @@ class PaymentSyncWorkerTest {
         val entity2 = pendingEntity(reference = "ref-b", id = 102L)
         val entity3 = pendingEntity(reference = "ref-c", id = 103L)
         coEvery { dao.claimBatch(any(), any(), any(), any()) } returns listOf(entity1, entity2, entity3)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.failure(IOException("red caida"))
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.failure(IOException("red caida"))
         // Solo el release() del pago DEL MEDIO revienta a nivel DAO — entity1/entity3 usan
         // el comportamiento relajado normal (devuelven 0, no lanzan).
         coEvery {
@@ -369,7 +369,7 @@ class PaymentSyncWorkerTest {
 
         // Los TRES pagos se intentaron: el throw de uno (atrapado dentro de
         // PaymentQueueRepositoryImpl.release(), ahora con try/catch) no detuvo el loop.
-        coVerify(exactly = 3) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 3) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { dao.release(entity1.id, token = any(), retryCount = any(), error = any()) }
         coVerify(exactly = 1) { dao.release(entity2.id, token = any(), retryCount = any(), error = any()) }
         coVerify(exactly = 1) { dao.release(entity3.id, token = any(), retryCount = any(), error = any()) }
@@ -396,7 +396,7 @@ class PaymentSyncWorkerTest {
         val entity1 = pendingEntity(reference = "ref-x", id = 201L)
         val entity2 = pendingEntity(reference = "ref-y", id = 202L)
         coEvery { dao.claimBatch(any(), any(), any(), any()) } returns listOf(entity1, entity2)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.failure(IOException("red caida"))
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.failure(IOException("red caida"))
         // El release() del PRIMER pago se cancela — nunca debería llegar al segundo.
         coEvery {
             dao.release(entity1.id, token = any(), retryCount = any(), error = any())
@@ -415,7 +415,7 @@ class PaymentSyncWorkerTest {
         assertThat(propagated).isTrue()
         // NO siguió con el segundo pago de la tanda — el throw cortó el for loop de doWork()
         // en seco, antes de llegar a entity2.
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 0) {
             dao.release(entity2.id, token = any(), retryCount = any(), error = any())
         }
@@ -442,7 +442,7 @@ class PaymentSyncWorkerTest {
 
         val payment = queuedPayment(reference = "ref-sync-ok")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
         // Tras sincronizar, la verdad en Room es 0 pendientes / 0 fallidos.
         coEvery { repo.getPendingCount() } returns 0
         coEvery { repo.getFailedCount() } returns 0
@@ -462,7 +462,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-count-boom")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
         coEvery { repo.getPendingCount() } throws IllegalStateException("db cerrada")
 
         val result = buildWorker(repo, useCase).doWork()
@@ -591,7 +591,7 @@ class PaymentSyncWorkerTest {
 
         val contextos = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
         val referencias = mutableListOf<String>()
-        coEvery { useCase(capture(contextos), any(), any(), capture(referencias)) } returnsMany listOf(
+        coEvery { useCase(capture(contextos), any(), any(), capture(referencias), true) } returnsMany listOf(
             Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
             Result.success(
                 com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
@@ -603,7 +603,7 @@ class PaymentSyncWorkerTest {
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 2) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any(), true) }
         assertThat(contextos[0]).isInstanceOf(
             com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.OrderPayment::class.java
         )
@@ -625,13 +625,13 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-404b", orderId = "order-borrada")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND"))
 
         buildWorker(repo, useCase).doWork()
 
         // Exactamente DOS: el de orden y UN reintento como venta rápida. Nunca un bucle.
-        coVerify(exactly = 2) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
     }
 
@@ -645,13 +645,13 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-404-venue", orderId = "order-viva")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(404, "Venue or Order not found"))
 
         buildWorker(repo, useCase).doWork()
 
         // UN solo intento: nunca se reintentó como venta rápida sobre una orden que quizá sigue viva.
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
     }
 
@@ -666,14 +666,14 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-404-otro", orderId = "order-viva")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(
                 BackendHttpException(404, "La orden pertenece a otra sucursal", errorCode = "ORDER_NOT_IN_VENUE"),
             )
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
     }
 
@@ -697,7 +697,7 @@ class PaymentSyncWorkerTest {
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
 
         val contextos = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
-        coEvery { useCase(capture(contextos), any(), any(), any()) } returnsMany listOf(
+        coEvery { useCase(capture(contextos), any(), any(), any(), true) } returnsMany listOf(
             Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
             Result.success(
                 com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
@@ -721,12 +721,12 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-400", orderId = "order-9")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(400, "payload mal formado"))
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
     }
 
@@ -741,12 +741,12 @@ class PaymentSyncWorkerTest {
         )
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
         // Con el código puesto: lo que la frena es el PROCESADOR, no que falte el código.
-        coEvery { useCase(any(), any(), any(), any()) } returns
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
             Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND"))
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any(), true) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
     }
 }

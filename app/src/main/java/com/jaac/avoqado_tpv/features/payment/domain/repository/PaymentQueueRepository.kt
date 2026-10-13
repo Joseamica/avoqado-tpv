@@ -60,6 +60,12 @@ interface PaymentQueueRepository {
      */
     suspend fun enqueue(payment: QueuedPayment): Result<Unit>
 
+    /** Guarda el efectivo ya confirmado y su claim en UN INSERT antes del primer POST.
+     * Un worker sólo puede recuperarlo cuando venza el claim; nunca compite con ese POST.
+     * Una referencia duplicada no se vuelve a enviar desde la pantalla.
+     */
+    suspend fun enqueueAndClaim(payment: QueuedPayment): Result<QueuedPayment>
+
     /**
      * Get all pending payments ordered by creation time (FIFO).
      *

@@ -6,7 +6,9 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorde
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
+import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import kotlinx.coroutines.delay
@@ -65,6 +67,7 @@ import javax.inject.Inject
 class RecordPaymentUseCase @Inject constructor(
     private val fastPaymentRecorder: FastPaymentRecorder,
     private val orderPaymentRecorder: OrderPaymentRecorder,
+    private val paymentQueueRepository: PaymentQueueRepository,
 ) {
     companion object {
         /**
@@ -148,6 +151,7 @@ class RecordPaymentUseCase @Inject constructor(
         cardDetails: CardDetails,
         authorizationNumber: String,
         referenceNumber: String,
+        alreadyQueued: Boolean = false,
     ): Result<PaymentReceipt> {
         // Seleccionar recorder basado en contexto (exhaustive when)
         val recorder = when (context) {
@@ -188,14 +192,45 @@ class RecordPaymentUseCase @Inject constructor(
             }
         }
 
-        // 🔄 Delegar con retry automático
-        return recordPaymentWithRetry(
+        // El efectivo confirmado debe sobrevivir a la muerte del proceso durante el
+        // PRIMER POST. El INSERT incluye su claim: el worker no compite con esta llamada.
+        // El replay ya posee un claim y no vuelve a insertar ni a reclamar la misma fila.
+        val cashClaim = if (cardDetails.isCash && !alreadyQueued) {
+            val payment = QueuedPayment.desdeContexto(
+                context = context,
+                orderNumber = (context as? PaymentContext.AngelPayPayment)?.orderNumber,
+                cardDetails = cardDetails,
+                authorizationNumber = authorizationNumber,
+                referenceNumber = referenceNumber,
+                error = null,
+            )
+            paymentQueueRepository.enqueueAndClaim(payment).getOrElse { return Result.failure(it) }
+        } else null
+        if (cashClaim != null && (cashClaim.queueId <= 0 || cashClaim.claimToken.isNullOrBlank())) {
+            return Result.failure(IllegalStateException("El efectivo no tiene un registro local reservado"))
+        }
+
+        // Un throw/cancel conserva SYNCING: tras vencer el claim el worker retoma esta
+        // misma identidad. Nunca se borra o reinserta dinero para manejar una cancelación.
+        val result = recordPaymentWithRetry(
             recorder = recorder,
             context = context,
             cardDetails = cardDetails,
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
         )
+        if (cashClaim != null) {
+            val token = requireNotNull(cashClaim.claimToken)
+            if (result.isSuccess) {
+                paymentQueueRepository.markSynced(cashClaim.queueId, token)
+            } else {
+                paymentQueueRepository.release(
+                    cashClaim.queueId, token, cashClaim.retryCount,
+                    result.exceptionOrNull()?.message ?: "No se pudo confirmar el registro de efectivo",
+                )
+            }
+        }
+        return result
     }
 
     /**

@@ -57,7 +57,7 @@ class PaymentSyncWorkerRefundTest {
         val payments = mockk<PaymentQueueRepository>(relaxed = true)
         coEvery { payments.claimBatch(any()) } returns listOf(queuedPayment("ref-1"))
         val useCase = mockk<RecordPaymentUseCase>()
-        coEvery { useCase(any(), any(), any(), any()) } coAnswers {
+        coEvery { useCase(any(), any(), any(), any(), alreadyQueued = true) } coAnswers {
             orden += "cobro"
             Result.success(mockk(relaxed = true))
         }
@@ -80,7 +80,7 @@ class PaymentSyncWorkerRefundTest {
         val payments = mockk<PaymentQueueRepository>(relaxed = true)
         coEvery { payments.claimBatch(any()) } returns listOf(queuedPayment("ref-1"))
         val useCase = mockk<RecordPaymentUseCase>()
-        coEvery { useCase(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        coEvery { useCase(any(), any(), any(), any(), alreadyQueued = true) } returns Result.failure(java.io.IOException("sin red"))
         val refunds = mockk<RefundQueueRepository>(relaxed = true)
         coEvery { refunds.claimBatch(any()) } returns listOf(queuedRefund("k-1"))
         coEvery { refunds.replay(any()) } returns SyncOutcome.Synced

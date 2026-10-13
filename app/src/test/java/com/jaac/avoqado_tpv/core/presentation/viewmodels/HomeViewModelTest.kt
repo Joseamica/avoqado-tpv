@@ -439,6 +439,7 @@ class HomeViewModelTest {
 
     @Test
     fun `P1 en PAX volver la red o el servidor jamas resuelve la recuperacion de AngelPay`() = runTest(testDispatcher) {
+        org.junit.Assume.assumeTrue("Caso PAX; Nexgo prueba su recuperación AngelPay", com.jaac.avoqado_tpv.BuildConfig.FLAVOR in setOf("sandbox", "production", "gymDemo"))
         // El sabor de pruebas es BLUMON (sandbox). Resolver el Provider cargaría clases de
         // AngelPay en una PAX: el candado de sabor va ANTES del get(), igual que el arranque.
         val viewModel = createViewModel()
@@ -499,6 +500,7 @@ class HomeViewModelTest {
             Unit
         }
         val vm = createViewModel()
+        vm.usaPaxParaReciboRemoto = true
         try {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
                 kotlinx.coroutines.withTimeout(5_000) { fakeSocketEvents.subscriptionCount.first { it > 0 } }
@@ -702,6 +704,7 @@ class HomeViewModelTest {
 
     @Test
     fun `cancelBlumonInit remains cancelled after already entered IO initialization completes`() = runTest(testDispatcher) {
+        org.junit.Assume.assumeTrue("Caso PAX: inicialización Blumon", com.jaac.avoqado_tpv.BuildConfig.FLAVOR in setOf("sandbox", "production", "gymDemo"))
         assertThat(com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK).isTrue()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)

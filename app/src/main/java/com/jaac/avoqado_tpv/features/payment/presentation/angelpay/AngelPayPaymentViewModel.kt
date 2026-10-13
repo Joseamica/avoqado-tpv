@@ -839,7 +839,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         // being enqueued for offline sync. Report SUCCESS to the POS now (founder rule 2026-07:
         // money moved ⇒ success). No paymentId yet; the synced REST record reconciles the row later.
         // No-op unless socket-sourced.
-        emitSocketResultIfSocketSourced(status = "success")
+        // La aprobación bancaria ya ocurrió en tarjeta. El efectivo, que no tiene ese
+        // comprobante, sólo se confirma al POS cuando su fila quedó guardada.
+        val isCash = context.cardDetails?.isCash == true
+        if (!isCash) emitSocketResultIfSocketSourced(status = "success")
 
         val queued = QueuedPayment(
             // UNIQUE column in Room — AngelPay can return a blank reference on edge
@@ -876,6 +879,7 @@ class AngelPayPaymentViewModel @Inject constructor(
 
         val enqueueResult = paymentQueueRepository.enqueue(queued)
         return if (enqueueResult.isSuccess) {
+            if (isCash) emitSocketResultIfSocketSourced(status = "success")
             // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now (its own
             // idempotency + retry); the ledger row rests. For the cash path (no ledger row
             // is opened for cash) this is a CAS no-match no-op inside the ledger.
@@ -2385,10 +2389,9 @@ class AngelPayPaymentViewModel @Inject constructor(
 
                 Timber.d("🔶 [AngelPay] Recording cash payment | amount=$pendingAmount, tip=$pendingTip")
 
-                // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
-                // espera (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s
-                // peor caso), la llamada NO debe abortarse a medio camino — sin esto el
-                // cobro puede saltarse la cola offline por completo.
+                // La cola se guarda ANTES del primer POST en RecordPaymentUseCase.
+                // NonCancellable protege de abandonar la pantalla; si Android mata el
+                // proceso, el worker recupera la fila durable al vencer su claim.
                 val recordResult = withContext(NonCancellable + Dispatchers.IO) {
                     recordPaymentUseCase(
                         context = paymentContext,

@@ -15,6 +15,7 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_
 import com.example.clean_lib_services.utils.clean.Either
 import com.example.clean_lib_services.utils.clean.Failure
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
@@ -25,6 +26,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
+import org.junit.Assume.assumeTrue
+import org.junit.Rule
+import org.junit.rules.TestName
 import org.junit.Test
 
 /**
@@ -40,6 +44,9 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class InitializationManagerTest {
+
+    @get:Rule
+    val testName = TestName()
 
     // Mocks
     private lateinit var mockContext: Context
@@ -57,6 +64,14 @@ class InitializationManagerTest {
 
     @Before
     fun setup() {
+        // Scope por identidad del flavor, independiente de los flags bajo prueba.
+        // Los 15 cuerpos PAX permanecen intactos y corren completos en sus APKs.
+        val nexgoFlavor = BuildConfig.FLAVOR in setOf("nexgo", "nexgoProd")
+        val nexgoCase = testName.methodName.startsWith("Nexgo ")
+        assumeTrue(
+            "Scope de hardware: caso ${if (nexgoCase) "Nexgo" else "PAX"}, flavor=${BuildConfig.FLAVOR}",
+            if (nexgoCase) nexgoFlavor else BuildConfig.FLAVOR in setOf("sandbox", "production", "gymDemo"),
+        )
         mockkObject(TerminalConfig)
         every { TerminalConfig.serialNumber } returns "TEST-SERIAL-123"
         every { TerminalConfig.brand } returns "PAX"
@@ -500,5 +515,86 @@ class InitializationManagerTest {
         assertThat(result.isSuccess).isTrue()
         // InitializerUseCase called only once (first init), not on second call
         coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+
+    private fun configureNexgoNoSdk() {
+        assertThat(BuildConfig.SUPPORTED_PROCESSOR).isEqualTo("ANGELPAY")
+        assertThat(BuildConfig.ENABLE_PAX_SDK).isFalse()
+        assertThat(BuildConfig.ENABLE_BLUMON_INIT).isFalse()
+        every { TerminalConfig.brand } returns "NEXGO"
+        every { TerminalConfig.model } returns "N86"
+        // Si desaparece el guard, los mocks fallan por tocar SDK en vez de dar
+        // una respuesta relajada que convierta la regresión en éxito accidental.
+        coEvery { mockInitializerUseCase.run(any<InitializerParams>()) } throws
+            IllegalStateException("FULLTEST Nexgo no debe inicializar Blumon")
+        coEvery { mockInsertInitUseCase.run(any<InsertInitParams>()) } throws
+            IllegalStateException("FULLTEST Nexgo no debe insertar configuración Blumon")
+        coEvery { mockGetInitDataUseCase.run(any<GetInitDataParams>()) } throws
+            IllegalStateException("FULLTEST Nexgo no debe consultar el SDK Blumon")
+    }
+
+    private fun assertNoBlumonSideEffects() {
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+        coVerify(exactly = 0) { mockInsertInitUseCase.run(any()) }
+        coVerify(exactly = 0) { mockGetInitDataUseCase.run(any()) }
+        verify(exactly = 0) { mockSecureStorage.getLastBlumonInitTimestamp() }
+        verify(exactly = 0) { mockSecureStorage.saveLastBlumonInitTimestamp(any()) }
+        verify(exactly = 0) { mockCriticalNetworkOperationManager.setSdkInitializationInProgress(any()) }
+    }
+
+    @Test
+    fun `Nexgo first initialization succeeds without invoking Blumon SDK`() = runTest {
+        configureNexgoNoSdk()
+        every { mockSecureStorage.getLastBlumonInitTimestamp() } returns null
+        initializationManager = createManager()
+        assertThat(initializationManager.isInitialized.value).isFalse()
+
+        val result = initializationManager.ensureInitialized()
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(initializationManager.isInitialized.value).isTrue()
+        assertNoBlumonSideEffects()
+    }
+
+    @Test
+    fun `Nexgo expired timestamp and merchant context do not initialize Blumon`() = runTest {
+        configureNexgoNoSdk()
+        every { mockSecureStorage.getLastBlumonInitTimestamp() } returns
+            System.currentTimeMillis() - 25 * 60 * 60 * 1000L
+        initializationManager = createManager()
+
+        val result = initializationManager.ensureInitialized(defaultMerchantPosId = "FULLTEST-merchant-pos")
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(initializationManager.isInitialized.value).isTrue()
+        assertNoBlumonSideEffects()
+    }
+
+    @Test
+    fun `Nexgo force reinitialize with merchant succeeds without any Blumon SDK step`() = runTest {
+        configureNexgoNoSdk()
+        initializationManager = createManager()
+        assertThat(initializationManager.isInitialized.value).isFalse()
+
+        val result = initializationManager.forceReinitialize(merchantPosId = "FULLTEST-merchant-pos")
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(initializationManager.isInitialized.value).isTrue()
+        assertNoBlumonSideEffects()
+    }
+
+    @Test
+    fun `Nexgo concurrent and repeated initialization never invokes Blumon SDK`() = runTest {
+        configureNexgoNoSdk()
+        initializationManager = createManager()
+        val first = async { initializationManager.ensureInitialized() }
+        val second = async { initializationManager.ensureInitialized(defaultMerchantPosId = "FULLTEST-merchant-pos") }
+
+        assertThat(first.await().isSuccess).isTrue()
+        assertThat(second.await().isSuccess).isTrue()
+        assertThat(initializationManager.ensureInitialized().isSuccess).isTrue()
+        assertThat(initializationManager.forceReinitialize().isSuccess).isTrue()
+        assertThat(initializationManager.isInitialized.value).isTrue()
+        assertNoBlumonSideEffects()
     }
 }

@@ -279,6 +279,7 @@ class PaymentSyncWorker @AssistedInject constructor(
                 cardDetails = payment.toCardDetails(),
                 authorizationNumber = payment.authorizationNumber ?: "",
                 referenceNumber = payment.referenceNumber,
+                alreadyQueued = true,
             )
         } catch (e: CancellationException) {
             throw e // Worker cancelado — no tocar la fila, la reclama el barrido de stale-claim

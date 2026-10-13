@@ -177,11 +177,13 @@ object PaymentModule {
     @Singleton
     fun provideRecordPaymentUseCase(
         fastPaymentRecorder: FastPaymentRecorder,
-        orderPaymentRecorder: OrderPaymentRecorder
+        orderPaymentRecorder: OrderPaymentRecorder,
+        paymentQueueRepository: PaymentQueueRepository
     ): RecordPaymentUseCase {
         return RecordPaymentUseCase(
             fastPaymentRecorder = fastPaymentRecorder,
-            orderPaymentRecorder = orderPaymentRecorder
+            orderPaymentRecorder = orderPaymentRecorder,
+            paymentQueueRepository = paymentQueueRepository
         )
     }
 

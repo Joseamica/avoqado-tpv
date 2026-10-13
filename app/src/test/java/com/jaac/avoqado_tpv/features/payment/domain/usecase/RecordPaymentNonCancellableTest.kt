@@ -31,7 +31,7 @@ import java.math.BigDecimal
  * scope que lo invoca (`withContext(NonCancellable + Dispatchers.IO) { ... }` en cada
  * call site de PaymentViewModel/AngelPayPaymentViewModel).
  *
- * **El hueco de dinero que esto tapa:** sin este blindaje, si el proceso muere / la
+ * **El hueco de dinero que esto tapa:** sin este blindaje, si se cancela el scope / la
  * pantalla se abandona / cancelPayment() cancela viewModelScope MIENTRAS
  * recordPaymentUseCase sigue reintentando (hasta 5 intentos con backoff, ~7.5s peor
  * caso), la llamada se cancela a media espera y el codigo NUNCA llega al
@@ -52,9 +52,20 @@ class RecordPaymentNonCancellableTest {
 
     private val fastPaymentRecorder = mockk<FastPaymentRecorder>()
     private val orderPaymentRecorder = mockk<OrderPaymentRecorder>(relaxed = true)
+    // Este harness sigue comprobando el fallback real bajo cancelación de pantalla.
+    // La escritura previa se simula aquí; su orden/INSERT real se prueba por separado en
+    // RecordPaymentUseCaseTest/CashWriteAheadQueueTest y en el reinicio físico.
+    private val writeAheadQueue = mockk<com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository>(relaxed = true).also { queue ->
+        coEvery { queue.enqueueAndClaim(any()) } coAnswers {
+            Result.success(firstArg<QueuedPayment>().copy(
+                queueId = 7L, claimToken = "harness-prewrite", syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.SYNCING,
+            ))
+        }
+    }
     private val recordPaymentUseCase = RecordPaymentUseCase(
         fastPaymentRecorder = fastPaymentRecorder,
         orderPaymentRecorder = orderPaymentRecorder,
+        paymentQueueRepository = writeAheadQueue,
     )
 
     private val queueDao = mockk<PendingPaymentDao>(relaxed = true)
@@ -65,6 +76,7 @@ class RecordPaymentNonCancellableTest {
         staffId = "staff-1",
         amount = BigDecimal("100.00"),
         merchantAccountId = "merchant-1",
+        idempotencyKey = "harness-cash-attempt",
     )
 
     private fun queuedPayment(reference: String) = QueuedPayment(
@@ -81,7 +93,7 @@ class RecordPaymentNonCancellableTest {
         entryMode = "CASH",
         isInternational = false,
         authorizationNumber = "AUTH",
-        idempotencyKey = null,
+        idempotencyKey = context.idempotencyKey,
         createdAt = System.currentTimeMillis(),
     )
 
@@ -113,7 +125,7 @@ class RecordPaymentNonCancellableTest {
 
     @Test
     fun `cancelar el scope a media grabacion no impide encolar`() = runTest(StandardTestDispatcher()) {
-        // El escenario real: el proceso muere/la pantalla se abandona mientras
+        // El escenario real: se cancela el scope/la pantalla se abandona mientras
         // recordPaymentUseCase sigue esperando la respuesta del backend. Un Deferred
         // sin resolver reproduce "en vuelo" sin depender de tiempo real.
         val networkCall = CompletableDeferred<Result<PaymentReceipt>>()

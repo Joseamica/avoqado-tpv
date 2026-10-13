@@ -37,6 +37,7 @@ import com.jaac.avoqado_tpv.features.payments.presentation.components.PaymentDet
 import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import java.math.BigDecimal
 import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Payments Screen
@@ -194,6 +195,7 @@ fun PaymentsScreen(
                 PaymentsContent(
                     modifier = Modifier.padding(top = paddingValues.calculateTopPadding()),
                     payments = currentState.payments,
+                    venueZoneId = viewModel.venueZoneId,
                     hasMore = currentState.hasMore,
                     currentPage = currentState.currentPage,
                     totalPages = currentState.totalPages,
@@ -221,6 +223,7 @@ fun PaymentsScreen(
                 PaymentsContent(
                     modifier = Modifier.padding(top = paddingValues.calculateTopPadding()),
                     payments = currentState.payments,
+                    venueZoneId = viewModel.venueZoneId,
                     hasMore = true,
                     currentPage = currentState.currentPage,
                     totalPages = currentState.totalPages,
@@ -284,6 +287,7 @@ fun PaymentsScreen(
             val processor = viewModel.getPaymentProcessor(selectedPaymentForDetail!!)
             PaymentDetailBottomSheet(
                 payment = selectedPaymentForDetail!!,
+                venueZoneId = viewModel.venueZoneId,
                 canProcessRefund = canProcessRefund,
                 canRefundOnCurrentDevice = refundAvailability.canRefund,
                 nonRefundableReasonOverride = refundAvailability.reason,
@@ -307,6 +311,7 @@ fun PaymentsScreen(
 private fun PaymentsContent(
     modifier: Modifier = Modifier,
     payments: List<Payment>,
+    venueZoneId: ZoneId,
     hasMore: Boolean,
     currentPage: Int,
     totalPages: Int,
@@ -442,6 +447,7 @@ private fun PaymentsContent(
                             }
                             PaymentCard(
                                 payment = payment,
+                                venueZoneId = venueZoneId,
                                 isPrintMode = isPrintMode,
                                 isSelected = payment.id in selectedPaymentIds,
                                 refundLocation = refundLocation,
@@ -486,6 +492,7 @@ private fun PaymentsContent(
 @Composable
 private fun PaymentCard(
     payment: Payment,
+    venueZoneId: ZoneId = ZoneId.of("America/Mexico_City"),
     modifier: Modifier = Modifier,
     isPrintMode: Boolean = false,
     isSelected: Boolean = false,
@@ -663,7 +670,7 @@ private fun PaymentCard(
 
                 // Timestamp
                 Text(
-                    text = payment.formatTimestamp(),
+                    text = payment.formatTimestamp(venueZoneId),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

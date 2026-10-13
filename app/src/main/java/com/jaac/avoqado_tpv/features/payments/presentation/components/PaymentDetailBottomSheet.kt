@@ -32,6 +32,7 @@ import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
 import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import java.math.BigDecimal
 import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Payment Detail Bottom Sheet
@@ -68,7 +69,8 @@ fun PaymentDetailBottomSheet(
     onRefundClick: (Payment) -> Unit,
     onSendReceiptByEmail: ((Payment, String) -> Unit)? = null,  // payment, email
     onViewReceipt: ((Payment) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    venueZoneId: ZoneId = ZoneId.of("America/Mexico_City"),
 ) {
     // Email input state
     var showEmailDialog by remember { mutableStateOf(false) }
@@ -211,7 +213,7 @@ fun PaymentDetailBottomSheet(
                     DetailRow(
                         icon = Icons.Default.CreditCard,
                         label = "Fecha",
-                        value = payment.formatTimestamp()
+                        value = payment.formatTimestamp(venueZoneId)
                     )
 
                     // Status

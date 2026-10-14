@@ -116,7 +116,7 @@ data class Payment(
      * Format timestamp for display
      * Example: "15 Ene 2025, 14:30"
      */
-    fun formatTimestamp(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+    fun formatTimestamp(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
         // Como el ticket: usa tzdata del sistema; algunos fabricantes dejan java.time/ICU antiguo.
         return SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("es", "MX")).apply {
             timeZone = systemTimeZone(zoneId)
@@ -127,7 +127,7 @@ data class Payment(
      * Format date only (for grouping)
      * Example: "15 Ene 2025"
      */
-    fun formatDate(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+    fun formatDate(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
         return SimpleDateFormat("dd MMM yyyy", Locale("es", "MX")).apply {
             timeZone = systemTimeZone(zoneId)
         }.format(Date.from(createdAt))

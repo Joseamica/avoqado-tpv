@@ -70,7 +70,7 @@ import java.util.Locale
 fun DateRangePickerDialog(
     onDismiss: () -> Unit,
     onConfirm: (startDate: Instant, endDate: Instant) -> Unit,
-    zoneId: ZoneId = ZoneId.of("America/Mexico_City")
+    zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
 ) {
     // Current month being displayed
     var currentMonth by remember { mutableStateOf(YearMonth.now()) }

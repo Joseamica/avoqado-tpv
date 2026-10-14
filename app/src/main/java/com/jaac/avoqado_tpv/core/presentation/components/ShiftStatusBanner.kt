@@ -389,7 +389,7 @@ private fun OfflineUnknownBanner(
  * @param startTime ISO 8601 timestamp
  * @param durationMinutes Duration in minutes (null if shift is open but < 1 min)
  */
-private fun formatShiftTime(startTime: String, durationMinutes: Int?, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+private fun formatShiftTime(startTime: String, durationMinutes: Int?, zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
     return try {
         val instant = Instant.parse(startTime)
         val localTime = instant.atZone(zoneId).toLocalTime()

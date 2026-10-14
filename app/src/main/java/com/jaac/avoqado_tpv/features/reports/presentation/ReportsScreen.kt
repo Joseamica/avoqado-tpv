@@ -381,7 +381,7 @@ private fun ReportsScreenContent(
     state: ReportsState,
     isComparisonEnabled: Boolean,
     isRefreshing: Boolean = false,
-    venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
+    venueZoneId: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     selectedStaffIds: Set<String> = emptySet(),
     filteredSummary: SalesSummary? = null,
     historicalState: HistoricalReportsState,
@@ -424,7 +424,7 @@ private fun ReportsScreenContent(
                         if (selectedTab == ReportTab.SUMMARY) {
                             if (isComparisonEnabled && state.period.previousPeriodStart != null) {
                                 // Show both periods when comparing
-                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(venueZoneId.id) }
+                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(venueZoneId) }
                                 val currentStart = formatter.format(java.util.Date.from(state.period.startDate))
                                 val currentEnd = formatter.format(java.util.Date.from(state.period.endDate))
                                 val previousStart = formatter.format(java.util.Date.from(state.period.previousPeriodStart))

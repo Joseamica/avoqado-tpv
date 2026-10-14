@@ -36,7 +36,7 @@ class LedgerUnknownRecovery @Inject constructor(
                 if (text("venueId") != venueId || text("idempotencyKey") != row.attemptId ||
                     json.get("amount")?.asBigDecimal?.movePointRight(2)?.longValueExact() != row.amountCents ||
                     json.get("tip")?.asBigDecimal?.movePointRight(2)?.longValueExact() != row.tipCents) continue
-                val date = Instant.ofEpochMilli(row.createdAt).atZone(ZoneId.of("America/Mexico_City")).toLocalDate()
+                val date = Instant.ofEpochMilli(row.createdAt).atZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO).toLocalDate()
                 // One provider request per durable lease. No inner 3x retry multiplied by the worker.
                 val result = kotlinx.coroutines.withTimeout(240_000L) {
                     verifier.verificar(row.attemptId, terminal, date, 1, 0, affiliation)

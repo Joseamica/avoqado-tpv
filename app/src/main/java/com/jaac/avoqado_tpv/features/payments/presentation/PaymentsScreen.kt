@@ -492,7 +492,7 @@ private fun PaymentsContent(
 @Composable
 private fun PaymentCard(
     payment: Payment,
-    venueZoneId: ZoneId = ZoneId.of("America/Mexico_City"),
+    venueZoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     modifier: Modifier = Modifier,
     isPrintMode: Boolean = false,
     isSelected: Boolean = false,

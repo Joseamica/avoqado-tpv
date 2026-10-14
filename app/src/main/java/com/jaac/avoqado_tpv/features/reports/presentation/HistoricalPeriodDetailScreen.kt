@@ -59,7 +59,7 @@ import java.time.Instant
 @Composable
 fun HistoricalPeriodDetailScreen(
     period: HistoricalPeriod,
-    venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
+    venueZoneId: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     onNavigateBack: () -> Unit = {}
 ) {
     Scaffold(
@@ -91,7 +91,7 @@ fun HistoricalPeriodDetailScreen(
 @Composable
 private fun HistoricalPeriodDetailContent(
     period: HistoricalPeriod,
-    venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
+    venueZoneId: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     modifier: Modifier = Modifier
 ) {
     val sizes = LocalResponsiveSizes.current
@@ -347,8 +347,8 @@ private fun InfoRow(
  * @param instant Date to format
  * @return Formatted date string (e.g., "15 Enero 2025")
  */
-private fun formatDate(instant: Instant, zoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City")): String {
-    val formatter = java.text.SimpleDateFormat("dd MMMM yyyy", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(zoneId.id) }
+private fun formatDate(instant: Instant, zoneId: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
+    val formatter = java.text.SimpleDateFormat("dd MMMM yyyy", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(zoneId) }
     return formatter.format(java.util.Date.from(instant))
 }
 

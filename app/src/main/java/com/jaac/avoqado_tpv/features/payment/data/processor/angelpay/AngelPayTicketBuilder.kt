@@ -73,7 +73,7 @@ class AngelPayTicketBuilder @Inject constructor() {
         venueCity: String? = null,
         venueState: String? = null,
         venueZipCode: String? = null,
-        venueTimeZone: TimeZone = TimeZone.getTimeZone("America/Mexico_City"),
+        venueTimeZone: TimeZone = TimeZone.getTimeZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
         staffName: String?,
         orderNumber: String?,
         receiptUrl: String? = null,
@@ -473,7 +473,7 @@ class AngelPayTicketBuilder @Inject constructor() {
         venueName: String? = null,
         staffName: String? = null,
         terminalSerial: String? = null,
-        venueTimeZone: java.util.TimeZone = java.util.TimeZone.getDefault(),
+        venueTimeZone: java.util.TimeZone = java.util.TimeZone.getTimeZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
     ): PrintTicketRequest {
         val centerBold = PrintStyleRequest(
             alignment = PrintAlignmentRequest.CENTER,

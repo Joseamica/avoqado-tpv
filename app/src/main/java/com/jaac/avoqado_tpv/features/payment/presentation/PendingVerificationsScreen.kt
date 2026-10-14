@@ -100,7 +100,7 @@ private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
 private fun formatDate(isoDate: String): String {
     return try {
         val instant = Instant.parse(isoDate)
-        val venueZone = ZoneId.of("America/Mexico_City")
+        val venueZone = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
         val formatter = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale("es", "MX"))
         instant.atZone(venueZone).format(formatter)
     } catch (_: Exception) {

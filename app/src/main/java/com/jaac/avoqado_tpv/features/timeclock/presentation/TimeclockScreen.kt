@@ -431,7 +431,7 @@ private fun PulseStatusCard(
 
 @Composable
 private fun RealtimeClock(color: Color) {
-    val venueZone = remember { java.time.ZoneId.of("America/Mexico_City") }
+    val venueZone = remember { com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO }
     var currentTime by remember { mutableStateOf(LocalTime.now(venueZone)) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -461,7 +461,7 @@ private fun RealtimeClock(color: Color) {
 
 @Composable
 private fun ElapsedTimeHero(startTime: LocalDateTime, color: Color) {
-    val venueZone = remember { java.time.ZoneId.of("America/Mexico_City") }
+    val venueZone = remember { com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO }
     var duration by remember { mutableStateOf(Duration.ZERO) }
     LaunchedEffect(startTime) {
         while (true) {

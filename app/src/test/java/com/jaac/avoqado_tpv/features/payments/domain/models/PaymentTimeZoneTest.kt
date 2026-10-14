@@ -39,8 +39,11 @@ class PaymentTimeZoneTest {
         assertDate("12 oct 2026", payment("2026-10-13T05:30:00Z").formatDate(staleIcu()))
     }
 
-    @Test fun `historical summer time is preserved`() {
-        assertDate("30 jun 2019, 20:00", payment("2019-07-01T01:00:00Z").formatTimestamp())
+    // 14-oct: la hora de México va por la ley vigente (desfase fijo −06:00, VenueTimeZone.MEXICO), así que un instante del
+    // verano de 2019 ya NO se pinta con el horario de verano de entonces. Avoqado no tiene cobros anteriores a 2022 (el más
+    // viejo en producción es de abril de 2026); a cambio, todo cobro real sale bien aunque el aparato traiga tzdata 2021a.
+    @Test fun `por default la hora de Mexico sigue la ley vigente, tambien en verano`() {
+        assertDate("13 jun 2026, 07:08", payment("2026-06-13T13:08:00Z").formatTimestamp())
     }
 
     @Test fun `border venue uses its own timezone`() {

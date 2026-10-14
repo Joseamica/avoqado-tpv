@@ -772,7 +772,7 @@ private fun ScanResultCard(
 /**
  * Format ISO timestamp to localized date/time with fallback to raw string
  */
-private fun formatSoldAtDate(isoTimestamp: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+private fun formatSoldAtDate(isoTimestamp: String, zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
     return try {
         val instant = Instant.parse(isoTimestamp)
         DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)

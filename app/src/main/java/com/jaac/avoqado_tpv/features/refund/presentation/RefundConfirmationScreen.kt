@@ -136,7 +136,7 @@ fun RefundConfirmationScreen(
     // Date formatter
     val dateFormatter = remember {
         DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")
-            .withZone(ZoneId.of("America/Mexico_City"))
+            .withZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)
     }
 
     Scaffold(

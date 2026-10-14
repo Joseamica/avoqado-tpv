@@ -32,7 +32,7 @@ import javax.inject.Inject
  * avoqado-tpv/.claude/rules/critical-warnings.md). Using the fixed zone avoids
  * pulling SecureStorage into this MVP and matches fallback behavior.
  */
-private val VENUE_ZONE: ZoneId = ZoneId.of("America/Mexico_City")
+private val VENUE_ZONE: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
 
 private fun MySim.isSoldToday(): Boolean {
     if (custodyState != SimCustodyState.SOLD) return false

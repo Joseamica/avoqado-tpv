@@ -70,7 +70,7 @@ fun PaymentDetailBottomSheet(
     onSendReceiptByEmail: ((Payment, String) -> Unit)? = null,  // payment, email
     onViewReceipt: ((Payment) -> Unit)? = null,
     modifier: Modifier = Modifier,
-    venueZoneId: ZoneId = ZoneId.of("America/Mexico_City"),
+    venueZoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
 ) {
     // Email input state
     var showEmailDialog by remember { mutableStateOf(false) }

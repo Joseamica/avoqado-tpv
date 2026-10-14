@@ -105,7 +105,7 @@ data class PinVerificationRequestDto(
 
 private val isoFormatter = DateTimeFormatter.ISO_DATE_TIME
 
-fun TimeEntryDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): TimeEntry {
+fun TimeEntryDto.toDomain(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): TimeEntry {
     val staffName = if (staff != null) {
         listOfNotNull(staff.firstName, staff.lastName).joinToString(" ").ifEmpty { "Empleado" }
     } else {
@@ -132,7 +132,7 @@ fun TimeEntryDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): Ti
     )
 }
 
-fun TimeEntryBreakDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): TimeEntryBreak {
+fun TimeEntryBreakDto.toDomain(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): TimeEntryBreak {
     return TimeEntryBreak(
         id = id,
         startTime = parseDateTime(startTime, zoneId),
@@ -140,7 +140,7 @@ fun TimeEntryBreakDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")
     )
 }
 
-private fun parseDateTime(isoString: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): LocalDateTime {
+private fun parseDateTime(isoString: String, zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): LocalDateTime {
     return try {
         // 1. Try as Instant (standard ISO-8601 with Z) - Converts UTC to venue timezone
         val instant = Instant.parse(isoString)

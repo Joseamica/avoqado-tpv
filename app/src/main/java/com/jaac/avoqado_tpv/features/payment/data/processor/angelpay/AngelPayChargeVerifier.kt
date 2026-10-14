@@ -60,7 +60,7 @@ class AngelPayChargeVerifier @Inject constructor(
     suspend fun verificar(
         attemptId: String,
         terminalSerial: String?,
-        hoy: LocalDate = LocalDate.now(java.time.ZoneId.of("America/Mexico_City")),
+        hoy: LocalDate = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
         intentos: Int = INTENTOS_POR_DEFECTO,
         esperaEntreIntentosMs: Long = ESPERA_ENTRE_INTENTOS_MS,
         affiliation: String? = null,

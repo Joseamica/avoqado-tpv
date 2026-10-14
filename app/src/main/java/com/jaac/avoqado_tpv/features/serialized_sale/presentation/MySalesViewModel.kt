@@ -87,7 +87,7 @@ class MySalesViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MySalesUiState())
     val uiState: StateFlow<MySalesUiState> = _uiState.asStateFlow()
 
-    private val venueZone: ZoneId = ZoneId.of("America/Mexico_City")
+    private val venueZone: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
     private val monthFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM")
 
     init {

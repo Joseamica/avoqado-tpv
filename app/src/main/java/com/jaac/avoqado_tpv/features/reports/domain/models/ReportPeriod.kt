@@ -38,13 +38,13 @@ data class ReportPeriod(
     /**
      * Get human-readable label for this period
      */
-    fun getLabel(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String = when (type) {
+    fun getLabel(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String = when (type) {
         PeriodType.TODAY -> "Hoy"
         PeriodType.LAST_7_DAYS -> "Últimos 7 días"
         PeriodType.LAST_30_DAYS -> "Últimos 30 días"
         PeriodType.LAST_90_DAYS -> "Últimos 90 días"
         PeriodType.CUSTOM -> {
-            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(zoneId.id) }
+            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(zoneId) }
             val start = formatter.format(java.util.Date.from(startDate))
             val end = formatter.format(java.util.Date.from(endDate))
             "$start - $end"
@@ -57,7 +57,7 @@ data class ReportPeriod(
          *
          * **Default period** - Most managers check "today's sales" first thing
          */
-        fun today(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): ReportPeriod {
+        fun today(zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): ReportPeriod {
             val today = LocalDate.now(zoneId)
 
             val startOfDay = today.atStartOfDay(zoneId).toInstant()

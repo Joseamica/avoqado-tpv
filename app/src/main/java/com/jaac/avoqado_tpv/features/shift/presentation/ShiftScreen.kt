@@ -451,7 +451,7 @@ private fun ShiftClosedContent(
     shift: Shift,
     reconciliationAction: CashReconciliationAction? = null,
     /** Zona del NEGOCIO para las horas del cajón (nunca la del aparato). */
-    zonaDelNegocio: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
+    zonaDelNegocio: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     onDone: () -> Unit = {}
 ) {
     if (reconciliationAction != null) {
@@ -960,7 +960,7 @@ private fun ShiftDetailRow(
 /**
  * Format time from ISO 8601 to HH:mm
  */
-private fun formatTime(isoTime: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+private fun formatTime(isoTime: String, zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
     return try {
         val instant = Instant.parse(isoTime)
         val localTime = instant.atZone(zoneId).toLocalTime()
@@ -1011,7 +1011,7 @@ private fun formatDurationForHistory(minutes: Int?): String {
 /**
  * Format date from ISO 8601 to "dd MMM, HH:mm"
  */
-private fun formatDate(isoTime: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
+private fun formatDate(isoTime: String, zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO): String {
     return try {
         val instant = Instant.parse(isoTime)
         val dateTime = instant.atZone(zoneId)

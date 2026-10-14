@@ -212,7 +212,7 @@ fun TimeclockStatusCard(
  */
 @Composable
 private fun ElapsedTimer(startTime: LocalDateTime) {
-    val venueZone = remember { ZoneId.of("America/Mexico_City") }
+    val venueZone = remember { com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO }
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(startTime) {

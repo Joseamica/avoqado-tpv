@@ -44,6 +44,8 @@ class PaymentTimeZoneTest {
     // viejo en producción es de abril de 2026); a cambio, todo cobro real sale bien aunque el aparato traiga tzdata 2021a.
     @Test fun `por default la hora de Mexico sigue la ley vigente, tambien en verano`() {
         assertDate("13 jun 2026, 07:08", payment("2026-06-13T13:08:00Z").formatTimestamp())
+        // Lo que se pierde, a propósito: 1-jul-2019 00:30 de CDMX (horario de verano de entonces) ahora se pinta un día antes.
+        assertDate("30 jun 2019, 23:30", payment("2019-07-01T05:30:00Z").formatTimestamp())
     }
 
     @Test fun `border venue uses its own timezone`() {

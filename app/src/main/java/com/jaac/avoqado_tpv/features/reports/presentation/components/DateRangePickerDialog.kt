@@ -73,7 +73,7 @@ fun DateRangePickerDialog(
     zoneId: ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
 ) {
     // Current month being displayed
-    var currentMonth by remember { mutableStateOf(YearMonth.now()) }
+    var currentMonth by remember { mutableStateOf(YearMonth.now(zoneId)) }
 
     // Selected date range
     var startDate by remember { mutableStateOf<LocalDate?>(null) }
@@ -102,11 +102,11 @@ fun DateRangePickerDialog(
                     },
                     onNextMonth = {
                         // Don't allow navigating to future months
-                        if (currentMonth < YearMonth.now()) {
+                        if (currentMonth < YearMonth.now(zoneId)) {
                             currentMonth = currentMonth.plusMonths(1)
                         }
                     },
-                    canGoNext = currentMonth < YearMonth.now()
+                    canGoNext = currentMonth < YearMonth.now(zoneId)
                 )
 
                 // Week day headers (D L M M J V S)

@@ -347,6 +347,7 @@ fun ReportsScreen(
     // Custom date range picker dialog
     if (showDatePicker) {
         DateRangePickerDialog(
+            zoneId = venueZoneId,
             onDismiss = { showDatePicker = false },
             onConfirm = { startDate, endDate ->
                 showDatePicker = false

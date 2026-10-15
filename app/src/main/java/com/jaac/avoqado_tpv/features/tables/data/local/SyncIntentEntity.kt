@@ -70,5 +70,15 @@ data class SyncIntentEntity(
         const val STATUS_PENDING = "PENDING"
         const val STATUS_ACKED = "ACKED"
         const val STATUS_REJECTED = "REJECTED"
+
+        /**
+         * Un REJECTED que el mesero/gerente resolvió a mano en la cuarentena. Se MARCA, no se borra: `seq` es
+         * `MAX(seq)+1` y el server ya vio ese número (D1-S) — borrar la fila lo haría reutilizable y la siguiente venta
+         * saldría `STALE_DEVICE_SEQUENCE`. Sólo `MAX(seq)` y `allForVenue` la ven.
+         */
+        const val STATUS_DISMISSED = "DISMISSED"
+
+        /** Un PENDING write-ahead que resultó innecesario. Misma razón que [STATUS_DISMISSED]: la fila se conserva marcada. */
+        const val STATUS_DISCARDED = "DISCARDED"
     }
 }

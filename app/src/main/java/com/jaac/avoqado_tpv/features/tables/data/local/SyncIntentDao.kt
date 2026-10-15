@@ -62,7 +62,7 @@ interface SyncIntentDao {
         """
         UPDATE sync_intents
         SET status = :status, error_code = :errorCode, message = :message, result_json = :resultJson
-        WHERE id = :id
+        WHERE id = :id AND status NOT IN ('DISCARDED', 'DISMISSED')
         """,
     )
     suspend fun resolve(id: String, status: String, errorCode: String?, message: String?, resultJson: String?): Int
@@ -70,9 +70,16 @@ interface SyncIntentDao {
     /**
      * El mesero/gerente descartó un rechazo de la cuarentena tras resolverlo a
      * mano. Acotado a `status = 'REJECTED'` a propósito: [dismiss] nunca debe
-     * poder borrar un intent PENDING o ACKED por error de UI.
+     * poder tocar un intent PENDING o ACKED por error de UI.
+     *
+     * MARCA la fila (`DISMISSED`) en vez de borrarla: [insertWithSeq] toma
+     * `MAX(seq)+1` y el server ya vio ese `seq` — con la fila borrada, la
+     * siguiente venta lo reutilizaba y salía `STALE_DEVICE_SEQUENCE`
+     * (D1-S, Mesas40). Una fila marcada no la ve ningún lector operativo
+     * (`pendingForVenue`/`rejectedForVenue` filtran estado exacto); sólo
+     * `MAX(seq)` y [allForVenue].
      */
-    @Query("DELETE FROM sync_intents WHERE id = :id AND venue_id = :venueId AND status = 'REJECTED'")
+    @Query("UPDATE sync_intents SET status = 'DISMISSED' WHERE id = :id AND venue_id = :venueId AND status = 'REJECTED'")
     suspend fun dismiss(id: String, venueId: String): Int
 
     /**
@@ -81,12 +88,16 @@ interface SyncIntentDao {
      * camino online, y si ESE intento SÍ tiene éxito (o el server lo rechaza
      * de forma permanente), el intent nunca debe reproducirse. Acotado a
      * `status = 'PENDING'` a propósito, igual que [dismiss]: nunca debe poder
-     * borrar un intent ya terminal (ACKED/REJECTED) por error de llamada —
+     * tocar un intent ya terminal (ACKED/REJECTED) por error de llamada —
      * eso perdería el registro de lo que pasó.
+     *
+     * MARCA la fila (`DISCARDED`), no la borra, por la misma razón que
+     * [dismiss]: un replay con respuesta perdida pudo hacer que el server ya
+     * viera su `seq`.
      *
      * @return filas afectadas (0 = ya no estaba PENDING, p.ej. el replay lo
      *   ganó de mano — no-op seguro, nunca un error).
      */
-    @Query("DELETE FROM sync_intents WHERE id = :id AND status = 'PENDING'")
+    @Query("UPDATE sync_intents SET status = 'DISCARDED' WHERE id = :id AND status = 'PENDING'")
     suspend fun discardPending(id: String): Int
 }

@@ -6,6 +6,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
+import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -112,7 +113,11 @@ class SyncOutboxTest {
         outbox.dismissRejected("venue-a", id)
 
         assertThat(outbox.rejectedIntents("venue-a")).isEmpty()
-        assertThat(dao.allForVenue("venue-a")).isEmpty() // se borró, no quedó fantasma
+        // D1-S: se MARCA (conserva su seq para que no se reutilice), no se borra; ya no es operativa para nadie.
+        val marcada = dao.allForVenue("venue-a").single()
+        assertThat(marcada.id).isEqualTo(id)
+        assertThat(marcada.seq).isEqualTo(1L)
+        assertThat(marcada.status).isEqualTo(SyncIntentEntity.STATUS_DISMISSED)
     }
 
     @Test
@@ -164,7 +169,11 @@ class SyncOutboxTest {
         outbox.discardPending(id)
 
         assertThat(dao.pendingForVenue("venue-a")).isEmpty()
-        assertThat(dao.allForVenue("venue-a")).isEmpty() // se borró, no quedó fantasma
+        // D1-S: se MARCA (conserva su seq para que no se reutilice), no se borra; el replay ya no la ve.
+        val marcada = dao.allForVenue("venue-a").single()
+        assertThat(marcada.id).isEqualTo(id)
+        assertThat(marcada.seq).isEqualTo(1L)
+        assertThat(marcada.status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
     }
 
     @Test

@@ -467,7 +467,7 @@ fun ProductSelectorBottomSheet(
                         )
                         OutlinedTextField(
                             value = notes,
-                            onValueChange = { notes = it },
+                            onValueChange = { notes = limitarNotaDeArticulo(it) },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = { Text("Ej: Sin aceitunas, para llevar") },
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -632,3 +632,11 @@ private fun ProductSelectorNoModifiersPreview() {
         )
     }
 }
+
+/** D5 (Mesas40, 15-oct): tope de la nota de un artículo en la TPV. El servidor recorta a 500; aquí no se escribe más de esto. */
+internal const val MAX_NOTA_DE_ARTICULO = 200
+
+/** Corta en [MAX_NOTA_DE_ARTICULO] caracteres COMPLETOS (puntos de código): un emoji nunca queda partido a la mitad. */
+internal fun limitarNotaDeArticulo(texto: String): String =
+    if (texto.codePointCount(0, texto.length) <= MAX_NOTA_DE_ARTICULO) texto
+    else texto.substring(0, texto.offsetByCodePoints(0, MAX_NOTA_DE_ARTICULO))

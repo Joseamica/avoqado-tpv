@@ -7,7 +7,15 @@
 
 ## [Unreleased]
 
+---
+
+## [2.12.6] - 2026-10-14
+
 ### **Fixed**
+- **[PAX] La hora del historial y del ticket ya no sale +1 h**: la PAX A910S trae tzdata 2021a y creía que la Ciudad de México seguía con horario de verano (abril–octubre). La zona del negocio se resuelve ahora por la ley mexicana de 2022 (CDMX, Monterrey, Mérida… −06:00 fijo; Cancún −05:00; Mazatlán y Hermosillo −07:00; la frontera sigue a EE. UU.), sin depender de las reglas del aparato. Probado en papel en la PAX: el ticket de las 11 am dice 11 am.
+- **[PAX] [Nexgo] El reporte por fechas corta el día con la zona del negocio**: el selector de fechas usaba la de CDMX aunque el negocio estuviera en Cancún o Tijuana, y el día elegido empezaba una hora antes o después que «Hoy».
+- **[PAX] [Nexgo] Un cobro en efectivo ya no se pierde entre el toque y el servidor**: el efectivo confirmado se guarda en el aparato ANTES de mandarlo; si se va la red o la app muere en medio, la cola lo manda después una sola vez (Mesas40).
+- **[PAX] [Nexgo] El historial de pagos ya no se cierra ni repite pagos**: las páginas que se cruzan mientras entran pagos nuevos conservan cada pago una vez, y los pagos parciales se ven completos (Mesas40).
 - **[Mesas] [PAX/Nexgo] Cargo del recibo y recuperación de impresión**: el recibo enviado por el POS conserva cargo, descuento, extras y propina sin alterar el total cobrado ni repartir descuentos de una cuenta completa entre abonos. En Nexgo, recibos, rechazos y reimpresiones usan la misma impresora; el éxito espera su callback final, un fallo se informa y un resultado pendiente no se reimprime automáticamente.
 
 ---

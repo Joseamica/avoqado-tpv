@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **[PAX/Nexgo] Contrata punto de venta**: ficha local de Avoqado POS desde una tarjeta de ancho completo en Inicio, con funciones, número comercial y QR para escribir a ventas desde el celular. Disponible sin conexión y en ambos menús, con contenido desplazable, cierre accesible y barras nativas de Android ocultas como en Inicio.
+
 ---
 
 ## [2.12.6] - 2026-10-14

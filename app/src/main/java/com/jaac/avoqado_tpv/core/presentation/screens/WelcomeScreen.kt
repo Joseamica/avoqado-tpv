@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
@@ -62,6 +63,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
@@ -75,6 +77,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
+import com.jaac.avoqado_tpv.core.presentation.components.PosInfoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.StaticActionButtonGrid
@@ -515,7 +518,7 @@ fun WelcomeScreen(
  * @param onLogout Logout callback
  */
 @Composable
-private fun WelcomeScreenContent(
+internal fun WelcomeScreenContent(
     modifier: Modifier = Modifier,
     staffName: String,
     clockInTime: String?,
@@ -642,7 +645,8 @@ private fun WelcomeScreenContent(
     var showAmountBottomSheet by remember { mutableStateOf(false) }
     var showSettingsModal by remember { mutableStateOf(false) }
     var showRestartConfirmDialog by remember { mutableStateOf(false) }
-    val editingHome = showAmountBottomSheet || showSettingsModal || showRestartConfirmDialog
+    var showPosInfoDialog by rememberSaveable { mutableStateOf(false) }
+    val editingHome = showAmountBottomSheet || showSettingsModal || showRestartConfirmDialog || showPosInfoDialog
     androidx.compose.runtime.DisposableEffect(editingHome) {
         val window = com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
         if (editingHome) window.reserveAction()
@@ -1117,6 +1121,36 @@ private fun WelcomeScreenContent(
                             buttons = actionButtons,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Card(
+                            onClick = { showPosInfoDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PointOfSale,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                                Text(
+                                    text = "Contrata punto de venta",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1189,6 +1223,10 @@ private fun WelcomeScreenContent(
                 onNavigateToSelfUpdate()
             }
         )
+    }
+
+    if (showPosInfoDialog) {
+        PosInfoDialog(onDismiss = { showPosInfoDialog = false })
     }
 
     // Restart app confirmation dialog

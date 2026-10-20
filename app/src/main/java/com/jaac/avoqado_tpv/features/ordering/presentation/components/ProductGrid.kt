@@ -26,8 +26,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
@@ -36,6 +38,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.reglasDeOrdenes
+import java.math.BigDecimal
 
 private const val PAGE_SIZE = 15
 private const val PAGINATION_THRESHOLD = 3
@@ -225,7 +228,10 @@ fun ProductGrid(
                     familia = entrada.familia,
                     reglas = reglasDeOrdenes,
                     precioTexto = formatoDePrecio,
-                    onClick = { onFamiliaClick(entrada.familia) }
+                    onClick = { onFamiliaClick(entrada.familia) },
+                    // Misma altura que ProductCard (1.45, el valor por defecto). En 2 columnas el contenido completo cabe; en 3 (~107 dp
+                    // de ancho, 74 dp de alto) no, y se usa la versión compacta. Ver `TileDeFamilia` y el cálculo en el informe de la tarea 6.
+                    compacto = columns == 3
                 )
             }
         }
@@ -340,6 +346,35 @@ private fun ProductGridEmptyPreview() {
             selectedCategory = null,
             displayMode = ProductDisplayMode.GRID_3,
             onProductClick = {}
+        )
+    }
+}
+
+// Celdas de 3 columnas: (360 − 24 de margen − 16 de separación) / 3 = 106.7 dp de ancho y 106.7 / 1.45 = 73.6 dp de alto (el de ProductCard).
+// El botón de familia compacto necesita 6 + 20 (nombre en 1 renglón) + 18 (insignia) + 2 + 16 (precio) + 6 = 68 dp ≤ 73.6, y de ancho
+// 90.7 dp de contenido (106.7 − 4 de acento − 2×6): «3 variantes» ≈ 66 dp, «desde $199.00» ≈ 79 dp.
+@Preview(name = "3 columnas con una familia", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun ProductGridFamiliasPreview() {
+    val variantes = listOf("S" to "19900", "M" to "19900", "L" to "24900").map { (talla, centavos) ->
+        Product(
+            id = "pl-$talla", name = "Playera básica $talla", sku = "PL-$talla", price = BigDecimal(centavos).movePointLeft(2),
+            categoryId = "cat_ropa", categoryName = "Ropa", description = null, emoji = "👕", imageUrl = null, available = true,
+            familia = DatosDeFamilia(
+                groupId = "playera", groupName = "Playera básica", groupImageUrl = null,
+                opciones = listOf(OpcionDeVariante("Talla", talla, 0, listOf("S", "M", "L").indexOf(talla))),
+            ),
+        )
+    }
+    // Dos productos sueltos, la familia (ocupa el lugar de su primera talla) y dos sueltos más: así comparte fila con tarjetas normales.
+    val productos = MockProducts.allProducts.take(2) + variantes + MockProducts.allProducts.drop(2).take(3)
+    AvoqadoTheme {
+        ProductGrid(
+            products = productos,
+            selectedCategory = null,
+            displayMode = ProductDisplayMode.GRID_3,
+            onProductClick = {},
+            familias = reglasDeOrdenes.familiasDe(productos),
         )
     }
 }

@@ -58,6 +58,9 @@ fun <T> ReglasDeFamilia<T>.textoDePrecio(f: Familia<T>, formato: (BigDecimal) ->
  * - Insignia `variantes(n)`; precio `desde(precio)` sólo si no todas cuestan lo mismo.
  * - [relacionDeAspecto] (ancho/alto): 1.45 por defecto, el de `ProductCard` de Órdenes. Una cuadrícula con otra tarjeta (Cobro rápido, de
  *   0.79) pasa la suya: el alto sale del ancho de la celda, así que el contenido tiene que caber en él (ver el cálculo en Cobro rápido).
+ * - [compacto]: la versión para una celda donde el contenido completo no cabe a la altura de `ProductCard` (las 3 columnas de Órdenes:
+ *   ~107 × 74 dp): nombre en 1 renglón, insignia de 18 dp y precio en labelMedium, con márgenes de 6 dp. Pensada para Órdenes, que no
+ *   pinta lo agotado (no reserva sitio para la insignia «Agotado»).
  * - «Agotado» sólo cuando TODAS las variantes lo están (Q5) y el modelo trae existencias (Cobro rápido). Nunca bloquea el toque:
  *   qué pasa al elegir una variante agotada lo decide cada pantalla. El «se puede vender igual» de Android no se usa aquí.
  */
@@ -70,6 +73,7 @@ fun <T> TileDeFamilia(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     relacionDeAspecto: Float = 1.45f,
+    compacto: Boolean = false,
 ) {
     val precio = reglas.textoDePrecio(familia, precioTexto)
     val agotada = reglas.agotada(familia)
@@ -95,7 +99,8 @@ fun <T> TileDeFamilia(
             Box(modifier = Modifier.fillMaxHeight().width(4.dp).background(color = acento, shape = AcentoShape))
 
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = if (compacto) 6.dp else 12.dp, vertical = if (compacto) 6.dp else 10.dp),
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
@@ -103,7 +108,7 @@ fun <T> TileDeFamilia(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     // Agotada: la insignia extra pide un renglón más abajo, y se paga con el del nombre (la hoja lo muestra completo).
-                    maxLines = if (agotada) 1 else 2,
+                    maxLines = if (agotada || compacto) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -114,22 +119,25 @@ fun <T> TileDeFamilia(
                             texto = TextosVariantes.variantes(familia.variantes.size),
                             fondo = MaterialTheme.colorScheme.primaryContainer,
                             letra = MaterialTheme.colorScheme.onPrimaryContainer,
+                            compacta = compacto,
                         )
                         if (agotada) {
                             Insignia(
                                 texto = TextosVariantes.AGOTADO,
                                 fondo = MaterialTheme.colorScheme.error,
                                 letra = MaterialTheme.colorScheme.onError,
+                                compacta = compacto,
                             )
                         }
                     }
                     Text(
                         text = precio,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = if (compacto) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary,
-                        // Dos renglones: «desde $199.00» no cabe en uno en una celda angosta y se parte en «desde» / «$199.00».
-                        maxLines = 2,
+                        // Dos renglones: «desde $199.00» no cabe en uno en una celda angosta y se parte en «desde» / «$199.00». El
+                        // compacto no tiene alto para el segundo: va en uno (labelMedium: «desde $199.00» ≈ 79 dp de 90.7; con miles queda justo y se corta con «…»).
+                        maxLines = if (compacto) 1 else 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -139,8 +147,11 @@ fun <T> TileDeFamilia(
 }
 
 @Composable
-private fun Insignia(texto: String, fondo: Color, letra: Color) {
-    Box(modifier = Modifier.background(color = fondo, shape = InsigniaShape).padding(horizontal = 6.dp, vertical = 2.dp)) {
+private fun Insignia(texto: String, fondo: Color, letra: Color, compacta: Boolean = false) {
+    Box(
+        modifier = Modifier.background(color = fondo, shape = InsigniaShape)
+            .padding(horizontal = 6.dp, vertical = if (compacta) 1.dp else 2.dp),
+    ) {
         Text(
             text = texto,
             style = MaterialTheme.typography.labelSmall,

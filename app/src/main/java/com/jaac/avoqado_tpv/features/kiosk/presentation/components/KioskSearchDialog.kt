@@ -68,7 +68,8 @@ import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
-import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
 import com.jaac.avoqado_tpv.features.kiosk.presentation.claveDeEntradaDeKiosco
@@ -384,47 +385,65 @@ private fun ResultadosDeBusqueda(
             key = { claveDeEntradaDeKiosco(it) }
         ) { entrada ->
             when (entrada) {
-                is EntradaDeCatalogo.Suelto -> SearchResultCard(
-                    product = entrada.producto,
-                    searchQuery = searchQuery,
-                    onClick = { onProductClick(entrada.producto) }
-                )
-                is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
-                    familia = entrada.familia,
-                    reglas = reglasDeKiosco,
-                    precioTexto = { currencyFormat.format(it) },
-                    onClick = { onFamiliaClick(entrada.familia) },
-                    relacionDeAspecto = RELACION_FAMILIA_EN_BUSQUEDA
-                )
+                is EntradaDeCatalogo.Suelto -> {
+                    val product = entrada.producto
+                    SearchResultCard(
+                        name = product.name,
+                        price = product.price,
+                        imageUrl = product.imageUrl,
+                        hasModifiers = product.hasModifiers,
+                        searchQuery = searchQuery,
+                        onClick = { onProductClick(product) }
+                    )
+                }
+                is EntradaDeCatalogo.DeFamilia -> {
+                    // La misma tarjeta que sus vecinos (foto, nombre, precio), con «desde …» y «N variantes»; tocarla abre la hoja.
+                    val familia = entrada.familia
+                    SearchResultCard(
+                        name = familia.nombre,
+                        price = reglasDeKiosco.precioMinimo(familia),
+                        imageUrl = familia.imagenUrl,
+                        hasModifiers = false,
+                        searchQuery = searchQuery,
+                        priceText = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) },
+                        badgeText = TextosVariantes.variantes(familia.variantes.size),
+                        onClick = { onFamiliaClick(familia) }
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * Relación ancho/alto del botón de familia en la búsqueda: la celda de [SearchResultCard]. En la PAX (360 dp) la celda mide
- * (360 − 2×16 de margen − 2×12 de separación) / 3 = 101.3 dp de ancho y [SearchResultCard] 160 dp de alto ⇒ 101.3 / 160 = 0.633.
- *
- * Cabe sin cortarse (DM Sans real de `res/font`, escala 1.0): el contenido mide 101.3 − 4 (acento) − 24 (márgenes) = 73.3 dp de ancho
- * y 160 − 20 = 140 dp de alto. Alto: nombre 2 renglones (40) + insignia (20) + 2 + precio hasta 2 renglones (40) = 102 dp ≤ 140.
- * Ancho: «N variantes» (dmsans_bold 11 sp + 2×4 de margen) 69.2 dp con N de un dígito (hasta 99: «10 variantes» 74.3, «99 variantes» 76.4
- * se cortan con «…», raro); precio (dmsans_semibold 14 sp): «desde $199.00» 100.6 dp no cabe en un renglón y baja a «desde» (42.4) y
- * «$199.00» (54.6); «$1,299.00» 66.5 y «$9,999.00» 70.5 caben; de cinco dígitos («$12,999.00», 75.4) se corta con «…» (la hoja trae el precio).
- */
-private const val RELACION_FAMILIA_EN_BUSQUEDA = 0.633f
-
-/**
  * Search Result Product Card
  *
  * Displays a product in the search results with highlighted matching text.
+ *
+ * @param priceText Texto del precio en lugar de [price] formateado (una familia: «desde $199.00»); null = el precio de siempre
+ * @param badgeText Insignia arriba a la izquierda (una familia: «3 variantes»); si no es null la tarjeta ES una familia: no lleva el «+»
+ *   (se leería como «agregar ya») y tocarla abre la hoja de tallas
+ *
+ * Una familia cabe en los mismos 160 dp de alto en cualquier ancho. Zona de texto: 160 − 80 (foto) − 16 (margen 8+8) = 64 dp. El precio
+ * de una familia («desde $199.00» baja a 2 renglones, 2×20 = 40) más 2 de separación deja 22 dp: el nombre va en UN renglón (14, con
+ * `lineHeight = 14.sp`): 14 + 2 + 40 = 56 ≤ 64. Con 2 renglones serían 28 + 2 + 40 = 70 > 64 (se pasaría 6 dp), por eso se corta con «…»
+ * (la hoja lo trae completo). Ancho: 101.3 − 16 = 85.3 dp en la PAX (360 dp); con DM Sans bold 14 sp y 0.25 sp entre letras «desde» mide
+ * 43.9 y «$199.00» 56.5; «$1,299.00» 69.1 y «$99,999.00» 82.1 caben en su renglón. La insignia («100 variantes» 76.9 + 8 de margen = 84.9
+ * dp) cabe en los 93.3 dp de la foto.
  */
 @Composable
 private fun SearchResultCard(
-    product: KioskProduct,
+    name: String,
+    price: BigDecimal,
+    imageUrl: String?,
+    hasModifiers: Boolean,
     searchQuery: String,
+    priceText: String? = null,
+    badgeText: String? = null,
     onClick: () -> Unit
 ) {
     val currencyFormat = rememberCurrencyFormat()
+    val esFamilia = badgeText != null
 
     Card(
         modifier = Modifier
@@ -447,13 +466,13 @@ private fun SearchResultCard(
                     .height(80.dp)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                if (!product.imageUrl.isNullOrEmpty()) {
+                if (!imageUrl.isNullOrEmpty()) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
-                            .data(product.imageUrl)
+                            .data(imageUrl)
                             .crossfade(true)
                             .build(),
-                        contentDescription = product.name,
+                        contentDescription = name,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
@@ -463,48 +482,62 @@ private fun SearchResultCard(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = product.name.take(2).uppercase(),
+                            text = name.take(2).uppercase(),
                             style = MaterialTheme.typography.headlineSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                // Add button overlay
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                        .clickable(onClick = onClick),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Agregar",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                // Add button overlay (una familia no lo lleva: tocarla abre la hoja de tallas, no agrega)
+                if (!esFamilia) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(6.dp)
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable(onClick = onClick),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Agregar",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
 
-                // Modifier indicator
-                if (product.hasModifiers) {
+                // Badge arriba a la izquierda: «N variantes» en una familia, ✨ en un producto con extras
+                if (esFamilia || hasModifiers) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(4.dp)
                             .background(
-                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                color = if (esFamilia) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.tertiaryContainer,
                                 shape = RoundedCornerShape(4.dp)
                             )
                             .padding(horizontal = 4.dp, vertical = 2.dp)
                     ) {
-                        Text(
-                            text = "✨",
-                            fontSize = 10.sp
-                        )
+                        if (badgeText != null) {
+                            Text(
+                                text = badgeText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Text(
+                                text = "✨",
+                                fontSize = 10.sp
+                            )
+                        }
                     }
                 }
             }
@@ -516,10 +549,11 @@ private fun SearchResultCard(
                     .padding(8.dp)
             ) {
                 Text(
-                    text = product.name,
+                    text = name,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 2,
+                    // Una familia: UN renglón (el «desde $199.00» ocupa dos y no hay alto para más; ver el cálculo arriba)
+                    maxLines = if (esFamilia) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                     lineHeight = 14.sp
@@ -528,9 +562,11 @@ private fun SearchResultCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
-                    text = currencyFormat.format(product.price),
+                    text = priceText ?: currencyFormat.format(price),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
@@ -569,7 +605,7 @@ internal fun kioskCatalogoDeEjemplo(): List<KioskProduct> = listOf(
     ),
 )
 
-@Preview(name = "Resultados con una familia y un producto", showBackground = true, widthDp = 360, heightDp = 640)
+@Preview(name = "Resultados: una familia junto a tarjetas con foto", showBackground = true, widthDp = 360, heightDp = 640)
 @Composable
 private fun ResultadosDeBusquedaPreview() {
     AvoqadoTheme {

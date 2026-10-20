@@ -86,8 +86,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
-import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.kiosk.presentation.accionAlElegirEnKiosco
 import com.jaac.avoqado_tpv.features.kiosk.presentation.claveDeEntradaDeKiosco
@@ -685,32 +686,22 @@ private fun KioskCatalogoGrid(
                         onAdd = { onProductClick(product) }
                     )
                 }
-                is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
-                    familia = entrada.familia,
-                    reglas = reglasDeKiosco,
-                    precioTexto = { currencyFormat.format(it) },
-                    onClick = { onFamiliaClick(entrada.familia) },
-                    relacionDeAspecto = RELACION_FAMILIA_EN_MENU
-                )
+                is EntradaDeCatalogo.DeFamilia -> {
+                    // La misma tarjeta que sus vecinos (foto, nombre, precio), con «desde …» y «N variantes»; tocarla abre la hoja.
+                    val familia = entrada.familia
+                    KioskProductCard(
+                        name = familia.nombre,
+                        price = reglasDeKiosco.precioMinimo(familia),
+                        imageUrl = familia.imagenUrl,
+                        priceText = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) },
+                        badgeText = TextosVariantes.variantes(familia.variantes.size),
+                        onAdd = { onFamiliaClick(familia) }
+                    )
+                }
             }
         }
     }
 }
-
-/**
- * Relación ancho/alto del botón de familia en el menú: la celda de [KioskProductCard]. En la PAX (360 dp) la celda mide
- * (360 − 2×16 de margen − 2×12 de separación) / 3 = 101.3 dp de ancho y [KioskProductCard] 180 dp de alto ⇒ 101.3 / 180 = 0.563.
- * (Como en Órdenes y Cobro rápido, la cuenta supone 360 dp: el botón guarda la relación, no el alto.)
- *
- * Cabe sin cortarse (DM Sans real de `res/font`, escala 1.0; no visto en un aparato): el contenido mide 101.3 − 4 (acento) − 24
- * (márgenes) = 73.3 dp de ancho y 180 − 20 = 160 dp de alto. Alto: nombre 2 renglones (40) + insignia (20) + 2 + precio hasta 2
- * renglones (40) = 102 dp ≤ 160. Ancho: «N variantes» (dmsans_bold 11 sp + 2×4 de margen) 69.2 dp con N de un dígito («10 variantes»
- * 74.3 y «99 variantes» 76.4 se cortan con «…»; raro en un kiosco); precio (dmsans_semibold 14 sp): «desde $199.00» 100.6 dp no cabe en un
- * renglón y baja a «desde» (42.4) y «$199.00» (54.6); «$1,299.00» 66.5 y «$9,999.00» 70.5 caben; de cinco dígitos («$12,999.00»,
- * 75.4) se corta con «…» (la hoja trae el precio). Se usa el botón completo y no el `compacto`: éste deja el nombre en 1 renglón y
- * al cliente del kiosco le importa leerlo.
- */
-private const val RELACION_FAMILIA_EN_MENU = 0.563f
 
 /**
  * Kiosk Product Card
@@ -719,7 +710,15 @@ private const val RELACION_FAMILIA_EN_MENU = 0.563f
  * @param price Product base price
  * @param imageUrl Optional product image URL
  * @param hasModifiers Whether product has modifier groups (shows indicator)
- * @param onAdd Callback when user taps to add product
+ * @param priceText Texto del precio en lugar de [price] formateado (una familia: «desde $199.00»); null = el precio de siempre
+ * @param badgeText Insignia arriba a la izquierda (una familia: «3 variantes»); si no es null la tarjeta ES una familia: no lleva el «+»
+ *   (se leería como «agregar ya») y tocarla abre la hoja de tallas
+ * @param onAdd Callback when user taps to add product (o a abrir la hoja de tallas, si es una familia)
+ *
+ * Una familia cabe en los mismos 180 dp de alto en cualquier ancho. Zona de texto: 180 − 90 (foto) − 16 (margen 8+8) = 74 dp: nombre
+ * 2 renglones (2×16 = 32) + 2 + precio hasta 2 renglones (2×20 = 40) = 74 dp. Ancho: 101.3 − 16 = 85.3 dp en la PAX (360 dp); con
+ * DM Sans bold 14 sp y 0.25 sp entre letras «desde $199.00» (104.0) baja a «desde» (43.9) y «$199.00» (56.5); «$1,299.00» 69.1 y
+ * «$99,999.00» 82.1 caben en su renglón. La insignia («100 variantes» 76.9 + 12 de margen = 88.9 dp) cabe en los 93.3 dp de la foto.
  */
 @Composable
 private fun KioskProductCard(
@@ -727,9 +726,12 @@ private fun KioskProductCard(
     price: BigDecimal,
     imageUrl: String?,
     hasModifiers: Boolean = false,
+    priceText: String? = null,
+    badgeText: String? = null,
     onAdd: () -> Unit
 ) {
     val currencyFormat = rememberCurrencyFormat()
+    val esFamilia = badgeText != null
 
     Card(
         modifier = Modifier
@@ -775,42 +777,50 @@ private fun KioskProductCard(
                     }
                 }
 
-                // Add button overlay
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                        .clickable(onClick = onAdd),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Agregar",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
+                // Add button overlay (una familia no lo lleva: tocarla abre la hoja de tallas, no agrega)
+                if (!esFamilia) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable(onClick = onAdd),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Agregar",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
 
-                // 🔧 Modifier indicator badge (top-left corner)
-                if (hasModifiers) {
+                // 🔧 Badge arriba a la izquierda: «N variantes» en una familia, «Personalizable» en un producto con extras
+                val textoInsignia = badgeText ?: if (hasModifiers) "Personalizable" else null
+                if (textoInsignia != null) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(4.dp)
                             .background(
-                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                color = if (esFamilia) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.tertiaryContainer,
                                 shape = RoundedCornerShape(4.dp)
                             )
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "Personalizable",
+                            text = textoInsignia,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            fontWeight = FontWeight.Medium
+                            color = if (esFamilia) MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.Medium,
+                            // «Personalizable» se queda como hoy; «N variantes» va en un renglón (cabe, ver el cálculo arriba)
+                            maxLines = if (esFamilia) 1 else Int.MAX_VALUE,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -834,9 +844,12 @@ private fun KioskProductCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
-                    text = currencyFormat.format(price),
+                    text = priceText ?: currencyFormat.format(price),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
+                    // «desde $199.00» no cabe en un renglón y baja a dos; más no hay alto (ver el cálculo arriba)
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
@@ -848,7 +861,7 @@ private fun KioskProductCard(
 // Preview
 // ============================================================================
 
-@Preview(name = "Menú del kiosco con dos familias", showBackground = true, widthDp = 360, heightDp = 640)
+@Preview(name = "Menú del kiosco: dos familias junto a tarjetas con foto", showBackground = true, widthDp = 360, heightDp = 640)
 @Composable
 private fun KioskCatalogoGridPreview() {
     AvoqadoTheme {

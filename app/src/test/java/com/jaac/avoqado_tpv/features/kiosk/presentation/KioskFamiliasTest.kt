@@ -167,31 +167,33 @@ class KioskFamiliasTest {
 
     @Test fun `dos variantes distintas de la misma familia quedan como dos renglones del carrito`() = runTest {
         val vm = viewModelConCatalogo(playera("p-s", "S"), playera("p-m", "M"))
-        val s = vm.productoVigente("p-s")!!
-        val m = vm.productoVigente("p-m")!!
 
-        vm.addToCart(s)
-        vm.addToCart(m)
+        // El camino de la pantalla: resolver por id en el catálogo vigente, decidir (accionAlElegirEnKiosco) y sólo entonces agregar.
+        vm.elegirEnLaHoja("p-s")
+        vm.elegirEnLaHoja("p-m")
 
         assertThat(vm.cartItems.value.map { it.productId }).containsExactly("p-s", "p-m").inOrder()
         assertThat(vm.cartItems.value.map { it.quantity }).containsExactly(1, 1)
         // La misma talla otra vez suma a SU renglón (agrupa por productId), sin tocar el de la otra.
-        vm.addToCart(s)
+        vm.elegirEnLaHoja("p-s")
         assertThat(vm.cartItems.value.map { it.productId to it.quantity }).containsExactly("p-s" to 2, "p-m" to 1).inOrder()
         vm.viewModelScope.cancel()
     }
 
     @Test fun `una variante con extras no entra por addToCart sino por sus extras y queda en su propio renglon`() = runTest {
         val vm = viewModelConCatalogo(playera("p-s", "S"), playera("p-m", "M", extras = true))
-        val s = vm.productoVigente("p-s")!!
         val m = vm.productoVigente("p-m")!!
 
         // addToCart rechaza lo que tiene extras: por eso la pantalla abre KioskModifierDialog (AbrirExtras) y no llama a addToCart.
         vm.addToCart(m)
         assertThat(vm.cartItems.value).isEmpty()
 
-        vm.addToCart(s)
-        vm.addToCartWithModifiers(m, m.modifierGroups.first().modifiers, BigDecimal("229.00"))
+        // El camino de la pantalla: la talla sin extras se agrega; la que tiene extras abre los suyos y entra con ellos.
+        vm.elegirEnLaHoja("p-s")
+        val accion = accionAlElegirEnKiosco(vm.productoVigente("p-m"))
+        assertThat(accion).isInstanceOf(AccionAlElegir.AbrirExtras::class.java)
+        val variante = (accion as AccionAlElegir.AbrirExtras).variante
+        vm.addToCartWithModifiers(variante, variante.modifierGroups.first().modifiers, BigDecimal("229.00"))
         assertThat(vm.cartItems.value.map { it.productId }).containsExactly("p-s", "p-m").inOrder()
         assertThat(vm.cartItems.value.last().unitPrice).isEqualTo(BigDecimal("229.00"))
         vm.viewModelScope.cancel()
@@ -261,6 +263,13 @@ class KioskFamiliasTest {
     }
 
     // ---- Montaje ----
+
+    /** Lo que hace la pantalla al elegir una talla sin extras: la resuelve por id en el catálogo vigente, decide y agrega. */
+    private fun KioskViewModel.elegirEnLaHoja(id: String) {
+        val accion = accionAlElegirEnKiosco(productoVigente(id))
+        assertThat(accion).isInstanceOf(AccionAlElegir.Agregar::class.java)
+        addToCart((accion as AccionAlElegir.Agregar).variante)
+    }
 
     private fun servidorResponde(vararg productos: Product) {
         coEvery { productRepository.getProducts(any(), any()) } returns Result.success(productos.toList())

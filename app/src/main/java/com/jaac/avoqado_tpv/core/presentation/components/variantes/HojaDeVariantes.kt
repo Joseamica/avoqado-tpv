@@ -3,7 +3,6 @@ package com.jaac.avoqado_tpv.core.presentation.components.variantes
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -30,6 +29,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -115,7 +115,12 @@ class EstadoDeHoja<T>(familia: Familia<T>, private val reglas: ReglasDeFamilia<T
  *   el aviso por variante lo decide quien la llama ([aviso]; `null` = no decir nada);
  * - el precio llega ya formateado por quien la llama ([precioTexto]): cada modelo de producto lo formatea a su manera.
  *
- * Elegir no escribe nada: sólo [onElegir], UNA vez por apertura. Quien la abre guarda el `groupId` (`familiaAbierta: String?`),
+ * Cubre TODA la pantalla y consume todos los toques (es una `Surface`): nada de lo que hay debajo los recibe, ni el título ni los
+ * espacios vacíos. (El repo no tiene pruebas de interfaz de Compose que corran en la JVM, así que esta garantía se revisa en el aparato.)
+ *
+ * Elegir no escribe nada: sólo [onElegir], UNA vez por apertura. 🔴 [onElegir] DEBE cerrar la hoja (`familiaAbierta = null`) antes de
+ * seguir, como `HojaDeLaFamiliaAbierta` de Android (cierra y luego entrega): la entrega es única por apertura, y si la hoja se queda
+ * abierta «Agregar» ya no hace nada. Quien la abre guarda el `groupId` (`familiaAbierta: String?`),
  * le pasa `familias[familiaAbierta]` en cada recomposición (el mapa guardado por cambio de catálogo, no uno recalculado con productos
  * nuevos en cada recomposición), cierra la hoja si eso es `null`, y resuelve la variante recibida por `id`
  * contra su catálogo vigente antes de seguir.
@@ -131,18 +136,21 @@ fun <T> HojaDeVariantes(
     onCerrar: () -> Unit,
 ) {
     val estado = remember(familia.groupId) { EstadoDeHoja(familia, reglas) }
-    // El catálogo se puede refrescar con la hoja abierta: la elección se concilia ANTES de leerla (misma idea que rememberUpdatedState).
+    // El catálogo se puede refrescar con la hoja abierta: la elección se concilia ANTES de leer el estado. Es una escritura de estado
+    // dentro de la composición (un «backwards write») acotada a propósito: lee y escribe en la misma composición, pero `actualizar` es
+    // idempotente (con una familia igual por `==` no escribe), así que cuando hay un cambio real sólo provoca UNA recomposición más.
     estado.actualizar(familia)
     val seleccion = estado.seleccion
     val elegida = estado.elegida
 
     BackHandler(enabled = true) { onCerrar() }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .zIndex(100f)
-            .background(MaterialTheme.colorScheme.background),
+    // Surface y no Box+background: un `background` no consume toques, y las pantallas montan esta hoja ENCIMA de su contenido como
+    // hermana (p. ej. Cobro rápido). La Surface de Material 3 consume todo el puntero: un toque en el título, en el espacio vacío o en el
+    // precio de abajo no cae a la búsqueda, al carrito ni a un producto de la cuadrícula.
+    Surface(
+        modifier = Modifier.fillMaxSize().zIndex(100f),
+        color = MaterialTheme.colorScheme.background,
     ) {
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             Row(
@@ -198,8 +206,10 @@ fun <T> HojaDeVariantes(
                                     onClick = { estado.elegir(eje.nombre, valor) },
                                     label = { Text(valor) },
                                     colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        // `primary`, no `primaryContainer`: el verde claro casi no se distingue del fondo (QA del bloque 3
+                                        // de Android; mismo arreglo).
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
                                         labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     ),
                                     modifier = if (disponible) Modifier else Modifier

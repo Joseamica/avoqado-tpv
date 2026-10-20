@@ -44,19 +44,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
-import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.checkout.presentation.reglasDeCobro
@@ -83,9 +88,10 @@ import java.math.BigDecimal
  * A breadcrumb at the top (`Todos los productos > Category`) lets the
  * operator back out without losing their place.
  *
- * Las tallas/colores de una misma familia salen en UN botón ([TileDeFamilia]) en el lugar de su primera variante de la lista que se
- * pinta (la de la categoría abierta, o la de los sin categoría): una categoría con una sola variante igual muestra el botón de la
- * familia. Tocarlo llama a [onFamiliaTap] y nunca agrega nada por sí solo. [familias] sale de `CheckoutViewModel.familias`.
+ * Las tallas/colores de una misma familia salen en UN botón en el lugar de su primera variante de la lista que se pinta (la de la
+ * categoría abierta, o la de los sin categoría): una categoría con una sola variante igual muestra el botón de la familia. Es el mismo
+ * [ProductTile] que sus vecinos (foto o iniciales, nombre y precio) con la insignia «N variantes» y «desde $…». Tocarlo llama a
+ * [onFamiliaTap] y nunca agrega nada por sí solo. [familias] sale de `CheckoutViewModel.familias`.
  */
 @Composable
 fun ProductGridView(
@@ -259,30 +265,41 @@ private fun EntradaTile(
 ) {
     when (entrada) {
         is EntradaDeCatalogo.Suelto -> ProductTile(product = entrada.producto, onClick = { onProductTap(entrada.producto) })
-        is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
-            familia = entrada.familia,
-            reglas = reglasDeCobro,
-            precioTexto = formatoDePrecio,
-            onClick = { onFamiliaTap(entrada.familia) },
-            relacionDeAspecto = RELACION_TILE_FAMILIA,
-        )
+        is EntradaDeCatalogo.DeFamilia -> {
+            val familia = entrada.familia
+            val precio = reglasDeCobro.textoDePrecio(familia, formatoDePrecio)
+            val variantes = familia.variantes.size
+            // La primera variante sólo pone el color de la categoría (el del lugar donde se pinta); todo lo demás es de la familia.
+            ProductTile(
+                product = familia.variantes.first(),
+                onClick = { onFamiliaTap(familia) },
+                modifier = Modifier.semantics { contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, variantes, precio) },
+                name = familia.nombre,
+                imageUrl = familia.imagenUrl,
+                priceText = precio,
+                badgeText = TextosVariantes.variantes(variantes),
+                agotada = reglasDeCobro.agotada(familia),
+            )
+        }
     }
 }
 
-/**
- * Ancho/alto del botón de familia en esta cuadrícula, igual al de un [ProductTile]: foto 1.2:1 + nombre y precio. Con 3 columnas en la
- * PAX (360 dp − 24 de margen − 16 de separación = 320 / 3 ≈ 106.7 dp por celda): ProductTile = 106.7/1.2 (88.9) + 12 de margen + 16 del
- * nombre (bodySmall) + 2 + 16 del precio (labelSmall) = 134.9 dp; 106.7/134.9 ⇒ 0.79 ⇒ 135 dp.
- *
- * Lo que `TileDeFamilia` necesita dentro de esos 135 dp (contenido de 106.7 − 4 de acento − 24 de margen = 78.7 dp de ancho, margen
- * vertical 2×10; texto: titleSmall 20 dp por renglón, insignia 16 + 2×2 = 20, labelLarge 20):
- * - normal (nombre en 2 renglones, 1 insignia, precio en 2 renglones, «desde» / «$199.00»): 20 + 40 + 20 + 2 + 40 = 122 dp ≤ 135;
- * - todas agotadas (la insignia «Agotado» baja a su renglón: 20 + 2 + 20; el nombre se queda en 1 renglón, 20; precio en 2): 20 + 20 + 42
- *   + 2 + 40 = 124 dp ≤ 135.
- * Ancho (78.7 dp), medido con dmsans_bold.ttf a 11 sp: «3 variantes» 61.2 + 2×4 = 69.2 dp y «12 variantes» 73.4 caben; «desde» (42.4) y
- * «$199.00» (54.6, labelLarge) caben cada uno en su renglón.
+/*
+ * El botón de una familia ES un [ProductTile] (spec §11: foto, nombre, «desde $299», «8 variantes»): no mide su propio alto, hereda el
+ * de sus vecinos. Cuentas con la PAX a 360 dp, fuente 1.0 y DM Sans de `res/font` (suma de `hmtx` con los .ttf estáticos, sin kerning:
+ * cota algo alta; la PAX usa la variable, de la misma familia):
+ * - Celda: (360 − 2×12 − 2×8) / 3 = 106.7 dp. Foto 106.7 / 1.2 = 88.9 dp (igual que la de un suelto) + info: margen 6+6, nombre
+ *   `bodySmall` 16, 2, precio `labelSmall` 16 ⇒ 134.9 dp en los dos casos, MIENTRAS el precio quepa en UN renglón.
+ * - Ancho del texto: 106.7 − 2×8 = 90.7 dp. Precio de la familia en `labelSmall` 11 sp, `dmsans_medium`, SIN espaciado entre letras
+ *   (con los 0.5 sp del tema «desde $1,299.00» medía 92.9 y se partía; sin él, 85.4): «desde $99.00» 72.6 · «desde $199.00» 76.5 ·
+ *   «desde $1,299.00» 85.4 · «desde $9,999.00» 88.8 caben en uno; «desde $12,999.00» (92.3) baja a «desde» / «$12,999.00» y ese
+ *   botón sale 16 dp más alto que sus vecinos (nada se corta; sólo pasa con precios de cinco cifras con «desde»).
+ * - Insignia (arriba a la izquierda, 6 dp de margen, 4+4 de relleno, `dmsans_bold` 11 sp sin espaciado): «3 variantes» 61.2 + 8 = 69.2 ·
+ *   «10 variantes» 74.3 · «100 variantes» 81.8 dp, de los 94.7 que deja la foto (106.7 − 12). Alto 16 + 4 = 20 dp, arriba; las
+ *   iniciales (`headlineMedium`, renglón de 36 dp) van abajo: 88.9 − 6 − 36 = 46.9 dp libres, no se tocan.
+ * - «Agotado» (el scrim del centro, como el de un suelto) sólo si TODAS las tallas lo están (Q5); la insignia se pinta encima del scrim.
+ * - El nombre es un renglón con «marquee», como el de un suelto: uno largo se desliza.
  */
-private const val RELACION_TILE_FAMILIA = 0.79f
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tiles
@@ -325,17 +342,33 @@ private fun CategoryTile(category: ProductCategory, onClick: () -> Unit) {
     }
 }
 
+/**
+ * La tarjeta de un producto de la cuadrícula. Con [badgeText] el botón ES una familia (tocarlo abre la hoja de tallas, nunca agrega):
+ * [product] es entonces sólo su primera variante, para el color de la categoría, y lo demás lo dan los parámetros: [name] y [imageUrl]
+ * de la familia, [priceText] («desde $199.00»), la insignia «N variantes» arriba a la izquierda y [agotada] (sólo si TODAS las tallas
+ * lo están). La existencia, los extras y lo agotado de cada talla los dice la hoja, no el botón. Sin [badgeText] pinta lo de siempre.
+ */
 @Composable
-private fun ProductTile(product: Product, onClick: () -> Unit) {
+private fun ProductTile(
+    product: Product,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    name: String = product.name,
+    imageUrl: String? = product.imageUrl,
+    priceText: String? = null,
+    badgeText: String? = null,
+    agotada: Boolean = false,
+) {
+    val esFamilia = badgeText != null
     val tintHex = product.categoryColor ?: CategoryColors.getAutoColor(product.categoryId)
     val tint = parseHexColor(tintHex) ?: MaterialTheme.colorScheme.primary
 
-    val isOutOfStock = !product.available
+    val isOutOfStock = if (esFamilia) agotada else !product.available
     val stockQty = product.availableQuantity
     val isRecipe = product.inventoryMethod == "RECIPE"
     // Muestra el numerito solo cuando hay stock (>0) en un producto rastreado.
     // El 0 no se pinta aquí — lo cubre el scrim de agotado.
-    val showStockCount = product.trackInventory && stockQty != null && stockQty > 0
+    val showStockCount = !esFamilia && product.trackInventory && stockQty != null && stockQty > 0
     val isLowStock = showStockCount && (stockQty ?: 0) <= 5
     val lowStockColor = MaterialTheme.avoqadoColors.statusWarning
     // Etiqueta de agotado según el MOTIVO:
@@ -343,13 +376,14 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
     //  - stock 0 por CANTIDAD → el producto mismo se acabó
     //  - no disponible por otra causa (inactivo) → genérico
     val outOfStockLabel = when {
+        esFamilia -> TextosVariantes.AGOTADO.uppercase()
         product.trackInventory && (stockQty ?: 0) <= 0 && isRecipe -> "SIN INSUMOS"
         product.trackInventory && (stockQty ?: 0) <= 0 -> "AGOTADO"
         else -> "NO DISPONIBLE"
     }
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
         onClick = onClick,
@@ -368,19 +402,19 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                     .background(tint.copy(alpha = 0.85f)),
             ) {
-                if (!product.imageUrl.isNullOrEmpty()) {
+                if (!imageUrl.isNullOrEmpty()) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
-                            .data(product.imageUrl)
+                            .data(imageUrl)
                             .crossfade(true)
                             .build(),
-                        contentDescription = product.name,
+                        contentDescription = name,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                     )
                 } else {
                     Text(
-                        text = product.name.take(2).uppercase(),
+                        text = name.take(2).uppercase(),
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
@@ -415,7 +449,7 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                     }
                 }
 
-                if (product.hasModifiers) {
+                if (product.hasModifiers && !esFamilia) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
@@ -453,6 +487,29 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                         )
                     }
                 }
+
+                // 🧩 Insignia de familia (arriba-izquierda, donde un suelto lleva su numerito de existencia). Después del scrim para que
+                // se lea aun con todas las tallas agotadas. Sin espaciado entre letras: «100 variantes» cabe (ver el cálculo arriba).
+                if (badgeText != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = badgeText,
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 0.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
 
             // Info row — atenuado cuando está agotado, para reforzar el estado
@@ -463,7 +520,7 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                     .alpha(if (isOutOfStock) 0.5f else 1f),
             ) {
                 Text(
-                    text = product.name,
+                    text = name,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -475,8 +532,12 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = product.formattedPrice,
+                    text = priceText ?: product.formattedPrice,
                     style = MaterialTheme.typography.labelSmall,
+                    // La familia dice «desde $1,299.00»: sin el espaciado del tema (0.5 sp) cabe en un renglón (85.4 de 90.7 dp).
+                    letterSpacing = if (esFamilia) 0.sp else TextUnit.Unspecified,
+                    maxLines = if (esFamilia) 2 else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -573,8 +634,10 @@ private fun ProductGridLoadingPreview() {
     }
 }
 
-// Celdas de ~106.7 dp: los dos botones de familia miden 135 dp (RELACION_TILE_FAMILIA; su contenido necesita 122 y 124 dp) y las dos
-// tarjetas sueltas ~135 dp; 2 filas de 135 + 8 de separación + 24 de margen = 302 dp, de sobra en los 640 dp.
+// Celdas de ~106.7 dp: el botón de una familia hereda el alto de un suelto (134.9 dp) mientras «desde $…» quepa en un renglón (88.8 de
+// 90.7 dp con «desde $9,999.00»). Tres familias (normal «desde $199.00»; de cuatro cifras «desde $1,299.00», lo más ancho que cabe en
+// un renglón; y con TODAS las tallas agotadas, con el scrim «AGOTADO») y dos sueltos: 2 filas de 135 + 8 de separación + 24 de margen =
+// 302 dp, de sobra en los 640 dp. (En un preview Coil no baja fotos: se ve el fallback de iniciales.)
 @Preview(name = "Products - Familias", widthDp = 360, heightDp = 640, showBackground = true)
 @Composable
 private fun ProductGridFamiliasPreview() {
@@ -583,7 +646,10 @@ private fun ProductGridFamiliasPreview() {
         fakeVariante("pl-s", "Playera básica S", 19900, "playera", "Playera básica", "S"),
         fakeVariante("pl-m", "Playera básica M", 19900, "playera", "Playera básica", "M"),
         fakeVariante("pl-l", "Playera básica L", 24900, "playera", "Playera básica", "L"),
-        // Una familia con TODAS las tallas agotadas ⇒ la insignia «Agotado» baja a su renglón.
+        // Precio de cuatro cifras: «desde $1,299.00» es lo más ancho que cabe en un renglón.
+        fakeVariante("te-s", "Tenis de cuero S", 129900, "tenis", "Tenis de cuero", "S"),
+        fakeVariante("te-m", "Tenis de cuero M", 149900, "tenis", "Tenis de cuero", "M"),
+        // Una familia con TODAS las tallas agotadas ⇒ el scrim «AGOTADO» (la insignia de variantes sigue legible encima).
         fakeVariante("ga-s", "Gorra de lana S", 12900, "gorra", "Gorra de lana", "S", available = false),
         fakeVariante("ga-m", "Gorra de lana M", 14900, "gorra", "Gorra de lana", "M", available = false),
         // Productos sueltos, uno agotado: la cuadrícula no cambia de ritmo.

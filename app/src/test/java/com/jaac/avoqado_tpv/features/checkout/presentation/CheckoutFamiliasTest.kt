@@ -108,6 +108,18 @@ class CheckoutFamiliasTest {
         assertThat(accionAlElegirEnCobro(agotadaConExtras)).isEqualTo(AccionAlElegir.NoDisponible(agotadaConExtras))
     }
 
+    @Test fun `la hoja dice Agotado si no esta disponible y si no cuantas quedan`() {
+        val base = playera("p-m", "M")
+        // Agotada: se ve marcada (como hoy un agotado se muestra), con la palabra corta y no con «se puede vender igual».
+        assertThat(avisoDeExistenciaEnCobro(base.copy(available = false))).isEqualTo("Agotado")
+        assertThat(avisoDeExistenciaEnCobro(base.copy(available = false, trackInventory = true, availableQuantity = 0))).isEqualTo("Agotado")
+        // Disponible: la misma regla que Órdenes (la existencia que hoy enseña cada talla suelta).
+        assertThat(avisoDeExistenciaEnCobro(base.copy(trackInventory = true, availableQuantity = 5))).isEqualTo("5 disponibles")
+        assertThat(avisoDeExistenciaEnCobro(base.copy(trackInventory = true, availableQuantity = 1))).isEqualTo("1 disponible")
+        assertThat(avisoDeExistenciaEnCobro(base.copy(trackInventory = false, availableQuantity = 5))).isNull()
+        assertThat(avisoDeExistenciaEnCobro(base.copy(trackInventory = true, availableQuantity = null))).isNull()
+    }
+
     @Test fun `la variante elegida con extras abre sus propios extras y sin extras se agrega`() {
         val sinExtras = playera("p-s", "S")
         val conExtras = playera("p-m", "M", extras = true)

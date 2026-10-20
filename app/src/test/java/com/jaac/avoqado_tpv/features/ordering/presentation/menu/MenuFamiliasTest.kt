@@ -184,6 +184,17 @@ class MenuFamiliasTest {
         assertThat(accionAlElegir(null)).isEqualTo(AccionAlElegir.Cerrar)
     }
 
+    @Test fun `la hoja dice cuantas quedan solo si la variante rastrea inventario y trae el numero`() {
+        val base = playera("p-m", "M")
+        // Rastrea y trae número: lo que hoy enseña la etiqueta de cada talla suelta.
+        assertThat(avisoDeExistenciaEnOrdenes(base.copy(trackInventory = true, availableQuantity = 5))).isEqualTo("5 disponibles")
+        assertThat(avisoDeExistenciaEnOrdenes(base.copy(trackInventory = true, availableQuantity = 1))).isEqualTo("1 disponible")
+        // No rastrea (existencia ilimitada), aunque el server mande un número: nada que decir.
+        assertThat(avisoDeExistenciaEnOrdenes(base.copy(trackInventory = false, availableQuantity = 5))).isNull()
+        // Rastrea pero sin número: nunca un cero inventado. Y nunca «Agotado: se puede vender igual.» (eso es de Android).
+        assertThat(avisoDeExistenciaEnOrdenes(base.copy(trackInventory = true, availableQuantity = null))).isNull()
+    }
+
     @Test fun `la hoja no puede estar abierta mientras se prepara el pago ni con el escaner abierto`() {
         // Con «Preparando pago…» un artículo nuevo entraría mientras se sincroniza la orden y el cobro saldría corto.
         assertThat(hojaDeVariantesPermitida(preparandoPago = false, escanerAbierto = false)).isTrue()

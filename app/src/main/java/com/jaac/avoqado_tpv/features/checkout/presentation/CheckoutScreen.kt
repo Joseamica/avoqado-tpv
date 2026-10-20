@@ -43,7 +43,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
-import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
 import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -515,8 +514,8 @@ fun CheckoutScreen(
                 reglas = reglasDeCobro,
                 precioTexto = { formatoDePrecio(it.price) },
                 // Como hoy un agotado se muestra y al tocarlo avisa: aquí la talla agotada se ve marcada («Agotado»), sin «se puede vender
-                // igual» (eso es de Android).
-                aviso = { if (it.available) null else TextosVariantes.AGOTADO },
+                // igual» (eso es de Android); las demás dicen cuántas quedan.
+                aviso = ::avisoDeExistenciaEnCobro,
                 onCerrar = { familiaAbierta = null },
                 onElegir = { elegida ->
                     // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el catálogo de AHORA;

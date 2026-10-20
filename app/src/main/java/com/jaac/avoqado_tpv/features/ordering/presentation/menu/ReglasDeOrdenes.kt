@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.SIN_FAMILIA
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import java.math.BigDecimal
@@ -55,6 +56,15 @@ fun accionAlElegir(varianteActual: Product?): AccionAlElegir<Product> = when {
     varianteActual.hasModifiers -> AccionAlElegir.AbrirExtras(varianteActual)
     else -> AccionAlElegir.Agregar(varianteActual)
 }
+
+/**
+ * Lo que la hoja de tallas dice de la variante elegida: cuántas quedan («5 disponibles»), la existencia que hoy enseña la etiqueta de
+ * cada talla suelta (`InventoryBadge`). Sólo si rastrea inventario Y trae el número; sin número no se dice nada (nunca un cero
+ * inventado). Órdenes no pinta lo agotado (ni dentro de la hoja), así que aquí no hay «Agotado»; y nunca `AGOTADO_AVISO` («se puede
+ * vender igual» es de Android: la terminal no vende lo agotado).
+ */
+fun avisoDeExistenciaEnOrdenes(p: Product): String? =
+    if (p.trackInventory) p.availableQuantity?.let(TextosVariantes::disponibles) else null
 
 /**
  * ¿Puede estar abierta la hoja de tallas? No mientras se prepara el pago («Preparando pago…» sincroniza la orden y trae los descuentos

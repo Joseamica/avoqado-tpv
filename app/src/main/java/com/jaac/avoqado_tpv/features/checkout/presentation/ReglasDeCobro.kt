@@ -2,7 +2,9 @@ package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.avisoDeExistenciaEnOrdenes
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.conNormalizador
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.reglasDeOrdenes
 
@@ -32,3 +34,10 @@ fun accionAlElegirEnCobro(varianteActual: Product?): AccionAlElegir<Product> = w
     varianteActual.hasModifiers -> AccionAlElegir.AbrirExtras(varianteActual)
     else -> AccionAlElegir.Agregar(varianteActual)
 }
+
+/**
+ * Lo que la hoja de tallas dice de la variante elegida en Cobro rápido: no disponible ⇒ «Agotado» (como hoy un agotado se muestra marcado
+ * y al tocarlo avisa; sin «se puede vender igual», que es de Android); si no, cuántas quedan, con la misma regla que Órdenes.
+ */
+fun avisoDeExistenciaEnCobro(p: Product): String? =
+    if (!p.available) TextosVariantes.AGOTADO else avisoDeExistenciaEnOrdenes(p)

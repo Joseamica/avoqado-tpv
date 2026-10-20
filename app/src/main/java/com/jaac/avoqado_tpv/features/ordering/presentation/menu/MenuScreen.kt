@@ -487,8 +487,8 @@ fun MenuScreen(
                                             familia = familiaDeLaHoja,
                                             reglas = reglasDeOrdenes,
                                             precioTexto = { formatoDePrecio(it.price) },
-                                            // Una talla agotada o desactivada ni siquiera está en la familia: no hay aviso que dar.
-                                            aviso = { null },
+                                            // Una talla agotada o desactivada ni siquiera está en la familia: sólo se dice cuántas quedan.
+                                            aviso = ::avisoDeExistenciaEnOrdenes,
                                             onCerrar = { familiaAbierta = null },
                                             onElegir = { elegida ->
                                                 // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el

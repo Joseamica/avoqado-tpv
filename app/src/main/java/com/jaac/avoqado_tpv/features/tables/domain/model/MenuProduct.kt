@@ -23,8 +23,11 @@ data class MenuProduct(
     val familia: DatosDeFamilia? = null,
 ) {
     val hasModifiers: Boolean get() = modifierGroups.isNotEmpty()
-    val priceDisplay: String get() = "$${price.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
+    val priceDisplay: String get() = precioDeMesas(price)
 }
+
+/** Cómo Mesas escribe un precio: `$45.00`, sin separador de miles. Lo usan el botón de cada producto, el de cada familia y la hoja de tallas. */
+fun precioDeMesas(precio: BigDecimal): String = "$${precio.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
 
 data class MenuModifierGroup(
     val id: String,

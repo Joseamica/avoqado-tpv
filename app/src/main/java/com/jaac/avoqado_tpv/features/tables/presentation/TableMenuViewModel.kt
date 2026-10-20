@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
@@ -25,6 +26,12 @@ data class TableMenuUiState(
     val categories: List<MenuCategory> = emptyList(),
     val selectedCategoryId: String? = null,
     val errorMessage: String? = null,
+    /**
+     * Las familias de variantes (talla/color) del catálogo COMPLETO, por `groupId`, calculadas UNA vez cuando llega un catálogo (en el
+     * mismo `update` que [products]: nunca hay una ventana en que no coincidan). Cambiar de categoría no las recalcula; la categoría sólo
+     * decide en qué lugar de la lista sale el botón de cada una.
+     */
+    val familias: Map<String, Familia<MenuProduct>> = emptyMap(),
 ) {
     fun productsForSelectedCategory(): List<MenuProduct> =
         if (selectedCategoryId == null) products else products.filter { it.categoryId == selectedCategoryId }
@@ -69,10 +76,13 @@ class TableMenuViewModel @Inject constructor(
 
             productsResult.fold(
                 onSuccess = { products ->
+                    // Fuera del `update`: éste puede reintentarse si otro hilo escribe a la vez.
+                    val familias = reglasDeMesas.familiasDe(products)
                     _uiState.update { current ->
                         current.copy(
                             isLoading = false,
                             products = products,
+                            familias = familias,
                             categories = categoriesResult.getOrElse { current.categories },
                             errorMessage = null,
                         )
@@ -107,6 +117,12 @@ class TableMenuViewModel @Inject constructor(
     fun selectCategory(categoryId: String?) {
         _uiState.update { it.copy(selectedCategoryId = categoryId) }
     }
+
+    /**
+     * El producto con este `id` en el catálogo de AHORA (`null` si ya no está). La hoja de tallas puede llevar abierta una copia vieja:
+     * al elegir, la variante se resuelve aquí por `id` y se decide con [accionAlElegirEnMesas].
+     */
+    fun productoVigente(id: String): MenuProduct? = _uiState.value.products.firstOrNull { it.id == id }
 
     /** Tap simple — solo para productos SIN grupos de modificadores. */
     fun addSimple(product: MenuProduct) {

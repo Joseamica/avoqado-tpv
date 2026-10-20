@@ -1,6 +1,9 @@
 package com.jaac.avoqado_tpv.features.ordering.data.dto
 
+import com.google.gson.annotations.JsonAdapter
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionDeVarianteDto
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionesDeVarianteTolerantes
 
 /**
  * Product Data Transfer Object
@@ -90,7 +93,23 @@ data class ProductDto(
     val limitingIngredient: IngredientShortageDto? = null,
 
     @SerializedName("insufficientIngredients")
-    val insufficientIngredients: List<IngredientShortageDto>? = null
+    val insufficientIngredients: List<IngredientShortageDto>? = null,
+
+    // Familia de variantes (talla/color). Los 4 campos son opcionales: un producto suelto o un server viejo no los manda (null).
+    // El server NUNCA manda `variants`; la terminal no lo declara. `variantOptions` con forma rara se lee como null y el producto
+    // sale suelto, en vez de tumbar el catálogo entero (ver [OpcionesDeVarianteTolerantes]).
+    @SerializedName("productGroupId")
+    val productGroupId: String? = null,
+
+    @SerializedName("productGroupName")
+    val productGroupName: String? = null,
+
+    @SerializedName("productGroupImageUrl")
+    val productGroupImageUrl: String? = null,
+
+    @JsonAdapter(OpcionesDeVarianteTolerantes::class)
+    @SerializedName("variantOptions")
+    val variantOptions: List<OpcionDeVarianteDto>? = null
 )
 
 /**

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.kiosk.domain.model
 
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.math.BigDecimal
@@ -52,7 +53,9 @@ data class KioskProduct(
     val categoryId: String?,
     val imageUrl: String? = null,
     val isAvailable: Boolean = true,
-    val modifierGroups: List<ModifierGroup> = emptyList()
+    val modifierGroups: List<ModifierGroup> = emptyList(),
+    /** Familia de variantes (talla/color) a la que pertenece; null = producto suelto. */
+    val familia: DatosDeFamilia? = null
 ) {
     /**
      * Check if product has any modifier groups

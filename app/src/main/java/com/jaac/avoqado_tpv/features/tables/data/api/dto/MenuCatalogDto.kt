@@ -1,6 +1,9 @@
 package com.jaac.avoqado_tpv.features.tables.data.api.dto
 
+import com.google.gson.annotations.JsonAdapter
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionDeVarianteDto
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionesDeVarianteTolerantes
 import java.math.BigDecimal
 
 /**
@@ -26,6 +29,12 @@ data class ProductCatalogDto(
     @SerializedName("imageUrl") val imageUrl: String? = null,
     @SerializedName("color") val color: String? = null,
     @SerializedName("modifierGroups") val modifierGroups: List<ProductModifierGroupCatalogDto>? = null,
+    // Familia de variantes (opcionales; el server nunca manda `variants`). Lo compartido vive en `core`, no en `ordering`.
+    @SerializedName("productGroupId") val productGroupId: String? = null,
+    @SerializedName("productGroupName") val productGroupName: String? = null,
+    @SerializedName("productGroupImageUrl") val productGroupImageUrl: String? = null,
+    @JsonAdapter(OpcionesDeVarianteTolerantes::class)
+    @SerializedName("variantOptions") val variantOptions: List<OpcionDeVarianteDto>? = null,
 )
 
 data class ProductModifierGroupCatalogDto(

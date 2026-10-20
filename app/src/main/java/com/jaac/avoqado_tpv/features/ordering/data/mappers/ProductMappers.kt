@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.data.mappers
 
+import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CategoryDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.IngredientShortageDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ModifierDto
@@ -56,7 +57,9 @@ fun ProductDto.toDomain(): Product {
         categoryIsActive = category.isActive,
         // ✅ FASE 2: ingredient shortage detail (RECIPE only; null on older backends)
         limitingIngredient = limitingIngredient?.toDomain(),
-        insufficientIngredients = insufficientIngredients?.map { it.toDomain() } ?: emptyList()
+        insufficientIngredients = insufficientIngredients?.map { it.toDomain() } ?: emptyList(),
+        // Familia de variantes: se arma UNA vez aquí (la agrupación la lee muchas veces por producto); null = producto suelto
+        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions)
     )
 }
 

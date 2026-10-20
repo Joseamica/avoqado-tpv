@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.tables.domain.model
 
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -18,6 +19,8 @@ data class MenuProduct(
     val color: String? = null,
     val active: Boolean = true,
     val modifierGroups: List<MenuModifierGroup> = emptyList(),
+    /** Familia de variantes (talla/color) a la que pertenece; null = producto suelto. Viene de `core`, no de `ordering`. */
+    val familia: DatosDeFamilia? = null,
 ) {
     val hasModifiers: Boolean get() = modifierGroups.isNotEmpty()
     val priceDisplay: String get() = "$${price.setScale(2, RoundingMode.HALF_UP).toPlainString()}"

@@ -801,23 +801,25 @@ class KioskViewModel @Inject constructor(
         Timber.d("👥 [KIOSK-VM] Customer state cleared")
     }
 
-    // ==================== HELPER FUNCTIONS ====================
+}
 
-    /**
-     * Convert domain Product to KioskProduct
-     *
-     * Note: Backend returns prices in pesos (78.00 = $78.00)
-     * Includes modifierGroups for products that have customization options
-     */
-    private fun Product.toKioskProduct(): KioskProduct {
-        return KioskProduct(
-            id = this.id,
-            name = this.name,
-            price = this.price,
-            categoryId = this.categoryId,
-            imageUrl = this.imageUrl,
-            isAvailable = this.available,
-            modifierGroups = this.modifierGroups  // 🔧 Include modifiers for kiosk selection
-        )
-    }
+/**
+ * Convert domain Product to KioskProduct
+ *
+ * Note: Backend returns prices in pesos (78.00 = $78.00)
+ * Includes modifierGroups for products that have customization options
+ *
+ * Top-level `internal` (antes un miembro privado del ViewModel) para poder probar el mapeo sin construir un ViewModel.
+ */
+internal fun Product.toKioskProduct(): KioskProduct {
+    return KioskProduct(
+        id = this.id,
+        name = this.name,
+        price = this.price,
+        categoryId = this.categoryId,
+        imageUrl = this.imageUrl,
+        isAvailable = this.available,
+        modifierGroups = this.modifierGroups,  // 🔧 Include modifiers for kiosk selection
+        familia = this.familia  // ya armada por el mapper; el modelo de Kiosco la lleva tal cual
+    )
 }

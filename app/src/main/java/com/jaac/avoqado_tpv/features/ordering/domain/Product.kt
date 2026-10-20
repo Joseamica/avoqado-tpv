@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
 import androidx.compose.runtime.Immutable
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import java.math.BigDecimal
 
 /**
@@ -58,7 +59,11 @@ data class Product(
     // ones are fully depleted. Populated by backend; empty on QUANTITY products
     // or older backends. Used by the "SIN INSUMOS" info modal to say WHAT ran out.
     val limitingIngredient: IngredientShortage? = null,
-    val insufficientIngredients: List<IngredientShortage> = emptyList()
+    val insufficientIngredients: List<IngredientShortage> = emptyList(),
+
+    // Familia de variantes (talla/color) a la que pertenece; null = producto suelto. Propiedad guardada, no calculada: la
+    // agrupación del catálogo la lee muchas veces por producto.
+    val familia: DatosDeFamilia? = null
 ) {
     /**
      * Convenience property: Formatted price for UI

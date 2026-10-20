@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
@@ -317,7 +318,7 @@ class TablesRepository @Inject constructor(
         val response = api.getProducts(venueId)
         val data = response.body()?.data
         if (response.isSuccessful && data != null) {
-            Result.success(data.filter { it.active }.map { it.toDomain() })
+            Result.success(data.filter { it.active }.map { it.toMenuProduct() })
         } else {
             Result.failure(
                 BackendHttpException(
@@ -363,26 +364,6 @@ class TablesRepository @Inject constructor(
         Timber.e(e, "❌ [Tables] Fallo inesperado en getCategories (venue=%s)", venueId)
         Result.failure(e)
     }
-
-    private fun ProductCatalogDto.toDomain(): MenuProduct = MenuProduct(
-        id = id,
-        name = name,
-        price = price,
-        categoryId = categoryId,
-        imageUrl = imageUrl,
-        color = color,
-        active = active,
-        modifierGroups = modifierGroups.orEmpty().mapNotNull { wrapper ->
-            val group = wrapper.group
-            MenuModifierGroup(
-                id = group.id,
-                name = group.name,
-                type = group.type,
-                required = group.required,
-                modifiers = group.modifiers.orEmpty().map { MenuModifier(id = it.id, name = it.name, price = it.price) },
-            )
-        },
-    )
 
     /**
      * `PATCH tpv/venues/{venueId}/orders/{orderId}/items` — envía una ronda.
@@ -1733,3 +1714,28 @@ class TablesRepository @Inject constructor(
             detail.items.isNotEmpty() && detail.items.all { it.id.startsWith(OPTIMISTIC_ITEM_ID_PREFIX) }
     }
 }
+
+/**
+ * Mapper del catálogo de Mesas. Top-level `internal` (antes un miembro privado de [TablesRepository]) para poder probar la
+ * lectura de la familia sin construir el repositorio. La familia se arma UNA vez aquí; null = producto suelto.
+ */
+internal fun ProductCatalogDto.toMenuProduct(): MenuProduct = MenuProduct(
+    id = id,
+    name = name,
+    price = price,
+    categoryId = categoryId,
+    imageUrl = imageUrl,
+    color = color,
+    active = active,
+    modifierGroups = modifierGroups.orEmpty().mapNotNull { wrapper ->
+        val group = wrapper.group
+        MenuModifierGroup(
+            id = group.id,
+            name = group.name,
+            type = group.type,
+            required = group.required,
+            modifiers = group.modifiers.orEmpty().map { MenuModifier(id = it.id, name = it.name, price = it.price) },
+        )
+    },
+    familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions),
+)

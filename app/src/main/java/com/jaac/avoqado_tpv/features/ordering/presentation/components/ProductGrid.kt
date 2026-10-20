@@ -351,8 +351,9 @@ private fun ProductGridEmptyPreview() {
 }
 
 // Celdas de 3 columnas: (360 − 24 de margen − 16 de separación) / 3 = 106.7 dp de ancho y 106.7 / 1.45 = 73.6 dp de alto (el de ProductCard).
-// El botón de familia compacto necesita 6 + 20 (nombre en 1 renglón) + 18 (insignia) + 2 + 16 (precio) + 6 = 68 dp ≤ 73.6, y de ancho
-// 90.7 dp de contenido (106.7 − 4 de acento − 2×6): «3 variantes» ≈ 66 dp, «desde $199.00» ≈ 79 dp.
+// El botón de familia compacto necesita 6 + 20 (nombre en 1 renglón) + 18 (insignia) + 2 + 16 (precio, labelSmall) + 6 = 68 dp ≤ 73.6, y de
+// ancho 90.7 dp de contenido (106.7 − 4 de acento − 2×6): «3 variantes» 61.2 + 2×4 = 69.2 dp, «desde $199.00» 78.0 dp, «desde $9,999.00»
+// 90.4 dp (anchos medidos con las fuentes de la app, ver TileDeFamilia).
 @Preview(name = "3 columnas con una familia", showBackground = true, widthDp = 360, heightDp = 640)
 @Composable
 private fun ProductGridFamiliasPreview() {

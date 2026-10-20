@@ -279,6 +279,8 @@ private fun EntradaTile(
  * - normal (nombre en 2 renglones, 1 insignia, precio en 2 renglones, «desde» / «$199.00»): 20 + 40 + 20 + 2 + 40 = 122 dp ≤ 135;
  * - todas agotadas (la insignia «Agotado» baja a su renglón: 20 + 2 + 20; el nombre se queda en 1 renglón, 20; precio en 2): 20 + 20 + 42
  *   + 2 + 40 = 124 dp ≤ 135.
+ * Ancho (78.7 dp), medido con dmsans_bold.ttf a 11 sp: «3 variantes» 61.2 + 2×4 = 69.2 dp y «12 variantes» 73.4 caben; «desde» (42.4) y
+ * «$199.00» (54.6, labelLarge) caben cada uno en su renglón.
  */
 private const val RELACION_TILE_FAMILIA = 0.79f
 

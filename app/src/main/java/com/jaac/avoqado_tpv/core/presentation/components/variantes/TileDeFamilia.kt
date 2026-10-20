@@ -28,7 +28,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
@@ -59,8 +61,8 @@ fun <T> ReglasDeFamilia<T>.textoDePrecio(f: Familia<T>, formato: (BigDecimal) ->
  * - [relacionDeAspecto] (ancho/alto): 1.45 por defecto, el de `ProductCard` de Órdenes. Una cuadrícula con otra tarjeta (Cobro rápido, de
  *   0.79) pasa la suya: el alto sale del ancho de la celda, así que el contenido tiene que caber en él (ver el cálculo en Cobro rápido).
  * - [compacto]: la versión para una celda donde el contenido completo no cabe a la altura de `ProductCard` (las 3 columnas de Órdenes:
- *   ~107 × 74 dp): nombre en 1 renglón, insignia de 18 dp y precio en labelMedium, con márgenes de 6 dp. Pensada para Órdenes, que no
- *   pinta lo agotado (no reserva sitio para la insignia «Agotado»).
+ *   ~107 × 74 dp): nombre en 1 renglón, insignia de 18 dp y precio en labelSmall (11 sp, sin espaciado entre letras), con márgenes de
+ *   6 dp. Pensada para Órdenes, que no pinta lo agotado (no reserva sitio para la insignia «Agotado»).
  * - «Agotado» sólo cuando TODAS las variantes lo están (Q5) y el modelo trae existencias (Cobro rápido). Nunca bloquea el toque:
  *   qué pasa al elegir una variante agotada lo decide cada pantalla. El «se puede vender igual» de Android no se usa aquí.
  */
@@ -132,11 +134,15 @@ fun <T> TileDeFamilia(
                     }
                     Text(
                         text = precio,
-                        style = if (compacto) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                        style = if (compacto) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
+                        // Sin espaciado entre letras en el compacto: el 0.5 sp del tema ensancha «desde $1,299.00» de 87 a 95 dp.
+                        letterSpacing = if (compacto) 0.sp else TextUnit.Unspecified,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary,
-                        // Dos renglones: «desde $199.00» no cabe en uno en una celda angosta y se parte en «desde» / «$199.00». El
-                        // compacto no tiene alto para el segundo: va en uno (labelMedium: «desde $199.00» ≈ 79 dp de 90.7; con miles queda justo y se corta con «…»).
+                        // Dos renglones: «desde $199.00» (labelLarge, 100.6 dp) no cabe en uno en una celda angosta y se parte en «desde» /
+                        // «$199.00». El compacto no tiene alto para el segundo: va en uno. Anchos medidos con dmsans_semibold.ttf a 11 sp,
+                        // sin espaciado: «desde $99.00» 73.8 dp, «desde $199.00» 78.0, «desde $1,299.00» 87.2, «desde $9,999.00» 90.4 de
+                        // los 90.7 dp de contenido; de cinco dígitos («desde $12,999.00», 94.2) se corta con «…» (la hoja trae el precio).
                         maxLines = if (compacto) 1 else 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -148,13 +154,17 @@ fun <T> TileDeFamilia(
 
 @Composable
 private fun Insignia(texto: String, fondo: Color, letra: Color, compacta: Boolean = false) {
+    // Margen de 4 dp y sin espaciado entre letras para que «12 variantes» quepa en la celda de Cobro rápido (78.7 dp de contenido):
+    // dmsans_bold.ttf a 11 sp mide «3 variantes» 61.2 dp, «12 variantes» 65.4 y «100 variantes» 73.8 (con el 0.5 sp del tema eran 66.7,
+    // 71.4 y 80.3, que con 2×6 de margen no cabían), así que con 2×4: 69.2, 73.4 y 81.8 (sólo el de tres dígitos se corta con «…»).
     Box(
         modifier = Modifier.background(color = fondo, shape = InsigniaShape)
-            .padding(horizontal = 6.dp, vertical = if (compacta) 1.dp else 2.dp),
+            .padding(horizontal = 4.dp, vertical = if (compacta) 1.dp else 2.dp),
     ) {
         Text(
             text = texto,
             style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 0.sp,
             color = letra,
             fontWeight = FontWeight.Bold,
             maxLines = 1,

@@ -98,5 +98,20 @@ data class ProductEntity(
     val categoryIsActive: Boolean = true,
 
     @ColumnInfo(name = "cached_at")
-    val cachedAt: Long  // Unix timestamp (for TTL expiration)
+    val cachedAt: Long,  // Unix timestamp (for TTL expiration)
+
+    // Familia de variantes (talla/color), guardada para armar el botón de la familia SIN red (v42). Los cuatro nacen NULL: un
+    // producto suelto, o una fila guardada antes de la v42, no tiene familia. Los nombres son idénticos a los de MIGRATION_41_42.
+    @ColumnInfo(name = "product_group_id")
+    val productGroupId: String? = null,
+
+    @ColumnInfo(name = "product_group_name")
+    val productGroupName: String? = null,
+
+    @ColumnInfo(name = "product_group_image_url")
+    val productGroupImageUrl: String? = null,
+
+    // JSON de List<OpcionDeVarianteDto>; se lee con el MISMO adaptador tolerante que el payload de la red.
+    @ColumnInfo(name = "variant_options_json")
+    val variantOptionsJson: String? = null
 )

@@ -1,7 +1,12 @@
 package com.jaac.avoqado_tpv.core.data.local.mappers
 
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionDeVarianteDto
+import com.jaac.avoqado_tpv.core.data.network.variantes.OpcionesDeVarianteTolerantes
+import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductCategoryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
@@ -20,6 +25,18 @@ import java.math.BigDecimal
  */
 
 private val gson = Gson()
+
+/**
+ * `variant_options_json` → opciones, con LA MISMA regla que el payload de la red (el adaptador tolerante): lo que no sea un arreglo de
+ * objetos válidos, o un JSON roto, es `null` y el producto se pinta suelto. Nunca lanza: una fila rara no puede tumbar el catálogo.
+ */
+private fun opcionesDeJson(json: String?): List<OpcionDeVarianteDto>? =
+    if (json.isNullOrBlank()) null
+    else runCatching { OpcionesDeVarianteTolerantes().deserialize(JsonParser.parseString(json), null, null) }.getOrNull()
+
+/** Opciones → JSON con los nombres de red (`@SerializedName` del DTO): sobreviven a R8, a diferencia de los campos del dominio. */
+private fun opcionesAJson(f: DatosDeFamilia): String? =
+    f.opciones?.map { OpcionDeVarianteDto(it.name, it.value, it.namePosition, it.valuePosition) }?.let(gson::toJson)
 
 /**
  * Convert ProductEntity to Product domain model.
@@ -53,7 +70,9 @@ fun ProductEntity.toDomain(): Product {
         availableQuantity = availableQuantity,
         modifierGroups = modifierGroups,
         categoryColor = categoryColor,  // Pass through from cache (null = auto-generate in domain)
-        categoryIsActive = categoryIsActive  // Category active status from dashboard
+        categoryIsActive = categoryIsActive,  // Category active status from dashboard
+        // Misma regla que la red: sin group id (o en blanco) no hay familia; opciones raras = null.
+        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, opcionesDeJson(variantOptionsJson))
     )
 }
 
@@ -85,7 +104,11 @@ fun Product.toEntity(venueId: String, cachedAt: Long): ProductEntity {
         modifierGroupsJson = gson.toJson(modifierGroups),
         categoryColor = categoryColor,  // Store backend color in cache
         categoryIsActive = categoryIsActive,  // Store category active status in cache
-        cachedAt = cachedAt
+        cachedAt = cachedAt,
+        productGroupId = familia?.groupId,
+        productGroupName = familia?.groupName,
+        productGroupImageUrl = familia?.groupImageUrl,
+        variantOptionsJson = familia?.let(::opcionesAJson)
     )
 }
 

@@ -172,7 +172,13 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v40 (p. ej. la 2.11.2) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
     // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v41.
-    version = 41,
+    //
+    // ⭐ Version 42 (19-oct-2026): `products` gana `product_group_id`, `product_group_name`, `product_group_image_url` y
+    // `variant_options_json` (variantes, bloque 4: Órdenes arma el botón de la familia SIN red). Aditiva y nullable (MIGRATION_41_42).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v41 (p. ej. la 2.12.6) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v42.
+    version = 42,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2072,6 +2078,24 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                     }
                 }
                 db.execSQL("ALTER TABLE payment_attempts ADD COLUMN process_token TEXT")
+            }
+        }
+
+        /**
+         * 42: familia de variantes en el catálogo guardado (`products`). Cuatro columnas TEXT nullable; las filas que ya había quedan
+         * en NULL (cada producto sale suelto) hasta el siguiente refresco. Idempotente por `PRAGMA table_info`. Los nombres son los
+         * de los `@ColumnInfo` de `ProductEntity`: si no coinciden, Room no abre la base (la deriva v23→v24 dejó terminales en bucle).
+         */
+        val MIGRATION_41_42 = object : Migration(41, 42) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existentes = mutableSetOf<String>()
+                db.query("PRAGMA table_info(products)").use { cursor ->
+                    val indiceNombre = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) existentes += cursor.getString(indiceNombre)
+                }
+                for (columna in listOf("product_group_id", "product_group_name", "product_group_image_url", "variant_options_json")) {
+                    if (columna !in existentes) db.execSQL("ALTER TABLE products ADD COLUMN $columna TEXT")
+                }
             }
         }
 

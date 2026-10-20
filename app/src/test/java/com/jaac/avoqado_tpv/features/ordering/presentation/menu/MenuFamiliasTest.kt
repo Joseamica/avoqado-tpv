@@ -184,6 +184,14 @@ class MenuFamiliasTest {
         assertThat(accionAlElegir(null)).isEqualTo(AccionAlElegir.Cerrar)
     }
 
+    @Test fun `la hoja no puede estar abierta mientras se prepara el pago ni con el escaner abierto`() {
+        // Con «Preparando pago…» un artículo nuevo entraría mientras se sincroniza la orden y el cobro saldría corto.
+        assertThat(hojaDeVariantesPermitida(preparandoPago = false, escanerAbierto = false)).isTrue()
+        assertThat(hojaDeVariantesPermitida(preparandoPago = true, escanerAbierto = false)).isFalse()
+        assertThat(hojaDeVariantesPermitida(preparandoPago = false, escanerAbierto = true)).isFalse()
+        assertThat(hojaDeVariantesPermitida(preparandoPago = true, escanerAbierto = true)).isFalse()
+    }
+
     @Test fun `la variante se resuelve contra el catalogo vigente`() = runBlocking<Unit> {
         val vm = crearViewModelConCache(playera("p-s", "S"), playera("p-m", "M"), playera("p-l", "L"))
         val familias = withTimeout(5_000) { vm.familias.first { it.isNotEmpty() } }

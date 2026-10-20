@@ -468,47 +468,57 @@ fun MenuScreen(
                                 )
 
                                 // 🧩 Hoja de tallas/colores de la familia tocada (encima de la cuadrícula, que conserva su scroll).
-                                val familiaDeLaHoja = familiaAbierta?.let { familias[it] }
+                                // Con el pago preparándose o el escáner abierto NO se pinta y se cierra: «Preparando pago…» no bloquea
+                                // los toques de lo que tiene debajo, así que una hoja viva podría agregar un artículo que el cobro no ve.
+                                val hojaPermitida = hojaDeVariantesPermitida(
+                                    preparandoPago = isPreparingPayment,
+                                    escanerAbierto = successState?.showBarcodeScanner == true
+                                )
+                                val familiaDeLaHoja = if (hojaPermitida) familiaAbierta?.let { familias[it] } else null
                                 if (familiaAbierta != null && familiaDeLaHoja == null) {
-                                    // El catálogo se refrescó y la familia ya no es válida: la hoja se cierra sola.
+                                    // La familia ya no es válida (catálogo refrescado) o no se puede mostrar ahora: la hoja se cierra sola.
                                     LaunchedEffect(familiaAbierta) { familiaAbierta = null }
                                 }
                                 if (familiaDeLaHoja != null) {
-                                    HojaDeVariantes(
-                                        familia = familiaDeLaHoja,
-                                        reglas = reglasDeOrdenes,
-                                        precioTexto = { formatoDePrecio(it.price) },
-                                        // Una talla agotada o desactivada ni siquiera está en la familia: no hay aviso que dar.
-                                        aviso = { null },
-                                        onCerrar = { familiaAbierta = null },
-                                        onElegir = { elegida ->
-                                            // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el
-                                            // catálogo de AHORA; 3º seguir por el camino de hoy: extras si los tiene, si no agregar.
-                                            familiaAbierta = null
-                                            val accion = accionAlElegir(viewModel.productoVigente(elegida.id))
-                                            if (!order.canAddItems) {
-                                                Timber.w("⚠️ Cannot add items - order status: ${order.status}")
-                                                return@HojaDeVariantes
-                                            }
-                                            when (accion) {
-                                                is AccionAlElegir.Agregar -> {
-                                                    Timber.d("🚀 Quick-add (variante): ${accion.variante.name}")
-                                                    viewModel.addItem(
-                                                        product = accion.variante,
-                                                        quantity = 1,
-                                                        modifiers = emptyList(),
-                                                        notes = ""
-                                                    )
+                                    // El Box aísla el zIndex(100f) de la hoja: los avisos que se montan DESPUÉS en este mismo contenedor
+                                    // («Preparando pago…», cargando productos, escáner) quedan encima de ella.
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        HojaDeVariantes(
+                                            familia = familiaDeLaHoja,
+                                            reglas = reglasDeOrdenes,
+                                            precioTexto = { formatoDePrecio(it.price) },
+                                            // Una talla agotada o desactivada ni siquiera está en la familia: no hay aviso que dar.
+                                            aviso = { null },
+                                            onCerrar = { familiaAbierta = null },
+                                            onElegir = { elegida ->
+                                                // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el
+                                                // catálogo de AHORA; 3º seguir por el camino de hoy: extras si los tiene, si no agregar.
+                                                familiaAbierta = null
+                                                val accion = accionAlElegir(viewModel.productoVigente(elegida.id))
+                                                if (!order.canAddItems) {
+                                                    Timber.w("⚠️ Cannot add items - order status: ${order.status}")
+                                                    return@HojaDeVariantes
                                                 }
-                                                is AccionAlElegir.AbrirExtras -> {
-                                                    Timber.d("⚙️ Opening ProductSelector (variante): ${accion.variante.name}")
-                                                    selectedProduct = accion.variante
-                                                    showProductSelector = true
+                                                when (accion) {
+                                                    is AccionAlElegir.Agregar -> {
+                                                        Timber.d("🚀 Quick-add (variante): ${accion.variante.name}")
+                                                        viewModel.addItem(
+                                                            product = accion.variante,
+                                                            quantity = 1,
+                                                            modifiers = emptyList(),
+                                                            notes = ""
+                                                        )
+                                                    }
+                                                    is AccionAlElegir.AbrirExtras -> {
+                                                        Timber.d("⚙️ Opening ProductSelector (variante): ${accion.variante.name}")
+                                                        selectedProduct = accion.variante
+                                                        showProductSelector = true
+                                                    }
+                                                    is AccionAlElegir.NoDisponible, AccionAlElegir.Cerrar -> Unit
                                                 }
-                                                is AccionAlElegir.NoDisponible, AccionAlElegir.Cerrar -> Unit
                                             }
-                                        }
-                                    )
+                                        )
+                                    }
                                 }
                             }
 

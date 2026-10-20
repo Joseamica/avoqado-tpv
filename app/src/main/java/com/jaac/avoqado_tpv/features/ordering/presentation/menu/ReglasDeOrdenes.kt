@@ -49,3 +49,10 @@ fun accionAlElegir(varianteActual: Product?): AccionAlElegir<Product> = when {
     varianteActual.hasModifiers -> AccionAlElegir.AbrirExtras(varianteActual)
     else -> AccionAlElegir.Agregar(varianteActual)
 }
+
+/**
+ * ¿Puede estar abierta la hoja de tallas? No mientras se prepara el pago («Preparando pago…» sincroniza la orden y trae los descuentos
+ * recalculados: un artículo que entre en ese momento saldría fuera del cobro) ni con el escáner de códigos abierto (que es una
+ * pantalla completa propia). `MenuScreen` ni la pinta ni la deja abierta cuando esto da `false`.
+ */
+fun hojaDeVariantesPermitida(preparandoPago: Boolean, escanerAbierto: Boolean): Boolean = !preparandoPago && !escanerAbierto

@@ -81,8 +81,10 @@ fun ProductGrid(
     onFamiliaClick: (Familia<Product>) -> Unit = {}
 ) {
     // ⚡ PERFORMANCE: Use remember to avoid filtering on every recomposition
-    val entradas = remember(products, selectedCategory, familias, searchQuery) {
-        reglasDeOrdenes.entradasParaMostrar(visiblesEnCuadricula(products, selectedCategory), familias, searchQuery)
+    // El filtro de categoría/disponible sólo se rehace si cambia el catálogo o la categoría, no con cada letra de la búsqueda.
+    val visibles = remember(products, selectedCategory) { visiblesEnCuadricula(products, selectedCategory) }
+    val entradas = remember(visibles, familias, searchQuery) {
+        reglasDeOrdenes.entradasParaMostrar(visibles, familias, searchQuery)
     }
 
     val resetKey = "${scrollResetKey ?: selectedCategory?.id ?: "all"}|${displayMode.preferenceValue}"

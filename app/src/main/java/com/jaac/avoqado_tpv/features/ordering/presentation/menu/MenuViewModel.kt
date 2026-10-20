@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
@@ -41,14 +42,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -268,35 +268,27 @@ class MenuViewModel @Inject constructor(
     val isLoadingRecentCustomers: StateFlow<Boolean> = _isLoadingRecentCustomers.asStateFlow()
 
     /**
-     * Filtered products based on search query.
-     * Combines products and searchQuery flows to provide reactive filtering.
+     * Las familias de variantes (talla/color) del catálogo, por `groupId`. Se calculan sobre lo que Órdenes puede vender hoy
+     * (`available`: una talla desactivada o agotada nunca entra a la hoja, igual que Órdenes ya no la pinta suelta) y SOLO cuando
+     * cambia [products], no con cada letra de la búsqueda. Sale de [products], que a su vez sale primero de Room: sin red la familia
+     * sigue ahí.
      *
-     * **Performance Optimizations (Toast POS + Cache-first pattern):**
-     * - Filtering runs on Dispatchers.Default (off main thread)
-     * - distinctUntilChanged() prevents redundant recompositions
-     * - Local filtering for instant results (~1ms filtering time)
+     * Sin `flowOn`, a propósito: es un recorrido O(n) por cambio de catálogo, y mandarlo a otro hilo sólo alargaría el cuadro en que
+     * la cuadrícula ya tiene los productos nuevos y todavía no el mapa (las tallas saldrían sueltas por un instante).
+     *
+     * La búsqueda ya no vive aquí: depende de la categoría elegida (estado de la pantalla), así que `ProductGrid` la arma con
+     * `reglasDeOrdenes.entradasParaMostrar(visiblesEnCuadricula(...), familias, query)`.
      */
-    val filteredProducts: StateFlow<List<Product>> = _products.combine(_searchQuery) { productsList: List<Product>, query: String ->
-        // Move filtering to background thread
-        withContext(Dispatchers.Default) {
-            if (query.isBlank()) {
-                productsList
-            } else {
-                productsList.filter { product: Product ->
-                    product.name.contains(query, ignoreCase = true) ||
-                    product.description?.contains(query, ignoreCase = true) == true ||
-                    product.sku?.contains(query, ignoreCase = true) == true
-                }
-            }
-        }
-    }
-        .distinctUntilChanged()  // Prevent redundant emissions
-        .flowOn(Dispatchers.Default)  // Ensure off main thread
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    val familias: StateFlow<Map<String, Familia<Product>>> = _products
+        .map { catalogo -> reglasDeOrdenes.familiasDe(catalogo.filter { it.available }) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * La variante `id` tal como está en el catálogo de AHORA, o `null` si ya no está o ya no se puede vender. La hoja de variantes
+     * entrega la copia con la que se abrió; antes de agregar se vuelve a leer aquí, para que un refresco con la hoja abierta (extras
+     * nuevos, talla desactivada) cuente.
+     */
+    fun productoVigente(id: String): Product? = _products.value.firstOrNull { it.id == id && it.available }
 
     // ✨ BARCODE QUICK ADD: BroadcastReceiver for VOLUME_UP button
     private val barcodeScannerReceiver = object : android.content.BroadcastReceiver() {

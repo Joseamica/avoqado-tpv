@@ -24,13 +24,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
+import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.reglasDeOrdenes
 import java.math.BigDecimal
 
 private val CardShape = RoundedCornerShape(12.dp)
@@ -202,6 +212,83 @@ fun ProductListItem(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Fila de una FAMILIA de variantes en la vista de lista: el equivalente de [ProductListItem] para el botón del padre
+ * (`TileDeFamilia` es una tarjeta de cuadrícula y en una lista saldría gigante). Tocarla abre la hoja de tallas; nunca agrega.
+ * Mismo precio que el botón de cuadrícula: el más bajo, con «desde» si no todas cuestan lo mismo.
+ */
+@Composable
+fun FamiliaListItem(
+    familia: Familia<Product>,
+    reglas: ReglasDeFamilia<Product>,
+    precioTexto: (BigDecimal) -> String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val precio = reglas.textoDePrecio(familia, precioTexto)
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, familia.variantes.size, precio)
+            },
+        onClick = onClick,
+        shape = CardShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Sin color de categoría (una familia puede abarcar varias): el acento es neutro, como en TileDeFamilia.
+            ProductThumbnail(
+                name = familia.nombre,
+                imageUrl = familia.imagenUrl,
+                categoryColor = MaterialTheme.colorScheme.outline,
+                size = 48.dp
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = familia.nombre,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = TextosVariantes.variantes(familia.variantes.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Text(
+                text = precio,
+                modifier = Modifier.padding(start = 8.dp, end = 6.dp),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -390,6 +477,41 @@ private fun ProductListItemPreview() {
     AvoqadoTheme {
         ProductListItem(
             product = MockProducts.allProducts.first(),
+            onClick = {},
+            modifier = Modifier.padding(16.dp)
+        )
+    }
+}
+
+@Preview(name = "Fila de familia", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun FamiliaListItemPreview() {
+    fun talla(id: String, talla: String, precio: String) = Product(
+        id = id,
+        name = "Playera básica $talla",
+        sku = "PB-$talla",
+        price = BigDecimal(precio),
+        categoryId = "cat_ropa",
+        categoryName = "Ropa",
+        description = null,
+        emoji = "👕",
+        imageUrl = null,
+        available = true,
+        familia = DatosDeFamilia(
+            groupId = "playera",
+            groupName = "Playera básica",
+            groupImageUrl = null,
+            opciones = listOf(OpcionDeVariante("Talla", talla, 0, "SML".indexOf(talla)))
+        )
+    )
+
+    AvoqadoTheme {
+        FamiliaListItem(
+            familia = reglasDeOrdenes.familiasDe(
+                listOf(talla("p-s", "S", "199.00"), talla("p-m", "M", "199.00"), talla("p-l", "L", "249.00"))
+            ).getValue("playera"),
+            reglas = reglasDeOrdenes,
+            precioTexto = formatoDePrecio,
             onClick = {},
             modifier = Modifier.padding(16.dp)
         )

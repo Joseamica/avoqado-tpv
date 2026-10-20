@@ -52,12 +52,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
@@ -188,6 +190,9 @@ fun MenuScreen(
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var showProductSelector by remember { mutableStateOf(false) }
+    // groupId de la familia de variantes (talla/color) cuya hoja está abierta; null = cerrada. Se guarda el id y no la familia: la
+    // hoja siempre lee `familias[id]` del catálogo de AHORA.
+    var familiaAbierta by remember { mutableStateOf<String?>(null) }
 
     // Split payment overlay state
     var showSplitOptions by remember { mutableStateOf(false) }
@@ -332,7 +337,10 @@ fun MenuScreen(
             // Top tabs (Square POS pattern - text only, no icons)
             OrderTabRow(
                 currentTab = currentTab,
-                onTabSelected = { newTab -> currentTab = newTab },
+                onTabSelected = { newTab ->
+                    familiaAbierta = null   // la hoja es del tab Menú: al volver no debe reaparecer sola
+                    currentTab = newTab
+                },
                 orderItemCount = order?.items?.distinctBy { it.id }?.sumOf { it.quantity } ?: 0
             )
 
@@ -403,7 +411,8 @@ fun MenuScreen(
                         when (currentTab) {
                             OrderTab.MENU -> {
                                 // Get products and categories from ViewModel
-                                val filteredProducts by viewModel.filteredProducts.collectAsStateWithLifecycle()
+                                val products by viewModel.products.collectAsStateWithLifecycle()
+                                val familias by viewModel.familias.collectAsStateWithLifecycle()
                                 val categories by viewModel.categories.collectAsStateWithLifecycle()
                                 val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
                                 val productDisplayMode by viewModel.productDisplayMode.collectAsStateWithLifecycle()
@@ -412,7 +421,7 @@ fun MenuScreen(
                                 // Menu tab: Product browsing and adding
                                 MenuTab(
                                     order = order,
-                                    products = filteredProducts,
+                                    products = products,
                                     categories = categories,
                                     searchQuery = searchQuery,
                                     productDisplayMode = productDisplayMode,
@@ -423,6 +432,15 @@ fun MenuScreen(
                                     onProductDisplayModeChange = { mode -> viewModel.setProductDisplayMode(mode) },
                                     isRefreshing = isRefreshing,
                                     onRefresh = { viewModel.refreshProducts() },
+                                    familias = familias,
+                                    onFamiliaClick = { familia ->
+                                        // Igual que un producto suelto: si la orden no acepta artículos, no se abre nada.
+                                        if (!order.canAddItems) {
+                                            Timber.w("⚠️ Cannot add items - order status: ${order.status}")
+                                        } else {
+                                            familiaAbierta = familia.groupId
+                                        }
+                                    },
                                     onProductClick = { product ->
                                         // Check if order can accept items
                                         if (!order.canAddItems) {
@@ -448,6 +466,50 @@ fun MenuScreen(
                                         }
                                     }
                                 )
+
+                                // 🧩 Hoja de tallas/colores de la familia tocada (encima de la cuadrícula, que conserva su scroll).
+                                val familiaDeLaHoja = familiaAbierta?.let { familias[it] }
+                                if (familiaAbierta != null && familiaDeLaHoja == null) {
+                                    // El catálogo se refrescó y la familia ya no es válida: la hoja se cierra sola.
+                                    LaunchedEffect(familiaAbierta) { familiaAbierta = null }
+                                }
+                                if (familiaDeLaHoja != null) {
+                                    HojaDeVariantes(
+                                        familia = familiaDeLaHoja,
+                                        reglas = reglasDeOrdenes,
+                                        precioTexto = { formatoDePrecio(it.price) },
+                                        // Una talla agotada o desactivada ni siquiera está en la familia: no hay aviso que dar.
+                                        aviso = { null },
+                                        onCerrar = { familiaAbierta = null },
+                                        onElegir = { elegida ->
+                                            // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el
+                                            // catálogo de AHORA; 3º seguir por el camino de hoy: extras si los tiene, si no agregar.
+                                            familiaAbierta = null
+                                            val accion = accionAlElegir(viewModel.productoVigente(elegida.id))
+                                            if (!order.canAddItems) {
+                                                Timber.w("⚠️ Cannot add items - order status: ${order.status}")
+                                                return@HojaDeVariantes
+                                            }
+                                            when (accion) {
+                                                is AccionAlElegir.Agregar -> {
+                                                    Timber.d("🚀 Quick-add (variante): ${accion.variante.name}")
+                                                    viewModel.addItem(
+                                                        product = accion.variante,
+                                                        quantity = 1,
+                                                        modifiers = emptyList(),
+                                                        notes = ""
+                                                    )
+                                                }
+                                                is AccionAlElegir.AbrirExtras -> {
+                                                    Timber.d("⚙️ Opening ProductSelector (variante): ${accion.variante.name}")
+                                                    selectedProduct = accion.variante
+                                                    showProductSelector = true
+                                                }
+                                                is AccionAlElegir.NoDisponible, AccionAlElegir.Cerrar -> Unit
+                                            }
+                                        }
+                                    )
+                                }
                             }
 
                         OrderTab.CHECK -> {

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -74,7 +75,7 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductGri
  * ```
  *
  * @param order Current order (to check if can add items)
- * @param products Filtered products from ViewModel
+ * @param products Catálogo completo del ViewModel (la categoría, lo disponible y la búsqueda los aplica ProductGrid)
  * @param categories Product categories from backend
  * @param searchQuery Current search query
  * @param productDisplayMode Current visual mode for product catalog
@@ -84,6 +85,8 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductGri
  * @param onClearSearch Callback to clear search
  * @param onProductDisplayModeChange Callback when display mode changes
  * @param onProductClick Callback when product is clicked (handled by MenuScreen)
+ * @param familias Familias de variantes válidas del catálogo, por `groupId` (`MenuViewModel.familias`)
+ * @param onFamiliaClick Callback cuando se toca el botón de una familia (MenuScreen abre la hoja de variantes)
  * @param isRefreshing Whether a refresh is in progress
  * @param onRefresh Callback to trigger a refresh
  * @param modifier Optional modifier
@@ -102,6 +105,8 @@ fun MenuTab(
     onClearSearch: () -> Unit,
     onProductDisplayModeChange: (ProductDisplayMode) -> Unit,
     onProductClick: (Product) -> Unit,
+    familias: Map<String, Familia<Product>> = emptyMap(),
+    onFamiliaClick: (Familia<Product>) -> Unit = {},
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -133,6 +138,9 @@ fun MenuTab(
                     selectedCategory = null,
                     displayMode = productDisplayMode,
                     onProductClick = onProductClick,
+                    searchQuery = searchQuery,
+                    familias = familias,
+                    onFamiliaClick = onFamiliaClick,
                     headerContent = {
                         Column(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -212,6 +220,9 @@ fun MenuTab(
                     selectedCategory = selectedCategory,
                     displayMode = productDisplayMode,
                     onProductClick = onProductClick,
+                    searchQuery = searchQuery,
+                    familias = familias,
+                    onFamiliaClick = onFamiliaClick,
                     headerContent = {
                         Row(
                             modifier = Modifier.fillMaxWidth(),

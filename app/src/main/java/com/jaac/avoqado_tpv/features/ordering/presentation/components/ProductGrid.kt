@@ -26,11 +26,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.reglasDeOrdenes
 
 private const val PAGE_SIZE = 15
 private const val PAGINATION_THRESHOLD = 3
@@ -46,14 +51,21 @@ private const val PAGINATION_THRESHOLD = 3
  * Uses incremental pagination for all modes to keep memory usage low
  * on constrained terminal devices.
  *
- * Products can be filtered by category.
+ * Products can be filtered by category and by [searchQuery].
  *
- * @param products List of all products
+ * Las tallas/colores de una misma familia salen en UN botón ([TileDeFamilia], o una fila en la lista): tocarlo llama a
+ * [onFamiliaClick] y nunca agrega nada por sí solo. Qué se pinta lo decide `reglasDeOrdenes.entradasParaMostrar` (sin texto: el
+ * catálogo agrupado; con texto: un nombre o descripción da la familia una vez, un SKU da la talla).
+ *
+ * @param products List of all products (la categoría, lo disponible y la búsqueda se aplican aquí)
  * @param selectedCategory Filter by this category (null = show all)
  * @param displayMode Visual mode for the product catalog
  * @param onProductClick Callback when product is tapped
  * @param modifier Modifier for customization
  * @param scrollResetKey Key that resets pagination + scroll
+ * @param searchQuery Texto de la búsqueda de Órdenes (vacío = sin búsqueda)
+ * @param familias Familias válidas del catálogo completo, por `groupId` (`MenuViewModel.familias`)
+ * @param onFamiliaClick Callback cuando se toca el botón de una familia
  */
 @Composable
 fun ProductGrid(
@@ -63,19 +75,14 @@ fun ProductGrid(
     onProductClick: (Product) -> Unit,
     headerContent: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
-    scrollResetKey: Any? = selectedCategory?.id
+    scrollResetKey: Any? = selectedCategory?.id,
+    searchQuery: String = "",
+    familias: Map<String, Familia<Product>> = emptyMap(),
+    onFamiliaClick: (Familia<Product>) -> Unit = {}
 ) {
     // ⚡ PERFORMANCE: Use remember to avoid filtering on every recomposition
-    val availableProducts = remember(products, selectedCategory) {
-        // Filter by category first
-        val categoryFiltered = if (selectedCategory == null) {
-            products
-        } else {
-            products.filter { it.categoryId == selectedCategory.id }
-        }
-
-        // Then filter by availability
-        categoryFiltered.filter { it.available }
+    val entradas = remember(products, selectedCategory, familias, searchQuery) {
+        reglasDeOrdenes.entradasParaMostrar(visiblesEnCuadricula(products, selectedCategory), familias, searchQuery)
     }
 
     val resetKey = "${scrollResetKey ?: selectedCategory?.id ?: "all"}|${displayMode.preferenceValue}"
@@ -84,8 +91,8 @@ fun ProductGrid(
     var displayedItemCount by remember(resetKey) { mutableStateOf(PAGE_SIZE) }
 
     // 🔢 PAGINATION: Only show first N products
-    val displayedProducts = remember(availableProducts, displayedItemCount) {
-        availableProducts.take(displayedItemCount)
+    val entradasVisibles = remember(entradas, displayedItemCount) {
+        entradas.take(displayedItemCount)
     }
 
     if (displayMode == ProductDisplayMode.LIST) {
@@ -95,15 +102,15 @@ fun ProductGrid(
             listState.scrollToItem(0)
         }
 
-        LaunchedEffect(listState, availableProducts) {
+        LaunchedEffect(listState, entradas) {
             snapshotFlow { listState.layoutInfo }
                 .collect { layoutInfo ->
                     val totalItems = layoutInfo.totalItemsCount
                     val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
                     if (totalItems > 0 &&
                         lastVisibleItem >= totalItems - PAGINATION_THRESHOLD &&
-                        displayedProducts.size < availableProducts.size) {
-                        displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, availableProducts.size)
+                        entradasVisibles.size < entradas.size) {
+                        displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, entradas.size)
                     }
                 }
         }
@@ -129,17 +136,25 @@ fun ProductGrid(
             }
 
             items(
-                items = displayedProducts,
-                key = { it.id },
-                contentType = { it.categoryId }
-            ) { product ->
-                ProductListItem(
-                    product = product,
-                    onClick = { onProductClick(product) }
-                )
+                items = entradasVisibles,
+                key = ::claveDeEntrada,
+                contentType = ::tipoDeEntrada
+            ) { entrada ->
+                when (entrada) {
+                    is EntradaDeCatalogo.Suelto -> ProductListItem(
+                        product = entrada.producto,
+                        onClick = { onProductClick(entrada.producto) }
+                    )
+                    is EntradaDeCatalogo.DeFamilia -> FamiliaListItem(
+                        familia = entrada.familia,
+                        reglas = reglasDeOrdenes,
+                        precioTexto = formatoDePrecio,
+                        onClick = { onFamiliaClick(entrada.familia) }
+                    )
+                }
             }
 
-            if (displayedProducts.size < availableProducts.size) {
+            if (entradasVisibles.size < entradas.size) {
                 item {
                     LoadingFooter()
                 }
@@ -157,7 +172,7 @@ fun ProductGrid(
     }
 
     // 🔄 LAZY LOADING: Load more when scrolling near end
-    LaunchedEffect(gridState, availableProducts) {
+    LaunchedEffect(gridState, entradas) {
         snapshotFlow { gridState.layoutInfo }
             .collect { layoutInfo ->
                 val totalItems = layoutInfo.totalItemsCount
@@ -165,8 +180,8 @@ fun ProductGrid(
 
                 if (totalItems > 0 &&
                     lastVisibleItem >= totalItems - PAGINATION_THRESHOLD &&
-                    displayedProducts.size < availableProducts.size) {
-                    displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, availableProducts.size)
+                    entradasVisibles.size < entradas.size) {
+                    displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, entradas.size)
                 }
             }
     }
@@ -195,22 +210,55 @@ fun ProductGrid(
         }
 
         gridItems(
-            items = displayedProducts,
-            key = { it.id },
-            contentType = { it.categoryId }
-        ) { product ->
-            ProductCard(
-                product = product,
-                onClick = { onProductClick(product) }
-            )
+            items = entradasVisibles,
+            key = ::claveDeEntrada,
+            contentType = ::tipoDeEntrada
+        ) { entrada ->
+            when (entrada) {
+                is EntradaDeCatalogo.Suelto -> ProductCard(
+                    product = entrada.producto,
+                    onClick = { onProductClick(entrada.producto) }
+                )
+                is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
+                    familia = entrada.familia,
+                    reglas = reglasDeOrdenes,
+                    precioTexto = formatoDePrecio,
+                    onClick = { onFamiliaClick(entrada.familia) }
+                )
+            }
         }
 
-        if (displayedProducts.size < availableProducts.size) {
+        if (entradasVisibles.size < entradas.size) {
             item(span = { GridItemSpan(columns) }) {
                 LoadingFooter()
             }
         }
     }
+}
+
+/**
+ * Lo que la cuadrícula puede mostrar de [products]: la categoría elegida (null = todas) y sólo lo disponible (Órdenes no pinta un
+ * producto agotado ni desactivado). Es el filtro que antes vivía dentro de [ProductGrid], sacado para probarlo; las familias y la
+ * búsqueda se aplican DESPUÉS, sobre este resultado.
+ */
+fun visiblesEnCuadricula(products: List<Product>, selectedCategory: ProductCategory?): List<Product> {
+    val deLaCategoria = if (selectedCategory == null) {
+        products
+    } else {
+        products.filter { it.categoryId == selectedCategory.id }
+    }
+    return deLaCategoria.filter { it.available }
+}
+
+// La llave de una entrada: el id del producto, o «familia:<groupId>» (el prefijo evita chocar con un id de producto).
+private fun claveDeEntrada(entrada: EntradaDeCatalogo<Product>): String = when (entrada) {
+    is EntradaDeCatalogo.Suelto -> entrada.producto.id
+    is EntradaDeCatalogo.DeFamilia -> "familia:${entrada.familia.groupId}"
+}
+
+private fun tipoDeEntrada(entrada: EntradaDeCatalogo<Product>): String = when (entrada) {
+    is EntradaDeCatalogo.Suelto -> entrada.producto.categoryId
+    is EntradaDeCatalogo.DeFamilia -> "familia"
 }
 
 @Composable

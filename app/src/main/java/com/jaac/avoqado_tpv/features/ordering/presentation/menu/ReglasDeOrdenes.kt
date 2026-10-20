@@ -12,7 +12,7 @@ import java.math.BigDecimal
  * nombre, descripción y SKU (`MenuViewModel` la tenía así), y eso es justo lo que da el `normalizar` por defecto con `textosExtra` =
  * descripción. Un nombre de familia o una talla encontrada por nombre/descripción da la fila de la familia; un SKU da la talla.
  *
- * Cobro rápido usa el mismo modelo con SU búsqueda (sin acentos): `reglasDeOrdenes.conNormalizador { … }`.
+ * Cobro rápido usa el mismo modelo con SU búsqueda: `reglasDeCobro` (sin acentos y sin descripción).
  */
 val reglasDeOrdenes = ReglasDeFamilia<Product>(
     datos = { it.familia ?: SIN_FAMILIA },
@@ -24,8 +24,14 @@ val reglasDeOrdenes = ReglasDeFamilia<Product>(
     textosExtra = { listOf(it.description) },
 )
 
-/** Las mismas reglas con otro [normalizar] (p. ej. quitar acentos): `ReglasDeFamilia` no tiene `copy` y sus accesores no cambian. */
-fun <T> ReglasDeFamilia<T>.conNormalizador(normalizar: (String) -> String): ReglasDeFamilia<T> = ReglasDeFamilia(
+/**
+ * Las mismas reglas con otro [normalizar] (p. ej. quitar acentos) y, si se pide, otros [textosExtra] (p. ej. ninguno: Cobro rápido no
+ * busca en la descripción): `ReglasDeFamilia` no tiene `copy` y sus accesores no cambian. Sin [textosExtra] se conservan los de hoy.
+ */
+fun <T> ReglasDeFamilia<T>.conNormalizador(
+    normalizar: (String) -> String,
+    textosExtra: (T) -> List<String?> = this.textosExtra,
+): ReglasDeFamilia<T> = ReglasDeFamilia(
     datos = datos,
     imagen = imagen,
     precio = precio,

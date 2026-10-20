@@ -51,12 +51,17 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.checkout.presentation.reglasDeCobro
 import com.jaac.avoqado_tpv.features.ordering.domain.CategoryColors
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
 import java.math.BigDecimal
 
 /**
@@ -75,6 +80,10 @@ import java.math.BigDecimal
  *
  * A breadcrumb at the top (`Todos los productos > Category`) lets the
  * operator back out without losing their place.
+ *
+ * Las tallas/colores de una misma familia salen en UN botón ([TileDeFamilia]) en el lugar de su primera variante de la lista que se
+ * pinta (la de la categoría abierta, o la de los sin categoría): una categoría con una sola variante igual muestra el botón de la
+ * familia. Tocarlo llama a [onFamiliaTap] y nunca agrega nada por sí solo. [familias] sale de `CheckoutViewModel.familias`.
  */
 @Composable
 fun ProductGridView(
@@ -83,6 +92,8 @@ fun ProductGridView(
     isLoading: Boolean,
     onProductTap: (Product) -> Unit,
     modifier: Modifier = Modifier,
+    familias: Map<String, Familia<Product>> = emptyMap(),
+    onFamiliaTap: (Familia<Product>) -> Unit = {},
 ) {
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
 
@@ -113,8 +124,10 @@ fun ProductGridView(
                     CategoriesGrid(
                         categories = categories,
                         uncategorizedProducts = uncategorized,
+                        familias = familias,
                         onCategoryTap = { selectedCategory = it },
                         onProductTap = onProductTap,
+                        onFamiliaTap = onFamiliaTap,
                     )
                 }
             }
@@ -123,7 +136,12 @@ fun ProductGridView(
                 if (categoryProducts.isEmpty()) {
                     EmptyState(message = "No hay productos en esta categoría")
                 } else {
-                    ProductsGrid(products = categoryProducts, onProductTap = onProductTap)
+                    ProductsGrid(
+                        products = categoryProducts,
+                        familias = familias,
+                        onProductTap = onProductTap,
+                        onFamiliaTap = onFamiliaTap,
+                    )
                 }
             }
         }
@@ -184,9 +202,12 @@ private fun BreadcrumbNavigation(categoryName: String, onBack: () -> Unit) {
 private fun CategoriesGrid(
     categories: List<ProductCategory>,
     uncategorizedProducts: List<Product>,
+    familias: Map<String, Familia<Product>>,
     onCategoryTap: (ProductCategory) -> Unit,
     onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia<Product>) -> Unit,
 ) {
+    val entradas = remember(uncategorizedProducts, familias) { reglasDeCobro.agruparCatalogo(uncategorizedProducts, familias) }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         contentPadding = PaddingValues(12.dp),
@@ -196,25 +217,59 @@ private fun CategoriesGrid(
         items(items = categories, key = { "cat_${it.id}" }) { category ->
             CategoryTile(category = category, onClick = { onCategoryTap(category) })
         }
-        items(items = uncategorizedProducts, key = { "prod_${it.id}" }) { product ->
-            ProductTile(product = product, onClick = { onProductTap(product) })
+        items(items = entradas, key = ::claveDeEntrada) { entrada ->
+            EntradaTile(entrada = entrada, onProductTap = onProductTap, onFamiliaTap = onFamiliaTap)
         }
     }
 }
 
 @Composable
-private fun ProductsGrid(products: List<Product>, onProductTap: (Product) -> Unit) {
+private fun ProductsGrid(
+    products: List<Product>,
+    familias: Map<String, Familia<Product>>,
+    onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia<Product>) -> Unit,
+) {
+    val entradas = remember(products, familias) { reglasDeCobro.agruparCatalogo(products, familias) }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(items = products, key = { it.id }) { product ->
-            ProductTile(product = product, onClick = { onProductTap(product) })
+        items(items = entradas, key = ::claveDeEntrada) { entrada ->
+            EntradaTile(entrada = entrada, onProductTap = onProductTap, onFamiliaTap = onFamiliaTap)
         }
     }
 }
+
+// La llave de una entrada: «prod_<id>» o «familia_<groupId>» (en la cuadrícula de arriba conviven con «cat_<id>»; el prefijo evita choques).
+private fun claveDeEntrada(entrada: EntradaDeCatalogo<Product>): String = when (entrada) {
+    is EntradaDeCatalogo.Suelto -> "prod_${entrada.producto.id}"
+    is EntradaDeCatalogo.DeFamilia -> "familia_${entrada.familia.groupId}"
+}
+
+@Composable
+private fun EntradaTile(
+    entrada: EntradaDeCatalogo<Product>,
+    onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia<Product>) -> Unit,
+) {
+    when (entrada) {
+        is EntradaDeCatalogo.Suelto -> ProductTile(product = entrada.producto, onClick = { onProductTap(entrada.producto) })
+        is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
+            familia = entrada.familia,
+            reglas = reglasDeCobro,
+            precioTexto = formatoDePrecio,
+            onClick = { onFamiliaTap(entrada.familia) },
+            // El botón de familia mide 1.45:1 (pensado para las cuadrículas de Órdenes) y aquí, con 3 columnas de ~107 dp, el texto no
+            // cabe. Este `aspectRatio` va ANTES del suyo y fija la altura al de un ProductTile (foto 1.2:1 + nombre y precio ≈ 0.8:1).
+            modifier = Modifier.aspectRatio(RELACION_TILE_FAMILIA),
+        )
+    }
+}
+
+private const val RELACION_TILE_FAMILIA = 0.8f
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tiles

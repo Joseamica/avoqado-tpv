@@ -40,6 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
 import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
@@ -60,6 +63,8 @@ import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.Custo
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
 import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.hojaDeVariantesPermitida
 import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureSection
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import dagger.hilt.android.EntryPointAccessors
@@ -88,6 +93,7 @@ fun CheckoutScreen(
 ) {
     val cartState by viewModel.cartState.collectAsState()
     val products by viewModel.products.collectAsState()
+    val familias by viewModel.familias.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val shortcuts by viewModel.shortcuts.collectAsState()
@@ -104,6 +110,10 @@ fun CheckoutScreen(
     var productUnavailableInfo by remember {
         mutableStateOf<com.jaac.avoqado_tpv.features.ordering.domain.Product?>(null)
     }
+
+    // groupId de la familia de variantes (talla/color) cuya hoja está abierta; null = cerrada. Se guarda el id y no la familia: la hoja
+    // siempre lee `familias[id]` del catálogo de AHORA.
+    var familiaAbierta by remember { mutableStateOf<String?>(null) }
 
     var selectedTab by rememberSaveable { mutableStateOf(InputTab.KEYPAD) }
     var amountCents by rememberSaveable { mutableIntStateOf(0) }
@@ -246,6 +256,8 @@ fun CheckoutScreen(
                         products = products,
                         categories = categories,
                         isLoading = isLoading,
+                        familias = familias,
+                        onFamiliaTap = { familiaAbierta = it.groupId },
                         onProductTap = { product ->
                             when {
                                 // 🚫 Agotado: no se agrega, solo se informa QUÉ falta.
@@ -454,6 +466,7 @@ fun CheckoutScreen(
     if (showSearch) {
         SearchOverlayView(
             viewModel = viewModel,
+            onFamiliaTap = { familiaAbierta = it.groupId },
             onProductTap = { product ->
                 viewModel.updateSearchQuery("")
                 showSearch = false
@@ -468,6 +481,53 @@ fun CheckoutScreen(
                 showSearch = false
             },
         )
+    }
+
+    // 🧩 Hoja de tallas/colores de la familia tocada (en la cuadrícula o en la búsqueda). Va DESPUÉS de la búsqueda, para pintarse encima
+    // de ella (tocar una familia ahí la abre), y ANTES del escáner, que se pinta sobre todo; los diálogos y hojas de abajo son ventanas
+    // propias. Cubre toda la pantalla y consume los toques (nada de lo de abajo los recibe).
+    // Cobro rápido no tiene un «Preparando pago…» a pantalla completa: su equivalente es `isChargeInFlight` (el «Cobrar» de la hoja del
+    // carrito mientras se crea la orden; esa hoja se puede cerrar con la operación en vuelo) y `isPayLaterInFlight`. Con eso en vuelo o
+    // con el escáner abierto la hoja NO se pinta y se cierra: un artículo que entre en ese momento saldría fuera del cobro.
+    val hojaPermitida = hojaDeVariantesPermitida(
+        preparandoPago = isChargeInFlight || isPayLaterInFlight,
+        escanerAbierto = showBarcodeScanner,
+    )
+    val familiaDeLaHoja = if (hojaPermitida) familiaAbierta?.let { familias[it] } else null
+    if (familiaAbierta != null && familiaDeLaHoja == null) {
+        // La familia ya no es válida (catálogo refrescado) o no se puede mostrar ahora: la hoja se cierra sola.
+        LaunchedEffect(familiaAbierta) { familiaAbierta = null }
+    }
+    if (familiaDeLaHoja != null) {
+        // El Box aísla el zIndex(100f) de la hoja: lo que se monta DESPUÉS (el escáner) queda encima de ella.
+        Box(modifier = Modifier.fillMaxSize()) {
+            HojaDeVariantes(
+                familia = familiaDeLaHoja,
+                reglas = reglasDeCobro,
+                precioTexto = { formatoDePrecio(it.price) },
+                // Como hoy un agotado se muestra y al tocarlo avisa: aquí la talla agotada se ve marcada («Agotado»), sin «se puede vender
+                // igual» (eso es de Android).
+                aviso = { if (it.available) null else TextosVariantes.AGOTADO },
+                onCerrar = { familiaAbierta = null },
+                onElegir = { elegida ->
+                    // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el catálogo de AHORA;
+                    // 3º el camino de hoy: agotado ⇒ aviso de no disponible; con extras ⇒ sus extras; si no ⇒ agregar.
+                    familiaAbierta = null
+                    val accion = accionAlElegirEnCobro(viewModel.productoVigente(elegida.id))
+                    if (accion != AccionAlElegir.Cerrar) {
+                        // Si venía de la búsqueda, se cierra como al tocar un producto de ahí.
+                        viewModel.updateSearchQuery("")
+                        showSearch = false
+                    }
+                    when (accion) {
+                        is AccionAlElegir.Agregar -> viewModel.addProduct(accion.variante)
+                        is AccionAlElegir.AbrirExtras -> productForModifiers = accion.variante
+                        is AccionAlElegir.NoDisponible -> productUnavailableInfo = accion.variante
+                        AccionAlElegir.Cerrar -> Unit
+                    }
+                },
+            )
+        }
     }
 
     // Modifier selection sheet — opens when an product with modifier groups

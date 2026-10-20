@@ -39,11 +39,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutViewModel
+import com.jaac.avoqado_tpv.features.checkout.presentation.reglasDeCobro
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.formatoDePrecio
 
 /**
  * Full-screen search overlay launched by tapping the [SearchBarView] pill.
@@ -51,7 +59,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Product
  * Subscribes to [CheckoutViewModel.searchResults] which filters the cached
  * product list reactively (no network call per keystroke). Tapping a result
  * calls [onProductTap] — the parent screen typically adds it to the cart and
- * dismisses the overlay.
+ * dismisses the overlay. Una FAMILIA de variantes (talla/color) sale en UNA fila
+ * y tocarla llama a [onFamiliaTap] (abre la hoja de tallas; no agrega nada).
  *
  * Auto-focuses the text field on entry so the operator can start typing
  * immediately, mirroring avoqado-android UX.
@@ -62,6 +71,7 @@ fun SearchOverlayView(
     onProductTap: (Product) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    onFamiliaTap: (Familia<Product>) -> Unit = {},
 ) {
     val query by viewModel.searchQuery.collectAsState()
     val results by viewModel.searchResults.collectAsState()
@@ -121,8 +131,21 @@ fun SearchOverlayView(
                 EmptyState(query = query)
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(items = results, key = { it.id }) { product ->
-                        ProductResultRow(product = product, onClick = { onProductTap(product) })
+                    items(
+                        items = results,
+                        key = {
+                            when (it) {
+                                is EntradaDeCatalogo.Suelto -> it.producto.id
+                                is EntradaDeCatalogo.DeFamilia -> "familia:${it.familia.groupId}"
+                            }
+                        },
+                    ) { entrada ->
+                        when (entrada) {
+                            is EntradaDeCatalogo.Suelto ->
+                                ProductResultRow(product = entrada.producto, onClick = { onProductTap(entrada.producto) })
+                            is EntradaDeCatalogo.DeFamilia ->
+                                FamiliaResultRow(familia = entrada.familia, onClick = { onFamiliaTap(entrada.familia) })
+                        }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     }
                 }
@@ -180,6 +203,70 @@ private fun ProductResultRow(product: Product, onClick: () -> Unit) {
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = product.formattedPrice,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * La fila de una familia en la búsqueda: mismas medidas y letra que [ProductResultRow]; en vez de la categoría dice cuántas variantes
+ * tiene, y el precio lleva «desde» si no todas cuestan lo mismo. «Agotado» sólo si TODAS lo están (no bloquea el toque: la hoja avisa
+ * de la que se elija).
+ */
+@Composable
+private fun FamiliaResultRow(familia: Familia<Product>, onClick: () -> Unit) {
+    val precio = reglasDeCobro.textoDePrecio(familia, formatoDePrecio)
+    val agotada = reglasDeCobro.agotada(familia)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .semantics { contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, familia.variantes.size, precio) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = familia.nombre.take(2).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = familia.nombre,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.basicMarquee(),
+            )
+            Text(
+                text = if (agotada) {
+                    "${TextosVariantes.variantes(familia.variantes.size)} · ${TextosVariantes.AGOTADO}"
+                } else {
+                    TextosVariantes.variantes(familia.variantes.size)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = precio,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.primary,

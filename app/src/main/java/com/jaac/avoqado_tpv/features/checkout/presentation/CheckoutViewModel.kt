@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.features.checkout.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.features.checkout.data.ActiveCartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
@@ -38,6 +40,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -114,21 +117,23 @@ class CheckoutViewModel @Inject constructor(
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     /**
-     * Filters [products] by [searchQuery]. Case- AND accent-insensitive match
-     * on name and SKU (so "datiles" finds "Dátiles", "cafe" finds "Café", etc.).
-     * Empty query returns the full list.
+     * Las familias de variantes (talla/color) del catálogo que Cobro rápido muestra hoy ([products], con lo agotado incluido: un
+     * agotado se pinta y al tocarlo avisa), por `groupId`. Se recalculan SOLO cuando cambia [products], no con cada letra de la
+     * búsqueda. Cobro rápido carga el catálogo de la red (no hay catálogo guardado aquí): sin red no hay productos ni familias.
      */
-    val searchResults: StateFlow<List<Product>> = combine(_products, _searchQuery) { all, query ->
-        if (query.isBlank()) {
-            all
-        } else {
-            val needle = query.normalizeForSearch()
-            all.filter { product ->
-                product.name.normalizeForSearch().contains(needle) ||
-                    product.sku.normalizeForSearch().contains(needle)
-            }
-        }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val familias: StateFlow<Map<String, Familia<Product>>> = _products
+        .map { reglasDeCobro.familiasDe(it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * Lo que pinta la búsqueda, reactivo y sin llamar a la red por letra. Case- AND accent-insensitive sobre nombre y SKU (no la
+     * descripción), con `trim` ("datiles" encuentra "Dátiles", "cafe" encuentra "Café"): [reglasDeCobro] con [normalizeForSearch]. Un
+     * nombre (o el de una familia) da la fila de la familia una vez; un SKU da la talla. Texto en blanco: todos los productos, como hoy
+     * ([entradasDeBusquedaEnCobro]).
+     */
+    val searchResults: StateFlow<List<EntradaDeCatalogo<Product>>> =
+        combine(_products, familias, _searchQuery) { all, grupos, query -> entradasDeBusquedaEnCobro(all, grupos, query) }
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val savedCarts: StateFlow<List<SavedCart>> = savedCartsRepository.observeAll()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -662,6 +667,13 @@ class CheckoutViewModel @Inject constructor(
     }
 
     /**
+     * La variante `id` tal como está en el catálogo de AHORA, o `null` si ya no está. La hoja de variantes entrega la copia con la que se
+     * abrió; antes de actuar se vuelve a leer aquí, para que un refresco con la hoja abierta (extras nuevos, talla agotada) cuente.
+     * A diferencia de Órdenes, una talla agotada SÍ se devuelve: Cobro rápido la muestra y al elegirla avisa que no está disponible.
+     */
+    fun productoVigente(id: String): Product? = _products.value.firstOrNull { it.id == id }
+
+    /**
      * Lookup a product by barcode (called from the QR scanner). Returns null
      * via callback if no match. Implementation note: a future iteration could
      * cache barcode→product to avoid the network round-trip.
@@ -949,7 +961,7 @@ private fun Int.centsToPesos(): BigDecimal =
 // removes the combining mark range (\\p{M}) to peel off accents without
 // touching base letters. Cheap enough to run per-keystroke against the
 // product catalog (typically <500 items).
-private fun String.normalizeForSearch(): String =
+internal fun String.normalizeForSearch(): String =
     java.text.Normalizer.normalize(this.trim(), java.text.Normalizer.Form.NFD)
         .replace(Regex("\\p{M}"), "")
         .lowercase()

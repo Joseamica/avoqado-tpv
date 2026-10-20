@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.checkout.presentation
 import androidx.lifecycle.viewModelScope
 import app.cash.turbine.test
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.features.checkout.data.ActiveCartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
 import com.jaac.avoqado_tpv.features.checkout.domain.model.MosaicShortcut
@@ -375,7 +376,8 @@ class CheckoutViewModelTest {
             viewModel.updateSearchQuery("caf")
             val filtered = awaitItem()
             assertEquals(1, filtered.size)
-            assertEquals("p-1", filtered.first().id)
+            // searchResults ahora trae entradas de catálogo (familia o producto suelto); sin familias, cada una es un producto suelto.
+            assertEquals("p-1", (filtered.first() as EntradaDeCatalogo.Suelto<Product>).producto.id)
 
             viewModel.updateSearchQuery("")
             assertEquals(3, awaitItem().size)

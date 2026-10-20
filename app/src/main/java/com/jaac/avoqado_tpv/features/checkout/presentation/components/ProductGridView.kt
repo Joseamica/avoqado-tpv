@@ -51,8 +51,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -262,14 +264,23 @@ private fun EntradaTile(
             reglas = reglasDeCobro,
             precioTexto = formatoDePrecio,
             onClick = { onFamiliaTap(entrada.familia) },
-            // El botón de familia mide 1.45:1 (pensado para las cuadrículas de Órdenes) y aquí, con 3 columnas de ~107 dp, el texto no
-            // cabe. Este `aspectRatio` va ANTES del suyo y fija la altura al de un ProductTile (foto 1.2:1 + nombre y precio ≈ 0.8:1).
-            modifier = Modifier.aspectRatio(RELACION_TILE_FAMILIA),
+            relacionDeAspecto = RELACION_TILE_FAMILIA,
         )
     }
 }
 
-private const val RELACION_TILE_FAMILIA = 0.8f
+/**
+ * Ancho/alto del botón de familia en esta cuadrícula, igual al de un [ProductTile]: foto 1.2:1 + nombre y precio. Con 3 columnas en la
+ * PAX (360 dp − 24 de margen − 16 de separación = 320 / 3 ≈ 106.7 dp por celda): ProductTile = 106.7/1.2 (88.9) + 12 de margen + 16 del
+ * nombre (bodySmall) + 2 + 16 del precio (labelSmall) = 134.9 dp; 106.7/134.9 ⇒ 0.79 ⇒ 135 dp.
+ *
+ * Lo que `TileDeFamilia` necesita dentro de esos 135 dp (contenido de 106.7 − 4 de acento − 24 de margen = 78.7 dp de ancho, margen
+ * vertical 2×10; texto: titleSmall 20 dp por renglón, insignia 16 + 2×2 = 20, labelLarge 20):
+ * - normal (nombre en 2 renglones, 1 insignia, precio en 2 renglones, «desde» / «$199.00»): 20 + 40 + 20 + 2 + 40 = 122 dp ≤ 135;
+ * - todas agotadas (la insignia «Agotado» baja a su renglón: 20 + 2 + 20; el nombre se queda en 1 renglón, 20; precio en 2): 20 + 20 + 42
+ *   + 2 + 40 = 124 dp ≤ 135.
+ */
+private const val RELACION_TILE_FAMILIA = 0.79f
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tiles
@@ -560,6 +571,35 @@ private fun ProductGridLoadingPreview() {
     }
 }
 
+// Celdas de ~106.7 dp: los dos botones de familia miden 135 dp (RELACION_TILE_FAMILIA; su contenido necesita 122 y 124 dp) y las dos
+// tarjetas sueltas ~135 dp; 2 filas de 135 + 8 de separación + 24 de margen = 302 dp, de sobra en los 640 dp.
+@Preview(name = "Products - Familias", widthDp = 360, heightDp = 640, showBackground = true)
+@Composable
+private fun ProductGridFamiliasPreview() {
+    val productos = listOf(
+        // Una familia normal: 3 tallas con precios distintos ⇒ «3 variantes» y «desde $199.00».
+        fakeVariante("pl-s", "Playera básica S", 19900, "playera", "Playera básica", "S"),
+        fakeVariante("pl-m", "Playera básica M", 19900, "playera", "Playera básica", "M"),
+        fakeVariante("pl-l", "Playera básica L", 24900, "playera", "Playera básica", "L"),
+        // Una familia con TODAS las tallas agotadas ⇒ la insignia «Agotado» baja a su renglón.
+        fakeVariante("ga-s", "Gorra de lana S", 12900, "gorra", "Gorra de lana", "S", available = false),
+        fakeVariante("ga-m", "Gorra de lana M", 14900, "gorra", "Gorra de lana", "M", available = false),
+        // Productos sueltos, uno agotado: la cuadrícula no cambia de ritmo.
+        fakeProduct("p1", "Coca-Cola 600ml", 3500, categoryId = "c1"),
+        fakeProduct("p2", "Agua Mineral 1L", 2500, categoryId = "c1", available = false, trackInventory = true, inventoryMethod = "QUANTITY", availableQuantity = 0),
+    )
+    AvoqadoTheme {
+        ProductGridView(
+            products = productos,
+            categories = emptyList(),
+            isLoading = false,
+            onProductTap = {},
+            familias = reglasDeCobro.familiasDe(productos),
+            onFamiliaTap = {},
+        )
+    }
+}
+
 private fun fakeCategory(id: String, name: String, color: String?) = ProductCategory(
     id = id,
     name = name,
@@ -568,7 +608,29 @@ private fun fakeCategory(id: String, name: String, color: String?) = ProductCate
     color = color,
 )
 
-private fun fakeProduct(
+// Una talla de una familia con un solo eje («Talla»); `internal` porque el preview de la búsqueda usa los mismos datos.
+internal fun fakeVariante(
+    id: String,
+    name: String,
+    priceCents: Int,
+    groupId: String,
+    groupName: String,
+    talla: String,
+    available: Boolean = true,
+) = fakeProduct(
+    id = id,
+    name = name,
+    priceCents = priceCents,
+    available = available,
+    familia = DatosDeFamilia(
+        groupId = groupId,
+        groupName = groupName,
+        groupImageUrl = null,
+        opciones = listOf(OpcionDeVariante("Talla", talla, 0, listOf("S", "M", "L").indexOf(talla))),
+    ),
+)
+
+internal fun fakeProduct(
     id: String,
     name: String,
     priceCents: Int,
@@ -578,6 +640,7 @@ private fun fakeProduct(
     trackInventory: Boolean = false,
     inventoryMethod: String? = null,
     availableQuantity: Int? = null,
+    familia: DatosDeFamilia? = null,
 ) = Product(
     id = id,
     name = name,
@@ -592,6 +655,7 @@ private fun fakeProduct(
     trackInventory = trackInventory,
     inventoryMethod = inventoryMethod,
     availableQuantity = availableQuantity,
+    familia = familia,
     modifierGroups = if (hasModifiers) {
         listOf(
             com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup(

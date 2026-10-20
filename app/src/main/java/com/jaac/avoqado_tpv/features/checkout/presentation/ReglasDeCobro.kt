@@ -1,8 +1,6 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
-import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
-import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.conNormalizador
@@ -34,16 +32,3 @@ fun accionAlElegirEnCobro(varianteActual: Product?): AccionAlElegir<Product> = w
     varianteActual.hasModifiers -> AccionAlElegir.AbrirExtras(varianteActual)
     else -> AccionAlElegir.Agregar(varianteActual)
 }
-
-/**
- * Lo que pinta la búsqueda de Cobro rápido. Con texto: [ReglasDeFamilia.entradasParaMostrar] (un nombre da la fila de la familia una
- * vez; un SKU da la talla). Sin texto (o en blanco) NO se agrupa: hoy un texto en blanco lista todos los productos, cada uno en su
- * fila, y eso se conserva (`entradasParaMostrar` con texto en blanco devolvería el catálogo agrupado).
- */
-fun entradasDeBusquedaEnCobro(
-    productos: List<Product>,
-    familias: Map<String, Familia<Product>>,
-    texto: String,
-): List<EntradaDeCatalogo<Product>> =
-    if (texto.isBlank()) productos.map { EntradaDeCatalogo.Suelto(it) }
-    else reglasDeCobro.entradasParaMostrar(productos, familias, texto)

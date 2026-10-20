@@ -36,8 +36,7 @@ import java.math.BigDecimal
  * camino de HOY de esta pantalla (agotada ⇒ aviso de no disponible; con extras ⇒ su hoja de extras; si no ⇒ agregar), contra el
  * catálogo vigente. La búsqueda sigue siendo la de Cobro rápido: sin acentos, con `trim`, sólo nombre y SKU (no descripción).
  *
- * Usa el `CheckoutViewModel` real y las mismas piezas puras que la pantalla (`reglasDeCobro`, `entradasDeBusquedaEnCobro`,
- * `accionAlElegirEnCobro`): lo que se prueba aquí es lo que ve la cajera.
+ * Usa el `CheckoutViewModel` real y las mismas piezas puras que la pantalla (`reglasDeCobro`, `accionAlElegirEnCobro`): lo que se prueba aquí es lo que ve la cajera.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CheckoutFamiliasTest {
@@ -183,37 +182,54 @@ class CheckoutFamiliasTest {
     @Test fun `un acierto solo en la descripcion no coincide en Cobro rapido`() {
         val productos = listOf(producto("p-taza", "Taza", sku = "TZ-1", descripcion = "para tu cafe"))
 
-        assertThat(entradasDeBusquedaEnCobro(productos, emptyMap(), "cafe")).isEmpty()
-        assertThat(entradasDeBusquedaEnCobro(productos, emptyMap(), "  TAZA ")).hasSize(1)
+        assertThat(reglasDeCobro.entradasParaMostrar(productos, emptyMap(), "cafe")).isEmpty()
+        assertThat(reglasDeCobro.entradasParaMostrar(productos, emptyMap(), "  TAZA ")).hasSize(1)
         // El SKU también se busca sin acentos ni mayúsculas, como hoy.
-        assertThat(entradasDeBusquedaEnCobro(productos, emptyMap(), "tz-1")).hasSize(1)
+        assertThat(reglasDeCobro.entradasParaMostrar(productos, emptyMap(), "tz-1")).hasSize(1)
     }
 
-    @Test fun `texto en blanco enseña todo el catalogo tal cual como hoy`() {
+    @Test fun `texto en blanco enseña todo el catalogo agrupado`() {
         val catalogo = listOf(playera("p-s", "S"), playera("p-m", "M"), taza())
         val familias = reglasDeCobro.familiasDe(catalogo)
 
-        val entradas = entradasDeBusquedaEnCobro(catalogo, familias, "   ")
+        val entradas = reglasDeCobro.entradasParaMostrar(catalogo, familias, "   ")
 
-        // Hoy un texto en blanco lista todos los productos (cada talla en su fila); no se agrupa ni se vacía.
-        assertThat(entradas.map { (it as EntradaDeCatalogo.Suelto<Product>).producto.id }).containsExactly("p-s", "p-m", "p-taza").inOrder()
+        // Hoy un texto en blanco lista todos los productos; con familias, la familia sale UNA vez (no cada talla suelta) y la taza suelta.
+        assertThat(entradas).hasSize(2)
+        assertThat((entradas[0] as EntradaDeCatalogo.DeFamilia<Product>).familia.groupId).isEqualTo(grupo)
+        assertThat((entradas[1] as EntradaDeCatalogo.Suelto<Product>).producto.id).isEqualTo("p-taza")
+        // Sin familias, cada producto sale suelto y en su orden (lo de hoy).
+        val sinFamilias = reglasDeCobro.entradasParaMostrar(listOf(taza()), emptyMap(), "")
+        assertThat(sinFamilias.map { (it as EntradaDeCatalogo.Suelto<Product>).producto.id }).containsExactly("p-taza")
+    }
+
+    @Test fun `la busqueda en blanco del VM enseña la familia una vez y no cada talla`() = runTest {
+        val vm = viewModelConCatalogo(playera("p-s", "S"), playera("p-m", "M"), playera("p-l", "L"), taza())
+
+        val entradas = vm.searchResults.first { it.isNotEmpty() }
+
+        // Lo que ve la cajera al abrir la búsqueda: la familia en UNA fila (no tres tallas sueltas) y la taza.
+        assertThat(entradas).hasSize(2)
+        assertThat((entradas[0] as EntradaDeCatalogo.DeFamilia<Product>).familia.groupId).isEqualTo(grupo)
+        assertThat((entradas[1] as EntradaDeCatalogo.Suelto<Product>).producto.id).isEqualTo("p-taza")
+        vm.viewModelScope.cancel()
     }
 
     @Test fun `buscar por nombre da la familia una vez y buscar por sku da la talla`() {
         val catalogo = listOf(playera("p-s", "S"), playera("p-m", "M"), playera("p-l", "L"), taza())
         val familias = reglasDeCobro.familiasDe(catalogo)
 
-        val porNombre = entradasDeBusquedaEnCobro(catalogo, familias, "PLAYERA básica")
+        val porNombre = reglasDeCobro.entradasParaMostrar(catalogo, familias, "PLAYERA básica")
         assertThat(porNombre).hasSize(1)
         assertThat((porNombre.single() as EntradaDeCatalogo.DeFamilia<Product>).familia.groupId).isEqualTo(grupo)
         // También sin acento (la búsqueda de Cobro rápido ignora acentos): «basica» encuentra «Playera básica».
-        assertThat(entradasDeBusquedaEnCobro(catalogo, familias, "basica")).hasSize(1)
+        assertThat(reglasDeCobro.entradasParaMostrar(catalogo, familias, "basica")).hasSize(1)
 
-        val porSku = entradasDeBusquedaEnCobro(catalogo, familias, "sku-p-m")
+        val porSku = reglasDeCobro.entradasParaMostrar(catalogo, familias, "sku-p-m")
         assertThat(porSku).hasSize(1)
         assertThat((porSku.single() as EntradaDeCatalogo.Suelto<Product>).producto.id).isEqualTo("p-m")
         // Un producto suelto se sigue encontrando como hoy.
-        assertThat(entradasDeBusquedaEnCobro(catalogo, familias, "taza")).hasSize(1)
+        assertThat(reglasDeCobro.entradasParaMostrar(catalogo, familias, "taza")).hasSize(1)
     }
 
     // ---- Montaje ----

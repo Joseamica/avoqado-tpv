@@ -128,11 +128,11 @@ class CheckoutViewModel @Inject constructor(
     /**
      * Lo que pinta la búsqueda, reactivo y sin llamar a la red por letra. Case- AND accent-insensitive sobre nombre y SKU (no la
      * descripción), con `trim` ("datiles" encuentra "Dátiles", "cafe" encuentra "Café"): [reglasDeCobro] con [normalizeForSearch]. Un
-     * nombre (o el de una familia) da la fila de la familia una vez; un SKU da la talla. Texto en blanco: todos los productos, como hoy
-     * ([entradasDeBusquedaEnCobro]).
+     * nombre (o el de una familia) da la fila de la familia una vez; un SKU da la talla. Texto en blanco: todo el catálogo AGRUPADO (hoy
+     * lista todos los productos; con familias, la familia sale en UNA fila y no cada talla suelta), como la cuadrícula.
      */
     val searchResults: StateFlow<List<EntradaDeCatalogo<Product>>> =
-        combine(_products, familias, _searchQuery) { all, grupos, query -> entradasDeBusquedaEnCobro(all, grupos, query) }
+        combine(_products, familias, _searchQuery) { all, grupos, query -> reglasDeCobro.entradasParaMostrar(all, grupos, query) }
             .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val savedCarts: StateFlow<List<SavedCart>> = savedCartsRepository.observeAll()

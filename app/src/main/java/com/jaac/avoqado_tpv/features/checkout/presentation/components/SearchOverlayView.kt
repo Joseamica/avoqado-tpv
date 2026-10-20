@@ -43,11 +43,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutViewModel
 import com.jaac.avoqado_tpv.features.checkout.presentation.reglasDeCobro
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
@@ -292,3 +294,28 @@ private fun EmptyState(query: String) {
     }
 }
 
+// Alto de cada fila: 12 + 40 (miniatura) + 12 = 64 dp. Ancho del texto: 360 − 32 (margen) − 40 − 12 − 8 − ~93 («desde $199.00», bodyMedium) ≈ 175 dp,
+// de sobra para «3 variantes · Agotado» (bodySmall, ~21 caracteres ≈ 130 dp); el nombre largo se desliza (marquee).
+@Preview(name = "Búsqueda - filas de familia", widthDp = 360, heightDp = 640, showBackground = true)
+@Composable
+private fun FamiliaResultRowPreview() {
+    val productos = listOf(
+        fakeVariante("pl-s", "Playera básica S", 19900, "playera", "Playera básica", "S"),
+        fakeVariante("pl-m", "Playera básica M", 19900, "playera", "Playera básica", "M"),
+        fakeVariante("pl-l", "Playera básica L", 24900, "playera", "Playera básica", "L"),
+        fakeVariante("ga-s", "Gorra de lana S", 12900, "gorra", "Gorra de lana", "S", available = false),
+        fakeVariante("ga-m", "Gorra de lana M", 12900, "gorra", "Gorra de lana", "M", available = false),
+    )
+    val familias = reglasDeCobro.familiasDe(productos)
+    AvoqadoTheme {
+        Surface(color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onSurface) {
+            Column {
+                // Normal: «3 variantes» y «desde $199.00».
+                FamiliaResultRow(familia = familias.getValue("playera"), onClick = {})
+                HorizontalDivider()
+                // Todas agotadas: «2 variantes · Agotado» y el precio solo (todas cuestan lo mismo).
+                FamiliaResultRow(familia = familias.getValue("gorra"), onClick = {})
+            }
+        }
+    }
+}

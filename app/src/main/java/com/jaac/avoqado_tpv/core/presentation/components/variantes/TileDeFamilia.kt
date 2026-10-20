@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -54,9 +56,12 @@ fun <T> ReglasDeFamilia<T>.textoDePrecio(f: Familia<T>, formato: (BigDecimal) ->
  * por sí solo. Mismo tamaño, forma y color que `ProductCard` para que la cuadrícula no cambie de ritmo.
  *
  * - Insignia `variantes(n)`; precio `desde(precio)` sólo si no todas cuestan lo mismo.
+ * - [relacionDeAspecto] (ancho/alto): 1.45 por defecto, el de `ProductCard` de Órdenes. Una cuadrícula con otra tarjeta (Cobro rápido, de
+ *   0.79) pasa la suya: el alto sale del ancho de la celda, así que el contenido tiene que caber en él (ver el cálculo en Cobro rápido).
  * - «Agotado» sólo cuando TODAS las variantes lo están (Q5) y el modelo trae existencias (Cobro rápido). Nunca bloquea el toque:
  *   qué pasa al elegir una variante agotada lo decide cada pantalla. El «se puede vender igual» de Android no se usa aquí.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun <T> TileDeFamilia(
     familia: Familia<T>,
@@ -64,6 +69,7 @@ fun <T> TileDeFamilia(
     precioTexto: (BigDecimal) -> String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    relacionDeAspecto: Float = 1.45f,
 ) {
     val precio = reglas.textoDePrecio(familia, precioTexto)
     val agotada = reglas.agotada(familia)
@@ -73,7 +79,7 @@ fun <T> TileDeFamilia(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(1.45f)
+            .aspectRatio(relacionDeAspecto)
             .border(
                 width = 0.5.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -96,11 +102,14 @@ fun <T> TileDeFamilia(
                     text = familia.nombre,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
+                    // Agotada: la insignia extra pide un renglón más abajo, y se paga con el del nombre (la hoja lo muestra completo).
+                    maxLines = if (agotada) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // FlowRow: en una celda angosta (3 columnas en la PAX, ~79 dp de contenido) «Agotado» baja a su renglón en vez de
+                    // empujar o recortar al otro rótulo; en una celda ancha los dos caben en uno.
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Insignia(
                             texto = TextosVariantes.variantes(familia.variantes.size),
                             fondo = MaterialTheme.colorScheme.primaryContainer,
@@ -119,7 +128,8 @@ fun <T> TileDeFamilia(
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
+                        // Dos renglones: «desde $199.00» no cabe en uno en una celda angosta y se parte en «desde» / «$199.00».
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -137,6 +147,7 @@ private fun Insignia(texto: String, fondo: Color, letra: Color) {
             color = letra,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

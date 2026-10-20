@@ -36,6 +36,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -114,6 +116,9 @@ fun CheckoutScreen(
     // groupId de la familia de variantes (talla/color) cuya hoja está abierta; null = cerrada. Se guarda el id y no la familia: la hoja
     // siempre lee `familias[id]` del catálogo de AHORA.
     var familiaAbierta by remember { mutableStateOf<String?>(null) }
+    // Abrir una familia desde la búsqueda deja el teclado puesto, y taparía «Agregar al carrito» (la hoja no usa `imePadding`).
+    val teclado = LocalSoftwareKeyboardController.current
+    val foco = LocalFocusManager.current
 
     var selectedTab by rememberSaveable { mutableStateOf(InputTab.KEYPAD) }
     var amountCents by rememberSaveable { mutableIntStateOf(0) }
@@ -466,7 +471,11 @@ fun CheckoutScreen(
     if (showSearch) {
         SearchOverlayView(
             viewModel = viewModel,
-            onFamiliaTap = { familiaAbierta = it.groupId },
+            onFamiliaTap = {
+                teclado?.hide()
+                foco.clearFocus()
+                familiaAbierta = it.groupId
+            },
             onProductTap = { product ->
                 viewModel.updateSearchQuery("")
                 showSearch = false

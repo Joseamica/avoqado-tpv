@@ -24,6 +24,9 @@ data class DatosDeFamilia(
     val opciones: List<OpcionDeVariante>?,
 )
 
+/** Un producto sin familia. Una sola instancia: los accesores de cada pantalla escriben `familia ?: SIN_FAMILIA` sin crear un objeto por llamada. */
+val SIN_FAMILIA = DatosDeFamilia(null, null, null, null)
+
 data class EjeDeFamilia(val nombre: String, val valores: List<String>)
 
 data class Familia<T>(

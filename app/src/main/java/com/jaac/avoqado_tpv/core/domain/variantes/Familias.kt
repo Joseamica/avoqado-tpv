@@ -2,15 +2,16 @@ package com.jaac.avoqado_tpv.core.domain.variantes
 
 import java.math.BigDecimal
 
-/**
- * Núcleo puro de las familias de variantes (sin Android): las reglas Q1–Q6 de `Familias.kt` de avoqado-android, portadas 1:1.
- *
- * Diferencias con el POS Android, y sólo estas:
- * - El dinero es `BigDecimal` (en la terminal `Double` no se usa para precios).
- * - La terminal tiene TRES modelos de producto (Órdenes/Cobro, Kiosco, Mesas): las reglas son genéricas sobre `T` y reciben cómo
- *   leer cada modelo ([ReglasDeFamilia]), en vez de depender de uno.
- * - [ReglasDeFamilia.entradasParaMostrar]: una coincidencia por CÓDIGO (SKU, barras, GTIN) muestra la talla suelta, nunca la familia.
- */
+// Núcleo puro de las familias de variantes (sin Android): las reglas Q1–Q6 de `Familias.kt` de avoqado-android, portadas 1:1.
+//
+// Diferencias con el POS Android, y sólo estas:
+// - El dinero es `BigDecimal` (en la terminal `Double` no se usa para precios). Por eso `PrecioDeFamilia(minimo, todosIguales)` de
+//   Android se parte en `precioMinimo` y `preciosIguales`; esta última compara el valor (199.0 == 199.00), no la escala.
+// - La terminal tiene TRES modelos de producto (Órdenes/Cobro, Kiosco, Mesas): las reglas son genéricas sobre `T` y reciben cómo
+//   leer cada modelo (`ReglasDeFamilia`), en vez de depender de uno.
+// - `ReglasDeFamilia.entradasParaMostrar`: una coincidencia por CÓDIGO (SKU, barras, GTIN) muestra la talla suelta, nunca la familia.
+// - `normalizar` y `textosExtra` (opcionales) dejan que cada pantalla conserve su búsqueda de hoy: sin acentos (Cobro rápido) y con
+//   descripción (Órdenes). Con los valores por defecto la búsqueda es la del POS Android, 1:1.
 
 /** Una opción de variante tal como la manda el server: «Talla = M», con su posición y la de su valor. */
 data class OpcionDeVariante(val name: String, val value: String, val namePosition: Int, val valuePosition: Int)
@@ -47,6 +48,12 @@ sealed interface ResultadoDeBusqueda<T> {
  * Las reglas de familia para un modelo de producto `T`. Cada accesor dice cómo leer ese modelo:
  * [datos] los 4 campos de familia; [imagen] su imagen propia; [precio] su precio (con IVA, como lo ve el cliente);
  * [agotado] si ya no hay existencia; [nombre] su nombre; [codigos] sus códigos de barras/SKU/GTIN (los nulos se ignoran).
+ *
+ * Dos parámetros opcionales conservan la búsqueda de cada pantalla (sólo [buscar] y [entradasParaMostrar] los usan):
+ * [normalizar] se aplica al texto buscado y a TODO texto comparado (nombre, nombre de familia, textos extra y códigos); el valor por
+ * defecto (`lowercase`) es el del POS Android, y p. ej. Cobro rápido pasa uno que además quita acentos («cafe» encuentra «Café»).
+ * [textosExtra] son textos que coinciden COMO TEXTO (un acierto da la fila de la familia, igual que el nombre), p. ej. la
+ * descripción en Órdenes; los nulos se ignoran.
  */
 class ReglasDeFamilia<T>(
     val datos: (T) -> DatosDeFamilia,
@@ -55,6 +62,8 @@ class ReglasDeFamilia<T>(
     val agotado: (T) -> Boolean,
     val nombre: (T) -> String,
     val codigos: (T) -> List<String?>,
+    val normalizar: (String) -> String = { it.lowercase() },
+    val textosExtra: (T) -> List<String?> = { emptyList() },
 ) {
 
     /** Valores de opción de una variante: nombre del eje → valor. */
@@ -167,17 +176,20 @@ class ReglasDeFamilia<T>(
     /**
      * Q6 — búsqueda local, O(n) con las familias ya calculadas. Texto (nombre) ⇒ la fila de su FAMILIA (una vez); sólo código
      * (sku/barcode/gtin, contiene) ⇒ la fila de la VARIANTE. Vacío ⇒ nada. Sin familias: lo de hoy (nombre o código).
-     * Se conserva la normalización del POS Android (sin `trim`; vacío = `isBlank`).
+     * Se conserva la normalización del POS Android (sin `trim`; vacío = `isBlank`); [normalizar] y [textosExtra] la ajustan por pantalla.
      */
     fun buscar(productos: List<T>, familias: Map<String, Familia<T>>, texto: String): List<ResultadoDeBusqueda<T>> {
         if (texto.isBlank()) return emptyList()
-        val q = texto.lowercase()
+        val q = normalizar(texto)
+        // Un normalizador que deja el texto en nada (p. ej. sólo acentos sueltos) no es una búsqueda: `contains("")` acertaría con todo.
+        if (q.isEmpty()) return emptyList()
+        fun coincide(t: String?) = t != null && normalizar(t).contains(q)
         val vistas = mutableSetOf<String>()
         return buildList {
             for (p in productos) {
                 val d = datos(p)
-                val porTexto = nombre(p).lowercase().contains(q) || d.groupName?.lowercase()?.contains(q) == true
-                val porCodigo = codigos(p).any { it?.lowercase()?.contains(q) == true }
+                val porTexto = coincide(nombre(p)) || coincide(d.groupName) || textosExtra(p).any(::coincide)
+                val porCodigo = codigos(p).any(::coincide)
                 val f = d.groupId?.let { familias[it] }
                 when {
                     porTexto && f != null -> if (vistas.add(f.groupId)) add(ResultadoDeBusqueda.DeFamilia(f))

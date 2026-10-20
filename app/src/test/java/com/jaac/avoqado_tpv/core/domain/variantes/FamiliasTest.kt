@@ -3,12 +3,14 @@ package com.jaac.avoqado_tpv.core.domain.variantes
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import java.math.BigDecimal
+import java.text.Normalizer
 
 /**
  * Variantes de producto, bloque 4 (TPV): las reglas puras de familias de `Familias.kt`.
- * Los casos A1–B8 (salvo B7) son LOS MISMOS (y con los mismos nombres) que `FamiliasTest.kt` de avoqado-android y
- * `ProductGroupTests.swift` de avoqado-ios; B7 es sólo del POS Android (no recorta espacios al buscar) y aquí se conserva igual.
- * Lo nuevo de la terminal: `BigDecimal` en vez de `Double` y `entradasParaMostrar` (un código nunca muestra la familia).
+ * Los casos A1–B8 son LOS MISMOS (y con los mismos nombres) que `FamiliasTest.kt` de avoqado-android; `ProductGroupTests.swift` de
+ * avoqado-ios tiene los mismos salvo B7, que es sólo del POS Android (no recorta espacios al buscar) y aquí se conserva igual.
+ * Lo nuevo de la terminal: `BigDecimal` en vez de `Double`, `entradasParaMostrar` (un código nunca muestra la familia) y la búsqueda
+ * ajustable por pantalla (`normalizar` sin acentos y `textosExtra` con descripción).
  */
 class FamiliasTest {
 
@@ -26,6 +28,7 @@ class FamiliasTest {
         val opciones: List<OpcionDeVariante>? = null,
         val agotado: Boolean = false,
         val imagen: String? = null,
+        val descripcion: String? = null,
     )
 
     private val reglas = ReglasDeFamilia<P>(
@@ -55,9 +58,10 @@ class FamiliasTest {
         agotado: Boolean = false,
         imagen: String? = null,
         imagenGrupo: String? = null,
+        descripcion: String? = null,
     ) = P(
         id = id, nombre = nombre, precio = m(precio), sku = sku, gtin = gtin, groupId = grupo, groupName = nombreGrupo,
-        groupImageUrl = imagenGrupo, opciones = opciones, agotado = agotado, imagen = imagen,
+        groupImageUrl = imagenGrupo, opciones = opciones, agotado = agotado, imagen = imagen, descripcion = descripcion,
     )
 
     /** `Playera · S · Azul` y compañía: familia `g1` «Playera». */
@@ -520,6 +524,92 @@ class FamiliasTest {
     fun `entradas sin coincidencias no muestran nada`() {
         val visibles = playeraBasica()
         assertThat(reglas.entradasParaMostrar(visibles, reglas.familiasDe(visibles), "zzz")).isEmpty()
+    }
+
+
+    // ---- Búsqueda ajustable por pantalla: normalizar (acentos) y textosExtra (descripción) ----
+
+    /** Lo que hace hoy Cobro rápido (`normalizeForSearch`): minúsculas y sin acentos. */
+    private fun sinAcentos(s: String) = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()
+
+    private fun reglasSinAcentos() = ReglasDeFamilia<P>(
+        datos = { DatosDeFamilia(it.groupId, it.groupName, it.groupImageUrl, it.opciones) },
+        imagen = { it.imagen },
+        precio = { it.precio },
+        agotado = { it.agotado },
+        nombre = { it.nombre },
+        codigos = { listOf(it.sku, it.barcode, it.gtin) },
+        normalizar = ::sinAcentos,
+    )
+
+    /** Familia «Café» (dos tamaños) y, aparte, una familia «Bebida» cuya talla M tiene el SKU «CAFÉ-M». */
+    private fun catalogoConAcentos() = listOf(
+        prod("c-ch", "Café · Chico", "30.00", grupo = "g-cafe", nombreGrupo = "Café", opciones = listOf(op("Tamaño", "Chico", 0, 0))),
+        prod("c-gr", "Café · Grande", "40.00", grupo = "g-cafe", nombreGrupo = "Café", opciones = listOf(op("Tamaño", "Grande", 0, 1))),
+        prod("b-s", "Chica", "50.00", sku = "TE-S", grupo = "g-beb", nombreGrupo = "Bebida", opciones = listOf(op("Talla", "S", 0, 0))),
+        prod("b-m", "Mediana", "55.00", sku = "CAFÉ-M", grupo = "g-beb", nombreGrupo = "Bebida", opciones = listOf(op("Talla", "M", 0, 1))),
+    )
+
+    @Test
+    fun `con normalizar sin acentos cafe encuentra la familia Cafe y el sku CAFE-M da la variante`() {
+        val c = catalogoConAcentos()
+        val r = reglasSinAcentos()
+        val familias = r.familiasDe(c)
+        // «cafe» acierta por NOMBRE de la familia «Café» (una vez) y por CÓDIGO de la talla M de «Bebida» (la talla, no la familia).
+        assertThat(formaResultados(r.buscar(c, familias, "cafe"))).containsExactly("familia:g-cafe", "producto:b-m").inOrder()
+        assertThat(formaResultados(r.buscar(c, familias, "CAFÉ"))).containsExactly("familia:g-cafe", "producto:b-m").inOrder()
+        // Sólo el código: «cafe-m» no está en ningún nombre.
+        assertThat(formaResultados(r.buscar(c, familias, "cafe-m"))).containsExactly("producto:b-m")
+        // Y la cuadrícula lo pinta igual: la familia como familia, la talla por código suelta.
+        assertThat(formaEntradas(r.entradasParaMostrar(c, familias, "cafe-m"))).containsExactly("suelto:b-m")
+    }
+
+    @Test
+    fun `textosExtra acierta como texto y da la fila de la familia una sola vez`() {
+        val c = listOf(
+            prod("a", "Chica", "199.00", grupo = "g1", nombreGrupo = "Playera", opciones = listOf(op("Talla", "S", 0, 0)),
+                descripcion = "Algodón peinado"),
+            prod("b", "Mediana", "199.00", grupo = "g1", nombreGrupo = "Playera", opciones = listOf(op("Talla", "M", 0, 1)),
+                descripcion = "Algodón peinado"),
+            prod("gorra", "Gorra", "150.00", descripcion = "Lona de algodón"),
+            prod("agua", "Agua", "20.00"),
+        )
+        val r = ReglasDeFamilia<P>(
+            datos = { DatosDeFamilia(it.groupId, it.groupName, it.groupImageUrl, it.opciones) },
+            imagen = { it.imagen },
+            precio = { it.precio },
+            agotado = { it.agotado },
+            nombre = { it.nombre },
+            codigos = { listOf(it.sku, it.barcode, it.gtin) },
+            textosExtra = { listOf(it.descripcion, null) },
+        )
+        val familias = r.familiasDe(c)
+        // Las dos tallas aciertan por descripción: sale la FAMILIA, una vez; el suelto acierta como producto; el nulo no estorba.
+        assertThat(formaResultados(r.buscar(c, familias, "algodón"))).containsExactly("familia:g1", "producto:gorra").inOrder()
+        assertThat(formaEntradas(r.entradasParaMostrar(c, familias, "algodón")))
+            .containsExactly("familia:g1[a,b]", "suelto:gorra").inOrder()
+        assertThat(formaResultados(r.buscar(c, familias, "lona"))).containsExactly("producto:gorra")
+    }
+
+    @Test
+    fun `por defecto la busqueda es la de Android 1 a 1 sin acentos ni descripcion`() {
+        val c = catalogoConAcentos() + prod("d", "Termo", "99.00", descripcion = "Para el café")
+        val familias = reglas.familiasDe(c)
+        // El normalizador por defecto sólo pasa a minúsculas: «cafe» no encuentra «Café» ni «CAFÉ-M»…
+        assertThat(formaResultados(reglas.buscar(c, familias, "cafe"))).isEmpty()
+        // …pero la consulta acentuada sí (minúsculas: «CAFÉ» → «café»).
+        assertThat(formaResultados(reglas.buscar(c, familias, "CAFÉ"))).containsExactly("familia:g-cafe", "producto:b-m").inOrder()
+        // Y la descripción no se busca si nadie pasa `textosExtra`: «termo» sale por nombre, «para» no sale por descripción.
+        assertThat(formaResultados(reglas.buscar(c, familias, "termo"))).containsExactly("producto:d")
+        assertThat(formaResultados(reglas.buscar(c, familias, "para"))).isEmpty()
+    }
+
+    @Test
+    fun `un normalizador que deja la consulta en nada no encuentra todo`() {
+        val c = catalogoConAcentos()
+        val r = reglasSinAcentos()
+        // Un acento suelto (U+0301) queda vacío tras quitar marcas: no es una búsqueda.
+        assertThat(r.buscar(c, r.familiasDe(c), "\u0301")).isEmpty()
     }
 
     // ---- Más allá de la tabla ----

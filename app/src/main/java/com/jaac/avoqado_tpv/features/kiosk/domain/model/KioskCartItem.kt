@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.kiosk.domain.model
 
 import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.math.BigDecimal
@@ -87,6 +88,11 @@ data class KioskCategory(
 data class KioskState(
     val isLoading: Boolean = true,
     val products: List<KioskProduct> = emptyList(),
+    /**
+     * Las familias de variantes de lo que el kiosco muestra (sólo disponible, todas las categorías), por `groupId`. Se arman UNA vez, al
+     * cargar el catálogo (`familiasDeKiosco`), junto con [products], para que ambos cambien en la misma emisión.
+     */
+    val familias: Map<String, Familia<KioskProduct>> = emptyMap(),
     val categories: List<KioskCategory> = emptyList(),
     val selectedCategoryId: String? = null,
     val error: String? = null,
@@ -95,6 +101,13 @@ data class KioskState(
     val isBlumonReady: Boolean = false,        // True when SDK is ready for payments
     val blumonInitError: String? = null        // Error message if initialization failed
 ) {
+    /**
+     * El aviso a pantalla completa del sistema de pagos («Preparando sistema de pagos…» o su error) está puesto: bloquea el menú.
+     * Es la misma condición con la que `KioskMenuScreen` pinta ese aviso.
+     */
+    val avisoDePagosVisible: Boolean
+        get() = isBlumonInitializing || blumonInitError != null || !isBlumonReady
+
     /**
      * Products filtered by selected category
      */

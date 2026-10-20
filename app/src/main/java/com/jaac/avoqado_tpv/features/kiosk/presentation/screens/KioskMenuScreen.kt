@@ -82,6 +82,18 @@ import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffInf
 import timber.log.Timber
 import java.math.BigDecimal
 import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
+import androidx.compose.ui.tooling.preview.Preview
+import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.kiosk.presentation.accionAlElegirEnKiosco
+import com.jaac.avoqado_tpv.features.kiosk.presentation.claveDeEntradaDeKiosco
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.kioskCatalogoDeEjemplo
+import com.jaac.avoqado_tpv.features.kiosk.presentation.hojaDeVariantesPermitidaEnKiosco
+import com.jaac.avoqado_tpv.features.kiosk.presentation.reglasDeKiosco
 
 /**
  * Kiosk Menu Screen - Product Selection
@@ -125,6 +137,16 @@ fun KioskMenuScreen(
 
     // 🔍 Search dialog state
     var showSearchDialog by remember { mutableStateOf(false) }
+
+    // 🧩 Familia de variantes (tallas) abierta: se guarda su groupId y la hoja la busca en el catálogo de AHORA
+    var familiaAbierta by remember { mutableStateOf<String?>(null) }
+    val currencyFormat = rememberCurrencyFormat()
+
+    // Lo que pinta la cuadrícula: las familias (armadas sobre TODO lo disponible) ocupan el lugar de su primera variante en la lista
+    // ya filtrada por categoría, así que una categoría con una sola talla igual muestra el botón de la familia.
+    val entradas = remember(state.products, state.selectedCategoryId, state.familias) {
+        reglasDeKiosco.agruparCatalogo(state.filteredProducts, state.familias)
+    }
 
     // 🥝 Staff assignment dialog state
     var showStaffAssignDialog by remember { mutableStateOf(false) }
@@ -348,37 +370,25 @@ fun KioskMenuScreen(
                 }
 
                 else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(
-                            items = state.filteredProducts,
-                            key = { it.id }
-                        ) { product ->
-                            KioskProductCard(
-                                name = product.name,
-                                price = product.price,
-                                imageUrl = product.imageUrl,
-                                hasModifiers = product.hasModifiers,  // 🔧 Show indicator if has modifiers
-                                onAdd = {
-                                    // 🔧 Check if product has modifiers
-                                    if (product.hasModifiers) {
-                                        // Show modifier selection dialog
-                                        Timber.d("🥝 [KIOSK-MENU] Product '${product.name}' has modifiers - showing dialog")
-                                        selectedProductForModifiers = product
-                                        showModifierDialog = true
-                                    } else {
-                                        // Add directly to cart (no modifiers)
-                                        viewModel.addToCart(product)
-                                    }
-                                }
-                            )
+                    KioskCatalogoGrid(
+                        entradas = entradas,
+                        onProductClick = { product ->
+                            // 🔧 Check if product has modifiers
+                            if (product.hasModifiers) {
+                                // Show modifier selection dialog
+                                Timber.d("🥝 [KIOSK-MENU] Product '${product.name}' has modifiers - showing dialog")
+                                selectedProductForModifiers = product
+                                showModifierDialog = true
+                            } else {
+                                // Add directly to cart (no modifiers)
+                                viewModel.addToCart(product)
+                            }
+                        },
+                        onFamiliaClick = { familia ->
+                            Timber.d("🧩 [KIOSK-MENU] Family '${familia.nombre}' tapped - showing variant sheet")
+                            familiaAbierta = familia.groupId
                         }
-                    }
+                    )
                 }
             }
         }
@@ -464,6 +474,7 @@ fun KioskMenuScreen(
     KioskSearchDialog(
         visible = showSearchDialog,
         products = state.allProducts,  // Search across ALL products (not filtered)
+        familias = state.familias,
         onDismiss = {
             Timber.d("🔍 [KIOSK-MENU] Search dialog dismissed")
             showSearchDialog = false
@@ -478,8 +489,57 @@ fun KioskMenuScreen(
             } else {
                 viewModel.addToCart(product)
             }
+        },
+        onFamiliaClick = { familia ->
+            // La búsqueda sigue abierta debajo: al cerrar la hoja con la X se vuelve a los resultados.
+            Timber.i("🔍 [KIOSK-MENU] Family selected from search: ${familia.nombre}")
+            familiaAbierta = familia.groupId
         }
     )
+
+    // 🧩 Hoja de tallas/colores de la familia tocada (en la cuadrícula o en la búsqueda). Va DESPUÉS de la búsqueda, para pintarse encima
+    // de ella (tocar una familia ahí la abre), y ANTES del aviso del sistema de pagos, que se pinta sobre todo; los diálogos de abajo son
+    // ventanas propias. Cubre toda la pantalla y consume los toques (nada de lo de abajo los recibe).
+    // El menú no cobra (la orden se crea en `KioskCartScreen`, otra ruta): su único freno es ese aviso. Con él puesto la hoja NO se pinta y se cierra.
+    val hojaPermitida = hojaDeVariantesPermitidaEnKiosco(state)
+    val familiaDeLaHoja = if (hojaPermitida) familiaAbierta?.let { state.familias[it] } else null
+    if (familiaAbierta != null && familiaDeLaHoja == null) {
+        // La familia ya no es válida (catálogo refrescado) o no se puede mostrar ahora: la hoja se cierra sola.
+        LaunchedEffect(familiaAbierta) { familiaAbierta = null }
+    }
+    if (familiaDeLaHoja != null) {
+        // El Box aísla el zIndex(100f) de la hoja: el aviso del sistema de pagos, que se monta DESPUÉS, queda encima de ella.
+        Box(modifier = Modifier.fillMaxSize()) {
+            HojaDeVariantes(
+                familia = familiaDeLaHoja,
+                reglas = reglasDeKiosco,
+                precioTexto = { currencyFormat.format(it.price) },
+                // Una talla agotada ni siquiera está en la familia (el kiosco no muestra lo agotado): no hay aviso que dar.
+                aviso = { null },
+                onCerrar = { familiaAbierta = null },
+                onElegir = { elegida ->
+                    // 1º cerrar la hoja (la entrega es única por apertura); 2º resolver la variante por id en el catálogo de AHORA;
+                    // 3º el camino de hoy: con extras ⇒ KioskModifierDialog de ESA variante; si no ⇒ agregar.
+                    familiaAbierta = null
+                    val accion = accionAlElegirEnKiosco(viewModel.productoVigente(elegida.id))
+                    // Si venía de la búsqueda, se cierra como al tocar un producto de ahí.
+                    if (accion != AccionAlElegir.Cerrar) showSearchDialog = false
+                    when (accion) {
+                        is AccionAlElegir.Agregar -> {
+                            Timber.i("🧩 [KIOSK-MENU] Variant selected: ${accion.variante.name}")
+                            viewModel.addToCart(accion.variante)
+                        }
+                        is AccionAlElegir.AbrirExtras -> {
+                            Timber.d("🧩 [KIOSK-MENU] Variant '${accion.variante.name}' has modifiers - showing dialog")
+                            selectedProductForModifiers = accion.variante
+                            showModifierDialog = true
+                        }
+                        is AccionAlElegir.NoDisponible, AccionAlElegir.Cerrar -> Unit
+                    }
+                },
+            )
+        }
+    }
 
     // 🥝 Staff Assignment Dialog
     if (showStaffAssignDialog) {
@@ -516,7 +576,7 @@ fun KioskMenuScreen(
 
     // 🔧 Blumon SDK Initialization Overlay
     // Shows loader while SDK initializes, blocks user from proceeding to payment
-    if (state.isBlumonInitializing || state.blumonInitError != null || !state.isBlumonReady) {
+    if (state.avisoDePagosVisible) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -591,6 +651,66 @@ fun KioskMenuScreen(
         }
     }
 }
+
+/**
+ * La cuadrícula del menú: productos sueltos y botones de familia (tallas). Cada familia ocupa el lugar de su primera variante.
+ */
+@Composable
+private fun KioskCatalogoGrid(
+    entradas: List<EntradaDeCatalogo<KioskProduct>>,
+    onProductClick: (KioskProduct) -> Unit,
+    onFamiliaClick: (Familia<KioskProduct>) -> Unit
+) {
+    val currencyFormat = rememberCurrencyFormat()
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(
+            items = entradas,
+            key = { claveDeEntradaDeKiosco(it) }
+        ) { entrada ->
+            when (entrada) {
+                is EntradaDeCatalogo.Suelto -> {
+                    val product = entrada.producto
+                    KioskProductCard(
+                        name = product.name,
+                        price = product.price,
+                        imageUrl = product.imageUrl,
+                        hasModifiers = product.hasModifiers,  // 🔧 Show indicator if has modifiers
+                        onAdd = { onProductClick(product) }
+                    )
+                }
+                is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
+                    familia = entrada.familia,
+                    reglas = reglasDeKiosco,
+                    precioTexto = { currencyFormat.format(it) },
+                    onClick = { onFamiliaClick(entrada.familia) },
+                    relacionDeAspecto = RELACION_FAMILIA_EN_MENU
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Relación ancho/alto del botón de familia en el menú: la celda de [KioskProductCard]. En la PAX (360 dp) la celda mide
+ * (360 − 2×16 de margen − 2×12 de separación) / 3 = 101.3 dp de ancho y [KioskProductCard] 180 dp de alto ⇒ 101.3 / 180 = 0.563.
+ * (Como en Órdenes y Cobro rápido, la cuenta supone 360 dp: el botón guarda la relación, no el alto.)
+ *
+ * Cabe sin cortarse (DM Sans real de `res/font`, escala 1.0; no visto en un aparato): el contenido mide 101.3 − 4 (acento) − 24
+ * (márgenes) = 73.3 dp de ancho y 180 − 20 = 160 dp de alto. Alto: nombre 2 renglones (40) + insignia (20) + 2 + precio hasta 2
+ * renglones (40) = 102 dp ≤ 160. Ancho: «N variantes» (dmsans_bold 11 sp + 2×4 de margen) 69.2 dp con N de un dígito («10 variantes»
+ * 74.3 y «99 variantes» 76.4 se cortan con «…»; raro en un kiosco); precio (dmsans_semibold 14 sp): «desde $199.00» 100.6 dp no cabe en un
+ * renglón y baja a «desde» (42.4) y «$199.00» (54.6); «$1,299.00» 66.5 y «$9,999.00» 70.5 caben; de cinco dígitos («$12,999.00»,
+ * 75.4) se corta con «…» (la hoja trae el precio). Se usa el botón completo y no el `compacto`: éste deja el nombre en 1 renglón y
+ * al cliente del kiosco le importa leerlo.
+ */
+private const val RELACION_FAMILIA_EN_MENU = 0.563f
 
 /**
  * Kiosk Product Card
@@ -721,5 +841,22 @@ private fun KioskProductCard(
                 )
             }
         }
+    }
+}
+
+// ============================================================================
+// Preview
+// ============================================================================
+
+@Preview(name = "Menú del kiosco con dos familias", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun KioskCatalogoGridPreview() {
+    AvoqadoTheme {
+        val productos = kioskCatalogoDeEjemplo()
+        KioskCatalogoGrid(
+            entradas = reglasDeKiosco.agruparCatalogo(productos, reglasDeKiosco.familiasDe(productos)),
+            onProductClick = {},
+            onFamiliaClick = {}
+        )
     }
 }

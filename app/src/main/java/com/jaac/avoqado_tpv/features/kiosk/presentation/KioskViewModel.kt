@@ -307,10 +307,14 @@ class KioskViewModel @Inject constructor(
                     product.toKioskProduct()
                 } ?: emptyList()
 
+                // Las familias se arman aquí, una vez por catálogo, y entran al estado junto con los productos.
+                val familias = familiasDeKiosco(products)
+
                 _state.update {
                     it.copy(
                         isLoading = false,
                         products = products,
+                        familias = familias,
                         categories = categories
                     )
                 }
@@ -328,6 +332,12 @@ class KioskViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * La variante [id] tal como está en el catálogo de AHORA (no la copia con la que se abrió la hoja de tallas): sus extras y su
+     * disponibilidad son los vigentes. `null` si ya no viene en el catálogo. Ver [accionAlElegirEnKiosco].
+     */
+    fun productoVigente(id: String): KioskProduct? = _state.value.products.firstOrNull { it.id == id }
 
     /**
      * Select category for filtering

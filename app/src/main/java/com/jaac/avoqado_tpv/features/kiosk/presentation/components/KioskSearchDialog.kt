@@ -53,16 +53,30 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
+import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
+import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
+import com.jaac.avoqado_tpv.core.presentation.components.variantes.TileDeFamilia
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
+import com.jaac.avoqado_tpv.features.kiosk.presentation.claveDeEntradaDeKiosco
+import com.jaac.avoqado_tpv.features.kiosk.presentation.entradasDeBusquedaEnKiosco
+import com.jaac.avoqado_tpv.features.kiosk.presentation.reglasDeKiosco
+import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
+import com.jaac.avoqado_tpv.features.ordering.domain.ModifierType
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import timber.log.Timber
 import java.math.BigDecimal
 import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
@@ -75,37 +89,34 @@ import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
  * Features:
  * - Auto-focus search field with keyboard
  * - Real-time filtering as user types
- * - Product grid with visual cards
+ * - Product grid with visual cards (a family of variants is ONE card)
  * - Easy dismiss with X button
  *
  * @param visible Whether the dialog is visible
  * @param products All available products to search from
+ * @param familias The families of [products] (por `groupId`), armadas una vez por catálogo
  * @param onDismiss Callback when user closes the search
  * @param onProductClick Callback when user selects a product
+ * @param onFamiliaClick Callback when user selects a family (opens the sheet to pick the variant)
  */
 @Composable
 fun KioskSearchDialog(
     visible: Boolean,
     products: List<KioskProduct>,
+    familias: Map<String, Familia<KioskProduct>>,
     onDismiss: () -> Unit,
-    onProductClick: (KioskProduct) -> Unit
+    onProductClick: (KioskProduct) -> Unit,
+    onFamiliaClick: (Familia<KioskProduct>) -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     var searchQuery by remember { mutableStateOf("") }
 
-    // Filter products based on search query
-    val filteredProducts by remember(searchQuery, products) {
-        derivedStateOf {
-            if (searchQuery.isBlank()) {
-                emptyList()
-            } else {
-                products.filter { product ->
-                    product.name.contains(searchQuery, ignoreCase = true)
-                }
-            }
-        }
+    // Filter products based on search query: by name, ignoring case (a blank text searches nothing). A family shows once.
+    val resultados by remember(searchQuery, products, familias) {
+        derivedStateOf { entradasDeBusquedaEnKiosco(products, familias, searchQuery) }
     }
 
     // Auto-focus when dialog opens
@@ -278,7 +289,7 @@ fun KioskSearchDialog(
                         }
                     }
 
-                    filteredProducts.isEmpty() -> {
+                    resultados.isEmpty() -> {
                         // No results
                         Box(
                             modifier = Modifier
@@ -320,7 +331,7 @@ fun KioskSearchDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "${filteredProducts.size} resultado${if (filteredProducts.size != 1) "s" else ""}",
+                                text = "${resultados.size} resultado${if (resultados.size != 1) "s" else ""}",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = FontWeight.Medium
@@ -328,33 +339,79 @@ fun KioskSearchDialog(
                         }
 
                         // Product grid
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(
-                                items = filteredProducts,
-                                key = { it.id }
-                            ) { product ->
-                                SearchResultCard(
-                                    product = product,
-                                    searchQuery = searchQuery,
-                                    onClick = {
-                                        keyboardController?.hide()
-                                        onProductClick(product)
-                                    }
-                                )
+                        ResultadosDeBusqueda(
+                            entradas = resultados,
+                            searchQuery = searchQuery,
+                            onProductClick = { product ->
+                                keyboardController?.hide()
+                                onProductClick(product)
+                            },
+                            onFamiliaClick = { familia ->
+                                // El teclado se esconde Y se suelta el foco: si no, taparía «Agregar al carrito» de la hoja que se abre encima.
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                onFamiliaClick(familia)
                             }
-                        }
+                        )
                     }
                 }
             }
         }
     }
 }
+
+/**
+ * La cuadrícula de resultados: productos sueltos y botones de familia (tallas). Una familia sale UNA vez aunque coincidan varias tallas.
+ */
+@Composable
+private fun ResultadosDeBusqueda(
+    entradas: List<EntradaDeCatalogo<KioskProduct>>,
+    searchQuery: String,
+    onProductClick: (KioskProduct) -> Unit,
+    onFamiliaClick: (Familia<KioskProduct>) -> Unit
+) {
+    val currencyFormat = rememberCurrencyFormat()
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(
+            items = entradas,
+            key = { claveDeEntradaDeKiosco(it) }
+        ) { entrada ->
+            when (entrada) {
+                is EntradaDeCatalogo.Suelto -> SearchResultCard(
+                    product = entrada.producto,
+                    searchQuery = searchQuery,
+                    onClick = { onProductClick(entrada.producto) }
+                )
+                is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(
+                    familia = entrada.familia,
+                    reglas = reglasDeKiosco,
+                    precioTexto = { currencyFormat.format(it) },
+                    onClick = { onFamiliaClick(entrada.familia) },
+                    relacionDeAspecto = RELACION_FAMILIA_EN_BUSQUEDA
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Relación ancho/alto del botón de familia en la búsqueda: la celda de [SearchResultCard]. En la PAX (360 dp) la celda mide
+ * (360 − 2×16 de margen − 2×12 de separación) / 3 = 101.3 dp de ancho y [SearchResultCard] 160 dp de alto ⇒ 101.3 / 160 = 0.633.
+ *
+ * Cabe sin cortarse (DM Sans real de `res/font`, escala 1.0): el contenido mide 101.3 − 4 (acento) − 24 (márgenes) = 73.3 dp de ancho
+ * y 160 − 20 = 140 dp de alto. Alto: nombre 2 renglones (40) + insignia (20) + 2 + precio hasta 2 renglones (40) = 102 dp ≤ 140.
+ * Ancho: «N variantes» (dmsans_bold 11 sp + 2×4 de margen) 69.2 dp con N de un dígito (hasta 99: «10 variantes» 74.3, «99 variantes» 76.4
+ * se cortan con «…», raro); precio (dmsans_semibold 14 sp): «desde $199.00» 100.6 dp no cabe en un renglón y baja a «desde» (42.4) y
+ * «$199.00» (54.6); «$1,299.00» 66.5 y «$9,999.00» 70.5 caben; de cinco dígitos («$12,999.00», 75.4) se corta con «…» (la hoja trae el precio).
+ */
+private const val RELACION_FAMILIA_EN_BUSQUEDA = 0.633f
 
 /**
  * Search Result Product Card
@@ -478,5 +535,50 @@ private fun SearchResultCard(
                 )
             }
         }
+    }
+}
+
+// ============================================================================
+// Preview (los datos de ejemplo también los usa el del menú)
+// ============================================================================
+
+private fun varianteDeEjemplo(id: String, grupo: String, nombreDelGrupo: String, valor: String, posicion: Int, precio: String) = KioskProduct(
+    id = id,
+    name = "$nombreDelGrupo $valor",
+    price = BigDecimal(precio),
+    categoryId = "c-1",
+    familia = DatosDeFamilia(grupo, nombreDelGrupo, null, listOf(OpcionDeVariante("Tamaño", valor, 0, posicion)))
+)
+
+/** Un catálogo con dos familias (una de nombre largo), un producto suelto y uno personalizable. */
+internal fun kioskCatalogoDeEjemplo(): List<KioskProduct> = listOf(
+    varianteDeEjemplo("cafe-ch", "g-cafe", "Café americano", "Chico", 0, "35.00"),
+    KioskProduct(id = "pastel", name = "Pastel de chocolate", price = BigDecimal("65.00"), categoryId = "c-1"),
+    varianteDeEjemplo("cafe-me", "g-cafe", "Café americano", "Mediano", 1, "40.00"),
+    varianteDeEjemplo("cafe-gr", "g-cafe", "Café americano", "Grande", 2, "45.00"),
+    varianteDeEjemplo("hamb-se", "g-hamb", "Hamburguesa con queso y tocino", "Sencilla", 0, "129.00"),
+    varianteDeEjemplo("hamb-do", "g-hamb", "Hamburguesa con queso y tocino", "Doble", 1, "169.00"),
+    KioskProduct(
+        id = "te", name = "Té verde", price = BigDecimal("28.00"), categoryId = "c-1",
+        modifierGroups = listOf(
+            ModifierGroup(
+                id = "mg-1", name = "Endulzante", type = ModifierType.SINGLE_CHOICE,
+                modifiers = listOf(ProductModifier("m-1", "Miel", BigDecimal("5.00"), ModifierType.SINGLE_CHOICE))
+            )
+        )
+    ),
+)
+
+@Preview(name = "Resultados con una familia y un producto", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun ResultadosDeBusquedaPreview() {
+    AvoqadoTheme {
+        val productos = kioskCatalogoDeEjemplo()
+        ResultadosDeBusqueda(
+            entradas = entradasDeBusquedaEnKiosco(productos, reglasDeKiosco.familiasDe(productos), "a"),
+            searchQuery = "a",
+            onProductClick = {},
+            onFamiliaClick = {}
+        )
     }
 }

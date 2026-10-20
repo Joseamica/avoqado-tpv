@@ -55,6 +55,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -399,14 +401,19 @@ private fun ResultadosDeBusqueda(
                 is EntradaDeCatalogo.DeFamilia -> {
                     // La misma tarjeta que sus vecinos (foto, nombre, precio), con «desde …» y «N variantes»; tocarla abre la hoja.
                     val familia = entrada.familia
+                    val precio = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) }
                     SearchResultCard(
                         name = familia.nombre,
                         price = reglasDeKiosco.precioMinimo(familia),
                         imageUrl = familia.imagenUrl,
                         hasModifiers = false,
                         searchQuery = searchQuery,
-                        priceText = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) },
+                        priceText = precio,
                         badgeText = TextosVariantes.variantes(familia.variantes.size),
+                        // «Playera, 3 variantes, desde $199.00»: igual que el botón de familia de Órdenes y Cobro rápido.
+                        modifier = Modifier.semantics {
+                            contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, familia.variantes.size, precio)
+                        },
                         onClick = { onFamiliaClick(familia) }
                     )
                 }
@@ -440,13 +447,14 @@ private fun SearchResultCard(
     searchQuery: String,
     priceText: String? = null,
     badgeText: String? = null,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val currencyFormat = rememberCurrencyFormat()
     val esFamilia = badgeText != null
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(160.dp)
             .clickable(onClick = onClick),

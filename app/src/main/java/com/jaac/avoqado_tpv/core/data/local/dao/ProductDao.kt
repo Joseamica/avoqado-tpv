@@ -115,7 +115,7 @@ interface ProductDao {
 
     /**
      * Reemplazo EXACTO del catálogo guardado de un negocio, en una sola transacción: lo que ya no manda el server desaparece.
-     * No depende de la hora (a diferencia de [deleteStaleProducts]) y no toca a otros negocios. Lo llama sólo `CatalogoGuardado`,
+     * No depende de la hora y no toca a otros negocios. Lo llama sólo `CatalogoGuardado`,
      * y sólo cuando el server contestó bien.
      */
     @Transaction
@@ -136,16 +136,6 @@ interface ProductDao {
      */
     @Query("DELETE FROM products WHERE venue_id = :venueId")
     suspend fun deleteAllProducts(venueId: String)
-
-    /**
-     * Delete stale products (TTL-based cleanup).
-     *
-     * **TTL:** 24 hours (86400000 ms)
-     *
-     * @param cutoffTimestamp Unix timestamp (products older than this are deleted)
-     */
-    @Query("DELETE FROM products WHERE cached_at < :cutoffTimestamp")
-    suspend fun deleteStaleProducts(cutoffTimestamp: Long)
 
     /**
      * Get cache timestamp (to check if refresh is needed).

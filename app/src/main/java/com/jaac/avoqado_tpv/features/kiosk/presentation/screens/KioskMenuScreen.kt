@@ -59,6 +59,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -689,12 +691,17 @@ private fun KioskCatalogoGrid(
                 is EntradaDeCatalogo.DeFamilia -> {
                     // La misma tarjeta que sus vecinos (foto, nombre, precio), con «desde …» y «N variantes»; tocarla abre la hoja.
                     val familia = entrada.familia
+                    val precio = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) }
                     KioskProductCard(
                         name = familia.nombre,
                         price = reglasDeKiosco.precioMinimo(familia),
                         imageUrl = familia.imagenUrl,
-                        priceText = reglasDeKiosco.textoDePrecio(familia) { currencyFormat.format(it) },
+                        priceText = precio,
                         badgeText = TextosVariantes.variantes(familia.variantes.size),
+                        // «Playera, 3 variantes, desde $199.00»: igual que el botón de familia de Órdenes y Cobro rápido.
+                        modifier = Modifier.semantics {
+                            contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, familia.variantes.size, precio)
+                        },
                         onAdd = { onFamiliaClick(familia) }
                     )
                 }
@@ -728,13 +735,14 @@ private fun KioskProductCard(
     hasModifiers: Boolean = false,
     priceText: String? = null,
     badgeText: String? = null,
+    modifier: Modifier = Modifier,
     onAdd: () -> Unit
 ) {
     val currencyFormat = rememberCurrencyFormat()
     val esFamilia = badgeText != null
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(180.dp)  // Increased from 150dp to fit price text
             .clickable(onClick = onAdd),

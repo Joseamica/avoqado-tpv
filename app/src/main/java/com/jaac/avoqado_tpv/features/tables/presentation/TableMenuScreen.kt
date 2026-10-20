@@ -53,6 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -290,12 +292,17 @@ private fun ProductGrid(
                 // El botón de una familia NO agrega nada: abre la hoja de tallas.
                 is EntradaDeCatalogo.DeFamilia -> {
                     val familia = entrada.familia
+                    val precio = reglasDeMesas.textoDePrecio(familia, ::precioDeMesas)
                     ProductTile(
                         name = familia.nombre,
-                        priceText = reglasDeMesas.textoDePrecio(familia, ::precioDeMesas),
+                        priceText = precio,
                         cartQuantity = cantidadEnLaRondaDeFamilia(familia, cartQuantities),
                         badgeText = TextosVariantes.variantes(familia.variantes.size),
                         onClick = { onFamilyTap(familia) },
+                        // «Playera, 3 variantes, desde $199.00»: igual que el botón de familia de Órdenes y Cobro rápido.
+                        modifier = Modifier.semantics {
+                            contentDescription = TextosVariantes.accesibleFamilia(familia.nombre, familia.variantes.size, precio)
+                        },
                     )
                 }
             }
@@ -320,12 +327,13 @@ private fun ProductTile(
     priceText: String,
     cartQuantity: Int,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     hasModifiers: Boolean = false,
     badgeText: String? = null,
 ) {
     Card(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .aspectRatio(1f),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),

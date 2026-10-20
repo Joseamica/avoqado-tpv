@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
@@ -10,7 +11,6 @@ import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
-import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
@@ -88,6 +88,7 @@ class MenuViewModel @Inject constructor(
     private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
     private val connectionEventManager: ConnectionEventManager,
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
+    private val catalogoGuardado: CatalogoGuardado,  // 📦 Único dueño de la escritura del catálogo guardado (de uno en uno)
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
     private val printerManager: PrinterManager,  // 🖨️ Kitchen ticket printing
     private val paymentApiService: PaymentApiService,  // 🎁 Cortesía: bypass gateway for $0 orders
@@ -1141,6 +1142,10 @@ class MenuViewModel @Inject constructor(
                     if (cachedCategoryList != _categories.value) {
                         _categories.value = cachedCategoryList
                     }
+                    // Con catálogo guardado ya hay qué pintar: el aviso «Cargando productos…» se apaga YA, sin esperar el refresco
+                    // (puede quedar esperando el candado de CatalogoGuardado si Inicio está refrescando). Con la caché vacía sigue
+                    // prendido hasta que llegue el catálogo (finally de abajo).
+                    _isLoadingProducts.value = false
                     Timber.i("⚡ [Cache Hit] Loaded ${cachedProducts.size} products, ${activeCachedCategories.size} active categories from cache (~10ms)")
 
                     // 🔍 DEBUG: Log inventory for each product
@@ -1161,12 +1166,9 @@ class MenuViewModel @Inject constructor(
             // ⚡ STEP 2: Fetch fresh data from backend (background refresh)
             val cachedAt = System.currentTimeMillis()
 
-            // Fetch products from backend
-            productRepository.getProducts(venueId).fold(
+            // Fetch products from backend (CatalogoGuardado: de uno en uno, y reemplaza el catálogo guardado del negocio)
+            catalogoGuardado.refrescar(venueId).fold(
                 onSuccess = { freshProducts ->
-                    withContext(Dispatchers.IO) {
-                        productDao.upsertProducts(freshProducts.toEntities(venueId, cachedAt))
-                    }
                     val sortedFreshProducts = sortProductsForMenu(freshProducts, categoryOrderMap)
                     if (sortedFreshProducts != _products.value) {
                         _products.value = sortedFreshProducts

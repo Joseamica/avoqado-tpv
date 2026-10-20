@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
 
 /**
@@ -111,6 +112,17 @@ interface ProductDao {
      */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertProducts(products: List<ProductEntity>)
+
+    /**
+     * Reemplazo EXACTO del catálogo guardado de un negocio, en una sola transacción: lo que ya no manda el server desaparece.
+     * No depende de la hora (a diferencia de [deleteStaleProducts]) y no toca a otros negocios. Lo llama sólo `CatalogoGuardado`,
+     * y sólo cuando el server contestó bien.
+     */
+    @Transaction
+    suspend fun reemplazarCatalogo(venueId: String, entidades: List<ProductEntity>) {
+        deleteAllProducts(venueId)
+        upsertProducts(entidades)
+    }
 
     /**
      * Delete all products for a venue (cache invalidation).

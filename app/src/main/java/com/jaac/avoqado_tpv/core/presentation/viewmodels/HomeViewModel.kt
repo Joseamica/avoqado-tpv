@@ -26,10 +26,9 @@ import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandTarget
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
-import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
-import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
@@ -91,7 +90,7 @@ class HomeViewModel @Inject constructor(
     val maintenanceManager: MaintenanceManager,
     // 📦 Product Cache Warm-up (Performance Optimization)
     private val productRepository: ProductRepository,
-    private val productDao: ProductDao,
+    private val catalogoGuardado: CatalogoGuardado,
     private val productCategoryDao: ProductCategoryDao,
     // 🎯 Sales Goal API
     private val apiService: ApiService,
@@ -306,9 +305,8 @@ class HomeViewModel @Inject constructor(
                 val cachedAt = System.currentTimeMillis()
 
                 // Fetch products
-                productRepository.getProducts(venueId).fold(
+                catalogoGuardado.refrescar(venueId).fold(
                     onSuccess = { products ->
-                        productDao.upsertProducts(products.toEntities(venueId, cachedAt))
                         Timber.i("✅ [HomeViewModel] Cached ${products.size} products")
                     },
                     onFailure = { e ->

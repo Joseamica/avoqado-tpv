@@ -6,7 +6,7 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
-import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.data.network.ApiService
@@ -73,7 +73,7 @@ class HomeViewModelTest {
     private lateinit var lockScreenManager: LockScreenManager
     private lateinit var maintenanceManager: MaintenanceManager
     private lateinit var productRepository: ProductRepository
-    private lateinit var productDao: ProductDao
+    private lateinit var catalogoGuardado: CatalogoGuardado
     private lateinit var productCategoryDao: ProductCategoryDao
     private lateinit var apiService: ApiService
     private lateinit var connectionEventManager: ConnectionEventManager
@@ -117,7 +117,7 @@ class HomeViewModelTest {
         lockScreenManager = mockk(relaxed = true)
         maintenanceManager = mockk(relaxed = true)
         productRepository = mockk(relaxed = true)
-        productDao = mockk(relaxed = true)
+        catalogoGuardado = mockk(relaxed = true)
         productCategoryDao = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         connectionEventManager = mockk(relaxed = true)
@@ -183,7 +183,7 @@ class HomeViewModelTest {
             lockScreenManager = lockScreenManager,
             maintenanceManager = maintenanceManager,
             productRepository = productRepository,
-            productDao = productDao,
+            catalogoGuardado = catalogoGuardado,
             productCategoryDao = productCategoryDao,
             apiService = apiService,
             connectionEventManager = connectionEventManager,

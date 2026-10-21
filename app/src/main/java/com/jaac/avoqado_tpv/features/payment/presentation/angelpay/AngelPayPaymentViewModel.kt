@@ -1660,8 +1660,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                         "🔶 [AngelPay] switchAccount FAILED; reverting merchant pick",
                     )
                     _currentMerchant.value = previousMerchant
+                    val kindSwitch = (angelPayAuthRepository.state.value as? AngelPayAuthState.AuthError)?.kind
+                    val delPanelSwitch = kindSwitch == AuthErrorKind.SIN_CREDENCIALES || kindSwitch == AuthErrorKind.CUENTA_NO_EN_CONFIG
                     _state.value = AngelPayPaymentState.Error(
-                        message = "No se pudo cambiar a la cuenta AngelPay del merchant: ${switchResult.exceptionOrNull()?.message ?: "error desconocido"}",
+                        message = "No se pudo cambiar a la cuenta AngelPay del merchant: ${switchResult.exceptionOrNull()?.message ?: "error desconocido"}" +
+                            if (delPanelSwitch) ". Avisa a soporte y luego reintenta." else "",
                         canRetry = true,
                     )
                     // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and
@@ -1874,13 +1877,20 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
             if (auth.isFailure) {
                 Timber.e(auth.exceptionOrNull(), "❌ [AngelPay] La auth previa al cobro falló")
-                val base = when ((angelPayAuthRepository.state.value as? AngelPayAuthState.AuthError)?.kind) {
+                val kind = (angelPayAuthRepository.state.value as? AngelPayAuthState.AuthError)?.kind
+                val base = when (kind) {
                     AuthErrorKind.SIN_RED -> "Sin conexión con AngelPay."
                     AuthErrorKind.SIN_CREDENCIALES -> "Faltan credenciales de AngelPay en el panel."
                     AuthErrorKind.CUENTA_NO_EN_CONFIG -> "La cuenta AngelPay del comercio no está en el panel."
                     else -> "No se pudo conectar con AngelPay."
                 }
-                fallaAntesDeAutorizar(base, mensajeParaPos = "La terminal no pudo conectar con AngelPay")
+                // Un panel mal configurado no se arregla reintentando: quien cobra tiene que avisar (IQ, 20-oct-2026).
+                val delPanel = kind == AuthErrorKind.SIN_CREDENCIALES || kind == AuthErrorKind.CUENTA_NO_EN_CONFIG
+                fallaAntesDeAutorizar(
+                    base,
+                    mensajeParaPos = "La terminal no pudo conectar con AngelPay",
+                    queHacer = if (delPanel) "Avisa a soporte y luego reintenta." else "Reintenta.",
+                )
                 return false
             }
         }
@@ -1922,7 +1932,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * sin resolver (un ViewModel recreado no recuerda; la libreta sí). Antes no se emitía
      * NUNCA nada aquí y la tablet terminaba en UNKNOWN con la terminal reservada.
      */
-    private suspend fun fallaAntesDeAutorizar(base: String, mensajeParaPos: String) {
+    private suspend fun fallaAntesDeAutorizar(base: String, mensajeParaPos: String, queHacer: String = "Reintenta.") {
         val esRemoto = _paymentSource == "SOCKET" && _socketRequestId != null && !_socketResultEmitted
         if (esRemoto) {
             val constaQueNoSeCobro = !authorizationWasLaunched && paymentAttemptLedger.cobroSinResolver() == null
@@ -1934,7 +1944,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 Timber.w("📡 [AngelPay Socket] Falla antes de autorizar SIN final retenido: no consta que no hubo cobro")
             }
         }
-        _state.value = AngelPayPaymentState.Error(message = "$base Reintenta.", canRetry = true)
+        _state.value = AngelPayPaymentState.Error(message = "$base $queHacer", canRetry = true)
         if (esRemoto && finalPreAutorizacionRetenido != null) programarCierreDeCobroAbandonado()
     }
 

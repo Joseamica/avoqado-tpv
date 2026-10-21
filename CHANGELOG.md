@@ -9,6 +9,16 @@
 
 ---
 
+## [2.13.1] - 2026-10-21
+
+### **Fixed**
+- **[Mesas] [PAX/Nexgo] Lo que se agrega mientras se manda una ronda lenta ya no se borra**: al terminar de mandar una ronda se vaciaba TODO el carrito, también lo que el mesero agregó mientras giraba (no se comandaba ni se cobraba). Ahora se quita sólo lo que viajó, incluida la pieza de más de un producto que iba en la ronda, y lo demás sale en la siguiente; igual con la ronda encolada sin red y con la mesa abierta sin red. Probado en la Nexgo N86 con red lenta.
+- **[Mesas] [PAX/Nexgo] Cobrar una mesa en efectivo ya no deja la pantalla en blanco**: al quedar saldada, la mesa se liberaba con el recibo abierto y la terminal retrocedía dos pantallas hasta una cuenta vacía. Ahora el recibo se queda y «Cerrar» lleva al plano de un salto. Probado en la N86.
+- **[Mesas] [PAX/Nexgo] Una respuesta tardía ya no pisa la cuenta abierta**: abrir otra mesa, mover la mesa o recibir el id real de una mesa abierta sin red ya no reemplazan ni vacían la cuenta en la que está el mesero.
+- **[Nexgo] Si falta la llave de AngelPay en el panel, el error dice «Avisa a soporte y luego reintenta»** (antes sólo «Reintenta»), en la autorización previa al cobro y al cambiar de comercio. El servidor ya no deja asignar un comercio cuya llave está en otro negocio (en producción desde el 21-oct). Sólo cambia el texto.
+
+---
+
 ## [2.13.0] - 2026-10-20
 
 ### **Added**

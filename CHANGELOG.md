@@ -15,6 +15,10 @@
 - **[PAX/Nexgo] Productos con variantes (talla, color, sabor)**: una familia se ve como UN botón («Playera · 8 variantes · desde $299») en Cobro rápido, Órdenes, Kiosco y Mesas; al tocarlo se abre la hoja para elegir una opción de cada grupo, con precio y existencia de esa talla, y se vende la talla exacta (su SKU, precio y existencia). Buscar o escanear el código de una talla la agrega directo. El catálogo se guarda en el aparato (base Room v42) para que «Órdenes» lo muestre sin red. Probado en PAX A910S y Nexgo N86, también la versión minificada.
 - **[PAX/Nexgo] Contrata punto de venta**: ficha local de Avoqado POS desde una tarjeta de ancho completo en Inicio, con funciones, número comercial y QR para escribir a ventas desde el celular. Disponible sin conexión y en ambos menús, con contenido desplazable, cierre accesible y barras nativas de Android ocultas como en Inicio.
 
+### **Fixed**
+- **[Mesas] [PAX/Nexgo] Un cobro en efectivo sin red ya no se queda atorado en cuarentena**: marcar como resuelto un pendiente rechazado (o descartarlo) borraba su fila y la siguiente venta podía repetir su número; el servidor la rechazaba (`STALE_DEVICE_SEQUENCE`). Ahora la fila se conserva marcada y los números no se repiten.
+- **[Órdenes] [PAX/Nexgo] La nota de un artículo tiene tope de 200 caracteres**: antes no tenía límite (se midió una de 10,038); deja de crecer al escribir o pegar, sin partir un emoji.
+
 ### **⚠️ Al publicar**
 - **La base del aparato sube de v41 a v42.** Subir de versión no pierde nada (probado encima de la 2.12.6). **Bajar a una versión con v41 BORRA la base del aparato** (cola de pagos, reembolsos y cobros remotos pendientes): para retroceder, usa sólo un APK que ya conozca la v42.
 

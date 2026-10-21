@@ -22,6 +22,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -128,6 +129,71 @@ class TableOrderViewModelTest {
         assertThat(viewModel.error.value).isNull() // NO es un error
         assertThat(viewModel.notice.value).contains("Sin conexión")
         coVerify(exactly = 1) { repository.addItems(venueId, "orden-1", any(), 3) }
+    }
+
+    // endregion
+
+    // region — lo que el mesero agrega MIENTRAS se envía la ronda no se borra (QA de variantes, 20-oct)
+
+    @Test
+    fun lo_que_se_agrega_mientras_se_envia_la_ronda_se_queda_en_el_carrito() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", version = 3))
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        val servidor = CompletableDeferred<Unit>()
+        coEvery { repository.addItems(venueId, "orden-1", any(), any()) } coAnswers {
+            servidor.await()
+            Result.success(OrderDetail(id = "orden-1", version = 4))
+        }
+
+        viewModel.sendRound() // envío lento: el server no contesta todavía
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00")) // otro café: se suma a la línea en vuelo
+        pendingCart.addSimple(productId = "prod-2", name = "Agua", unitPrice = BigDecimal("20.00"))
+        servidor.complete(Unit)
+
+        // Se quita SÓLO lo que se mandó (1 café); el segundo café y el agua esperan la siguiente ronda.
+        assertThat(viewModel.pendingLines.value.map { it.productId to it.quantity })
+            .containsExactly("prod-1" to 1, "prod-2" to 1)
+        coVerify(exactly = 1) { repository.addItems(venueId, "orden-1", match { it.size == 1 && it.first().quantity == 1 }, any()) }
+    }
+
+    @Test
+    fun el_cafe_de_mas_mandado_en_otra_ronda_sin_red_no_repite_la_llave_de_la_lista() = runTest {
+        // Codex r1: lo que queda de una línea en vuelo conservaba su lineId; al encolarse también, «Por sincronizar»
+        // tenía dos renglones con la misma llave y la LazyColumn truena (`queued-<lineId>`).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", version = 3))
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        val servidor = CompletableDeferred<Unit>()
+        val encolada = OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-1", quantity = 1)))
+        coEvery { repository.addItems(venueId, "orden-1", any(), any()) } coAnswers { servidor.await(); Result.success(encolada) }
+
+        viewModel.sendRound()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        servidor.complete(Unit)
+        viewModel.sendRound() // el café de más, también sin red
+
+        assertThat(viewModel.queuedLines.value.map { it.quantity }).containsExactly(1, 1)
+        assertThat(viewModel.queuedLines.value.map { it.lineId }.distinct()).hasSize(2)
+        assertThat(viewModel.pendingLines.value).isEmpty()
+    }
+
+    @Test
+    fun sesion_provisional_lo_que_se_agrega_mientras_se_encola_la_ronda_se_queda_en_el_carrito() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-uuid-123")
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        val disco = CompletableDeferred<Unit>()
+        coEvery { syncOutbox.enqueue(any(), any(), any(), any()) } coAnswers { disco.await(); "intent-id" }
+
+        viewModel.sendRound()
+        pendingCart.addSimple(productId = "prod-2", name = "Agua", unitPrice = BigDecimal("20.00"))
+        disco.complete(Unit)
+
+        assertThat(viewModel.pendingLines.value.map { it.productId }).containsExactly("prod-2")
+        assertThat(viewModel.queuedLines.value.map { it.productId }).containsExactly("prod-1")
     }
 
     // endregion
@@ -488,6 +554,34 @@ class TableOrderViewModelTest {
         assertThat(session.orderId).isEqualTo("orden-1") // MISMA cuenta, mesa nueva
         assertThat(viewModel.notice.value).contains("9")
         assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun mover_la_mesa_mientras_llega_el_id_real_no_regresa_la_cuenta_al_id_local_ni_vacia_el_carrito() = runTest {
+        // Codex r2: moveOrder escribía encima la copia de la sesión de ANTES de esperar al servidor. Si el ack de
+        // OPEN_TABLE la promovía mientras tanto, la cuenta volvía al id local y el carrito (ya del id real) se vaciaba.
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1", tableNumber = "1")
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        val servidor = CompletableDeferred<Unit>()
+        coEvery { repository.moveOrder(venueId, "local-1", true, "mesa-9") } coAnswers {
+            servidor.await()
+            Result.success(TablesRepository.MoveOutcome(queued = true, targetTableId = "mesa-9", version = null))
+        }
+        coEvery { repository.getOrder(venueId, "real-1") } returns Result.success(OrderDetail(id = "real-1", version = 2))
+
+        viewModel.moveOrder(DiningTable(id = "mesa-9", number = "9", areaName = "Terraza", status = "AVAILABLE"))
+        // Mientras se mueve vuelve la red: el ack de OPEN_TABLE promueve carrito y cuenta (lo que hace TableSyncCoordinator).
+        pendingCart.promote("local-1", "real-1")
+        tableSession.promoteProvisional("local-1", "real-1", orderNumber = null, version = 2)
+        servidor.complete(Unit)
+        viewModel.loadCheck()
+
+        val session = tableSession.current()!!
+        assertThat(session.orderId).isEqualTo("real-1")
+        assertThat(session.isProvisional).isFalse()
+        assertThat(session.tableId).isEqualTo("mesa-9")
+        assertThat(viewModel.pendingLines.value.map { it.productId }).containsExactly("prod-1")
     }
 
     @Test

@@ -183,13 +183,28 @@ fun TableCheckoutScreen(
         }
     }
 
+    // 🧾 Recibo de EFECTIVO — ver KDoc del LaunchedEffect(tableReleased, cashReceipt)
+    // de arriba. Se muestra en TODO cobro (encolado o no); solo cuando
+    // [CashReceiptSummary.isSettlingPayment] es true se agrega la invitación a
+    // calificar — nunca en un split parcial. Va ANTES del guard «sin sesión»:
+    // releaseTable() limpia la sesión con el recibo todavía abierto.
+    state.cashReceipt?.let { receipt ->
+        CashReceiptDialog(
+            receipt = receipt,
+            onDismiss = viewModel::consumeCashReceipt,
+        )
+    }
+
     val activeSession = session
     if (activeSession == null) {
-        // No debería pasar (solo se llega aquí desde "Cobrar" en
-        // TableOrderScreen), pero si la sesión se limpió por otra vía (no el
-        // camino de tableReleased de arriba, que ya navegó), salir es más
-        // seguro que una pantalla de cobro sin mesa a la que apuntar.
-        LaunchedEffect(Unit) { onNavigateBack() }
+        // Sesión limpiada por otra vía (p. ej. regresar de tarjeta sin cobrar y
+        // salir de la cuenta de encima): salir AL PLANO de un solo salto
+        // ([onPaymentFinished]), nunca un paso. Un paso compite con el guard de
+        // TableOrderScreen y el antirrebote global de SafeNavigationHelper se
+        // traga el segundo: pantalla en blanco (QA N86, 20-oct; Codex r1).
+        // 🔴 Con la mesa liberada no navega: el mismo salto espera a que el
+        // mesero cierre el recibo (efecto de arriba).
+        if (!state.tableReleased) LaunchedEffect(Unit) { onPaymentFinished() }
         return
     }
 
@@ -272,17 +287,6 @@ fun TableCheckoutScreen(
                 serviceChargeTriggered = true
                 viewModel.applyServiceCharge(serviceChargeId)
             },
-        )
-    }
-
-    // 🧾 Recibo de EFECTIVO — ver KDoc del LaunchedEffect(tableReleased, cashReceipt)
-    // de arriba. Se muestra en TODO cobro (encolado o no); solo cuando
-    // [CashReceiptSummary.isSettlingPayment] es true se agrega la invitación a
-    // calificar — nunca en un split parcial.
-    state.cashReceipt?.let { receipt ->
-        CashReceiptDialog(
-            receipt = receipt,
-            onDismiss = viewModel::consumeCashReceipt,
         )
     }
 }

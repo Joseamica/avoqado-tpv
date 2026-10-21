@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data.sync
 
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
+import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
@@ -35,13 +36,32 @@ class TableSyncCoordinatorTest {
 
     private val outbox = mockk<SyncOutbox>()
     private lateinit var session: TableSession
+    private lateinit var cart: PendingRoundCart
     private lateinit var coordinator: TableSyncCoordinator
 
     @Before
     fun setUp() {
         clearMocks(outbox)
         session = TableSession()
-        coordinator = TableSyncCoordinator(outbox, session)
+        cart = PendingRoundCart()
+        coordinator = TableSyncCoordinator(outbox, session, cart)
+    }
+
+    @Test
+    fun el_ack_de_OPEN_TABLE_le_pasa_el_carrito_sin_enviar_a_la_cuenta_real() {
+        // Mesa abierta sin red con productos SIN enviar: al volver la red la cuenta recibe su id real y la siguiente
+        // carga (`loadCheck` → `ensureOrder(real)`) creía que era OTRA cuenta y vaciaba el carrito (Codex r1, 20-oct).
+        session.open(tableId = "mesa-1", localOrderId = "local-1")
+        cart.ensureOrder("local-1")
+        cart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        coordinator.onAck(intentType = SyncIntentTypes.OPEN_TABLE, localOrderId = "local-1", serverOrderId = "real-1")
+        cart.ensureOrder(session.current()!!.orderId)
+
+        assertThat(cart.lines.value.map { it.productId }).containsExactly("prod-1")
+        // Y el carrito de OTRA cuenta se sigue vaciando, como siempre.
+        cart.ensureOrder("otra-cuenta")
+        assertThat(cart.lines.value).isEmpty()
     }
 
     // region — onAck(): literal del plan (Task 5, Step 1)

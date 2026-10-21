@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.math.BigDecimal
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -67,10 +68,20 @@ class TableSession @Inject constructor() {
     private val _active = MutableStateFlow<Active?>(null)
     val active: StateFlow<Active?> = _active.asStateFlow()
 
+    private val _epoch = AtomicLong()
+
+    /**
+     * Sube cada vez que alguien ARRANCA, abre o limpia una sesión (no al promoverla ni al refrescar su versión o total). Una
+     * operación que espera a la red la captura al empezar: si al volver cambió, el mesero ya entró a otra cuenta —o a la
+     * misma otra vez— y la respuesta tardía no debe reemplazarla (Codex r3/r4: comparar el orderId no basta).
+     */
+    val epoch: Long get() = _epoch.get()
+
     fun current(): Active? = _active.value
 
     /** Arranca la sesión directo con un [Active] ya completo (camino ONLINE feliz — id real desde el inicio). */
     fun start(session: Active) {
+        _epoch.incrementAndGet()
         _active.value = session
     }
 
@@ -87,6 +98,7 @@ class TableSession @Inject constructor() {
         areaName: String? = null,
         mode: Mode = Mode.ORDERING,
     ) {
+        _epoch.incrementAndGet()
         _active.value = Active(
             tableId = tableId,
             tableNumber = tableNumber,
@@ -112,6 +124,7 @@ class TableSession @Inject constructor() {
     }
 
     fun clear() {
+        _epoch.incrementAndGet()
         _active.value = null
     }
 

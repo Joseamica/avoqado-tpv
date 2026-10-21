@@ -42,8 +42,8 @@ class PendingRoundCart @Inject constructor() {
         val lineTotal: BigDecimal get() = effectiveUnitPrice.multiply(BigDecimal(quantity))
     }
 
-    /** La mesa/orden dueña del carrito actual — ver [ensureOrder]. */
-    private var ownerOrderId: String? = null
+    /** La mesa/orden dueña del carrito actual — ver [ensureOrder]. `@Volatile`: [promote] llega desde la cola de sincronización. */
+    @Volatile private var ownerOrderId: String? = null
 
     private val _lines = MutableStateFlow<List<Line>>(emptyList())
     val lines: StateFlow<List<Line>> = _lines.asStateFlow()
@@ -63,6 +63,14 @@ class PendingRoundCart @Inject constructor() {
             ownerOrderId = orderId
             _lines.value = emptyList()
         }
+    }
+
+    /**
+     * El ack de OPEN_TABLE cambió el id local de la cuenta por el real: el carrito sigue siendo de ESA cuenta. Sin esto, la
+     * siguiente carga (`ensureOrder(real)`) la tomaba por otra cuenta y tiraba lo que no se había enviado.
+     */
+    fun promote(localOrderId: String, orderId: String) {
+        if (ownerOrderId == localOrderId) ownerOrderId = orderId
     }
 
     /** Tap simple en el grid, sin modificadores — agrupa con una línea igual existente (mismo producto, sin modificadores). */
@@ -107,9 +115,23 @@ class PendingRoundCart @Inject constructor() {
         _lines.value = _lines.value.filterNot { it.lineId == lineId }
     }
 
-    /** Llamado tras un `sendRound()` exitoso (online u offline-encolado) — la ronda ya viajó. */
+    /** Salir de la mesa o cancelar la cuenta: se tira todo lo que no se mandó. */
     fun clear() {
         _lines.value = emptyList()
+    }
+
+    /**
+     * Tras un `sendRound()` exitoso (online u offline-encolado): quita SÓLO lo que viajó, tal como estaba al enviar. Lo que el
+     * mesero agregó mientras tanto se queda para la siguiente ronda, incluido el café de más que `addSimple` sumó a la línea
+     * en vuelo (por eso se resta la cantidad, no se borra la línea). Ese resto lleva un `lineId` NUEVO: si después también se
+     * encola, «Por sincronizar» no puede tener dos renglones con la misma llave (la LazyColumn truena).
+     */
+    fun removeSent(sent: List<Line>) {
+        val enviadas = sent.associate { it.lineId to it.quantity }
+        _lines.value = _lines.value.mapNotNull { line ->
+            val enviada = enviadas[line.lineId] ?: return@mapNotNull line
+            (line.quantity - enviada).takeIf { it > 0 }?.let { line.copy(lineId = UUID.randomUUID().toString(), quantity = it) }
+        }
     }
 
     /** Traduce el carrito al shape que `TablesRepository.addItems` espera para `ADD_ITEMS`. */

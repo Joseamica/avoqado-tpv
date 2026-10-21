@@ -17,6 +17,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -402,6 +403,70 @@ class TablesViewModelTest {
         advanceTimeBy(1000)
 
         coVerify(exactly = 1) { repository.getTables(venueId) } // solo la carga inicial
+    }
+
+    // endregion
+
+    // region — una apertura que responde tarde no reemplaza la cuenta en la que ya está el mesero (Codex r3, 20-oct)
+
+    @Test
+    fun abrir_una_mesa_que_responde_tarde_no_reemplaza_la_cuenta_en_la_que_ya_esta_el_mesero() = runTest {
+        // El mesero toca «Abrir» en A (red lenta), cierra la hoja y entra a «Ver cuenta» de B. Cuando A por fin responde, no
+        // debe quitarle la sesión de B ni llevárselo a A: el carrito sin enviar de B se vaciaba en ensureOrder(A).
+        val servidor = CompletableDeferred<Unit>()
+        coEvery { repository.openTable(venueId, "mesa-A", 2) } coAnswers {
+            servidor.await()
+            Result.success(TablesRepository.TableOpenOutcome(orderId = "orden-A", orderNumber = "A-1", version = 1, isProvisional = false))
+        }
+        val vm = createViewModel()
+        var aAbierta = false
+        vm.openTableAndOrder(table(id = "mesa-A", number = "A"), covers = 2) { aAbierta = true }
+        val b = table(id = "mesa-B", number = "B").copy(
+            openOrders = listOf(OpenCheckSummary(id = "orden-B", orderNumber = "B-1", total = BigDecimal("50.00"), version = 3)),
+        )
+        vm.viewExistingCheck(b) {}
+        servidor.complete(Unit)
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-B")
+        assertThat(aAbierta).isFalse()
+    }
+
+    @Test
+    fun abrir_otra_mesa_que_responde_tarde_no_reemplaza_la_misma_cuenta_a_la_que_el_mesero_volvio_a_entrar() = runTest {
+        // Codex r4: la sesión A seguía activa al tocar «Abrir B» (p. ej. tras un abono con tarjeta y «Inicio»); el mesero
+        // vuelve a entrar a A con «Ver cuenta» y agrega productos. Comparar el orderId (A == A) dejaba que B la reemplazara.
+        tableSession.start(TableSession.Active(tableId = "mesa-A", orderId = "orden-A"))
+        val servidor = CompletableDeferred<Unit>()
+        coEvery { repository.openTable(venueId, "mesa-B", 2) } coAnswers {
+            servidor.await()
+            Result.success(TablesRepository.TableOpenOutcome(orderId = "orden-B", orderNumber = "B-1", version = 1, isProvisional = false))
+        }
+        val vm = createViewModel()
+        var bAbierta = false
+        vm.openTableAndOrder(table(id = "mesa-B", number = "B"), covers = 2) { bAbierta = true }
+        val a = table(id = "mesa-A", number = "A").copy(
+            openOrders = listOf(OpenCheckSummary(id = "orden-A", orderNumber = "A-1", total = BigDecimal("80.00"), version = 2)),
+        )
+        vm.viewExistingCheck(a) {}
+        servidor.complete(Unit)
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-A")
+        assertThat(bAbierta).isFalse()
+    }
+
+    @Test
+    fun abrir_una_mesa_con_una_sesion_que_ya_estaba_antes_de_tocar_si_la_abre() = runTest {
+        // El candado anterior no debe dejar «Abrir» sin efecto si ya había una sesión vieja ANTES del toque.
+        tableSession.start(TableSession.Active(tableId = "mesa-vieja", orderId = "orden-vieja"))
+        coEvery { repository.openTable(venueId, "mesa-A", 2) } returns
+            Result.success(TablesRepository.TableOpenOutcome(orderId = "orden-A", orderNumber = "A-1", version = 1, isProvisional = false))
+        val vm = createViewModel()
+        var aAbierta = false
+
+        vm.openTableAndOrder(table(id = "mesa-A", number = "A"), covers = 2) { aAbierta = true }
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-A")
+        assertThat(aAbierta).isTrue()
     }
 
     // endregion

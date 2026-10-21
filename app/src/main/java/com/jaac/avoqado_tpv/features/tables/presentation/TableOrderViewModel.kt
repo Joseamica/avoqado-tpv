@@ -303,7 +303,7 @@ class TableOrderViewModel @Inject constructor(
                     val payload = tableSession.buildAddItemsPayload(items)
                     syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
                     _queuedLines.value = _queuedLines.value + lines
-                    pendingCart.clear()
+                    pendingCart.removeSent(lines) // lo agregado durante el envío se queda
                     _isSending.value = false
                     _notice.value = "Sin conexión — ronda guardada; se sincronizará sola"
                     return@launch
@@ -321,7 +321,7 @@ class TableOrderViewModel @Inject constructor(
                         } else {
                             _notice.value = "Ronda enviada a cocina"
                         }
-                        pendingCart.clear()
+                        pendingCart.removeSent(lines) // lo agregado durante el envío se queda
                         _isSending.value = false
                         if (!queuedOffline) loadCheck()
                     },
@@ -566,14 +566,19 @@ class TableOrderViewModel @Inject constructor(
             repository.moveOrder(vId, session.orderId, session.isProvisional, target.id).fold(
                 onSuccess = { outcome ->
                     _isMoving.value = false
-                    tableSession.start(
-                        session.copy(
-                            tableId = target.id,
-                            tableNumber = target.number,
-                            areaName = target.areaName,
-                            version = outcome.version ?: session.version,
-                        ),
-                    )
+                    // Sobre la sesión VIGENTE, no sobre la copia de antes de esperar: si el ack de OPEN_TABLE la promovió
+                    // mientras tanto, la copia la regresaba al id local (y el carrito, ya del id real, se vaciaba). Si ya
+                    // no es esta mesa (se salió), no se resucita.
+                    tableSession.current()?.takeIf { it.tableId == session.tableId }?.let { actual ->
+                        tableSession.start(
+                            actual.copy(
+                                tableId = target.id,
+                                tableNumber = target.number,
+                                areaName = target.areaName,
+                                version = outcome.version ?: actual.version,
+                            ),
+                        )
+                    }
                     _notice.value = if (outcome.queued) {
                         "Sin conexión — movimiento a Mesa ${target.number} guardado; se sincronizará solo"
                     } else {

@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.data.sync
 
 import com.google.gson.JsonObject
+import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
@@ -34,6 +35,7 @@ import javax.inject.Singleton
 class TableSyncCoordinator @Inject constructor(
     private val outbox: SyncOutbox,
     private val tableSession: TableSession,
+    private val pendingCart: PendingRoundCart,
 ) {
 
     /**
@@ -101,8 +103,11 @@ class TableSyncCoordinator @Inject constructor(
         version: Int? = null,
     ) {
         when {
-            intentType == SyncIntentTypes.OPEN_TABLE && localOrderId != null && serverOrderId != null ->
+            intentType == SyncIntentTypes.OPEN_TABLE && localOrderId != null && serverOrderId != null -> {
+                // Antes que la sesión: quien ya vea el id real encuentra el carrito sin enviar de esa misma cuenta.
+                pendingCart.promote(localOrderId, serverOrderId)
                 tableSession.promoteProvisional(localOrderId, serverOrderId, orderNumber, version ?: 1)
+            }
 
             serverOrderId != null && tableSession.current()?.orderId == serverOrderId ->
                 version?.let { tableSession.updateVersion(it) }

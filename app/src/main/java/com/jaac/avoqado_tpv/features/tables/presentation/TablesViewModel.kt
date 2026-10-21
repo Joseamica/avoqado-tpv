@@ -365,11 +365,19 @@ class TablesViewModel @Inject constructor(
     fun openTableAndOrder(table: DiningTable, covers: Int, onReady: () -> Unit) {
         val venueId = deviceInfoManager.getVenueId() ?: return
         if (_isOpeningTable.value) return
+        // Si al responder alguien ya arrancó o limpió una sesión (el mesero entró a otra cuenta —o a la MISMA otra vez— con
+        // «Ver cuenta», que no espera esta apertura), la respuesta tardía no la reemplaza ni lo saca de ahí, y la mesa queda
+        // abierta en el plano (Codex r3/r4; misma familia que «Mover mesa»).
+        val epocaAlTocar = tableSession.epoch
         viewModelScope.launch {
             _isOpeningTable.value = true
             _openTableError.value = null
             tablesRepository.openTable(venueId, table.id, covers).fold(
                 onSuccess = { outcome ->
+                    if (tableSession.epoch != epocaAlTocar) {
+                        _isOpeningTable.value = false
+                        return@fold
+                    }
                     if (outcome.isProvisional) {
                         tableSession.open(
                             tableId = table.id,

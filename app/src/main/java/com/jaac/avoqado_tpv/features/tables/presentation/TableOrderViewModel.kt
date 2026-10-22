@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.IOException
+import java.time.ZoneId
 import javax.inject.Inject
 
 /**
@@ -70,6 +72,9 @@ class TableOrderViewModel @Inject constructor(
      */
     private val _isOnline = MutableStateFlow(networkMonitor.isConnected())
     val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
+
+    /** Zona del negocio para las horas de la cuenta (la hora de cada ronda): el servidor las manda en UTC. */
+    val venueZoneId: ZoneId get() = VenueTimeZone.get(secureStorage)
 
     private val _check = MutableStateFlow<OrderDetail?>(null)
     val check: StateFlow<OrderDetail?> = _check.asStateFlow()

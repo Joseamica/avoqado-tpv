@@ -68,6 +68,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
@@ -77,6 +78,7 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
@@ -265,6 +267,7 @@ fun TableOrderScreen(
         onSendRound = viewModel::sendRound,
         onRetryLoad = viewModel::loadCheck,
         onNavigateToCheckout = onNavigateToCheckout,
+        venueZoneId = viewModel.venueZoneId,
         onSplitClick = { showSplitSheet = true },
         onCompClick = { showCompSheet = true },
         onMoveClick = {
@@ -418,6 +421,8 @@ private fun TableOrderScreenContent(
     onSendRound: () -> Unit,
     onRetryLoad: () -> Unit,
     onNavigateToCheckout: () -> Unit,
+    /** Zona del negocio para la hora de cada ronda (nunca la del aparato). */
+    venueZoneId: ZoneId = VenueTimeZone.MEXICO,
     onSplitClick: () -> Unit = {},
     onCompClick: () -> Unit = {},
     onMoveClick: () -> Unit = {},
@@ -556,7 +561,7 @@ private fun TableOrderScreenContent(
                     if (rounds.isNotEmpty()) {
                         rounds.forEachIndexed { index, round ->
                             item(key = "round-header-${round.sentAt}-$index") {
-                                SectionHeader(roundLabel(round.sentAt, rounds.size - index))
+                                SectionHeader(roundLabel(round.sentAt, rounds.size - index, venueZoneId))
                             }
                             items(round.items, key = { "sent-${it.id}" }) { orderItem ->
                                 SentItemRow(item = orderItem)
@@ -944,10 +949,13 @@ private fun TableOrderBottomBar(
 
 private fun moneyDisplay(amount: BigDecimal): String = "$${amount.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
 
-/** "Ronda 3" (más reciente) → "Ronda 1" (primera) — o la hora si se puede parsear. */
-private fun roundLabel(sentAt: String?, roundNumber: Int): String {
+/**
+ * "Ronda 3" (más reciente) → "Ronda 1" (primera) — o la hora si se puede parsear, en la zona del NEGOCIO: el servidor la
+ * manda en UTC («…Z») y sin convertirla el mesero veía «21:08» a las 3:08 pm (N86, 21-oct).
+ */
+internal fun roundLabel(sentAt: String?, roundNumber: Int, zona: ZoneId): String {
     val time = sentAt?.let { raw ->
-        runCatching { OffsetDateTime.parse(raw).format(DateTimeFormatter.ofPattern("HH:mm")) }.getOrNull()
+        runCatching { OffsetDateTime.parse(raw).atZoneSameInstant(zona).format(DateTimeFormatter.ofPattern("HH:mm")) }.getOrNull()
     }
     return if (time != null) "Ronda $roundNumber · $time" else "Ronda $roundNumber"
 }

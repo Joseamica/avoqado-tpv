@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Mesas] [PAX/Nexgo] La hora de cada ronda sale en la hora del negocio**: el título «Ronda 1 · 21:08» mostraba la hora UTC que manda el servidor (6 horas adelantada en la Ciudad de México); ahora dice «Ronda 1 · 15:08», con la zona del negocio (Cancún, Tijuana… cada una la suya).
+
 ---
 
 ## [2.13.1] - 2026-10-21

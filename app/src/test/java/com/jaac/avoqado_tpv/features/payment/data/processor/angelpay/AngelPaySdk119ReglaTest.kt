@@ -361,10 +361,10 @@ class AngelPaySdk119ReglaTest {
     @Test
     fun `P1 T12 con otra version del SDK la regla no corre`() {
         val u101 = delOrquestador(PaymentResult.Status.TIMEOUT, "Tiempo de espera agotado", AppErrorCatalog.Code.U101)
-        assertThat(decidir(u101)).isEqualTo(DecisionDelSdk.SIN_AUTORIZACION) // control: con 1.0.21 sí
-        // 🔴 El 1.0.19 ya NO: su Cancelar no se revisaba antes de enviar (diseño §4.2, ventanas W1/W2). Y el 1.0.20 tampoco
-        // desde el 29-sep: se auditó el binario que se empaqueta (1.0.21), no el anterior.
-        listOf("1.0.18", "1.0.19", "1.0.20", "1.0.22", "1.0.210", "", null).forEach { otra ->
+        assertThat(decidir(u101)).isEqualTo(DecisionDelSdk.SIN_AUTORIZACION) // control: con 1.0.22 sí
+        // 🔴 El 1.0.19 ya NO: su Cancelar no se revisaba antes de enviar (diseño §4.2, ventanas W1/W2). Y el 1.0.20 y el
+        // 1.0.21 tampoco: se audita el binario que se empaqueta (1.0.22 desde el 23-oct), no el anterior.
+        listOf("1.0.18", "1.0.19", "1.0.20", "1.0.21", "1.0.23", "1.0.220", "", null).forEach { otra ->
             assertWithMessage("versión=$otra").that(decidir(u101, versionSdk = otra)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
         }
     }
@@ -372,23 +372,25 @@ class AngelPaySdk119ReglaTest {
     @Test
     fun `P1 T12 el AAR del proyecto es EXACTAMENTE el auditado - cambiarlo exige re-auditar la regla`() {
         // 🔴 Si esto cae porque llegó un SDK nuevo: NO actualices el hash a ciegas. La regla confía en `authorizationAttempted`
-        // tal como lo implementa ESTE binario (`b0.v0.m` en el 1.0.21, re-auditado el 29-sep contra el 1.0.20 `b0.h0`: el
-        // Cancelar sigue revisándose antes de `m = true` y del envío en chip y banda, sin caminos de envío nuevos);
+        // tal como lo implementa ESTE binario (`b0.v0.m` en el 1.0.22, re-auditado el 23-oct contra el 1.0.21 `b0.v0`: el
+        // Cancelar sigue revisándose antes de `m = true` y del envío en chip y banda, sin caminos de envío nuevos ni
+        // salidas nuevas; lo único nuevo es la detección de wallet AMEX antes del tope sin contacto);
         // re-audítalo contra el nuevo antes de mover el candado.
-        val aar = listOf(File("libs/angelpaySDK-v1.0.21-fat-release.aar"), File("app/libs/angelpaySDK-v1.0.21-fat-release.aar"))
+        val aar = listOf(File("libs/angelpaySDK-v1.0.22-fat-release.aar"), File("app/libs/angelpaySDK-v1.0.22-fat-release.aar"))
             .firstOrNull { it.exists() }
-        assertWithMessage("no se encontró el AAR 1.0.21 (directorio de trabajo: ${File(".").absolutePath})").that(aar).isNotNull()
+        assertWithMessage("no se encontró el AAR 1.0.22 (directorio de trabajo: ${File(".").absolutePath})").that(aar).isNotNull()
         val sha = MessageDigest.getInstance("SHA-256").digest(aar!!.readBytes()).joinToString("") { "%02x".format(it) }
-        // El que publica AngelPay en su portal de desarrolladores (SDK Android v1.0.21, 29-sep-2026, «sha256 2cacce2b482d…»).
-        assertThat(sha).isEqualTo("2cacce2b482d64726386479b7a10fadd092e9e048a60827c598997efa125fa8d")
+        // El que publica AngelPay en su portal (SDK Android v1.18.0 = AAR 1.0.22, 15-oct-2026, «sha256 d4faf9f36690…»;
+        // el portal lo titula «angelpaySDK-v1.0.21 — v1.0.22»: el nombre miente, `version()` no).
+        assertThat(sha).isEqualTo("d4faf9f36690fb921c10d892f02bdde8c3b9604d8b372ebebc49aa2493031d2e")
         // La versión que el binario dice ser es la del candado.
         assertThat(AngelPaySDK.version()).isEqualTo(AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA)
         // Y el build empaqueta ESE archivo en las cuatro configuraciones (compileOnly, nexgo, nexgoProd, pruebas).
         val gradle = listOf(File("build.gradle.kts"), File("app/build.gradle.kts")).first { it.exists() }.readText()
         val aars = Regex("""files\("libs/(angelpaySDK-[^"]+)"\)""").findAll(gradle).map { it.groupValues[1] }.toList()
         assertThat(aars).containsExactly(
-            "angelpaySDK-v1.0.21-fat-release.aar", "angelpaySDK-v1.0.21-fat-release.aar",
-            "angelpaySDK-v1.0.21-fat-release.aar", "angelpaySDK-v1.0.21-fat-release.aar",
+            "angelpaySDK-v1.0.22-fat-release.aar", "angelpaySDK-v1.0.22-fat-release.aar",
+            "angelpaySDK-v1.0.22-fat-release.aar", "angelpaySDK-v1.0.22-fat-release.aar",
         )
     }
 

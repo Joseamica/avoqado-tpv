@@ -136,8 +136,16 @@ object AngelPayOutcomeClassifier {
      * (AMEX/hotelería), el `-8028` que ahora llega aprobado (`S000`) sin reversa, la firma en pantalla —sólo después de
      * aprobar, con tope de 60 s, y no cambia el resultado— y `PaymentResult.cardCountryCode` (5F28). El 1.0.20 ya NO está
      * auditado para esta regla: se audita el binario que se empaqueta.
+     *
+     * 🔴 **1.0.22 (23-oct), re-auditado en bytecode contra el 1.0.21 (Codex r1 sin hallazgos):** fuera del método de cobro
+     * de `b0.v0` el AAR es idéntico salvo renombres y la versión. En el cobro, `m` se escribe en los mismos 3 lugares, `l`
+     * se revisa antes de `m = true` y del envío en chip y banda, y las 25 salidas son las mismas (corridas +443 bytes). Lo
+     * nuevo va ANTES del tope sin contacto: en contactless lee 9F34/9F71 y, si el titular se verificó en el teléfono
+     * (CDCVM), lo trata como wallet —sin tope, `authentication = "con dispositivo movil"`—; el `E608` sólo sale ahora para la
+     * tarjeta física. No envía, no escribe `m` y sus excepciones no salen del bloque. El 1.0.21 ya NO está auditado.
+     * Acta: `Avoqado/docs/audit/2026-10-23-angelpay-sdk-1022/auditoria-bytecode.md`.
      */
-    const val VERSION_SDK_AUDITADA = "1.0.21"
+    const val VERSION_SDK_AUDITADA = "1.0.22"
 
     /**
      * 🔴 La regla del SDK 1.0.19 (diseño `diseno-nexgo-sdk-1.0.19.md` §2.1 + decisiones del founder del 18-sep).

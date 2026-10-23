@@ -9,6 +9,13 @@
 
 ---
 
+## [2.13.2] - 2026-10-23
+
+### **Changed**
+- **[Nexgo] SDK de AngelPay 1.0.22**: un AMEX pagado con Apple Pay o Google Pay por más de $1,500 ya no se rechaza con E608 (la AMEX física sigue con su tope). Re-auditado en bytecode contra el 1.0.21 antes de mover el candado de la regla «no se cobró» (`VERSION_SDK_AUDITADA = "1.0.22"`); la frontera del envío y el Cancelar antes de enviar no cambiaron. Probado en la N86 con los rechazos controlados de QA (51, 54, 55, 61, 05, 1A), Cancelar sin tarjeta, lectura fallida y un cobro aprobado. Las terminales PAX no cambian.
+
+---
+
 ## [2.13.1] - 2026-10-21
 
 ### **Fixed**

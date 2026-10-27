@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Nexgo] Ya no se traba con «El token de selección ha expirado»**: en una cuenta AngelPay con varios comercios, si pasaban unos minutos entre que la terminal arrancaba y el primer cobro, elegir el comercio fallaba y sólo se arreglaba reiniciando. Ahora pide un permiso nuevo de la MISMA cuenta y elige otra vez, una sola vez y antes de leer la tarjeta (sin red no reintenta)
+- **[Nexgo] Salir a media conexión con AngelPay ya no deja Tarjeta y Efectivo apagados**: si el cajero salía mientras la terminal iniciaba sesión en AngelPay, quedaba «conectando» para siempre; ahora queda lista para reconectar sola
+
 ---
 
 ## [2.13.2] - 2026-10-23

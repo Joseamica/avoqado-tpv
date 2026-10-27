@@ -515,8 +515,16 @@ class AngelPayAuthRepository @Inject constructor(
         // AngelPay QA `initKeys` endpoint occasionally takes 15+ sec under load;
         // the previous 3-attempt schedule (500ms+1s+2s = 3.5s) bailed before the
         // server recovered. Reported: 2026-05-19 timeout on contacto@avoqado.io.
-        val authResult = retryWithBackoff(maxAttempts = 5) {
-            sdkGateway.authenticateSimple(creds.email, creds.pin)
+        val authResult = try {
+            retryWithBackoff(maxAttempts = 5) {
+                sdkGateway.authenticateSimple(creds.email, creds.pin)
+            }
+        } catch (cancelada: CancellationException) {
+            // D7 (Codex r1 #1): el cajero salió o la pantalla murió a media espera. Sin esto quedaba
+            // Authenticating para siempre (Tarjeta y Efectivo apagados) y T26 no lo recupera;
+            // Unauthenticated sí lo recuperan T26 y la auth previa del siguiente cobro.
+            _state.value = AngelPayAuthState.Unauthenticated
+            throw cancelada
         }
 
         return authResult.fold(
@@ -736,7 +744,37 @@ class AngelPayAuthRepository @Inject constructor(
         temporaryToken: String,
         reportMerchants: Boolean = false,
     ): Result<Unit> = nucleo.withLock {
-        val result = merchantRepository.completeInitialSelection(merchantId, temporaryToken)
+        var result = merchantRepository.completeInitialSelection(merchantId, temporaryToken)
+        // D7 (27-oct-2026, N86 real): el token de selección vence a los pocos minutos y se pidió al
+        // arrancar. Un login nuevo de la MISMA cuenta trae otro y se elige UNA vez más. Es antes de
+        // abrir el lector: nada se cobró. Sin red no se reintenta (lo recupera T26).
+        if (result.isFailure && !esFallaDeRed(result.exceptionOrNull())) {
+            val cuenta = currentAngelPayAccountId
+            // Regla de Amaena: sin cuenta conocida, o si ya no resuelve, nunca el genérico (la primaria).
+            val creds = cuenta?.let { credentialResolver.resolveByAccountId(it).getOrNull() }
+            if (creds != null) {
+                Timber.tag(LOG_TAG).w(
+                    "completeMerchantSelection($merchantId): selección rechazada (${result.exceptionOrNull()?.message}) — login nuevo de $cuenta",
+                )
+                runCatching { sdkGateway.logout() }
+                merchantRepository.clearActive()
+                authenticateWithCreds(creds)
+                val tokenNuevo = (_state.value as? AngelPayAuthState.SelectingMerchant)?.temporaryToken
+                if (tokenNuevo != null) {
+                    result = merchantRepository.completeInitialSelection(merchantId, tokenNuevo)
+                } else {
+                    // El login nuevo ya no pide elegir: su estado manda (Codex r1 #2). Con el mismo comercio
+                    // activo y un estado que cobra, ya quedó elegido; si no, se falla sin pisar ese estado.
+                    val estado = _state.value
+                    val cobra = estado is AngelPayAuthState.Authenticated || estado is AngelPayAuthState.ConfigMismatchBanner
+                    return@withLock if (cobra && merchantRepository.activeAngelPayMerchantId.value == merchantId) {
+                        Result.success(Unit)
+                    } else {
+                        result
+                    }
+                }
+            }
+        }
         if (result.isSuccess) {
             _state.value = AngelPayAuthState.Authenticated
             salirDeAtorada()

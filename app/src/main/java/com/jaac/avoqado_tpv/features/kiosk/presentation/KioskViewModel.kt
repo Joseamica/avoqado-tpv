@@ -130,6 +130,8 @@ class KioskViewModel @Inject constructor(
     // otra. Cambia cuando cambia el carrito y se olvida al vaciarlo o al terminar la venta.
     private var llaveDeVenta: String? = null
     private var identidadDeLaLlave: String = ""
+    // Ya se mandó al SERVIDOR una vez: la venta que devuelva puede ser de un intento anterior (y alguien pudo tocarla).
+    private var llaveYaSeUso = false
 
     // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
     // Falls back to regular venueId for backwards compatibility
@@ -543,7 +545,10 @@ class KioskViewModel @Inject constructor(
             if (llaveDeVenta == null || identidadDeLaLlave != identidad) {
                 llaveDeVenta = "kiosk:${UUID.randomUUID()}"
                 identidadDeLaLlave = identidad
+                llaveYaSeUso = false
             }
+            val esReintento = llaveYaSeUso
+            llaveYaSeUso = true
             val order = crearVentaConLlave() ?: return null
             Timber.i("🥝 [KIOSK-VM] Order from backend - orderId: ${order.id}, orderNumber: ${order.orderNumber}, items: ${order.items.size}")
 
@@ -600,6 +605,14 @@ class KioskViewModel @Inject constructor(
                 Timber.e("🥝 [KIOSK-VM] ❌ Order ${order.id} was created but has NO items - aborting payment flow!")
                 // TODO: Consider deleting/voiding the empty order here
                 return null  // 🔴 FIX: Return null to prevent payment with empty order
+            }
+
+            // En un reintento, la venta vacía que se recuperó pudo traer algo que sólo se ve al cargarle los productos (un cargo
+            // por servicio aplicado mientras estaba vacía, Codex r4 #1): si el total ya no es el del carrito, no se cobra.
+            // En el primer intento la venta es nueva y nadie más la tocó: sigue como hoy.
+            if (esReintento && !updatedOrder.estaComoLaDejoElKiosco(identidad, totalDelCarrito())) {
+                Timber.e("🥝 [KIOSK-VM] ❌ Recovered order ${order.id} total ${updatedOrder.total} != cart ${totalDelCarrito()} after adding — not paying it")
+                return null
             }
 
             Timber.i("🥝 [KIOSK-VM] ✅ createOrder() SUCCESS - orderId: ${order.id}, orderNumber: ${order.orderNumber}, items: ${updatedOrder.items.size}, total: ${updatedOrder.total}")
@@ -701,6 +714,7 @@ class KioskViewModel @Inject constructor(
         cartIdentityWhenOrderCreated = ""
         llaveDeVenta = null
         identidadDeLaLlave = ""
+        llaveYaSeUso = false
         Timber.i("🥝 [KIOSK-VM] clearCreatedOrder() - Cleared order state (was: $orderId)")
     }
 

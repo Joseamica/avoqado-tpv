@@ -196,7 +196,33 @@ class KioskOrdenHuerfanaTest {
         }
     }
 
+    @Test fun `un cargo puesto a la venta vacia que solo se ve al cargar los productos no se cobra de menos (Codex r4 #1)`() = runTest {
+        val vm = kiosco()
+        vm.addToCart(producto("p-cafe"))
+        servidor.alAgregar = listOf(Agregar.NO_LLEGA)
+
+        assertThat(vm.getOrCreateOrder()).isNull()
+        servidor.ventas.values.single().cargo = 10.0 // vacía: todavía no cambia nada a la vista
+        assertThat(vm.getOrCreateOrder()).isNull() // al cargarle los productos el total es $40 y el carrito $30
+
+        assertThat(servidor.ventas).hasSize(1)
+        assertThat(vm.getOrCreateOrder()).isNull() // tampoco al reintentar
+        assertThat(servidor.ventas).hasSize(1)
+        vm.viewModelScope.cancel()
+    }
+
     // ---- Regresiones: lo de hoy sigue igual ----
+
+    @Test fun `primer intento con un precio distinto en el servidor sigue como hoy`() = runTest {
+        // El candado del total es sólo para ventas recuperadas: una venta nueva no la tocó nadie (el precio distinto es otro tema).
+        val vm = kiosco()
+        vm.addToCart(producto("p-cafe"))
+        servidor.ajusteDePrecio = -5.0
+
+        assertThat(vm.getOrCreateOrder()).isNotNull()
+        assertThat(servidor.ventas).hasSize(1)
+        vm.viewModelScope.cancel()
+    }
 
     @Test fun `camino feliz - una venta con sus productos y volver a pagar la reutiliza sin crear otra`() = runTest {
         val vm = kiosco()
@@ -243,6 +269,7 @@ class KioskOrdenHuerfanaTest {
         var pago: String = "PENDING",
         var pagado: Double = 0.0,
         var descuento: Double = 0.0,
+        var cargo: Double = 0.0,
         val cantidades: MutableMap<String, Int> = linkedMapOf(), // «producto|extras ordenados» → cantidad
     )
 
@@ -251,6 +278,7 @@ class KioskOrdenHuerfanaTest {
         val llavesRecibidas = mutableListOf<String>()
         var crearLlamadas = 0
         var alAgregar: List<Agregar> = emptyList()
+        var ajusteDePrecio = 0.0
         private var agregarLlamadas = 0
 
         fun venta(id: String) = ventas.values.first { it.id == id }
@@ -283,7 +311,7 @@ class KioskOrdenHuerfanaTest {
             return Result.success(orden(venta))
         }
 
-        private fun precio(extras: String) = 30.0 + 5.0 * extras.split(",").count { it.isNotBlank() }
+        private fun precio(extras: String) = 30.0 + ajusteDePrecio + 5.0 * extras.split(",").count { it.isNotBlank() }
         private fun subtotal(v: Venta) = v.cantidades.entries.sumOf { (llave, cantidad) -> precio(llave.substringAfter("|")) * cantidad }
 
         /** La venta como JSON del SERVIDOR, traducida igual que en la terminal. */
@@ -303,7 +331,8 @@ class KioskOrdenHuerfanaTest {
                         )
                     },
                     "subtotal" to subtotal(v), "discountAmount" to v.descuento, "taxAmount" to 0.0,
-                    "total" to subtotal(v) - v.descuento, "paidAmount" to v.pagado, "servedById" to null,
+                    "total" to subtotal(v) - v.descuento + (if (v.cantidades.isEmpty()) 0.0 else v.cargo),
+                    "paidAmount" to v.pagado, "servedById" to null,
                     "createdAt" to ahora, "updatedAt" to ahora, "version" to v.version,
                 ),
             )

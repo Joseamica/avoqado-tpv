@@ -13,7 +13,10 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
+import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
+import java.util.UUID
 import javax.inject.Inject
 
 /**
@@ -118,8 +122,14 @@ class KioskViewModel @Inject constructor(
     private val _createdOrderNumber = MutableStateFlow<String?>(null)
     val createdOrderNumber: StateFlow<String?> = _createdOrderNumber.asStateFlow()
 
-    // Cart hash when order was created (to detect cart changes)
-    private var cartHashWhenOrderCreated: Int = 0
+    // Identidad EXACTA del carrito cuando se creó la venta (para saber si cambió)
+    private var cartIdentityWhenOrderCreated: String = ""
+
+    // hz:d4d6c503:D1 — llave (`externalId`) de la venta de ESTE carrito. Si la red se cae al agregar los productos (o se pierde
+    // la respuesta), el reintento con el mismo carrito repite la llave y el SERVIDOR devuelve la MISMA venta en vez de crear
+    // otra. Cambia cuando cambia el carrito y se olvida al vaciarlo o al terminar la venta.
+    private var llaveDeVenta: String? = null
+    private var identidadDeLaLlave: String = ""
 
     // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
     // Falls back to regular venueId for backwards compatibility
@@ -528,25 +538,31 @@ class KioskViewModel @Inject constructor(
 
             Timber.d("🥝 [KIOSK-VM] createOrder() - ${items.size} items, venueId: $venueId")
 
-            // Step 1: Create empty order via backend
-            // 🥝 KIOSK source: Abandoned orders are excluded from pay-later/open orders lists
-            val createResult = orderRepository.createOrder(
-                venueId = venueId,
-                tableId = null,  // TAKEOUT - no table
-                covers = 1,
-                waiterId = null,  // Self-service - no waiter
-                orderType = OrderType.TAKEOUT,
-                source = "KIOSK"  // 🔑 Mark as KIOSK to exclude from "cuentas por cobrar" if abandoned
-            )
+            // Step 1: Create empty order via backend — con la llave de este carrito (un reintento recupera la misma venta)
+            val identidad = identidadDelCarrito()
+            if (llaveDeVenta == null || identidadDeLaLlave != identidad) {
+                llaveDeVenta = "kiosk:${UUID.randomUUID()}"
+                identidadDeLaLlave = identidad
+            }
+            val order = crearVentaConLlave() ?: return null
+            Timber.i("🥝 [KIOSK-VM] Order from backend - orderId: ${order.id}, orderNumber: ${order.orderNumber}, items: ${order.items.size}")
 
-            // Extract order from result
-            val order = createResult.getOrNull()
-            if (order == null) {
-                Timber.e("🥝 [KIOSK-VM] createOrder() FAILED - backend returned null")
+            // Con la llave, el SERVIDOR puede devolver una venta que YA existía (un intento anterior de este mismo carrito).
+            // Sólo se usa si está EXACTAMENTE como la dejó el kiosco. Si alguien más la tocó (cobro, abono, cancelación,
+            // borrado, unión con otra cuenta, división, descuento, cortesía, cargo…), ni se cobra ni se abre otra con el mismo
+            // carrito: la llave se CONSERVA y vaciar el carrito es lo que empieza de cero (Codex r1–r3, una regla para toda la
+            // familia en vez de un parche por caso).
+            if (!order.estaComoLaDejoElKiosco(identidad, totalDelCarrito())) {
+                Timber.e("🥝 [KIOSK-VM] ❌ Order ${order.id} changed elsewhere (${order.serverStatus ?: order.status}, ${order.paymentStatus}, paid=${order.paidAmount}, total=${order.total}, items=${order.items.size}) — not paying it nor opening another")
                 return null
             }
 
-            Timber.i("🥝 [KIOSK-VM] Order created by backend - orderId: ${order.id}, orderNumber: ${order.orderNumber}")
+            // Recuperada CON productos: el envío anterior sí llegó (agregar es todo o nada en el SERVIDOR). No se vuelven a
+            // mandar: el SERVIDOR suma los renglones iguales de un envío (`_count > 1`) y duplicaría lo comprado (Codex r1 #1).
+            if (order.items.isNotEmpty()) {
+                Timber.i("🥝 [KIOSK-VM] ✅ Recovered order ${order.id} already has the cart items — reusing it")
+                return guardarVentaCreada(order, identidad)
+            }
 
             // Step 2: Add items to the order
             val addItemRequests = items.map { cartItem ->
@@ -587,20 +603,55 @@ class KioskViewModel @Inject constructor(
             }
 
             Timber.i("🥝 [KIOSK-VM] ✅ createOrder() SUCCESS - orderId: ${order.id}, orderNumber: ${order.orderNumber}, items: ${updatedOrder.items.size}, total: ${updatedOrder.total}")
-            // Save order ID for customer assignment
-            currentOrderId = order.id
-
-            // 🔧 FIX: Save order for reuse (prevents duplicate orders on back navigation)
-            _createdOrderId.value = order.id
-            _createdOrderNumber.value = order.orderNumber
-            cartHashWhenOrderCreated = computeCartHash()
-            Timber.i("🥝 [KIOSK-VM] Order saved for reuse (cartHash=$cartHashWhenOrderCreated)")
-
-            Pair(order.id, order.orderNumber)
+            guardarVentaCreada(order, identidad)
         } catch (e: Exception) {
             Timber.e(e, "🥝 [KIOSK-VM] createOrder() EXCEPTION")
             null
         }
+    }
+
+    /** 🥝 KIOSK source: las ventas abandonadas no salen en «cuentas por cobrar». */
+    private suspend fun crearVentaConLlave(): Order? {
+        val order = orderRepository.createOrder(
+            venueId = venueId,
+            tableId = null,  // TAKEOUT - no table
+            covers = 1,
+            waiterId = null,  // Self-service - no waiter
+            orderType = OrderType.TAKEOUT,
+            source = "KIOSK",
+            externalId = llaveDeVenta
+        ).getOrNull()
+        if (order == null) Timber.e("🥝 [KIOSK-VM] createOrder() FAILED - backend returned null")
+        return order
+    }
+
+    /**
+     * Abierta (estado CRUDO del SERVIDOR: la terminal lee DELETED como OPEN), sin dinero ni descuentos, y vacía (el envío de los
+     * productos no llegó) o con lo mismo del carrito al MISMO total (llegó y se perdió la respuesta; el total atrapa descuentos,
+     * cortesías y cargos que no cambian los productos, Codex r3 #3: el kiosco cobra el total del carrito).
+     */
+    private fun Order.estaComoLaDejoElKiosco(identidad: String, totalDelCarrito: BigDecimal): Boolean {
+        val abierta = (serverStatus ?: "PENDING") in ESTADOS_ABIERTOS_DEL_SERVIDOR &&
+            status != OrderStatus.CANCELLED && status != OrderStatus.COMPLETED
+        val sinDinero = paymentStatus == PaymentStatus.PENDING && paidAmount.signum() == 0 && discountAmount.signum() == 0
+        val comoElCarrito = items.isEmpty() ||
+            (identidadDeRenglones(items.map { Triple(it.productId, it.modifiers.map { m -> m.id }, it.quantity) }) == identidad &&
+                total.compareTo(totalDelCarrito) == 0)
+        return abierta && sinDinero && comoElCarrito
+    }
+
+    private fun totalDelCarrito(): BigDecimal = _cartItems.value.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) }
+
+    private fun guardarVentaCreada(order: Order, identidad: String): Pair<String, String> {
+        // Save order ID for customer assignment
+        currentOrderId = order.id
+
+        // 🔧 FIX: Save order for reuse (prevents duplicate orders on back navigation)
+        _createdOrderId.value = order.id
+        _createdOrderNumber.value = order.orderNumber
+        cartIdentityWhenOrderCreated = identidad
+        Timber.i("🥝 [KIOSK-VM] Order saved for reuse (cart=$identidad)")
+        return Pair(order.id, order.orderNumber)
     }
 
     /**
@@ -616,11 +667,11 @@ class KioskViewModel @Inject constructor(
     suspend fun getOrCreateOrder(): Pair<String, String>? {
         val existingOrderId = _createdOrderId.value
         val existingOrderNumber = _createdOrderNumber.value
-        val currentCartHash = computeCartHash()
+        val currentCartIdentity = identidadDelCarrito()
 
         // Case 1: Order exists and cart hasn't changed → reuse
-        if (existingOrderId != null && existingOrderNumber != null && currentCartHash == cartHashWhenOrderCreated) {
-            Timber.i("🥝 [KIOSK-VM] getOrCreateOrder() - REUSING existing order (id=$existingOrderId, cartHash unchanged)")
+        if (existingOrderId != null && existingOrderNumber != null && currentCartIdentity == cartIdentityWhenOrderCreated) {
+            Timber.i("🥝 [KIOSK-VM] getOrCreateOrder() - REUSING existing order (id=$existingOrderId, cart unchanged)")
             currentOrderId = existingOrderId  // Ensure currentOrderId is set for customer assignment
             return Pair(existingOrderId, existingOrderNumber)
         }
@@ -647,7 +698,9 @@ class KioskViewModel @Inject constructor(
         val orderId = _createdOrderId.value
         _createdOrderId.value = null
         _createdOrderNumber.value = null
-        cartHashWhenOrderCreated = 0
+        cartIdentityWhenOrderCreated = ""
+        llaveDeVenta = null
+        identidadDeLaLlave = ""
         Timber.i("🥝 [KIOSK-VM] clearCreatedOrder() - Cleared order state (was: $orderId)")
     }
 
@@ -660,18 +713,9 @@ class KioskViewModel @Inject constructor(
         return _createdOrderId.value != null && _createdOrderNumber.value != null
     }
 
-    /**
-     * Compute a hash of the current cart contents
-     * Used to detect if cart has changed since order was created
-     */
-    private fun computeCartHash(): Int {
-        val items = _cartItems.value
-        return items.sumOf { item ->
-            // Hash based on product ID, quantity, and modifiers
-            val modifiersHash = item.selectedModifiers.sumOf { it.id.hashCode() }
-            item.productId.hashCode() * 31 + item.quantity * 17 + modifiersHash
-        }
-    }
+    /** Lo que compra este carrito, exacto (Codex r1 #2: la suma de hashes confundía «2 de A + 1 de B» con «1 de A + 2 de B»). */
+    private fun identidadDelCarrito(): String =
+        identidadDeRenglones(_cartItems.value.map { Triple(it.productId, it.selectedModifiers.map { m -> m.id }, it.quantity) })
 
     // ==================== CUSTOMER FUNCTIONS ====================
 
@@ -833,3 +877,15 @@ internal fun Product.toKioskProduct(): KioskProduct {
         familia = this.familia  // ya armada por el mapper; el modelo de Kiosco la lleva tal cual
     )
 }
+
+/**
+ * Identidad exacta de lo comprado: (producto, extras sin importar su orden) → cantidad total. Dos renglones iguales cuentan como
+ * uno con la suma, igual que los junta el SERVIDOR. Sirve para comparar el carrito con otro carrito o con una venta.
+ */
+internal fun identidadDeRenglones(renglones: List<Triple<String, List<String>, Int>>): String =
+    renglones.groupBy({ (producto, extras, _) -> "$producto|${extras.sorted().joinToString(",")}" }, { it.third })
+        .mapValues { (_, cantidades) -> cantidades.sum() }
+        .toSortedMap()
+        .entries.joinToString(";") { (renglon, cantidad) -> "$renglon×$cantidad" }
+
+private val ESTADOS_ABIERTOS_DEL_SERVIDOR = setOf("PENDING", "CONFIRMED", "PREPARING", "READY")

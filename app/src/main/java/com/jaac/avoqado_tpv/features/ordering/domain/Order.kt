@@ -44,7 +44,13 @@ data class Order(
     val lastSplitType: SplitType? = null,  // ⭐ Split type of last payment (restricts future split options)
     val paidItemIds: List<String> = emptyList(),  // ⭐ Items already paid (for SplitByProduct screen)
     val discounts: List<OrderDiscount> = emptyList(),  // 🎟️ Applied discounts on this order
-    val orderCustomers: List<OrderCustomer> = emptyList()  // 💳 Customers linked to order (for pay-later tracking)
+    val orderCustomers: List<OrderCustomer> = emptyList(),  // 💳 Customers linked to order (for pay-later tracking)
+    /**
+     * El `status` TAL CUAL lo manda el SERVIDOR (PENDING, CONFIRMED, PREPARING, READY, COMPLETED, CANCELLED, DELETED). [status]
+     * no tiene DELETED y lo lee como OPEN; esto es para quien necesite distinguirlo (el kiosco, hz:d4d6c503:D1) sin cambiar
+     * lo que ve el resto de la terminal. null = no vino del SERVIDOR (caché local).
+     */
+    val serverStatus: String? = null
 ) {
     /**
      * Convenience property: Number of items in order

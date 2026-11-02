@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **[Reportes] Los reportes de días anteriores ya no piden plan**: cambiar de día, la comparación y la pestaña Historial pedían «Plan Pro» y, pasada la medianoche, un negocio sin plan ya no podía ver lo que vendió ayer (founder, 2-nov). Ahora todos los reportes de la terminal se ven en cualquier plan
+
 ---
 
 ## [2.14.0] - 2026-11-02

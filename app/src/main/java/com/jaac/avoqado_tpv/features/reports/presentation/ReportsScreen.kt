@@ -57,12 +57,6 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
-import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
-import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
-import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
-import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
-import com.jaac.avoqado_tpv.features.plan.presentation.PlanGate
-import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellDialog
 import com.jaac.avoqado_tpv.features.reports.domain.models.ComparisonMetrics
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalPeriod
@@ -82,7 +76,6 @@ import com.jaac.avoqado_tpv.features.reports.presentation.components.PeriodFilte
 import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffFilterChips
 import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffSalesBreakdown
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
-import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -159,12 +152,10 @@ fun ReportsScreen(
     var printIncludeStaffSales by remember { mutableStateOf(false) }
     val isReviewsEnabled = remember { viewModel.isReviewsEnabled }
 
-    // ⭐ Plan-tier gating (fail open — null plan info ⇒ nothing is locked).
-    // Mirrors the platform rule: TODAY summary stays free; historical /
-    // advanced views (7d/30d/90d/custom periods, comparison, Historial tab)
-    // require ADVANCED_REPORTS (Plan Pro). Gated taps show an upsell dialog;
-    // the Historial tab shows an inline teaser. Printing today's report and
-    // everything else in the order flow is untouched.
+    // 🔴 Los reportes de la terminal NO llevan candado de plan (founder, 2-nov-2026): un negocio sin
+    // plan tiene que poder ver lo que vendió ayer. Antes, a partir de la medianoche, cambiar de día,
+    // la comparación y la pestaña Historial pedían «Plan Pro» (ADVANCED_REPORTS) y el cajero ya no
+    // podía sacar el reporte del día anterior (Quesabirrias). El dashboard decide su propio candado.
     val context = LocalContext.current
 
     // 🔴 Un fallo al imprimir tiene que VERSE. Antes sólo quedaba en el log: el cajero
@@ -178,24 +169,6 @@ fun ReportsScreen(
             viewModel.avisoDeImpresionMostrado()
         }
     }
-    val planManager = remember {
-        EntryPointAccessors.fromApplication(
-            context.applicationContext,
-            PermissionsEntryPoint::class.java,
-        ).planManager()
-    }
-    val planInfo by planManager.planInfo.collectAsStateWithLifecycle()
-    val advancedReportsLocked = !planInfo.allowsFeature(PlanFeatureCatalog.ADVANCED_REPORTS)
-    var showAdvancedReportsUpsell by remember { mutableStateOf(false) }
-
-    if (showAdvancedReportsUpsell) {
-        PlanUpsellDialog(
-            featureTitle = "Reportes avanzados",
-            tier = PlanTier.PRO,
-            onDismiss = { showAdvancedReportsUpsell = false },
-        )
-    }
-
     if (showPrintOptionsDialog) {
         AlertDialog(
             onDismissRequest = { showPrintOptionsDialog = false },
@@ -290,27 +263,16 @@ fun ReportsScreen(
         isHistoricalPrintMode = isHistoricalPrintMode,
         selectedPeriodsForPrint = selectedPeriodsForPrint,
         showHistoricalPrintDialog = showHistoricalPrintDialog,
-        advancedReportsLocked = advancedReportsLocked,
         onNavigateBack = onNavigateBack,
         onRefresh = { viewModel.refresh() },
         onPeriodSelected = { periodType ->
-            if (advancedReportsLocked && periodType != PeriodType.TODAY) {
-                // ⭐ Historical periods are Plan Pro — teaser dialog, no change.
-                showAdvancedReportsUpsell = true
-            } else if (periodType == PeriodType.CUSTOM) {
+            if (periodType == PeriodType.CUSTOM) {
                 showDatePicker = true
             } else {
                 viewModel.changePeriod(periodType)
             }
         },
-        onComparisonToggle = { enabled ->
-            if (advancedReportsLocked && enabled) {
-                // ⭐ Comparison loads a previous (historical) period — Plan Pro.
-                showAdvancedReportsUpsell = true
-            } else {
-                viewModel.toggleComparison(enabled)
-            }
-        },
+        onComparisonToggle = { enabled -> viewModel.toggleComparison(enabled) },
         onToggleStaffSelection = { staffId -> viewModel.toggleStaffSelection(staffId) },
         onClearStaffFilter = { viewModel.clearStaffFilter() },
         onPrintReport = {
@@ -390,9 +352,6 @@ private fun ReportsScreenContent(
     isHistoricalPrintMode: Boolean,
     selectedPeriodsForPrint: Set<String>,
     showHistoricalPrintDialog: Boolean,
-    // ⭐ ADVANCED_REPORTS plan gate (Plan Pro). Default false → fail open,
-    // previews and old callers behave as today.
-    advancedReportsLocked: Boolean = false,
     onNavigateBack: () -> Unit,
     onRefresh: () -> Unit = {},
     onPeriodSelected: (PeriodType) -> Unit,
@@ -456,12 +415,8 @@ private fun ReportsScreenContent(
                             }
                         }
                         ReportTab.HISTORY -> {
-                            // Print mode toggle for History tab. Hidden while
-                            // the plan gate is locked: the tab content is an
-                            // inert blur-preview, but this button lives in the
-                            // top bar (outside the gated area) and historical
-                            // data can still reach Success behind the preview.
-                            if (!advancedReportsLocked && historicalState is HistoricalReportsState.Success) {
+                            // Print mode toggle for History tab
+                            if (historicalState is HistoricalReportsState.Success) {
                                 if (isHistoricalPrintMode) {
                                     // Show "Done" button when in print mode
                                     androidx.compose.material3.TextButton(
@@ -556,37 +511,21 @@ private fun ReportsScreenContent(
                             }
 
                             ReportTab.HISTORY -> {
-                                // ⭐ Plan gate — blur-preview paywall (mirror
-                                // of the dashboard's FeatureGate): the tab
-                                // stays visible and the REAL Historial UI
-                                // renders behind the upsell card as a dimmed,
-                                // non-interactive preview. The entitlement
-                                // decision (advancedReportsLocked) is
-                                // unchanged; whatever the tab naturally
-                                // renders (loading/cache/data) is the
-                                // backdrop.
-                                PlanGate(
-                                    locked = advancedReportsLocked,
-                                    featureTitle = "Historial de reportes",
-                                    tier = PlanTier.PRO,
-                                    modifier = Modifier.fillMaxSize(),
-                                ) {
-                                    HistoricalReportsContent(
-                                        state = historicalState,
-                                        grouping = historicalGrouping,
-                                        isPrintMode = isHistoricalPrintMode,
-                                        selectedPeriodsForPrint = selectedPeriodsForPrint,
-                                        showPrintDialog = showHistoricalPrintDialog,
-                                        onGroupingSelected = onHistoricalGroupingSelected,
-                                        onLoadMore = onLoadMoreHistorical,
-                                        onPeriodClick = onNavigateToPeriodDetail,
-                                        onLoadInitial = onLoadHistoricalSummaries,
-                                        onTogglePeriodSelection = onTogglePeriodSelection,
-                                        onShowPrintDialog = onShowHistoricalPrintDialog,
-                                        onDismissPrintDialog = onDismissHistoricalPrintDialog,
-                                        onPrintHistoricalReports = onPrintHistoricalReports
-                                    )
-                                }
+                                HistoricalReportsContent(
+                                    state = historicalState,
+                                    grouping = historicalGrouping,
+                                    isPrintMode = isHistoricalPrintMode,
+                                    selectedPeriodsForPrint = selectedPeriodsForPrint,
+                                    showPrintDialog = showHistoricalPrintDialog,
+                                    onGroupingSelected = onHistoricalGroupingSelected,
+                                    onLoadMore = onLoadMoreHistorical,
+                                    onPeriodClick = onNavigateToPeriodDetail,
+                                    onLoadInitial = onLoadHistoricalSummaries,
+                                    onTogglePeriodSelection = onTogglePeriodSelection,
+                                    onShowPrintDialog = onShowHistoricalPrintDialog,
+                                    onDismissPrintDialog = onDismissHistoricalPrintDialog,
+                                    onPrintHistoricalReports = onPrintHistoricalReports
+                                )
                             }
                         }
                     }

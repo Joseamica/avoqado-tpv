@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.14.0] - 2026-11-02
+
 ### **Changed**
 - **[Kiosco] El modo kiosco queda como legacy**: se quitaron de la terminal el «Modo Kiosk» del menú de opciones y la sección «Modo Kiosko» de Configuración (founder, 2-nov: nadie lo usa). El código se queda; una terminal que ya estuviera en kiosco sale con su PIN como siempre. Para retomarlo: `MODO_KIOSCO_DISPONIBLE` en `KioskModeManager.kt`
 

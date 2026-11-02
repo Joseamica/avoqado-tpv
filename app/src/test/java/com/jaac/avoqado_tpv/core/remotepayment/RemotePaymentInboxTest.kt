@@ -246,4 +246,85 @@ class RemotePaymentInboxTest {
         assertThat(decision.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
         assertThat(decision.finalResultJson).isNull()
     }
+
+    // ═══ B2 (22-oct): `executionAlive` / `closedForExecution` — cuándo se le pregunta a la libreta y cuándo no ═══
+
+    @Test
+    fun `P1 con propiedad y cero intentos ni la sonda ni el cancel le preguntan a la libreta aunque el CAS del cancel falle`() = runTest {
+        var preguntas = 0
+        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
+        coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+        coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
+        coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 0
+        coEvery { dao.contarIntentosBloqueadores("req-1") } returns 0
+        coEvery { dao.cancelarTrasReclamar("req-1", any(), any(), true) } throws IllegalStateException("Room no disponible")
+
+        val sonda = bandeja.probe("req-1", "venue-1", propiedadEnEsteProceso = true)
+        val cancel = bandeja.cancel("req-1", propiedadEnEsteProceso = true)
+
+        // La pantalla espera «Tarjeta»: con cero intentos la libreta cerraría sin ver la pantalla.
+        assertThat(sonda).isEqualTo(RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE, executionAlive = true, closedForExecution = false))
+        assertThat(cancel).isEqualTo(RemotePaymentCancelDecision(RemotePaymentCancelDisposition.ACTIVE, executionAlive = true, closedForExecution = false))
+        assertThat(preguntas).isEqualTo(0)
+        coVerify(exactly = 0) { dao.resolverDesenlaceNegativo(any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 sin cablear la bandeja nunca certifica el cese`() = runTest {
+        coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+        coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
+        coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 1
+        coEvery { dao.resolverDesenlaceNegativo("req-1", any(), any()) } returns null // hay un intento en duda
+        coEvery { dao.cancelarTrasReclamar("req-1", any(), any(), any()) } returns false
+
+        val sonda = inbox.probe("req-1", "venue-1")
+        val cancel = inbox.cancel("req-1")
+
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+        assertThat(sonda.executionAlive).isTrue()
+        assertThat(sonda.closedForExecution).isFalse()
+        assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+        assertThat(cancel.executionAlive).isTrue()
+        assertThat(cancel.closedForExecution).isFalse()
+    }
+
+    @Test
+    fun `P2 ya cerrada para ejecucion pero la libreta hoy no certifica - contesta cerrada y viva, nunca sin ejecucion viva`() = runTest {
+        // P. ej. la terminal pasó a app-a-app después del cierre, o la relectura encontró algo vivo: el cierre es un hecho
+        // durable (la cerca rige), pero «sin ejecución viva» sólo lo dice la libreta en ESTA llamada.
+        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { false }
+        coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+            .copy(executionClosedAt = 1_700_000_000_000L)
+        coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
+        coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 1
+        coEvery { dao.resolverDesenlaceNegativo("req-1", any(), any()) } returns null
+        coEvery { dao.cancelarTrasReclamar("req-1", any(), any(), any()) } returns false
+
+        val sonda = bandeja.probe("req-1", "venue-1")
+        val cancel = bandeja.cancel("req-1")
+
+        assertThat(sonda).isEqualTo(RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE, executionAlive = true, closedForExecution = true))
+        assertThat(cancel).isEqualTo(RemotePaymentCancelDecision(RemotePaymentCancelDisposition.ACTIVE, executionAlive = true, closedForExecution = true))
+    }
+
+    @Test
+    fun `P1 dueno con el banco rechazando y la pantalla ofreciendo Reintentar - el cancel que no pudo escribir dice ejecucion viva y no le pregunta a la libreta`() = runTest {
+        // Fix round 0 (duda 2): con propiedad y sólo intentos que la pantalla puede dejar atrás (el rechazo final del banco, un
+        // descarte), si el CAS del cancel no aterriza la respuesta es la del caso 1 — nunca el certificado de cese.
+        var preguntas = 0
+        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
+        coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+        coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
+        coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 1 // el rechazo del banco
+        coEvery { dao.contarIntentosBloqueadores("req-1") } returns 0 // DESCARTADA con host_approved = 0, sin dinero
+        coEvery { dao.cancelarTrasReclamar("req-1", any(), any(), true) } throws IllegalStateException("Room no disponible")
+
+        val cancel = bandeja.cancel("req-1", propiedadEnEsteProceso = true)
+        val sonda = bandeja.probe("req-1", "venue-1", propiedadEnEsteProceso = true)
+
+        assertThat(cancel).isEqualTo(RemotePaymentCancelDecision(RemotePaymentCancelDisposition.ACTIVE, executionAlive = true, closedForExecution = false))
+        assertThat(sonda).isEqualTo(RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE, executionAlive = true, closedForExecution = false))
+        assertThat(preguntas).isEqualTo(0)
+        coVerify(exactly = 0) { dao.resolverDesenlaceNegativo(any(), any(), any()) }
+    }
 }

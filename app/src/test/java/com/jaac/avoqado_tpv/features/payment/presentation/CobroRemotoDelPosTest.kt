@@ -63,4 +63,41 @@ class CobroRemotoDelPosTest {
             .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
         assertThat(navegacion).doesNotContain("Ya hay un pago en proceso")
     }
+
+    // ── Codex TPV r1, ronda 2 (N1, 22-oct): la bandeja (antes de certificar el cese) y la navegación (al admitir una venta del
+    //    POS) leen la MISMA regla, para que «libre» en el SERVIDOR signifique que la terminal SÍ aceptaría otra venta. ──
+
+    private fun banderas(cobroActivo: Boolean, devolucion: Boolean) =
+        object : com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider {
+            override fun isCharging() = cobroActivo || devolucion
+            override fun isChargeAttemptActive() = cobroActivo
+            override fun isRefundInFlight() = devolucion
+        }
+
+    @Test fun `P1 la bandeja dice ocupada siempre que la admision rechazaria una venta nueva, en cualquier ruta`() {
+        for (cobroActivo in listOf(false, true)) for (devolucion in listOf(false, true)) {
+            val estado = banderas(cobroActivo, devolucion)
+            // Es la admisión con la pantalla de cobro abierta (la peor ruta: la bandeja no ve la navegación)…
+            assertThat(CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estado))
+                .isEqualTo(CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro = true, cobroActivo = cobroActivo, devolucionEnCurso = devolucion) != null)
+            // …así que nunca dice «aceptaría» cuando la navegación rechaza, esté donde esté.
+            for (enPantallaDeCobro in listOf(false, true)) {
+                if (CobroRemotoDelPos.motivoParaNoIniciar(enPantallaDeCobro, estado) != null) {
+                    assertThat(CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estado)).isTrue()
+                }
+            }
+        }
+    }
+
+    @Test fun `P1 la navegacion admite con las banderas del proveedor - la misma entrada que lee la bandeja`() {
+        val navegacion = java.io.File(
+            "src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt",
+        ).readText()
+        val inicio = navegacion.indexOf("val motivoParaNoIniciar = CobroRemotoDelPos.motivoParaNoIniciar(")
+        assertThat(inicio).isAtLeast(0)
+        val llamada = navegacion.substring(inicio, navegacion.indexOf("if (motivoParaNoIniciar != null)", inicio))
+        assertThat(llamada).contains("estado = paymentStateProvider")
+        assertThat(llamada).doesNotContain("isChargeAttemptActive")
+        assertThat(llamada).doesNotContain("isRefundInFlight")
+    }
 }

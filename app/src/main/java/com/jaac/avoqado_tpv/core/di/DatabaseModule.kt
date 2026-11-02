@@ -132,7 +132,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_38_39,  // 🧾 r17 P1: el dinero que la versión anterior guardó sin la marca que aparta el aparato
                 AvoqadoDatabase.MIGRATION_39_40,  // 🧾 founder 23-sep: quién confirmó que un cobro dado por no cobrado SÍ pasó
                 AvoqadoDatabase.MIGRATION_40_41,  // 🔴 founder 25-sep: qué proceso abrió cada cobro (ninguna duda apaga la terminal)
-                AvoqadoDatabase.MIGRATION_41_42   // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
+                AvoqadoDatabase.MIGRATION_41_42,  // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
+                AvoqadoDatabase.MIGRATION_42_43   // 🔒 B1: solicitud «cerrada para ejecución» + «el SDK regresó» (aditiva)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

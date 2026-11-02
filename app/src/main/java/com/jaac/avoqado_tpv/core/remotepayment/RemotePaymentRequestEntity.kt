@@ -50,6 +50,14 @@ data class RemotePaymentRequestEntity(
      * mayor sube la columna. Room v35.
      */
     @ColumnInfo(name = "attempt_link_version", defaultValue = "0") val attemptLinkVersion: Int = 0,
+    /**
+     * B1 (21-oct, «ninguna duda de cobro sin salida»): esta solicitud quedó CERRADA PARA EJECUCIÓN. Ningún intento suyo
+     * puede seguir vivo (todos cesaron) y ya no se admite otro: es CERCA para [PaymentAttemptDao.reserveTerminal], la
+     * traducción de la pantalla y el arranque de efectivo/cripto. La escribe sólo
+     * [com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao.cerrarSolicitudSiCeso]. NO resuelve la
+     * solicitud: el status sigue PROCESSING a propósito y el dinero tardío la resuelve por su camino. Room v43.
+     */
+    @ColumnInfo(name = "execution_closed_at") val executionClosedAt: Long? = null,
 ) {
     fun sameMoneyContract(event: SocketEvent.TerminalPaymentRequest): Boolean =
         venueId == event.venueId &&

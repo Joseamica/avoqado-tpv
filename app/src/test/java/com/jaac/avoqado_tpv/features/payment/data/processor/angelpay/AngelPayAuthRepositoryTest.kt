@@ -125,7 +125,7 @@ class AngelPayAuthRepositoryTest {
     // 1. Idempotency
     // ----------------------------------------------------------------------
     @Test
-    fun `ensureAuthenticated when SDK already authenticated emits Authenticated immediately`() =
+    fun `ensureAuthenticated solo reutiliza una sesion acreditada por auth real`() =
         runTest(dispatcher) {
             every { sdkGateway.isAuthenticated() } returns true
             // Return a non-empty merchant list so the stale-session guard does NOT
@@ -136,16 +136,14 @@ class AngelPayAuthRepositoryTest {
             )
             every { terminalConfigRepository.getCachedConfig() } returns null
 
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns Result.success(AuthenticateSimpleResult.Success)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
             val result = repo.ensureAuthenticated()
 
             assertTrue(result.isSuccess)
             assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
-            // No re-auth call — the SDK session was reused.
-            coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
-            // Note: credentialResolver.resolve() MAY be called once in the short-circuit
-            // path to populate currentAngelPayAccountId (fallback when SDK merchant IDs
-            // don't match any config entry). That's not a re-auth — just an account-ID
-            // lookup. What must NOT happen is authenticateSimple().
+            // La primera acredita identidad; la segunda reutiliza ESA sesión.
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple(backendCreds.email, backendCreds.pin) }
         }
 
     // ----------------------------------------------------------------------
@@ -474,7 +472,7 @@ class AngelPayAuthRepositoryTest {
         }
 
     @Test
-    fun `ensureAuthenticatedAs falls back to the venue primary when the target account no longer resolves`() =
+    fun `D4 ensureAuthenticatedAs no autentica la primaria si falta la cuenta elegida`() =
         runTest(dispatcher) {
             coEvery { credentialResolver.resolveByAccountId("acc-gone") } returns
                 Result.failure(MissingAngelPayCredsError)
@@ -483,11 +481,9 @@ class AngelPayAuthRepositoryTest {
 
             val result = repo.ensureAuthenticatedAs("acc-gone")
 
-            assertTrue(result.isSuccess)
-            // Se INTENTÓ resolver la cuenta objetivo (incluido el retry post self-heal)…
+            assertTrue(result.isFailure)
             coVerify(atLeast = 1) { credentialResolver.resolveByAccountId("acc-gone") }
-            // …y solo entonces cayó a la primaria (fallback explícito > terminal muerta).
-            coVerify(exactly = 1) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+            coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
         }
 
     @Test
@@ -509,12 +505,15 @@ class AngelPayAuthRepositoryTest {
             every { terminalConfigRepository.getCachedConfig() } returns config
             coEvery { configValidator.validate(any(), any()) } returns ValidationResult.AllClear
 
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns Result.success(secondAccountCreds)
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns Result.success(AuthenticateSimpleResult.Success)
+            assertTrue(repo.ensureAuthenticatedAs("acc-cuid-2").isSuccess)
             val result = repo.ensureAuthenticatedAs("acc-cuid-2")
 
             assertTrue(result.isSuccess)
             assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
-            coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
-            verify(exactly = 0) { sdkGateway.logout() }
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
+            verify(exactly = 1) { sdkGateway.logout() }
         }
 
     @Test
@@ -746,4 +745,50 @@ class AngelPayAuthRepositoryTest {
         coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
         assertFalse(repo.candadoDeSesion.isLocked)
     }
+    @Test
+    fun `D4 deriveSessionAccountId no bautiza la sesion cacheada por interseccion de comercios`() = runTest(dispatcher) {
+        every { sdkGateway.isAuthenticated() } returns true
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(listOf(mockk(relaxed = true) { every { id } returns 11 }))
+        val config = mockk<TerminalConfigData>(relaxed = true) {
+            every { merchantAccounts } returns listOf(mockk<MerchantAccountDto>(relaxed = true) {
+                every { providerCode } returns "ANGELPAY"
+                every { externalMerchantId } returns "11"
+                every { angelpayUserAccountId } returns "acc-cuid-1"
+            })
+        }
+        every { terminalConfigRepository.getCachedConfig() } returns config
+        assertNull(repo.deriveSessionAccountId())
+        assertNull(repo.getCurrentAngelPayAccountId())
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+    }
+
+    @Test
+    fun `D4 ensureAuthenticated acredita con auth REAL antes de reportar discovery de cache`() = runTest(dispatcher) {
+        val api = mockk<AngelPayReportApi>(relaxed = true)
+        repo = AngelPayAuthRepository(sdkGateway, credentialResolver, configValidator, terminalConfigRepository,
+            deviceInfoManager, merchantRepository, paymentStateProvider, crashlytics, api)
+        every { sdkGateway.isAuthenticated() } returns true
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(listOf(mockk(relaxed = true) { every { id } returns 11 }))
+        val puerta = CompletableDeferred<Result<AuthenticateSimpleResult>>()
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } coAnswers { puerta.await() }
+        val auth = async { repo.ensureAuthenticated(reportMerchants = true) }
+        assertNull(repo.getCurrentAngelPayAccountId())
+        coVerify(exactly = 1) { sdkGateway.authenticateSimple(backendCreds.email, backendCreds.pin) }
+        coVerify(exactly = 0) { api.reportDiscoveredMerchants(any(), any()) }
+        puerta.complete(Result.success(AuthenticateSimpleResult.Success))
+        assertTrue(auth.await().isSuccess)
+        assertEquals(backendCreds.accountId, repo.getCurrentAngelPayAccountId())
+    }
+
+    @Test
+    fun `D4 un cambio de cuenta fallido no conserva acreditacion de la sesion que cerro`() = runTest(dispatcher) {
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns Result.success(secondAccountCreds)
+        coEvery { sdkGateway.authenticateSimple(backendCreds.email, any()) } returns Result.success(AuthenticateSimpleResult.Success)
+        assertTrue(repo.ensureAuthenticatedAs("acc-cuid-1").isSuccess)
+        coEvery { sdkGateway.authenticateSimple(secondAccountCreds.email, any()) } returns Result.failure(IllegalStateException("PIN rechazado"))
+        assertTrue(repo.switchAccount("acc-cuid-2").isFailure)
+        assertNull(repo.getCurrentAngelPayAccountId())
+    }
+
 }

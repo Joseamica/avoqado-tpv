@@ -247,6 +247,14 @@ interface RemotePaymentRequestDao {
     )
     suspend fun markResolved(requestId: String, finalResultJson: String, now: Long): Int
 
+    /**
+     * B1 (21-oct): cuándo quedó la solicitud CERRADA PARA EJECUCIÓN, o null si no lo está (o la bandeja no la tiene). La
+     * escribe sólo `PaymentAttemptDao.cerrarSolicitudSiCeso`; la leen la sonda y la reentrega (B2) para contestar lo mismo
+     * sin volver a escribir y sin navegar.
+     */
+    @Query("SELECT execution_closed_at FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun cerradaParaEjecucionEn(requestId: String): Long?
+
     /** N0: sólo SUBE la versión de capacidad, y sólo mientras la solicitud siga viva (RECEIVED/PROCESSING). */
     @Query(
         """UPDATE remote_payment_requests
@@ -309,7 +317,8 @@ interface RemotePaymentRequestDao {
      *  - la solicitud sigue PROCESSING, sin efectivo/cripto arrancado, sin cancel ni final previos;
      *  - ningún intento correlacionado bloquea ([contarIntentosBloqueadores]);
      *  - si NO hay intentos, sólo con PRUEBA DE PROPIEDAD en este proceso (el `requestId` lo reclamó este
-     *    proceso): sin ella, tras un reinicio nadie sabe si algo quedó a medias ⇒ ACTIVE;
+     *    proceso): sin ella este CAS devuelve false, y `RemotePaymentInbox.cancel` sigue por `resolverDesenlaceNegativo`
+     *    (B2/T3, 22-oct: con la libreta write-ahead, cero intentos = nadie tocó el SDK ⇒ ACCEPTED con la cerca puesta);
      *  - «entre intentos» (sólo DESCARTADA, p. ej. tras un rechazo reintentable): se acepta, porque en la
      *    MISMA transacción se escribe `cancel_accepted_at` y la cerca de [PaymentAttemptDao.reserveTerminal]
      *    impide ese reintento.

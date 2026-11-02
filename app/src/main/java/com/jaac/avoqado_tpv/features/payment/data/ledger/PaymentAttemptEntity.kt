@@ -147,6 +147,15 @@ data class PaymentAttemptEntity(
      * a la v41: nunca aparta el aparato.
      */
     @ColumnInfo(name = "process_token") val processToken: String? = null,
+    /**
+     * B1 (21-oct, «ninguna duda de cobro sin salida», Room v43): cuándo TERMINÓ toda la interacción de este intento con el
+     * SDK — el SDK REGRESÓ y la terminal ya no vuelve a él con este intento (en la PAX, después del cierre EMV; en AngelPay,
+     * al recibir el resultado sin relanzar). La escribe [PaymentAttemptLedger.marcarSdkRegreso] sólo donde eso está
+     * COMPROBADO: nunca en un `catch` ni en un `finally`. Con ella, HOST_RESPONDIO/AUTORIZADO/REGISTRO_FALLIDO/INDETERMINADO
+     * de ESTE proceso dejan de «poder seguir vivos» ([SQL_PUEDE_SEGUIR_VIVO]). Conserva la PRIMERA vez. NULL en toda fila
+     * anterior a la v43.
+     */
+    @ColumnInfo(name = "sdk_returned_at") val sdkReturnedAt: Long? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -269,10 +278,36 @@ data class PaymentAttemptEntity(
          * Mientras una devolución habla con el procesador, lo que espera es la pantalla (el marcador en RAM de
          * `PaymentStateHolder`, con tope de 2 min), no la libreta; y una en duda sólo cerca OTRA devolución del mismo pago
          * ([PaymentAttemptDao.devolucionSinResolver]).
+         *
+         * 🔒 Codex TPV r1 #2 (22-oct, «ninguna duda de cobro sin salida»), la misma regla del founder del 25-sep: «sólo aparta el
+         * aparato un cobro CORRIENDO; el dinero conocido cerca SU venta». `HOST_RESPONDIO`, `AUTORIZADO` y `REGISTRO_FALLIDO`
+         * cuentan como corriendo SÓLO mientras no se comprobó que el SDK regresó (`sdk_returned_at IS NULL`: el cierre EMV de
+         * la PAX pendiente, o una fila anterior a v43, que no tiene la marca y sigue contando). Con el SDK fuera, el dinero de
+         * esa fila sigue cercando SU venta ([SQL_CERCA_LA_VENTA]) y SU solicitud (cerrada para ejecución), pero no las demás
+         * ventas: si no, la terminal rechazaría lo que el SERVIDOR ya dejó pasar al soltar la ranura. `KERNEL_ACTIVO`,
+         * `AUTORIZANDO` y la cuarentena por reloj no cambian.
          */
         const val SQL_EJECUCION_VIVA = "(legacy_shadow = 0 AND kind = 'SALE' AND process_token IS :processToken " +
-            "AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') " +
+            "AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO') " +
+            "OR (state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') AND sdk_returned_at IS NULL) " +
             "OR (state = 'INDETERMINADO' AND last_error = 'cuarentena_por_antiguedad')))"
+
+        /**
+         * 🔴 B1 (21-oct, «ninguna duda de cobro sin salida»): la DEFINICIÓN ÚNICA de «este intento PUEDE SEGUIR VIVO» — la
+         * pregunta del cese que certifica [PaymentAttemptDao.cerrarSolicitudSiCeso]. El SDK de Blumon y el de AngelPay corren
+         * DENTRO del proceso de la app, así que sólo un intento de ESTE proceso (`process_token` de la libreta viva, un
+         * `@Singleton`: un token por proceso) puede seguir ejecutándose, y sólo mientras:
+         *  - su SDK no ha dado veredicto (`PREPARANDO`, `KERNEL_ACTIVO`, `AUTORIZANDO`), o
+         *  - ya hay estado posterior pero la interacción con el SDK no se COMPROBÓ terminada (`sdk_returned_at IS NULL`): la
+         *    cuarentena por reloj, el `catch` de la corrutina y el cierre EMV pendiente de la PAX.
+         * Todo intento de OTRO proceso (token distinto o NULL, de una app anterior) cesó: su proceso murió y el SDK con él.
+         * El DINERO no entra en esta pregunta (`host_approved`, evidencia, veto): ése lo decide el SERVIDOR.
+         * 🔴 Sólo vale con el SDK EMBEBIDO: en app-a-app la app externa cobra en SU proceso (lo filtra la libreta antes).
+         * Sin alias; usa `:processToken`. `IS` a prueba de NULL.
+         */
+        const val SQL_PUEDE_SEGUIR_VIVO = "(process_token IS :processToken AND (" +
+            "state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO') " +
+            "OR (state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','INDETERMINADO') AND sdk_returned_at IS NULL)))"
 
         /** [SQL_EJECUCION_VIVA] más la reserva que ESTE proceso acaba de hacer: para no admitir dos cobros basta estar en la fila. */
         const val SQL_APARTA_EL_APARATO = "(" + SQL_EJECUCION_VIVA +

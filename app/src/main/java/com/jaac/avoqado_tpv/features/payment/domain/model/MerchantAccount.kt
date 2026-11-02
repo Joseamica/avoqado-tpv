@@ -74,9 +74,14 @@ data class MerchantAccount(
      * AngelPay merchant ID as Int — only call when processorType == ANGELPAY.
      * Throws if externalMerchantId is null or non-numeric (malformed config).
      */
-    fun requireAngelpayMerchantId(): Int =
-        externalMerchantId?.toIntOrNull()
-            ?: error("Malformed externalMerchantId for ANGELPAY merchant $merchantAccountId: '$externalMerchantId'")
+    fun requireAngelpayMerchantId(): Int {
+        require(processorType == ProcessorType.ANGELPAY) { "La cuenta no es de AngelPay" }
+        val id = externalMerchantId
+            ?.takeIf { it.isNotEmpty() && it.all { digit -> digit in '0'..'9' } }
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+        return id ?: error("ID de comercio AngelPay inválido para $merchantAccountId")
+    }
 
     /**
      * Get formatted display text for UI

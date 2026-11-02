@@ -431,10 +431,10 @@ fun AppNavigation(
             // open), so a socket charge only reaches here when the slot is free.
             // 🔴 29-sep-2026: también una DEVOLUCIÓN que está hablando con AngelPay (unos segundos): navegar al cobro le
             // arrancaba la pantalla a media llamada. La marca caduca sola a los 2 min, así que nunca traba las ventas.
+            // N1 (22-oct): las banderas se leen DENTRO de la regla, la misma que mira la bandeja antes de certificar el cese.
             val motivoParaNoIniciar = CobroRemotoDelPos.motivoParaNoIniciar(
                 enPantallaDeCobro = onBlumonPayment || onAngelPayPayment,
-                cobroActivo = paymentStateProvider.isChargeAttemptActive(),
-                devolucionEnCurso = paymentStateProvider.isRefundInFlight(),
+                estado = paymentStateProvider,
             )
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)

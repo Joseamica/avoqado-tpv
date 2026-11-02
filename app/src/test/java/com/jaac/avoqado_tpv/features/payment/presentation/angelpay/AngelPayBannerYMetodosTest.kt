@@ -100,4 +100,14 @@ class AngelPayBannerYMetodosTest {
         assertThat(bloqueoDeMetodosDePago(false, null, AngelPayAuthState.Authenticated))
             .isEqualTo(BloqueoMetodosDePago(tarjeta = false, efectivo = false))
     }
+    @Test
+    fun `D4 AuthError bloquea solo tarjeta y recuperar la cuenta habilita los dos`() {
+        for (kind in AuthErrorKind.entries) {
+            assertThat(bloqueoDeMetodosDePago(false, null, AngelPayAuthState.AuthError("Cuenta inválida", kind)))
+                .isEqualTo(BloqueoMetodosDePago(tarjeta = true, efectivo = false))
+        }
+        assertThat(bloqueoDeMetodosDePago(false, null, AngelPayAuthState.Authenticated))
+            .isEqualTo(BloqueoMetodosDePago(tarjeta = false, efectivo = false))
+    }
+
 }

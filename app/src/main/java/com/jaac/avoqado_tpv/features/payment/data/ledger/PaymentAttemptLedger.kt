@@ -26,10 +26,21 @@ import javax.inject.Singleton
  *  - Financial durability is independent of optional shadow telemetry settings.
  */
 @Singleton
-class PaymentAttemptLedger @Inject constructor(
+class PaymentAttemptLedger(
     private val dao: PaymentAttemptDao,
-    private val settingsRepository: TpvSettingsRepository
+    private val settingsRepository: TpvSettingsRepository,
+    /** Codex TPV r1 #1: sin cablear nunca certifica el cese ([PilaDePantallas.SIN_CABLEAR]). */
+    private val pilaDePantallas: PilaDePantallas = PilaDePantallas.SIN_CABLEAR,
 ) {
+    /**
+     * Hilt cablea la pila REAL. Constructor SECUNDARIO a propósito (mismo patrón que `RemotePaymentInbox`): un default en el
+     * constructor `@Inject` genera una sobrecarga sintética que Dagger rechaza.
+     */
+    @Inject constructor(
+        dao: PaymentAttemptDao,
+        settingsRepository: TpvSettingsRepository,
+        pila: PilaDePantallasDeAndroid,
+    ) : this(dao, settingsRepository, pila as PilaDePantallas)
 
     fun observarIntento(attemptId: String, venueId: String) = dao.observeAttempt(attemptId, venueId)
 
@@ -49,6 +60,12 @@ class PaymentAttemptLedger @Inject constructor(
      * con él la llamada nativa que protegía.
      */
     private val processToken: String = java.util.UUID.randomUUID().toString()
+
+    /**
+     * B1 (Pre-B, Codex r3 #9): lo que el BUILD dice de este aparato — marca y SDK compilado. Seam de pruebas: el carril
+     * `testSandboxDebugUnitTest` compila PAX/Blumon, y la Nexgo sólo se puede simular cambiando esto.
+     */
+    @androidx.annotation.VisibleForTesting internal var marcaDelBuild: MarcaDelBuild = MarcaDelBuild.DE_ESTE_BUILD
 
     /** Ronda 21 (Codex r19, P2-1): reloj MONOTÓNICO de este proceso — una corrección de la hora del aparato no lo mueve. */
     @androidx.annotation.VisibleForTesting internal var relojMonotonico: () -> Long = { android.os.SystemClock.elapsedRealtime() }
@@ -713,6 +730,94 @@ class PaymentAttemptLedger @Inject constructor(
     }
 
     /**
+     * 🔒 B1 (21-oct, «ninguna duda de cobro sin salida»): TODA la interacción de este intento con el SDK TERMINÓ — el SDK regresó
+     * y la terminal ya no vuelve a él con este intento ([PaymentAttemptEntity.sdkReturnedAt]). Desde aquí, un HOST_RESPONDIO,
+     * AUTORIZADO, REGISTRO_FALLIDO o INDETERMINADO de este proceso ya no «puede seguir vivo» ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]):
+     * lo que falte (registrar, conciliar) es dinero, y ése lo decide el servidor.
+     *
+     * 🔴 Sólo donde el regreso está COMPROBADO y es el FINAL:
+     *  - PAX: después de que regresa `CompleteEmvTrans` (con éxito o con error), o donde el host ya contestó y no hay cierre EMV
+     *    (contactless, o chip que no pide ARPC), y en cada salida de rechazo o sin veredicto que ya no vuelve al SDK. NUNCA en
+     *    `markHostResponded`, que se escribe ANTES del cierre EMV.
+     *  - AngelPay: al recibir el resultado del SDK embebido cuando ya no se relanza (la sesión expirada relanza con la MISMA llave).
+     *  - NUNCA en un `catch` ni en un `finally` de la corrutina: una excepción no prueba que la llamada nativa terminó.
+     *
+     * NonCancellable + IO como el resto de marcas post-SDK. Nunca lanza: si no se escribe, el intento sigue «pudiendo estar vivo»
+     * hasta que este proceso muera — el lado seguro (no se certifica nada).
+     */
+    suspend fun marcarSdkRegreso(attemptId: String) {
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val n = dao.marcarSdkRegreso(attemptId, System.currentTimeMillis())
+                if (n == 1) Timber.d("📒 [Libreta] el SDK regresó: terminó su interacción con el intento | attemptId=%s", attemptId)
+                else Timber.w("📒 [Libreta] marcarSdkRegreso sin fila | attemptId=%s", attemptId)
+            }
+        }.onFailure { Timber.e(it, "📒 [Libreta] marcarSdkRegreso failed — el intento sigue contando como vivo | attemptId=%s", attemptId) }
+    }
+
+    /**
+     * 🔒 B1: ¿con qué cobra ESTE aparato? Sólo [EjecucionDelCobro.EMBEBIDO] certifica el cese (Codex r3 #9). Lee los ajustes
+     * en el momento: un ajuste ilegible es [EjecucionDelCobro.DESCONOCIDO].
+     */
+    internal fun ejecucionDelCobro(): EjecucionDelCobro =
+        EjecucionDelCobro.decidir(marcaDelBuild) { settingsRepository.getCurrentSettings() }
+
+    /**
+     * 🔒 Codex TPV r1 #1 (22-oct): ¿la app tiene UNA sola pantalla por tarea, y es nuestra `MainActivity`? Sólo así ninguna
+     * pantalla del SDK puede RESTAURARSE: `PaymentActivity.onCreate` del AAR de AngelPay 1.0.21 relanza el cobro con
+     * `angelpay_req` al restaurarse, sin pasar por la libreta ([PilaDePantallas]). Sin tareas no hay nada que restaurar. Una pila
+     * ilegible —lo que sea que lance, también un `Error` de una clase que este Android no tiene— es «no» (fail-closed).
+     */
+    internal fun soloLaPantallaPrincipal(): Boolean = try {
+        pilaDePantallas.tareas().all { it.pantallas == 1 && it.arribaLaPrincipal }
+    } catch (error: Throwable) {
+        Timber.e(error, "📒 [Libreta] no se pudo leer la pila de pantallas — no se certifica el cese")
+        false
+    }
+
+    /**
+     * 🔒 B1 (21-oct, «ninguna duda de cobro sin salida»): si NINGÚN intento de esta solicitud puede seguir vivo, la deja CERRADA
+     * PARA EJECUCIÓN ([PaymentAttemptDao.cerrarSolicitudSiCeso], con el token de ESTE proceso) y devuelve true; también true si
+     * ya lo estaba. Es el certificado con el que el servidor suelta la RANURA de la terminal; nunca dice «no se cobró».
+     *
+     * 🔴 Sólo con el SDK EMBEBIDO (Pre-B, Codex r3 #9): «todo intento de otro proceso cesó porque su proceso murió» es falso en
+     * app-a-app — ahí cobra la app EXTERNA de AngelPay, en su propio proceso, y puede seguir viva aunque la nuestra muera. Con
+     * app-a-app, respaldo app-a-app, marca desconocida o ajustes ilegibles devuelve false SIN escribir nada.
+     * ⚠️ Residual declarado: la libreta no guarda por intento si cobró embebido o con la app externa; se decide con los ajustes
+     * de AHORA. Si el ajuste cambió entre el cobro (app-a-app) y la sonda (embebido), un intento app-a-app de un proceso muerto
+     * contaría como cesado.
+     *
+     * 🔴 Y sólo con UNA pantalla por tarea, la nuestra ([soloLaPantallaPrincipal], Codex TPV r1 #1, para TODAS las marcas): con
+     * pantallas apiladas, Android puede restaurar la del SDK de AngelPay, cuyo `PaymentActivity.onCreate` (AAR 1.0.21) relanza el
+     * cobro con `angelpay_req`. Con la pila apilada o ilegible devuelve false SIN escribir nada.
+     *
+     * Nunca lanza (una cancelación se propaga): un fallo de lectura o escritura es false — no se certifica lo que no se pudo ver.
+     */
+    suspend fun cerrarSolicitudSiCeso(requestId: String): Boolean {
+        val ejecucion = runCatching { ejecucionDelCobro() }.getOrDefault(EjecucionDelCobro.DESCONOCIDO)
+        if (ejecucion != EjecucionDelCobro.EMBEBIDO) {
+            // Debug y no warning (fix 1, M5): en una terminal app-a-app sale en CADA sonda y es la conducta esperada.
+            Timber.d("📒 [Libreta] la solicitud %s NO se cierra para ejecución: el cobro corre %s (sólo el SDK embebido certifica el cese)", requestId, ejecucion)
+            return false
+        }
+        if (!soloLaPantallaPrincipal()) {
+            Timber.w("📒 [Libreta] la solicitud %s NO se cierra para ejecución: hay pantallas apiladas (el SDK podría restaurarse) o la pila no se pudo leer", requestId)
+            return false
+        }
+        return try {
+            val cerrada = dao.cerrarSolicitudSiCeso(requestId, processToken, System.currentTimeMillis())
+            if (cerrada) Timber.w("📒 [Libreta] solicitud %s CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo", requestId)
+            else Timber.i("📒 [Libreta] la solicitud %s no se cierra: puede seguir viva o no está reclamada", requestId)
+            cerrada
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.e(error, "📒 [Libreta] no se pudo cerrar para ejecución la solicitud %s — no se certifica nada", requestId)
+            false
+        }
+    }
+
+    /**
      * 🔴 El kernel rechazó EXPLÍCITAMENTE y sin salir a autorizar (`CtlssDenied`,
      * `CtlssUseContact`, `EmvNoApp`…): esas negativas se deciden DENTRO de la PAX y
      * nunca llegan al procesador, así que la terminal puede liberarse.
@@ -1054,4 +1159,63 @@ enum class CercaDeSolicitud {
 
     /** Ya salió su desenlace final (o hay lápida): la terminal no la ejecuta; el POS debe reenviarla. */
     CERRADA,
+}
+
+/**
+ * B1 (Pre-B, Codex r3 #9): lo que el BUILD fija del aparato. [procesador] es `BuildConfig.SUPPORTED_PROCESSOR` (BLUMON = PAX,
+ * ANGELPAY = Nexgo); los otros dos, los interruptores COMPILADOS del SDK de AngelPay y de su respaldo app-a-app.
+ */
+data class MarcaDelBuild(
+    val procesador: String,
+    val sdkAngelPayCompilado: Boolean,
+    val respaldoAppAAppCompilado: Boolean,
+) {
+    companion object {
+        val DE_ESTE_BUILD = MarcaDelBuild(
+            procesador = com.jaac.avoqado_tpv.BuildConfig.SUPPORTED_PROCESSOR,
+            sdkAngelPayCompilado = com.jaac.avoqado_tpv.BuildConfig.ANGELPAY_SDK_ENABLED,
+            respaldoAppAAppCompilado = com.jaac.avoqado_tpv.BuildConfig.ANGELPAY_SDK_FALLBACK_ENABLED,
+        )
+    }
+}
+
+/**
+ * 🔒 B1 (Pre-B, Codex r3 #9): con qué corre el cobro con tarjeta de este aparato. Sólo [EMBEBIDO] certifica el cese de un
+ * intento de otro proceso: el SDK vive en el proceso de la app y muere con él.
+ */
+enum class EjecucionDelCobro {
+    /** El SDK corre DENTRO de nuestro proceso: PAX/Blumon siempre; Nexgo/AngelPay con su SDK embebido. */
+    EMBEBIDO,
+
+    /** Puede cobrar la app EXTERNA de AngelPay, en SU proceso: que el nuestro muera no prueba que ella terminó. */
+    APP_A_APP,
+
+    /** Marca que la libreta no conoce o ajustes ilegibles: no se certifica nada. */
+    DESCONOCIDO;
+
+    companion object {
+        /**
+         * PAX/Blumon ⇒ [EMBEBIDO]. Nexgo/AngelPay ⇒ [EMBEBIDO] sólo con el MISMO predicado de producción que elige el flujo SDK
+         * (`AngelPayPaymentViewModel.isSdkFlowEnabled`: `ANGELPAY_SDK_ENABLED && settings.angelPaySdkEnabled`, SIN el atajo de
+         * pruebas `flujoSdkForzadoParaPruebas`) y sin respaldo app-a-app posible (`ANGELPAY_SDK_FALLBACK_ENABLED &&
+         * settings.angelPaySdkFallbackEnabled`, `isAppToAppFallbackEnabled`): ese respaldo le entrega la MISMA llave a la app
+         * externa. Los builds Nexgo compilan el respaldo apagado, así que en la calle sólo decide `angelPaySdkEnabled`.
+         */
+        fun decidir(marca: MarcaDelBuild, ajustes: () -> com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings): EjecucionDelCobro =
+            when (marca.procesador) {
+                PaymentAttemptEntity.PROCESSOR_BLUMON -> EMBEBIDO
+                PaymentAttemptEntity.PROCESSOR_ANGELPAY -> try {
+                    val actuales = ajustes()
+                    when {
+                        !(marca.sdkAngelPayCompilado && actuales.angelPaySdkEnabled) -> APP_A_APP
+                        marca.respaldoAppAAppCompilado && actuales.angelPaySdkFallbackEnabled -> APP_A_APP
+                        else -> EMBEBIDO
+                    }
+                } catch (error: Exception) {
+                    Timber.e(error, "📒 [Libreta] ajustes ilegibles: no se sabe con qué cobra la terminal")
+                    DESCONOCIDO
+                }
+                else -> DESCONOCIDO
+            }
+    }
 }

@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Nexgo] La cuenta de AngelPay se acredita antes de abrir tarjeta**: una sesión guardada ya no toma el nombre de un login sólo por compartir un comercio. El cobro exige cuenta y comercio vivos correctos, rechaza IDs inválidos y vuelve a comprobarlos tras la libreta, la propina y la renovación de sesión. La app externa no abre cuentas con login conocido porque no puede acreditarlo; el error de autenticación bloquea la ejecución de Tarjeta también en el canal legacy, sin desviar una autenticación fallida a la app externa, y conserva Efectivo.
+- **[PAX/Nexgo] Un cobro de la tablet que la terminal dejó a medias ya no la aparta sin salida** («ninguna duda de cobro sin salida»; Amaena, 20-oct: una Nexgo apartada 35 min): cuando la app vuelve tras morir a media venta, o el SDK ya regresó sin veredicto, la terminal deja esa solicitud cerrada para ejecución y se lo dice al servidor en la sonda y en la respuesta al cancel (`executionAlive=false` + `closedForExecution=true`, capacidad `terminalPaymentExecutionVersion: "1"`). El servidor suelta SÓLO la terminal: la venta sigue en duda hasta que una persona declare «no se cobró» o el banco concilie, y nunca se dice «no se cobró» por silencio. En la Nexgo, esa declaración llega por la consulta del intento (S6) y cierra la duda en la libreta; en la PAX, tras la declaración del cajero la duda puede seguir en la libreta de la terminal (deuda previa, tablero D12) y se resuelve en la terminal o al conciliar el banco, como hoy. La terminal no certifica si tiene pantallas apiladas (el SDK de AngelPay relanza el cobro al restaurarse) o si no puede leerlas. Y un cobro cuyo SDK ya regresó deja de apartar la terminal para OTRAS ventas: su dinero sigue cercando sólo SU venta. Mientras la pantalla siga con un cobro activo (en la PAX, «Cobrado. Sincronización pendiente» hasta que el cajero toca «Cancelar»), la terminal rechaza la venta nueva del POS como hoy y tampoco le dice al servidor que está libre.
+
+### **⚠️ Al publicar**
+- **Sale primero el SERVIDOR** con «ninguna duda de cobro sin salida»: sólo él lee `terminalPaymentExecutionVersion`, `executionAlive` y `closedForExecution`. Un servidor anterior los ignora y la terminal se comporta como hoy (no suelta nada nuevo).
+- **La base del aparato sube de v42 a v43** («ninguna duda de cobro sin salida», B1: la solicitud del POS «cerrada para ejecución» y «el SDK regresó»; dos columnas nuevas, aditivas, que nacen vacías). Subir de versión no pierde nada. **Bajar a una versión con v42 (la 2.13.1 o anteriores) BORRA la base del aparato** (cola de pagos, reembolsos y cobros remotos pendientes): para retroceder, usa sólo un APK que ya conozca la v43.
+- **Choque de versión de base con «Cobrar sin red»**: la rama `feat/cobrar-sin-red` (sin unir a `main` el 21-oct) también declara una v43, con otras columnas. **Quien aterrice SEGUNDO en `main` renumera la suya a v44 (`MIGRATION_43_44`, `44.json`, prueba de migración) ANTES de publicar**: dos APK con «v43» distintas dejan columnas faltantes o un downgrade destructivo.
+
 ---
 
 ## [2.13.1] - 2026-10-21

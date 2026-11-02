@@ -763,6 +763,18 @@ class AngelPayPaymentViewModelTest {
         launchSdkRequest(mockk<PaymentRequest>(relaxed = true), usedQaTipFallback = false)
     }
 
+    /** Sólo para escenarios de cobro válido: la selección real del VM y la sesión viva coinciden. */
+    private fun AngelPayPaymentViewModel.prepararSesionSdkValida(merchant: MerchantAccount = angelPayMerchantA) {
+        val targetId = merchant.requireAngelpayMerchantId()
+        every { sdkGateway.isAuthenticated() } returns true
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(targetId) } answers {
+            activeMerchantIdFlow.value = targetId
+            Result.success(Unit)
+        }
+        selectMerchant(merchant)
+        assertThat(currentMerchant.value).isEqualTo(merchant)
+    }
+
     /** Builds a declined SDK PaymentResult carrying the given AppErrorCatalog code. */
     private fun sdkFailureResult(
         sdkCode: String,
@@ -785,6 +797,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
@@ -809,11 +822,13 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
             vm.onAngelPaySdkResult(sdkFailureResult("D308"))
             runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
             vm.onAngelPaySdkResult(sdkFailureResult("D308"))
             runCurrent()
 
@@ -891,6 +906,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -917,6 +933,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -942,6 +959,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -968,12 +986,14 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
             val d312 = "No fue posible registrar la terminal antes del cobro. Intente de nuevo; si persiste, contacte a soporte."
 
             vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
             runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
             vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
             runCurrent()
 
@@ -1034,6 +1054,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test
     fun `D308 recovery does NOT relaunch when the re-authenticated session lands on a different merchant`() = runTest(testDispatcher) {
+        every { sdkGateway.isAuthenticated() } returns true
         coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
         val vm = createViewModel()
         try {
@@ -1065,6 +1086,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test
     fun `D308 recovery relaunches when the re-authenticated session matches the selected merchant`() = runTest(testDispatcher) {
+        every { sdkGateway.isAuthenticated() } returns true
         coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
         val vm = createViewModel()
         try {
@@ -1571,6 +1593,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -4019,6 +4042,7 @@ class AngelPayPaymentViewModelTest {
         coEvery { paymentAttemptLedger.motivoDeLaBarrera(any(), any(), any()) } returns "LO QUE DICE LA LIBRETA"
         val vm = createViewModel()
         vm.initPayment(amount = "80.00"); runCurrent()
+        vm.prepararSesionSdkValida()
         vm.flujoSdkForzadoParaPruebas = true
         vm.startCardPayment(); runCurrent()
         return vm
@@ -5070,6 +5094,7 @@ class AngelPayPaymentViewModelTest {
         coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
         val vm = vmConCobroDelPos("req-registro")
         try {
+            vm.prepararSesionSdkValida()
             val fallo = sdkInciertoResult(
                 sdkCode = "N400",
                 status = PaymentResult.Status.TIMEOUT,
@@ -5222,6 +5247,7 @@ class AngelPayPaymentViewModelTest {
         sdkListo()
         val vm = vmConCobroDelPos("req-cercado")
         try {
+            vm.prepararSesionSdkValida()
             vm.flujoSdkForzadoParaPruebas = true
             vm.startCardPayment()
             runCurrent()

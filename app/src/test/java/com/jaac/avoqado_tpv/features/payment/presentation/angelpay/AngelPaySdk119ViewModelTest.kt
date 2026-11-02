@@ -1074,10 +1074,10 @@ class AngelPaySdk119ViewModelTest {
 
     // ═══════════════════════════ §3.8 — el rechazo MUDO de la barrera (T31, T33, T34, T35) ═══════════════════════════
 
-    private fun TestScope.cobroDelPosEnMetodoDePago(requestId: String?): AngelPayPaymentViewModel {
+    private fun TestScope.cobroDelPosEnMetodoDePago(requestId: String?, merchant: MerchantAccount = comercio): AngelPayPaymentViewModel {
         val vm = createViewModel()
         vm.flujoSdkForzadoParaPruebas = true
-        merchantsFlow.value = listOf(comercio)
+        merchantsFlow.value = listOf(merchant)
         if (requestId != null) vm.setSocketPaymentSource("SOCKET", requestId)
         vm.initPayment("100.00")
         runCurrent()
@@ -1199,13 +1199,13 @@ class AngelPaySdk119ViewModelTest {
     }
 
     @Test
-    fun `P1 T35 la app-a-app rechazada por la barrera tambien emite`() = runTest(testDispatcher) {
+    fun `P1 T35 la app-a-app legacy sin login rechazada por la barrera tambien emite`() = runTest(testDispatcher) {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
             enableShifts = false, angelPaySdkEnabled = false, angelPaySdkFallbackEnabled = true,
             showReviewScreen = false, showTipScreen = false,
         )
         coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
-        val vm = cobroDelPosEnMetodoDePago("req-barrera-app")
+        val vm = cobroDelPosEnMetodoDePago("req-barrera-app", comercio.copy(angelpayUserAccountId = null))
         vm.flujoSdkForzadoParaPruebas = false
         try {
             vm.startCardPayment()
@@ -1373,6 +1373,117 @@ class AngelPaySdk119ViewModelTest {
             vm.viewModelScope.cancel()
         }
     }
+    @Test
+    fun `D4 la sesion que cambia durante la libreta no lanza y cierra solo el intento no lanzado`() = runTest(testDispatcher) {
+        var cuenta: String? = "acc-A"
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } answers { cuenta }
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } answers { cuenta = "acc-B"; true }
+        val vm = cobroDelPosEnMetodoDePago("req-d4-libretasinlaunch")
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", any()) }
+            verificarSinEmision()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 fallback de propina vuelve a comprobar login antes de publicar lanzamiento`() = runTest(testDispatcher) {
+        var cuenta: String? = "acc-A"
+        var validaciones = 0
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } answers { cuenta }
+        every { sdkGateway.validatePaymentIntent(any(), any()) } answers {
+            validaciones++
+            if (validaciones == 1) Result.failure(IllegalStateException("Propina no soportada"))
+            else { cuenta = null; Result.success(Unit) }
+        }
+        every { sdkGateway.isTipUnsupportedError(any()) } returns true
+        val vm = cobroDelPosEnMetodoDePago("req-d4-propina")
+        vm.initPayment("100.00", externalTipCents = 1_000)
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", any()) }
+            verificarSinEmision()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 app to app no puede eludir identidad conocida sin acreditar la sesion externa`() = runTest(testDispatcher) {
+        val vm = cobroDelPosEnMetodoDePago("req-d4-app")
+        vm.flujoSdkForzadoParaPruebas = false
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, angelPaySdkEnabled = false, angelPaySdkFallbackEnabled = true,
+            showReviewScreen = false, showTipScreen = false,
+        )
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            verificarSinEmision()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 D308 solo relanza con login y comercio vivos correctos despues de renovar`() = runTest(testDispatcher) {
+        var cuenta: String? = "acc-A"
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } answers { cuenta }
+        val vm = cobroDelPosEnMetodoDePago("req-d4-d308")
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            vm.onIntentLaunched()
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { cuenta = null; Result.success(Unit) }
+            vm.onAngelPaySdkResult(delOrquestador(null, PaymentResult.Status.ERROR, "Sesión expirada", AppErrorCatalog.Code.D308))
+            runCurrent()
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            coVerify(exactly = 0) { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 D308 con cuenta acreditada conserva la misma referencia y el relanzamiento legitimo`() = runTest(testDispatcher) {
+        coEvery { angelPayAuthRepository.handleAuthExpiry() } returns Result.success(Unit)
+        val vm = cobroDelPosEnMetodoDePago("req-d4-d308-valido")
+        try {
+            vm.startCardPayment()
+            val solicitud = (vm.state.value as AngelPayPaymentState.LaunchingAngelPaySdk).request
+            vm.onIntentLaunched()
+            vm.onAngelPaySdkResult(delOrquestador(null, PaymentResult.Status.ERROR, "Sesión expirada", AppErrorCatalog.Code.D308))
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            assertThat((vm.state.value as AngelPayPaymentState.LaunchingAngelPaySdk).request).isSameInstanceAs(solicitud)
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            coVerify(exactly = 0) { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 cancelar durante la revision final de sesion cierra solo el intento aun no lanzado`() = runTest(testDispatcher) {
+        val puerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { sdkGateway.getUserMerchants() } coAnswers {
+            if (++lecturas == 2) puerta.await()
+            Result.success(listOf(MerchantSummary(11, "Tienda", "1001", true)))
+        }
+        val vm = cobroDelPosEnMetodoDePago("req-d4-cancel")
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(lecturas).isEqualTo(2)
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            vm.viewModelScope.cancel()
+            runCurrent()
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", "no_lanzado:identidad_cancelada") }
+            verificarSinEmision()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
 }
 
 /**

@@ -178,7 +178,18 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v41 (p. ej. la 2.12.6) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
     // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v42.
-    version = 42,
+    //
+    // ⭐ Version 43 (21-oct-2026, «ninguna duda de cobro sin salida», B1): `remote_payment_requests.execution_closed_at` (la
+    // solicitud quedó CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo ni empezar) y
+    // `payment_attempts.sdk_returned_at` (el SDK regresó: terminó toda su interacción con ese intento). Aditiva y nullable
+    // (MIGRATION_42_43).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.1) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
+    // ⚠️ La rama `feat/cobrar-sin-red` (TPV «Cobrar sin red», sin unir a main el 21-oct) TAMBIÉN declara una v43 distinta
+    // (gtin, catalog_at, venta y checador guardados). Quien aterrice SEGUNDO en main renumera la suya a v44 (MIGRATION_43_44)
+    // ANTES de publicar: dos APK con «v43» distintas dejan columnas faltantes o un downgrade destructivo.
+    version = 43,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2095,6 +2106,33 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 }
                 for (columna in listOf("product_group_id", "product_group_name", "product_group_image_url", "variant_options_json")) {
                     if (columna !in existentes) db.execSQL("ALTER TABLE products ADD COLUMN $columna TEXT")
+                }
+            }
+        }
+
+        /**
+         * 43 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` (cerrada para
+         * ejecución) y `payment_attempts.sdk_returned_at` (el SDK regresó). Dos columnas INTEGER nullable: las filas que ya había
+         * nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es otro proceso,
+         * así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe ninguna fila.
+         * Idempotente por `PRAGMA table_info`.
+         */
+        val MIGRATION_42_43 = object : Migration(42, 43) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                if (!columnaExiste("remote_payment_requests", "execution_closed_at")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN execution_closed_at INTEGER")
+                }
+                if (!columnaExiste("payment_attempts", "sdk_returned_at")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN sdk_returned_at INTEGER")
                 }
             }
         }

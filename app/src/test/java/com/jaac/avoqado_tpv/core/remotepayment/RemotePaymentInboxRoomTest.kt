@@ -13,7 +13,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import com.jaac.avoqado_tpv.features.payment.data.ledger.MarcaDelBuild
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+import io.mockk.mockk
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -81,6 +84,12 @@ class RemotePaymentInboxRoomTest {
     @Test fun `claim winning cancellation race never fabricates preauthorization proof`() = runTest {
         receive()
         assertThat(coordinator.claimSocketPaymentRequest("req-1")).isTrue()
+        // B2 (T3): el reclamo que ganó ya está cobrando (kernel activo). Sin NINGÚN intento, un reclamo sin dueño en memoria
+        // es el de un proceso muerto que nunca tocó el SDK (la libreta es write-ahead), y ése sí se cancela:
+        // `CancelTrasReclamarRoomTest` › «P2 el cancel tras reiniciar sin intentos contesta ACCEPTED».
+        db.paymentAttemptDao().insert(PaymentAttemptEntity("attempt-1", "venue-1", "BLUMON", state = "KERNEL_ACTIVO",
+            amountCents = 10000, tipCents = 1000, recordingRoute = "ORDER",
+            paymentContextJson = """{"terminalPaymentRequestId":"req-1"}""", createdAt = 1, updatedAt = 1))
         val result = inbox.cancel("req-1")
         assertThat(result.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
         assertThat(result.finalResultJson).isNull()
@@ -99,7 +108,12 @@ class RemotePaymentInboxRoomTest {
     @Test fun `actual Room preserves later approval after refused cancellation`() = runTest {
         receive()
         assertThat(coordinator.claimSocketPaymentRequest("req-1")).isTrue()
-        coordinator.cancelSocketPaymentRequest("req-1")
+        // B2 (T3): para que el cancel se RECHACE tiene que haber un cobro en vuelo; sin ningún intento, un reclamo sin dueño
+        // en memoria se cancela (lo dejó un proceso muerto que nunca tocó el SDK).
+        db.paymentAttemptDao().insert(PaymentAttemptEntity("attempt-1", "venue-1", "BLUMON", state = "KERNEL_ACTIVO",
+            amountCents = 10000, tipCents = 1000, recordingRoute = "ORDER",
+            paymentContextJson = """{"terminalPaymentRequestId":"req-1"}""", createdAt = 1, updatedAt = 1))
+        assertThat(coordinator.cancelSocketPaymentRequest("req-1").disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
         val success = """{"requestId":"req-1","status":"success","paymentId":"pay-1"}"""
         assertThat(inbox.markResolved("req-1", success)).isTrue()
         assertThat(inbox.receive(request)).isEqualTo(RemotePaymentReceiveDecision.ReplayResult(success))
@@ -257,6 +271,7 @@ class RemotePaymentInboxRoomTest {
     }
 
     @Test fun `concurrent Room claim and cancellation have exactly one admission winner`() = runTest {
+        val libreta = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true))
         repeat(10) { index ->
             val id = "race-$index"
             inbox.receive(request.copy(requestId = id))
@@ -265,10 +280,24 @@ class RemotePaymentInboxRoomTest {
             val cancel = async(Dispatchers.IO) { gate.await(); inbox.cancel(id) }
             gate.complete(Unit)
             val claimed = claim.await()
-            val cancelled = cancel.await().disposition == RemotePaymentCancelDisposition.ACCEPTED
-            assertThat(claimed.xor(cancelled)).isTrue()
-            assertThat(db.remotePaymentRequestDao().getById(id)?.status)
-                .isEqualTo(if (claimed) "PROCESSING" else "RESOLVED")
+            val decision = cancel.await()
+            val fila = db.remotePaymentRequestDao().getById(id)!!
+            // La ADMISIÓN (el CAS desde RECEIVED) tiene exactamente un ganador: la cancelación ANTES del reclamo, o el reclamo.
+            val canceladaAntesDelReclamo = org.json.JSONObject(fila.finalResultJson!!).optString("errorMessage") ==
+                "Cancelado por el POS antes de iniciar el cobro"
+            assertThat(claimed.xor(canceladaAntesDelReclamo)).isTrue()
+            // B2 (T3): si ganó el reclamo, el cancel encuentra un reclamo SIN dueño en memoria y SIN intentos (lo que deja un
+            // proceso muerto que nunca tocó el SDK) y lo resuelve por la libreta. Las dos salidas quedan resueltas y CERCADAS.
+            assertThat(decision.disposition).isEqualTo(RemotePaymentCancelDisposition.ACCEPTED)
+            assertThat(fila.status).isEqualTo("RESOLVED")
+            assertThat(fila.finalEmittedAt).isNotNull()
+            // Fix round 1 (M4): la garantía de dinero — gane quien gane, quien reclamó ya NO puede ejecutar esa solicitud: la
+            // cerca guardada no está LIBRE y la reserva de un intento (tarjeta) y el arranque de efectivo/cripto se rechazan.
+            assertThat(db.paymentAttemptDao().cercaDeSolicitud(id)).isEqualTo("CERRADA")
+            assertThat(libreta.openAttempt("a-$id", "venue-1", "BLUMON", 10000, 1000, "ORDER",
+                """{"terminalPaymentRequestId":"$id"}""")).isFalse()
+            assertThat(db.paymentAttemptDao().getById("a-$id")).isNull()
+            assertThat(db.paymentAttemptDao().iniciarEjecucionNoTarjeta(id, System.currentTimeMillis())).isEqualTo(0)
         }
     }
 
@@ -324,5 +353,39 @@ class RemotePaymentInboxRoomTest {
         val row = db.remotePaymentRequestDao().getById("req-1")!!
         assertThat(row.status).isEqualTo(RemotePaymentRequestEntity.STATUS_NOT_FOUND_ANSWERED)
         assertThat(row.finalResultJson).isNull()
+    }
+
+    // ═══ B2 (22-oct): una solicitud CERRADA PARA EJECUCIÓN no se vuelve a entregar ═══
+    @Test fun `P1 la reentrega de una solicitud cerrada para ejecucion es AckOnly y no navega`() = runTest {
+        val marcaPax = MarcaDelBuild(procesador = "BLUMON", sdkAngelPayCompilado = false, respaldoAppAAppCompilado = false)
+        // Codex TPV r1 #1: la app con UNA pantalla, la nuestra (la pila con la que se certifica).
+        val unaSolaPantalla = com.jaac.avoqado_tpv.features.payment.data.ledger.PilaDePantallas {
+            listOf(com.jaac.avoqado_tpv.features.payment.data.ledger.TareaDeLaApp(pantallas = 1, arribaLaPrincipal = true))
+        }
+        val libreta = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true), unaSolaPantalla).apply { marcaDelBuild = marcaPax }
+        val contexto = """{"terminalPaymentRequestId":"req-1"}"""
+        inbox.receive(request)
+        assertThat(coordinator.prepareSocketPaymentRequest("req-1", { true }, { "venue-1" })).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(libreta.openAttempt("a1", "venue-1", "BLUMON", 10000, 1000, "ORDER", contexto)).isTrue()
+        assertThat(libreta.markAuthorizing("a1")).isTrue()
+        // La app muere con el SDK dentro. Proceso nuevo: otra libreta, otra bandeja (cableada como Hilt), sin propiedad.
+        val libretaNueva = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true), unaSolaPantalla).apply { marcaDelBuild = marcaPax }
+        val bandejaNueva = RemotePaymentInbox(db.remotePaymentRequestDao(), libretaNueva, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder())
+        val coordinadorNuevo = RemotePaymentCoordinator(bandejaNueva)
+        val sonda = coordinadorNuevo.probeSocketPaymentRequest("req-1", "venue-1")
+        assertThat(sonda.closedForExecution).isTrue()
+        assertThat(sonda.executionAlive).isFalse()
+        assertThat(db.remotePaymentRequestDao().cerradaParaEjecucionEn("req-1")).isNotNull()
+
+        // El servidor la vuelve a entregar (igual, o con una capacidad mayor): sólo ACK, nunca `Deliver`.
+        assertThat(bandejaNueva.receive(request)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
+        assertThat(bandejaNueva.receive(request.copy(attemptLinkVersion = 1))).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
+        // …y no navega: no se puede reclamar otra vez ni abrir otro intento de esa solicitud.
+        assertThat(coordinadorNuevo.prepareSocketPaymentRequest("req-1", { true }, { "venue-1" }))
+            .isEqualTo(RemotePaymentAdmission.NOT_CLAIMABLE)
+        assertThat(libretaNueva.openAttempt("a2", "venue-1", "BLUMON", 10000, 1000, "ORDER", contexto)).isFalse()
+        val fila = db.remotePaymentRequestDao().getById("req-1")!!
+        assertThat(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        assertThat(fila.finalResultJson).isNull()
     }
 }

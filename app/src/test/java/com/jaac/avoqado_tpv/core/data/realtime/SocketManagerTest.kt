@@ -549,6 +549,157 @@ class SocketManagerTest {
         verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
     }
 
+    // ═══ B3 (22-oct, «ninguna duda de cobro sin salida»): la capacidad en el handshake y el estado de la ejecución en el payload ═══
+    //
+    // El SERVIDOR suelta SÓLO la ranura de la terminal con `disposition = ACTIVE` + `executionAlive = false` +
+    // `closedForExecution = true`, y sólo de un socket que anunció `terminalPaymentExecutionVersion >= 1`. Compara con `===`:
+    // los dos campos viajan como booleanos de JSON, nunca como texto.
+
+    @Test
+    fun `P1 el socket declara terminalPaymentExecutionVersion 1`() = runTest(testDispatcher) {
+        val capturedOptions = slot<IO.Options>()
+        every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
+        socketManager.connect("https://test.socket.io", "test-token", terminalId = "AVQD-123")
+        val authMap = capturedOptions.captured.auth as? Map<*, *>
+        assertThat(authMap?.get("terminalPaymentExecutionVersion")).isEqualTo("1")
+        // Las capacidades de antes siguen igual: anunciar una más no le quita nada a un servidor viejo.
+        assertThat(authMap?.get("terminalPaymentAckVersion")).isEqualTo("1")
+        assertThat(authMap?.get("terminalPaymentCancelDispositionVersion")).isEqualTo("2")
+        assertThat(authMap?.get("terminalPaymentProbeVersion")).isEqualTo("1")
+        assertThat(authMap?.get("terminalId")).isEqualTo("AVQD-123")
+    }
+
+    @Test
+    fun `P1 la respuesta de la sonda lleva executionAlive y closedForExecution`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-cerrada", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+                executionAlive = false, closedForExecution = true,
+            )
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-viva", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+            )
+        capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-cerrada").put("venueId", "venue-1"))
+        capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-viva").put("venueId", "venue-1"))
+
+        // La evidencia completa: sin ejecución viva Y cerrada para ejecución.
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                it.optString("requestId") == "req-cerrada" && it.optString("disposition") == "ACTIVE" &&
+                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true && !it.has("finalResult")
+            })
+        }
+        // Con la ejecución viva (lo de siempre) también viaja, explícito; para el servidor no es evidencia.
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                it.optString("requestId") == "req-viva" && it.optString("disposition") == "ACTIVE" &&
+                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+            })
+        }
+        verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }
+        verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
+    }
+
+    @Test
+    fun `P1 la disposicion del cancel lleva executionAlive y closedForExecution`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-cerrada") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACTIVE,
+                executionAlive = false, closedForExecution = true,
+            )
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-viva") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACTIVE,
+            )
+        capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-cerrada"))
+        capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-viva"))
+
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_cancel_disposition", match<JSONObject> {
+                it.optString("requestId") == "req-cerrada" && it.optString("disposition") == "ACTIVE" &&
+                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true
+            })
+        }
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_cancel_disposition", match<JSONObject> {
+                it.optString("requestId") == "req-viva" && it.optString("disposition") == "ACTIVE" &&
+                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+            })
+        }
+        verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }
+    }
+
+    @Test
+    fun `P2 sin cierre para ejecucion nunca sale executionAlive false`() = runTest(testDispatcher) {
+        // La bandeja no arma esta combinación. Si algún día la armara, el socket no la deja salir a medias: «sin ejecución viva»
+        // sin el cierre que lo respalda sería una afirmación sin evidencia; sale «puede seguir viva», el lado seguro.
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-a-medias", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+                executionAlive = false, closedForExecution = false,
+            )
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-a-medias") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACTIVE,
+                executionAlive = false, closedForExecution = false,
+            )
+        // Revisión B3 (m1): la corrección no es silenciosa — deja un aviso con la solicitud, para poder diagnosticarla.
+        val avisos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                if (priority == android.util.Log.WARN) avisos += message
+            }
+        }
+        timber.log.Timber.plant(arbol)
+        try {
+            capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-a-medias").put("venueId", "venue-1"))
+            capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-a-medias"))
+
+            verify(timeout = 2000) {
+                mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                    it.optString("requestId") == "req-a-medias" && it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+                })
+            }
+            verify(timeout = 2000) {
+                mockSocket.emit("terminal:payment_cancel_disposition", match<JSONObject> {
+                    it.optString("requestId") == "req-a-medias" && it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+                })
+            }
+            assertThat(avisos.count { "req-a-medias" in it && "executionAlive" in it }).isEqualTo(2)
+        } finally {
+            timber.log.Timber.uproot(arbol)
+        }
+    }
+
+    @Test
+    fun `P2 la evidencia completa no deja aviso de correccion`() = runTest(testDispatcher) {
+        // Control de m1: el caso normal (sin ejecución viva Y cerrada) sale tal cual y sin aviso.
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-completa", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+                executionAlive = false, closedForExecution = true,
+            )
+        val avisos = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                if (priority == android.util.Log.WARN) avisos += message
+            }
+        }
+        timber.log.Timber.plant(arbol)
+        try {
+            capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-completa").put("venueId", "venue-1"))
+            verify(timeout = 2000) {
+                mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                    it.optString("requestId") == "req-completa" && it.opt("executionAlive") == false && it.opt("closedForExecution") == true
+                })
+            }
+            assertThat(avisos.filter { "req-completa" in it }).isEmpty()
+        } finally {
+            timber.log.Timber.uproot(arbol)
+        }
+    }
+
     @Test
     fun `should parse payment_completed event correctly`() = runTest(testDispatcher) {
         // Given

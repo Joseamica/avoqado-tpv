@@ -5,9 +5,13 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 
 /** E3 · cuántas candidatas trae cada página de la consulta S6 ([PaymentAttemptDao.candidatasDeConsultaAlServidor]). */
 const val CANDIDATAS_POR_PAGINA = 25
+
+/** B1: revierte la transacción de [PaymentAttemptDao.cerrarSolicitudSiCeso] cuando la bandeja no aceptó el cierre. */
+class CierreParaEjecucionNoAceptado : RuntimeException("La bandeja no aceptó el cierre para ejecución; se revierte la transacción")
 
 @Dao
 interface PaymentAttemptDao {
@@ -140,13 +144,15 @@ interface PaymentAttemptDao {
      *     lo mismo con un VETO durable (Codex r7, P1-2), sin reabrir la fila. Sin identidad de venta nada se cerca (r6).
      *     🔴 Sin filtro de venue a propósito: la terminal es UNA, y un cobro de la cuenta 7 sigue siendo de la cuenta 7 aunque
      *     el turno haya cambiado de sucursal. Ésta es la que impide el cobro doble mientras el aparato cobra las demás cuentas.
-     *  3. **La solicitud del POS**, por lápida/cancel/desenlace en la bandeja.
+     *  3. **La solicitud del POS**, por lápida/cancel/desenlace/cierre para ejecución en la bandeja.
      *
      * 🛑 CERCA (C.5 / H.3, 11-sep): ningún intento nuevo de una solicitud remota cuya fila en la bandeja
      * tenga lápida (`NOT_FOUND_ANSWERED`), cancelación aceptada (`cancel_accepted_at`) o un desenlace final
      * ya escrito (`final_emitted_at`). Va DENTRO de esta sentencia, no en una lectura previa: un reintento
      * y un cancel simultáneos no pueden ganar los dos. 🔴 A propósito NO exige «la bandeja está en
      * PROCESSING»: tras un rechazo reintentable la solicitud sigue en PROCESSING y el reintento es legítimo.
+     * 🔒 B1 (21-oct): tampoco de una solicitud CERRADA PARA EJECUCIÓN (`execution_closed_at`, [cerrarSolicitudSiCeso]):
+     * la terminal ya certificó que nada suyo sigue vivo, y esa certificación sólo es verdad si nada vuelve a empezar.
      *
      * Las filas HEREDADAS (`legacy_shadow = 1`) no cuentan para reservar: en 2.9.2 no reservaban.
      */
@@ -165,7 +171,7 @@ interface PaymentAttemptDao {
             SELECT 1 FROM remote_payment_requests cerca
             WHERE cerca.request_id = :terminalPaymentRequestId
             AND (cerca.status = 'NOT_FOUND_ANSWERED' OR cerca.cancel_accepted_at IS NOT NULL
-                 OR cerca.final_emitted_at IS NOT NULL)
+                 OR cerca.final_emitted_at IS NOT NULL OR cerca.execution_closed_at IS NOT NULL)
         ))""")
     suspend fun reserveTerminal(
         attemptId: String, venueId: String, processor: String, kind: String,
@@ -178,10 +184,11 @@ interface PaymentAttemptDao {
      * Por qué una solicitud remota ya no admite otro intento, o 'LIBRE'. Sólo LEE la bandeja: la usa el
      * ViewModel para traducir un fallo de la cerca a lo que de verdad pasó («El POS canceló este cobro»
      * o «Este cobro ya se cerró»), nunca a «No se pudo guardar el intento». null = la bandeja no la tiene.
+     * B1: una solicitud cerrada para ejecución (`execution_closed_at`) también es 'CERRADA'.
      */
     @Query("""SELECT CASE
             WHEN cancel_accepted_at IS NOT NULL THEN 'CANCELADA_POR_EL_POS'
-            WHEN status = 'NOT_FOUND_ANSWERED' OR final_emitted_at IS NOT NULL THEN 'CERRADA'
+            WHEN status = 'NOT_FOUND_ANSWERED' OR final_emitted_at IS NOT NULL OR execution_closed_at IS NOT NULL THEN 'CERRADA'
             ELSE 'LIBRE' END
         FROM remote_payment_requests WHERE request_id = :requestId""")
     suspend fun cercaDeSolicitud(requestId: String): String?
@@ -194,13 +201,91 @@ interface PaymentAttemptDao {
      * C.5 — CAS del EFECTIVO/CRIPTO de un cobro remoto, ANTES de registrar. Gana sólo si la solicitud
      * sigue reclamada (PROCESSING) y nadie la canceló ni la cerró; desde aquí el cancel remoto contesta
      * ACTIVE. Idempotente para la misma solicitud (COALESCE): un segundo arranque del mismo cobro no
-     * pierde. Devuelve 1 si puede arrancar, 0 si no.
+     * pierde. Devuelve 1 si puede arrancar, 0 si no. B1: tampoco sobre una solicitud cerrada para ejecución.
      */
     @Query("""UPDATE remote_payment_requests
         SET execution_started_at = COALESCE(execution_started_at, :now), updated_at = :now
         WHERE request_id = :requestId AND status = 'PROCESSING'
-        AND cancel_accepted_at IS NULL AND final_emitted_at IS NULL""")
+        AND cancel_accepted_at IS NULL AND final_emitted_at IS NULL AND execution_closed_at IS NULL""")
     suspend fun iniciarEjecucionNoTarjeta(requestId: String, now: Long): Int
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    // B1 (21-oct, «ninguna duda de cobro sin salida»): «el SDK regresó» y la solicitud «cerrada para ejecución».
+    // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * B1: toda la interacción de ESTE intento con el SDK terminó ([PaymentAttemptEntity.sdkReturnedAt]). Conserva la PRIMERA
+     * vez (COALESCE) y NO toca `state`, `state_version` ni `updated_at`: es un hecho, no una transición (la cuarentena y la
+     * poda siguen midiendo lo de siempre). Devuelve 1 si la fila existe.
+     */
+    @Query("UPDATE payment_attempts SET sdk_returned_at = COALESCE(sdk_returned_at, :now) WHERE attempt_id = :attemptId")
+    suspend fun marcarSdkRegreso(attemptId: String, now: Long): Int
+
+    /**
+     * B1: cuántos intentos de ESTA solicitud PUEDEN SEGUIR VIVOS ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]). La solicitud
+     * se reconoce por su columna o por el `instr` de siempre ([com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao.contarIntentosBloqueadores]):
+     * las filas anteriores a la v35 sólo la llevan en el contexto.
+     */
+    @Query("""SELECT COUNT(*) FROM payment_attempts
+        WHERE (terminal_payment_request_id = :requestId
+               OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)
+        AND """ + PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO)
+    suspend fun intentosQuePuedenSeguirVivos(requestId: String, processToken: String): Int
+
+    /**
+     * B1: las reservas (PREPARANDO) de esta solicitud que dejó OTRO proceso pasan a DESCARTADA: por construcción ninguna llamada
+     * capaz de cobrar empezó, y su proceso murió, así que ya no pueden avanzar (su `markKernelEntered`/`markAuthorizing` exige
+     * PREPARANDO). Nunca una fila HEREDADA: su PREPARANDO no prueba nada (en 2.9.2 el contactless entraba al kernel así).
+     */
+    @Query("""UPDATE payment_attempts
+        SET state = 'DESCARTADA', state_version = state_version + 1, updated_at = :now, last_error = 'preparando_de_proceso_terminado'
+        WHERE (terminal_payment_request_id = :requestId
+               OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)
+        AND state = 'PREPARANDO' AND legacy_shadow = 0 AND process_token IS NOT :processToken""")
+    suspend fun descartarPreparandoDeOtrosProcesos(requestId: String, processToken: String, now: Long): Int
+
+    /**
+     * B1: escribe el cierre en la bandeja. Las MISMAS condiciones que lee [cerrarSolicitudSiCeso], otra vez dentro del UPDATE:
+     * reclamada (PROCESSING), sin efectivo/cripto arrancado, sin final emitido y sin cierre previo. El status NO cambia.
+     */
+    @Query("""UPDATE remote_payment_requests
+        SET execution_closed_at = :now, updated_at = :now
+        WHERE request_id = :requestId AND status = 'PROCESSING' AND execution_started_at IS NULL
+        AND final_emitted_at IS NULL AND execution_closed_at IS NULL""")
+    suspend fun bandejaCerrarParaEjecucion(requestId: String, now: Long): Int
+
+    /**
+     * 🔒 B1 — «cerrada para ejecución»: la terminal CERTIFICA que nada de esta solicitud puede seguir ejecutándose ni volver a
+     * empezar. Es la evidencia que el SERVIDOR pide para soltar la RANURA de la terminal (`executionAlive=false` +
+     * `closedForExecution=true`); nunca dice «no se cobró» — el dinero de esa venta lo deciden el banco o una persona.
+     *
+     * En UNA transacción:
+     *  1. la bandeja está reclamada (PROCESSING), sin efectivo/cripto arrancado (`execution_started_at`) y sin final emitido;
+     *  2. NINGÚN intento de la solicitud puede seguir vivo ([intentosQuePuedenSeguirVivos]);
+     *  3. se descartan las reservas de OTROS procesos ([descartarPreparandoDeOtrosProcesos]);
+     *  4. se escribe `execution_closed_at` ([bandejaCerrarParaEjecucion]); si no aterriza, se revierte todo.
+     * El status de la bandeja sigue PROCESSING a propósito: un aprobado tardío la resuelve por `resolverBandejaConGanador`.
+     *
+     * Devuelve true si cerró o si YA estaba cerrada (sin volver a escribir; se revalida que nada siga vivo: un cierre nunca
+     * certifica lo que la libreta desmiente). False en cualquier otro caso, sin escribir nada.
+     *
+     * ⚠️ No conoce la PROPIEDAD en memoria de la solicitud: con CERO intentos la cierra aunque ESTE proceso tenga abierta la
+     * pantalla esperando «Tarjeta». Esa pregunta es de quien llama (la sonda, B2), igual que en [cancelarTrasReclamar].
+     * ⚠️ Sólo vale con el SDK EMBEBIDO: [PaymentAttemptLedger.cerrarSolicitudSiCeso] lo filtra antes de llegar aquí.
+     */
+    @Transaction
+    suspend fun cerrarSolicitudSiCeso(requestId: String, processToken: String, now: Long): Boolean {
+        val bandeja = bandejaDe(requestId) ?: return false
+        if (bandeja.executionClosedAt != null) return intentosQuePuedenSeguirVivos(requestId, processToken) == 0
+        if (bandeja.status != RemotePaymentRequestEntity.STATUS_PROCESSING ||
+            bandeja.executionStartedAt != null || bandeja.finalEmittedAt != null
+        ) return false
+        if (intentosQuePuedenSeguirVivos(requestId, processToken) > 0) return false
+        descartarPreparandoDeOtrosProcesos(requestId, processToken, now)
+        // Nada escrito sin su pareja: si la bandeja no acepta el cierre, el descarte se revierte con ella.
+        if (bandejaCerrarParaEjecucion(requestId, now) != 1) throw CierreParaEjecucionNoAceptado()
+        return true
+    }
 
     @Query("""SELECT COUNT(*) FROM payment_attempts WHERE venue_id = :venueId
         AND state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')""")

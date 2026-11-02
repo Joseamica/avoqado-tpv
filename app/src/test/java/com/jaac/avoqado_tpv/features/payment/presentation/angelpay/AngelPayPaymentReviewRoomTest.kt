@@ -59,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -248,6 +249,23 @@ class AngelPayPaymentReviewRoomTest {
         savedStateHandle = handle,
     )
 
+    /** Los casos SDK positivos pasan por la selección real, sin acreditar otros escenarios desde setup. */
+    private fun AngelPayPaymentViewModel.prepararSesionSdkValida() {
+        val targetId = angelPayMerchantA.requireAngelpayMerchantId()
+        every { sdkGateway.isAuthenticated() } returns true
+        coEvery { sdkGateway.getUserMerchants() } answers {
+            Result.success(activeMerchantIdFlow.value?.let {
+                listOf(MerchantSummary(id = it, name = "x", affiliationNumber = "1", isActive = true))
+            } ?: emptyList())
+        }
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(targetId) } answers {
+            activeMerchantIdFlow.value = targetId
+            Result.success(Unit)
+        }
+        selectMerchant(angelPayMerchantA)
+        assertThat(currentMerchant.value).isEqualTo(angelPayMerchantA)
+    }
+
     @Test
     fun `review Room attempt survives VM recreation and empty callback cannot claim PRE`() = kotlinx.coroutines.runBlocking {
         // 🔴 RELOJ REAL, no virtual — y esto NO es una preferencia de estilo, es lo único que
@@ -433,6 +451,7 @@ class AngelPayPaymentReviewRoomTest {
         try {
             vm.initPayment("100.00")
             runCurrent()
+            vm.prepararSesionSdkValida()
             repeat(2) {
                 kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
                     val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("startSdkCardPayment",
@@ -473,6 +492,7 @@ class AngelPayPaymentReviewRoomTest {
         try {
             vm.initPayment("100.00")
             runCurrent()
+            vm.prepararSesionSdkValida()
             val primero = vm.attemptIdForTest()!!
             iniciarCobroConElSdk()
 
@@ -523,6 +543,9 @@ class AngelPayPaymentReviewRoomTest {
             every { sdkGateway.validatePaymentIntent(any(), any()) } returns Result.success(Unit)
             every { sdkGateway.sdkVersion() } returns com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA
             coEvery { angelPayAuthRepository.ensureAuthenticated() } returns Result.success(Unit)
+            // Puertos tipados aunque una regresión desvíe el callback: nunca un Object de mock relajado.
+            coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("fuera del escenario S5")
+            coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure<PaymentReceipt>(IllegalStateException("registro fuera del escenario S5"))
             // El CAS de «no se cobró» GANA de verdad (Room); dentro de su suspensión llega el aviso de S5 cuya PROPIA escritura
             // falló (`registrado = false` y la fila sin tocar): el dinero sólo consta en el veto de la pantalla. Se inyecta con un
             // DAO decorador — un `spyk` + `callOriginal()` de mockk devuelve COROUTINE_SUSPENDED cuando la libreta salta a IO.
@@ -542,14 +565,19 @@ class AngelPayPaymentReviewRoomTest {
             try {
                 vm.initPayment("100.00")
                 vm.setSocketPaymentSource("SOCKET", requestId)
+                vm.prepararSesionSdkValida()
                 kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
                     val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("startSdkCardPayment",
                         com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials::class.java,
                         kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
                     method.invoke(vm, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials("", "", "", ""), continuation)
                 }
-                vm.onIntentLaunched()
+                // Acreditar preparación antes de simular un SDK que ya se lanzó y devolver su callback.
+                assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
                 val intento = vm.attemptIdForTest()!!
+                assertThat(db.paymentAttemptDao().getById(intento)?.state)
+                    .isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_AUTORIZANDO)
+                vm.onIntentLaunched()
                 vm.onAngelPaySdkResult(
                     PaymentResult(
                         approved = false, status = PaymentResult.Status.TIMEOUT, message = "Tiempo de espera agotado", amount = 10_000L,
@@ -577,8 +605,10 @@ class AngelPayPaymentReviewRoomTest {
                 assertThat(org.json.JSONObject(resuelta.finalResultJson!!).getString("status")).isEqualTo("success")
                 assertThat(org.json.JSONObject(resuelta.finalResultJson!!).getString("paymentId")).isEqualTo("pay-1")
                 verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(resuelta.finalResultJson!!) }
+                coVerify(exactly = 0) { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) }
+                coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }
             } finally {
-                vm.viewModelScope.cancel()
+                vm.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
             }
 
             // «Muere el proceso»: sólo queda lo durable. 🔴 Ronda 19 (founder, 23-sep: «corrige y avisa»): un cobro LIMPIO —su
@@ -622,6 +652,7 @@ class AngelPayPaymentReviewRoomTest {
         try {
             vm.initPayment("100.00")
             runCurrent()
+            vm.prepararSesionSdkValida()
             // Invoke the existing SDK orchestration entry, bypassing only UI merchant selection.
             kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
                 val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("startSdkCardPayment",

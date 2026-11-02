@@ -664,6 +664,55 @@ class AvoqadoDatabaseMigrationTest {
         }
     }
 
+    /**
+     * v42 → v43 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` y
+     * `payment_attempts.sdk_returned_at`. Aditiva y nullable: una solicitud reclamada y el dinero de la libreta sobreviven
+     * intactos, nada se da por cerrado para ejecución y ningún SDK por regresado. Room valida contra `43.json`.
+     * (Gemelo en Robolectric: `MigracionV43RoomTest`, que sí corre sin aparato.)
+     */
+    @Test
+    fun migrate42To43_conservaLaBandejaYLaLibretaYDejaLasColumnasNuevasEnNull() {
+        helper.createDatabase(TEST_DB, 42).use { db ->
+            db.execSQL(
+                "INSERT INTO remote_payment_requests " +
+                    "(request_id, venue_id, amount_cents, tip_cents, rating, skip_review, order_id, processed_by_staff_id, " +
+                    "sender_device_name, source_timestamp, status, final_result_json, created_at, updated_at, " +
+                    "cancel_accepted_at, execution_started_at, final_emitted_at, attempt_link_version) " +
+                    "VALUES ('req-v42','v1',47500,4750,5,0,NULL,'staff-pos','Android POS','2026-10-21T14:00:00Z'," +
+                    "'PROCESSING',NULL,123,123,NULL,NULL,NULL,1)",
+            )
+            db.execSQL(
+                "INSERT INTO payment_attempts (attempt_id, venue_id, processor, kind, state, state_version, amount_cents, " +
+                    "tip_cents, currency, recording_route, context_schema_version, payment_context_json, host_approved, " +
+                    "verify_attempts, created_at, updated_at, legacy_shadow, terminal_payment_request_id, server_check_count, " +
+                    "process_token) VALUES ('a-v42','v1','BLUMON','SALE','HOST_RESPONDIO',2,47500,4750,'MXN','FAST',1," +
+                    "'{\"terminalPaymentRequestId\":\"req-v42\"}',1,0,123,123,0,'req-v42',0,'proceso-v42')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 43, true, AvoqadoDatabase.MIGRATION_42_43)
+
+        migrated.query(
+            "SELECT status, amount_cents, tip_cents, execution_closed_at FROM remote_payment_requests WHERE request_id = 'req-v42'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getString(0)).isEqualTo("PROCESSING")
+            assertThat(c.getLong(1)).isEqualTo(47_500L)
+            assertThat(c.getLong(2)).isEqualTo(4_750L)
+            assertThat(c.isNull(3)).isTrue() // nada se da por cerrado para ejecución al actualizar
+        }
+        migrated.query(
+            "SELECT state, host_approved, amount_cents, process_token, sdk_returned_at FROM payment_attempts WHERE attempt_id = 'a-v42'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getString(0)).isEqualTo("HOST_RESPONDIO")
+            assertThat(c.getInt(1)).isEqualTo(1)
+            assertThat(c.getLong(2)).isEqualTo(47_500L)
+            assertThat(c.getString(3)).isEqualTo("proceso-v42")
+            assertThat(c.isNull(4)).isTrue() // ningún SDK se da por regresado al actualizar
+        }
+    }
+
     companion object {
         private const val TEST_DB = "migration-test-avoqado"
         // database.identityHash from app/schemas/.../23.json

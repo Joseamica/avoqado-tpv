@@ -1774,6 +1774,10 @@ class AngelPayPaymentViewModel @Inject constructor(
                     paymentStateHolder.setCharging(false)
                     return@launch
                 }
+                if (_currentMerchant.value?.let { runCatching { it.requireAngelpayMerchantId() }.isSuccess } != true) {
+                    fallarIdentidadAntesDeLanzar()
+                    return@launch
+                }
                 // ── T26 — auth ANTES de la espera del comercio (sólo en la ruta del SDK) ──
                 // Tras arrancar sin red la sesión no existe y nada movía el comercio activo: la
                 // espera de abajo vencía a los 8 s ANTES de llegar a la única línea que
@@ -1862,7 +1866,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         val cuentaDeSesion = angelPayAuthRepository.getCurrentAngelPayAccountId()
         val sesionLista = sesionViva &&
             (estado is AngelPayAuthState.Authenticated || estado is AngelPayAuthState.ConfigMismatchBanner) &&
-            (cuentaObjetivo == null || cuentaDeSesion == null || cuentaDeSesion == cuentaObjetivo)
+            (cuentaObjetivo == null || cuentaDeSesion == cuentaObjetivo)
 
         if (!sesionLista) {
             Timber.i(
@@ -2111,11 +2115,6 @@ class AngelPayPaymentViewModel @Inject constructor(
         if (authResult.isFailure) {
             val error = authResult.exceptionOrNull()
             Timber.e(error, "❌ [AngelPay SDK] Authentication failed")
-            if (isAppToAppFallbackEnabled()) {
-                Timber.w("↩️ [AngelPay] Falling back to app-to-app after SDK auth failure")
-                startAppToAppCardPayment(credentials)
-                return
-            }
             // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
             fallaAntesDeAutorizar(
                 base = conPunto(error?.message ?: "No se pudo autenticar AngelPay SDK"),
@@ -2171,7 +2170,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         )
 
         if (validation.isSuccess) {
-            launchSdkRequest(primaryRequest, usedQaTipFallback = false)
+            lanzarSdkConCuentaAcreditada(primaryRequest, usedQaTipFallback = false, intentoNoLanzado = paymentAttemptId)
             return
         }
 
@@ -2203,7 +2202,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             )
 
             if (fallbackValidation.isSuccess) {
-                launchSdkRequest(fallbackRequest, usedQaTipFallback = true)
+                lanzarSdkConCuentaAcreditada(fallbackRequest, usedQaTipFallback = true, intentoNoLanzado = paymentAttemptId)
                 return
             }
         }
@@ -2211,7 +2210,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         Timber.e(validationError, "❌ [AngelPay SDK] createPaymentIntent validation failed")
         if (isAppToAppFallbackEnabled()) {
             Timber.w("↩️ [AngelPay] Falling back to app-to-app after SDK validation failure")
-            startAppToAppCardPayment(credentials)
+            startAppToAppCardPayment(credentials, intentoNoLanzado = paymentAttemptId)
             return
         }
 
@@ -2250,6 +2249,41 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
         authorizationWasLaunched = false
         return true
+    }
+
+    /** La barrera de libreta suspende: comprobar otra vez la sesión justo antes de publicar el lanzamiento. */
+    private suspend fun lanzarSdkConCuentaAcreditada(
+        request: PaymentRequest,
+        usedQaTipFallback: Boolean,
+        intentoNoLanzado: String,
+    ) {
+        val alineada = try {
+            sessionAlignedWithSelectedMerchant()
+        } catch (cancelled: CancellationException) {
+            // Esta invocación abrió la fila y aún no publicó nada capaz de cobrar.
+            withContext(NonCancellable) { cerrarIntentoQueNoSeLanzo(intentoNoLanzado, causa = "identidad_cancelada") }
+            throw cancelled
+        }
+        if (!alineada) {
+            fallarIdentidadAntesDeLanzar(intentoNoLanzado = intentoNoLanzado)
+            return
+        }
+        launchSdkRequest(request, usedQaTipFallback)
+    }
+
+    private suspend fun fallarIdentidadAntesDeLanzar(
+        base: String = "No se pudo confirmar la cuenta y el comercio de AngelPay.",
+        intentoNoLanzado: String? = null,
+    ) {
+        val cerrado = intentoNoLanzado == null || withContext(NonCancellable) {
+            cerrarIntentoQueNoSeLanzo(intentoNoLanzado, causa = "identidad")
+        }
+        if (cerrado) {
+            fallaAntesDeAutorizar(base, "La terminal no pudo preparar la cuenta de AngelPay", "Vuelve a seleccionar la cuenta o avisa a soporte.")
+        } else {
+            _state.value = AngelPayPaymentState.Error(message = base, canRetry = false)
+        }
+        clearChargingOnTerminal()
     }
 
     // Internal for tests: the sandbox variant compiles with ANGELPAY_SDK_ENABLED=false,
@@ -2296,7 +2330,17 @@ class AngelPayPaymentViewModel @Inject constructor(
     // firing the intent) — same write→launch relocation Task 4 applied to Blumon. Every call
     // site already runs inside a coroutine (startCardPayment's viewModelScope.launch, or the
     // suspend SDK path's fallbacks), so no call-site restructuring was needed.
-    private suspend fun startAppToAppCardPayment(credentials: AngelPayCredentials) {
+    private suspend fun startAppToAppCardPayment(credentials: AngelPayCredentials, intentoNoLanzado: String? = null) {
+        val merchant = _currentMerchant.value
+        // La sesión SDK no acredita el login de OTRA app. El legacy sin FK conserva su política.
+        val authFallida = angelPayAuthRepository.state.value is AngelPayAuthState.AuthError
+        if (merchant == null || runCatching { merchant.requireAngelpayMerchantId() }.isFailure ||
+            merchant.angelpayUserAccountId != null || authFallida
+        ) {
+            val mensaje = if (authFallida) "No se pudo autenticar AngelPay." else "Usa el SDK de AngelPay para confirmar la cuenta antes de cobrar."
+            fallarIdentidadAntesDeLanzar(mensaje, intentoNoLanzado)
+            return
+        }
         val staffName = secureStorage.getStaffName()
         val paymentAttemptId = ensurePaymentAttemptId()
 
@@ -2312,6 +2356,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             // 🛑 La cerca de la solicitud remota se traduce a lo que pasó, nunca a «no se pudo guardar».
             traducirBarreraRechazada()
             clearChargingOnTerminal()
+            return
+        }
+
+        if (_currentMerchant.value != merchant || angelPayAuthRepository.state.value is AngelPayAuthState.AuthError) {
+            fallarIdentidadAntesDeLanzar(intentoNoLanzado = paymentAttemptId)
             return
         }
 
@@ -2680,6 +2729,16 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
 
+    /**
+     * 🔒 B1 (21-oct, «ninguna duda de cobro sin salida»): el SDK EMBEBIDO de AngelPay regresó con un resultado TERMINAL para
+     * este intento — no se relanza con la misma llave — así que terminó toda su interacción con el SDK
+     * ([PaymentAttemptLedger.marcarSdkRegreso]). Sólo desde [onAngelPaySdkResult]: el resultado de la app EXTERNA
+     * ([onAngelPayResult]) no se marca, porque en app-a-app la terminal nunca certifica el cese. Nunca en un `catch`/`finally`.
+     */
+    private suspend fun marcarFinDelSdk(attemptId: String?) {
+        attemptId?.let { paymentAttemptLedger.marcarSdkRegreso(it) }
+    }
+
     fun onAngelPaySdkResult(result: PaymentResult) {
         viewModelScope.launch {
           // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
@@ -2690,6 +2749,8 @@ class AngelPayPaymentViewModel @Inject constructor(
           var authAttemptOutcomeCode: String? = null
           try {
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
+            // 🔒 B1: el intento DUEÑO de este resultado, fijado al recibirlo: el regreso del SDK se marca sobre ÉL.
+            val intentoDelResultado = currentPaymentAttemptId
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}, montoCobrado=${result.amount}")
             verificarMontoCobrado(result)
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
@@ -2722,12 +2783,14 @@ class AngelPayPaymentViewModel @Inject constructor(
                     CierreSinAutorizacion.CERRADO -> {
                         // 📊 Task 6 — resuelto, y distinguible en la telemetría de un U101 incierto de antes.
                         authAttemptOutcomeCode = "${result.callResult?.code ?: "SIN_CODIGO"}_SIN_AUTORIZACION"
+                        marcarFinDelSdk(intentoDelResultado) // 🔒 B1: el SDK regresó y este intento no se relanza
                         clearChargingOnTerminal()
                         return@launch
                     }
                     CierreSinAutorizacion.DESMENTIDO -> {
                         // S5 acreditó dinero mientras se escribía la libreta: la pantalla ya quedó en el cobro o en la contradicción.
                         authAttemptOutcomeCode = "${result.callResult?.code ?: "SIN_CODIGO"}_CONTRADICCION"
+                        marcarFinDelSdk(intentoDelResultado) // 🔒 B1: el SDK regresó y este intento no se relanza
                         clearChargingOnTerminal()
                         return@launch
                     }
@@ -2794,6 +2857,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // 📊 Task 6 — el intento SÍ quedó resuelto para la telemetría (el cobro no
                 // sigue en vuelo), aunque su desenlace sea justamente "no se sabe".
                 authAttemptOutcomeCode = result.callResult?.code ?: "INDETERMINADO"
+                // 🔒 B1: el SDK regresó SIN veredicto y no se relanza (la verificación pregunta al historial, no cobra).
+                marcarFinDelSdk(intentoDelResultado)
                 manejarDesenlaceIncierto(result)
                 clearChargingOnTerminal()
                 return@launch
@@ -2803,6 +2868,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // 📊 Task 6 — AngelPay's own catalog code when present (e.g. "S000"), never
                 // result.message (human-readable, can carry amount/reference).
                 authAttemptOutcomeCode = result.callResult?.code ?: "SUCCESS"
+                // 🔒 B1: aprobado — termina la interacción con el SDK; lo que sigue es registrar (dinero: lo decide el servidor).
+                marcarFinDelSdk(intentoDelResultado)
                 recordCardPayment(result)
             } else {
                 val sessionExpiryShape = when {
@@ -2825,6 +2892,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                 }
                 // 📊 Task 6 — reached only on a TERMINAL decline (no relaunch above).
                 authAttemptOutcomeCode = result.callResult?.code ?: "DECLINED"
+                // 🔒 B1: rechazo TERMINAL — ya no hay relanzamiento con esta llave (ése sale arriba, SIN marcar: la sesión
+                // expirada vuelve a lanzar el SDK con el MISMO intento).
+                marcarFinDelSdk(intentoDelResultado)
                 // 📒 [Libreta] Expiry-shaped decline that did NOT relaunch — now it IS the
                 // terminal host verdict for this attempt (deferred from the mark above).
                 if (ledgerExpiryShapedDecline) {
@@ -4180,25 +4250,31 @@ class AngelPayPaymentViewModel @Inject constructor(
         authExpiryRetriedAttemptId = attemptId
         Timber.w("🔐 [AngelPay SDK] Session expired mid-payment (shape=$reason) — re-authenticating and relaunching once | attemptId=$attemptId")
         _state.value = AngelPayPaymentState.WaitingForResult(message = "Sesión expirada, renovando…")
-        val reauth = angelPayAuthRepository.handleAuthExpiry()
-        if (reauth.isFailure) {
-            Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after $reason failed")
-            return false
+        val candado = angelPayAuthRepository.candadoDeSesion
+        candado.lock()
+        try {
+            val reauth = angelPayAuthRepository.handleAuthExpiry()
+            if (reauth.isFailure) {
+                Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after $reason failed")
+                return false
+            }
+            // Incidente Amaena (2026-07-29): handleAuthExpiry ahora vuelve a la cuenta que
+            // estaba activa, pero si aun así la sesión quedó en OTRO merchant (fallback a
+            // primaria, cuenta multi-merchant esperando pick manual), relanzar cobraría esa
+            // otra afiliación mientras el registro llevaría la seleccionada. No relanzar:
+            // el caller cae al estado de error normal y el cajero re-selecciona.
+            if (!sessionAlignedWithSelectedMerchant()) {
+                Timber.e(
+                    "🔐 [AngelPay SDK] Post-expiry re-auth landed on a different merchant than selected — NOT relaunching | attemptId=%s",
+                    attemptId,
+                )
+                return false
+            }
+            launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
+            return true
+        } finally {
+            candado.unlock()
         }
-        // Incidente Amaena (2026-07-29): handleAuthExpiry ahora vuelve a la cuenta que
-        // estaba activa, pero si aun así la sesión quedó en OTRO merchant (fallback a
-        // primaria, cuenta multi-merchant esperando pick manual), relanzar cobraría esa
-        // otra afiliación mientras el registro llevaría la seleccionada. No relanzar:
-        // el caller cae al estado de error normal y el cajero re-selecciona.
-        if (!sessionAlignedWithSelectedMerchant()) {
-            Timber.e(
-                "🔐 [AngelPay SDK] Post-expiry re-auth landed on a different merchant than selected — NOT relaunching | attemptId=%s",
-                attemptId,
-            )
-            return false
-        }
-        launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
-        return true
     }
 
     /**
@@ -4206,14 +4282,18 @@ class AngelPayPaymentViewModel @Inject constructor(
      * activo, mientras que el registro lleva [_currentMerchant] — si divergen, el
      * dinero y los libros quedan en afiliaciones distintas (7 pagos, $4,344.50).
      *
-     * True cuando no hay nada seleccionado con qué alinear (flujos single-merchant
-     * pre-selección). Fail-closed: si el merchant de la sesión es desconocido o
-     * difiere del seleccionado, NO se cobra.
+     * Fail-closed: selección ausente o inválida, login conocido sin acreditar o merchant
+     * vivo distinto nunca permiten cobrar. Un comercio compartido no acredita un login.
      */
     private suspend fun sessionAlignedWithSelectedMerchant(): Boolean {
-        val merchant = _currentMerchant.value ?: return true
-        if (merchant.processorType != ProcessorType.ANGELPAY) return true
-        val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrNull() ?: return true
+        val merchant = _currentMerchant.value ?: return false
+        if (merchant.processorType != ProcessorType.ANGELPAY) return false
+        val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrNull() ?: return false
+        if (!runCatching { sdkGateway.isAuthenticated() }.getOrDefault(false)) return false
+        val authState = angelPayAuthRepository.state.value
+        if (authState !is AngelPayAuthState.Authenticated && authState !is AngelPayAuthState.ConfigMismatchBanner) return false
+        val cuentaObjetivo = merchant.angelpayUserAccountId
+        if (cuentaObjetivo != null && angelPayAuthRepository.getCurrentAngelPayAccountId() != cuentaObjetivo) return false
         // 🔴 T26: se revalida contra la sesión VIVA del SDK, no sólo contra la marca en memoria:
         // una auth ajena que corrió después (recuperación, panel) pudo dejar el SDK en otra
         // cuenta sin tocar `activeAngelPayMerchantId`. Si la marca existe, también debe coincidir.

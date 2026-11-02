@@ -11,6 +11,7 @@
 - **[Kiosco] El modo kiosco queda como legacy**: se quitaron de la terminal el «Modo Kiosk» del menú de opciones y la sección «Modo Kiosko» de Configuración (founder, 2-nov: nadie lo usa). El código se queda; una terminal que ya estuviera en kiosco sale con su PIN como siempre. Para retomarlo: `MODO_KIOSCO_DISPONIBLE` en `KioskModeManager.kt`
 
 ### **Fixed**
+- **[Nexgo] El letrero de AngelPay sin red ya no promete «se reintenta sola»**: en «Método de pago» la terminal no se reconecta sola (a propósito, para no cambiar de cuenta a media venta), así que ahora dice «sin conexión: cuando vuelva, toca Reintentar»
 - **[Kiosco] Un corte de red al mandar los productos ya no crea una segunda venta** (PR #4): el reintento recupera la misma venta por su llave
 - **[Nexgo] Ya no se traba con «El token de selección ha expirado»**: en una cuenta AngelPay con varios comercios, si pasaban unos minutos entre que la terminal arrancaba y el primer cobro, elegir el comercio fallaba y sólo se arreglaba reiniciando. Ahora pide un permiso nuevo de la MISMA cuenta y elige otra vez, una sola vez y antes de leer la tarjeta (sin red no reintenta)
 - **[Nexgo] Salir a media conexión con AngelPay ya no deja Tarjeta y Efectivo apagados**: si el cajero salía mientras la terminal iniciaba sesión en AngelPay, quedaba «conectando» para siempre; ahora queda lista para reconectar sola

@@ -115,6 +115,19 @@ sealed class ApiException(
         get() = this is NetworkError || (this is HttpError && (code in 502..504 || code in 520..527))
 
     /**
+     * Regla única de «sesión muerta» para el error de `AuthRepository.refreshAccessToken()`
+     * (la usan TokenAuthenticator, SocketManager y el propio repositorio). SÓLO se consulta sobre
+     * ESE resultado: un ValidationError de otra pantalla es un campo mal llenado, no una sesión muerta.
+     *
+     * Muerta ⇔ el servidor rechazó el refresh de forma explícita (HTTP 401/403) o falta en el aparato
+     * el refresh token / el venue ([ValidationError] local, sin red de por medio: nunca podrá renovarse).
+     * Red caída, tiempo agotado y 5xx NO lo son: borrar la sesión ahí manda al cajero al PIN y el
+     * login por PIN necesita red, así que sin red nadie podría vender.
+     */
+    val sesionMuertaAlRenovar: Boolean
+        get() = (this is HttpError && (code == 401 || code == 403)) || this is ValidationError
+
+    /**
      * HTTP error (4xx, 5xx)
      *
      * @param code HTTP status code

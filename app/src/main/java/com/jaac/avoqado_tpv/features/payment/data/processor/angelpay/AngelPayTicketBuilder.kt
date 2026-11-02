@@ -87,6 +87,7 @@ class AngelPayTicketBuilder @Inject constructor() {
         serviceChargeAmount: BigDecimal = BigDecimal.ZERO,
         paymentMethod: String? = null,
         isCash: Boolean = false,
+        ventaGuardadaSinConexion: Boolean = false,
     ): PrintTicketRequest {
         val centerBold = PrintStyleRequest(
             alignment = PrintAlignmentRequest.CENTER,
@@ -159,6 +160,9 @@ class AngelPayTicketBuilder @Inject constructor() {
         }
 
         val body = buildList {
+            if (ventaGuardadaSinConexion) {
+                add(PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "Venta guardada sin conexión", style = centerNormalBold))
+            }
             // ── Folio + Fecha + Cajero (sale identifiers) ──────────────
             if (!orderNumber.isNullOrBlank()) {
                 add(

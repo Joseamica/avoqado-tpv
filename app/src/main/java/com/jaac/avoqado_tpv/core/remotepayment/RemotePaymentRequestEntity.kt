@@ -50,6 +50,10 @@ data class RemotePaymentRequestEntity(
      * mayor sube la columna. Room v35.
      */
     @ColumnInfo(name = "attempt_link_version", defaultValue = "0") val attemptLinkVersion: Int = 0,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
 ) {
     fun sameMoneyContract(event: SocketEvent.TerminalPaymentRequest): Boolean =
         venueId == event.venueId &&

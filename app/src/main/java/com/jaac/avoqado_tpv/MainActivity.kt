@@ -39,6 +39,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
+import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
@@ -524,6 +525,17 @@ class MainActivity : ComponentActivity() {
         if (isActivated) {
             Timber.d("🟢 Terminal is activated - starting heartbeat scheduler")
             HeartbeatScheduler.start(applicationContext)
+            // El kiosco restaurado evita Splash; ambos modos pasan por este arranque.
+            if (secureStorage.isAuthenticated() && !secureStorage.getStaffId().isNullOrBlank() &&
+                !secureStorage.getVenueId().isNullOrBlank()) {
+                try {
+                    PaymentSyncScheduler.start(applicationContext)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Timber.e(error, "No se pudo agendar la recuperación de la cola guardada")
+                }
+            }
         } else {
             Timber.d("🔴 Terminal not activated - heartbeat will not start until activation")
         }

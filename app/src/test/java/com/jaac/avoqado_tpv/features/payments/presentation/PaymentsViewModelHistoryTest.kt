@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +46,73 @@ class PaymentsViewModelHistoryTest {
         method = PaymentMethod.CASH, processedBy = null, createdAt = Instant.parse("2026-10-13T13:08:00Z"),
         status = PaymentStatus.COMPLETED, tableName = null,
     )
+
+    @Test fun `48 payments stay reachable over three pages with their server total visible`() = runTest {
+        val all = (1..48).map { payment("c%024d".format(it), "90", "c%024d".format(it + 100)) }
+        coEvery { repository.getPaymentHistory(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val page = secondArg<Int>()
+            Result.Success(PaginatedPayments(all.drop((page - 1) * 20).take(20), 48, page, 20))
+        }
+        val vm = model(); advanceUntilIdle()
+        assertEquals(48, (vm.state.value as PaymentsState.Success).totalCount)
+        assertEquals(20, (vm.state.value as PaymentsState.Success).payments.size)
+        vm.loadMore(); advanceUntilIdle()
+        assertEquals(48, (vm.state.value as PaymentsState.Success).totalCount)
+        assertEquals(40, (vm.state.value as PaymentsState.Success).payments.size)
+        vm.loadMore(); advanceUntilIdle()
+        val final = vm.state.value as PaymentsState.Success
+        assertEquals(all.map { it.id }, final.payments.map { it.id })
+        assertEquals(48, final.totalCount)
+        assertEquals(3, final.totalPages)
+        assertEquals(false, final.hasMore)
+        vm.loadMore(); advanceUntilIdle()
+        assertEquals(final, vm.state.value)
+    }
+
+    @Test fun `next page updates total and page count when more payments arrived`() = runTest {
+        coEvery { repository.getPaymentHistory(any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            Result.Success(PaginatedPayments(listOf(payment("first", "90")), 48, 1, 20)),
+            Result.Success(PaginatedPayments(listOf(payment("second", "90", "other-order")), 61, 2, 20)),
+        )
+        val vm = model(); advanceUntilIdle(); vm.loadMore(); advanceUntilIdle()
+        val state = vm.state.value as PaymentsState.Success
+        assertEquals(listOf("first", "second"), state.payments.map { it.id })
+        assertEquals(61, state.totalCount)
+        assertEquals(4, state.totalPages)
+        assertTrue(state.hasMore)
+    }
+
+    @Test fun `refresh preserves the server total before all rows are loaded`() = runTest {
+        coEvery { repository.getPaymentHistory(any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            Result.Success(PaginatedPayments(listOf(payment("old", "90")), 48, 1, 20)),
+            Result.Success(PaginatedPayments(listOf(payment("fresh", "90")), 21, 1, 20)),
+        )
+        val vm = model(); advanceUntilIdle(); vm.refresh(); advanceUntilIdle()
+        val state = vm.state.value as PaymentsState.Success
+        assertEquals(listOf("fresh"), state.payments.map { it.id })
+        assertEquals(21, state.totalCount)
+        assertEquals(2, state.totalPages)
+        assertTrue(state.hasMore)
+    }
+
+    @Test fun `a page of failed refunds can advance to later payments without showing refunded money`() = runTest {
+        val failed = (1..20).map { payment("c%024d".format(it + 1000), "-90").copy(status = PaymentStatus.FAILED) }
+        coEvery { repository.getPaymentHistory(any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            Result.Success(PaginatedPayments(failed, 21, 1, 20)),
+            Result.Success(PaginatedPayments(listOf(payment("later", "90", "later-order")), 21, 2, 20)),
+        )
+        val vm = model(); advanceUntilIdle()
+        val first = vm.state.value as PaymentsState.Success
+        assertTrue(first.payments.isEmpty())
+        assertTrue(first.hasMore)
+        assertEquals(21, first.totalCount)
+        vm.loadMore(); advanceUntilIdle()
+        val last = vm.state.value as PaymentsState.Success
+        assertEquals(listOf("later"), last.payments.map { it.id })
+        assertEquals(BigDecimal("90"), last.payments.single().totalAmount)
+        assertEquals(2, last.currentPage)
+        assertFalse(last.hasMore)
+    }
 
     @Test fun `partial payments retain distinct identities when a refund shares their order`() = runTest {
         val first = payment("partial-1", "50").copy(refundedAmount = BigDecimal("20"))

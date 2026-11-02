@@ -99,4 +99,31 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(fila.serverAmountCents).isEqualTo(9000L)
         assertThat(dao.esContradiccion("a2")).isTrue()
     }
+
+    @Test fun `B2 recovery rechaza snapshot que contradice columnas sin perder owner ni evidencia`() = runTest {
+        val original = blumon("contradictory")
+        val snapshot = Gson().fromJson(original.paymentContextJson, PaymentContext.FastPayment::class.java).copy(shiftMembership = "NO_SHIFT_SYSTEM")
+        dao.insert(original.copy(shiftMembership = "MANAGED", localShiftSessionId = "cabcdefghijklmnopqrstuvwx", paymentContextJson = Gson().toJson(snapshot)))
+        coEvery { fast.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt)
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", now)).isEqualTo(0)
+        val row = dao.getById("contradictory")!!
+        assertThat(row.state).isEqualTo("HOST_RESPONDIO")
+        assertThat(row.hostApproved).isTrue()
+        assertThat(row.shiftMembership).isEqualTo("MANAGED")
+        assertThat(row.lastError).isEqualTo("snapshot_caja_ilegible_o_contradictorio")
+        coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
+    }
+
+    @Test fun `B2 recovery legacy no demuestra OFF por un campo JSON redundante`() = runTest {
+        val original = blumon("legacy-tag")
+        val snapshot = Gson().fromJson(original.paymentContextJson, PaymentContext.FastPayment::class.java).copy(shiftMembership = "NO_SHIFT_SYSTEM")
+        dao.insert(original.copy(paymentContextJson = Gson().toJson(snapshot)))
+        coEvery { fast.recordPayment(any(), any(), any(), any()) } coAnswers {
+            assertThat(firstArg<PaymentContext>().shiftMembership).isEqualTo("UNKNOWN")
+            Result.success(receipt)
+        }
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", now)).isEqualTo(1)
+        assertThat(dao.getById("legacy-tag")?.shiftMembership).isEqualTo("UNKNOWN")
+    }
+
 }

@@ -4,6 +4,13 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
 
 /**
+ * 💵 D2 «Cobrar sin red» (21-oct-2026): lo que se lee bajo «Tarjeta» cuando el cobro sólo puede ir en
+ * efectivo — sin red, con las cuentas de pago sin poder verificarse o con una venta guardada en la
+ * terminal. Es un estado normal, no un error: nunca en rojo. Lo comparten Blumon y AngelPay.
+ */
+const val MOTIVO_SIN_TARJETA = "Necesita internet. Cobra en efectivo; la venta se guarda en la terminal."
+
+/**
  * Immutable retry context - preserves all transaction data for smart retry.
  *
  * **Philosophy (Toast/Square/Stripe Pattern):**
@@ -229,7 +236,9 @@ sealed class PaymentState {
         val subtotal: String,      // Original amount
         val tipAmount: String,     // Calculated tip
         val totalAmount: String,   // subtotal + tip
-        val rating: Int?           // null = skipped, 1-5 = rated
+        val rating: Int?,          // null = skipped, 1-5 = rated
+        // 💵 D2 «Cobrar sin red»: no nulo ⇒ sólo efectivo; tarjeta, MSI y cripto en gris con este texto.
+        val motivoSinTarjeta: String? = null,
     ) : PaymentState()
 
     // ==========================================

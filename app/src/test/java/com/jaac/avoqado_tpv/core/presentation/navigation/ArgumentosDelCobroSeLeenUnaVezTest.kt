@@ -67,6 +67,69 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         )
     }
 
+    /**
+     * 💵 D2 «Cobrar sin red» (21-oct-2026): la ruta Blumon decidía esperar al lector ANTES de leer sus
+     * argumentos, así que no podía saber que el cobro iba en sólo efectivo. Ahora congela primero y la
+     * compuerta respeta `soloEfectivo`.
+     */
+    @Test
+    fun `D2 la ruta Blumon congela sus argumentos antes de la compuerta del lector y respeta soloEfectivo`() {
+        assertTrue("\"soloEfectivo\" debe estar en CLAVES_DE_COBRO", "soloEfectivo" in CLAVES_DE_COBRO)
+        val cuerpo = cuerpoDe("NavRoute.Payment.route")
+        val congela = cuerpo.indexOf("congelarArgumentosDeCobro(")
+        val compuerta = cuerpo.indexOf("awaitPaxPaymentReady(")
+        assertTrue("No encontré la compuerta del lector en la ruta Blumon", compuerta >= 0)
+        assertTrue(
+            "La ruta Blumon espera al lector antes de leer sus argumentos: no puede saber que el cobro es sólo efectivo.",
+            congela in 0 until compuerta,
+        )
+        assertTrue(
+            "La compuerta del lector de la ruta Blumon debe decidirse con rutaDePagoEsperaAlLector(…, soloEfectivo) " +
+                "(su comportamiento se prueba en SoloEfectivoSinRedTest).",
+            cuerpo.contains("rutaDePagoEsperaAlLector(") && cuerpo.contains("soloEfectivo = soloEfectivo"),
+        )
+    }
+
+    @Test
+    fun `D2 Cobrar usa las reglas puras para no esperar al lector en solo efectivo`() {
+        val cuerpo = cuerpoDe("NavRoute.Checkout.route")
+        assertTrue(
+            "La entrada desde Cobrar debe decidir con cobrarSaltaElLector(…) y la regla de la tarjeta tarjetaSinRed(…) " +
+                "(su comportamiento se prueba en SoloEfectivoSinRedTest), y saltarse awaitPaxPaymentReady con soloEfectivo.",
+            cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") &&
+                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady("),
+        )
+        assertTrue(
+            "La entrada desde Cobrar debe pasarle \"soloEfectivo\" a la pantalla de cobro.",
+            cuerpo.contains("set(\"soloEfectivo\", soloEfectivo)"),
+        )
+    }
+
+    /**
+     * 💵 C2b «Cobrar» sin red (21-oct-2026): la venta local va SIEMPRE en sólo efectivo (sin esperar al lector de Blumon, que sin red no
+     * termina) y lleva su venta guardada en `"ventaLocalJson"`, que se congela con los demás argumentos del cobro.
+     */
+    @Test
+    fun `C2b la venta local de Cobrar va en sólo efectivo y lleva su venta en ventaLocalJson`() {
+        assertTrue("\"ventaLocalJson\" debe estar en CLAVES_DE_COBRO", "ventaLocalJson" in CLAVES_DE_COBRO)
+        val cuerpo = cuerpoDe("NavRoute.Checkout.route")
+        assertTrue(
+            "Una venta local de Cobrar debe ir en sólo efectivo aunque haya lector listo o red: " +
+                "`val soloEfectivo = payload is …VentaLocal || cobrarSaltaElLector(…)`.",
+            Regex("""val soloEfectivo = payload is [\w.]*PaymentNavigationPayload\.VentaLocal \|\|\s*cobrarSaltaElLector\(""")
+                .containsMatchIn(cuerpo),
+        )
+        assertTrue(
+            "La entrada desde Cobrar debe pasarle la venta guardada a la pantalla de cobro en \"ventaLocalJson\".",
+            cuerpo.contains("set(\"ventaLocalJson\", payload.ventaLocalJson)"),
+        )
+        val limpieza = navegacion.substring(navegacion.indexOf("fun clearPaymentArgs("))
+        assertTrue(
+            "clearPaymentArgs debe quitar \"ventaLocalJson\": un cobro rápido nuevo no puede heredar la venta guardada de otro.",
+            limpieza.substring(0, limpieza.indexOf("\n}")).contains("handle.remove<String>(\"ventaLocalJson\")"),
+        )
+    }
+
     @Test
     fun `toda clave que leen las pantallas de cobro se congela`() {
         val leidas = Regex("""argumentosDelCobro\.get<.+?>\("([^"]+)"\)""")

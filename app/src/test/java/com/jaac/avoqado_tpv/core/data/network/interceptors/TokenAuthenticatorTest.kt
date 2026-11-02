@@ -20,6 +20,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 /**
  * Unit tests for TokenAuthenticator
@@ -31,7 +32,10 @@ import org.junit.Test
  * 2. ❌ Token refresh fails → Returns null (gives up)
  * 3. 🔄 Token already refreshed by another thread → Reuses new token
  * 4. 🔐 Refresh token expired → Clears session and returns null
- * 5. 🌐 Network error during refresh → Clears session and returns null
+ * 5. 🌐 Network error / timeout / 5xx during refresh → KEEPS the session and returns null
+ *    (sin red el cajero sigue vendiendo; sólo un 401/403 explícito del refresh cierra la sesión)
+ * 6. 🧩 ValidationError local (sin refresh token / sin venue) → cierra y avisa: no hay red de por
+ *    medio y nunca podrá renovarse, así que cuenta como sesión muerta
  */
 class TokenAuthenticatorTest {
 
@@ -142,6 +146,7 @@ class TokenAuthenticatorTest {
 
         // Then: Session was cleared (force logout)
         verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { sessionManager.notifySessionExpired() }
     }
 
     /**
@@ -205,35 +210,59 @@ class TokenAuthenticatorTest {
 
         // Then: Session was cleared
         verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { sessionManager.notifySessionExpired() }
     }
 
     /**
-     * Test 5: Network error during token refresh
+     * Test 5: la sesión sobrevive cuando el refresh NO es un 401/403 explícito
      *
-     * **Given:** 401 response with expired token
-     * **When:** Token refresh throws network exception
-     * **Then:** Returns null and clears session
+     * **Given:** 401 en una petición normal y el refresh falla por la red (NetworkError,
+     *            HttpError 5xx o una excepción)
+     * **When:** Authenticate es llamado
+     * **Then:** Devuelve null SIN borrar la sesión ni avisar "sesión expirada": sin red el
+     *           cajero no puede volver a entrar con PIN (el login necesita red), así que
+     *           borrarla dejaría el aparato sin poder vender. El letrero "Verificando
+     *           sesión..." sí se apaga.
      */
     @Test
-    fun `authenticate handles network error during refresh`() = runBlocking {
-        // Given: Old token in storage
+    fun `authenticate conserva la sesion si el refresh devuelve NetworkError`() = runBlocking {
         every { secureStorage.getToken() } returns oldToken
+        coEvery { authRepository.refreshAccessToken() } returns Result.Error(ApiException.NetworkError(IOException("sin red")))
 
-        // Given: Network error during refresh
+        val newRequest = authenticator.authenticate(null, create401Response(createRequest(oldToken)))
+
+        assertNull("Expected null, got request", newRequest)
+        coVerify(exactly = 1) { authRepository.refreshAccessToken() }
+        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { sessionManager.notifySessionExpired() }
+        verify(atLeast = 1) { sessionManager.resetSessionExpiringState() }
+    }
+
+    @Test
+    fun `authenticate conserva la sesion si el refresh devuelve HttpError 503`() = runBlocking {
+        every { secureStorage.getToken() } returns oldToken
+        coEvery { authRepository.refreshAccessToken() } returns Result.Error(ApiException.HttpError(503, "Service Unavailable"))
+
+        val newRequest = authenticator.authenticate(null, create401Response(createRequest(oldToken)))
+
+        assertNull("Expected null, got request", newRequest)
+        coVerify(exactly = 1) { authRepository.refreshAccessToken() }
+        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { sessionManager.notifySessionExpired() }
+        verify(atLeast = 1) { sessionManager.resetSessionExpiringState() }
+    }
+
+    @Test
+    fun `authenticate conserva la sesion si el refresh lanza`() = runBlocking {
+        every { secureStorage.getToken() } returns oldToken
         coEvery { authRepository.refreshAccessToken() } throws Exception("Network error")
 
-        // Given: 401 response
-        val failedRequest = createRequest(oldToken)
-        val failedResponse = create401Response(failedRequest)
+        val newRequest = authenticator.authenticate(null, create401Response(createRequest(oldToken)))
 
-        // When: Authenticate is called
-        val newRequest = authenticator.authenticate(null, failedResponse)
-
-        // Then: Null is returned (give up)
         assertNull("Expected null, got request", newRequest)
-
-        // Then: Session was cleared
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { sessionManager.notifySessionExpired() }
+        verify(atLeast = 1) { sessionManager.resetSessionExpiringState() }
     }
 
     /**
@@ -244,7 +273,9 @@ class TokenAuthenticatorTest {
      * **Then:** Returns null — refresh is attempted but fails, session is cleared
      *
      * Note: The actual code does NOT short-circuit when token is null.
-     * It still attempts refresh, which fails, then clears the session.
+     * It still attempts refresh; AuthRepository answers with a LOCAL ValidationError
+     * ("No refresh token available") — never an HttpError — and that counts as a dead
+     * session: the session is cleared and the UI is told.
      */
     @Test
     fun `authenticate returns null when no token in storage`() = runBlocking {
@@ -252,7 +283,7 @@ class TokenAuthenticatorTest {
         every { secureStorage.getToken() } returns null
 
         // Given: Refresh will fail (relaxed mock returns non-Success Result)
-        val error = ApiException.HttpError(401, "No active session")
+        val error = ApiException.ValidationError("No refresh token available. Please login again.")
         coEvery { authRepository.refreshAccessToken() } returns Result.Error(error)
 
         // Given: 401 response
@@ -268,8 +299,28 @@ class TokenAuthenticatorTest {
         // Then: Token refresh WAS called (code doesn't short-circuit on null token)
         coVerify(exactly = 1) { authRepository.refreshAccessToken() }
 
-        // Then: Session was cleared (refresh failed → force logout)
+        // Then: Session was cleared and the UI told (refresh failed → force logout)
         verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { sessionManager.notifySessionExpired() }
+    }
+
+    /**
+     * ValidationError local (token vencido pero sin venue ID guardado): no hay red de por medio y
+     * el refresh nunca podrá resolverse, así que cierra la sesión y avisa. Si no, el aparato
+     * quedaría con el token vencido, cada llamada daría 401 y nunca llegaría al PIN.
+     */
+    @Test
+    fun `authenticate cierra y avisa si el refresh devuelve ValidationError`() = runBlocking {
+        every { secureStorage.getToken() } returns oldToken
+        coEvery { authRepository.refreshAccessToken() } returns
+            Result.Error(ApiException.ValidationError("No venue ID found. Please login again."))
+
+        val newRequest = authenticator.authenticate(null, create401Response(createRequest(oldToken)))
+
+        assertNull("Expected null, got request", newRequest)
+        coVerify(exactly = 1) { authRepository.refreshAccessToken() }
+        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { sessionManager.notifySessionExpired() }
     }
 
     // ═════════════════════════════════════════════════════════════════════════

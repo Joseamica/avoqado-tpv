@@ -2,8 +2,10 @@ package com.jaac.avoqado_tpv.features.checkout.di
 
 import com.jaac.avoqado_tpv.features.checkout.data.repository.MosaicRepositoryImpl
 import com.jaac.avoqado_tpv.features.checkout.data.repository.SavedCartsRepositoryImpl
+import com.jaac.avoqado_tpv.features.checkout.data.repository.VentaSinRedRepositoryImpl
 import com.jaac.avoqado_tpv.features.checkout.domain.repository.MosaicRepository
 import com.jaac.avoqado_tpv.features.checkout.domain.repository.SavedCartsRepository
+import com.jaac.avoqado_tpv.features.checkout.domain.repository.VentaSinRedRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -32,4 +34,11 @@ abstract class CheckoutModule {
     abstract fun bindMosaicRepository(
         impl: MosaicRepositoryImpl,
     ): MosaicRepository
+
+    /** 💵 «Cobrar» sin red: el carrito a medias, la venta en $0 y el turno guardado, en el aparato. */
+    @Binds
+    @Singleton
+    abstract fun bindVentaSinRedRepository(
+        impl: VentaSinRedRepositoryImpl,
+    ): VentaSinRedRepository
 }

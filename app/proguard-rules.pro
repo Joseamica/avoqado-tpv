@@ -255,6 +255,13 @@
     <fields>;
 }
 
+# Extras del catálogo guardado (Room `products.modifier_groups_json`): Gson guarda y lee estas clases del DOMINIO por reflexión, y
+# no viven en `domain.model`. Sin esto R8 renombra sus campos (y las constantes del enum) y el JSON que guardó una versión no lo
+# entiende la siguiente: sin red, el producto saldría sin extras hasta el siguiente refresco (v43, «Cobrar» sin red).
+-keep class com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup { <init>(...); <fields>; }
+-keep class com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier { <init>(...); <fields>; }
+-keep class com.jaac.avoqado_tpv.features.ordering.domain.ModifierType { <init>(...); <fields>; }
+
 # ==========================================
 # 16. SOCKET.IO
 # ==========================================

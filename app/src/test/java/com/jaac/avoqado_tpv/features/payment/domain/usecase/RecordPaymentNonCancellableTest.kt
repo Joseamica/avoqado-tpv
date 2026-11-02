@@ -65,8 +65,7 @@ class RecordPaymentNonCancellableTest {
     private val recordPaymentUseCase = RecordPaymentUseCase(
         fastPaymentRecorder = fastPaymentRecorder,
         orderPaymentRecorder = orderPaymentRecorder,
-        paymentQueueRepository = writeAheadQueue,
-    )
+        paymentQueueRepository = writeAheadQueue, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     private val queueDao = mockk<PendingPaymentDao>(relaxed = true)
     private val queueRepository = PaymentQueueRepositoryImpl(queueDao)

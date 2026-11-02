@@ -90,13 +90,22 @@ class PrinterManagerLeyendaIvaTest {
     }
 
     @Test
+    fun `PAX original keeps subtotal and discount currency inside the 32 column paper`() {
+        val (result, text) = renderT11("90.00", discount = "10.00", itemTotal = "100.00")
+        assertTrue(result.toString(), result.isSuccess)
+        val money = text.lineSequence().filter { it.startsWith("Subtotal:") || it.startsWith("Descuento:") }.toList()
+        assertEquals(listOf("Subtotal: $100.00 MXN", "Descuento: -$10.00 MXN"), money.map { it.replace(Regex(" +"), " ") })
+        assertTrue("Money would wrap on PAX: $money", money.all { it.length <= 32 && it.endsWith(" MXN") })
+    }
+
+    @Test
     fun `T11 renderer PAX conserva cargo descuento propina y total`() {
         val (result, text) = renderT11("120.00", tip = "5.00", discount = "20.00", charge = "15.00", itemTotal = "120.00")
         assertTrue(result.toString(), result.isSuccess)
-        assertTrue(text, text.contains("Subtotal:".padEnd(22) + "$120.00 MXN"))
-        assertTrue(text, text.contains("Descuento:".padEnd(22) + "-$20.00 MXN"))
-        assertTrue(text, text.contains("Cargo:".padEnd(22) + "$15.00 MXN"))
-        assertTrue(text, text.contains("Propina:".padEnd(22) + "$5.00 MXN"))
+        assertTrue(text, text.replace(Regex(" +"), " ").contains("Subtotal: $120.00 MXN"))
+        assertTrue(text, text.replace(Regex(" +"), " ").contains("Descuento: -$20.00 MXN"))
+        assertTrue(text, text.replace(Regex(" +"), " ").contains("Cargo: $15.00 MXN"))
+        assertTrue(text, text.replace(Regex(" +"), " ").contains("Propina: $5.00 MXN"))
         assertTrue(text, text.contains("TOTAL: $120.00"))
         assertTrue(text, text.indexOf("Cargo:") < text.indexOf(LeyendaIva.TEXTO))
     }
@@ -106,8 +115,8 @@ class PrinterManagerLeyendaIvaTest {
         for ((total, base) in listOf("115.00" to "100.00", "15.00" to "0.00")) {
             val (result, text) = renderT11(total, discount = "20.00", charge = "15.00")
             assertTrue(result.toString(), result.isSuccess)
-            assertTrue(text, text.contains("Subtotal:".padEnd(22) + "$$base MXN"))
-            assertTrue(text, text.contains("Cargo:".padEnd(22) + "$15.00 MXN"))
+            assertTrue(text, text.replace(Regex(" +"), " ").contains("Subtotal: $$base MXN"))
+            assertTrue(text, text.replace(Regex(" +"), " ").contains("Cargo: $15.00 MXN"))
             assertFalse(text, text.contains("Descuento:"))
             assertTrue(text, text.contains("TOTAL: $$total"))
         }
@@ -118,7 +127,7 @@ class PrinterManagerLeyendaIvaTest {
         for (charge in listOf(null, "0.00")) {
             val (result, text) = renderT11("50.00", discount = "20.00", charge = charge, itemTotal = "120.00")
             assertTrue(result.toString(), result.isSuccess)
-            assertTrue(text, text.contains("Subtotal:".padEnd(22) + "$50.00 MXN"))
+            assertTrue(text, text.replace(Regex(" +"), " ").contains("Subtotal: $50.00 MXN"))
             assertFalse(text, text.contains("Cargo:"))
             assertFalse(text, text.contains("Descuento:"))
         }

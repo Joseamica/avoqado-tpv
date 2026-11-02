@@ -91,6 +91,7 @@ fun ReferralCaptureSection(
     onForceOverride: () -> Unit,
     modifier: Modifier = Modifier,
     planLocked: Boolean = false,
+    necesitaInternet: Boolean = false,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -107,7 +108,7 @@ fun ReferralCaptureSection(
             Icon(
                 imageVector = Icons.Filled.CardGiftcard,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = if (necesitaInternet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp),
             )
             Spacer(modifier = Modifier.width(6.dp))
@@ -115,12 +116,17 @@ fun ReferralCaptureSection(
                 text = "¿Te recomendó alguien?",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (necesitaInternet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
             )
             if (planLocked) {
                 Spacer(modifier = Modifier.width(8.dp))
                 PlanTierBadge(tier = PlanTier.PRO)
             }
+        }
+
+        if (necesitaInternet) {
+            Text("Necesita internet", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@Column
         }
 
         // Plan gate — visible teaser instead of the capture UI. Only the

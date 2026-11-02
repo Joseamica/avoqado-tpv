@@ -95,10 +95,15 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             }
             // El fallback de efectivo no puede acreditar otra venta sólo porque comparte
             // referencia/UUID. Se compara el dinero por valor, no por formato decimal.
+            val comparable = if (sameIdentity && entity.shiftMembership == "UNKNOWN" && existing != null) entity.copy(
+                shiftMembership = existing.shiftMembership, localShiftSessionId = existing.localShiftSessionId,
+                cashDrawerSessionId = existing.cashDrawerSessionId, shiftId = existing.shiftId) else entity
             val sameCashPayload = !payment.toCardDetails().isCash || (existing != null &&
                 entity.amount.toBigDecimal().compareTo(existing.amount.toBigDecimal()) == 0 &&
                 entity.tip.toBigDecimal().compareTo(existing.tip.toBigDecimal()) == 0 &&
-                entity.staffId == existing.staffId && entity.shiftId == existing.shiftId &&
+                entity.staffId == existing.staffId && comparable.shiftId == existing.shiftId &&
+                comparable.shiftMembership == existing.shiftMembership && comparable.localShiftSessionId == existing.localShiftSessionId &&
+                comparable.cashDrawerSessionId == existing.cashDrawerSessionId &&
                 entity.orderId == existing.orderId && entity.deviceSerialNumber == existing.deviceSerialNumber &&
                 entity.terminalPaymentRequestId == existing.terminalPaymentRequestId &&
                 entity.paymentProcessor == existing.paymentProcessor &&
@@ -150,7 +155,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
                 )
                 val id = pendingPaymentDao.insert(entity)
                 check(id > 0) { "El pago ya está guardado; no se enviará otra vez desde esta pantalla" }
-                Result.success(entity.copy(id = id).toDomain())
+                Result.success(entity.copy(id = id).toQueuedPayment())
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -160,7 +165,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
         try {
             val entities = pendingPaymentDao.getAllPending()
             Timber.d("📋 [Payment Queue] Fetched ${entities.size} pending payments")
-            entities.map { it.toDomain() }
+            entities.map { it.toQueuedPayment() }
         } catch (e: Exception) {
             Timber.e(e, "❌ [Payment Queue] Failed to fetch pending payments")
             emptyList()
@@ -293,7 +298,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
                 now = now,
                 staleBefore = now - STALE_CLAIM_MS,
             )
-            .map { it.toDomain() }
+            .map { it.toQueuedPayment() }
     }
 
     override suspend fun release(queueId: Long, token: String, retryCount: Int, error: String): Int =
@@ -353,6 +358,9 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             orderId = orderId,
             orderNumber = orderNumber,
             shiftId = shiftId,
+            shiftMembership = shiftMembership ?: "UNKNOWN",
+            localShiftSessionId = localShiftSessionId,
+            cashDrawerSessionId = cashDrawerSessionId,
             isPortabilidad = isPortabilidad,
             serialNumbers = serialNumbers.takeIf { it.isNotEmpty() }?.joinToString(","),
             // ⭐ Split de la orden (v33, 2026-09-07) — misma codificación CSV que serialNumbers
@@ -368,60 +376,15 @@ class PaymentQueueRepositoryImpl @Inject constructor(
                 SyncStatus.SYNCING -> PendingPaymentEntity.SYNC_STATUS_SYNCING
                 SyncStatus.SUCCESS -> PendingPaymentEntity.SYNC_STATUS_SUCCESS
                 SyncStatus.FAILED -> PendingPaymentEntity.SYNC_STATUS_FAILED
-            }
-        )
-    }
-
-    /**
-     * Map PendingPaymentEntity (Room) → QueuedPayment (domain).
-     */
-    private fun PendingPaymentEntity.toDomain(): QueuedPayment {
-        return QueuedPayment(
-            queueId = id,
-            referenceNumber = referenceNumber,
-            venueId = venueId,
-            staffId = staffId,
-            amount = amount.toBigDecimal(), // String → BigDecimal
-            tip = tip.toBigDecimal(),
-            rating = rating, // 🆕 Optional user rating (1-5 stars or null)
-            merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Provider-agnostic merchant ID
-            blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback
-            deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
-            maskedPan = maskedPan,
-            cardBrand = cardBrand,
-            entryMode = entryMode,
-            isInternational = isInternational,
-            authorizationNumber = authorizationNumber,
-            idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
-            // 🔶 Processor-aware queue (2026-07-09) — unknown/legacy values fall back
-            // to BLUMON (the pre-v25 semantics of every existing row).
-            processor = runCatching {
-                com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.valueOf(paymentProcessor)
-            }.getOrDefault(com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON),
-            terminalPaymentRequestId = terminalPaymentRequestId, // 📡 POS→TPV arbitration link (2026-07-14)
-            orderId = orderId,
-            orderNumber = orderNumber,
-            shiftId = shiftId,
-            isPortabilidad = isPortabilidad,
-            serialNumbers = serialNumbers?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
-            // ⭐ Split de la orden (v33, 2026-09-07). NULL (fila anterior a la v33) o un valor
-            // desconocido caen a FULLPAYMENT — `SplitType.fromValue` ya lo hace, y ése es el
-            // comportamiento que esas filas tenían antes de que la columna existiera.
-            splitType = splitType?.let { SplitType.fromValue(it) } ?: SplitType.FULLPAYMENT,
-            paidProductIds = paidProductIds?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
-            equalPartsPartySize = equalPartsPartySize,
-            equalPartsPayedFor = equalPartsPayedFor,
-            createdAt = createdAt,
-            retryCount = retryCount,
-            lastError = lastError,
-            syncStatus = when (syncStatus) {
-                PendingPaymentEntity.SYNC_STATUS_PENDING -> SyncStatus.PENDING
-                PendingPaymentEntity.SYNC_STATUS_SYNCING -> SyncStatus.SYNCING
-                PendingPaymentEntity.SYNC_STATUS_SUCCESS -> SyncStatus.SUCCESS
-                PendingPaymentEntity.SYNC_STATUS_FAILED -> SyncStatus.FAILED
-                else -> SyncStatus.PENDING
             },
-            claimToken = claimToken, // 🔒 F-8, Fix round 1 — round-trips so release()/markSynced() can CAS
+            claimToken = claimToken,
+            orderRequestJson = orderRequestJson,
+            exitoMostrado = exitoMostrado,
+            ticketJson = ticketJson,
+            relojMonotonoAlVender = relojMonotonoAlVender,
+            arranqueAlVender = arranqueAlVender,
+            requiereRevision = requiereRevision,
+            acknowledged = acknowledged,
         )
     }
 
@@ -455,4 +418,67 @@ class PaymentQueueRepositoryImpl @Inject constructor(
          */
         const val STALE_CLAIM_MS = 15 * 60 * 1000L
     }
+}
+
+/**
+ * Map PendingPaymentEntity (Room) → QueuedPayment (domain).
+ */
+internal fun PendingPaymentEntity.toQueuedPayment(): QueuedPayment {
+    return QueuedPayment(
+        queueId = id,
+        referenceNumber = referenceNumber,
+        venueId = venueId,
+        staffId = staffId,
+        amount = amount.toBigDecimal(), // String → BigDecimal
+        tip = tip.toBigDecimal(),
+        rating = rating, // 🆕 Optional user rating (1-5 stars or null)
+        merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Provider-agnostic merchant ID
+        blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback
+        deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
+        maskedPan = maskedPan,
+        cardBrand = cardBrand,
+        entryMode = entryMode,
+        isInternational = isInternational,
+        authorizationNumber = authorizationNumber,
+        idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
+        // 🔶 Processor-aware queue (2026-07-09) — unknown/legacy values fall back
+        // to BLUMON (the pre-v25 semantics of every existing row).
+        processor = runCatching {
+            com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.valueOf(paymentProcessor)
+        }.getOrDefault(com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON),
+        terminalPaymentRequestId = terminalPaymentRequestId, // 📡 POS→TPV arbitration link (2026-07-14)
+        orderId = orderId,
+        orderNumber = orderNumber,
+        shiftId = shiftId,
+            shiftMembership = shiftMembership ?: "UNKNOWN",
+            localShiftSessionId = localShiftSessionId,
+            cashDrawerSessionId = cashDrawerSessionId,
+        isPortabilidad = isPortabilidad,
+        serialNumbers = serialNumbers?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
+        // ⭐ Split de la orden (v33, 2026-09-07). NULL (fila anterior a la v33) o un valor
+        // desconocido caen a FULLPAYMENT — `SplitType.fromValue` ya lo hace, y ése es el
+        // comportamiento que esas filas tenían antes de que la columna existiera.
+        splitType = splitType?.let { SplitType.fromValue(it) } ?: SplitType.FULLPAYMENT,
+        paidProductIds = paidProductIds?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
+        equalPartsPartySize = equalPartsPartySize,
+        equalPartsPayedFor = equalPartsPayedFor,
+        createdAt = createdAt,
+        retryCount = retryCount,
+        lastError = lastError,
+        syncStatus = when (syncStatus) {
+            PendingPaymentEntity.SYNC_STATUS_PENDING -> SyncStatus.PENDING
+            PendingPaymentEntity.SYNC_STATUS_SYNCING -> SyncStatus.SYNCING
+            PendingPaymentEntity.SYNC_STATUS_SUCCESS -> SyncStatus.SUCCESS
+            PendingPaymentEntity.SYNC_STATUS_FAILED -> SyncStatus.FAILED
+            else -> SyncStatus.PENDING
+        },
+        claimToken = claimToken, // 🔒 F-8, Fix round 1 — round-trips so release()/markSynced() can CAS
+        orderRequestJson = orderRequestJson,
+        exitoMostrado = exitoMostrado,
+        ticketJson = ticketJson,
+        relojMonotonoAlVender = relojMonotonoAlVender,
+        arranqueAlVender = arranqueAlVender,
+        requiereRevision = requiereRevision,
+        acknowledged = acknowledged,
+    )
 }

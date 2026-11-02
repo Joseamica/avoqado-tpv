@@ -1,217 +1,149 @@
 package com.jaac.avoqado_tpv.features.shift.data
 
+import android.app.Application
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
-import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
-import com.jaac.avoqado_tpv.features.shift.data.dto.CashReconciliationDto
-import com.jaac.avoqado_tpv.features.shift.data.dto.CloseShiftRequest
-import com.jaac.avoqado_tpv.features.shift.data.dto.OpenShiftRequest
-import com.jaac.avoqado_tpv.features.shift.data.dto.PaginationMeta
-import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftDto
-import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftHistoryResponse
-import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftResponse
+import com.jaac.avoqado_tpv.features.shift.data.dto.*
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.toEntity
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationOutcome
-import io.mockk.clearMocks
-import io.mockk.coEvery
-import io.mockk.coVerify
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.slot
+import io.mockk.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
-import org.junit.Before
-import org.junit.Test
+import org.junit.*
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import retrofit2.Response
 import java.math.BigDecimal
 
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE, application = Application::class, sdk = [28])
 class ShiftRepositoryTest {
-
     private val apiService = mockk<ApiService>()
-    private val secureStorage = mockk<SecureStorage>()
-    private val cachedShiftDao = mockk<CachedShiftDao>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val refundQueue = mockk<com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository>(relaxed = true)
+    private lateinit var database: AvoqadoDatabase
     private lateinit var repository: ShiftRepository
-
-    @Before
-    fun setUp() {
-        clearMocks(apiService, secureStorage, cachedShiftDao)
-        every { secureStorage.isShiftSystemEnabled() } returns true
-        clearMocks(refundQueue)
-        coEvery { refundQueue.blockingForVenue(any()) } returns emptyList()
-        repository = ShiftRepository(apiService, secureStorage, cachedShiftDao, refundQueue)
+    @Before fun setUp() {
+        database = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        repository = task5RoomShiftRepository(database, secureStorage, apiService, "venue-1", "staff-1", true)
+        kotlinx.coroutines.runBlocking {
+            database.cachedShiftDao().cacheShift(com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity(
+                "c000000000000000000000031", "venue-1", "OPEN", "staff-1", "", "2026-08-08T00:00:00Z", "0", 0, 0, 1))
+        }
     }
+    @After fun closeDatabase() { database.close() }
 
-    @Test
-    fun `default close preserves null reconciliation fields for legacy and kiosk callers`() = runTest {
+    // B2: el gesto público confirma el commit local; el coordinador único hace HTTP después.
+    @Test fun `default close preserves null reconciliation fields for legacy and kiosk callers`() = runTest {
         val request = slot<CloseShiftRequest>()
-        coEvery { apiService.closeShift("venue-1", "shift-1", capture(request)) } returns
-            Response.success(successfulClose())
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
-        assertThat(result).isInstanceOf(Result.Success::class.java)
+        coEvery { apiService.closeShift("venue-1", "c000000000000000000000031", capture(request)) } returns Response.success(successfulClose())
+        assertThat(repository.closeShift("venue-1", "c000000000000000000000031")).isInstanceOf(Result.Success::class.java)
+        coVerify(exactly = 0) { apiService.closeShift(any(), any(), any()) }
+        repository.sincronizarCierresLocales("venue-1")
         assertThat(request.captured.closeData).isNull()
         assertThat(request.captured.cashReconciliationAction).isNull()
         assertThat(request.captured.countedCash).isNull()
-        coVerify(exactly = 1) { apiService.closeShift("venue-1", "shift-1", any()) }
+        assertThat(request.captured.operationId).isNotEmpty()
+        coVerify(exactly = 1) { apiService.closeShift("venue-1", "c000000000000000000000031", any()) }
     }
-
-    @Test
-    fun `COUNTED close normalizes BigDecimal to two-place plain string without exponent`() = runTest {
+    @Test fun `COUNTED close normalizes BigDecimal to two-place plain string without exponent`() = runTest {
         val request = slot<CloseShiftRequest>()
-        coEvery { apiService.closeShift("venue-1", "shift-1", capture(request)) } returns
-            Response.success(successfulClose())
-
-        repository.closeShift(
-            venueId = "venue-1",
-            shiftId = "shift-1",
-            action = CashReconciliationAction.COUNTED,
-            countedCash = BigDecimal("0E+7")
-        )
-
+        coEvery { apiService.closeShift("venue-1", "c000000000000000000000031", capture(request)) } returns Response.success(successfulClose())
+        repository.closeShift("venue-1", "c000000000000000000000031", CashReconciliationAction.COUNTED, BigDecimal("0E+7"))
+        repository.sincronizarCierresLocales("venue-1")
         assertThat(request.captured.cashReconciliationAction).isEqualTo(CashReconciliationAction.COUNTED)
         assertThat(request.captured.countedCash).isEqualTo("0.00")
     }
-
-    @Test
-    fun `root reconciliation is request-scoped on the returned shift`() = runTest {
-        coEvery { apiService.closeShift(any(), any(), any()) } returns Response.success(
-            successfulClose(
-                shift = shiftDto(cashDeclared = "6000.00", cashDifference = "-25.50"),
-                reconciliation = CashReconciliationDto(
-                    outcome = CashReconciliationOutcome.APPLIED,
-                    countedCash = "6000.00",
-                    cashDifference = "-25.50"
-                )
-            )
-        )
-
-        val result = repository.closeShift(
-            venueId = "venue-1",
-            shiftId = "shift-1",
-            action = CashReconciliationAction.COUNTED,
-            countedCash = BigDecimal("6000.00")
-        )
-
-        val shift = (result as Result.Success).data
-        assertThat(shift.cashDeclared).isEqualTo(BigDecimal("6000.00"))
-        assertThat(shift.cashDifference).isEqualTo(BigDecimal("-25.50"))
-        assertThat(shift.reconciliation?.outcome).isEqualTo(CashReconciliationOutcome.APPLIED)
-        assertThat(shift.reconciliation?.cashDeclared).isEqualTo(BigDecimal("6000.00"))
-        assertThat(shift.reconciliation?.cashDifference).isEqualTo(BigDecimal("-25.50"))
+    @Test fun `local projection preserves count without claiming remote reconciliation`() = runTest {
+        val result = repository.closeShift("venue-1", "c000000000000000000000031", CashReconciliationAction.COUNTED, BigDecimal("6000.00"))
+        val shift = result.getOrThrow()
+        assertThat(shift.financialTotalsKnown).isFalse()
+        assertThat(shift.reconciliation).isNull()
+        assertThat(shift.cashDifference).isNull()
+        assertThat(database.localShiftSessionDao().ultima("venue-1")!!.countedCash).isEqualTo("6000.00")
+        coVerify(exactly = 0) { apiService.closeShift(any(), any(), any()) }
+        val row = database.localShiftSessionDao().ultima("venue-1")!!
+        val response = successfulClose(shiftDto(cashDeclared = "6000.00", cashDifference = "-25.50"),
+            CashReconciliationDto(CashReconciliationOutcome.APPLIED, "6000.00", "-25.50")).copy(
+                operation = ShiftOperationDto(row.closeOperationId, "CLOSE", "APPLIED", closedAtLocal = row.closedAtLocal, submittedCountedCash = row.countedCash))
+        coEvery { apiService.closeShift("venue-1", "c000000000000000000000031", any()) } returns Response.success(response)
+        repository.sincronizarCierresLocales("venue-1")
+        val evidence = com.google.gson.Gson().fromJson(database.localShiftSessionDao().ultima("venue-1")!!.closeEvidenceJson, ShiftResponse::class.java)
+        assertThat(evidence.reconciliation?.outcome).isEqualTo(CashReconciliationOutcome.APPLIED)
+        assertThat(evidence.reconciliation?.countedCash).isEqualTo("6000.00")
+        assertThat(evidence.reconciliation?.cashDifference).isEqualTo("-25.50")
+        assertThat(evidence.data.cashDeclared).isEqualTo("6000.00")
+        assertThat(evidence.data.cashDifference).isEqualTo("-25.50")
     }
-
-    @Test
-    fun `409 performs one bounded history GET and never repeats the close POST`() = runTest {
+    @Test fun `409 recovers exact operation without history guess or second close POST`() = runTest {
         coEvery { apiService.closeShift(any(), any(), any()) } returns httpError(409)
-        coEvery { apiService.getShiftHistory("venue-1", pageSize = 10, pageNumber = 1) } returns
-            Response.success(
-                ShiftHistoryResponse(
-                    success = true,
-                    data = listOf(shiftDto(status = "CLOSED")),
-                    meta = PaginationMeta(1, 1, 1, 10)
-                )
-            )
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
-        assertThat(result).isInstanceOf(Result.Success::class.java)
-        assertThat((result as Result.Success).data.id).isEqualTo("shift-1")
-        coVerify(exactly = 1) { apiService.closeShift("venue-1", "shift-1", any()) }
-        coVerify(exactly = 1) { apiService.getShiftHistory("venue-1", pageSize = 10, pageNumber = 1) }
+        repository.closeShift("venue-1", "c000000000000000000000031")
+        repository.sincronizarCierresLocales("venue-1")
+        val row = database.localShiftSessionDao().ultima("venue-1")!!
+        coEvery { apiService.getShiftOperation("venue-1", row.closeOperationId!!) } returns Response.success(
+            ShiftOperationResponse(true, ShiftOperationDto(operationId = row.closeOperationId, kind = "CLOSE", state = "APPLIED", closedAtLocal = row.closedAtLocal),
+                ShiftOperationShiftDto(id = "c000000000000000000000031", status = "CLOSED")))
+        repository.sincronizarCierresLocales("venue-1")
+        assertThat(database.localShiftSessionDao().ultima("venue-1")!!.closeStatus).isEqualTo("CONFIRMED")
+        coVerify(exactly = 1) { apiService.closeShift("venue-1", "c000000000000000000000031", any()) }
+        coVerify(exactly = 1) { apiService.getShiftOperation("venue-1", row.closeOperationId!!) }
+        coVerify(exactly = 0) { apiService.getShiftHistory(any(), any(), any()) }
     }
-
-    @Test
-    fun `409 remains an error when the bounded GET cannot find the closed shift`() = runTest {
+    @Test fun `409 unproven operation keeps original close pending`() = runTest {
         coEvery { apiService.closeShift(any(), any(), any()) } returns httpError(409)
-        coEvery { apiService.getShiftHistory(any(), any(), any()) } returns Response.success(
-            ShiftHistoryResponse(
-                success = true,
-                data = emptyList(),
-                meta = PaginationMeta(0, 0, 1, 10)
-            )
-        )
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
-        assertThat(result).isInstanceOf(Result.Error::class.java)
-        assertThat(((result as Result.Error).exception as ApiException.HttpError).code).isEqualTo(409)
+        repository.closeShift("venue-1", "c000000000000000000000031", CashReconciliationAction.COUNTED, BigDecimal("61.25"))
+        repository.sincronizarCierresLocales("venue-1")
+        val row = database.localShiftSessionDao().ultima("venue-1")!!
+        assertThat(row.closeStatus).isEqualTo("PENDING")
+        assertThat(row.countedCash).isEqualTo("61.25")
+        assertThat(row.closeEvidenceJson).isNull()
         coVerify(exactly = 1) { apiService.closeShift(any(), any(), any()) }
-        coVerify(exactly = 1) { apiService.getShiftHistory(any(), any(), any()) }
+        coVerify(exactly = 0) { apiService.getShiftHistory(any(), any(), any()) }
     }
-
-    @Test
-    fun `400 already-closed response performs one bounded GET and never repeats POST`() = runTest {
+    @Test fun `400 remains visible review without inventing history reconciliation`() = runTest {
         coEvery { apiService.closeShift(any(), any(), any()) } returns httpError(400)
-        coEvery { apiService.getShiftHistory("venue-1", pageSize = 10, pageNumber = 1) } returns
-            Response.success(
-                ShiftHistoryResponse(
-                    success = true,
-                    data = listOf(shiftDto(status = "CLOSED")),
-                    meta = PaginationMeta(1, 1, 1, 10)
-                )
-            )
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
-        assertThat(result).isInstanceOf(Result.Success::class.java)
-        coVerify(exactly = 1) { apiService.closeShift("venue-1", "shift-1", any()) }
-        coVerify(exactly = 1) { apiService.getShiftHistory("venue-1", pageSize = 10, pageNumber = 1) }
+        repository.closeShift("venue-1", "c000000000000000000000031", CashReconciliationAction.COUNTED, BigDecimal("61.25"))
+        repository.sincronizarCierresLocales("venue-1")
+        val row = database.localShiftSessionDao().ultima("venue-1")!!
+        assertThat(row.closeStatus).isEqualTo("REVIEW")
+        assertThat(row.countedCash).isEqualTo("61.25")
+        assertThat(row.closeOperationId).isNotEmpty()
+        coVerify(exactly = 1) { apiService.closeShift(any(), any(), any()) }
+        coVerify(exactly = 0) { apiService.getShiftHistory(any(), any(), any()) }
     }
-
-    // ─── 🔔 Abrir o cerrar el turno AVISA a las demás pantallas (QA Nexgo N86, 7-sep-2026) ────
-    //
-    // Cada pantalla tiene su propio ShiftViewModel; sin este pulso, «Turnos de caja» abría la caja
-    // e Inicio seguía en «Sin turno de caja» bloqueando Cobrar hasta reiniciar la app.
-
-    @Test
-    fun `abrir el turno con exito avisa por shiftChanges`() = runTest {
+    @Test fun `abrir el turno con exito avisa por shiftChanges`() = runTest {
         val avisos = mutableListOf<Unit>()
-        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
-        runCurrent()
-        coEvery { apiService.openShift("venue-1", any<OpenShiftRequest>()) } returns
-            Response.success(ShiftResponse(success = true, data = shiftDto(status = "OPEN"), reconciliation = null))
-
-        val result = repository.openShift("venue-1", "staff-1", 500.0)
-        runCurrent()
-
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }; runCurrent()
+        val result = repository.openShift("venue-1", "staff-1", 500.0); runCurrent()
         assertThat(result).isInstanceOf(Result.Success::class.java)
         assertThat(avisos).hasSize(1)
+        coVerify(exactly = 0) { apiService.openShift(any(), any()) }
     }
-
-    @Test
-    fun `si abrir el turno falla no se avisa nada`() = runTest {
+    @Test fun `si el commit de apertura falla no se avisa nada`() = runTest {
         val avisos = mutableListOf<Unit>()
-        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
-        runCurrent()
-        coEvery { apiService.openShift("venue-1", any<OpenShiftRequest>()) } returns
-            Response.error(500, "".toResponseBody("application/json".toMediaTypeOrNull()))
-
-        val result = repository.openShift("venue-1", "staff-1", 500.0)
-        runCurrent()
-
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }; runCurrent()
+        database.openHelper.writableDatabase.execSQL("CREATE TRIGGER task6_no_open BEFORE INSERT ON local_shift_sessions BEGIN SELECT RAISE(ABORT,'no local commit'); END")
+        val result = repository.openShift("venue-1", "staff-1", 500.0); runCurrent()
         assertThat(result).isInstanceOf(Result.Error::class.java)
         assertThat(avisos).isEmpty()
+        assertThat(database.localShiftSessionDao().contar("venue-1")).isEqualTo(0)
     }
-
-    @Test
-    fun `cerrar el turno con exito avisa por shiftChanges`() = runTest {
+    @Test fun `cerrar el turno con exito avisa por shiftChanges`() = runTest {
         val avisos = mutableListOf<Unit>()
-        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
-        runCurrent()
-        coEvery { apiService.closeShift("venue-1", "shift-1", any()) } returns Response.success(successfulClose())
-
-        repository.closeShift("venue-1", "shift-1")
-        runCurrent()
-
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }; runCurrent()
+        repository.closeShift("venue-1", "c000000000000000000000031"); runCurrent()
         assertThat(avisos).hasSize(1)
     }
 
@@ -229,7 +161,7 @@ class ShiftRepositoryTest {
         cashDeclared: String? = null,
         cashDifference: String? = null
     ) = ShiftDto(
-        id = "shift-1",
+        id = "c000000000000000000000031",
         venueId = "venue-1",
         staffId = "staff-1",
         startTime = "2026-08-08T00:00:00Z",
@@ -420,23 +352,18 @@ class ShiftRepositoryTest {
         entryMode = "CHIP", createdAt = 1_000L,
     )
 
-    @Test
-    fun `P1 con una devolucion sin registrar el repositorio NO cierra ni llama al API - cubre al kiosco`() = runTest {
-        coEvery { refundQueue.blockingForVenue("venue-1") } returns listOf(reembolsoPendiente())
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
-        assertThat(result).isInstanceOf(Result.Error::class.java)
-        assertThat((result as Result.Error).exception.message).contains("devolución")
+    @Test fun `P1 devolucion sin registrar permite conteo durable pero impide POST del coordinador`() = runTest {
+        database.pendingRefundDao().insertRow(reembolsoPendiente().toEntity())
+        val result = repository.closeShift("venue-1", "c000000000000000000000031")
+        assertThat(result).isInstanceOf(Result.Success::class.java)
+        assertThat(database.localShiftSessionDao().ultima("venue-1")!!.localStatus).isEqualTo("CLOSED")
+        repository.sincronizarCierresLocales("venue-1")
         coVerify(exactly = 0) { apiService.closeShift(any(), any(), any()) }
     }
 
-    @Test
-    fun `P1 si la cola no se puede leer tampoco cierra - nunca a ciegas`() = runTest {
-        coEvery { refundQueue.blockingForVenue("venue-1") } throws IllegalStateException("db cerrada")
-
-        val result = repository.closeShift("venue-1", "shift-1")
-
+    @Test fun `P1 si Room no se puede leer no guarda ni envia un cierre a ciegas`() = runTest {
+        database.close()
+        val result = repository.closeShift("venue-1", "c000000000000000000000031")
         assertThat(result).isInstanceOf(Result.Error::class.java)
         coVerify(exactly = 0) { apiService.closeShift(any(), any(), any()) }
     }

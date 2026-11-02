@@ -216,7 +216,7 @@ fun KioskUnavailableScreen(
 /**
  * Get localized messages based on unavailability reason
  */
-private fun getUnavailableMessages(reason: UnavailableReason): UnavailableMessages {
+internal fun getUnavailableMessages(reason: UnavailableReason): UnavailableMessages {
     return when (reason) {
         UnavailableReason.SHIFT_CLOSED -> UnavailableMessages(
             titleEs = "Este kiosko no esta\ndisponible",
@@ -239,6 +239,13 @@ private fun getUnavailableMessages(reason: UnavailableReason): UnavailableMessag
             subtitleEn = "Please check your internet connection"
         )
 
+        UnavailableReason.LOCAL_CAJA_READ_ERROR -> UnavailableMessages(
+            titleEs = "No se pudo leer la caja",
+            titleEn = "Could not read the till",
+            subtitleEs = "Abre Administración y vuelve a consultar la caja de este aparato",
+            subtitleEn = "Open Administration and check this device's till again"
+        )
+
         UnavailableReason.DISABLED -> UnavailableMessages(
             titleEs = "Kiosko deshabilitado",
             titleEn = "Kiosk disabled",
@@ -251,7 +258,7 @@ private fun getUnavailableMessages(reason: UnavailableReason): UnavailableMessag
 /**
  * Container for unavailable screen messages
  */
-private data class UnavailableMessages(
+internal data class UnavailableMessages(
     val titleEs: String,
     val titleEn: String,
     val subtitleEs: String,

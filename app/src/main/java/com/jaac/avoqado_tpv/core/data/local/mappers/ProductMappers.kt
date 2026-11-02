@@ -12,6 +12,9 @@ import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
+import timber.log.Timber
+import java.lang.reflect.Type
 import java.math.BigDecimal
 
 /**
@@ -38,6 +41,41 @@ private fun opcionesDeJson(json: String?): List<OpcionDeVarianteDto>? =
 private fun opcionesAJson(f: DatosDeFamilia): String? =
     f.opciones?.map { OpcionDeVarianteDto(it.name, it.value, it.namePosition, it.valuePosition) }?.let(gson::toJson)
 
+private val tipoDeGruposDeExtras = object : TypeToken<List<ModifierGroup>>() {}.type
+private val tipoDeExtras = object : TypeToken<List<ProductModifier>>() {}.type
+
+/**
+ * JSON de extras guardado en la terminal → lista. Lee los nombres reales y los que R8 ponía antes de la v43 (los `alternate` de
+ * [ModifierGroup] y [ProductModifier]). Nunca lanza: un JSON dañado de verdad sale como SIN extras en vez de tumbar a quien lo lee.
+ * Gson no lanza con nombres desconocidos: deja en null campos que Kotlin da por no nulos y el que tronaría es la pantalla (o la
+ * sincronización mandaría `modifierIds=[null]`), después. Por eso se revisan aquí.
+ */
+private fun <T> extrasSinTronar(json: String, tipo: Type, completo: (T) -> Boolean, dueno: String): List<T> {
+    if (json.isBlank() || json == "[]") return emptyList()
+    return runCatching {
+        val lista: List<T> = gson.fromJson(json, tipo)
+        check(lista.all(completo)) { "extra incompleto" }
+        lista
+    }.getOrElse { e ->
+        Timber.w(e, "⚠️ [Extras guardados] Ilegibles en $dueno: sale sin extras")
+        emptyList()
+    }
+}
+
+/** `draft_order_items.modifiers` → extras del renglón, con la misma regla que el catálogo guardado. */
+internal fun extrasDeRenglon(json: String, dueno: String): List<ProductModifier> =
+    extrasSinTronar(json, tipoDeExtras, { it.estaCompleto() }, dueno)
+
+private fun ProductEntity.gruposDeExtras(): List<ModifierGroup> =
+    extrasSinTronar(modifierGroupsJson, tipoDeGruposDeExtras, { it.estaCompleto() }, "el producto $productId")
+
+// `listOf<Any?>` a propósito: el compilador da estos campos por no nulos, pero Gson sí los deja en null. Un elemento null de la lista
+// lanza aquí dentro, y también cuenta como dañado.
+private fun ProductModifier.estaCompleto(): Boolean = listOf<Any?>(id, name, priceAdjustment, type).none { it == null }
+
+private fun ModifierGroup.estaCompleto(): Boolean =
+    listOf<Any?>(id, name, modifiers, type).none { it == null } && modifiers.all { it.estaCompleto() }
+
 /**
  * Convert ProductEntity to Product domain model.
  *
@@ -45,14 +83,6 @@ private fun opcionesAJson(f: DatosDeFamilia): String? =
  * @return Product domain model
  */
 fun ProductEntity.toDomain(): Product {
-    // Deserialize modifierGroups from JSON
-    val modifierGroups: List<ModifierGroup> = if (modifierGroupsJson.isBlank() || modifierGroupsJson == "[]") {
-        emptyList()
-    } else {
-        val type = object : TypeToken<List<ModifierGroup>>() {}.type
-        gson.fromJson(modifierGroupsJson, type)
-    }
-
     return Product(
         id = productId,
         name = name,
@@ -68,11 +98,13 @@ fun ProductEntity.toDomain(): Product {
         trackInventory = trackInventory,
         inventoryMethod = inventoryMethod,
         availableQuantity = availableQuantity,
-        modifierGroups = modifierGroups,
+        modifierGroups = gruposDeExtras(),
         categoryColor = categoryColor,  // Pass through from cache (null = auto-generate in domain)
         categoryIsActive = categoryIsActive,  // Category active status from dashboard
         // Misma regla que la red: sin group id (o en blanco) no hay familia; opciones raras = null.
-        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, opcionesDeJson(variantOptionsJson))
+        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, opcionesDeJson(variantOptionsJson)),
+        gtin = gtin,
+        catalogAt = catalogAt
     )
 }
 
@@ -108,7 +140,9 @@ fun Product.toEntity(venueId: String, cachedAt: Long): ProductEntity {
         productGroupId = familia?.groupId,
         productGroupName = familia?.groupName,
         productGroupImageUrl = familia?.groupImageUrl,
-        variantOptionsJson = familia?.let(::opcionesAJson)
+        variantOptionsJson = familia?.let(::opcionesAJson),
+        gtin = gtin,
+        catalogAt = catalogAt
     )
 }
 

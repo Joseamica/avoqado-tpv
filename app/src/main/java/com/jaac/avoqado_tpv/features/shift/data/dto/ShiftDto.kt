@@ -30,6 +30,9 @@ data class CurrentShiftResponse(
     val shift: ShiftDto?
 )
 
+/** También lee el detalle legado: los campos financieros adicionales se ignoran. */
+data class KnownShiftState(val id: String? = null, val venueId: String? = null, val status: String? = null)
+
 /**
  * Wrapper for POST /shifts/open and POST /shifts/:id/close endpoint responses
  *
@@ -45,7 +48,8 @@ data class ShiftResponse(
 
     /** Additive, request-scoped close result. Missing on open/old-server responses. */
     @SerializedName("reconciliation")
-    val reconciliation: CashReconciliationDto? = null
+    val reconciliation: CashReconciliationDto? = null,
+    @SerializedName("operation") val operation: ShiftOperationDto? = null
 )
 
 data class CashReconciliationDto(
@@ -154,7 +158,11 @@ data class OpenShiftRequest(
     val startingCash: Double,
 
     @SerializedName("stationId")
-    val stationId: String? = null
+    val stationId: String? = null,
+    @SerializedName("operationId") val operationId: String? = null,
+    @SerializedName("localId") val localId: String? = null,
+    @SerializedName("openedAt") val openedAt: String? = null,
+    @SerializedName("isOfflineReplay") val isOfflineReplay: Boolean? = null
 )
 
 /**
@@ -182,7 +190,13 @@ data class CloseShiftRequest(
 
     /** Canonical Decimal(10,2) plain string; present only with COUNTED. */
     @SerializedName("countedCash")
-    val countedCash: String? = null
+    val countedCash: String? = null,
+    @SerializedName("operationId") val operationId: String? = null,
+    @SerializedName("closedAtLocal") val closedAtLocal: String? = null,
+    @SerializedName("isOfflineReplay") val isOfflineReplay: Boolean? = null,
+    @SerializedName("openingOperationId") val openingOperationId: String? = null,
+    @SerializedName("cashDrawerSessionId") val cashDrawerSessionId: String? = null,
+    @SerializedName("staffId") val staffId: String? = null
 )
 
 /**
@@ -270,7 +284,14 @@ data class ShiftDto(
     val cashDeclared: String? = null,
 
     @SerializedName("cashDifference")
-    val cashDifference: String? = null
+    val cashDifference: String? = null,
+    @SerializedName("cashDrawerSessionId") val cashDrawerSessionId: String? = null,
+    @SerializedName("localId") val localId: String? = null,
+    @SerializedName("cajaCreada") val cajaCreada: Boolean? = null,
+    @SerializedName("shiftCreado") val shiftCreado: Boolean? = null,
+    @SerializedName("reintento") val reintento: Boolean? = null,
+    @SerializedName("openingDisposition") val openingDisposition: String? = null,
+    @SerializedName("fondoAplicado") val fondoAplicado: String? = null
 )
 
 /**
@@ -316,7 +337,9 @@ fun ShiftDto.toDomain(): Shift {
         totalProductsSold = totalProductsSold,
         durationMinutes = calculateDurationMinutes(startTime, endTime),
         cashDeclared = cashDeclared?.let(::BigDecimal),
-        cashDifference = cashDifference?.let(::BigDecimal)
+        cashDifference = cashDifference?.let(::BigDecimal),
+        cashDrawerSessionId = cashDrawerSessionId, openingDisposition = openingDisposition,
+        fondoAplicado = fondoAplicado?.let(::BigDecimal)
     )
 }
 

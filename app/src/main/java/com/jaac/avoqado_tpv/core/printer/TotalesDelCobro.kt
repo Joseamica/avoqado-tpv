@@ -32,7 +32,7 @@ object TotalesDelCobro {
         if (p.propina > BigDecimal.ZERO) add(renglon("Propina:", "$${formato(p.propina)} MXN"))
     }
 
-    private fun renglon(etiqueta: String, importe: String) = etiqueta.padEnd(22, ' ') + importe
+    private fun renglon(etiqueta: String, importe: String) = etiqueta.padEnd((32 - importe.length).coerceAtLeast(etiqueta.length + 1), ' ') + importe
 
     private fun formato(v: BigDecimal) = v.setScale(2, RoundingMode.HALF_UP).toPlainString()
 }

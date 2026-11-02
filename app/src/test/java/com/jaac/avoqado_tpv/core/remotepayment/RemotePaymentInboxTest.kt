@@ -11,7 +11,7 @@ import org.junit.Test
 class RemotePaymentInboxTest {
 
     private val dao = mockk<RemotePaymentRequestDao>(relaxed = true)
-    private val inbox = RemotePaymentInbox(dao)
+    private val inbox = RemotePaymentInbox(dao, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     private fun event(requestId: String = "req-1") = SocketEvent.TerminalPaymentRequest(
         requestId = requestId,

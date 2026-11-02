@@ -99,7 +99,17 @@ data class QueuedPayment(
     // compare-and-swap key — without it, a worker that stalls past the stale-claim
     // threshold can stomp a row a second worker has since reclaimed and is actively
     // recording. Null only for rows never obtained via claimBatch().
-    val claimToken: String? = null
+    val claimToken: String? = null,
+    val orderRequestJson: String? = null,
+    val exitoMostrado: Boolean = true,
+    val ticketJson: String? = null,
+    val relojMonotonoAlVender: Long? = null,
+    val arranqueAlVender: Int? = null,
+    val requiereRevision: Boolean = false,
+    val acknowledged: Boolean = false,
+    val shiftMembership: String? = "UNKNOWN",
+    val localShiftSessionId: String? = null,
+    val cashDrawerSessionId: String? = null,
 ) {
     companion object {
         /**
@@ -144,6 +154,9 @@ data class QueuedPayment(
                 venueId = context.venueId,
                 staffId = context.staffId,
                 shiftId = context.shiftId,
+                shiftMembership = context.shiftMembership,
+                localShiftSessionId = context.localShiftSessionId,
+                cashDrawerSessionId = context.cashDrawerSessionId,
                 amount = context.amount,
                 tip = context.tip,
                 rating = context.rating,
@@ -212,6 +225,11 @@ data class QueuedPayment(
                 venueId = venueId,
                 staffId = staffId,
                 shiftId = shiftId,
+                queueClaimToken = claimToken,
+                shiftMembership = shiftMembership,
+                localShiftSessionId = localShiftSessionId,
+                cashDrawerSessionId = cashDrawerSessionId,
+                isOfflineReplay = true,
                 amount = amount,
                 tip = tip,
                 rating = rating,
@@ -238,6 +256,11 @@ data class QueuedPayment(
                 venueId = venueId,
                 staffId = staffId,
                 shiftId = shiftId,
+                queueClaimToken = claimToken,
+                shiftMembership = shiftMembership,
+                localShiftSessionId = localShiftSessionId,
+                cashDrawerSessionId = cashDrawerSessionId,
+                isOfflineReplay = true,
                 orderId = orderId,
                 amount = amount,
                 tip = tip,
@@ -270,6 +293,11 @@ data class QueuedPayment(
             // fila encolada sin orden como en el RESPALDO del worker, que reproduce una fila de
             // orden como `copy(orderId = null)` cuando el servidor dice `ORDER_NOT_FOUND`.
             shiftId = shiftId,
+                queueClaimToken = claimToken,
+                shiftMembership = shiftMembership,
+                localShiftSessionId = localShiftSessionId,
+                cashDrawerSessionId = cashDrawerSessionId,
+            isOfflineReplay = true,
             amount = amount,
             tip = tip,
             rating = rating, // 🆕 Preserve user rating for retry

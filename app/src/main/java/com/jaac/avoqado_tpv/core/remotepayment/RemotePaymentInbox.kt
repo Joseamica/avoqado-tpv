@@ -41,6 +41,7 @@ data class RemotePaymentCancelDecision(
 @Singleton
 class RemotePaymentInbox @Inject constructor(
     private val dao: RemotePaymentRequestDao,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
 ) {
     suspend fun receive(event: SocketEvent.TerminalPaymentRequest): RemotePaymentReceiveDecision {
         if (event.requestId.isBlank() || event.venueId.isBlank() || event.amountCents <= 0L || event.tipCents < 0L) {
@@ -98,11 +99,18 @@ class RemotePaymentInbox @Inject constructor(
     fun observePendingObligationCount(venueId: String) =
         dao.observePendingObligations(venueId).map { it.size }
 
-    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean =
-        dao.markProcessingForVenue(requestId, venueId, System.currentTimeMillis()) == 1
+    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean = try {
+        shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
+            dao.claimWithBelonging(requestId, venueId, belonging.kind, belonging.localSessionId,
+                belonging.cashDrawerSessionId, System.currentTimeMillis()) == 1
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { Timber.w(error, "No se admitió el cobro remoto en Caja"); false }
 
-    suspend fun markProcessing(requestId: String): Boolean =
-        dao.markProcessing(requestId, System.currentTimeMillis()) == 1
+    suspend fun markProcessing(requestId: String): Boolean {
+        val row = dao.getById(requestId) ?: return false
+        return markProcessingForVenue(requestId, row.venueId)
+    }
 
     suspend fun markResolved(requestId: String, finalResultJson: String): Boolean {
         val status = runCatching { JSONObject(finalResultJson).optString("status") }.getOrNull()

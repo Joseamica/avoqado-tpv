@@ -124,6 +124,24 @@ class PaymentAttemptLedger @Inject constructor(
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.
 
+    /** Admisión y reserva comparten RoomTx; el SDK corre sólo después de que ésta termina. */
+    suspend fun openAttemptForShift(
+        shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+        attemptId: String, venueId: String, processor: String, amountCents: Long, tipCents: Long,
+        recordingRoute: String, contextJson: String, kind: String = PaymentAttemptEntity.KIND_SALE,
+    ): Boolean = try {
+        val json = com.google.gson.JsonParser.parseString(contextJson).asJsonObject
+        val requestId = json.get("terminalPaymentRequestId")?.takeUnless { it.isJsonNull }?.asString
+        candadoDeEvidencia.withLock { shiftRepository.guardarNuevaObligacionDeCaja(venueId, kind == PaymentAttemptEntity.KIND_REFUND, requestId) { belonging ->
+            json.addProperty("shiftMembership", belonging.kind)
+            json.addProperty("localShiftSessionId", belonging.localSessionId)
+            json.addProperty("cashDrawerSessionId", belonging.cashDrawerSessionId)
+            json.addProperty("shiftId", belonging.serverShiftId)
+            abrirIntento(attemptId, venueId, processor, amountCents, tipCents, recordingRoute, json.toString(), kind, evidenceLockHeld = true)
+        } }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { Timber.w(error, "No se admitió la operación en Caja"); false }
+
     suspend fun openAttempt(
         attemptId: String,
         venueId: String,
@@ -133,6 +151,18 @@ class PaymentAttemptLedger @Inject constructor(
         recordingRoute: String,
         contextJson: String,
         kind: String = PaymentAttemptEntity.KIND_SALE,
+    ): Boolean = abrirIntento(attemptId, venueId, processor, amountCents, tipCents, recordingRoute, contextJson, kind)
+
+    private suspend fun abrirIntento(
+        attemptId: String,
+        venueId: String,
+        processor: String,
+        amountCents: Long,
+        tipCents: Long,
+        recordingRoute: String,
+        contextJson: String,
+        kind: String = PaymentAttemptEntity.KIND_SALE,
+        evidenceLockHeld: Boolean = false,
     ): Boolean {
         if (!isEnabled()) return true
         intentosDeEsteProceso += attemptId   // Ronda 20: ANTES de reservar (ver [intentosDeEsteProceso])
@@ -152,11 +182,17 @@ class PaymentAttemptLedger @Inject constructor(
                 // aceptado o con su desenlace final ya escrito NO admite ningún intento nuevo (C.5 / H.3).
                 val solicitudRemota = json?.get("terminalPaymentRequestId")?.takeUnless { it.isJsonNull }
                     ?.asString?.takeIf { it.isNotBlank() }
+                val belonging = com.jaac.avoqado_tpv.features.shift.domain.ShiftBelonging.fromStored(
+                    json?.get("shiftMembership")?.takeUnless { it.isJsonNull }?.asString,
+                    json?.get("localShiftSessionId")?.takeUnless { it.isJsonNull }?.asString,
+                    json?.get("shiftId")?.takeUnless { it.isJsonNull }?.asString,
+                    json?.get("cashDrawerSessionId")?.takeUnless { it.isJsonNull }?.asString,
+                )
                 val now = System.currentTimeMillis()
                 // 🔴 Comprobar-e-insertar en UNA sentencia. La versión anterior consultaba y
                 // luego insertaba por separado: dos intentos simultáneos leían «terminal libre»
                 // y los dos entraban (medido, 1 esperado y 2 obtenidos).
-                val rowId = candadoDeEvidencia.withLock {
+                val reserve: suspend () -> Long = {
                     // 🔴 Codex, pasada final (P1-1): dinero CONOCIDO de otro intento que la libreta no pudo escribir aparta el
                     // aparato entero mientras no se escriba — la fila por sí sola ya no lo muestra (pudo quedar DESCARTADA).
                     // ponytail: todo el aparato y no sólo su venta, porque cercar sólo la venta exigiría leer la fila, que es
@@ -169,9 +205,12 @@ class PaymentAttemptLedger @Inject constructor(
                         attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
                         amountCents = amountCents, tipCents = tipCents, recordingRoute = recordingRoute,
                         contextJson = contextJson, orderJsonFragment = fragment, now = now,
-                        terminalPaymentRequestId = solicitudRemota, processToken = processToken
+                        terminalPaymentRequestId = solicitudRemota, processToken = processToken,
+                        shiftMembership = belonging.kind, localShiftSessionId = belonging.localSessionId,
+                        cashDrawerSessionId = belonging.cashDrawerSessionId
                     )
                 }
+                val rowId = if (evidenceLockHeld) reserve() else candadoDeEvidencia.withLock { reserve() }
                 if (rowId > 0L) {
                     Timber.d("📒 [Libreta] PREPARANDO | attemptId=%s amount=%d+%d", attemptId, amountCents, tipCents)
                     true
@@ -664,7 +703,7 @@ class PaymentAttemptLedger @Inject constructor(
         null
     }
 
-    /** Once queued, pending_payments owns the money (its idempotency + retry) — the ledger row rests. */
+    /** Compatibilidad: el DAO comprueba el sucesor durable y su contrato en Tx; sin prueba conserva la fuente. */
     suspend fun markDeliveredToQueue(attemptId: String) = casNonCancellable(
         attemptId, from = listOf(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO),
         to = PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, label = "ENTREGADA_A_COLA"

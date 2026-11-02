@@ -147,6 +147,10 @@ data class PaymentAttemptEntity(
      * a la v41: nunca aparta el aparato.
      */
     @ColumnInfo(name = "process_token") val processToken: String? = null,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -205,6 +209,10 @@ data class PaymentAttemptEntity(
         const val LAST_ERROR_LIBERADA_PREFIX = "liberada_por_el_servidor:"
         /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
         const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
+
+        /** Un veredicto/veto conocido conserva su escritor financiero; la cola no lo sustituye. */
+        const val SQL_REGISTRO_POR_VEREDICTO = "(legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE' " +
+            "AND (server_outcome IS NOT NULL OR server_veto IS NOT NULL))"
 
         /**
          * 🔴 CONTRADICCIÓN = predicado DERIVADO (nunca una columna, para que no se desincronice): el servidor tiene

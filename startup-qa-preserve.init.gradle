@@ -1,0 +1,12 @@
+gradle.projectsEvaluated {
+    allprojects { tasks.withType(Test).configureEach {
+        testLogging { exceptionFormat = 'full'; showStandardStreams = false }
+    } }
+}
+gradle.buildFinished {
+    def dest = new File('/tmp/avq-wiring-empty-full-01a16484-20261101')
+    dest.mkdirs()
+    dest.setReadable(false, false); dest.setWritable(false, false); dest.setExecutable(false, false)
+    dest.setReadable(true, true); dest.setWritable(true, true); dest.setExecutable(true, true)
+    copy { from new File(gradle.rootProject.projectDir, 'app/build/test-results'); into new File(dest, 'junit') }
+}

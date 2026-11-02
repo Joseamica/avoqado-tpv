@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,6 +26,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
 import javax.inject.Inject
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Shift ViewModel
@@ -83,8 +85,24 @@ class ShiftViewModel @Inject constructor(
     // STATE
     // ══════════════════════════════════════════════════════════════════════
 
+    // El executor de Room también lo lee al confirmar «Revisado».
+    private val solicitudesDeCierre = AtomicLong(0)
+    // Cambia por gesto/entrada UI; un reload del pulso propio no lo invalida.
+    private val gestosDePantalla = AtomicLong(0)
+    private data class ContextoCierre(val version: Long, val venueId: String, val staffId: String?, val token: String?,
+        val shiftId: String, val localSessionId: String?, val uiEpoch: Long)
+    private var contextoCierre: ContextoCierre? = null
+
     private val _state = MutableStateFlow<ShiftState>(ShiftState.Idle)
     val state: StateFlow<ShiftState> = _state.asStateFlow()
+
+    private val _localCaja = MutableStateFlow<CajaLocalPresentation?>(null)
+    val localCaja: StateFlow<CajaLocalPresentation?> = _localCaja.asStateFlow()
+    private var acknowledgedLocalSessionId: String? = null
+    private val _localHistory = MutableStateFlow<com.jaac.avoqado_tpv.features.shift.data.repository.LocalShiftPage?>(null)
+    val localHistory = _localHistory.asStateFlow()
+    private val _localReview = MutableStateFlow<LocalCajaReview?>(null)
+    val localReview = _localReview.asStateFlow()
 
     // Pull-to-refresh state
     private val _isRefreshing = MutableStateFlow(false)
@@ -201,7 +219,9 @@ class ShiftViewModel @Inject constructor(
     }
 
     private suspend fun cargarUltimoTurnoConocido(venueId: String) {
+        val staff = secureStorage.getStaffId(); val token = secureStorage.getToken()
         val cached = cachedShiftDao.getCachedShift(venueId)
+        if (secureStorage.getVenueId() != venueId || secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return
 
         if (cached != null) {
             _cachedShiftInfo.value = CachedShiftInfo(
@@ -230,7 +250,9 @@ class ShiftViewModel @Inject constructor(
      */
     private suspend fun alNoContestarElServidor(venueId: String, error: ApiException) {
         if (!error.servidorNoContesto) return
+        val staff = secureStorage.getStaffId(); val token = secureStorage.getToken()
         cargarUltimoTurnoConocido(venueId)
+        if (secureStorage.getVenueId() != venueId || secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return
         servidorSinContestar = true
         publicarSinConexion()
         Timber.w("📦 [ShiftViewModel] Servidor sin contestar — último turno conocido: abierto=${_cachedShiftInfo.value?.isOpen}")
@@ -293,6 +315,8 @@ class ShiftViewModel @Inject constructor(
             connectionEventManager.connectionRestoredEvents.collect { event ->
                 Timber.i("🔄 [ShiftViewModel] Connection restored - syncing shift data")
                 Timber.d("   Reconnected after ${event.attemptsBeforeReconnection} attempts at ${event.timestamp}")
+                // Este evento proviene del latido HTTP, a diferencia de un Success local de Room.
+                alContestarElServidor()
                 loadCurrentShift()
             }
         }
@@ -318,122 +342,112 @@ class ShiftViewModel @Inject constructor(
      * - If already ShiftActive, keeps the shift visible while reloading
      * - Prevents "flash of no shift" when navigating back to WelcomeScreen
      */
-    fun loadCurrentShift() {
-        viewModelScope.launch {
-            if (hasUnacknowledgedCashReconciliationResult()) {
-                Timber.d("⏸️ Keeping cash reconciliation result visible until acknowledgment")
-                return@launch
-            }
-
-            // ✅ Anti-flash fix: Only show Loading if we don't already have a shift
-            // This prevents the "flash of inactive shift" when navigating back to WelcomeScreen
-            val currentState = _state.value
-            if (currentState !is ShiftState.ShiftActive) {
-                _state.value = ShiftState.Loading
-            }
-
-            val venueId = secureStorage.getVenueId()
-            if (venueId == null) {
-                Timber.e("❌ No venueId found in storage")
-                _state.value = ShiftState.Error("No se encontró información del local")
-                return@launch
-            }
-
-            // Load current shift
-            val currentShiftResult = shiftRepository.getCurrentShift(venueId)
-
-            // Load shift history (last 10 closed shifts)
-            val historyResult = shiftRepository.getShiftHistory(venueId, limit = 10)
-
-            // Extract history (default to empty list on error)
-            val shiftHistory = when (historyResult) {
-                is Result.Success -> historyResult.data
-                is Result.Error -> {
-                    Timber.w("⚠️ Failed to load shift history, continuing without it")
-                    emptyList()
-                }
-            }
-
-            // A close may have completed while this reload was in flight. Never let stale reload
-            // data replace the counted/skipped result before the cashier acknowledges it.
-            if (hasUnacknowledgedCashReconciliationResult()) return@launch
-
-            // Update state based on current shift result
-            when (currentShiftResult) {
-                is Result.Success -> {
-                    alContestarElServidor()
-                    val shift = currentShiftResult.data
-                    // 💾 Cache shift state for offline access
-                    cacheShiftState(shift, venueId)
-
-                    if (shift != null) {
-                        Timber.i("✅ Active shift loaded: ${shift.id}")
-                        _state.value = ShiftState.ShiftActive(shift, shiftHistory)
-                    } else {
-                        Timber.i("ℹ️ No active shift")
-                        _state.value = ShiftState.NoActiveShift(shiftHistory)
-                    }
-                }
-                is Result.Error -> {
-                    // Antes del estado: el Inicio no debe pintar ni un cuadro de «Sin turno» sin red.
-                    alNoContestarElServidor(venueId, currentShiftResult.exception)
-                    val errorMessage = translateError(currentShiftResult.exception)
-                    Timber.e("❌ Failed to load shift: $errorMessage")
-                    _state.value = ShiftState.Error(errorMessage)
-                }
-            }
-
-            // ✅ Mark initial loading complete (hides loading overlay on WelcomeScreen)
-            if (_isInitialLoading.value) {
-                _isInitialLoading.value = false
-                Timber.d("✅ [ShiftViewModel] Initial loading complete")
-            }
-        }
+    private fun historyOf(state: ShiftState): List<Shift> = when (state) {
+        is ShiftState.ShiftActive -> state.shiftHistory
+        is ShiftState.ShiftClosed -> state.shiftHistory
+        is ShiftState.NoActiveShift -> state.shiftHistory
+        else -> emptyList()
     }
 
-    /**
-     * Refresh shift data (Pull-to-refresh)
-     *
-     * Reloads shift data without showing full-screen loading.
-     */
-    fun refresh() {
+    private fun publishShift(shift: Shift?, history: List<Shift>) {
+        _state.value = when {
+            shift == null -> ShiftState.NoActiveShift(history)
+            shift.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.CLOSED -> {
+                val row = _localCaja.value?.session?.takeIf { it.localSessionId == shift.localShiftSessionId }
+                if (acknowledgedLocalSessionId == row?.localSessionId && row != null) ShiftState.NoActiveShift(history)
+                else ShiftState.ShiftClosed(shift, history, row?.cashReconciliationAction?.let {
+                    runCatching { CashReconciliationAction.valueOf(it) }.getOrNull()
+                })
+            }
+            else -> ShiftState.ShiftActive(shift, history)
+        }
+        _isInitialLoading.value = false
+    }
+
+    fun loadCurrentShift() { loadCaja(refreshing = false) }
+    fun refresh() { loadCaja(refreshing = true) }
+
+    /** Room primero; cada suspensión conserva venue, actor, token y dueño de esta lectura. */
+    private fun loadCaja(refreshing: Boolean) {
+        val solicitud = solicitudesDeCierre.incrementAndGet()
+        val epoch = gestosDePantalla.get()
+        val venueId = secureStorage.getVenueId()
+        val staffId = secureStorage.getStaffId()
+        val token = secureStorage.getToken()
+        fun vigente() = solicitudesDeCierre.get() == solicitud && gestosDePantalla.get() == epoch &&
+            secureStorage.getVenueId() == venueId && secureStorage.getStaffId() == staffId && secureStorage.getToken() == token
         viewModelScope.launch {
-            if (hasUnacknowledgedCashReconciliationResult()) return@launch
-
-            _isRefreshing.value = true
+            if (hasUnacknowledgedCashReconciliationResult() &&
+                (_state.value as? ShiftState.ShiftClosed)?.shift?.financialTotalsKnown != false) return@launch
+            if (venueId == null) {
+                _state.value = ShiftState.Error("No se encontró información del local")
+                _isInitialLoading.value = false
+                return@launch
+            }
+            _isRefreshing.value = refreshing
+            val priorHistory = historyOf(_state.value)
+            if (_state.value == ShiftState.Idle || _state.value is ShiftState.Error) _state.value = ShiftState.Loading
             try {
-                val venueId = secureStorage.getVenueId() ?: return@launch
-
-                // Load current shift
-                val currentShiftResult = shiftRepository.getCurrentShift(venueId)
-                val historyResult = shiftRepository.getShiftHistory(venueId, limit = 10)
-
-                val shiftHistory = when (historyResult) {
-                    is Result.Success -> historyResult.data
-                    is Result.Error -> emptyList()
-                }
-
-                // Preserve a result that arrived while the refresh requests were in flight.
-                if (hasUnacknowledgedCashReconciliationResult()) return@launch
-
-                when (currentShiftResult) {
+                val bootstrap = readCajaBootstrap(shiftRepository, venueId, ::vigente)
+                if (!vigente()) return@launch
+                val local = bootstrap.local
+                val legacyFallback = bootstrap.shift.takeIf { local == null }
+                _localCaja.value = local?.let { CajaLocalPresentation(it.row, it.summary) }
+                if (local != null) publishShift(local.shift, priorHistory)
+                else if (legacyFallback != null) publishShift(legacyFallback, priorHistory)
+                val result = shiftRepository.getCurrentShift(venueId)
+                if (!vigente()) return@launch
+                when (result) {
                     is Result.Success -> {
-                        alContestarElServidor()
-                        val shift = currentShiftResult.data
-                        _state.value = if (shift != null) {
-                            ShiftState.ShiftActive(shift, shiftHistory)
+                        val remote = result.data
+                        // Revalidar la fila DESPUÉS de HTTP antes de mostrar sus métricas.
+                        val fresh = shiftRepository.leerCajaLocal(venueId)
+                        if (!vigente()) return@launch
+                        _localCaja.value = fresh?.let { CajaLocalPresentation(it.row, it.summary) }
+                        if (remote?.financialTotalsKnown != false) alContestarElServidor()
+                        if (fresh != null) {
+                            val row = fresh.row
+                            val sameAccreditedOpen = remote != null && remote.hasKnownFinancialTotals() &&
+                                remote.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN &&
+                                remote.venueId == venueId && remote.localShiftSessionId == row.localSessionId &&
+                                row.serverShiftId != null && remote.id == row.serverShiftId && row.localStatus == "OPEN" &&
+                                row.openingStatus == "CONFIRMED" && row.closeOperationId == null && row.closeStatus == "NONE"
+                            publishShift(if (sameAccreditedOpen) remote else fresh.shift, priorHistory)
                         } else {
-                            ShiftState.NoActiveShift(shiftHistory)
+                            if (remote?.financialTotalsKnown != false) {
+                                cacheShiftState(remote, venueId)
+                                if (!vigente()) return@launch
+                            }
+                            publishShift(remote, priorHistory)
                         }
                     }
                     is Result.Error -> {
-                        alNoContestarElServidor(venueId, currentShiftResult.exception)
-                        Timber.e("❌ Refresh failed: ${currentShiftResult.exception}")
+                        alNoContestarElServidor(venueId, result.exception)
+                        if (!vigente()) return@launch
+                        if (local == null && legacyFallback == null) _state.value = ShiftState.Error(
+                            translateError(result.exception), canOpenLocally = result.exception.servidorNoContesto)
+                        _isInitialLoading.value = false
                     }
                 }
-            } finally {
+                // El historial remoto no retrasa la caja ni sus hechos locales.
                 _isRefreshing.value = false
-            }
+                val visible = _state.value
+                val history = shiftRepository.getShiftHistory(venueId, limit = 10)
+                if (!vigente() || _state.value !== visible) return@launch
+                if (history is Result.Success) _state.value = when (visible) {
+                    is ShiftState.ShiftActive -> visible.copy(shiftHistory = history.data)
+                    is ShiftState.ShiftClosed -> visible.copy(shiftHistory = history.data)
+                    is ShiftState.NoActiveShift -> visible.copy(shiftHistory = history.data)
+                    else -> visible
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) {
+                if (vigente()) {
+                    _state.value = ShiftState.Error("No se pudo leer la caja guardada. Vuelve a intentar; no se confirma ningún cambio.")
+                    _isInitialLoading.value = false
+                }
+                Timber.e(error, "No se pudo consultar la caja local")
+            } finally { if (vigente()) _isRefreshing.value = false }
         }
     }
 
@@ -446,6 +460,8 @@ class ShiftViewModel @Inject constructor(
      * @param startingCash Initial cash amount in drawer
      */
     fun openShift(startingCash: Double) {
+        gestosDePantalla.incrementAndGet()
+        solicitudesDeCierre.incrementAndGet()
         viewModelScope.launch {
             if (!_canOpenShift.value) {
                 _state.value = ShiftState.Error("No tienes permiso para abrir la caja.\n\nContacta a tu administrador.")
@@ -463,16 +479,22 @@ class ShiftViewModel @Inject constructor(
                 return@launch
             }
 
-            Timber.i("🟢 Opening shift with starting cash: $$startingCash")
+            val actor = secureStorage.getStaffId()
+            val token = secureStorage.getToken()
+            val epoch = gestosDePantalla.get()
+            Timber.i("Guardando apertura local")
 
             when (val result = shiftRepository.openShift(venueId, staffId, startingCash)) {
                 is Result.Success -> {
-                    val shift = result.data
-                    Timber.i("✅ Shift opened successfully: ${shift.id}")
-                    // Reload to get fresh state with history
+                    if (secureStorage.getVenueId() != venueId || secureStorage.getStaffId() != actor ||
+                        secureStorage.getToken() != token || gestosDePantalla.get() != epoch) return@launch
+                    acknowledgedLocalSessionId = null
+                    publishShift(result.data, emptyList())
                     loadCurrentShift()
                 }
                 is Result.Error -> {
+                    if (secureStorage.getVenueId() != venueId || secureStorage.getStaffId() != actor ||
+                        secureStorage.getToken() != token || gestosDePantalla.get() != epoch) return@launch
                     val errorMessage = translateError(result.exception)
                     Timber.e("❌ Failed to open shift: $errorMessage")
                     _state.value = ShiftState.Error(errorMessage)
@@ -506,6 +528,7 @@ class ShiftViewModel @Inject constructor(
                 return@launch
             }
 
+            val version = solicitudesDeCierre.incrementAndGet()
             _state.value = ShiftState.Loading
 
             val venueId = secureStorage.getVenueId()
@@ -515,6 +538,13 @@ class ShiftViewModel @Inject constructor(
                 return@launch
             }
 
+            val contexto = ContextoCierre(version, venueId, secureStorage.getStaffId(), secureStorage.getToken(),
+                currentState.shift.id, currentState.shift.localShiftSessionId, gestosDePantalla.incrementAndGet())
+            contextoCierre = contexto
+
+            // B2 separa GUARDAR del POST: el repositorio conserva su cerca SDK/SQL.
+            // Las pantallas legacy aún sin identidad local conservan C7 hasta importar su caja.
+            if (currentState.shift.localShiftSessionId == null && currentState.shift.financialTotalsKnown != false) {
             // 💸 BARRERA (Fase 2, Task 9): una devolución que el SDK YA aprobó y que aún no quedó
             // registrada en el servidor —o que el servidor rechazó y nadie ha visto— impide cerrar.
             // Cerrar antes firmaría un corte que cuadra DE MÁS por dinero que sí salió del cajón:
@@ -527,11 +557,13 @@ class ShiftViewModel @Inject constructor(
                 // Ante la duda se BLOQUEA, no se cierra a ciegas: no poder leer la cola es no saber
                 // si hay dinero sin anotar. El cajero vuelve a intentar.
                 Timber.e(e, "💸 [Shift] No se pudo leer la cola de reembolsos antes de cerrar")
+                if (!puedePublicar(contexto, ShiftState.Loading)) return@launch
                 _state.value = ShiftState.Error(
                     "No se pudo verificar si hay devoluciones sin registrar.\n\nVuelve a intentar cerrar la caja."
                 )
                 return@launch
             }
+            if (!puedePublicar(contexto, ShiftState.Loading)) return@launch
             if (bloqueantes.isNotEmpty()) {
                 Timber.w("💸 [Shift] Cierre BLOQUEADO: ${bloqueantes.size} devolución(es) sin registrar o sin reconocer")
                 _state.value = ShiftState.CloseBlockedByRefunds(
@@ -540,6 +572,25 @@ class ShiftViewModel @Inject constructor(
                     refunds = bloqueantes,
                 )
                 return@launch
+            }
+
+            val pagos = try {
+                shiftRepository.pagosQueBloqueanCierre(venueId, 0)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (puedePublicar(contexto, ShiftState.Loading)) {
+                    _state.value = ShiftState.CloseBlockedByPayments(currentState.shift, currentState.shiftHistory, venueId,
+                        error = "No se pudo verificar si hay ventas sin registrar o sin revisar. Vuelve a intentar.")
+                }
+                return@launch
+            }
+            if (!puedePublicar(contexto, ShiftState.Loading)) return@launch
+            if (pagos.total > 0) {
+                _state.value = ShiftState.CloseBlockedByPayments(currentState.shift, currentState.shiftHistory, venueId, pagos)
+                return@launch
+            }
+
             }
 
             val shiftId = currentState.shift.id
@@ -555,7 +606,24 @@ class ShiftViewModel @Inject constructor(
             ) {
                 is Result.Success -> {
                     val closedShift = result.data
-                    Timber.i("✅ Shift closed. Sales: $${closedShift.totalSales}, Products: ${closedShift.totalProductsSold}")
+                    if (!resultadoPerteneceAlGesto(contexto, closedShift)) return@launch
+                    if (closedShift.financialTotalsKnown == false) {
+                        // El recibo local no firma ventas/esperado/diferencia de compatibilidad.
+                        val snapshot = try { shiftRepository.leerCajaLocal(venueId) }
+                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (error: Exception) {
+                            if (resultadoPerteneceAlGesto(contexto, closedShift)) _state.value = ShiftState.Error(
+                                "El cierre quedó guardado; no se pudo leer su resumen. Reabre Caja para comprobarlo.")
+                            return@launch
+                        }
+                        if (!resultadoPerteneceAlGesto(contexto, closedShift)) return@launch
+                        _localCaja.value = snapshot?.takeIf { it.row.localSessionId == closedShift.localShiftSessionId }
+                            ?.let { CajaLocalPresentation(it.row, it.summary) }
+                        _state.value = ShiftState.ShiftClosed(closedShift, currentState.shiftHistory, reconciliationAction)
+                        _isInitialLoading.value = false
+                        return@launch
+                    }
+                    Timber.i("Cierre remoto acreditado: ${closedShift.id}")
 
                     // Load updated history (now includes the just-closed shift)
                     val historyResult = shiftRepository.getShiftHistory(venueId, limit = 10)
@@ -564,21 +632,24 @@ class ShiftViewModel @Inject constructor(
                         is Result.Error -> emptyList()
                     }
 
+                    if (!resultadoPerteneceAlGesto(contexto, closedShift)) return@launch
                     // Show closed shift briefly with updated history
-                    _state.value = ShiftState.ShiftClosed(
+                    val publicado = ShiftState.ShiftClosed(
                         shift = closedShift,
                         shiftHistory = shiftHistory,
                         reconciliationAction = reconciliationAction
                     )
+                    _state.value = publicado
 
                     // Preserve the legacy behavior exactly. A reconciliation attempt remains until
                     // explicit acknowledgment so the cashier can read the result.
                     if (reconciliationAction == null) {
                         kotlinx.coroutines.delay(2000)
-                        loadCurrentShift()
+                        if (_state.value === publicado && resultadoPerteneceAlGesto(contexto, closedShift)) loadCurrentShift()
                     }
                 }
                 is Result.Error -> {
+                    if (!puedePublicar(contexto, ShiftState.Loading)) return@launch
                     val errorMessage = translateError(result.exception)
                     Timber.e("❌ Failed to close shift: $errorMessage")
                     _state.value = ShiftState.Error(errorMessage)
@@ -646,8 +717,248 @@ class ShiftViewModel @Inject constructor(
         }
     }
 
+    /** Sólo publicación UI: el commit/intención de A permanecen aunque ya se esté mostrando B. */
+    private fun resultadoPerteneceAlGesto(contexto: ContextoCierre, resultado: Shift): Boolean {
+        if (contextoCierre !== contexto || gestosDePantalla.get() != contexto.uiEpoch || !mismaIdentidad(contexto)) return false
+        fun mismaCaja(shift: Shift): Boolean = if (contexto.localSessionId != null)
+            shift.localShiftSessionId == contexto.localSessionId else shift.id == contexto.shiftId
+        if (!mismaCaja(resultado)) return false
+        return when (val visible = _state.value) {
+            ShiftState.Loading, is ShiftState.NoActiveShift -> true
+            is ShiftState.ShiftActive -> mismaCaja(visible.shift)
+            is ShiftState.ShiftClosed -> mismaCaja(visible.shift)
+            else -> false
+        }
+    }
+
+    private fun mismaPantalla(contexto: ContextoCierre, esperado: ShiftState): Boolean =
+        solicitudesDeCierre.get() == contexto.version && _state.value === esperado &&
+            (esperado !is ShiftState.CloseBlockedByPayments || esperado.shift.id == contexto.shiftId)
+
+    private fun mismaIdentidad(contexto: ContextoCierre): Boolean =
+        secureStorage.getVenueId() == contexto.venueId && secureStorage.getStaffId() == contexto.staffId &&
+            secureStorage.getToken() == contexto.token
+
+    private fun puedePublicar(contexto: ContextoCierre, esperado: ShiftState): Boolean {
+        if (!mismaPantalla(contexto, esperado)) return false
+        if (!mismaIdentidad(contexto)) {
+            _state.value = ShiftState.Error("La sesión cambió. Vuelve a abrir Caja para revisar las ventas.")
+            return false
+        }
+        return true
+    }
+
+    fun onShiftScreenEntered() {
+        gestosDePantalla.incrementAndGet()
+        _localReview.value = null
+        _localHistory.value = null
+        refreshSettings()
+        refreshShiftPermissions()
+        loadCurrentShift()
+    }
+
+    fun onShiftScreenLeft() {
+        gestosDePantalla.incrementAndGet()
+        solicitudesDeCierre.incrementAndGet()
+        _localReview.value = null
+    }
+
+    /** Un gesto explícito de adopción invalida el cierre UI viejo incluso en la misma pareja real. */
+    fun adoptRemoteCaja() {
+        val source = _localCaja.value ?: return
+        val venue = secureStorage.getVenueId() ?: return
+        val staff = secureStorage.getStaffId()
+        val token = secureStorage.getToken()
+        val epoch = gestosDePantalla.incrementAndGet()
+        solicitudesDeCierre.incrementAndGet()
+        viewModelScope.launch {
+            if (!permissionsRepository.hasPermission("tpv-shifts:create")) return@launch
+            if (gestosDePantalla.get() != epoch || secureStorage.getVenueId() != venue ||
+                secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return@launch
+            when (val result = shiftRepository.adoptarCajaRemotaParaNuevosGestos(venue, source.session.localSessionId)) {
+                is Result.Success -> {
+                    if (gestosDePantalla.get() != epoch || secureStorage.getVenueId() != venue ||
+                        secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return@launch
+                    contextoCierre = null
+                    _localReview.value = null
+                    acknowledgedLocalSessionId = null
+                    _state.value = ShiftState.Loading
+                    loadCurrentShift()
+                }
+                is Result.Error -> if (gestosDePantalla.get() == epoch && secureStorage.getVenueId() == venue &&
+                    secureStorage.getStaffId() == staff && secureStorage.getToken() == token)
+                    _state.value = ShiftState.Error(translateError(result.exception))
+            }
+        }
+    }
+
+    fun loadLocalHistory(offset: Int = 0) {
+        val venue = secureStorage.getVenueId() ?: return
+        val staff = secureStorage.getStaffId(); val token = secureStorage.getToken(); val epoch = gestosDePantalla.get()
+        fun vigente() = gestosDePantalla.get() == epoch && secureStorage.getVenueId() == venue &&
+            secureStorage.getStaffId() == staff && secureStorage.getToken() == token
+        viewModelScope.launch {
+            try {
+                if (!permissionsRepository.hasPermission("shifts:read") || !vigente()) return@launch
+                val page = shiftRepository.sesionesLocales(venue, offset)
+                if (vigente()) _localHistory.value = page
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) { Timber.w(error, "No se pudo leer el historial local de Caja") }
+        }
+    }
+
+    fun reviewLocalCaja(sessionId: String, offset: Int = 0) {
+        if (_localReview.value?.let { it.busy && it.sessionId == sessionId } == true) return
+        val venue = secureStorage.getVenueId() ?: return
+        val staff = secureStorage.getStaffId(); val token = secureStorage.getToken(); val epoch = gestosDePantalla.get()
+        val owner = LocalCajaReview(sessionId, busy = true)
+        _localReview.value = owner
+        fun vigente() = _localReview.value === owner && gestosDePantalla.get() == epoch &&
+            secureStorage.getVenueId() == venue && secureStorage.getStaffId() == staff && secureStorage.getToken() == token
+        viewModelScope.launch {
+            try {
+                if (!permissionsRepository.hasPermission("shifts:read")) {
+                    if (vigente()) _localReview.value = owner.copy(busy = false, error = "No tienes permiso para consultar esta caja.")
+                    return@launch
+                }
+                if (!vigente()) return@launch
+                val page = shiftRepository.obligacionesDelCierreLocal(venue, sessionId, offset)
+                val cash = shiftRepository.efectivoRevisableDelCierre(venue, page)
+                if (vigente()) _localReview.value = owner.copy(page = page, cashEligible = cash, busy = false)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) { if (vigente()) _localReview.value = owner.copy(busy = false,
+                  error = "No se pudo leer la lista. El cierre sigue esperando sus registros.") }
+        }
+    }
+
+    fun acknowledgeLocalCash(id: Long) {
+        val current = _localReview.value ?: return
+        if (current.busy || id !in current.cashEligible) return
+        val venue = secureStorage.getVenueId() ?: return
+        val staff = secureStorage.getStaffId() ?: return
+        val token = secureStorage.getToken(); val epoch = gestosDePantalla.get()
+        val owner = current.copy(busy = true, error = null); _localReview.value = owner
+        fun vigente() = _localReview.value === owner && gestosDePantalla.get() == epoch &&
+            secureStorage.getVenueId() == venue && secureStorage.getStaffId() == staff && secureStorage.getToken() == token
+        viewModelScope.launch {
+            try {
+                if (!permissionsRepository.hasPermission("tpv-shifts:close")) {
+                    if (vigente()) _localReview.value = current.copy(error = "No tienes permiso para revisar el efectivo de esta caja.")
+                    return@launch
+                }
+                if (!vigente()) return@launch
+                val changed = shiftRepository.reconocerPagoEnCierreLocal(current.sessionId, id, venue, staff, token) {
+                    vigente() && PermissionsRepository.enLaUltimaListaEfectiva(secureStorage, "tpv-shifts:close")
+                }
+                if (!vigente()) return@launch
+                if (changed == 1) {
+                    _localReview.value = current
+                    reviewLocalCaja(current.sessionId, current.page?.offset ?: 0)
+                }
+                else _localReview.value = current.copy(error = "No se pudo marcar el efectivo como revisado. Actualiza y vuelve a intentar.")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) { if (vigente()) _localReview.value = current.copy(error = "No se pudo guardar la revisión del efectivo.") }
+        }
+    }
+
+    /** Consulta la K elegida de Room; nunca inicia otro QR ni busca una operación por monto. */
+    fun queryLocalCrypto(key: String) {
+        val current = _localReview.value ?: return
+        if (current.busy || current.page?.rows?.none { it.owner == "CRYPTO" && it.ownerId == key } != false) return
+        val venue = secureStorage.getVenueId() ?: return
+        val staff = secureStorage.getStaffId(); val token = secureStorage.getToken(); val epoch = gestosDePantalla.get()
+        val owner = current.copy(busy = true, error = null); _localReview.value = owner
+        fun vigente() = _localReview.value === owner && gestosDePantalla.get() == epoch &&
+            secureStorage.getVenueId() == venue && secureStorage.getStaffId() == staff && secureStorage.getToken() == token
+        viewModelScope.launch {
+            try {
+                if (!permissionsRepository.hasPermission("payments:create")) {
+                    if (vigente()) _localReview.value = current.copy(error = "No tienes permiso para consultar esta operación.")
+                    return@launch
+                }
+                if (!vigente()) return@launch
+                val result = shiftRepository.consultarCriptoDurable(venue, key)
+                if (vigente()) _localReview.value = current.copy(error = if (result.operation?.financialRecorded == true &&
+                    result.operation?.financialStatus == "COMPLETED") "Registro confirmado para esta operación. Actualiza la lista."
+                    else "Operación consultada; el registro financiero todavía no está confirmado. No vuelvas a cobrarla.")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) { if (vigente()) _localReview.value = current.copy(error = "No se pudo confirmar esta operación. Su clave se conserva; vuelve a consultar.") }
+        }
+    }
+
+    fun dismissLocalReview() { _localReview.value = null }
+
+    fun loadPaymentPage(offset: Int) {
+        val actual = _state.value as? ShiftState.CloseBlockedByPayments ?: return
+        if (actual.busy) return
+        val contexto = contextoCierre ?: return
+        viewModelScope.launch { cargarPaginaDePagos(contexto, actual, offset) }
+    }
+
+    fun onPaymentRetryFailed() {
+        val actual = _state.value as? ShiftState.CloseBlockedByPayments ?: return
+        _state.value = actual.copy(error = "No se pudo iniciar la subida. La venta sigue guardada; vuelve a intentar.")
+    }
+
+    private suspend fun cargarPaginaDePagos(contexto: ContextoCierre, anterior: ShiftState.CloseBlockedByPayments, offset: Int) {
+        if (!puedePublicar(contexto, anterior)) return
+        // StateFlow conserva la instancia anterior al asignar una copia igual. La guarda
+        // por identidad debe usar esa misma instancia si «Revisado» ya puso busy=true.
+        val cargando = if (anterior.busy && anterior.error == null) anterior else anterior.copy(busy = true, error = null)
+        _state.value = cargando
+        try {
+            val pagina = shiftRepository.pagosQueBloqueanCierre(contexto.venueId, offset)
+            if (!puedePublicar(contexto, cargando)) return
+            _state.value = if (pagina.total == 0) ShiftState.ShiftActive(anterior.shift, anterior.shiftHistory)
+                else anterior.copy(page = pagina, busy = false, error = null)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (puedePublicar(contexto, cargando)) {
+                _state.value = anterior.copy(busy = false, error = "No se pudo actualizar la lista. La caja sigue esperando. Vuelve a intentar.")
+            }
+        }
+    }
+
+    fun acknowledgePayment(id: Long) {
+        val actual = _state.value as? ShiftState.CloseBlockedByPayments ?: return
+        val contexto = contextoCierre ?: return
+        if (actual.busy) return
+        val pagina = actual.page ?: return
+        val pago = pagina.pagos.firstOrNull { it.id == id } ?: return
+        if (pago.syncStatus in listOf("PENDING", "SYNCING") || (pago.syncStatus != "FAILED" && !pago.requiereRevision)) return
+        viewModelScope.launch {
+            if (!puedePublicar(contexto, actual)) return@launch
+            val quien = contexto.staffId
+            if (quien.isNullOrBlank() || !_canCloseShift.value) {
+                _state.value = actual.copy(error = "Inicia sesión con permiso para cerrar la caja antes de marcar Revisado.")
+                return@launch
+            }
+            val revisando = actual.copy(busy = true, error = null)
+            _state.value = revisando
+            try {
+                val filas = shiftRepository.reconocerPago(id, contexto.venueId, quien, contexto.token) {
+                    mismaPantalla(contexto, revisando) && mismaIdentidad(contexto) && _canCloseShift.value
+                }
+                if (!puedePublicar(contexto, revisando)) return@launch
+                if (filas != 1) {
+                    _state.value = actual.copy(error = "No se pudo marcar la venta como Revisado. Actualiza la lista y vuelve a intentar.")
+                    return@launch
+                }
+                cargarPaginaDePagos(contexto, revisando, pagina.offset)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (puedePublicar(contexto, revisando)) {
+                    _state.value = actual.copy(error = "No se pudo marcar la venta como Revisado. Vuelve a intentar.")
+                }
+            }
+        }
+    }
+
     fun acknowledgeClosedShift() {
         if (_state.value is ShiftState.ShiftClosed) {
+            acknowledgedLocalSessionId = (_state.value as ShiftState.ShiftClosed).shift.localShiftSessionId
             // Clear the guarded result first so the authoritative reload is allowed to proceed.
             _state.value = ShiftState.Loading
             loadCurrentShift()
@@ -772,12 +1083,21 @@ sealed class ShiftState {
         val refunds: List<QueuedRefund>,
     ) : ShiftState()
 
+    data class CloseBlockedByPayments(
+        val shift: Shift,
+        val shiftHistory: List<Shift>,
+        val venueId: String,
+        val page: PaginaPagosDelCierre? = null,
+        val busy: Boolean = false,
+        val error: String? = null,
+    ) : ShiftState()
+
     /**
      * Error state with user-friendly message
      *
      * @param message Translated error message for user display
      */
-    data class Error(val message: String) : ShiftState()
+    data class Error(val message: String, val canOpenLocally: Boolean = false) : ShiftState()
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -815,5 +1135,5 @@ data class CachedShiftInfo(
  * Con conexión la caché nunca sustituye al servidor, y sin nada guardado no se inventa un turno.
  */
 fun turnoPermiteVender(turno: Shift?, sinConexion: Boolean, ultimoConocido: CachedShiftInfo?): Boolean =
-    turno?.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN ||
-        (sinConexion && ultimoConocido?.isOpen == true)
+    if (turno != null) turno.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN
+    else sinConexion && ultimoConocido?.isOpen == true

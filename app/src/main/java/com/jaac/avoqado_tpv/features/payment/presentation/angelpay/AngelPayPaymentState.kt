@@ -41,6 +41,8 @@ sealed class AngelPayPaymentState {
         val tipAmount: String,
         val totalAmount: String,
         val rating: Int?,
+        // 💵 D2 «Cobrar sin red»: no nulo ⇒ sólo efectivo; tarjeta y cripto en gris con este texto.
+        val motivoSinTarjeta: String? = null,
     ) : AngelPayPaymentState()
 
     /** SDK request built, ready for ActivityResult launcher using AngelPayPaymentContract. */
@@ -119,6 +121,8 @@ sealed class AngelPayPaymentState {
         val orderId: String? = null,
         val orderNumber: String? = null,
         val isCash: Boolean = false,
+        val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,
+        val pendingSyncMessage: String? = null,
         /**
          * Checkpoint 2 (E4): el banco aprobó y el servidor conserva el cobro, pero NO como una venta normal — una
          * SEGUNDA CAPTURA con ganador acreditado. La pantalla lo dice en vez de presentar un éxito limpio:

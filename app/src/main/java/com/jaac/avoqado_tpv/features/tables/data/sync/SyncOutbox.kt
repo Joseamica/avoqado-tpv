@@ -73,6 +73,8 @@ class SyncOutbox @Inject constructor(
     private val dao: SyncIntentDao,
     private val api: TablesApiService,
     private val secureStorage: SecureStorage,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
 ) {
     private val replayMutex = Mutex()
     private val gson = Gson()
@@ -114,7 +116,12 @@ class SyncOutbox @Inject constructor(
             payloadJson = gson.toJson(payload),
         )
         val seq = withContext(NonCancellable + Dispatchers.IO) {
-            dao.insertWithSeq(entity)
+            if (type == SyncIntentTypes.PAY_CASH) {
+                shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
+                    dao.insertWithSeq(entity.copy(shiftMembership = belonging.kind, localShiftSessionId = belonging.localSessionId,
+                        cashDrawerSessionId = belonging.cashDrawerSessionId))
+                }
+            } else dao.insertWithSeq(entity)
         }
         Timber.i("📥 [Tables] Encolado %s seq=%d id=%s venue=%s", type, seq, id, venueId)
         return id
@@ -152,7 +159,7 @@ class SyncOutbox @Inject constructor(
      *
      * Reproducir el mismo ack dos veces (mismo `intentId`, mismo `status`) tiene
      * un solo efecto: es un `UPDATE ... WHERE id = :id`, no un `INSERT` — la
-     * segunda llamada solo re-escribe los mismos valores.
+     * segunda llamada conserva los valores terminales existentes.
      */
     suspend fun applyAck(
         intentId: String,
@@ -161,29 +168,27 @@ class SyncOutbox @Inject constructor(
         message: String? = null,
         resultJson: String? = null,
     ) {
-        when (status) {
-            SyncIntentEntity.STATUS_ACKED, SyncIntentEntity.STATUS_REJECTED -> {
-                persistTerminalAck(intentId, status, errorCode, message, resultJson)
-                if (status == SyncIntentEntity.STATUS_REJECTED) {
-                    Timber.w("🚫 [Tables] Intent %s RECHAZADO: %s — %s", intentId, errorCode, message)
-                }
-            }
+        applyAckChecked(intentId, status, errorCode, message, resultJson)
+    }
 
-            STATUS_RETRY -> {
-                Timber.d(
-                    "🔁 [Tables] Intent %s en RETRY (%s) — sigue PENDING, se reintenta solo",
-                    intentId,
-                    errorCode,
-                )
+    /** El mismo adjudicador para el caller público y el replay; true sólo si Room avanzó. */
+    private suspend fun applyAckChecked(
+        intentId: String, status: String, errorCode: String?, message: String?, resultJson: String?,
+    ): Boolean = when (status) {
+        SyncIntentEntity.STATUS_ACKED, SyncIntentEntity.STATUS_REJECTED -> {
+            val persisted = persistTerminalAck(intentId, status, errorCode, message, resultJson)
+            if (persisted && status == SyncIntentEntity.STATUS_REJECTED) {
+                Timber.w("🚫 [Tables] Intent %s RECHAZADO: %s — %s", intentId, errorCode, message)
             }
-
-            else -> {
-                Timber.w(
-                    "⚠️ [Tables] Ack con status desconocido '%s' para intent %s — ignorado, se queda PENDING",
-                    status,
-                    intentId,
-                )
-            }
+            persisted
+        }
+        STATUS_RETRY -> {
+            Timber.d("🔁 [Tables] Intent %s en RETRY (%s) — sigue PENDING, se reintenta solo", intentId, errorCode)
+            false
+        }
+        else -> {
+            Timber.w("⚠️ [Tables] Ack con status desconocido '%s' para intent %s — ignorado, se queda PENDING", status, intentId)
+            false
         }
     }
 
@@ -198,19 +203,14 @@ class SyncOutbox @Inject constructor(
      * seguro, nunca duplica el efecto.
      */
     private suspend fun persistTerminalAck(
-        intentId: String,
-        status: String,
-        errorCode: String?,
-        message: String?,
-        resultJson: String?,
-    ) {
-        try {
-            dao.resolve(intentId, status, errorCode, message, resultJson)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "❌ [Tables] No se pudo persistir el ack de %s — queda PENDING, se reintenta", intentId)
-        }
+        intentId: String, status: String, errorCode: String?, message: String?, resultJson: String?,
+    ): Boolean = try {
+        dao.resolve(intentId, status, errorCode, message, resultJson) == 1
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] No se pudo persistir el ack de %s — queda PENDING, se reintenta", intentId)
+        false
     }
 
     /**
@@ -240,59 +240,83 @@ class SyncOutbox @Inject constructor(
      *   [applyAck] arriba; este callback es solo notificación.
      */
     suspend fun replayNow(venueId: String, onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { _, _ -> }) {
-        replayMutex.withLock {
-            while (true) {
-                val batch = dao.pendingForVenue(venueId).take(BATCH_SIZE)
-                if (batch.isEmpty()) return
+        replay(venueId, singleBatch = false, onAck = onAck, canEmit = { true })
+    }
 
-                val request = SyncIntentsRequest(
-                    deviceId = deviceId,
-                    intents = batch.map { it.toWire() },
-                )
+    /** Un lote del MISMO replayer para recuperación fuera de Mesas. No crea otro emisor. */
+    data class ReplayProgress(val resolved: Int, val moreAfterLimit: Boolean)
 
-                val response = try {
-                    val httpResponse = api.syncIntents(venueId, request)
-                    if (!httpResponse.isSuccessful) {
-                        Timber.w(
-                            "⚠️ [Tables] Replay interrumpido — HTTP %d (%d pendientes, venue=%s)",
-                            httpResponse.code(),
-                            batch.size,
-                            venueId,
-                        )
-                        return
-                    }
-                    httpResponse.body()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Tables] Replay interrumpido (sin red, %d pendientes, venue=%s)", batch.size, venueId)
-                    return
+    suspend fun replayCurrentVenueBatch(
+        onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { _, _ -> },
+    ): ReplayProgress {
+        val venue = secureStorage.getVenueId()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
+        val staff = secureStorage.getStaffId()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
+        val token = secureStorage.getToken()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
+        return replay(venue, singleBatch = true, onAck = onAck, canEmit = {
+            secureStorage.getVenueId() == venue && secureStorage.getStaffId() == staff && secureStorage.getToken() == token
+        })
+    }
+
+    private suspend fun replay(
+        venueId: String,
+        singleBatch: Boolean,
+        onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit,
+        canEmit: () -> Boolean,
+    ): ReplayProgress = replayMutex.withLock {
+        var resolved = 0
+        do {
+            if (!canEmit()) return@withLock ReplayProgress(resolved, false)
+            val batch = dao.pendingBatchForVenue(venueId, BATCH_SIZE)
+            if (batch.isEmpty()) return@withLock ReplayProgress(resolved, false)
+            val ready = mutableListOf<SyncIntentEntity>()
+            var waitingForMapping = false
+            for (intent in batch) {
+                try {
+                    ready += if (intent.type == SyncIntentTypes.PAY_CASH && intent.shiftMembership == "MANAGED")
+                        (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException()).table(intent)
+                    else intent
+                } catch (cancelled: CancellationException) { throw cancelled }
+                  catch (waiting: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException) {
+                    waitingForMapping = true
+                    break
                 }
-
-                if (response == null) {
-                    Timber.w("⚠️ [Tables] sync/intents respondió sin cuerpo — se reintenta después (venue=%s)", venueId)
-                    return
-                }
-
-                var sawRetry = false
-                for (ack in response.data) {
-                    applyAck(
-                        intentId = ack.id,
-                        status = ack.status,
-                        errorCode = ack.errorCode,
-                        message = ack.message,
-                        resultJson = ack.result?.let { gson.toJson(it) },
-                    )
-                    batch.find { it.id == ack.id }?.let { intent -> onAck(intent, ack) }
-                    if (ack.isRetry) {
-                        sawRetry = true
-                        break // el server ya cortó aquí — no hay más acks después de un RETRY
-                    }
-                }
-                Timber.i("✅ [Tables] Replay de %d intents aplicado (venue=%s)", batch.size, venueId)
-                if (sawRetry) return // no hot-loop sobre el mismo PENDING
             }
-        }
+            if (ready.isEmpty() || !canEmit()) return@withLock ReplayProgress(resolved, false)
+            val request = SyncIntentsRequest(deviceId = deviceId, intents = ready.map { it.toWire() })
+            val response = try {
+                val http = api.syncIntents(venueId, request)
+                if (!http.isSuccessful) {
+                    Timber.w("⚠️ [Tables] Replay interrumpido — HTTP %d (venue=%s)", http.code(), venueId)
+                    return@withLock ReplayProgress(resolved, false)
+                }
+                http.body()
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (error: Exception) {
+                Timber.w(error, "⚠️ [Tables] Replay interrumpido — conserva el prefijo (venue=%s)", venueId)
+                return@withLock ReplayProgress(resolved, false)
+            } ?: return@withLock ReplayProgress(resolved, false)
+
+            var next = 0
+            for (ack in response.data) {
+                // Sólo el siguiente id solicitado: no aplicar ACK ajeno, duplicado o fuera de FIFO.
+                val intent = ready.getOrNull(next)
+                if (intent == null || ack.id != intent.id) return@withLock ReplayProgress(resolved, false)
+                val persisted = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) })
+                if (ack.isRetry) {
+                    onAck(batch[next], ack)
+                    return@withLock ReplayProgress(resolved, false)
+                }
+                if (!persisted) return@withLock ReplayProgress(resolved, false)
+                resolved++
+                onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
+                next++
+            }
+            // Sin ACK de todo el prefijo no volver a consultar el mismo PENDING en un hot-loop.
+            if (next != ready.size || waitingForMapping) return@withLock ReplayProgress(resolved, false)
+            if (singleBatch) return@withLock ReplayProgress(resolved,
+                batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
+        } while (!singleBatch)
+        ReplayProgress(resolved, false)
     }
 
     // MARK: - Cuarentena

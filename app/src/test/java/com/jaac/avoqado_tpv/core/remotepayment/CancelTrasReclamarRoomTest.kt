@@ -46,7 +46,7 @@ class CancelTrasReclamarRoomTest {
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         coordinator = RemotePaymentCoordinator(inbox)
         ledger = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true))
     }

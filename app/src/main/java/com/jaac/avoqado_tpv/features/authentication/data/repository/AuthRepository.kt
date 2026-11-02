@@ -491,8 +491,11 @@ class AuthRepository @Inject constructor(
      * - Proactively before token expires (background refresh)
      *
      * **Error Handling:**
-     * - If refresh token invalid/expired → Force re-login with PIN
-     * - If network error → Retry with exponential backoff
+     * - Dead session (`ApiException.sesionMuertaAlRenovar`) → clears the session: force re-login with PIN.
+     *   That is HTTP 401/403 from the server, or no refresh token / venue ID on the device (a LOCAL
+     *   ValidationError: it can never refresh, and no network is involved).
+     * - Anything else (network error, timeout, 5xx) → KEEPS the session. The PIN login needs the
+     *   network, so clearing it here would leave an offline cashier unable to sell.
      *
      * @return Result with new auth data or error
      */
@@ -501,11 +504,12 @@ class AuthRepository @Inject constructor(
             Timber.d("🔄 Refreshing access token")
 
             // Get refresh token from SecureStorage
+            // Sin refresh token o sin venue no hay nada que renovar: sesión muerta (error local, sin red).
             val refreshToken = secureStorage.getRefreshToken()
-                ?: return Result.Error(ApiException.ValidationError("No refresh token available. Please login again."))
+                ?: return sessionDead(ApiException.ValidationError("No refresh token available. Please login again."))
 
             val venueId = secureStorage.getVenueId()
-                ?: return Result.Error(ApiException.ValidationError("No venue ID found. Please login again."))
+                ?: return sessionDead(ApiException.ValidationError("No venue ID found. Please login again."))
 
             // Call refresh endpoint
             val request = com.jaac.avoqado_tpv.features.authentication.domain.models.RefreshTokenRequest(refreshToken).toDto()
@@ -527,17 +531,25 @@ class AuthRepository @Inject constructor(
                 val errorMessage = when (response.code()) {
                     401 -> "Refresh token expired. Please login again."
                     403 -> "Refresh token invalid. Please login again."
-                    else -> "Failed to refresh token. Please login again."
+                    else -> "Failed to refresh token."
                 }
 
-                // Clear session on refresh failure (force re-login)
-                secureStorage.clearSession()
+                // Sólo un 401/403 explícito es "sesión muerta" (force re-login). Un 5xx u otro código
+                // conserva la sesión: sin red el cajero no puede volver a entrar con PIN.
+                val error = ApiException.HttpError(response.code(), errorMessage)
+                if (error.sesionMuertaAlRenovar) secureStorage.clearSession()
 
-                Result.Error(ApiException.HttpError(response.code(), errorMessage))
+                Result.Error(error)
             }
         } catch (e: Exception) {
             Timber.w(e, "❌ Token refresh failed")
             Result.Error(ApiException.NetworkError(e))
         }
+    }
+
+    /** Error local que deja la sesión sin remedio (sin refresh token / venue): se borra y se devuelve el error. */
+    private fun sessionDead(error: ApiException): Result.Error {
+        secureStorage.clearSession()
+        return Result.Error(error)
     }
 }

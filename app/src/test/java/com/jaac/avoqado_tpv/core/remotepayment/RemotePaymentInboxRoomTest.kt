@@ -36,7 +36,7 @@ class RemotePaymentInboxRoomTest {
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         coordinator = RemotePaymentCoordinator(inbox)
     }
 
@@ -115,7 +115,7 @@ class RemotePaymentInboxRoomTest {
     @Test fun `new coordinator cannot reauthorize persisted processing request`() = runTest {
         receive()
         assertThat(coordinator.claimSocketPaymentRequest("req-1")).isTrue()
-        val restoredInbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val restoredInbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         assertThat(restoredInbox.receive(request)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
         assertThat(RemotePaymentCoordinator(restoredInbox).claimSocketPaymentRequest("req-1")).isFalse()
     }
@@ -155,12 +155,12 @@ class RemotePaymentInboxRoomTest {
         context.deleteDatabase(name)
         try {
             db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
-            inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+            inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             inbox.receive(request)
             assertThat(inbox.markProcessing("req-1")).isTrue()
             db.close()
             db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
-            val restored = RemotePaymentInbox(db.remotePaymentRequestDao())
+            val restored = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             assertThat(restored.receive(request)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
             assertThat(restored.markProcessing("req-1")).isFalse()
             assertThat(restored.observePendingObligationCount("venue-1").first()).isEqualTo(1)

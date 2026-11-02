@@ -20,7 +20,15 @@ class TotalesDelCobroTest {
 
     private fun cuadra(p: TotalesDelCobro.Papel) = (p.subtotal - p.descuento + p.propina).compareTo(p.total) == 0
 
-    private fun texto(p: TotalesDelCobro.Papel) = TotalesDelCobro.renglonesPax(p, LeyendaIva.renglonesDelTicket(esDevolucion = false))
+    private fun texto(p: TotalesDelCobro.Papel) = TotalesDelCobro.renglonesPax(p, LeyendaIva.renglonesDelTicket(esDevolucion = false)).map { it.replace(Regex(" +"), " ") }
+
+    @Test
+    fun `PAX money at database limits keeps every digit and currency on one line`() {
+        val p = TotalesDelCobro.desdeLoCobrado(d("0.01"), d("0"), d("99999999.98"), listOf(d("99999999.99")))
+        val rows = TotalesDelCobro.renglonesPax(p, emptyList())
+        assertEquals(listOf("Subtotal: $99999999.99 MXN", "Descuento: -$99999999.98 MXN"), rows.map { it.replace(Regex(" +"), " ") })
+        assertTrue("Money would wrap on PAX: $rows", rows.all { it.length <= 32 && it.endsWith(" MXN") })
+    }
 
     @Test
     fun `P1 venta con descuento - subtotal bruto, descuento y total suman`() {
@@ -30,8 +38,8 @@ class TotalesDelCobroTest {
         assertTrue("no cuadra: $p", cuadra(p))
         assertEquals(
             listOf(
-                "Subtotal:".padEnd(22) + "$120.00 MXN",
-                "Descuento:".padEnd(22) + "-$20.00 MXN",
+                "Subtotal: $120.00 MXN",
+                "Descuento: -$20.00 MXN",
                 LeyendaIva.TEXTO,
             ),
             texto(p),
@@ -44,10 +52,10 @@ class TotalesDelCobroTest {
         assertTrue("no cuadra: $p", cuadra(p))
         assertEquals(
             listOf(
-                "Subtotal:".padEnd(22) + "$120.00 MXN",
-                "Descuento:".padEnd(22) + "-$20.00 MXN",
+                "Subtotal: $120.00 MXN",
+                "Descuento: -$20.00 MXN",
                 LeyendaIva.TEXTO,
-                "Propina:".padEnd(22) + "$15.00 MXN",
+                "Propina: $15.00 MXN",
             ),
             texto(p),
         )
@@ -59,7 +67,7 @@ class TotalesDelCobroTest {
         assertTrue(cuadra(p))
         val t = texto(p)
         assertFalse("salió un renglón de descuento en $0.00: $t", t.any { it.startsWith("Descuento") })
-        assertEquals(listOf("Subtotal:".padEnd(22) + "$120.00 MXN", LeyendaIva.TEXTO), t)
+        assertEquals(listOf("Subtotal: $120.00 MXN", LeyendaIva.TEXTO), t)
     }
 
     @Test
@@ -107,7 +115,7 @@ class TotalesDelCobroTest {
         assertEquals(0, p.subtotal.compareTo(d("100")))
         assertEquals(0, p.cargo.compareTo(d("15")))
         assertEquals(0, (p.subtotal - p.descuento + p.cargo + p.propina).compareTo(p.total))
-        assertEquals(listOf("Subtotal:".padEnd(22) + "$100.00 MXN", "Cargo:".padEnd(22) + "$15.00 MXN", LeyendaIva.TEXTO), texto(p))
+        assertEquals(listOf("Subtotal: $100.00 MXN", "Cargo: $15.00 MXN", LeyendaIva.TEXTO), texto(p))
     }
 
     @Test
@@ -117,7 +125,7 @@ class TotalesDelCobroTest {
         assertEquals(0, p.descuento.compareTo(d("20")))
         assertEquals(0, p.propina.compareTo(d("5")))
         assertEquals(0, (p.subtotal - p.descuento + p.cargo + p.propina).compareTo(p.total))
-        assertEquals(listOf("Subtotal:".padEnd(22) + "$120.00 MXN", "Descuento:".padEnd(22) + "-$20.00 MXN", "Cargo:".padEnd(22) + "$15.00 MXN", LeyendaIva.TEXTO, "Propina:".padEnd(22) + "$5.00 MXN"), texto(p))
+        assertEquals(listOf("Subtotal: $120.00 MXN", "Descuento: -$20.00 MXN", "Cargo: $15.00 MXN", LeyendaIva.TEXTO, "Propina: $5.00 MXN"), texto(p))
     }
 
     @Test

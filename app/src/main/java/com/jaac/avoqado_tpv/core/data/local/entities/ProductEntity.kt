@@ -113,5 +113,14 @@ data class ProductEntity(
 
     // JSON de List<OpcionDeVarianteDto>; se lee con el MISMO adaptador tolerante que el payload de la red.
     @ColumnInfo(name = "variant_options_json")
-    val variantOptionsJson: String? = null
+    val variantOptionsJson: String? = null,
+
+    // «Cobrar» sin red (v43). `gtin`: el código de barras del fabricante, para escanear sin red (el SKU no siempre lo es).
+    // `catalog_at`: la hora del SERVIDOR (ISO) en que se leyó este catálogo, nunca la del aparato; con ella el servidor reconoce el
+    // precio que vio el cliente al subir una venta guardada. Nacen NULL: una fila de antes de la v43 no tiene precio visto.
+    @ColumnInfo(name = "gtin")
+    val gtin: String? = null,
+
+    @ColumnInfo(name = "catalog_at")
+    val catalogAt: String? = null
 )

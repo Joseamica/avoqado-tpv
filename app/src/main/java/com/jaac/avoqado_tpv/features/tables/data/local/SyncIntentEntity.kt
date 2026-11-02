@@ -65,6 +65,9 @@ data class SyncIntentEntity(
     val resultJson: String? = null,
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
 ) {
     companion object {
         const val STATUS_PENDING = "PENDING"

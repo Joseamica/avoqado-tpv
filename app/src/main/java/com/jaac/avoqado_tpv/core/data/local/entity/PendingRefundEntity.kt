@@ -161,6 +161,10 @@ data class PendingRefundEntity(
 
     @ColumnInfo(name = "acknowledged_at")
     val acknowledgedAt: Long? = null,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
 ) {
     companion object {
         const val SYNC_STATUS_PENDING = "PENDING"

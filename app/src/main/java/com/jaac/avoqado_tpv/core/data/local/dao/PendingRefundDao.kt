@@ -5,6 +5,9 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.jaac.avoqado_tpv.features.payment.data.ledger.checkHandoff
+import com.jaac.avoqado_tpv.features.payment.data.ledger.sameFinancialContract
+import com.jaac.avoqado_tpv.features.payment.data.ledger.HANDOFF_CONTRACT_CONFLICT
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity
 
 /**
@@ -24,7 +27,63 @@ interface PendingRefundDao {
      * @return el rowid insertado, o -1 si ya existía (o sea, ya estaba encolado).
      */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(row: PendingRefundEntity): Long
+    suspend fun insertRow(row: PendingRefundEntity): Long
+
+    @Query("""UPDATE payment_attempts SET last_error = CASE
+        WHEN instr(COALESCE(last_error,''), :reason) > 0 THEN last_error
+        ELSE substr(:reason || COALESCE(' | ' || last_error, ''), 1, 2000) END
+        WHERE venue_id = :venueId AND attempt_id = :key""")
+    suspend fun noteHandoffConflict(venueId: String, key: String, reason: String): Int
+
+    @Query("SELECT * FROM payment_attempts WHERE venue_id = :venueId AND attempt_id = :key LIMIT 1")
+    suspend fun ownerForHandoff(venueId: String, key: String): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity?
+
+    @Query("""UPDATE payment_attempts SET state = 'ENTREGADA_A_COLA', state_version = state_version + 1, updated_at = :now
+        WHERE venue_id = :venueId AND attempt_id = :key AND kind = 'REFUND'
+        AND state IN ('AUTORIZADO','HOST_RESPONDIO','REGISTRO_FALLIDO','INDETERMINADO')""")
+    suspend fun handoff(venueId: String, key: String, now: Long): Int
+
+    @Query("SELECT * FROM pending_refunds WHERE venue_id = :venueId AND idempotency_key = :key LIMIT 1")
+    suspend fun existingRow(venueId: String, key: String): PendingRefundEntity?
+
+    @Query("""UPDATE pending_refunds SET last_error = CASE
+        WHEN instr(COALESCE(last_error,''), 'handoff_contrato_contradictorio') > 0 THEN last_error
+        ELSE substr('handoff_contrato_contradictorio:duplicate' || COALESCE(' | ' || last_error, ''), 1, 2000) END
+        WHERE venue_id = :venueId AND idempotency_key = :key""")
+    suspend fun noteDuplicateConflict(venueId: String, key: String): Int
+
+    @Transaction
+    suspend fun insertIgnore(row: PendingRefundEntity): Long {
+        val owner = ownerForHandoff(row.venueId, row.idempotencyKey)
+        val originalStaff = owner?.let { runCatching { com.google.gson.JsonParser.parseString(it.paymentContextJson).asJsonObject.get("staffId")?.takeUnless { it.isJsonNull }?.asString }.getOrNull() }
+        val saved = if (owner == null) row else row.copy(staffId = originalStaff ?: row.staffId, shiftMembership = owner.shiftMembership,
+            localShiftSessionId = owner.localShiftSessionId, cashDrawerSessionId = owner.cashDrawerSessionId)
+        if (owner != null && row.shiftMembership != "UNKNOWN") {
+            if (row.shiftMembership != owner.shiftMembership || row.localShiftSessionId != owner.localShiftSessionId ||
+                row.cashDrawerSessionId != owner.cashDrawerSessionId) {
+                noteHandoffConflict(row.venueId, owner.attemptId, "handoff_contrato_contradictorio:membership")
+                return HANDOFF_CONTRACT_CONFLICT
+            }
+        }
+        val contract = owner?.checkHandoff(saved)
+        if (owner != null && contract?.conflict != null) {
+            noteHandoffConflict(row.venueId, owner.attemptId, "handoff_contrato_contradictorio:${contract.conflict}")
+            return HANDOFF_CONTRACT_CONFLICT
+        }
+        val old = existingRow(row.venueId, row.idempotencyKey)
+        val identical = old?.sameFinancialContract(saved) == true
+        if (old != null && !identical) {
+            noteDuplicateConflict(row.venueId, row.idempotencyKey)
+            noteHandoffConflict(row.venueId, row.idempotencyKey, "handoff_contrato_contradictorio:duplicate")
+            return HANDOFF_CONTRACT_CONFLICT
+        }
+        val id = insertRow(saved)
+        if (owner != null && contract?.proven == true && (id > 0 || identical)) {
+            if (old?.syncStatus == "SUCCESS") acknowledgeOwner(row.venueId, row.idempotencyKey, System.currentTimeMillis())
+            else handoff(row.venueId, row.idempotencyKey, System.currentTimeMillis())
+        }
+        return id
+    }
 
     /**
      * Reclama hasta [limit] filas de forma atómica y devuelve exactamente las que quedaron
@@ -71,7 +130,35 @@ interface PendingRefundDao {
         WHERE idempotency_key = :key AND claim_token = :token
     """
     )
-    suspend fun markSuccess(key: String, token: String): Int
+    suspend fun markSuccessRow(key: String, token: String): Int
+
+    @Query("SELECT * FROM pending_refunds WHERE idempotency_key = :key AND claim_token = :token LIMIT 1")
+    suspend fun ownedRow(key: String, token: String): PendingRefundEntity?
+
+    @Query("""UPDATE payment_attempts SET state = 'REGISTRADO', state_version = state_version + 1, updated_at = :now
+        WHERE venue_id = :venueId AND attempt_id = :key AND kind = 'REFUND'
+        AND state IN ('ENTREGADA_A_COLA','AUTORIZADO','HOST_RESPONDIO','REGISTRO_FALLIDO','INDETERMINADO')""")
+    suspend fun acknowledgeOwnerRow(venueId: String, key: String, now: Long): Int
+
+    @Transaction
+    suspend fun acknowledgeOwner(venueId: String, key: String, now: Long): Int {
+        val owner = ownerForHandoff(venueId, key) ?: return 0
+        val row = existingRow(venueId, key)
+        val contract = row?.let { owner.checkHandoff(it) }
+        if (row?.syncStatus != "SUCCESS" || contract?.proven != true) {
+            noteHandoffConflict(venueId, key, "handoff_contrato_contradictorio:${contract?.conflict ?: "unproven"}")
+            return 0
+        }
+        return acknowledgeOwnerRow(venueId, key, now)
+    }
+
+    @Transaction
+    suspend fun markSuccess(key: String, token: String): Int {
+        val row = ownedRow(key, token) ?: return 0
+        val changed = markSuccessRow(key, token)
+        if (changed == 1) acknowledgeOwner(row.venueId, key, System.currentTimeMillis())
+        return changed
+    }
 
     /**
      * Fallo TRANSITORIO: vuelve a PENDING con el intento contado. SIEMPRE a PENDING.

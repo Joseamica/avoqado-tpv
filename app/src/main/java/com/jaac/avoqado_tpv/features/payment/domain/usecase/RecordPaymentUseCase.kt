@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.domain.usecase
 
 import androidx.annotation.VisibleForTesting
+import com.jaac.avoqado_tpv.features.payment.domain.model.withShiftBelonging
 import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
@@ -11,9 +12,25 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
+import com.jaac.avoqado_tpv.features.payment.domain.model.withQueueClaimToken
 import kotlinx.coroutines.delay
 import timber.log.Timber
 import javax.inject.Inject
+
+/** Marcador sin reemplazar la excepción original: el contrato previo conserva su identidad y diagnóstico. */
+class CashAdmissionRejectedException(error: Throwable) : IllegalStateException(error.message ?: "No se pudo admitir el efectivo en Caja.") {
+    companion object {
+        fun identifica(error: Throwable?): Boolean = error is CashAdmissionRejectedException ||
+            error?.suppressed?.any { it is CashAdmissionRejectedException } == true
+        fun marcar(error: Throwable): Throwable {
+            if (!identifica(error)) error.addSuppressed(CashAdmissionRejectedException(error))
+            return error
+        }
+    }
+}
+
+/** No es un rechazo de admisión: el dinero existente conserva su dueño y necesita consulta. */
+class CashOwnerReviewRequiredException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 
 /**
  * Use case que orquesta la grabación de pagos en el backend.
@@ -68,7 +85,14 @@ class RecordPaymentUseCase @Inject constructor(
     private val fastPaymentRecorder: FastPaymentRecorder,
     private val orderPaymentRecorder: OrderPaymentRecorder,
     private val paymentQueueRepository: PaymentQueueRepository,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
 ) {
+    private suspend fun revisionDeDueno(context: PaymentContext, reference: String, cause: Throwable? = null): CashOwnerReviewRequiredException {
+        val compatible = runCatching { shiftRepository.contratoDelPagoGuardadoCoincide(context, reference) }.getOrDefault(false)
+        return CashOwnerReviewRequiredException(if (compatible) "La venta ya está guardada; no vuelvas a cobrarla."
+            else "El registro previo no coincide con la referencia, el importe o el pedido. Revísalo antes de volver a cobrar.", cause)
+    }
+
     companion object {
         /**
          * Número máximo de intentos para grabar un pago antes de marcarlo como fallido.
@@ -195,16 +219,30 @@ class RecordPaymentUseCase @Inject constructor(
         // El efectivo confirmado debe sobrevivir a la muerte del proceso durante el
         // PRIMER POST. El INSERT incluye su claim: el worker no compite con esta llamada.
         // El replay ya posee un claim y no vuelve a insertar ni a reclamar la misma fila.
+        var recordingContext = if (cardDetails.isCash) context else shiftRepository.restaurarContextoDelIntento(context)
         val cashClaim = if (cardDetails.isCash && !alreadyQueued) {
-            val payment = QueuedPayment.desdeContexto(
-                context = context,
-                orderNumber = (context as? PaymentContext.AngelPayPayment)?.orderNumber,
-                cardDetails = cardDetails,
-                authorizationNumber = authorizationNumber,
-                referenceNumber = referenceNumber,
-                error = null,
-            )
-            paymentQueueRepository.enqueueAndClaim(payment).getOrElse { return Result.failure(it) }
+            val owned = try { shiftRepository.pagoTieneDueno(context.venueId, context.idempotencyKey, referenceNumber) }
+                catch (error: Exception) { return Result.failure(CashOwnerReviewRequiredException("No se pudo consultar el registro local de esta venta.", error)) }
+            if (owned) return Result.failure(revisionDeDueno(context, referenceNumber))
+            try {
+                shiftRepository.guardarNuevaObligacionDeCaja(context.venueId, terminalRequestId = context.terminalPaymentRequestId) { belonging ->
+                    recordingContext = context.withShiftBelonging(belonging)
+                    val payment = QueuedPayment.desdeContexto(
+                        context = recordingContext,
+                        orderNumber = (context as? PaymentContext.AngelPayPayment)?.orderNumber,
+                        cardDetails = cardDetails,
+                        authorizationNumber = authorizationNumber,
+                        referenceNumber = referenceNumber,
+                        error = null,
+                    )
+                    paymentQueueRepository.enqueueAndClaim(payment).getOrThrow()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+              catch (error: Exception) {
+                val existing = runCatching { shiftRepository.pagoTieneDueno(context.venueId, context.idempotencyKey, referenceNumber) }.getOrElse { true }
+                return Result.failure(if (existing) revisionDeDueno(context, referenceNumber, error)
+                    else CashAdmissionRejectedException.marcar(error))
+              }
         } else null
         if (cashClaim != null && (cashClaim.queueId <= 0 || cashClaim.claimToken.isNullOrBlank())) {
             return Result.failure(IllegalStateException("El efectivo no tiene un registro local reservado"))
@@ -214,7 +252,7 @@ class RecordPaymentUseCase @Inject constructor(
         // misma identidad. Nunca se borra o reinserta dinero para manejar una cancelación.
         val result = recordPaymentWithRetry(
             recorder = recorder,
-            context = context,
+            context = recordingContext.withQueueClaimToken(cashClaim?.claimToken ?: recordingContext.queueClaimToken),
             cardDetails = cardDetails,
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
@@ -300,6 +338,8 @@ class RecordPaymentUseCase @Inject constructor(
             // ❌ Analizar el error
             val exception = result.exceptionOrNull()
             lastError = exception as? Exception
+
+            if (exception is com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException) return result
 
             // Determinar si es un error retriable
             val isRetriable = isRetryable(exception)

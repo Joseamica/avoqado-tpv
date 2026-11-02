@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.authentication.data.repository
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.data.dto.AuthResponseDto
 import com.jaac.avoqado_tpv.features.authentication.data.dto.RefreshTokenResponseDto
@@ -33,7 +34,7 @@ import retrofit2.Response
  * 4. ❌ Login without device activation → Validation error
  * 5. 🔐 Master TOTP login (8-digit code) → Uses master endpoint
  * 6. 🔄 Token refresh success → Saves new token
- * 7. ❌ Token refresh failure → Clears session
+ * 7. ❌ Token refresh failure → Clears session ONLY on 401/403 (503/red: la conserva)
  * 8. 🚪 Logout → Clears all session data
  * 9. ✅ isAuthenticated → Returns true when token exists
  */
@@ -311,6 +312,55 @@ class AuthRepositoryTest {
 
         // Then: Session was cleared
         verify { secureStorage.clearSession() }
+        val error = (result as Result.Error).exception
+        assertTrue("Expected HttpError 401", error is ApiException.HttpError && error.code == 401)
+    }
+
+    /** Un 403 del refresh también es "sesión muerta": se borra. */
+    @Test
+    fun `refreshAccessToken con 403 sí borra la sesion`() = runTest {
+        every { secureStorage.getRefreshToken() } returns testRefreshToken
+        every { secureStorage.getVenueId() } returns testVenueId
+        val errorBody = "Forbidden".toResponseBody("text/plain".toMediaTypeOrNull())
+        coEvery { apiService.refreshToken(testVenueId, any()) } returns Response.error(403, errorBody)
+
+        val result = authRepository.refreshAccessToken()
+
+        assertTrue("Expected error result", result is Result.Error)
+        verify(exactly = 1) { secureStorage.clearSession() }
+    }
+
+    /**
+     * Un 5xx del servidor (caído, desplegándose) NO es "sesión muerta": sin red el cajero no
+     * puede volver a entrar con PIN, así que la sesión se conserva y el error sube tal cual.
+     */
+    @Test
+    fun `refreshAccessToken con 503 no borra la sesion`() = runTest {
+        every { secureStorage.getRefreshToken() } returns testRefreshToken
+        every { secureStorage.getVenueId() } returns testVenueId
+        val errorBody = "Service Unavailable".toResponseBody("text/plain".toMediaTypeOrNull())
+        coEvery { apiService.refreshToken(testVenueId, any()) } returns Response.error(503, errorBody)
+
+        val result = authRepository.refreshAccessToken()
+
+        assertTrue("Expected error result", result is Result.Error)
+        val error = (result as Result.Error).exception
+        assertTrue("Expected HttpError 503", error is ApiException.HttpError && error.code == 503)
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    /** Una caída de red (excepción de E/S) tampoco borra la sesión. */
+    @Test
+    fun `refreshAccessToken sin red no borra la sesion`() = runTest {
+        every { secureStorage.getRefreshToken() } returns testRefreshToken
+        every { secureStorage.getVenueId() } returns testVenueId
+        coEvery { apiService.refreshToken(testVenueId, any()) } throws java.io.IOException("sin red")
+
+        val result = authRepository.refreshAccessToken()
+
+        assertTrue("Expected error result", result is Result.Error)
+        assertTrue((result as Result.Error).exception is ApiException.NetworkError)
+        verify(exactly = 0) { secureStorage.clearSession() }
     }
 
     /**
@@ -338,6 +388,24 @@ class AuthRepositoryTest {
 
         // Then: API was NOT called
         coVerify(exactly = 0) { apiService.refreshToken(any(), any()) }
+
+        // Then: Sin refresh token la sesión nunca podrá renovarse → se borra (va al PIN)
+        assertTrue(errorResult.exception is ApiException.ValidationError)
+        verify(exactly = 1) { secureStorage.clearSession() }
+    }
+
+    /** Sin venue ID guardado el refresh tampoco puede resolverse: error local y sesión borrada. */
+    @Test
+    fun `refreshAccessToken sin venue ID borra la sesion`() = runTest {
+        every { secureStorage.getRefreshToken() } returns testRefreshToken
+        every { secureStorage.getVenueId() } returns null
+
+        val result = authRepository.refreshAccessToken()
+
+        assertTrue("Expected error result", result is Result.Error)
+        assertTrue((result as Result.Error).exception is ApiException.ValidationError)
+        coVerify(exactly = 0) { apiService.refreshToken(any(), any()) }
+        verify(exactly = 1) { secureStorage.clearSession() }
     }
 
     // ═════════════════════════════════════════════════════════════════════════

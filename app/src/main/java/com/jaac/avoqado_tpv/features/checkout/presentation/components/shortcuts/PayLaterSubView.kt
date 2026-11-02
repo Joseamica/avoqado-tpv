@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
+import com.jaac.avoqado_tpv.features.checkout.domain.textoDelErrorParaElCajero
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import kotlinx.coroutines.launch
 
@@ -168,7 +169,7 @@ fun PayLaterSubView(
                             },
                             onFailure = { e ->
                                 isSubmitting = false
-                                error = e.message ?: "No se pudo crear la orden"
+                                error = textoDelErrorParaElCajero(e, "No se pudo crear la orden")
                             },
                         )
                     }

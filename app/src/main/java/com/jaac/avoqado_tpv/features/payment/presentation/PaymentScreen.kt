@@ -145,6 +145,8 @@ fun PaymentScreen(
     paymentSource: String? = null,  // "BLE" | "SOCKET" | null (direct)
     socketRequestId: String? = null,  // Request ID for Socket.IO result callback
     socketProcessedByStaffId: String? = null,
+    soloEfectivo: Boolean = false,  // 💵 D2: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar)
+    ventaLocalJson: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -220,6 +222,11 @@ fun PaymentScreen(
     // Pass kioskStaffId for sales attribution (commissions/tips)
     LaunchedEffect(isKioskPayment, kioskStaffId) {
         viewModel.setKioskPaymentMode(isKioskPayment, kioskStaffId)
+    }
+
+    // 💵 D2 «Cobrar sin red»: antes de llegar a «Método de pago» (lo lee proceedToMerchantSelection).
+    LaunchedEffect(soloEfectivo) {
+        viewModel.setSoloEfectivo(soloEfectivo)
     }
 
     // 📱 PORTABILIDAD: Set portabilidad mode for proof-of-sale photo count
@@ -539,7 +546,9 @@ fun PaymentScreen(
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
                         hideAccountSelector = hideKioskMerchantSelector,
                         // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
-                        routingBannerMessage = routingBanner
+                        routingBannerMessage = routingBanner,
+                        // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta, MSI y cripto en gris con el motivo)
+                        motivoSinTarjeta = currentState.motivoSinTarjeta,
                     )
                 }
 
@@ -563,7 +572,8 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, ventaLocalJson) {
+                        if (!viewModel.setVentaLocalJson(ventaLocalJson)) return@LaunchedEffect
                         // 💸 REFUND MODE: Process refund instead of payment
                         if (isRefundMode && refundAmount != null && originalPaymentId != null) {
                             Timber.i("💸 [PaymentScreen] Refund mode detected - starting refund for payment: $originalPaymentId")
@@ -727,6 +737,9 @@ fun PaymentScreen(
                     )
                 }
                 is PaymentState.Success -> {
+                    LaunchedEffect(currentState.referenceNumber) {
+                        viewModel.marcarExitoDeVentaLocalMostrado()
+                    }
                     // 🎉 Payment Success Flow:
                     // 1. Show "Aprobado" animation with confetti
                     // 2. After animation: show success content

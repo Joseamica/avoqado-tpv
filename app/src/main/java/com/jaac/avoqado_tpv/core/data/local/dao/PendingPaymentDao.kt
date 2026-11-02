@@ -6,6 +6,9 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.jaac.avoqado_tpv.features.payment.data.ledger.checkHandoff
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
+import com.jaac.avoqado_tpv.features.payment.data.ledger.HANDOFF_CONTRACT_CONFLICT
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 
 /**
@@ -36,6 +39,11 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  */
 @Dao
 interface PendingPaymentDao {
+    @Query("""UPDATE pending_payments SET order_wire_request_json = :wire WHERE venue_id = :venueId AND id = :id
+        AND claim_token = :token AND sync_status = 'SYNCING' AND order_request_json = :original
+        AND order_wire_request_json IS :previous""")
+    suspend fun guardarCopiaDeEnvio(venueId: String, id: Long, token: String, original: String, previous: String?, wire: String): Int
+
 
     /**
      * Insert a new pending payment.
@@ -47,19 +55,71 @@ interface PendingPaymentDao {
      * @return Row ID of inserted payment (0 if conflict)
      */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(payment: PendingPaymentEntity): Long
+    suspend fun insertRow(payment: PendingPaymentEntity): Long
+
+    @Query("""UPDATE payment_attempts SET last_error = CASE
+        WHEN instr(COALESCE(last_error,''), :reason) > 0 THEN last_error
+        ELSE substr(:reason || COALESCE(' | ' || last_error, ''), 1, 2000) END
+        WHERE venue_id = :venueId AND attempt_id = :key""")
+    suspend fun noteHandoffConflict(venueId: String, key: String, reason: String): Int
+
+    @Query("SELECT * FROM payment_attempts WHERE venue_id = :venueId AND attempt_id = :key LIMIT 1")
+    suspend fun ownerForHandoff(venueId: String, key: String): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity?
+
+    @Query("SELECT COUNT(*) FROM local_shift_sessions WHERE venue_id = :venueId AND local_session_id = :id AND local_status = 'OPEN'")
+    suspend fun sessionOpen(venueId: String, id: String): Int
+
+    @Query("""UPDATE payment_attempts SET state = 'ENTREGADA_A_COLA', state_version = state_version + 1, updated_at = :now
+        WHERE venue_id = :venueId AND attempt_id = :key AND state IN ('AUTORIZADO','HOST_RESPONDIO','REGISTRO_FALLIDO','INDETERMINADO')""")
+    suspend fun handoff(venueId: String, key: String, now: Long): Int
+
+    /** El anterior dueño sólo se entrega cuando su sucesor quedó en ESTA transacción. */
+    @Transaction
+    suspend fun insert(payment: PendingPaymentEntity): Long {
+        val owner = payment.idempotencyKey?.let { ownerForHandoff(payment.venueId, it) }
+        val originalStaff = owner?.let { runCatching { com.google.gson.JsonParser.parseString(it.paymentContextJson).asJsonObject.get("staffId")?.takeUnless { it.isJsonNull }?.asString }.getOrNull() }
+        val row = if (owner != null) payment.copy(staffId = originalStaff ?: payment.staffId, shiftMembership = owner.shiftMembership,
+            localShiftSessionId = owner.localShiftSessionId, cashDrawerSessionId = owner.cashDrawerSessionId) else payment
+        if (owner != null && payment.shiftMembership != "UNKNOWN") {
+            if (payment.shiftMembership != owner.shiftMembership || payment.localShiftSessionId != owner.localShiftSessionId ||
+                payment.cashDrawerSessionId != owner.cashDrawerSessionId) {
+                noteHandoffConflict(payment.venueId, owner.attemptId, "handoff_contrato_contradictorio:membership")
+                return HANDOFF_CONTRACT_CONFLICT
+            }
+        }
+        val contract = owner?.checkHandoff(row)
+        if (owner != null && contract?.conflict != null) {
+            noteHandoffConflict(payment.venueId, owner.attemptId, "handoff_contrato_contradictorio:${contract.conflict}")
+            return HANDOFF_CONTRACT_CONFLICT
+        }
+        val existing = findByReference(row.referenceNumber, row.venueId)
+        if (existing == null && owner == null && row.shiftMembership == "MANAGED") {
+            check(row.localShiftSessionId != null && sessionOpen(row.venueId, row.localShiftSessionId) == 1) { "La caja ya está cerrada en este aparato." }
+        }
+        val id = insertRow(row)
+        val identical = existing != null && !row.idempotencyKey.isNullOrBlank() && existing.idempotencyKey == row.idempotencyKey &&
+            existing.amount.toBigDecimal().compareTo(row.amount.toBigDecimal()) == 0 && existing.tip.toBigDecimal().compareTo(row.tip.toBigDecimal()) == 0 &&
+            existing.staffId == row.staffId && existing.orderId == row.orderId && existing.paymentProcessor == row.paymentProcessor &&
+            existing.terminalPaymentRequestId == row.terminalPaymentRequestId && existing.shiftMembership == row.shiftMembership &&
+            existing.localShiftSessionId == row.localShiftSessionId && existing.cashDrawerSessionId == row.cashDrawerSessionId
+        if (owner != null && contract?.proven == true && (id > 0 || identical)) {
+            if (existing?.syncStatus == "SUCCESS") acknowledgeOwner(row.venueId, owner.attemptId, System.currentTimeMillis())
+            else handoff(row.venueId, owner.attemptId, System.currentTimeMillis())
+        }
+        return id
+    }
 
     /**
      * Get all pending payments ordered by creation time (FIFO).
      *
      * **Use Case:** PaymentSyncWorker fetches these for retry
      *
-     * @return List of payments with status = PENDING, oldest first
+     * @return List of payments with status = PENDING, oldest first, incluidas las ventas locales con su pedido.
      */
     @Query("""
         SELECT * FROM pending_payments
         WHERE sync_status = 'PENDING'
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
     """)
     suspend fun getAllPending(): List<PendingPaymentEntity>
 
@@ -90,7 +150,38 @@ interface PendingPaymentDao {
             claimed_at = NULL
         WHERE id = :id AND claim_token = :token
     """)
-    suspend fun markSynced(id: Long, token: String): Int
+    suspend fun markSyncedRow(id: Long, token: String): Int
+
+    @Query("SELECT * FROM pending_payments WHERE id = :id AND claim_token = :token LIMIT 1")
+    suspend fun ownedRow(id: Long, token: String): PendingPaymentEntity?
+
+    @Query("""UPDATE payment_attempts SET state = 'REGISTRADO', state_version = state_version + 1, updated_at = :now
+        WHERE venue_id = :venueId AND attempt_id = :key AND state IN ('ENTREGADA_A_COLA','AUTORIZADO','HOST_RESPONDIO','REGISTRO_FALLIDO','INDETERMINADO')""" +
+        " AND NOT " + PaymentAttemptEntity.SQL_REGISTRO_POR_VEREDICTO)
+    suspend fun acknowledgeOwnerRow(venueId: String, key: String, now: Long): Int
+
+    @Query("SELECT * FROM pending_payments WHERE venue_id = :venueId AND idempotency_key = :key LIMIT 2")
+    suspend fun queuedSalesForAcknowledgement(venueId: String, key: String): List<PendingPaymentEntity>
+
+    @Transaction
+    suspend fun acknowledgeOwner(venueId: String, key: String, now: Long): Int {
+        val owner = ownerForHandoff(venueId, key) ?: return 0
+        val row = queuedSalesForAcknowledgement(venueId, key).singleOrNull()
+        val contract = row?.let { owner.checkHandoff(it) }
+        if (row?.syncStatus != "SUCCESS" || contract?.proven != true) {
+            noteHandoffConflict(venueId, key, "handoff_contrato_contradictorio:${contract?.conflict ?: "unproven"}")
+            return 0
+        }
+        return acknowledgeOwnerRow(venueId, key, now)
+    }
+
+    @Transaction
+    suspend fun markSynced(id: Long, token: String): Int {
+        val row = ownedRow(id, token) ?: return 0
+        val changed = markSyncedRow(id, token)
+        if (changed == 1) row.idempotencyKey?.let { acknowledgeOwner(row.venueId, it, System.currentTimeMillis()) }
+        return changed
+    }
 
     /**
      * Update retry count and last error message after failed attempt, WITHOUT clearing the
@@ -153,6 +244,53 @@ interface PendingPaymentDao {
     """)
     suspend fun getPendingCount(): Int
 
+    /** Efectivo nuevo y legacy del negocio, con la misma semántica de prefijos que QueuedPayment.isCash. */
+    @Query("""
+        SELECT COUNT(*) FROM pending_payments
+        WHERE venue_id = :venueId AND sync_status IN ('PENDING', 'SYNCING')
+        AND (UPPER(reference_number) LIKE 'CASH-%' OR UPPER(authorization_number) LIKE 'EFECTIVO%')
+    """)
+    fun contarVentasGuardadas(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+
+    @Query("""
+        SELECT COUNT(*) FROM pending_payments
+        WHERE venue_id = :venueId AND (sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0
+    """)
+    fun contarConProblema(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+
+    /** Todas las obligaciones del negocio, también legacy y de otros turnos/métodos. No hidrata la cola para cerrar. */
+    @Query("""
+        SELECT COUNT(*) FROM pending_payments
+        WHERE venue_id = :venueId AND (sync_status IN ('PENDING', 'SYNCING')
+            OR ((sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0))
+    """)
+    suspend fun contarBloqueanCierre(venueId: String): Int
+
+    /** Página acotada; el total se consulta aparte y el id desambigua fechas iguales. */
+    @Query("""
+        SELECT * FROM pending_payments
+        WHERE venue_id = :venueId AND (sync_status IN ('PENDING', 'SYNCING')
+            OR ((sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0))
+        ORDER BY created_at ASC, id ASC, id ASC LIMIT 20 OFFSET :offset
+    """)
+    suspend fun bloqueanCierre(venueId: String, offset: Int): List<PendingPaymentEntity>
+
+    @Query("""SELECT EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId
+        AND (idempotency_key = :key OR reference_number = :reference) LIMIT 1)""")
+    suspend fun tieneDueno(venueId: String, key: String?, reference: String): Boolean
+
+    @Query("SELECT * FROM pending_payments WHERE id = :id AND venue_id = :venueId LIMIT 1")
+    suspend fun leerParaReconocer(id: Long, venueId: String): PendingPaymentEntity?
+
+    /** El mismo UPDATE veta un snapshot viejo: PENDING/SYNCING nunca se pueden dar por revisadas. */
+    @Query("""
+        UPDATE pending_payments SET acknowledged = 1, acknowledged_by = :staffId, acknowledged_at = :now
+        WHERE id = :id AND venue_id = :venueId AND acknowledged = 0
+            AND sync_status NOT IN ('PENDING', 'SYNCING') AND (sync_status = 'FAILED' OR requiere_revision = 1)
+            AND :staffId IS NOT NULL AND LENGTH(TRIM(:staffId)) > 0
+    """)
+    suspend fun reconocer(id: Long, venueId: String, staffId: String?, now: Long): Int
+
     /**
      * Get count of failed payments (for UI warning).
      *
@@ -171,12 +309,15 @@ interface PendingPaymentDao {
      *
      * **Use Case:** Prevent database bloat from old successful syncs
      *
+     * Nunca borra una venta que subió con diferencia de cobro (`requiere_revision`) mientras nadie la marque «Revisado» (v43).
+     *
      * @param timestampMs Unix timestamp (e.g., 7 days ago)
      */
     @Query("""
         DELETE FROM pending_payments
         WHERE sync_status = 'SUCCESS'
         AND created_at < :timestampMs
+        AND NOT (requiere_revision = 1 AND acknowledged = 0)
     """)
     suspend fun deleteOldSyncedPayments(timestampMs: Long)
 
@@ -255,7 +396,7 @@ interface PendingPaymentDao {
      */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'PENDING', retry_count = 0
+        SET sync_status = 'PENDING', retry_count = 0, acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
         WHERE sync_status = 'FAILED' AND permanent = 0
     """)
     suspend fun resetAllFailed(): Int
@@ -274,7 +415,7 @@ interface PendingPaymentDao {
      */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'PENDING', retry_count = 0, permanent = 0
+        SET sync_status = 'PENDING', retry_count = 0, permanent = 0, acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
         WHERE sync_status = 'FAILED'
     """)
     suspend fun resetAllFailedIncludingPermanent(): Int
@@ -308,24 +449,34 @@ interface PendingPaymentDao {
      */
     @Transaction
     suspend fun claimBatch(limit: Int, token: String, now: Long, staleBefore: Long): List<PendingPaymentEntity> {
+        normalizarClaimsFuturos(now, staleBefore)
         markClaimed(limit, token, now, staleBefore)
         return getClaimed(token)
     }
 
+    // Una corrección grande del reloj conserva el dueño y le da un lease completo antes del relevo.
+    @Query("""
+        UPDATE pending_payments SET claimed_at = :now
+        WHERE sync_status = 'SYNCING' AND claimed_at > :now + (:now - :staleBefore)
+    """)
+    suspend fun normalizarClaimsFuturos(now: Long, staleBefore: Long)
+
+    /** Incluye ventas locales: el worker las sube con su pedido antes de registrar el pago. */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'SYNCING', claim_token = :token, claimed_at = :now
+        SET sync_status = 'SYNCING', claim_token = :token, claimed_at = :now,
+            acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
         WHERE id IN (
             SELECT id FROM pending_payments
-            WHERE sync_status = 'PENDING'
-               OR (sync_status = 'SYNCING' AND claimed_at IS NOT NULL AND claimed_at < :staleBefore)
-            ORDER BY created_at ASC
+            WHERE (sync_status = 'PENDING'
+               OR (sync_status = 'SYNCING' AND claimed_at IS NOT NULL AND claimed_at < :staleBefore))
+            ORDER BY created_at ASC, id ASC
             LIMIT :limit
         )
     """)
     suspend fun markClaimed(limit: Int, token: String, now: Long, staleBefore: Long)
 
-    @Query("SELECT * FROM pending_payments WHERE claim_token = :token ORDER BY created_at ASC")
+    @Query("SELECT * FROM pending_payments WHERE claim_token = :token ORDER BY created_at ASC, id ASC")
     suspend fun getClaimed(token: String): List<PendingPaymentEntity>
 
     /**
@@ -356,4 +507,38 @@ interface PendingPaymentDao {
         WHERE id = :id AND claim_token = :token
     """)
     suspend fun release(id: Long, token: String, retryCount: Int, error: String): Int
+
+    /**
+     * «Cobrar» sin red: la pantalla de éxito de una venta local llegó a verse. Las filas con `exito_mostrado = 0` al volver a abrir la
+     * app avisan que la venta ya quedó cobrada y guardada. Devuelve las filas afectadas (0 = no hay fila con esa llave).
+     */
+    @Query("UPDATE pending_payments SET exito_mostrado = 1 WHERE idempotency_key = :idempotencyKey")
+    suspend fun marcarExitoMostrado(idempotencyKey: String): Int
+
+    /** Orden y evidencia de revision juntas, conservando el claim y cualquier revision previa. */
+    @Query("""
+        UPDATE pending_payments
+        SET order_id = :orderId,
+            order_number = :orderNumber,
+            acknowledged = CASE WHEN :requiereRevision AND requiere_revision = 0 THEN 0 ELSE acknowledged END,
+            acknowledged_by = CASE WHEN :requiereRevision AND requiere_revision = 0 THEN NULL ELSE acknowledged_by END,
+            acknowledged_at = CASE WHEN :requiereRevision AND requiere_revision = 0 THEN NULL ELSE acknowledged_at END,
+            requiere_revision = CASE WHEN :requiereRevision OR requiere_revision = 1 THEN 1 ELSE 0 END,
+            last_error = CASE WHEN :requiereRevision OR requiere_revision = 1
+                THEN 'DIFERENCIA_DE_COBRO: revisa los renglones y el importe de la venta guardada'
+                ELSE last_error END
+        WHERE id = :id AND claim_token = :claimToken
+    """)
+    suspend fun guardarOrdenDeVentaGuardada(id: Long, claimToken: String, orderId: String, orderNumber: String?, requiereRevision: Boolean): Int
+
+    @Query("""
+        SELECT * FROM pending_payments
+        WHERE venue_id = :venueId AND exito_mostrado = 0 AND order_request_json IS NOT NULL
+        ORDER BY created_at DESC, id DESC LIMIT 1
+    """)
+    suspend fun ultimaVentaSinMostrar(venueId: String): PendingPaymentEntity?
+
+    /** ¿La venta del carrito ya tiene una fila durable? No restaurarla como si siguiera sin cobrar. */
+    @Query("SELECT EXISTS(SELECT 1 FROM pending_payments WHERE idempotency_key = :idempotencyKey)")
+    suspend fun existeFilaConLlave(idempotencyKey: String): Boolean
 }

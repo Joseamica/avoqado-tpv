@@ -34,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
@@ -79,6 +80,9 @@ fun MerchantSelectionContent(
     // T26: el efectivo puede tener su propio bloqueo (AngelPay: la auth en fondo no lo apaga).
     // Por default es el mismo que el de la tarjeta → Blumon y el kiosco quedan idénticos.
     cashSwitchingLoading: Boolean = merchantSwitchingLoading,
+    // 💵 D2 «Cobrar sin red» (21-oct-2026): no nulo ⇒ sólo efectivo. Tarjeta, MSI y cripto en gris con este
+    // texto debajo; el efectivo sigue encendido y la lista de cuentas no se muestra (el efectivo no la usa).
+    motivoSinTarjeta: String? = null,
 ) {
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
@@ -141,7 +145,7 @@ fun MerchantSelectionContent(
 
                     // 🥝 KIOSK: When hideAccountSelector=true, show simplified UI (no merchant list)
                     // This is used in kiosk mode when admin has pre-configured a default merchant
-                    val showSimplifiedView = merchants.size <= 1 || hideAccountSelector
+                    val showSimplifiedView = merchants.size <= 1 || hideAccountSelector || motivoSinTarjeta != null
 
                     if (showSimplifiedView) {
                         // ✅ SINGLE MERCHANT: Modern fintech-style payment card
@@ -363,7 +367,7 @@ fun MerchantSelectionContent(
 
                     // Segmented button group
                     val buttonShape = RoundedCornerShape(12.dp)
-                    val cardEnabled = !merchantSwitchingLoading && currentMerchant != null
+                    val cardEnabled = motivoSinTarjeta == null && !merchantSwitchingLoading && currentMerchant != null
                     val cashEnabled = !cashSwitchingLoading
                     val enabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant
                     val disabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -473,7 +477,7 @@ fun MerchantSelectionContent(
                         if (showCryptoOption) {
                             // Disabled look when below min amount OR switching merchant — but stays
                             // tappable below min so we can surface the explanatory dialog.
-                            val cryptoLooksEnabled = !merchantSwitchingLoading && cryptoMeetsMinAmount
+                            val cryptoLooksEnabled = motivoSinTarjeta == null && !merchantSwitchingLoading && cryptoMeetsMinAmount
                             // Crypto payment button
                             Box(
                                 modifier = Modifier
@@ -484,7 +488,7 @@ fun MerchantSelectionContent(
                                         if (cryptoLooksEnabled) enabledMethodBackground
                                         else disabledMethodBackground
                                     )
-                                    .clickable(enabled = !merchantSwitchingLoading) {
+                                    .clickable(enabled = motivoSinTarjeta == null && !merchantSwitchingLoading) {
                                         if (cryptoMeetsMinAmount) {
                                             onStartCryptoPayment()
                                         } else {
@@ -517,6 +521,17 @@ fun MerchantSelectionContent(
                                 }
                             }
                         }
+                    }
+
+                    // 💵 D2: por qué la tarjeta está en gris. Estado normal, no error: nunca en rojo.
+                    motivoSinTarjeta?.let { motivo ->
+                        Text(
+                            text = motivo,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(sizes.spacingMedium))

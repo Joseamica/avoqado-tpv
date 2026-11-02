@@ -19,7 +19,7 @@ import retrofit2.Response
 
 /**
  * La «llave de órdenes» rechazada (401 en `tpv/commands/ready`) se repara dándola de alta otra vez con la sesión del cajero,
- * una sola vez por proceso: el latido llama esto seguido y antes se volvía un bucle con «Verificando sesión...» encima.
+ * una sola vez por proceso, cuando el servidor sí contestó: el latido llama esto seguido y antes se volvía un bucle con «Verificando sesión...» encima.
  */
 class HeartbeatRepositoryLlaveDeOrdenesTest {
     private val api = mockk<ApiService>()
@@ -90,6 +90,33 @@ class HeartbeatRepositoryLlaveDeOrdenesTest {
         every { storage.getToken() } returns "jwt-del-cajero"
         assertTrue(repo.commandsReady(serial) is Result.Success)
         coVerify(exactly = 1) { api.provisionCommandCredential(any()) }
+    }
+
+    @Test
+    fun `una falla de red al pedir la llave no gasta el intento`() = runBlocking {
+        coEvery { api.commandsReady(any()) } returnsMany listOf(rechazo, rechazo, sinOrdenes)
+        coEvery { api.provisionCommandCredential(any()) } throws java.io.IOException("sin red") andThen alta
+
+        assertTrue(repo.commandsReady(serial) is Result.Error)
+        assertTrue(repo.commandsReady(serial) is Result.Success)
+
+        coVerify(exactly = 2) { api.provisionCommandCredential(any()) }
+    }
+
+    @Test
+    fun `un 503 o un 401 al pedir la llave no gastan el intento`() = runBlocking {
+        coEvery { api.commandsReady(any()) } returnsMany listOf(rechazo, rechazo, rechazo, sinOrdenes)
+        coEvery { api.provisionCommandCredential(any()) } returnsMany listOf(
+            Response.error(503, "".toResponseBody(null)),
+            Response.error(401, "".toResponseBody(null)),
+            alta,
+        )
+
+        assertTrue(repo.commandsReady(serial) is Result.Error)
+        assertTrue(repo.commandsReady(serial) is Result.Error)
+        assertTrue(repo.commandsReady(serial) is Result.Success)
+
+        coVerify(exactly = 3) { api.provisionCommandCredential(any()) }
     }
 
     @Test

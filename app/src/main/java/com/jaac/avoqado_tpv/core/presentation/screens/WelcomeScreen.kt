@@ -1199,7 +1199,7 @@ internal fun WelcomeScreenContent(
             // 🥝 Kiosk Mode Toggle - same permission as Settings
             // kioskModeAvailable: controlled from dashboard TpvSettings (shows/hides the toggle)
             // isKioskModeEnabled: local state (whether kiosk mode is currently active)
-            kioskModeAvailable = tpvSettings.kioskModeEnabled,
+            kioskModeAvailable = com.jaac.avoqado_tpv.core.data.manager.MODO_KIOSCO_DISPONIBLE && tpvSettings.kioskModeEnabled,
             isKioskModeEnabled = isKioskModeEnabled,
             onKioskModeToggle = if (hasSettingsAccess) {
                 {

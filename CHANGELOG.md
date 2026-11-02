@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[Pruebas] `ShiftPaymentBarrierRoomTest` ya no se cuelga de vez en cuando**: el ViewModel de Caja corría en los hilos de Room con `UnconfinedTestDispatcher` y dos corrutinas podían cruzar sus escrituras del estado (1 minuto colgada, 2 de 100 con la CPU ocupada). Ahora corre en un solo hilo con `StandardTestDispatcher`, como en la terminal. Sólo cambia la prueba
+
 ---
 
 ## [2.14.0] - 2026-11-02

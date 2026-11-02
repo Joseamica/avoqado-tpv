@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **[Reportes] Los reportes de días anteriores ya no piden plan**: cambiar de día, la comparación y la pestaña Historial pedían «Plan Pro» y, pasada la medianoche, un negocio sin plan ya no podía ver lo que vendió ayer (founder, 2-nov). Ahora todos los reportes de la terminal se ven en cualquier plan
+
 ### **Fixed**
 - **[Pruebas] `ShiftPaymentBarrierRoomTest` ya no se cuelga de vez en cuando**: el ViewModel de Caja corría en los hilos de Room con `UnconfinedTestDispatcher` y dos corrutinas podían cruzar sus escrituras del estado (1 minuto colgada, 2 de 100 con la CPU ocupada). Ahora corre en un solo hilo con `StandardTestDispatcher`, como en la terminal. Sólo cambia la prueba
 

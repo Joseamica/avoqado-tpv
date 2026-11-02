@@ -109,6 +109,15 @@ class TokenAuthenticator @Inject constructor(
     }
 
     /**
+     * Las rutas de órdenes remotas que entran con la «llave de órdenes» (`X-TPV-Command-Token`). Si la trae, el servidor no mira la
+     * sesión: su 401 dice que la LLAVE no coincide, no que venció la sesión del cajero. Renovar la sesión no lo arregla y reintentar
+     * con la misma llave era un bucle con «Verificando sesión...» encima. Lo repara `HeartbeatRepository.commandsReady`.
+     */
+    private fun esRechazoDeLaLlaveDeOrdenes(request: Request): Boolean =
+        request.header("X-TPV-Command-Token") != null &&
+            listOf("/tpv/commands/ready", "/tpv/commands/permit", "/tpv/command-ack").any { request.url.encodedPath.endsWith(it) }
+
+    /**
      * Called by OkHttp when a request receives 401 Unauthorized.
      *
      * **Return values:**
@@ -133,6 +142,11 @@ class TokenAuthenticator @Inject constructor(
         if (isAuthEndpoint(response.request)) {
             Timber.d("🔐 [Auth] 401 on auth endpoint (${response.request.url.encodedPath}) - skipping token refresh")
             return null  // Let the error propagate to LoginViewModel
+        }
+
+        if (esRechazoDeLaLlaveDeOrdenes(response.request)) {
+            Timber.w("🔑 [Auth] 401 de la llave de órdenes en ${response.request.url.encodedPath}: no se renueva la sesión")
+            return null
         }
 
         Timber.w("⚠️ [Auth] Received 401 Unauthorized - Token expired, attempting refresh...")

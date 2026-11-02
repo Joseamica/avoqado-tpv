@@ -100,6 +100,15 @@ class HeartbeatRepository @Inject constructor(
         Result.Error(ApiException.NetworkError(e))
     }
 
+    @Volatile private var llaveDeOrdenesReparada = false
+
+    private suspend fun darDeAltaLaLlaveDeOrdenes(terminalId: String): Boolean {
+        val commandToken = apiService.provisionCommandCredential(mapOf("terminalId" to terminalId)).body()?.commandToken ?: return false
+        secureStorage.putStringDurably("tpv_command_token", commandToken)
+        secureStorage.putStringDurably("tpv_command_enrolled", "true")
+        return true
+    }
+
     // Event-triggered only: safe foreground, network recovery or socket notification.
     suspend fun commandsReady(terminalId: String): Result<List<PendingCommandDto>> = try {
         if (secureStorage.getString("tpv_command_enrolled") != "true" && secureStorage.getToken() != null) {
@@ -107,13 +116,17 @@ class HeartbeatRepository @Inject constructor(
                 val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
                 secureStorage.putStringDurably("tpv_command_token", bytes.joinToString("") { "%02x".format(it) })
             }
-            val credential = apiService.provisionCommandCredential(mapOf("terminalId" to terminalId))
-            credential.body()?.commandToken?.let {
-                secureStorage.putStringDurably("tpv_command_token", it)
-                secureStorage.putStringDurably("tpv_command_enrolled", "true")
+            darDeAltaLaLlaveDeOrdenes(terminalId)
+        }
+        var response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
+        // 401 = la llave de órdenes no coincide con el servidor (base restaurada, otra app en la terminal). Con la sesión del cajero se da
+        // de alta otra vez, una sola vez por proceso: el latido llama esto seguido y, si no se arregla, se calla hasta el siguiente arranque.
+        if (response.code() == 401 && !llaveDeOrdenesReparada && secureStorage.getToken() != null) {
+            llaveDeOrdenesReparada = true
+            if (darDeAltaLaLlaveDeOrdenes(terminalId)) {
+                response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
             }
         }
-        val response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
         if (response.isSuccessful && response.body() != null) Result.Success(response.body()!!.pendingCommands)
         else Result.Error(ApiException.HttpError(response.code(), "No se pudieron recuperar los comandos"))
     } catch (e: Exception) {

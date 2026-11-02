@@ -331,29 +331,32 @@ fun SettingsScreen(
                 // ═══════════════════════════════════════════════════════════════
                 // KIOSK MODE FUNCTIONALITY
                 // ═══════════════════════════════════════════════════════════════
-                item {
-                    CollapsibleSection(
-                        title = "Modo Kiosko",
-                        icon = Icons.Outlined.Storefront,
-                        subtitle = "Funcionalidad de autoservicio",
-                        expanded = kioskExpanded,
-                        onToggle = { kioskExpanded = !kioskExpanded }
-                    ) {
-                        SettingsToggleRow(
-                            label = "Habilitar Kiosko",
-                            description = "Permite activar modo autoservicio en este terminal",
-                            enabled = state.tpvSettings.kioskModeEnabled,
-                            isSaving = state.isSaving,
-                            onToggle = { viewModel.toggleKioskModeEnabled() }
-                        )
-                        // Only show merchant dropdown when kiosk is enabled
-                        if (state.tpvSettings.kioskModeEnabled) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            MerchantDropdownRow(
-                                merchants = state.merchants,
-                                selectedMerchantId = state.tpvSettings.kioskDefaultMerchantId,
-                                onMerchantSelected = { viewModel.setKioskDefaultMerchant(it) }
+                // Legacy desde el 2-nov-2026: ver MODO_KIOSCO_DISPONIBLE (KioskModeManager.kt).
+                if (com.jaac.avoqado_tpv.core.data.manager.MODO_KIOSCO_DISPONIBLE) {
+                    item {
+                        CollapsibleSection(
+                            title = "Modo Kiosko",
+                            icon = Icons.Outlined.Storefront,
+                            subtitle = "Funcionalidad de autoservicio",
+                            expanded = kioskExpanded,
+                            onToggle = { kioskExpanded = !kioskExpanded }
+                        ) {
+                            SettingsToggleRow(
+                                label = "Habilitar Kiosko",
+                                description = "Permite activar modo autoservicio en este terminal",
+                                enabled = state.tpvSettings.kioskModeEnabled,
+                                isSaving = state.isSaving,
+                                onToggle = { viewModel.toggleKioskModeEnabled() }
                             )
+                            // Only show merchant dropdown when kiosk is enabled
+                            if (state.tpvSettings.kioskModeEnabled) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                MerchantDropdownRow(
+                                    merchants = state.merchants,
+                                    selectedMerchantId = state.tpvSettings.kioskDefaultMerchantId,
+                                    onMerchantSelected = { viewModel.setKioskDefaultMerchant(it) }
+                                )
+                            }
                         }
                     }
                 }

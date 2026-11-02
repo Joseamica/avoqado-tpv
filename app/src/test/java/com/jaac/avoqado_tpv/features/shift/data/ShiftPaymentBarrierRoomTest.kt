@@ -51,7 +51,12 @@ import retrofit2.Response
 @Config(manifest = Config.NONE, application = Application::class, sdk = [28])
 class ShiftPaymentBarrierRoomTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
-    @get:Rule val main = MainDispatcherRule()
+    // D6 (2-nov-2026): el ViewModel corre en UN solo hilo, como en la terminal (Dispatchers.Main). Con el
+    // UnconfinedTestDispatcher, sus corrutinas seguían en los hilos de Room y podían correr a la vez y
+    // cruzar sus escrituras del estado: la prueba se colgaba 1 minuto (2 de 100 con la CPU
+    // ocupada; una vez en el CI del PR #6). StandardTestDispatcher comparte el reloj de runTest y las
+    // corre una tras otra en el hilo de la prueba; los ganchos de Room siguen disparando a media consulta.
+    @get:Rule val main = MainDispatcherRule(kotlinx.coroutines.test.StandardTestDispatcher())
     @Volatile private var duringQuery: (String) -> Unit = {}
     @Volatile private var sessionVenue: String? = "v1"
     @Volatile private var kioskVenue: String? = null

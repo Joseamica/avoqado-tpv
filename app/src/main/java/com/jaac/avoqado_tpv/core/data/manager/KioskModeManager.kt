@@ -11,6 +11,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Modo kiosco: LEGACY desde el 2-nov-2026 (founder: «nadie lo usa y nadie está interesado»).
+ * Se quitaron de la terminal los dos botones para entrar: el «Modo Kiosk» del menú de opciones del inicio y la
+ * sección «Modo Kiosko» de Configuración. El código del kiosco se queda tal cual, y una terminal que ya estuviera
+ * en kiosco sigue saliendo con su PIN. Para retomarlo, basta con poner esto en `true`.
+ */
+const val MODO_KIOSCO_DISPONIBLE = false
+
+/**
  * Kiosk Mode Manager - Self-Service Terminal State Management
  *
  * **WHY**: Provides centralized state management for kiosk/self-service mode.

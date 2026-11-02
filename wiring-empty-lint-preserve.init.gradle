@@ -1,0 +1,5 @@
+gradle.buildFinished {
+    def dest = new File('/tmp/avq-wiring-empty-lint-01a16484-20261101')
+    dest.mkdirs()
+    copy { from new File(gradle.rootProject.projectDir, 'app/build/reports'); include 'lint-results*'; into dest }
+}

@@ -98,21 +98,40 @@ fun ShortcutsGridView(
     // discount form. Cortesía, cupones and predefined discounts stay open.
     // Default false → fail open, behaves as today.
     manualDiscountPlanLocked: Boolean = false,
+    sinRed: Boolean = false,
+    canCompItems: Boolean = false,
+    canApplyDiscount: Boolean = false,
+    errorCatalogo: String? = null,
+    isLoading: Boolean = false,
+    onRetry: () -> Unit = {},
 ) {
     var screen by remember { mutableStateOf(ShortcutsScreen.MAIN) }
 
+    LaunchedEffect(sinRed, canCompItems, canApplyDiscount) {
+        if ((sinRed && screen in listOf(ShortcutsScreen.COUPON, ShortcutsScreen.PAY_LATER)) ||
+            (!canCompItems && screen == ShortcutsScreen.CORTESIA) ||
+            (!canApplyDiscount && screen == ShortcutsScreen.DISCOUNT)) screen = ShortcutsScreen.MAIN
+    }
+
     when (screen) {
-        ShortcutsScreen.MAIN -> ShortcutsMainGrid(
-            cartIsEmpty = cartState.isEmpty,
-            shortcuts = shortcuts,
-            onShortcutTap = onShortcutTap,
-            onConfigureTap = onConfigureTap,
-            onNavigate = { screen = it },
-            snackbarHostState = snackbarHostState,
-            modifier = modifier,
-        )
+        ShortcutsScreen.MAIN -> Column(modifier = modifier.fillMaxSize()) {
+            AvisoDeCatalogo(errorCatalogo = errorCatalogo, isLoading = isLoading, onRetry = onRetry)
+            ShortcutsMainGrid(
+                cartIsEmpty = cartState.isEmpty,
+                sinRed = sinRed,
+                canCompItems = canCompItems,
+                canApplyDiscount = canApplyDiscount,
+                shortcuts = shortcuts,
+                onShortcutTap = onShortcutTap,
+                onConfigureTap = onConfigureTap,
+                onNavigate = { screen = it },
+                snackbarHostState = snackbarHostState,
+                modifier = Modifier.weight(1f),
+            )
+        }
         ShortcutsScreen.CORTESIA -> CortesiaSubView(
             cartState = cartState,
+            canCompItems = canCompItems,
             onApply = onApplyCortesia,
             onRemove = onRemoveCortesia,
             onBack = { screen = ShortcutsScreen.MAIN },
@@ -161,6 +180,9 @@ enum class ShortcutsScreen { MAIN, CORTESIA, DISCOUNT, COUPON, VOID, PAY_LATER }
 @Composable
 private fun ShortcutsMainGrid(
     cartIsEmpty: Boolean,
+    sinRed: Boolean,
+    canCompItems: Boolean,
+    canApplyDiscount: Boolean,
     shortcuts: List<MosaicShortcut>,
     onShortcutTap: (MosaicShortcut) -> Unit,
     onConfigureTap: () -> Unit,
@@ -256,8 +278,15 @@ private fun ShortcutsMainGrid(
         }
 
         items(items = actionTiles, key = { "action_${it.label}" }) { tile ->
+            val bloqueo = when {
+                sinRed && tile.screen in listOf(ShortcutsScreen.COUPON, ShortcutsScreen.PAY_LATER) -> "Necesita internet"
+                !canCompItems && tile.screen == ShortcutsScreen.CORTESIA -> "Sin permiso"
+                !canApplyDiscount && tile.screen == ShortcutsScreen.DISCOUNT -> "Sin permiso"
+                else -> null
+            }
             ActionTileView(
                 tile = tile,
+                bloqueo = bloqueo,
                 onTap = {
                     when {
                         tile.pronto -> {
@@ -303,14 +332,14 @@ private fun SectionHeader(title: String) {
 }
 
 @Composable
-private fun ActionTileView(tile: ActionTile, onTap: () -> Unit) {
+private fun ActionTileView(tile: ActionTile, bloqueo: String?, onTap: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(RoundedCornerShape(10.dp))
-            .background(tile.tint)
-            .clickable(onClick = onTap),
+            .background(if (bloqueo == null) tile.tint else MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(enabled = bloqueo == null, onClick = onTap),
     ) {
         // "Pronto" pill — top-right, like avoqado-android's "Gift Card / Pronto" tile.
         if (tile.pronto) {
@@ -341,15 +370,15 @@ private fun ActionTileView(tile: ActionTile, onTap: () -> Unit) {
             Icon(
                 imageVector = tile.icon,
                 contentDescription = null,
-                tint = Color.White,
+                tint = if (bloqueo == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
             )
             Text(
-                text = tile.label,
+                text = if (bloqueo == null) tile.label else "${tile.label}\n$bloqueo",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
-                maxLines = 2,
+                color = if (bloqueo == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
         }

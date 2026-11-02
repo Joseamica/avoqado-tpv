@@ -57,7 +57,7 @@ class EvidenciaDurableDelServidorRoomTest {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         dao = db.paymentAttemptDao()
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         coordinator = RemotePaymentCoordinator(inbox)
         ledger = PaymentAttemptLedger(dao, mockk(relaxed = true))
         recovery = LedgerServerRecovery(dao, ledger, api)

@@ -221,6 +221,8 @@ class BlumonSaleReferenceTest {
 
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
+            // D2: el ViewModel sigue el estado de conexión mientras «Método de pago» está a la vista.
+            every { connectionState } returns MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
         }
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
@@ -299,7 +301,10 @@ class BlumonSaleReferenceTest {
             ),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
-            appContext = mockAppContext
+            appContext = mockAppContext,
+            ventaLocalRepository = mockk(relaxed = true),
+            pendingPaymentDao = mockk(relaxed = true),
+            subirVentaGuardadaUseCase = mockk(relaxed = true),
         )
     }
 

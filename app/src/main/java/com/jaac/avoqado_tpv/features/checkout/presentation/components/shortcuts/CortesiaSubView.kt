@@ -60,6 +60,7 @@ fun CortesiaSubView(
     onRemove: (itemId: String) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    canCompItems: Boolean = false,
 ) {
     var pendingApplyItem by remember { mutableStateOf<CartItem?>(null) }
     var pendingRemoveItem by remember { mutableStateOf<CartItem?>(null) }
@@ -83,6 +84,7 @@ fun CortesiaSubView(
             items(items = cartState.items, key = { it.id }) { item ->
                 CortesiaRow(
                     item = item,
+                    canCompItems = canCompItems,
                     onTap = {
                         when {
                             item.isCortesia -> pendingRemoveItem = item
@@ -97,7 +99,7 @@ fun CortesiaSubView(
         }
     }
 
-    pendingApplyItem?.let { item ->
+    if (canCompItems) pendingApplyItem?.let { item ->
         ReasonDialog(
             item = item,
             onDismiss = { pendingApplyItem = null },
@@ -108,7 +110,7 @@ fun CortesiaSubView(
         )
     }
 
-    pendingRemoveItem?.let { item ->
+    if (canCompItems) pendingRemoveItem?.let { item ->
         AlertDialog(
             onDismissRequest = { pendingRemoveItem = null },
             title = { Text("Quitar cortesía") },
@@ -127,7 +129,7 @@ fun CortesiaSubView(
 }
 
 @Composable
-private fun CortesiaRow(item: CartItem, onTap: () -> Unit) {
+private fun CortesiaRow(item: CartItem, canCompItems: Boolean, onTap: () -> Unit) {
     val hasItemDiscount = item.itemDiscountId != null && !item.isCortesia
     val accent = if (item.isCortesia) Color(0xFF4CAF50) else MaterialTheme.colorScheme.outlineVariant
 
@@ -139,7 +141,7 @@ private fun CortesiaRow(item: CartItem, onTap: () -> Unit) {
                 if (item.isCortesia) Color(0xFF4CAF50).copy(alpha = 0.08f)
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
             )
-            .clickable(enabled = !hasItemDiscount, onClick = onTap)
+            .clickable(enabled = canCompItems && !hasItemDiscount, onClick = onTap)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -160,6 +162,7 @@ private fun CortesiaRow(item: CartItem, onTap: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             when {
+                !canCompItems -> Text("Sin permiso", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 item.isCortesia -> Text(
                     text = "Cortesía: ${item.cortesiaReason ?: "—"}",
                     style = MaterialTheme.typography.labelSmall,

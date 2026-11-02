@@ -14,6 +14,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueReposi
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
+import com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -45,7 +46,7 @@ import timber.log.Timber
  * 1. PaymentSyncScheduler.start() → Enqueues periodic work
  * 2. WorkManager triggers every 15 minutes (or on-demand via runNow())
  * 3. Worker claims a batch from PaymentQueueRepository (claimBatch — F-8, other workers can't take the same rows)
- * 4. Worker attempts each payment ONCE via RecordPaymentUseCase (F-9 — no retry loop in this worker)
+ * 4. Worker attempts each payment ONCE: SubirVentaGuardadaUseCase para ventas con pedido, RecordPaymentUseCase para las demás
  * 5. On success → markSynced() and continue to next payment
  * 6. On a TRANSIENT failure → release() with incremented retry count (returns the row to
  *    PENDING, clears the claim, so the NEXT trigger picks it up)
@@ -102,6 +103,10 @@ class PaymentSyncWorker @AssistedInject constructor(
     private val refundQueueRepository: RefundQueueRepository,
     /** Checkpoint 2 (E5): el 2xx del replay se aplica como VEREDICTO en la libreta ANTES de dar por consumida la fila. */
     private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
+    private val subirVentaGuardadaUseCase: SubirVentaGuardadaUseCase,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository? = null,
+    private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
+    private val tableSyncCoordinator: com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator,
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -167,6 +172,11 @@ class PaymentSyncWorker @AssistedInject constructor(
         return try {
             Timber.d("💾 [Payment Sync] Worker started")
 
+            var sessionProgress = shiftRepository?.sincronizarAperturasLocales() ?: 0
+            val tableProgress = tableSyncCoordinator.replayCurrentVenueBatch()
+            shiftRepository?.consultarCriptosPendientes()
+            var paymentProgress = 0
+
             // Reclamar la tanda: otro worker corriendo en paralelo NO puede tomar estas filas.
             val batch = paymentQueueRepository.claimBatch(MAX_PAYMENTS_PER_RUN)
 
@@ -186,6 +196,7 @@ class PaymentSyncWorker @AssistedInject constructor(
                     val success = syncPayment(payment)
                     if (success) {
                         successCount++
+                        paymentProgress++
                     } else {
                         failedCount++
                     }
@@ -201,6 +212,12 @@ class PaymentSyncWorker @AssistedInject constructor(
             // 💸 Los reembolsos van DESPUÉS de los cobros: un reembolso apunta al pago original
             // por su id de servidor, así que primero tiene que existir el pago allá.
             drainRefunds()
+            sessionProgress += shiftRepository?.sincronizarCierresLocales() ?: 0
+            if ((tableProgress.resolved > 0 && tableProgress.moreAfterLimit) ||
+                (paymentProgress > 0 && batch.size == MAX_PAYMENTS_PER_RUN && paymentQueueRepository.getPendingCount() > 0) ||
+                (sessionProgress > 0 && shiftRepository?.haySesionesPorReproducir() == true)) {
+                com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext)
+            }
 
             // 🔴 Avisar al banner (bug real 2026-08-07): el contador de
             // "pagos pendientes" es un StateFlow de push manual
@@ -258,8 +275,43 @@ class PaymentSyncWorker @AssistedInject constructor(
      * @param payment Queued payment to sync
      * @return true si quedó sincronizado (o el backend ya lo tenía), false si no
      */
-    private suspend fun syncPayment(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment): Boolean =
-        registrarYClasificar(payment, payment.toPaymentContext(), permitirCaidaAVentaRapida = true)
+    private suspend fun syncPayment(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment): Boolean {
+        if (payment.shiftMembership == "MANAGED") {
+            try {
+                (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException())
+                    .reference(payment.toPaymentContext(), payment.referenceNumber)
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (waiting: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException) {
+                releaseClaim(payment, payment.retryCount, waiting.message ?: "La venta espera su caja.")
+                return false
+              }
+        }
+        if (payment.orderRequestJson == null) {
+            return registrarYClasificar(payment, payment.toPaymentContext(), permitirCaidaAVentaRapida = true)
+        }
+
+        // Su pedido y su pago van juntos; un 404 nunca autoriza convertirlos en una venta rápida sin artículos.
+        val outcome = try {
+            subirVentaGuardadaUseCase(payment)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            classifySyncFailure(e)
+        }
+        return when (outcome) {
+            is SyncOutcome.Synced -> {
+                markSyncedChecked(payment)
+            }
+            is SyncOutcome.Permanent -> {
+                markPermanentlyFailedClaim(payment, outcome.reason)
+                false
+            }
+            is SyncOutcome.Retryable -> {
+                releaseClaim(payment, payment.retryCount + 1, "No se pudo subir la venta guardada; se reintenta")
+                false
+            }
+        }
+    }
 
     /**
      * Registra [context] y clasifica el desenlace. Recursiva **una sola vez**, y sólo por el
@@ -308,8 +360,7 @@ class PaymentSyncWorker @AssistedInject constructor(
                 releaseClaim(payment, payment.retryCount + 1, "El veredicto del servidor no quedó guardado en la libreta; se reintenta")
                 return false
             }
-            markSyncedChecked(payment)
-            return true
+            return markSyncedChecked(payment)
         }
 
         // 🔴 F-6: clasificar por código HTTP, NUNCA por texto del mensaje.
@@ -323,7 +374,6 @@ class PaymentSyncWorker @AssistedInject constructor(
                     payment.referenceNumber,
                 )
                 markSyncedChecked(payment)
-                true
             }
 
             is SyncOutcome.Permanent -> {
@@ -422,16 +472,17 @@ class PaymentSyncWorker @AssistedInject constructor(
      * solo perdimos la carrera por el bookkeeping local. NUNCA reintentar el write en ese
      * caso; quien tenga el claim vigente resolverá su propio intento por su cuenta.
      */
-    private suspend fun markSyncedChecked(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment) {
+    private suspend fun markSyncedChecked(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment): Boolean {
         val affected = paymentQueueRepository.markSynced(payment.queueId, payment.claimToken.orEmpty())
         if (affected == 0) {
             Timber.w(
                 "⚠️ [Payment Sync] markSynced() no afectó filas | ref=%s | queueId=%d | " +
-                    "otro worker ya reclamó esta fila (el pago SÍ quedó registrado en backend)",
+                    "no se confirmó el cierre local; el backend ya confirmó el pago",
                 payment.referenceNumber,
                 payment.queueId,
             )
         }
+        return affected > 0
     }
 
     /**

@@ -26,7 +26,10 @@ import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExpiry
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandTarget
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
+import com.jaac.avoqado_tpv.core.data.local.entities.CachedTimeEntryEntity
 import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
+import com.jaac.avoqado_tpv.core.data.local.dao.CachedTimeEntryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
@@ -47,6 +50,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepositor
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
+import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -126,6 +130,8 @@ class HomeViewModel @Inject constructor(
     private val orderSyncCoordinator: OrderSyncCoordinator,
     // ⏱ Attendance state for WelcomeScreen timeclock card
     private val timeEntryRepository: TimeEntryRepository,
+    // ⏱ Sin red la terminal se acuerda de la última entrada de reloj de ESTA persona (igual que el turno guardado)
+    private val cachedTimeEntryDao: CachedTimeEntryDao,
     private val tpvSettingsRepository: TpvSettingsRepository,
     // 📸 Pending verifications count for WelcomeScreen card
     private val saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
@@ -395,6 +401,7 @@ class HomeViewModel @Inject constructor(
                 // Load active time entry
                 val result = timeEntryRepository.findActiveEntryForStaff(venueId, staffId)
                 result.onSuccess { entry ->
+                    guardarAsistencia(venueId, staffId, entry)
                     _currentTimeEntry.value = entry
                     // Populate clockInTime for backward compat
                     if (entry != null) {
@@ -406,8 +413,15 @@ class HomeViewModel @Inject constructor(
                     Timber.d("⏱ [Attendance] Active entry: ${entry?.status ?: "none"}")
                 }.onFailure { error ->
                     Timber.w(error, "⚠️ [Attendance] Failed to fetch active entry")
-                    _currentTimeEntry.value = null
-                    _clockInTime.value = null
+                    // Sin red (el servidor no contestó) vale la última entrada que ESTE aparato confirmó para ESTA persona:
+                    // dejarla en null apagaba Cobrar y todos los botones con «Registra tu entrada». Un 4xx sí es una
+                    // respuesta: no se sustituye. Sin entrada guardada queda como hoy (null).
+                    val entry = if ((error as? ApiException)?.servidorNoContesto == true) {
+                        asistenciaGuardada(venueId, staffId)
+                    } else null
+                    _currentTimeEntry.value = entry
+                    _clockInTime.value = entry?.let { "Desde las ${it.clockInTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))}" }
+                    if (entry != null) Timber.i("📦 [Attendance] Sin red: usando la entrada guardada ${entry.id} (${entry.status})")
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Attendance] Error fetching attendance state")
@@ -416,6 +430,52 @@ class HomeViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Al leer la entrada activa con éxito se guarda (o se borra si no hay), como el turno guardado: así la siguiente vez
+     * sin red el aparato sabe si ESTA persona ya checó. Un fallo del guardado nunca tumba la lectura en vivo.
+     */
+    private suspend fun guardarAsistencia(venueId: String, staffId: String, entry: TimeEntry?) {
+        runCatching {
+            if (entry != null) {
+                cachedTimeEntryDao.guardar(
+                    CachedTimeEntryEntity(
+                        venueId = venueId,
+                        staffId = staffId,
+                        entryId = entry.id,
+                        status = entry.status.name,
+                        clockInTime = entry.clockInTime.toString(),
+                        cachedAt = System.currentTimeMillis(),
+                    )
+                )
+            } else {
+                cachedTimeEntryDao.borrar(venueId, staffId)
+            }
+        }.onFailure { Timber.w(it, "⚠️ [Attendance] No se pudo guardar la entrada para sin red") }
+    }
+
+    /** La entrada guardada de ESTA persona en ESTE negocio (la llave lo garantiza), o null si no hay o no se puede leer. */
+    private suspend fun asistenciaGuardada(venueId: String, staffId: String): TimeEntry? =
+        runCatching {
+            cachedTimeEntryDao.leer(venueId, staffId)?.let { c ->
+                TimeEntry(
+                    id = c.entryId,
+                    staffId = staffId,
+                    staffName = "Empleado",
+                    venueId = venueId,
+                    // Sólo guardamos nosotros y siempre con hora; si faltara, la de cuando se guardó.
+                    clockInTime = c.clockInTime?.let { java.time.LocalDateTime.parse(it) }
+                        ?: java.time.LocalDateTime.ofInstant(Instant.ofEpochMilli(c.cachedAt), com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
+                    clockOutTime = null,
+                    jobRole = null,
+                    totalHours = null,
+                    breakMinutes = 0,
+                    status = TimeEntryStatus.valueOf(c.status),
+                    checkInPhotoUrl = null,
+                    breaks = emptyList(),
+                )
+            }
+        }.onFailure { Timber.w(it, "⚠️ [Attendance] La entrada guardada no se pudo leer") }.getOrNull()
 
     /**
      * 🔄 Refresh Attendance State

@@ -203,13 +203,13 @@ data class PaymentHistoryResponse(
  * Metadata for pagination (total count, page info).
  */
 data class PaginationMeta(
-    @SerializedName("total")
+    @SerializedName(value = "totalCount", alternate = ["total"])
     val total: Int,
 
     @SerializedName("pageSize")
     val pageSize: Int,
 
-    @SerializedName("pageNumber")
+    @SerializedName(value = "currentPage", alternate = ["pageNumber"])
     val pageNumber: Int
 )
 

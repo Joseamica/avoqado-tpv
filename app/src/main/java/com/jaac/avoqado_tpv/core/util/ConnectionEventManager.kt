@@ -39,7 +39,9 @@ import javax.inject.Singleton
  * ```
  */
 @Singleton
-class ConnectionEventManager @Inject constructor() {
+class ConnectionEventManager @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
+) {
 
     private val _connectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>(
         replay = 0,
@@ -62,6 +64,8 @@ class ConnectionEventManager @Inject constructor() {
     suspend fun emitConnectionRestored(
         attemptsBeforeReconnection: Int
     ) {
+        runCatching { PaymentSyncScheduler.runNow(appContext) }
+            .onFailure { timber.log.Timber.w(it, "Caja y registros conservan el respaldo periódico de sincronización.") }
         _connectionRestoredEvents.emit(
             ConnectionRestoredEvent(
                 timestamp = java.time.Instant.now().toString(),

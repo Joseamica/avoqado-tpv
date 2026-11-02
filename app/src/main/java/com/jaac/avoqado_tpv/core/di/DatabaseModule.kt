@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
+import com.jaac.avoqado_tpv.core.data.local.dao.CachedTimeEntryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
@@ -18,7 +19,7 @@ import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptDao
 import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptDatabase
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
-import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
+import com.jaac.avoqado_tpv.core.data.local.LegacyTablesImport
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
 import dagger.Module
@@ -81,6 +82,7 @@ object DatabaseModule {
     fun provideDatabase(
         @ApplicationContext context: Context
     ): AvoqadoDatabase {
+        LegacyTablesImport.rejectAmbiguousCreation(context)
         return Room.databaseBuilder(
             context,
             AvoqadoDatabase::class.java,
@@ -132,8 +134,16 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_38_39,  // 🧾 r17 P1: el dinero que la versión anterior guardó sin la marca que aparta el aparato
                 AvoqadoDatabase.MIGRATION_39_40,  // 🧾 founder 23-sep: quién confirmó que un cobro dado por no cobrado SÍ pasó
                 AvoqadoDatabase.MIGRATION_40_41,  // 🔴 founder 25-sep: qué proceso abrió cada cobro (ninguna duda apaga la terminal)
-                AvoqadoDatabase.MIGRATION_41_42   // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
+                AvoqadoDatabase.MIGRATION_41_42,  // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
+                AvoqadoDatabase.migration43To44(context),  // B2-T1: gesto durable de Caja y pertenencia
+                AvoqadoDatabase.MIGRATION_42_43   // 💵 «Cobrar» sin red: gtin/catalog_at, la venta guardada y el checador guardado
             )
+
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    LegacyTablesImport.rejectLegacyOnCreate(context)
+                }
+            })
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
             // A missing migration must FAIL LOUDLY (IllegalStateException at startup,
@@ -187,6 +197,12 @@ object DatabaseModule {
      * @param database AvoqadoDatabase instance
      * @return PendingPaymentDao for offline payment queue operations
      */
+    @Provides
+    fun provideLocalShiftSessionDao(database: AvoqadoDatabase): com.jaac.avoqado_tpv.core.data.local.dao.LocalShiftSessionDao = database.localShiftSessionDao()
+
+    @Provides
+    fun provideLocalCryptoOperationDao(database: AvoqadoDatabase): com.jaac.avoqado_tpv.core.data.local.dao.LocalCryptoOperationDao = database.localCryptoOperationDao()
+
     @Provides
     fun providePendingPaymentDao(
         database: AvoqadoDatabase
@@ -354,6 +370,10 @@ object DatabaseModule {
         return database.cachedShiftDao()
     }
 
+    /** El checador guardado (v43). Un DAO nuevo sin su `@Provides` compila, pero Hilt truena al inyectarlo. */
+    @Provides
+    fun provideCachedTimeEntryDao(database: AvoqadoDatabase): CachedTimeEntryDao = database.cachedTimeEntryDao()
+
     /**
      * Provides VerificationQueueDao from database.
      *
@@ -401,49 +421,17 @@ object DatabaseModule {
     }
 
     /**
-     * Provides TablesDatabase singleton — el outbox de Mesas (Plan C, Task 3).
-     *
-     * **Deliberadamente SEPARADA de [AvoqadoDatabase]** — ver el KDoc de
-     * [TablesDatabase] para el porqué (aislamiento del módulo + evitar colisión
-     * de versión de schema con la migración en curso de `pending_payments` en
-     * `codex/payment-safety-phase-0`).
-     *
-     * **Versión 1** — base nueva, sin migraciones que declarar todavía. Mismo
-     * criterio de "fallar ruidoso, nunca borrar en silencio" que
-     * [AvoqadoDatabase]: sin `fallbackToDestructiveMigration` de producción; el
-     * único fallback es para bases nunca instaladas (no aplica aquí, v1 es el
-     * piso).
-     *
-     * @param context Application context (injected by Hilt)
-     * @return TablesDatabase singleton instance
-     */
-    @Provides
-    @Singleton
-    fun provideTablesDatabase(
-        @ApplicationContext context: Context
-    ): TablesDatabase {
-        return Room.databaseBuilder(
-            context,
-            TablesDatabase::class.java,
-            TablesDatabase.DATABASE_NAME
-        )
-            // ✅ Enable Write-Ahead Logging for better concurrency (mismo patrón que AvoqadoDatabase)
-            .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-            .build()
-    }
-
-    /**
-     * Provides SyncIntentDao from TablesDatabase.
+     * Provides the existing Mesas outbox from the SAME database as Caja.
      *
      * **Injected Into:**
      * - SyncOutbox (features/tables/data/sync — el outbox de Mesas)
      *
-     * @param database TablesDatabase instance
+     * @param database AvoqadoDatabase instance
      * @return SyncIntentDao for the offline tables outbox
      */
     @Provides
     fun provideSyncIntentDao(
-        database: TablesDatabase
+        database: AvoqadoDatabase
     ): SyncIntentDao {
         return database.syncIntentDao()
     }
@@ -452,7 +440,7 @@ object DatabaseModule {
      * Provides AuthAttemptDatabase singleton — telemetría local de intentos de
      * autorización (Task 6, plan `2026-08-04-event-loop-no-bloqueante-reportes`).
      *
-     * **Deliberadamente SEPARADA** de [AvoqadoDatabase] y de [TablesDatabase] — ver el
+     * **Deliberadamente SEPARADA** de [AvoqadoDatabase] — ver el
      * KDoc de [AuthAttemptDatabase] para el porqué completo.
      *
      * **Versión 1** — base nueva, sin migraciones que declarar todavía.
@@ -470,7 +458,7 @@ object DatabaseModule {
             AuthAttemptDatabase::class.java,
             AuthAttemptDatabase.DATABASE_NAME
         )
-            // ✅ Enable Write-Ahead Logging for better concurrency (mismo patrón que AvoqadoDatabase/TablesDatabase)
+            // ✅ Enable Write-Ahead Logging for better concurrency (mismo patrón que AvoqadoDatabase)
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .build()
     }

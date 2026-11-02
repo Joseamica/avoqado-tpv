@@ -493,6 +493,7 @@ class PaymentSyncWorkerTest {
                 coEvery { it.claimBatch(any()) } returns emptyList()
             },
         ledger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger = libretaSinFila(),
+        ventaGuardada: com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase = mockk(),
     ): PaymentSyncWorker {
         val context = mockk<Context>(relaxed = true)
         return TestListenableWorkerBuilder<PaymentSyncWorker>(context)
@@ -501,7 +502,7 @@ class PaymentSyncWorkerTest {
                     appContext: Context,
                     workerClassName: String,
                     workerParameters: WorkerParameters,
-                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager, refundRepo, ledger)
+                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager, refundRepo, ledger, ventaGuardada, tableSyncCoordinator = com.jaac.avoqado_tpv.features.shift.data.emptyTableReplayFixture())
             })
             .build()
     }

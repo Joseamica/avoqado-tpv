@@ -327,6 +327,9 @@ fun CloseShiftDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
+                if (!shift.hasKnownFinancialTotals()) {
+                    Text("El cierre se guardará en este aparato. Las ventas pendientes se enviarán antes del cierre; los totales todavía no están confirmados.")
+                } else {
                 // Shift summary
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -379,6 +382,7 @@ fun CloseShiftDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
+                }
                 // Warning message
                 Text(
                     text = "¿Estás seguro de cerrar la caja?",

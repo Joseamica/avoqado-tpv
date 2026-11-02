@@ -1,8 +1,11 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
@@ -51,6 +54,7 @@ class CheckoutFamiliasTest {
 
     @Before fun preparar() {
         Dispatchers.setMain(testDispatcher)
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Unconfined
         productRepository = mockk(relaxed = true)
         savedCartsRepository = mockk(relaxed = true)
         mosaicRepository = mockk(relaxed = true)
@@ -65,6 +69,7 @@ class CheckoutFamiliasTest {
 
     @After fun limpiar() {
         Dispatchers.resetMain()
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Default
     }
 
     @Test fun `las familias salen de refreshProducts y teclear no las recalcula`() = runTest {
@@ -263,6 +268,19 @@ class CheckoutFamiliasTest {
             secureStorage = secureStorage,
             validateReferralUseCase = mockk(relaxed = true),
             captureReferralUseCase = mockk(relaxed = true),
+            productDao = mockk(relaxed = true) { coEvery { getAllProducts(any()) } returns emptyList() },
+            productCategoryDao = mockk(relaxed = true) { coEvery { getAllCategories(any()) } returns emptyList() },
+            catalogoGuardado = mockk { coEvery { refrescar(any()) } coAnswers { productRepository.getProducts(firstArg()) } },
+            connectionStateManager = ConnectionStateManager(),
+            ventaSinRed = com.jaac.avoqado_tpv.features.checkout.VentaSinRedEnMemoria(),
+            impresoraDeVentaGuardada = mockk(relaxed = true),
+            pendingPaymentDao = mockk(relaxed = true) {
+                io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+                io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+            },
+            permissionsRepository = mockk(relaxed = true) {
+                io.mockk.coEvery { hasPermission(any()) } returns true
+            },
         )
     }
 

@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -49,7 +51,13 @@ class TableSyncCoordinator @Inject constructor(
         outbox.replayNow(venueId) { intent, ack -> handleAck(intent, ack) }
     }
 
-    private fun handleAck(intent: SyncIntentEntity, ack: SyncIntentAck) {
+    /** Recuperación productiva: el mismo callback, con el presupuesto de un lote del outbox. */
+    suspend fun replayCurrentVenueBatch(): SyncOutbox.ReplayProgress =
+        outbox.replayCurrentVenueBatch { intent, ack -> handleAck(intent, ack) }
+
+    // El worker llega desde Default. Carrito, sesión y versión comparten el dueño de UI;
+    // el ACK ya es durable y dentro de esta unidad no hay I/O ni suspensión entre guardas/escrituras.
+    private suspend fun handleAck(intent: SyncIntentEntity, ack: SyncIntentAck) = withContext(Dispatchers.Main.immediate) {
         when {
             ack.isAcked -> handleAcked(intent, ack)
 
@@ -67,6 +75,8 @@ class TableSyncCoordinator @Inject constructor(
                 intent.id,
                 ack.errorCode,
             )
+
+            else -> Unit
         }
     }
 

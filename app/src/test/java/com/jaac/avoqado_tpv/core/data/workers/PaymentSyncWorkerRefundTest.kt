@@ -181,6 +181,8 @@ class PaymentSyncWorkerRefundTest {
                             ),
                         )
                     },
+                    mockk<com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase>(),
+                    tableSyncCoordinator = com.jaac.avoqado_tpv.features.shift.data.emptyTableReplayFixture(),
                 )
             })
             .build()
@@ -213,6 +215,7 @@ class PaymentSyncWorkerRefundTest {
 
     private fun queuedPayment(reference: String): QueuedPayment = mockk(relaxed = true) {
         coEvery { referenceNumber } returns reference
+        coEvery { orderRequestJson } returns null
         coEvery { claimToken } returns "tok-p"
         coEvery { retryCount } returns 0
         coEvery { queueId } returns 1L

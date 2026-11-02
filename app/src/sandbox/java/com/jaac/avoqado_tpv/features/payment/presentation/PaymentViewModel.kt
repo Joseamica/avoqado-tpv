@@ -1,6 +1,15 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
 import androidx.annotation.VisibleForTesting
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal
+import com.jaac.avoqado_tpv.features.checkout.domain.model.RenglonDeTicket
+import com.jaac.avoqado_tpv.features.checkout.domain.renglonesParaImprimir
+import com.jaac.avoqado_tpv.features.checkout.domain.descuentoParaImprimir
+import com.jaac.avoqado_tpv.features.checkout.data.VentaLocalYaGuardadaException
+import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
+import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -71,6 +80,9 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.authWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
+import com.jaac.avoqado_tpv.features.payment.domain.referenciaDeEfectivo
+import com.jaac.avoqado_tpv.features.payment.domain.decidirMotivoSinTarjeta
+import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.ProcessingClock
 import com.jaac.avoqado_tpv.features.payment.domain.PhaseOutcome
@@ -284,7 +296,11 @@ class PaymentViewModel @Inject constructor(
     // NEVER a network call of its own, NEVER card data/amounts — see the store's own KDoc.
     private val authAttemptTelemetryStore: AuthAttemptTelemetryStore,
     // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
-    @ApplicationContext private val appContext: Context
+    @ApplicationContext private val appContext: Context,
+    private val ventaLocalRepository: com.jaac.avoqado_tpv.features.checkout.data.VentaLocalRepository,
+    private val pendingPaymentDao: com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao,
+    private val subirVentaGuardadaUseCase: com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase,
+    private val cryptoSavedState: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
 ) : ViewModel() {
 
     // 🔒 True while handlePaymentSuccess's recording coroutine is running. PaymentState.Success is
@@ -431,19 +447,12 @@ class PaymentViewModel @Inject constructor(
      */
     private val cobroEnEfectivoEnVuelo = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /**
-     * La referencia de un cobro en efectivo sale de la LLAVE del intento, no del reloj.
-     *
-     * Antes era `CASH-${System.currentTimeMillis()}`, acuñada dentro de cada corrutina: en una
-     * ráfaga salían N referencias distintas a ~5 ms y la defensa por `referenceNumber` del
-     * servidor no veía nada. Derivada de la llave, un reintento del MISMO intento manda la
-     * MISMA referencia. Conserva el prefijo `CASH-`, que el servidor, la cola offline
-     * (`QueuedPayment.isCashQueuedPayment()`) y el ticket ya reconocen.
-     */
-    private fun referenciaDeEfectivo(attemptId: String, prefijo: String = "CASH-"): String =
-        prefijo + attemptId.replace("-", "").takeLast(16)
+    // La referencia de efectivo vive en `features/payment/domain/ReferenciaDeEfectivo.kt` (la comparten la venta local de «Cobrar»).
 
     // 🪙 CRYPTO PAYMENT: Track pending B4Bit request for Socket.IO matching
+    private var currentCryptoOperationKey: String?
+        get() = cryptoSavedState["b2_crypto_operation_key"]
+        set(value) { cryptoSavedState["b2_crypto_operation_key"] = value }
     private var currentCryptoRequestId: String? = null  // B4Bit request ID (for matching webhook callback)
 
     // 📡 SOCKET PAYMENT: Track source for sending result back via Socket.IO
@@ -648,6 +657,9 @@ class PaymentViewModel @Inject constructor(
 
         // 🔄 Receipt-on-reconnect + offline-queue sync on connection restored
         listenToConnectionRestored()
+
+        // 💵 D2: «Método de pago» sigue a la conexión (sólo efectivo ⇄ tarjeta)
+        vigilarMotivoSinTarjeta()
 
         // 🔒 CLOSE the MONEY WINDOW on any RESOLVED state. The window is OPENED imperatively
         // at the two authorization call sites (performOnlineAuthorization /
@@ -1552,6 +1564,13 @@ class PaymentViewModel @Inject constructor(
      * Transitions UI from AwaitingCryptoPayment → Success
      */
     private fun handleCryptoPaymentConfirmed(event: SocketEvent.CryptoPaymentConfirmed) {
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching {
+                event.paymentId?.let { shiftRepository.anotarAvisoCripto(event.venueId, it, event.requestId) }
+                // Conciliación durable de esta solicitud; no cambia la identidad del gesto en pantalla.
+                shiftRepository.consultarCriptoPorSolicitud(event.venueId, event.requestId)
+            }.onFailure { Timber.w(it, "El resultado cripto sigue pendiente de conciliación") }
+        }
         // Only handle if this is OUR pending crypto payment
         if (currentCryptoRequestId != event.requestId) {
             Timber.d("🪙 [CRYPTO] Ignoring confirmation for different request: ${event.requestId} (current: $currentCryptoRequestId)")
@@ -1615,6 +1634,13 @@ class PaymentViewModel @Inject constructor(
      * - Other blockchain/gateway errors
      */
     private fun handleCryptoPaymentFailed(event: SocketEvent.CryptoPaymentFailed) {
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching {
+                event.paymentId?.let { shiftRepository.anotarAvisoCripto(event.venueId, it, event.requestId) }
+                // Conciliación durable de esta solicitud; no cambia la identidad del gesto en pantalla.
+                shiftRepository.consultarCriptoPorSolicitud(event.venueId, event.requestId)
+            }.onFailure { Timber.w(it, "El resultado cripto sigue pendiente de conciliación") }
+        }
         // Only handle if this is OUR pending crypto payment
         if (currentCryptoRequestId != event.requestId) {
             Timber.d("🪙 [CRYPTO] Ignoring failure for different request: ${event.requestId} (current: $currentCryptoRequestId)")
@@ -1764,6 +1790,52 @@ class PaymentViewModel @Inject constructor(
     fun setFlowOrigin(origin: PaymentFlowOrigin) {
         _flowOrigin.value = origin
         updateSessionSnapshot(reason = "setFlowOrigin")
+    }
+
+    /**
+     * 💵 D2 «Cobrar sin red» (21-oct-2026): este cobro sólo puede ir en efectivo (llegó sin red desde
+     * Cobrar, sin esperar al lector). Es un argumento de la pantalla: no se borra en [resetPayment].
+     */
+    @Volatile
+    private var soloEfectivo: Boolean = false
+
+    @Volatile
+    private var ventaLocal: VentaLocal? = null
+
+    /** Un argumento ilegible bloquea el cobro: nunca se sustituye por una venta rápida sin artículos. */
+    fun setVentaLocalJson(json: String?): Boolean {
+        if (json == null) { ventaLocal = null; return true }
+        return try {
+            val venta = checkNotNull(Gson().fromJson(json, VentaLocal::class.java))
+            check(venta.llave.isNotBlank() && venta.venueId.isNotBlank() && venta.staffId.isNotBlank())
+            check(venta.totalCents >= 0 && venta.pedidoJson.isNotBlank() && venta.renglones.isNotEmpty())
+            check(venta.renglones.all { it.cantidad > 0 && it.externalId.isNotBlank() })
+            ventaLocal = venta
+            true
+        } catch (e: Exception) {
+            ventaLocal = null
+            _state.value = PaymentState.Error("No se pudo leer la venta guardada. Regresa a Cobrar y pide apoyo al gerente.", canRetry = false)
+            false
+        }
+    }
+
+    /** Se llama desde la pantalla de éxito, nunca desde el insert o desde la respuesta de la red. */
+    fun marcarExitoDeVentaLocalMostrado() {
+        val venta = ventaLocal ?: return
+        val exito = _state.value as? PaymentState.Success ?: return
+        if (exito.referenceNumber != referenciaDeEfectivo(venta.llave)) return
+        viewModelScope.launch {
+            try {
+                withContext(NonCancellable) { pendingPaymentDao.marcarExitoMostrado(venta.llave) }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.w(e, "No se pudo marcar el éxito de la venta guardada como mostrado")
+            }
+        }
+    }
+
+    fun setSoloEfectivo(soloEfectivo: Boolean) {
+        this.soloEfectivo = soloEfectivo
     }
 
     /**
@@ -1984,10 +2056,46 @@ class PaymentViewModel @Inject constructor(
         val isCobro = getOrderIdForFlow() == null &&
             !shouldSkipLocalValidation() &&
             sessionSnapshot.mode != PaymentMode.REFUND
-        return if (!settings.requireAvoqadoServerForCardPayment && isCobro) {
-            !connectionStateManager.hasInternet()
-        } else {
-            !connectionStateManager.isFullyConnected()
+        // 💵 D2: la MISMA regla que usa la entrada desde Cobrar para no esperar al lector ([tarjetaSinRed]).
+        return tarjetaSinRed(
+            requiereServidorDeAvoqado = settings.requireAvoqadoServerForCardPayment,
+            esCobro = isCobro,
+            hayInternet = connectionStateManager.hasInternet(),
+            conexionCompleta = connectionStateManager.isFullyConnected(),
+        )
+    }
+
+    /**
+     * 💵 D2 «Cobrar sin red» (21-oct-2026): por qué «Método de pago» sale en sólo efectivo, o null si la
+     * tarjeta puede cobrar ([decidirMotivoSinTarjeta]): con [soloEfectivo], sin red (la misma regla que
+     * [cardPreflightBlocked] aplica al tocar «Tarjeta») o con las cuentas de respaldo sin refrescar. Nunca en un
+     * cobro que mandó el POS: no ofrece efectivo y conserva sus caminos Error de antes (reloj H.3).
+     */
+    private fun motivoSinTarjeta(): String? = decidirMotivoSinTarjeta(
+        soloEfectivo = soloEfectivo || ventaLocal != null,
+        ofreceEfectivo = CobroRemotoDelPos.permiteEfectivoYCripto(_paymentSource),
+        tarjetaSinRed = cardPreflightBlocked(),
+        cuentasDeRespaldo = merchantRepository.isUsingFallback(),
+    )
+
+    /**
+     * 💵 D2: mientras «Método de pago» está a la vista, el motivo sigue a la conexión: si la red se cayó justo al
+     * entrar y vuelve, la tarjeta se vuelve a encender (y al revés). Con [soloEfectivo] el motivo es fijo, y en un
+     * cobro remoto nunca hay motivo de red ([motivoSinTarjeta]). Sólo reescribe si la pantalla sigue en el MISMO
+     * estado (compareAndSet): un toque de Efectivo o Tarjeta que ya cambió el estado nunca se pisa.
+     */
+    private fun vigilarMotivoSinTarjeta() {
+        viewModelScope.launch {
+            connectionStateManager.connectionState.collect {
+                val estado = _state.value as? PaymentState.SelectingMerchant ?: return@collect
+                if (_isPreparingMerchantSelection.value) return@collect
+                val motivo = motivoSinTarjeta()
+                if (motivo != estado.motivoSinTarjeta &&
+                    _state.compareAndSet(estado, estado.copy(motivoSinTarjeta = motivo))
+                ) {
+                    Timber.i("💵 [Payment Flow] Cambió la conexión en «Método de pago»: sólo efectivo=${motivo != null}")
+                }
+            }
         }
     }
 
@@ -2442,7 +2550,15 @@ class PaymentViewModel @Inject constructor(
                 awaitMerchantsLoaded()
 
             // 🔄 SMART RETRY: Detect fallback merchants and attempt refresh
-            if (merchantRepository.isUsingFallback()) {
+            // 💵 D2 «Cobrar sin red» (21-oct-2026): sólo si la tarjeta podría cobrar. Sin red o con
+            // `soloEfectivo` no se verifica nada por red, y si el refresco no se logra ya no es un error:
+            // el efectivo no usa cuentas de pago (`merchantAccountId = null`) y la pantalla sale en sólo
+            // efectivo ([motivoSinTarjeta]).
+            // 🛑 Un cobro que mandó el POS no ofrece efectivo: ahí se conservan EXACTAMENTE los caminos de
+            // antes (refresco siempre y sus dos `Error` con «Reintentar», que arman el reloj H.3 de abandono).
+            val ofreceEfectivo = CobroRemotoDelPos.permiteEfectivoYCripto(_paymentSource)
+            val intentarRefresco = if (ofreceEfectivo) !soloEfectivo && !cardPreflightBlocked() else true
+            if (intentarRefresco && merchantRepository.isUsingFallback()) run refresco@{
                 Timber.w("⚠️ [Payment Flow] Using fallback merchants - attempting refresh before payment")
 
                 // Show SelectingMerchant state with loading overlay
@@ -2464,13 +2580,17 @@ class PaymentViewModel @Inject constructor(
                 if (!hasConnection) {
                     _merchantSwitchingLoading.value = false
                     _merchantSwitchMessage.value = null
-                    _state.value = PaymentState.Error(
-                        message = "Sin conexion a internet.\n\n" +
-                                "No se pudieron verificar las cuentas de pago. " +
-                                "Verifica tu conexion WiFi e intenta de nuevo.",
-                        context = createPaymentContext()
-                    )
-                    return@launch
+                    if (!ofreceEfectivo) {
+                        _state.value = PaymentState.Error(
+                            message = "Sin conexion a internet.\n\n" +
+                                    "No se pudieron verificar las cuentas de pago. " +
+                                    "Verifica tu conexion WiFi e intenta de nuevo.",
+                            context = createPaymentContext()
+                        )
+                        return@launch
+                    }
+                    Timber.w("⚠️ [Payment Flow] Sin conexion para verificar las cuentas de pago - sólo efectivo")
+                    return@refresco
                 }
 
                 // Fetch real merchants from backend
@@ -2483,15 +2603,23 @@ class PaymentViewModel @Inject constructor(
 
                 if (refreshResult.isFailure || merchantRepository.isUsingFallback()) {
                     Timber.e("❌ [Payment Flow] Merchant refresh failed - still using fallback")
-                    _state.value = PaymentState.Error(
-                        message = "No se pudieron cargar las cuentas de pago.\n\n" +
-                                "Cierra y vuelve a abrir la app, o contacta al administrador.",
-                        context = createPaymentContext()
-                    )
-                    return@launch
+                    if (!ofreceEfectivo) {
+                        _state.value = PaymentState.Error(
+                            message = "No se pudieron cargar las cuentas de pago.\n\n" +
+                                    "Cierra y vuelve a abrir la app, o contacta al administrador.",
+                            context = createPaymentContext()
+                        )
+                        return@launch
+                    }
+                    return@refresco
                 }
 
                 Timber.i("✅ [Payment Flow] Merchants refreshed successfully - continuing payment flow")
+            }
+
+            val motivoSinTarjeta = motivoSinTarjeta()
+            if (motivoSinTarjeta != null) {
+                Timber.i("💵 [Payment Flow] Sólo efectivo | soloEfectivo=$soloEfectivo, cuentasDeRespaldo=${merchantRepository.isUsingFallback()}")
             }
 
             val merchants = _merchants.value
@@ -2510,7 +2638,8 @@ class PaymentViewModel @Inject constructor(
             // 🧭 MERCHANT_ROUTING_RULES (PREMIUM): decide which merchants to OFFER for this charge.
             // Fail-open — any error/offline returns shouldShowAll=true so a rule never blocks a sale.
             // Skipped for kiosk (it uses its own fixed default and hides the selector).
-            val routingEligibility = if (sessionSnapshot.isKioskPayment) {
+            // 💵 D2: en sólo efectivo tampoco: no hay cuenta que elegir y evaluate() espera hasta 3 s sin red.
+            val routingEligibility = if (sessionSnapshot.isKioskPayment || motivoSinTarjeta != null) {
                 com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
             } else {
                 runCatching {
@@ -2589,7 +2718,8 @@ class PaymentViewModel @Inject constructor(
                 subtotal = subtotal,
                 tipAmount = tipAmount,
                 totalAmount = totalAmount,
-                rating = rating
+                rating = rating,
+                motivoSinTarjeta = motivoSinTarjeta,
             )
             } finally {
                 if (merchantSelectionPreparationGeneration == preparationGeneration) {
@@ -3391,7 +3521,7 @@ class PaymentViewModel @Inject constructor(
                 val json = com.google.gson.Gson().toJsonTree(context).asJsonObject.apply {
                     addProperty("processorAffiliation", merchant?.posId)
                 }
-                paymentAttemptLedger.openAttempt(
+                paymentAttemptLedger.openAttemptForShift(shiftRepository, 
                     attemptId, currentVenueId,
                     com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
                     context.amount.movePointRight(2).longValueExact(), context.tip.movePointRight(2).longValueExact(),
@@ -4137,14 +4267,14 @@ class PaymentViewModel @Inject constructor(
                     val ledgerContext = buildRefundPaymentContext()
                     val attemptIdForLedger = sessionSnapshot.refundAttemptId
                     if (ledgerContext != null && attemptIdForLedger != null) {
-                        paymentAttemptLedger.openAttempt(
+                        paymentAttemptLedger.openAttemptForShift(shiftRepository, 
                             attemptId = attemptIdForLedger,
                             venueId = currentVenueId,
                             processor = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
                             amountCents = ledgerContext.amount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
                             tipCents = ledgerContext.tip.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
                             recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
-                            contextJson = com.google.gson.Gson().toJson(ledgerContext),
+                            contextJson = com.google.gson.GsonBuilder().serializeNulls().create().toJson(ledgerContext),
                             kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND
                         )
                     }
@@ -4420,6 +4550,11 @@ class PaymentViewModel @Inject constructor(
      */
     private suspend fun processChipRefund() {
         try {
+            val attemptId = sessionSnapshot.refundAttemptId
+            if (attemptId == null || !paymentAttemptLedger.markKernelEntered(attemptId)) {
+                _state.value = PaymentState.Error(message = "No se pudo guardar la devolución. No se inició el lector.", canRetry = false)
+                return
+            }
             // STEP 1: Start EMV transaction
             _state.value = PaymentState.Processing("Procesando reembolso con chip...")
             com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
@@ -4514,7 +4649,10 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Original operation number for CancelIcc: $originalOperationNumber")
 
             // 📒 [Libreta] Barrera pre-SDK: AUTORIZANDO queda en disco antes de que CancelIcc arranque.
-            sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
+            if (!paymentAttemptLedger.markAuthorizing(attemptId)) {
+                _state.value = PaymentState.Error(message = "No se pudo guardar la autorización de la devolución.", canRetry = false)
+                return
+            }
             val authResult = performRefundAuthorization(
                 amount = formatAmountDecimal(getAmountForFlow()),
                 track2 = track2,
@@ -4720,7 +4858,10 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Original operation number for CancelIcc: $originalOperationNumber")
 
             // 📒 [Libreta] Barrera pre-SDK: AUTORIZANDO queda en disco antes de que CancelIcc arranque.
-            sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
+            if (sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) } != true) {
+                _state.value = PaymentState.Error(message = "No se pudo guardar la autorización de la devolución.", canRetry = false)
+                return
+            }
             val authResult = performRefundAuthorization(
                 amount = amount,
                 track2 = track2,
@@ -6205,6 +6346,78 @@ class PaymentViewModel @Inject constructor(
      *
      * ⚠️ CRITICAL: This skips ALL Blumon SDK operations (no PreTrans, no card reading, no EMV)
      */
+    /** C3: un único escritor Room, antes de cualquier red; después sólo se sincroniza esa misma fila. */
+    private suspend fun procesarEfectivoDeVentaLocal(venta: VentaLocal) {
+        val seleccion = _state.value as? PaymentState.SelectingMerchant
+            ?: throw IllegalStateException("La venta todavía no está lista para cobrar")
+        check(_paymentSource != "SOCKET" && _socketRequestId == null) { "Una venta local no es un cobro remoto" }
+        check(authRepository.getVenueId() == venta.venueId && authRepository.getStaffId() == venta.staffId) {
+            "La venta pertenece a otra sesión. Regresa a Cobrar y pide apoyo al gerente."
+        }
+        check(seleccion.subtotal.toBigDecimal().movePointRight(2).intValueExact() == venta.totalCents) {
+            "El importe de la venta cambió. Regresa a Cobrar y pide apoyo al gerente."
+        }
+        val propina = seleccion.tipAmount.toBigDecimal().movePointRight(2).intValueExact()
+        check(propina >= 0) { "La propina no puede ser negativa" }
+        _state.value = PaymentState.Processing("Guardando venta en la terminal...")
+        val guardada = ventaLocalRepository.guardar(
+            venta, com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.PROCESSOR_BLUMON,
+            blumonSerialNumber = "", deviceSerialNumber = secureStorage.getSerialNumber(), reclamada = true, propinaCents = propina,
+            relojMonotonoAlVender = monotonicClockMs(),
+            arranqueAlVender = runCatching {
+                android.provider.Settings.Global.getInt(appContext.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)
+                    .takeIf { it >= 0 }
+            }.getOrNull(),
+        )
+        val repetida = guardada.exceptionOrNull() is VentaLocalYaGuardadaException
+        if (!repetida) guardada.getOrThrow()
+        var fila = pendingPaymentDao.findByReference(referenciaDeEfectivo(venta.llave), venta.venueId)
+            ?: throw IllegalStateException("No se pudo recuperar la venta guardada")
+        check(fila.idempotencyKey == venta.llave && fila.orderRequestJson == venta.pedidoJson &&
+            fila.amount.toBigDecimal().movePointRight(2).intValueExact() == venta.totalCents &&
+            fila.tip.toBigDecimal().movePointRight(2).intValueExact() == propina && fila.staffId == venta.staffId &&
+            fila.paymentProcessor == com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.PROCESSOR_BLUMON) {
+            "Esta llave ya tiene una venta con datos distintos. Pide al gerente que la revise."
+        }
+        if (!repetida) {
+            val token = checkNotNull(guardada.getOrThrow().claimToken)
+            when (val resultado = subirVentaGuardadaUseCase(fila.toQueuedPayment())) {
+                SyncOutcome.Synced -> paymentQueueRepository.markSynced(fila.id, token)
+                is SyncOutcome.Permanent -> paymentQueueRepository.markPermanentlyFailed(fila.id, token, resultado.reason)
+                SyncOutcome.Retryable -> {
+                    paymentQueueRepository.release(fila.id, token, fila.retryCount + 1, "Pendiente de sincronizar con el servidor")
+                    runCatching { PaymentSyncScheduler.runNow(appContext) }
+                }
+            }
+            fila = pendingPaymentDao.findByReference(fila.referenceNumber, fila.venueId)
+                ?: throw IllegalStateException("No se pudo recuperar la venta guardada")
+        } else if (fila.syncStatus == com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.SYNC_STATUS_PENDING) {
+            // Una fila existente conserva su identidad y el claim de su dueño; sólo el worker puede reclamarla de nuevo.
+            runCatching { PaymentSyncScheduler.runNow(appContext) }
+        }
+        if (ventaLocal?.llave != venta.llave) return // Un reset no debe publicar el éxito sobre el siguiente cobro.
+        val ticket = checkNotNull(Gson().fromJson<List<RenglonDeTicket>>(fila.ticketJson, object : TypeToken<List<RenglonDeTicket>>() {}.type))
+        val ventaDelTicket = venta.copy(
+            llave = checkNotNull(fila.idempotencyKey), venueId = fila.venueId, staffId = fila.staffId, shiftId = fila.shiftId,
+            createdAtLocal = fila.createdAt, totalCents = fila.amount.toBigDecimal().movePointRight(2).intValueExact(),
+            pedidoJson = checkNotNull(fila.orderRequestJson), renglones = ticket,
+        )
+        ventaLocal = ventaDelTicket
+        val aviso = when {
+            fila.syncStatus == com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.SYNC_STATUS_FAILED || fila.requiereRevision ->
+                "Venta guardada: necesita revisión. Pide apoyo al gerente."
+            fila.syncStatus == com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.SYNC_STATUS_SUCCESS -> null
+            else -> "Venta guardada sin conexión: se manda sola al volver el internet"
+        }
+        _state.value = PaymentState.Success(
+            authCode = "EFECTIVO", amount = fila.amount.toBigDecimal().add(fila.tip.toBigDecimal()).setScale(2).toPlainString(),
+            tipAmount = fila.tip, rating = seleccion.rating, receipt = null, cardDetails = CardDetails.CASH,
+            referenceNumber = fila.referenceNumber, orderId = fila.orderId, orderNumber = fila.orderNumber,
+            orderItems = renglonesParaImprimir(ventaDelTicket), discountAmount = descuentoParaImprimir(ventaDelTicket).toPlainString(),
+            pendingSyncMessage = aviso,
+        )
+    }
+
     fun processCashPayment(totalAmount: String) {
         financialOperationStarted = true
         negativeOutcomeEvidence = null
@@ -6222,7 +6435,8 @@ class PaymentViewModel @Inject constructor(
         // llevada explícita al contexto, a la referencia y a la fila de la cola. Leerla de la
         // sesión DESPUÉS de la espera es lo que mandó llave vacía en producción: cancelar o
         // reiniciar la pantalla mientras el toque estaba estacionado la borra.
-        val attemptId = ensurePaymentAttemptId()
+        val ventaLocalCongelada = ventaLocal
+        val attemptId = ventaLocalCongelada?.llave ?: ensurePaymentAttemptId()
 
         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
             processor = "BLUMON",
@@ -6235,6 +6449,10 @@ class PaymentViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                if (ventaLocalCongelada != null) {
+                    procesarEfectivoDeVentaLocal(ventaLocalCongelada)
+                    return@launch
+                }
                 // 🛑 C.5: el efectivo de un cobro del POS se ancla ANTES de registrar. Si el cancel del POS
                 // ya ganó, aquí se para: registrar sería cobrar algo que el servidor dio por cancelado.
                 if (!puedeArrancarEfectivoOCripto()) return@launch
@@ -6456,6 +6674,12 @@ class PaymentViewModel @Inject constructor(
 
                     Timber.d("💚 [Cash Payment] Payment completed successfully")
                 }.onFailure { error ->
+                    if ((com.jaac.avoqado_tpv.features.payment.domain.usecase.CashAdmissionRejectedException.identifica(error) ||
+                        error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)) {
+                        _state.value = PaymentState.Error(message = if (error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)
+                            error.message ?: "Consulta la venta guardada." else "No se guardó el cobro: ${error.message}", canRetry = false)
+                        return@onFailure
+                    }
                     Timber.e(error, "❌ [Cash Payment] Failed to record payment to backend")
                     Timber.w("💾 [Offline Queue] Queueing CASH payment for retry | ref=$cashReference")
 
@@ -6700,17 +6924,9 @@ class PaymentViewModel @Inject constructor(
                     deviceSerialNumber = deviceSerial
                 )
 
-                val response = apiService.initiateCryptoPayment(venueId, request)
-
-                if (!response.isSuccessful || response.body()?.success != true) {
-                    val errorMessage = response.errorBody()?.string() ?: "Error iniciando pago crypto"
-                    Timber.e("❌ [Crypto Payment] API call failed: ${response.code()} - $errorMessage")
-                    throw Exception(errorMessage)
-                }
-
-                val cryptoResponse = response.body()!!
-                val cryptoData = cryptoResponse.data
-                    ?: throw Exception("Server returned empty crypto payment data")
+                val cryptoKey = currentCryptoOperationKey ?: com.jaac.avoqado_tpv.core.util.CuidV1.next().also { currentCryptoOperationKey = it }
+                val cryptoData = shiftRepository.iniciarCriptoDurable(venueId, request.copy(idempotencyKey = cryptoKey),
+                    terminalRequestId = _socketRequestId)
 
                 Timber.i("✅ [Crypto Payment] B4Bit order created: requestId=${cryptoData.requestId}")
                 Timber.d("   🔗 Payment URL: ${cryptoData.paymentUrl}")
@@ -6821,7 +7037,8 @@ class PaymentViewModel @Inject constructor(
                 subtotal = subtotal,
                 tipAmount = tipAmount,
                 totalAmount = totalAmount,
-                rating = rating
+                rating = rating,
+                motivoSinTarjeta = motivoSinTarjeta(),
             )
 
             Timber.i("🪙 [Crypto Payment] Returned to SelectingMerchant state")
@@ -6977,6 +7194,12 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("💚 [KIOSK CASH] Staff-confirmed cash payment completed successfully")
 
                 }.onFailure { error ->
+                    if ((com.jaac.avoqado_tpv.features.payment.domain.usecase.CashAdmissionRejectedException.identifica(error) ||
+                        error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)) {
+                        _state.value = PaymentState.Error(message = if (error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)
+                            error.message ?: "Consulta la venta guardada." else "No se guardó el cobro: ${error.message}", canRetry = false)
+                        return@onFailure
+                    }
                     Timber.e(error, "❌ [KIOSK CASH] Failed to record confirmed payment")
                     Timber.w("💾 [Offline Queue] Queueing KIOSK CASH payment for retry | ref=$cashReference")
 
@@ -7121,6 +7344,7 @@ class PaymentViewModel @Inject constructor(
                 paymentAttemptIdClear = true,
                 refundAttemptIdClear = true
             )
+            ventaLocal = null
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
             chipOnlyOnNextDetect = false  // un cancel no debe heredar el lector recortado a la siguiente venta
@@ -7175,6 +7399,7 @@ class PaymentViewModel @Inject constructor(
             Timber.i("📡 [Socket-Payment] Emitted final outcome from resetPayment for requestId=$requestId")
         }
 
+        ventaLocal = null
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
@@ -7188,7 +7413,8 @@ class PaymentViewModel @Inject constructor(
         _serialNumber = null
         _categoryName = null
 
-        // 🪙 Clear crypto payment state
+        // Termina sólo el gesto UI. Su operación/fila sigue conciliándose por su solicitud original.
+        currentCryptoOperationKey = null
         currentCryptoRequestId = null
 
         // 📡 Clear socket payment source
@@ -7558,7 +7784,8 @@ class PaymentViewModel @Inject constructor(
             subtotal = context.amount,
             tipAmount = context.tipAmount,
             totalAmount = calculateTotal(context.amount, context.tipAmount),
-            rating = context.rating
+            rating = context.rating,
+            motivoSinTarjeta = motivoSinTarjeta(),
         )
     }
 
@@ -7761,6 +7988,7 @@ class PaymentViewModel @Inject constructor(
                     tipAmount = previous.tip.toPlainString(),
                     totalAmount = (previous.amount + previous.tip).toPlainString(),
                     rating = previous.rating,
+                    motivoSinTarjeta = motivoSinTarjeta(),
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -8167,8 +8395,8 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             var referenciaParaAviso = "sin referencia"
             try {
-                val refundContext = buildRefundPaymentContext() ?: refundContextEnVuelo
-                if (refundContext == null) {
+                val rawRefundContext = buildRefundPaymentContext() ?: refundContextEnVuelo
+                if (rawRefundContext == null) {
                     // 🔴 El SDK YA devolvió el dinero y no hay con qué registrarlo: JAMÁS un return mudo
                     // (auditoría de Codex F2). Se grita en el canal vigilado y la pantalla lo dice.
                     Timber.e("💸🔴 [Refund Recording] Sin contexto tras la aprobación del SDK — devolución SIN registro")
@@ -8180,6 +8408,8 @@ class PaymentViewModel @Inject constructor(
                     buildRefundLostState(_state.value, referenciaParaAviso)?.let { _state.value = it }
                     return@launch
                 }
+                val refundContext = shiftRepository.restaurarContextoDelIntento(rawRefundContext) as PaymentContext.RefundPayment
+
 
                 // Extract authorization and reference from SDK response
                 val authorizationNumber = if (saleData != null) {
@@ -8308,6 +8538,8 @@ class PaymentViewModel @Inject constructor(
                     // con el motivo y puede liberar el cierre. Y no se intenta el POST: no hay nada
                     // que el servidor pueda aceptar.
                     val result = when {
+                        writeAhead.exceptionOrNull() is com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentOwnerContractConflictException ->
+                            Result.failure(requireNotNull(writeAhead.exceptionOrNull()))
                         sinMerchant -> Result.failure(
                             IllegalArgumentException(
                                 "No se pudo identificar la cuenta del comerciante del pago original. " +
@@ -8912,6 +9144,7 @@ class PaymentViewModel @Inject constructor(
             Timber.i("📄 [Print] No receipt from backend - will print generic receipt with payment data")
         }
 
+        val ventaGuardada = ventaLocal
         viewModelScope.launch {
             try {
                 Timber.i("🖨️ [Print] Starting receipt print")
@@ -8942,7 +9175,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Paper low - proceeding with print")
                 }
 
-                val orderDataForPrint = if (currentState.orderId != null && currentState.orderItems.isNullOrEmpty()) {
+                val orderDataForPrint = if (ventaGuardada == null && currentState.orderId != null && currentState.orderItems.isNullOrEmpty()) {
                     loadOrderData(currentState.orderId)
                 } else {
                     null
@@ -8962,7 +9195,14 @@ class PaymentViewModel @Inject constructor(
                 // 🖨️ Set printing state (button shows "Imprimiendo..." instead of separate screen)
                 _isPrinting.value = true
 
-                val result = withContext(Dispatchers.IO) {
+                val result = if (ventaGuardada != null) {
+                    com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada.imprimirEnPax(
+                        ventaGuardada,
+                        currentState.tipAmount.orEmpty().ifBlank { "0" }.toBigDecimal().movePointRight(2).intValueExact(),
+                        printerManager,
+                        secureStorage,
+                    )
+                } else withContext(Dispatchers.IO) {
                     printerManager.printReceipt(
                         receiptUrl = currentState.receipt?.receiptUrl,  // ✅ FIX: Can be null for generic receipt
                         amount = currentState.amount,  // ⚠️ TOTAL (already includes tip)

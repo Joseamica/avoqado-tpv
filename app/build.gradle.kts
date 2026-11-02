@@ -775,6 +775,7 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
     testImplementation("io.mockk:mockk:1.13.14")
     testImplementation("app.cash.turbine:turbine:1.0.0")  // Flow testing
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")  // Repositorio real contra un servidor de mentiras (503, socket cortado)
     testImplementation("com.google.truth:truth:1.1.5")  // Assertions
     testImplementation("org.robolectric:robolectric:4.11.1")  // Android testing in JVM
     testImplementation("org.json:json:20231013")  // org.json real (el de android.jar es un stub que tira "Stub!")

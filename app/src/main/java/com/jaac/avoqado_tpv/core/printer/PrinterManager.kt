@@ -140,6 +140,20 @@ class PrinterManager @Inject constructor(
     private val printer: ImpresoraTermica?
         get() = if (esHardwarePax) impresoraPax else ImpresoraAngelPay.paraEstaTerminal()
 
+    /** El mismo dictado provisional usa la impresora existente de PAX o de Nexgo. */
+    fun printLocalShiftSummary(summary: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation): Result<Unit> = try {
+        val device = printer
+        if (device == null) Result.failure(Exception(motivoSinImpresora))
+        else {
+            device.init()
+            device.printBitmap(renderLocalShiftSummary(summary.paper()))
+            device.printStr("\n\n\n", null)
+            val result = device.start()
+            if (result == 0) Result.success(Unit)
+            else Result.failure(Exception("No se pudo imprimir el resumen provisional (código: $result). Vuelve a intentar."))
+        }
+    } catch (error: Exception) { Result.failure(error) }
+
     /**
      * Print Mexican fiscal-style receipt (Toast/Square/Clip adapted for Mexico).
      *
@@ -234,6 +248,7 @@ class PrinterManager @Inject constructor(
         categoryName: String? = null,  // 📱 Category name for serialized inventory receipt
         autofacturaAvailable: Boolean = false,  // 🧾 Backend flag: same QR, caption mentions autofactura
         serviceChargeAmount: String? = null,  // T11: importe explícito, opcional para llamadores anteriores
+        ventaGuardadaSinConexion: Boolean = false,
     ): Result<Unit> {
         return try {
             val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
@@ -395,6 +410,11 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("\n", null)
 
             // ========================================
+            // La venta local se imprime desde su snapshot, incluso si todavía no hay folio/QR.
+            if (ventaGuardadaSinConexion) {
+                printerInstance.printStr("Venta guardada sin conexión\n\n", null)
+            }
+
             // FISCAL DISCLAIMER (Mexican requirement)
             // ========================================
             printerInstance.printStr("--------------------------------\n", null)
@@ -1414,14 +1434,14 @@ class PrinterManager @Inject constructor(
             // ========================================
             // AMOUNTS
             // ========================================
-            printerInstance.printStr(String.format("%-18s %12s\n", "Monto:", "$${payment.formatAmount()} MXN"), null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "Monto:", "${payment.formatAmount()} MXN"), null)
 
             if (payment.tipAmount > java.math.BigDecimal.ZERO) {
-                printerInstance.printStr(String.format("%-18s %12s\n", "Propina:", "$${payment.formatTipAmount()} MXN"), null)
+                printerInstance.printStr(String.format("%-18s %12s\n", "Propina:", "${payment.formatTipAmount()} MXN"), null)
             }
 
             printerInstance.printStr("================================\n", null)
-            printerInstance.printStr(String.format("%-18s %12s\n", "TOTAL:", "$${payment.formatTotalAmount()} MXN"), null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "TOTAL:", "${payment.formatTotalAmount()} MXN"), null)
             printerInstance.printStr("================================\n\n", null)
 
             // ========================================

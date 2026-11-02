@@ -13,6 +13,11 @@ import androidx.room.Transaction
  */
 @Dao
 interface SyncIntentDao {
+    @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND id = :id LIMIT 1")
+    suspend fun leer(venueId: String, id: String): SyncIntentEntity?
+    @Query("UPDATE sync_intents SET payload_json = :wire WHERE venue_id = :venueId AND id = :id AND status = 'PENDING' AND payload_json = :original")
+    suspend fun guardarReferencia(venueId: String, id: String, original: String, wire: String): Int
+
 
     /**
      * Inserta el intent tomando el siguiente [SyncIntentEntity.seq] DENTRO de la
@@ -41,6 +46,13 @@ interface SyncIntentDao {
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC")
     suspend fun pendingForVenue(venueId: String): List<SyncIntentEntity>
 
+    /** Sólo el prefijo FIFO que cabe en una pasada; el límite se aplica en SQLite. */
+    @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC LIMIT :limit")
+    suspend fun pendingBatchForVenue(venueId: String, limit: Int): List<SyncIntentEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING')")
+    suspend fun hasPendingForVenue(venueId: String): Boolean
+
     /** Cuarentena: rechazos de negocio permanentes, visibles hasta que el mesero/gerente los descarte. */
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
@@ -53,8 +65,8 @@ interface SyncIntentDao {
      * pasa por aquí — [com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox.applyAck]
      * lo intercepta antes y deja la fila intacta.
      *
-     * Se puede llamar dos veces con el mismo ack sin efecto extra (UPDATE por
-     * `id`, no INSERT) — reproducir el mismo ack no duplica ni corrompe la fila.
+     * CAS PENDING→terminal: repetir el ack es un no-op. Una fila ya terminal
+     * no cuenta como avance nuevo ni puede ser reetiquetada por un ack tardío.
      *
      * @return filas afectadas (0 = el id no existe, p.ej. ya se descartó).
      */
@@ -62,7 +74,7 @@ interface SyncIntentDao {
         """
         UPDATE sync_intents
         SET status = :status, error_code = :errorCode, message = :message, result_json = :resultJson
-        WHERE id = :id AND status NOT IN ('DISCARDED', 'DISMISSED')
+        WHERE id = :id AND status = 'PENDING'
         """,
     )
     suspend fun resolve(id: String, status: String, errorCode: String?, message: String?, resultJson: String?): Int

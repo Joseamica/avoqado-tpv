@@ -2,11 +2,30 @@ package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaGuardadaVista
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
+import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
+import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.features.checkout.data.ActiveCartState
+import com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada
+import com.jaac.avoqado_tpv.features.checkout.data.VentaLocalYaGuardadaException
+import com.jaac.avoqado_tpv.features.checkout.domain.CaminoDelCobro
+import com.jaac.avoqado_tpv.features.checkout.domain.armarPedidoParaMobile
+import com.jaac.avoqado_tpv.features.checkout.domain.caminoDelCobro
+import com.jaac.avoqado_tpv.features.checkout.domain.pasaALaVentaLocal
+import com.jaac.avoqado_tpv.features.checkout.domain.renglonesDeTicket
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem
+import com.jaac.avoqado_tpv.features.checkout.domain.model.grossLineCents
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.MosaicShortcut
@@ -15,8 +34,11 @@ import com.jaac.avoqado_tpv.features.checkout.domain.model.SavedCart
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SavedCartItem
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SavedDiscount
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SelectedModifier
+import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal
+import com.jaac.avoqado_tpv.features.checkout.domain.model.hasProductItems
 import com.jaac.avoqado_tpv.features.checkout.domain.repository.MosaicRepository
 import com.jaac.avoqado_tpv.features.checkout.domain.repository.SavedCartsRepository
+import com.jaac.avoqado_tpv.features.checkout.domain.repository.VentaSinRedRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
@@ -35,6 +57,13 @@ import com.jaac.avoqado_tpv.features.referrals.domain.usecase.CaptureReferralUse
 import com.jaac.avoqado_tpv.features.referrals.domain.usecase.ValidateReferralUseCase
 import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureUiState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +73,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
 import java.util.UUID
@@ -57,6 +87,18 @@ import javax.inject.Inject
  * cart. Customer + staff selection arrive in Phase 4. Order creation and
  * `PaymentFlowOrigin` routing arrive in Phase 5.
  */
+data class AvisoSinConexion(val sinRed: Boolean, val guardadas: Int, val conProblema: Int) {
+    val texto: String get() {
+        val ventas = if (guardadas == 1) "1 venta guardada" else "$guardadas ventas guardadas"
+        val principal = when {
+            sinRed -> "Sin conexión · $ventas"
+            guardadas > 0 -> "Subiendo $ventas"
+            else -> null
+        }
+        return listOfNotNull(principal, "$conProblema con problema".takeIf { conProblema > 0 }).joinToString(" · ")
+    }
+}
+
 @HiltViewModel
 class CheckoutViewModel @Inject constructor(
     private val productRepository: ProductRepository,
@@ -69,7 +111,57 @@ class CheckoutViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val validateReferralUseCase: ValidateReferralUseCase,
     private val captureReferralUseCase: CaptureReferralUseCase,
+    private val productDao: ProductDao,
+    private val productCategoryDao: ProductCategoryDao,
+    private val catalogoGuardado: CatalogoGuardado,
+    private val connectionStateManager: ConnectionStateManager,
+    /** 💵 «Cobrar» sin red: el carrito a medias, la venta en $0 y el turno guardado, en el aparato. */
+    private val ventaSinRed: VentaSinRedRepository,
+    private val impresoraDeVentaGuardada: ImpresoraDeVentaGuardada,
+    private val pendingPaymentDao: PendingPaymentDao,
+    private val permissionsRepository: PermissionsRepository,
 ) : ViewModel() {
+
+    /**
+     * 🔒 «Venta en preparación»: `true` mientras corren [prepareForPayment] o [createPayLaterOrder]. Ahí el ViewModel rechaza toda
+     * mutación del carrito y la pantalla no responde (pestañas, cuadrícula, «Preparando…»), así que al terminar sólo se vacía lo que viajó.
+     */
+    private val _avisoSinConexion = MutableStateFlow<AvisoSinConexion?>(null)
+    val avisoSinConexion: StateFlow<AvisoSinConexion?> = _avisoSinConexion.asStateFlow()
+    private val _ventaSinMostrar = MutableStateFlow<VentaGuardadaVista?>(null)
+    val ventaSinMostrar: StateFlow<VentaGuardadaVista?> = _ventaSinMostrar.asStateFlow()
+    private val _canCompItems = MutableStateFlow(false)
+    val canCompItems: StateFlow<Boolean> = _canCompItems.asStateFlow()
+    private val _canApplyDiscount = MutableStateFlow(false)
+    val canApplyDiscount: StateFlow<Boolean> = _canApplyDiscount.asStateFlow()
+    private val _errorRecuperacion = MutableStateFlow<String?>(null)
+    val errorRecuperacion: StateFlow<String?> = _errorRecuperacion.asStateFlow()
+    val sinRed: StateFlow<Boolean> = connectionStateManager.connectionState.map { !it.hasInternet }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, !connectionStateManager.hasInternet())
+    private var permisosDe: Pair<String?, String?>? = null
+    private var permisosJob: Job? = null
+    private var contadoresJob: Job? = null
+    private var recuperacionJob: Job? = null
+    private var venueObservado: String? = null
+    private var recuperacionVerificada = false
+
+    private val candado = CandadoDeVenta()
+    val ventaEnPreparacion: StateFlow<Boolean> = candado.activo
+
+    /** Un aviso para el cajero (p. ej. «Recuperamos la venta que estaba a medias»); la pantalla lo muestra y llama [avisoMostrado]. */
+    private val _aviso = MutableStateFlow<String?>(null)
+    val aviso: StateFlow<String?> = _aviso.asStateFlow()
+
+    private val _ventaEnCeroGuardada = MutableStateFlow<VentaLocal?>(null)
+    val ventaEnCeroGuardada: StateFlow<VentaLocal?> = _ventaEnCeroGuardada.asStateFlow()
+
+    fun cerrarVentaEnCero() {
+        _ventaEnCeroGuardada.value = null
+    }
+
+    fun avisoMostrado() {
+        _aviso.value = null
+    }
 
     private val _cartState = MutableStateFlow(
         // Pre-seed the staff who logged in so the cart panel shows a real name
@@ -110,6 +202,9 @@ class CheckoutViewModel @Inject constructor(
     private val _categories = MutableStateFlow<List<ProductCategory>>(emptyList())
     val categories: StateFlow<List<ProductCategory>> = _categories.asStateFlow()
 
+    private val _errorCatalogo = MutableStateFlow<String?>(null)
+    val errorCatalogo: StateFlow<String?> = _errorCatalogo.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -119,7 +214,7 @@ class CheckoutViewModel @Inject constructor(
     /**
      * Las familias de variantes (talla/color) del catálogo que Cobro rápido muestra hoy ([products], con lo agotado incluido: un
      * agotado se pinta y al tocarlo avisa), por `groupId`. Se recalculan SOLO cuando cambia [products], no con cada letra de la
-     * búsqueda. Cobro rápido carga el catálogo de la red (no hay catálogo guardado aquí): sin red no hay productos ni familias.
+     * búsqueda. Cobro rápido pinta primero el catálogo guardado del negocio y luego el de la red: sin red salen de lo guardado.
      */
     val familias: StateFlow<Map<String, Familia<Product>>> = _products
         .map { reglasDeCobro.familiasDe(it) }
@@ -160,10 +255,6 @@ class CheckoutViewModel @Inject constructor(
                 activeCartState.update(state.itemCount, state.totalDisplay)
             }
         }
-        // Initial product load — non-blocking.
-        viewModelScope.launch {
-            refreshProducts()
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -171,6 +262,7 @@ class CheckoutViewModel @Inject constructor(
     // ─────────────────────────────────────────────────────────────────────
 
     fun addCustomAmount(name: String, amountCents: Int) {
+        if (candado.rechaza("agregar un importe")) return
         if (amountCents <= 0) return
         val item = CartItem(
             type = CartItemType.CustomAmount,
@@ -186,6 +278,8 @@ class CheckoutViewModel @Inject constructor(
         modifiers: List<SelectedModifier> = emptyList(),
         itemNote: String? = null,
     ) {
+        // Cubre la cuadrícula, la búsqueda, la talla/familia, el atajo y el escaneo: todos agregan por aquí.
+        if (candado.rechaza("agregar un producto")) return
         if (quantity <= 0) return
         val unitPriceCents = product.price.multiply(BigDecimal(100)).toInt()
         val item = CartItem(
@@ -199,17 +293,21 @@ class CheckoutViewModel @Inject constructor(
             categoryId = product.categoryId,
             selectedModifiers = modifiers,
             itemNote = itemNote,
+            // Se congela al agregar: un refresco posterior del catálogo no mueve lo que el cliente vio.
+            catalogAt = product.catalogAt,
         )
         _cartState.update { it.copy(items = it.items + item) }
     }
 
     fun removeItem(itemId: String) {
+        if (candado.rechaza("quitar un renglón")) return
         _cartState.update { current ->
             current.copy(items = current.items.filterNot { it.id == itemId })
         }
     }
 
     fun incrementQuantity(itemId: String) {
+        if (candado.rechaza("cambiar la cantidad")) return
         _cartState.update { current ->
             current.copy(
                 items = current.items.map {
@@ -220,6 +318,7 @@ class CheckoutViewModel @Inject constructor(
     }
 
     fun decrementQuantity(itemId: String) {
+        if (candado.rechaza("cambiar la cantidad")) return
         _cartState.update { current ->
             current.copy(
                 items = current.items.mapNotNull {
@@ -234,6 +333,7 @@ class CheckoutViewModel @Inject constructor(
     }
 
     fun setItemNote(itemId: String, note: String?) {
+        if (candado.rechaza("cambiar la nota del renglón")) return
         _cartState.update { current ->
             current.copy(
                 items = current.items.map {
@@ -244,10 +344,12 @@ class CheckoutViewModel @Inject constructor(
     }
 
     fun setOrderNote(note: String?) {
+        if (candado.rechaza("cambiar la nota de la cuenta")) return
         _cartState.update { it.copy(orderNote = note?.takeIf { n -> n.isNotBlank() }) }
     }
 
     fun applyOrderDiscount(discount: Discount?) {
+        if (candado.rechaza("cambiar el descuento")) return
         _cartState.update { it.copy(orderDiscount = discount) }
     }
 
@@ -265,6 +367,11 @@ class CheckoutViewModel @Inject constructor(
      * combination too. UI must guard so the operator can't even attempt it.
      */
     fun applyCortesiaToItem(itemId: String, reason: String) {
+        if (candado.rechaza("dar una cortesía")) return
+        if (!_canCompItems.value || permisosDe != sesionActual()) {
+            _aviso.value = "No tienes permiso para dar cortesías. Pide apoyo al gerente."
+            return
+        }
         val trimmed = reason.trim()
         require(trimmed.isNotEmpty()) { "Cortesía reason cannot be blank" }
         _cartState.update { current ->
@@ -284,6 +391,11 @@ class CheckoutViewModel @Inject constructor(
 
     /** Reverts a cortesía back to a billable item. Keeps everything else intact. */
     fun removeCortesiaFromItem(itemId: String) {
+        if (candado.rechaza("quitar una cortesía")) return
+        if (!_canCompItems.value || permisosDe != sesionActual()) {
+            _aviso.value = "No tienes permiso para cambiar cortesías. Pide apoyo al gerente."
+            return
+        }
         _cartState.update { current ->
             current.copy(
                 items = current.items.map { item ->
@@ -310,6 +422,7 @@ class CheckoutViewModel @Inject constructor(
      *   only — manual discounts skip that path).
      */
     fun applyManualOrderDiscount(amountCents: Int, reason: String?) {
+        if (candado.rechaza("aplicar un descuento")) return
         applyManualOrderDiscountInternal(amountCents, reason, source = null)
     }
 
@@ -319,6 +432,10 @@ class CheckoutViewModel @Inject constructor(
         reason: String?,
         source: String?,
     ) {
+        if (amountCents > 0 && (!_canApplyDiscount.value || permisosDe != sesionActual())) {
+            _aviso.value = "No tienes permiso para aplicar descuentos. Pide apoyo al gerente."
+            return
+        }
         require(amountCents >= 0) { "Manual discount must be non-negative" }
         _cartState.update { current ->
             current.copy(
@@ -334,6 +451,7 @@ class CheckoutViewModel @Inject constructor(
 
     /** Clears any manual order discount currently applied. */
     fun clearManualOrderDiscount() {
+        if (candado.rechaza("quitar el descuento")) return
         _cartState.update {
             it.copy(
                 manualDiscountCents = 0,
@@ -352,6 +470,8 @@ class CheckoutViewModel @Inject constructor(
      * so UI can show an inline error.
      */
     suspend fun validateAndApplyCoupon(code: String): Result<Unit> {
+        if (candado.rechaza("validar un cupón")) return Result.failure(VentaEnPreparacionException())
+        if (necesitaInternet()) return Result.failure(IllegalStateException("Necesita internet"))
         val trimmed = code.trim().uppercase()
         if (trimmed.isEmpty()) {
             return Result.failure(IllegalArgumentException("Código requerido"))
@@ -361,8 +481,13 @@ class CheckoutViewModel @Inject constructor(
         val cartTotal = _cartState.value.totalCents / 100.0
         return discountRepository.validateCoupon(venueId, trimmed, cartTotal).fold(
             onSuccess = { coupon ->
-                if (!coupon.isValid) {
+                if (necesitaInternet()) {
+                    Result.failure(IllegalStateException("Necesita internet"))
+                } else if (!coupon.isValid) {
                     Result.failure(IllegalStateException(coupon.invalidReason ?: "Cupón inválido"))
+                } else if (candado.rechaza("aplicar el cupón")) {
+                    // La respuesta llegó con la venta ya preparándose: aplicarlo ahora cambiaría un carrito que ya viajó.
+                    Result.failure(VentaEnPreparacionException())
                 } else {
                     val asDiscount = Discount(
                         id = coupon.id,
@@ -389,6 +514,7 @@ class CheckoutViewModel @Inject constructor(
     }
 
     fun applyOrderTaxPercent(percent: Int?) {
+        if (candado.rechaza("cambiar el impuesto")) return
         // New Cobrar V1 intentionally disables order tax. Backend rejects
         // taxAmount != 0 until payment math, receipts, and dashboard totals
         // are updated together. Keep this no-op so stale UI/previews cannot
@@ -405,7 +531,15 @@ class CheckoutViewModel @Inject constructor(
     private var orderAttemptExternalId: String? = null
     private var orderAttemptFingerprint: String? = null
 
+    /** El borrado del carrito a medias que lanzó el último «vaciar»: la siguiente venta lo espera antes de escribir el suyo. */
+    private var borradoDelCarrito: Job? = null
+
     fun clearCart() {
+        if (candado.rechaza("vaciar el carrito")) return
+        reiniciarCarrito()
+    }
+
+    private fun reiniciarCarrito() {
         _cartState.value = CartState()
         // Also reset the referral capture state — the cart is a per-order
         // surface so anything tied to it (referral code, validation) must
@@ -415,11 +549,20 @@ class CheckoutViewModel @Inject constructor(
         _referralValidation.value = ReferralCaptureUiState.Idle
         // ActiveCartState is updated by the collector in init.
         // Venta nueva = llave nueva (la huella ya lo garantizaría; esto es higiene).
+        olvidarLlave()
+        // El cajero vació (o la venta terminó): el carrito a medias del aparato ya no es una venta pendiente.
+        secureStorage.getVenueId()?.let { venueId ->
+            borradoDelCarrito = viewModelScope.launch { ventaSinRed.borrarCarrito(venueId) }
+        }
+    }
+
+    private fun olvidarLlave() {
         orderAttemptExternalId = null
         orderAttemptFingerprint = null
     }
 
     fun selectStaff(staffId: String, staffName: String) {
+        if (candado.rechaza("cambiar quién vende")) return
         _cartState.update {
             it.copy(selectedStaffId = staffId, selectedStaffName = staffName)
         }
@@ -430,6 +573,8 @@ class CheckoutViewModel @Inject constructor(
     // ─────────────────────────────────────────────────────────────────────
 
     fun selectCustomer(customer: Customer?) {
+        // El cliente viaja en la orden (y cambiarlo limpia el referido, que es un descuento del carrito).
+        if (candado.rechaza("cambiar el cliente") || necesitaInternet()) return
         val previous = _selectedCustomer.value
         _selectedCustomer.value = customer
         // Switching customer invalidates any cached referral validation
@@ -447,6 +592,7 @@ class CheckoutViewModel @Inject constructor(
     private val REFERRAL_DISCOUNT_SOURCE = "REFERRAL_NEW_CUSTOMER"
 
     fun onReferralCodeChange(code: String) {
+        if (candado.rechaza("cambiar el código de referido") || necesitaInternet()) return
         _referralCode.value = code
         // Reset validation if the operator edits the code after a previous
         // validation result. Forces them to re-validate.
@@ -466,6 +612,7 @@ class CheckoutViewModel @Inject constructor(
      * confirms the charge.
      */
     fun validateReferralCode() {
+        if (necesitaInternet()) return
         val venueId = secureStorage.getVenueId() ?: run {
             Timber.w("🎁 validateReferralCode skipped: no venueId")
             return
@@ -476,14 +623,21 @@ class CheckoutViewModel @Inject constructor(
         }
         val code = _referralCode.value.trim()
         if (code.isEmpty()) return
+        if (candado.rechaza("validar el referido")) return
 
         viewModelScope.launch {
             _referralValidation.value = ReferralCaptureUiState.Validating
-            validateReferralUseCase(
+            val validacion = validateReferralUseCase(
                 venueId = venueId,
                 referralCode = code,
                 newCustomerId = customer.id,
-            ).fold(
+            )
+            if (candado.rechaza("aplicar el referido") || necesitaInternet()) {
+                // La respuesta llegó con la venta ya preparándose: su descuento no viajó. Se descarta y el cajero vuelve a validar.
+                _referralValidation.value = ReferralCaptureUiState.Idle
+                return@launch
+            }
+            validacion.fold(
                 onSuccess = { result ->
                     when (result) {
                         is ReferralValidationResult.Valid -> {
@@ -512,6 +666,7 @@ class CheckoutViewModel @Inject constructor(
 
     /** Resets referral state and any discount it applied. */
     fun clearReferral() {
+        if (candado.rechaza("quitar el referido") || necesitaInternet()) return
         _referralCode.value = ""
         _referralValidation.value = ReferralCaptureUiState.Idle
         clearReferralDiscountOnly()
@@ -562,6 +717,7 @@ class CheckoutViewModel @Inject constructor(
      * applied to the cart.
      */
     suspend fun captureReferralOnPayment(orderId: String? = null): Boolean {
+        if (!connectionStateManager.hasInternet()) return false
         val state = _referralValidation.value
         if (state !is ReferralCaptureUiState.Valid) return true
         val venueId = secureStorage.getVenueId() ?: return false
@@ -607,6 +763,7 @@ class CheckoutViewModel @Inject constructor(
      */
     private var customerSearchJob: kotlinx.coroutines.Job? = null
     private fun searchCustomers(query: String) {
+        if (necesitaInternet()) return
         val venueId = secureStorage.getVenueId() ?: return
         customerSearchJob?.cancel()
         customerSearchJob = viewModelScope.launch {
@@ -618,7 +775,7 @@ class CheckoutViewModel @Inject constructor(
                 customerRepository.searchCustomers(venueId, trimmed)
             }
             result.fold(
-                onSuccess = { _customerResults.value = it },
+                onSuccess = { if (connectionStateManager.hasInternet()) _customerResults.value = it },
                 onFailure = { e ->
                     Timber.e(e, "🛒 Customer search failed")
                     _customerResults.value = emptyList()
@@ -646,23 +803,94 @@ class CheckoutViewModel @Inject constructor(
         _searchQuery.value = query
     }
 
-    /** Re-fetches the product catalog from the backend. Safe to call repeatedly. */
+    private var refreshJob: Job? = null
+    private var refreshVenueId: String? = null
+    private var contextoDelCatalogo: Pair<String?, String?>? = null
+    private var versionDelCatalogo = 0
+    private var generacionDelContexto = 0
+
+    companion object {
+        /**
+         * Dónde se lee y se mapea el catálogo guardado (Gson de extras y variantes): fuera del hilo principal, como Órdenes. Vive en el
+         * companion porque el primer refresco sale del `init`; las pruebas lo ponen en `Dispatchers.Unconfined` en `@Before`.
+         */
+        internal var despachadorDelCatalogo: CoroutineDispatcher = Dispatchers.Default
+    }
+
+    /**
+     * Catálogo guardado primero, luego la red (como `MenuViewModel.performProductsRefresh`). Pinta lo guardado del negocio ACTUAL
+     * (Room filtra por `venue_id`) aunque venga vacío: tras cambiar de negocio nunca se queda pintado el anterior. Con red lo
+     * refresca [CatalogoGuardado] (que también lo guarda); sin red no se pregunta, y si la red falla lo pintado se queda. Mientras
+     * lee y pregunta, [isLoading] gira (el botón de refrescar; la cuadrícula sólo tapa la pantalla si no hay nada pintado).
+     * Seguro de llamar varias veces: con el mismo negocio refrescando no lo reinicia; con otro negocio cancela el anterior.
+     */
     fun refreshProducts() {
-        val venueId = secureStorage.getVenueId() ?: run {
-            Timber.w("🛒 refreshProducts skipped: no venueId in secure storage")
-            return
-        }
-        viewModelScope.launch {
+        if (contextoDelCatalogo != sesionActual()) actualizarEstadoDeCobrar()
+        val contexto = sesionActual()
+        val venueId = contexto.first ?: return
+        if (refreshJob?.isActive == true && refreshVenueId == venueId) return
+        refreshJob?.cancel()
+        refreshVenueId = venueId
+        val version = ++versionDelCatalogo
+        refreshJob = viewModelScope.launch {
             _isLoading.value = true
-            productRepository.getProducts(venueId).fold(
-                onSuccess = { list -> _products.value = list },
-                onFailure = { e -> Timber.e(e, "🛒 Failed to load products") },
-            )
-            productRepository.getCategories(venueId).fold(
-                onSuccess = { list -> _categories.value = list },
-                onFailure = { e -> Timber.e(e, "🛒 Failed to load categories") },
-            )
-            _isLoading.value = false
+            try {
+                try {
+                    val (guardados, categoriasGuardadas) = withContext(despachadorDelCatalogo) {
+                        productDao.getAllProducts(venueId).toDomain() to productCategoryDao.getAllCategories(venueId).toCategoryDomain()
+                    }
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto) return@launch
+                    _products.value = guardados
+                    _categories.value = categoriasGuardadas
+                    _errorCatalogo.value = null
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto || versionDelCatalogo != version) return@launch
+                    Timber.e(e, "🛒 No se pudo leer el catálogo guardado")
+                    _errorCatalogo.value = "No se pudo leer el catálogo guardado. Se conserva lo anterior; vuelve a intentar."
+                    _aviso.value = _errorCatalogo.value
+                }
+                if (!connectionStateManager.hasInternet()) return@launch
+                var productosRecuperados = false
+                try {
+                    val list = catalogoGuardado.refrescar(venueId).getOrThrow()
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto) return@launch
+                    _products.value = list
+                    productosRecuperados = true
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto || versionDelCatalogo != version) return@launch
+                    Timber.w(e, "🛒 Failed to refresh products (se queda el catálogo guardado)")
+                    if (_products.value.isEmpty() && _errorCatalogo.value == null) {
+                        _errorCatalogo.value = "No se pudo actualizar el catálogo. Se conserva lo guardado; vuelve a intentar."
+                    }
+                }
+                try {
+                    val list = productRepository.getCategories(venueId).getOrThrow()
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto) return@launch
+                    productCategoryDao.upsertCategories(list.toCategoryEntities(venueId, System.currentTimeMillis()))
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto) return@launch
+                    _categories.value = list
+                    if (productosRecuperados) {
+                        if (_aviso.value == _errorCatalogo.value) _aviso.value = null
+                        _errorCatalogo.value = null
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto || versionDelCatalogo != version) return@launch
+                    Timber.w(e, "🛒 Failed to refresh categories (se quedan las guardadas)")
+                }
+            } finally {
+                // Una lectura cancelada no apaga el giro de la que la reemplazó.
+                if (versionDelCatalogo == version) _isLoading.value = false
+            }
         }
     }
 
@@ -674,23 +902,40 @@ class CheckoutViewModel @Inject constructor(
     fun productoVigente(id: String): Product? = _products.value.firstOrNull { it.id == id }
 
     /**
-     * Lookup a product by barcode (called from the QR scanner). Returns null
-     * via callback if no match. Implementation note: a future iteration could
-     * cache barcode→product to avoid the network round-trip.
+     * Busca un código escaneado. Con red pregunta al servidor (el producto trae `catalogAt` de la raíz de la respuesta); sin red, o si
+     * la red falla, lo busca por SKU o GTIN en el catálogo guardado del negocio actual (con su `catalog_at` guardado).
+     * [onResult] recibe el producto (o `null`) y si se buscó en el catálogo guardado: así la pantalla no dice «no encontrado» cuando
+     * sólo miró lo guardado. Un fallo de lectura publica un aviso y no llama a [onResult]; una cancelación se propaga.
      */
-    fun findProductByBarcode(barcode: String, onResult: (Product?) -> Unit) {
-        val venueId = secureStorage.getVenueId() ?: run {
-            onResult(null)
-            return
-        }
+    fun findProductByBarcode(barcode: String, onResult: (producto: Product?, delCatalogoGuardado: Boolean) -> Unit) {
+        val contexto = sesionActual()
+        val venueId = contexto.first ?: return
+        val generacion = generacionDelContexto
         viewModelScope.launch {
-            productRepository.getProductByBarcode(venueId, barcode).fold(
-                onSuccess = { onResult(it) },
-                onFailure = { e ->
-                    Timber.e(e, "🛒 Barcode lookup failed")
-                    onResult(null)
-                },
-            )
+            if (connectionStateManager.hasInternet()) {
+                try {
+                    val producto = productRepository.getProductByBarcode(venueId, barcode).getOrThrow()
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() == contexto && generacionDelContexto == generacion) onResult(producto, false)
+                    return@launch
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    currentCoroutineContext().ensureActive()
+                    if (sesionActual() != contexto || generacionDelContexto != generacion) return@launch
+                    Timber.w(e, "🛒 Barcode lookup failed; se busca en el catálogo guardado")
+                }
+            }
+            try {
+                val guardado = withContext(despachadorDelCatalogo) { productDao.getProductByCodigo(venueId, barcode)?.toDomain() }
+                currentCoroutineContext().ensureActive()
+                if (sesionActual() == contexto && generacionDelContexto == generacion) onResult(guardado, true)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                currentCoroutineContext().ensureActive()
+                if (sesionActual() != contexto || generacionDelContexto != generacion) return@launch
+                Timber.e(e, "🛒 Barcode lookup in saved catalog failed")
+                _aviso.value = "No se pudo leer el catálogo guardado para buscar el código. Vuelve a escanear."
+            }
         }
     }
 
@@ -757,14 +1002,21 @@ class CheckoutViewModel @Inject constructor(
         viewModelScope.launch { mosaicRepository.delete(id) }
     }
 
-    /** Tap on a shortcut — looks up the product and adds it to the cart. */
-    fun addShortcutToCart(shortcut: MosaicShortcut) {
-        val product = _products.value.firstOrNull { it.id == shortcut.productId }
-        if (product != null) {
-            addProduct(product)
-        } else {
+    /**
+     * Toque de un atajo: busca el producto en el catálogo pintado (guardado o de la red) y lo agrega. Si tiene algún grupo de extras
+     * OBLIGATORIO no lo agrega: lo devuelve para que la pantalla abra la misma hoja de extras que la cuadrícula (sin sus obligatorios
+     * se vendería incompleto). `null` = ya se agregó, o el producto ya no está en el catálogo.
+     */
+    fun addShortcutToCart(shortcut: MosaicShortcut): Product? {
+        // Tampoco abre la hoja de extras: lo que entrara ahí saldría fuera de la venta que se está preparando.
+        if (candado.rechaza("agregar un atajo")) return null
+        val product = _products.value.firstOrNull { it.id == shortcut.productId } ?: run {
             Timber.w("🛒 Shortcut ${shortcut.id} references missing product ${shortcut.productId}")
+            return null
         }
+        if (product.modifierGroups.any { it.effectiveMinSelections > 0 }) return product
+        addProduct(product)
+        return null
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -775,45 +1027,76 @@ class CheckoutViewModel @Inject constructor(
      * Inspects the current cart and produces the payload the navigation layer
      * needs to open `PaymentScreen`.
      *
-     * Routing:
-     * - All items are `CustomAmount` → [PaymentNavigationPayload.Fast] (no
-     *   order is created, mirrors today's "Pago Rápido" flow exactly).
-     * - At least one `ProductItem` → the new TPV `/orders/with-items`
-     *   endpoint creates one complete order with catalog products, custom
-     *   amounts, cortesía metadata, and discounts preserved.
+     * Routing ([caminoDelCobro], D3 del spec «Cobrar sin red»):
+     * - Sólo importes con red → [PaymentNavigationPayload.Fast] (no order is created, mirrors today's "Pago Rápido" flow exactly).
+     * - Con productos y red → la orden completa en `/orders/with-items`, como hoy. La llave (`externalId`) y el carrito quedan en el
+     *   aparato ANTES del POST ([VentaSinRedRepository.guardarCarrito]); si no se pudieron escribir, no se sale a la red.
+     *   Si el servidor no contesta ([pasaALaVentaLocal]) ⇒ venta local con la MISMA llave; otro error (4xx) ⇒ como hoy.
+     * - Sin red (o sólo importes en $0) → venta local: [PaymentNavigationPayload.VentaLocal] (sólo efectivo) o, en $0, la fila ya
+     *   guardada sin abrir la pantalla de cobro ([PaymentNavigationPayload.VentaEnCeroGuardada]).
+     *
+     * Mientras corre, el carrito no cambia ([ventaEnPreparacion]).
      */
-    suspend fun prepareForPayment(): Result<PaymentNavigationPayload> {
+    suspend fun prepareForPayment(): Result<PaymentNavigationPayload> = candado.mientras { prepararCobro() }
+
+    private suspend fun prepararCobro(): Result<PaymentNavigationPayload> {
         val current = _cartState.value
+        errorParaCobrar(current)?.let { return Result.failure(IllegalStateException(it)) }
         if (current.isEmpty) {
             return Result.failure(IllegalStateException("Cart is empty"))
         }
         if (current.taxCents != 0) {
             return Result.failure(IllegalStateException("El impuesto no está disponible en Cobrar V1"))
         }
+        // Un «vaciar» de hace un instante termina de borrar el carrito a medias antes de que esta venta escriba el suyo.
+        borradoDelCarrito?.join()
 
         val amountPesos = (current.totalCents / 100.0).toString()
-
-        val productItems = current.items.filter { it.type is CartItemType.ProductItem }
-        if (productItems.isEmpty()) {
-            // No order is created here, but the referral can still be captured
-            // with no `intendedOrderId`. The qualifying-order webhook on the
-            // backend will pick it up via the customerId attached to the
-            // fast-payment Order shadow row.
-            runCatching { captureReferralOnPayment(orderId = null) }
-                .onFailure { e -> Timber.e(e, "🎁 captureReferralOnPayment threw (fast path)") }
-            return Result.success(PaymentNavigationPayload.Fast(amountPesos))
-        }
-
-        return createOrderWithCurrentItems().also { orderResult ->
-            // Persist the referral right before we hand off to PaymentScreen.
-            // Failures are swallowed: the cart already has the discount
-            // applied, so blocking the charge over a transient backend
-            // failure would punish the customer for a backend hiccup.
-            orderResult.getOrNull()?.let { order ->
-                runCatching { captureReferralOnPayment(orderId = order.id) }
-                    .onFailure { e -> Timber.e(e, "🎁 captureReferralOnPayment threw") }
+        val hayRed = connectionStateManager.hasInternet()
+        return when (caminoDelCobro(current.hasProductItems, current.totalCents, hayRed)) {
+            CaminoDelCobro.RAPIDO -> {
+                // Sin orden y sin carrito durable (como hoy). Un carrito a medias de un intento anterior ya no es esta venta.
+                secureStorage.getVenueId()?.let { ventaSinRed.borrarCarrito(it) }
+                // No order is created here, but the referral can still be captured with no `intendedOrderId`. The qualifying-order
+                // webhook on the backend will pick it up via the customerId attached to the fast-payment Order shadow row.
+                capturarReferido(orderId = null)
+                Result.success(PaymentNavigationPayload.Fast(amountPesos))
             }
-        }.map { order ->
+            CaminoDelCobro.EN_LINEA -> cobrarEnLinea(current, amountPesos)
+            CaminoDelCobro.LOCAL -> {
+                // Sólo importes en $0 con red: hasta hoy salía como Fast y capturaba el referido sin orden; eso se conserva.
+                if (hayRed && !current.hasProductItems) capturarReferido(orderId = null)
+                ventaLocal(current, amountPesos, llaveYaUsada = null)
+            }
+        }
+    }
+
+    private suspend fun cobrarEnLinea(current: CartState, amountPesos: String): Result<PaymentNavigationPayload> {
+        val venueId = secureStorage.getVenueId()
+            ?: return Result.failure(IllegalStateException("No venueId in secure storage"))
+        val staffId = staffDe(current) ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
+        val cliente = _selectedCustomer.value
+        val pedido = pedidoEnLinea(current, staffId, cliente?.id)
+        val llave = llaveDelIntento(pedido)
+        // ANTES del POST: si el proceso muere esperando la respuesta, al reabrir Cobrar vuelve este carrito con ESTA llave y el reintento
+        // encuentra la misma orden por `externalId`. Si no quedó escrito, no se sale a la red.
+        if (!ventaSinRed.guardarCarrito(venueId, llave, current, cliente)) {
+            return Result.failure(IllegalStateException(TEXTO_NO_SE_GUARDO_LA_VENTA))
+        }
+        val creada = crearOrdenEnLinea(venueId, pedido, llave)
+        val fallo = creada.exceptionOrNull()
+        if (fallo != null) {
+            if (!pasaALaVentaLocal(fallo)) return Result.failure(fallo) // 4xx, 500…: como hoy (el carrito y su llave se quedan)
+            Timber.w(fallo, "🛒 El servidor no contestó al crear la orden: sigue como venta local con la misma llave")
+            return ventaLocal(current, amountPesos, llaveYaUsada = llave)
+        }
+        val order = creada.getOrThrow()
+        // La venta en línea terminó de prepararse: la orden ya existe y el cobro sigue en la pantalla de pago.
+        ventaSinRed.borrarCarrito(venueId)
+        // Persist the referral right before we hand off to PaymentScreen. Failures are swallowed: the cart already has the discount
+        // applied, so blocking the charge over a transient backend failure would punish the customer for a backend hiccup.
+        capturarReferido(orderId = order.id)
+        return Result.success(
             if (current.totalCents == 0) {
                 PaymentNavigationPayload.CompletedFreeCart(
                     amountPesosString = amountPesos,
@@ -827,8 +1110,63 @@ class CheckoutViewModel @Inject constructor(
                     orderNumber = order.orderNumber,
                     wasPayLaterOrder = false,
                 )
-            }
+            },
+        )
+    }
+
+    /**
+     * 💵 La venta local: el pedido para mobile (centavos, `isOfflineReplay`) y los renglones del ticket, con [llaveYaUsada] si ya
+     * hubo un intento en línea (o la del carrito si no). En $0 se guarda YA como fila y no abre la pantalla de cobro; si no, el carrito a
+     * medias se guarda antes de navegar con la venta (sólo efectivo) y la pantalla de cobro inserta la fila (C3).
+     */
+    private suspend fun ventaLocal(current: CartState, amountPesos: String, llaveYaUsada: String?): Result<PaymentNavigationPayload> {
+        val venueId = secureStorage.getVenueId()
+            ?: return Result.failure(IllegalStateException("No venueId in secure storage"))
+        val staffId = staffDe(current) ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
+        val cliente = _selectedCustomer.value
+        val llave = llaveYaUsada ?: llaveDelIntento(pedidoEnLinea(current, staffId, cliente?.id))
+        if (!ventaSinRed.guardarCarrito(venueId, llave, current, cliente)) {
+            return Result.failure(IllegalStateException(TEXTO_NO_SE_GUARDO_LA_VENTA))
         }
+        val shiftId = try {
+            ventaSinRed.turnoDeLaVenta(venueId)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Timber.e(e, "🛒 No se pudo leer la caja guardada para preparar la venta")
+            return Result.failure(IllegalStateException("No se pudo leer la caja guardada. La venta se conserva; vuelve a intentar.", e))
+        }
+        val productos = _products.value.associateBy { it.id }
+        val ahora = System.currentTimeMillis()
+        val venta = VentaLocal(
+            llave = llave,
+            venueId = venueId,
+            staffId = staffId,
+            shiftId = shiftId,
+            createdAtLocal = ahora,
+            totalCents = current.totalCents,
+            pedidoJson = armarPedidoParaMobile(current, llave, staffId, shiftId, ahora, productos, customerId = cliente?.id),
+            renglones = renglonesDeTicket(current, llave, productos),
+        )
+        if (current.totalCents == 0) {
+            return ventaSinRed.guardarVentaEnCero(venta).fold(
+                onSuccess = {
+                    // El carrito ya terminó: una recreación de la pantalla conserva SU ticket, nunca permite cobrarlo otra vez.
+                    _ventaEnCeroGuardada.value = venta
+                    reiniciarCarrito()
+                    Result.success(PaymentNavigationPayload.VentaEnCeroGuardada(amountPesos, venta))
+                },
+                onFailure = { e ->
+                    Timber.e(e, "🛒 No se pudo guardar la venta en \$0")
+                    Result.failure(if (e is VentaLocalYaGuardadaException) e else IllegalStateException(TEXTO_NO_SE_GUARDO_LA_VENTA, e))
+                },
+            )
+        }
+        return Result.success(PaymentNavigationPayload.VentaLocal(amountPesos, Gson().toJson(venta)))
+    }
+
+    private suspend fun capturarReferido(orderId: String?) {
+        runCatching { captureReferralOnPayment(orderId = orderId) }
+            .onFailure { e -> Timber.e(e, "🎁 captureReferralOnPayment threw (orderId=$orderId)") }
     }
 
     /**
@@ -840,6 +1178,7 @@ class CheckoutViewModel @Inject constructor(
      *
      * Requires `_selectedCustomer != null` (the whole point is binding the
      * debt to a customer). Cart must have items (no $0 free-cart in this path).
+     * Mientras corre, el carrito no cambia ([ventaEnPreparacion]).
      *
      * **Known drift**: when the dashboard later settles this order via the
      * existing `settleOrder` endpoint, inventory is NOT deducted (the
@@ -848,23 +1187,21 @@ class CheckoutViewModel @Inject constructor(
      * order itself is faithful — items, discounts, cortesía all persisted as
      * with regular Cobrar orders.
      */
-    suspend fun createPayLaterOrder(): Result<Order> {
+    suspend fun createPayLaterOrder(): Result<Order> = candado.mientras {
         val current = _cartState.value
-        if (current.isEmpty) {
-            return Result.failure(IllegalStateException("El carrito está vacío"))
-        }
-        if (_selectedCustomer.value == null) {
-            return Result.failure(IllegalStateException("Selecciona un cliente para Pagar después"))
-        }
-        if (current.totalCents == 0) {
-            return Result.failure(
+        val error = if (!connectionStateManager.hasInternet()) "Necesita internet" else errorParaCobrar(current)
+        when {
+            error != null -> Result.failure(IllegalStateException(error))
+            current.isEmpty -> Result.failure(IllegalStateException("El carrito está vacío"))
+            _selectedCustomer.value == null -> Result.failure(IllegalStateException("Selecciona un cliente para Pagar después"))
+            current.totalCents == 0 -> Result.failure(
                 IllegalStateException("El total es \$0 — usa cortesía/cobrar normal en lugar de Pagar después"),
             )
+            // The backend createOrderWithItems endpoint already accepts customerId
+            // and leaves the order in PENDING + PENDING when total > 0. That's
+            // exactly the pay-later shape. No separate "leave open" flag needed.
+            else -> createOrderWithCurrentItems()
         }
-        // The backend createOrderWithItems endpoint already accepts customerId
-        // and leaves the order in PENDING + PENDING when total > 0. That's
-        // exactly the pay-later shape. No separate "leave open" flag needed.
-        return createOrderWithCurrentItems()
     }
 
     /**
@@ -877,10 +1214,16 @@ class CheckoutViewModel @Inject constructor(
             IllegalStateException("No venueId in secure storage"),
         )
         val current = _cartState.value
-        val staffId = current.selectedStaffId.takeIf { it.isNotBlank() }
-            ?: secureStorage.getStaffId()
-            ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
+        val staffId = staffDe(current) ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
+        val pedido = pedidoEnLinea(current, staffId, _selectedCustomer.value?.id)
+        return crearOrdenEnLinea(venueId, pedido, llaveDelIntento(pedido))
+    }
 
+    private fun staffDe(current: CartState): String? =
+        current.selectedStaffId.takeIf { it.isNotBlank() } ?: secureStorage.getStaffId()
+
+    /** El cuerpo de `/tpv/.../orders/with-items` del carrito, SIN `externalId` (es también la huella de la venta). */
+    private fun pedidoEnLinea(current: CartState, staffId: String, customerId: String?): TpvCreateOrderWithItemsRequest {
         val requestItems = current.items.map { item ->
             val productId = (item.type as? CartItemType.ProductItem)?.productId
             TpvCreateOrderWithItemsItem(
@@ -908,12 +1251,12 @@ class CheckoutViewModel @Inject constructor(
             else -> current.manualDiscountCents
         }
 
-        val baseRequest = TpvCreateOrderWithItemsRequest(
+        return TpvCreateOrderWithItemsRequest(
             items = requestItems,
             staffId = staffId,
             orderType = OrderType.TAKEOUT,
             source = "TPV",
-            customerId = _selectedCustomer.value?.id,
+            customerId = customerId,
             discount = discountForWire.centsToPesos(),
             orderDiscountId = current.orderDiscount?.id,
             taxAmount = BigDecimal.ZERO,
@@ -922,33 +1265,227 @@ class CheckoutViewModel @Inject constructor(
             total = current.totalCents.centsToPesos(),
             note = current.orderNote,
         )
+    }
 
-        // Idempotencia por venta (retry-safety): si el request es IDÉNTICO al del
-        // intento anterior (la respuesta se perdió y el cajero volvió a picar), se
-        // reusa la misma llave y el backend devuelve la orden original en vez de
-        // crear otra — que en free-cart ($0) significaba segunda deducción de stock.
-        // Si el carrito CAMBIÓ, la huella difiere y nace llave nueva: jamás se puede
-        // recibir de vuelta una orden con los items viejos. Al CREARSE la orden la
-        // llave se limpia — reusar llave entre dos ventas devolvería la anterior.
-        val fingerprint = baseRequest.toString()
-        val externalId = orderAttemptExternalId.takeIf { orderAttemptFingerprint == fingerprint }
-            ?: java.util.UUID.randomUUID().toString().also {
+    /**
+     * La llave de la venta (= `externalId` de la orden = llave de la venta local). Idempotencia por venta (retry-safety): si el pedido
+     * es IDÉNTICO al del intento anterior (la respuesta se perdió y el cajero volvió a picar, o el carrito volvió tras morir el proceso),
+     * se reusa la misma llave y el backend devuelve la orden original en vez de crear otra — que en free-cart ($0) significaba segunda
+     * deducción de stock. Si el carrito CAMBIÓ, la huella difiere y nace llave nueva: jamás se puede recibir de vuelta una orden con los
+     * items viejos. Al CREARSE la orden (o guardarse la venta) la llave se olvida — reusarla entre dos ventas devolvería la anterior.
+     */
+    private fun llaveDelIntento(pedido: TpvCreateOrderWithItemsRequest): String {
+        val huella = pedido.toString()
+        return orderAttemptExternalId.takeIf { orderAttemptFingerprint == huella }
+            ?: UUID.randomUUID().toString().also {
                 orderAttemptExternalId = it
-                orderAttemptFingerprint = fingerprint
+                orderAttemptFingerprint = huella
             }
+    }
 
-        return orderRepository.createOrderWithItems(
-            venueId = venueId,
-            request = baseRequest.copy(externalId = externalId),
-        ).onSuccess {
-            orderAttemptExternalId = null
-            orderAttemptFingerprint = null
+    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> =
+        orderRepository.createOrderWithItems(venueId = venueId, request = pedido.copy(externalId = llave))
+            .onSuccess { olvidarLlave() }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 💵 «Cobrar» sin red: el carrito a medias y la venta en $0
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** «Imprimir ticket» del diálogo «Venta en $0 guardada»: el impresor de la pantalla de éxito, con los renglones de la venta. */
+    suspend fun imprimirVentaGuardada(venta: VentaLocal): Result<Unit> = impresoraDeVentaGuardada.imprimir(venta)
+
+    /** El cajero ya vio que la venta guardada terminó (`exito_mostrado = 1`): al reabrir no se le vuelve a avisar. */
+    fun ventaGuardadaVista(llave: String) {
+        val mostrada = _ventaSinMostrar.value?.venta ?: _ventaEnCeroGuardada.value
+        if (mostrada?.llave != llave || mostrada.venueId != secureStorage.getVenueId()) return
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            candado.mientras {
+                try {
+                    ventaSinRed.marcarVentaVista(llave)
+                    if (secureStorage.getVenueId() == mostrada.venueId) {
+                        val siguiente = ventaSinRed.ultimaVentaSinMostrar(mostrada.venueId)
+                        if (secureStorage.getVenueId() == mostrada.venueId) _ventaSinMostrar.value = siguiente
+                    }
+                    Result.success(Unit)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    if (secureStorage.getVenueId() == mostrada.venueId) {
+                        _errorRecuperacion.value = "No se pudo confirmar la venta guardada. Se conserva; vuelve a intentar."
+                    }
+                    Result.failure(e)
+                }
+            }
+            // Cambiar de sucursal pudo esperar este candado. Ahora se recupera la que sigue activa.
+            if (secureStorage.getVenueId() != mostrada.venueId) actualizarEstadoDeCobrar()
+        }
+    }
+
+    /**
+     * Al abrir Cobrar: si quedó un carrito a medias (guardado antes de la red, sin fila de pago, de menos de 24 h), vuelve con SU llave
+     * y se avisa. Queda a nombre de quien tiene la sesión ahora (precedente del founder, 20-oct: la venta es de quien la termina). Si
+     * ya hay otra venta en el carrito, no se pisa.
+     */
+    private suspend fun restaurarCarritoAMedias() {
+        val venueId = secureStorage.getVenueId() ?: return
+        // Al volver con el MISMO ViewModel (Atrás desde pago), su copia en memoria tampoco se puede cobrar otra vez.
+        // Sólo se consume si sigue siendo el mismo intento: un carrito nuevo o editado conserva sus artículos.
+        val llave = orderAttemptExternalId
+        val actual = _cartState.value
+        val staff = staffDe(actual)
+        if (llave != null && staff != null && orderAttemptFingerprint == pedidoEnLinea(actual, staff, _selectedCustomer.value?.id).toString() &&
+            pendingPaymentDao.existeFilaConLlave(llave) && secureStorage.getVenueId() == venueId) {
+            _cartState.value = CartState()
+            _selectedCustomer.value = null
+            _referralCode.value = ""
+            _referralValidation.value = ReferralCaptureUiState.Idle
+            olvidarLlave()
+        }
+        val aMedias = ventaSinRed.carritoParaRestaurar(venueId) ?: return
+        if (secureStorage.getVenueId() != venueId) return
+        if (!_cartState.value.isEmpty) {
+            Timber.w("🛒 La venta a medias no se restaura: ya hay otra venta en el carrito")
+            return
+        }
+        val sesion = secureStorage.getStaffId()?.takeIf { it.isNotBlank() }
+        val cart = if (sesion == null) aMedias.cart else aMedias.cart.copy(
+            selectedStaffId = sesion,
+            selectedStaffName = secureStorage.getStaffName().orEmpty().ifBlank { "Staff" },
+        )
+        val staffId = staffDe(cart) ?: return
+        _cartState.value = cart
+        _selectedCustomer.value = aMedias.cliente
+        // Su llave para su carrito: el siguiente «Cobrar» sin cambios reusa la misma (ver [llaveDelIntento]).
+        orderAttemptExternalId = aMedias.llave
+        orderAttemptFingerprint = pedidoEnLinea(cart, staffId, aMedias.cliente?.id).toString()
+        _aviso.value = AVISO_VENTA_RECUPERADA
+        Timber.i("🛒 Venta a medias restaurada (${cart.itemCount} artículos)")
+    }
+
+    // Va AL FINAL de la clase a propósito: las propiedades de arriba (la llave del intento, el candado) ya están inicializadas cuando
+    // esto corre, aunque la lectura no espere nada (en las pruebas el aparato está en memoria).
+    init {
+        actualizarEstadoDeCobrar()
+        refreshProducts()
+    }
+
+    private fun sesionActual() = secureStorage.getVenueId() to secureStorage.getStaffId()
+
+    private fun necesitaInternet(): Boolean {
+        if (connectionStateManager.hasInternet()) return false
+        _aviso.value = "Necesita internet"
+        return true
+    }
+
+    private suspend fun errorParaCobrar(cart: CartState): String? {
+        if (!recuperacionVerificada || _errorRecuperacion.value != null || venueObservado != secureStorage.getVenueId()) {
+            return "No se ha podido recuperar la venta anterior. Vuelve a intentar antes de cobrar."
+        }
+        if (_ventaSinMostrar.value != null) return "Revisa primero la venta que ya quedó cobrada y guardada."
+        val sesion = sesionActual()
+        if (cart.items.any { it.isCortesia } &&
+            !permissionsRepository.hasPermission("tpv-orders:comp")) {
+            return "La venta tiene una cortesía y tu sesión no tiene permiso. Pide apoyo al gerente."
+        }
+        if (cart.orderDiscount == null && cart.manualDiscountCents > 0 && !permissionsRepository.hasPermission("discounts:apply")) {
+            return "La venta tiene un descuento y tu sesión no tiene permiso. Pide apoyo al gerente."
+        }
+        return if (sesion == sesionActual()) null else "La sesión cambió. Vuelve a Cobrar para continuar."
+    }
+
+    /** Al volver de un cobro o cambiar de negocio se vuelve a leer Room; nunca se toma una lectura fallida por ausencia. */
+    fun actualizarEstadoDeCobrar() {
+        val contexto = sesionActual()
+        if (contextoDelCatalogo != contexto) {
+            contextoDelCatalogo = contexto
+            versionDelCatalogo++
+            refreshJob?.cancel()
+            generacionDelContexto++
+            refreshVenueId = null
+            _isLoading.value = false
+            _products.value = emptyList()
+            _categories.value = emptyList()
+            _errorCatalogo.value = null
+            _aviso.value = null
+        }
+        val venueId = contexto.first
+        if (venueObservado != venueId) {
+            val anterior = venueObservado
+            venueObservado = venueId
+            recuperacionVerificada = false
+            _ventaSinMostrar.value = null
+            _ventaEnCeroGuardada.value = null
+            _errorRecuperacion.value = null
+            if (anterior != null) {
+                _cartState.value = CartState(selectedStaffId = secureStorage.getStaffId().orEmpty(), selectedStaffName = secureStorage.getStaffName().orEmpty())
+                _selectedCustomer.value = null
+                olvidarLlave()
+            }
+            contadoresJob?.cancel()
+            _avisoSinConexion.value = null
+            if (venueId != null) contadoresJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    combine(pendingPaymentDao.contarVentasGuardadas(venueId), pendingPaymentDao.contarConProblema(venueId),
+                        connectionStateManager.connectionState) { guardadas, problemas, conexion ->
+                        AvisoSinConexion(!conexion.hasInternet, guardadas, problemas)
+                            .takeIf { it.sinRed || it.guardadas > 0 || it.conProblema > 0 }
+                    }.collect { if (secureStorage.getVenueId() == venueId) _avisoSinConexion.value = it }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Timber.e(e, "No se pudieron leer los contadores de ventas guardadas")
+                    _aviso.value = "No se pudieron leer las ventas guardadas. Vuelve a intentar."
+                }
+            }
+        }
+        permisosJob?.cancel()
+        _canCompItems.value = false
+        _canApplyDiscount.value = false
+        permisosDe = null
+        val dueno = sesionActual()
+        permisosJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val descuento = permissionsRepository.hasPermission("discounts:apply")
+                val cortesia = permissionsRepository.hasPermission("tpv-orders:comp")
+                if (sesionActual() == dueno) {
+                    permisosDe = dueno
+                    _canApplyDiscount.value = descuento
+                    _canCompItems.value = cortesia
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.e(e, "No se pudieron leer los permisos de Cobrar")
+            }
+        }
+        if (recuperacionJob?.isActive == true || candado.activo.value) return
+        recuperacionJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            candado.mientras {
+                var recuperada = false
+                while (!recuperada) {
+                    val negocio = secureStorage.getVenueId() ?: return@mientras Result.success(Unit)
+                    recuperacionVerificada = false
+                    try {
+                        restaurarCarritoAMedias()
+                        val pendiente = ventaSinRed.ultimaVentaSinMostrar(negocio)
+                        if (secureStorage.getVenueId() != negocio) continue
+                        _ventaSinMostrar.value = pendiente
+                        _errorRecuperacion.value = null
+                        recuperacionVerificada = true
+                        recuperada = true
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        if (secureStorage.getVenueId() != negocio) continue
+                        Timber.e(e, "No se pudo recuperar la venta guardada")
+                        _errorRecuperacion.value = "No se pudo leer la venta anterior. Se conserva en la terminal; vuelve a intentar antes de cobrar."
+                        return@mientras Result.failure(e)
+                    }
+                }
+                Result.success(Unit)
+            }
         }
     }
 }
 
-private fun CartItem.grossLineCents(): Int =
-    (effectiveUnitPriceCents + selectedModifiers.sumOf { it.priceInCents }) * quantity
+private const val AVISO_VENTA_RECUPERADA = "Recuperamos la venta que estaba a medias"
+private const val TEXTO_NO_SE_GUARDO_LA_VENTA = "No se pudo guardar la venta en la terminal. Intenta de nuevo."
 
 // Converts internal integer-cents math to BigDecimal pesos for wire format.
 // The new TPV /tpv/.../orders/with-items endpoint accepts pesos as decimals

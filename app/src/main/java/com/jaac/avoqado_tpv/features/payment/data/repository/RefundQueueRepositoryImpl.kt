@@ -35,6 +35,8 @@ class RefundQueueRepositoryImpl @Inject constructor(
         // escrita. Un `withContext` sólo alrededor del `insert` dejaría el mapeo y el log fuera.
         runCatching {
             val insertado = dao.insertIgnore(refund.toEntity())
+            if (insertado == com.jaac.avoqado_tpv.features.payment.data.ledger.HANDOFF_CONTRACT_CONFLICT)
+                throw com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentOwnerContractConflictException()
             if (insertado == -1L) {
                 Timber.i("💸 [RefundQueue] ya estaba encolado, no se duplica | key=${refund.idempotencyKey}")
             } else {
@@ -157,7 +159,10 @@ class RefundQueueRepositoryImpl @Inject constructor(
     private fun QueuedRefund.toContext() = PaymentContext.RefundPayment(
         venueId = venueId,
         staffId = staffId,
-        shiftId = null, // el turno lo resuelve el SERVIDOR; lo que mande el cliente se ignora
+        shiftId = null, // La pertenencia es local; el receptor conserva su política financiera.
+        shiftMembership = shiftMembership,
+        localShiftSessionId = localShiftSessionId,
+        cashDrawerSessionId = cashDrawerSessionId,
         amount = amount,
         merchantAccountId = merchantAccountId,
         blumonSerialNumber = blumonSerialNumber,

@@ -212,6 +212,8 @@ class PaymentViewModelWatchdogTest {
 
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
+            // D2: el ViewModel sigue el estado de conexión mientras «Método de pago» está a la vista.
+            every { connectionState } returns MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
         }
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
@@ -243,6 +245,8 @@ class PaymentViewModelWatchdogTest {
         stopDetectCardUseCase: com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase =
             mockk(relaxed = true),
     ): PaymentViewModel {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true),
@@ -291,7 +295,10 @@ class PaymentViewModelWatchdogTest {
             blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
-            appContext = mockAppContext
+            appContext = mockAppContext,
+            ventaLocalRepository = mockk(relaxed = true),
+            pendingPaymentDao = mockk(relaxed = true),
+            subirVentaGuardadaUseCase = mockk(relaxed = true),
         )
     }
 

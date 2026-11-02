@@ -294,6 +294,8 @@ class PaymentViewModelTest {
         // Configure connectivity manager
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
+            // D2: el ViewModel sigue el estado de conexión mientras «Método de pago» está a la vista.
+            every { connectionState } returns MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
         }
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
@@ -340,6 +342,8 @@ class PaymentViewModelTest {
         startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
             mockk(relaxed = true),
     ): PaymentViewModel {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = startDetectCardUseCase,
@@ -389,7 +393,10 @@ class PaymentViewModelTest {
             blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
-            appContext = mockAppContext
+            appContext = mockAppContext,
+            ventaLocalRepository = mockk(relaxed = true),
+            pendingPaymentDao = mockk(relaxed = true),
+            subirVentaGuardadaUseCase = mockk(relaxed = true),
         )
     }
 
@@ -599,15 +606,26 @@ class PaymentViewModelTest {
 
     @Test
     fun `resetPayment releases payment guard`() = runTest {
+        // R26: mantener la ventana real de pago en curso. El flujo IO puede terminar
+        // antes de observar el guard, que entonces ya se liberó legítimamente.
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { mockInitializationManager.awaitInitialization() } coAnswers {
+            entered.complete(Unit)
+            release.await()
+            Result.success(Unit)
+        }
         val viewModel = createViewModel()
-
-        viewModel.startPayment("100.00")
-        assertThat(viewModel.isPaymentInProgress.value).isTrue()
-
-        viewModel.resetPayment()
-        assertThat(viewModel.isPaymentInProgress.value).isFalse()
-
-        viewModel.viewModelScope.cancel()
+        try {
+            viewModel.startPayment("100.00")
+            entered.await()
+            assertThat(viewModel.isPaymentInProgress.value).isTrue()
+            viewModel.resetPayment()
+            assertThat(viewModel.isPaymentInProgress.value).isFalse()
+        } finally {
+            viewModel.viewModelScope.cancel()
+            release.complete(Unit)
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1159,6 +1177,21 @@ class PaymentViewModelTest {
 
     private fun PaymentViewModel.registrar() =
         handleRefundSuccessForTest(saleData = null, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, seedState = exitoSembrado())
+
+    @Test
+    fun `B2 refund write ahead contradictorio conserva evidencia y no hace POST`() = runTest {
+        val conflict = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentOwnerContractConflictException()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(any(), any()) } returns Result.failure(conflict)
+        coEvery { mockRefundQueueRepository.enqueue(any()) } returns Result.failure(conflict)
+        val vm = refundReady()
+        vm.registrar()
+        coVerify(exactly = 0) { mockRecordRefundUseCase(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.markRecorded(any()) }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.markDeliveredToQueue(any()) }
+        assertThat(vm.state.value).isInstanceOf(PaymentState.Success::class.java)
+        assertThat((vm.state.value as PaymentState.Success).recordingLostMessage).contains("La devolución SÍ se hizo")
+        vm.viewModelScope.cancel()
+    }
 
     @Test
     fun `P1 la fila se escribe en Room ANTES de tocar la red - write-ahead de verdad`() = runTest {

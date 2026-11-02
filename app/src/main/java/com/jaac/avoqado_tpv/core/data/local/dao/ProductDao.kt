@@ -104,6 +104,20 @@ interface ProductDao {
     suspend fun getProductBySku(venueId: String, sku: String): ProductEntity?
 
     /**
+     * Busca un código escaneado o tecleado en el catálogo guardado (sin red): por SKU o por GTIN, y si los dos casan con productos
+     * distintos gana el del SKU. Un código vacío nunca encuentra nada (un producto sin SKU no se agrega «al azar»).
+     */
+    @Query(
+        """
+        SELECT * FROM products
+        WHERE venue_id = :venueId AND :codigo <> '' AND (sku = :codigo OR gtin = :codigo)
+        ORDER BY CASE WHEN sku = :codigo THEN 0 ELSE 1 END
+        LIMIT 1
+        """
+    )
+    suspend fun getProductByCodigo(venueId: String, codigo: String): ProductEntity?
+
+    /**
      * Upsert products (batch insert/update).
      *
      * **Strategy:** REPLACE on conflict (venue_id, product_id unique index)

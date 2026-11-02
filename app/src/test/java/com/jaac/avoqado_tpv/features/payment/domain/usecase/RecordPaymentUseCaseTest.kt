@@ -49,8 +49,7 @@ class RecordPaymentUseCaseTest {
     private val useCase = RecordPaymentUseCase(
         fastPaymentRecorder = fastRecorder,
         orderPaymentRecorder = orderRecorder,
-        paymentQueueRepository = queue,
-    )
+        paymentQueueRepository = queue, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     // --- Delegación correcta a classifySyncFailure -------------------------------------
 
@@ -198,6 +197,11 @@ class RecordPaymentUseCaseTest {
     }
 
     private suspend fun TestScope.assertWaitsForClaim(context: PaymentContext, angelPay: Boolean) {
+        val recordingContext = when (context) {
+            is PaymentContext.FastPayment -> context.copy(queueClaimToken = ownToken)
+            is PaymentContext.AngelPayPayment -> context.copy(queueClaimToken = ownToken)
+            else -> error("Fixture de efectivo rápida/AngelPay únicamente")
+        }
         val committed = CompletableDeferred<Unit>()
         var sent = false
         coEvery { queue.enqueueAndClaim(any()) } coAnswers {
@@ -238,10 +242,10 @@ class RecordPaymentUseCaseTest {
             assertThat(stored?.queueId).isEqualTo(7L)
             assertThat(stored?.claimToken).isEqualTo(ownToken)
             if (angelPay) {
-                coVerify(exactly = 1) { orderRecorder.recordPayment(context, CardDetails.CASH, authorization, reference) }
+                coVerify(exactly = 1) { orderRecorder.recordPayment(recordingContext, CardDetails.CASH, authorization, reference) }
                 coVerify(exactly = 0) { fastRecorder.recordPayment(any(), any(), any(), any()) }
             } else {
-                coVerify(exactly = 1) { fastRecorder.recordPayment(context, CardDetails.CASH, authorization, reference) }
+                coVerify(exactly = 1) { fastRecorder.recordPayment(recordingContext, CardDetails.CASH, authorization, reference) }
                 coVerify(exactly = 0) { orderRecorder.recordPayment(any(), any(), any(), any()) }
             }
         } finally {
@@ -292,7 +296,7 @@ class RecordPaymentUseCaseTest {
         val result = runCatching { useCase(cashContext, CardDetails.CASH, authorization, reference) }
         assertThat(result.exceptionOrNull()).isSameInstanceAs(cancellation)
         coVerify(exactly = 1) { queue.enqueueAndClaim(any()) }
-        coVerify(exactly = 1) { fastRecorder.recordPayment(cashContext, CardDetails.CASH, authorization, reference) }
+        coVerify(exactly = 1) { fastRecorder.recordPayment(cashContext.copy(queueClaimToken = ownToken), CardDetails.CASH, authorization, reference) }
         assertThat(stored?.queueId).isEqualTo(7L)
         assertThat(stored?.claimToken).isEqualTo(ownToken)
         assertThat(stored?.syncStatus).isEqualTo(SyncStatus.SYNCING)
@@ -320,7 +324,7 @@ class RecordPaymentUseCaseTest {
         assertThat(result.getOrNull()).isSameInstanceAs(receipt)
         coVerifyOrder {
             queue.enqueueAndClaim(any())
-            orderRecorder.recordPayment(context, CardDetails.CASH, authorization, reference)
+            orderRecorder.recordPayment(context.copy(queueClaimToken = ownToken), CardDetails.CASH, authorization, reference)
             queue.markSynced(7L, ownToken)
         }
         coVerify(exactly = 1) { queue.enqueueAndClaim(any()) }
@@ -351,7 +355,7 @@ class RecordPaymentUseCaseTest {
         val result = useCase(cashContext, CardDetails.CASH, authorization, reference)
         assertThat(result.exceptionOrNull()).isSameInstanceAs(failure)
         coVerify(exactly = 1) { queue.enqueueAndClaim(any()) }
-        coVerify(exactly = 1) { fastRecorder.recordPayment(cashContext, CardDetails.CASH, authorization, reference) }
+        coVerify(exactly = 1) { fastRecorder.recordPayment(cashContext.copy(queueClaimToken = ownToken), CardDetails.CASH, authorization, reference) }
         coVerify(exactly = 1) { queue.release(7L, ownToken, any(), match { it.contains("FULLTEST orden cerrada") }) }
         assertThat(stored?.queueId).isEqualTo(7L)
         assertThat(stored?.referenceNumber).isEqualTo(reference)

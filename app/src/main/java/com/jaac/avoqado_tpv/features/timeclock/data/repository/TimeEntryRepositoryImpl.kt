@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.timeclock.data.repository
 
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.features.timeclock.data.dto.ClockInRequestDto
 import com.jaac.avoqado_tpv.features.timeclock.data.dto.ClockOutRequestDto
 import com.jaac.avoqado_tpv.features.timeclock.data.dto.toDomain
@@ -10,6 +11,7 @@ import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryReposi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -243,9 +245,15 @@ class TimeEntryRepositoryImpl @Inject constructor(
                 } else {
                     val errorMsg = parseErrorMessage(response.errorBody()?.string(), response.code())
                     Timber.e("❌ Find active entry failed: $errorMsg")
-                    Result.failure(Exception(errorMsg))
+                    // Con su código: 502-504 y 520-527 = el servidor no contestó (ApiException.servidorNoContesto);
+                    // un 4xx sí es una respuesta. HomeViewModel decide con eso si usa la entrada guardada.
+                    Result.failure(ApiException.HttpError(response.code(), errorMsg))
                 }
             }
+        } catch (e: IOException) {
+            // Sin red, host que no resuelve, conexión rechazada o tiempo agotado.
+            Timber.w(e, "⚠️ Find active entry: sin red")
+            Result.failure(ApiException.NetworkError(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ Find active entry error")
             Result.failure(e)

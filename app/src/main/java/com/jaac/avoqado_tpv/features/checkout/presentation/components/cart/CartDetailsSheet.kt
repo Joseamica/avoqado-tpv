@@ -104,6 +104,7 @@ fun CartDetailsSheet(
      */
     referralSection: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
+    necesitaInternet: Boolean = false,
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -199,20 +200,20 @@ fun CartDetailsSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onCustomerTap)
+                    .clickable(enabled = !necesitaInternet, onClick = onCustomerTap)
                     .padding(vertical = 4.dp),
             ) {
                 Text(
                     text = customerName ?: "Agregar cliente",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    textDecoration = TextDecoration.Underline,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    textDecoration = if (necesitaInternet) TextDecoration.None else TextDecoration.Underline,
+                    color = if (necesitaInternet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "${cartState.itemCount} ${if (cartState.itemCount == 1) "artículo" else "artículos"}",
+                    text = if (necesitaInternet) "Necesita internet" else "${cartState.itemCount} ${if (cartState.itemCount == 1) "artículo" else "artículos"}",
                     style = MaterialTheme.typography.bodyMedium,
                     textDecoration = TextDecoration.Underline,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -263,7 +264,12 @@ fun CartDetailsSheet(
             ),
         ) {
             Text(
-                text = if (cartState.isEmpty) "Cobrar" else "Cobrar ${cartState.totalDisplay}",
+                // 🔒 Mientras la venta se prepara, el botón dice qué pasa (el carrito no cambia hasta que termine).
+                text = when {
+                    cartState.isEmpty -> "Cobrar"
+                    isChargeInFlight -> "Preparando…"
+                    else -> "Cobrar ${cartState.totalDisplay}"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,

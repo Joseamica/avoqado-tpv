@@ -102,6 +102,9 @@ fun ProductGridView(
     modifier: Modifier = Modifier,
     familias: Map<String, Familia<Product>> = emptyMap(),
     onFamiliaTap: (Familia<Product>) -> Unit = {},
+    sinRed: Boolean = false,
+    errorCatalogo: String? = null,
+    onRetry: () -> Unit = {},
 ) {
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
 
@@ -113,6 +116,7 @@ fun ProductGridView(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
+        AvisoDeCatalogo(errorCatalogo = errorCatalogo, isLoading = isLoading, onRetry = onRetry)
         if (selectedCategory != null) {
             BreadcrumbNavigation(
                 categoryName = selectedCategory!!.name,
@@ -122,12 +126,13 @@ fun ProductGridView(
 
         when {
             isLoading && products.isEmpty() -> LoadingState()
+            errorCatalogo != null && products.isEmpty() -> Unit
             selectedCategory == null -> {
                 val uncategorized = products.filter {
                     it.categoryId.isBlank() || categories.none { c -> c.id == it.categoryId }
                 }
                 if (categories.isEmpty() && uncategorized.isEmpty()) {
-                    EmptyState(message = "No hay productos. Refresca o configúralos en el dashboard.")
+                    EmptyState(message = if (sinRed) "Conéctate para descargar el catálogo" else "No hay productos. Refresca o configúralos en el dashboard.")
                 } else {
                     CategoriesGrid(
                         categories = categories,
@@ -142,7 +147,9 @@ fun ProductGridView(
             else -> {
                 val categoryProducts = products.filter { it.categoryId == selectedCategory!!.id }
                 if (categoryProducts.isEmpty()) {
-                    EmptyState(message = "No hay productos en esta categoría")
+                    if (errorCatalogo == null) {
+                        EmptyState(message = if (sinRed) "No hay productos de esta categoría en el catálogo guardado" else "No hay productos en esta categoría")
+                    }
                 } else {
                     ProductsGrid(
                         products = categoryProducts,
@@ -736,3 +743,12 @@ internal fun fakeProduct(
         )
     } else emptyList(),
 )
+
+@Preview(widthDp = 360, heightDp = 640, showBackground = true)
+@Composable
+private fun ProductGridReadErrorPreview() {
+    AvoqadoTheme {
+        ProductGridView(products = emptyList(), categories = emptyList(), isLoading = false, onProductTap = {},
+            sinRed = true, errorCatalogo = "No se pudo leer el catálogo guardado. Se conserva lo anterior; vuelve a intentar.")
+    }
+}

@@ -1,8 +1,16 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import app.cash.turbine.test
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
+import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.features.checkout.data.ActiveCartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
@@ -17,22 +25,30 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountScope
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
+import com.jaac.avoqado_tpv.features.ordering.domain.ModifierType
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -67,6 +83,10 @@ class CheckoutViewModelTest {
     private lateinit var activeCartState: ActiveCartState
     private lateinit var validateReferralUseCase: com.jaac.avoqado_tpv.features.referrals.domain.usecase.ValidateReferralUseCase
     private lateinit var captureReferralUseCase: com.jaac.avoqado_tpv.features.referrals.domain.usecase.CaptureReferralUseCase
+    private lateinit var productDao: ProductDao
+    private lateinit var productCategoryDao: ProductCategoryDao
+    private lateinit var catalogoGuardado: CatalogoGuardado
+    private lateinit var connectionStateManager: ConnectionStateManager
 
     private val savedCartsFlow = MutableStateFlow<List<SavedCart>>(emptyList())
     private val shortcutsFlow = MutableStateFlow<List<MosaicShortcut>>(emptyList())
@@ -74,6 +94,7 @@ class CheckoutViewModelTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Unconfined // el catálogo guardado se pinta síncrono en las pruebas
 
         productRepository = mockk(relaxed = true)
         customerRepository = mockk(relaxed = true)
@@ -85,8 +106,17 @@ class CheckoutViewModelTest {
         activeCartState = ActiveCartState() // real instance — no behavior to mock
         validateReferralUseCase = mockk(relaxed = true)
         captureReferralUseCase = mockk(relaxed = true)
+        productDao = mockk(relaxed = true)
+        productCategoryDao = mockk(relaxed = true)
+        catalogoGuardado = mockk()
+        connectionStateManager = ConnectionStateManager() // real: arranca con red
 
         coEvery { secureStorage.getVenueId() } returns "venue-1"
+        coEvery { productDao.getAllProducts(any()) } returns emptyList()
+        coEvery { productDao.getProductByCodigo(any(), any()) } returns null
+        coEvery { productCategoryDao.getAllCategories(any()) } returns emptyList()
+        // El refresco real pasa por CatalogoGuardado → ProductRepository.getProducts: el «servidor» se siembra en el repositorio.
+        coEvery { catalogoGuardado.refrescar(any()) } coAnswers { productRepository.getProducts(firstArg()) }
         coEvery { secureStorage.getStaffId() } returns "staff-1"
         coEvery { secureStorage.getStaffName() } returns "María"
         coEvery { productRepository.getProducts(any(), any()) } returns Result.success(emptyList())
@@ -100,6 +130,7 @@ class CheckoutViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Default
     }
 
     private fun createViewModel() = CheckoutViewModel(
@@ -113,6 +144,19 @@ class CheckoutViewModelTest {
         secureStorage = secureStorage,
         validateReferralUseCase = validateReferralUseCase,
         captureReferralUseCase = captureReferralUseCase,
+        productDao = productDao,
+        productCategoryDao = productCategoryDao,
+        catalogoGuardado = catalogoGuardado,
+        connectionStateManager = connectionStateManager,
+        ventaSinRed = com.jaac.avoqado_tpv.features.checkout.VentaSinRedEnMemoria(),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true) {
+            io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+            io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+        },
+        permissionsRepository = mockk(relaxed = true) {
+            io.mockk.coEvery { hasPermission(any()) } returns true
+        },
     )
 
     private fun fakeProduct(
@@ -395,24 +439,30 @@ class CheckoutViewModelTest {
         val viewModel = createViewModel()
 
         var captured: Product? = null
-        viewModel.findProductByBarcode("1234") { captured = it }
+        var delGuardado: Boolean? = null
+        viewModel.findProductByBarcode("1234") { p, guardado -> captured = p; delGuardado = guardado }
 
         assertNotNull(captured)
         assertEquals("by-barcode", captured?.id)
+        assertEquals(false, delGuardado)
 
         viewModel.viewModelScope.cancel()
     }
 
     @Test
-    fun `findProductByBarcode returns null when repo fails`() = runTest {
+    fun `findProductByBarcode returns null when repo fails and the saved catalog has no match`() = runTest {
         coEvery { productRepository.getProductByBarcode("venue-1", "9999") } returns
-            Result.failure(RuntimeException("not found"))
+            Result.failure(RuntimeException("timeout"))
         val viewModel = createViewModel()
 
         var captured: Product? = fakeProduct() // sentinel non-null
-        viewModel.findProductByBarcode("9999") { captured = it }
+        var delGuardado: Boolean? = null
+        viewModel.findProductByBarcode("9999") { p, guardado -> captured = p; delGuardado = guardado }
 
         assertNull(captured)
+        // La red falló: se buscó en el catálogo guardado y la pantalla lo dice («No está en el catálogo guardado»).
+        assertEquals(true, delGuardado)
+        coVerify(exactly = 1) { productDao.getProductByCodigo("venue-1", "9999") }
 
         viewModel.viewModelScope.cancel()
     }
@@ -873,6 +923,239 @@ class CheckoutViewModelTest {
 
         assertEquals(2, captured.size)
         assertNotEquals(captured[0].externalId, captured[1].externalId)
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Cobrar sin red (C1): catálogo guardado primero, códigos y atajos sin red
+    // ─────────────────────────────────────────────────────────────────────
+
+    private fun guardados(venueId: String, vararg productos: Product) = productos.toList().toEntities(venueId, 0L)
+
+    @Test
+    fun `sin red refreshProducts pinta la cache`() = runTest {
+        connectionStateManager.setInternetConnected(false)
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-g", name = "Guardado"))
+        coEvery { productCategoryDao.getAllCategories("venue-1") } returns
+            listOf(ProductCategory(id = "cat-1", name = "Bebidas", displayOrder = 0, productCount = 1)).toCategoryEntities("venue-1", 0L)
+
+        val viewModel = createViewModel()
+
+        assertEquals(listOf("p-g"), viewModel.products.value.map { it.id })
+        assertEquals(listOf("cat-1"), viewModel.categories.value.map { it.id })
+        assertFalse(viewModel.isLoading.value)
+        // Sin red no se espera a la red (ni a su tiempo de espera): lo guardado es todo lo que hay.
+        coVerify(exactly = 0) { catalogoGuardado.refrescar(any()) }
+        coVerify(exactly = 0) { productRepository.getCategories(any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con red refresca y reemplaza`() = runTest {
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-viejo"))
+        coEvery { productRepository.getProducts("venue-1", any()) } returns Result.success(listOf(fakeProduct(id = "p-nuevo")))
+        coEvery { productRepository.getCategories("venue-1") } returns
+            Result.success(listOf(ProductCategory(id = "cat-n", name = "Nueva", displayOrder = 0, productCount = 1)))
+
+        val viewModel = createViewModel()
+
+        assertEquals(listOf("p-nuevo"), viewModel.products.value.map { it.id })
+        assertEquals(listOf("cat-n"), viewModel.categories.value.map { it.id })
+        coVerify(exactly = 1) { catalogoGuardado.refrescar("venue-1") }
+        // Las categorías del servidor también se guardan, para pintarlas sin red la próxima vez.
+        coVerify(exactly = 1) { productCategoryDao.upsertCategories(match { it.map { c -> c.categoryId } == listOf("cat-n") }) }
+        assertFalse(viewModel.isLoading.value)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `red falla con cache conserva productos`() = runTest {
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-g"))
+        coEvery { productCategoryDao.getAllCategories("venue-1") } returns
+            listOf(ProductCategory(id = "cat-1", name = "Bebidas", displayOrder = 0, productCount = 1)).toCategoryEntities("venue-1", 0L)
+        coEvery { catalogoGuardado.refrescar("venue-1") } returns Result.failure(java.io.IOException("sin salida"))
+        coEvery { productRepository.getCategories("venue-1") } returns Result.failure(java.io.IOException("sin salida"))
+
+        val viewModel = createViewModel()
+        viewModel.refreshProducts() // y el botón de refrescar tampoco borra lo pintado
+
+        assertEquals(listOf("p-g"), viewModel.products.value.map { it.id })
+        assertEquals(listOf("cat-1"), viewModel.categories.value.map { it.id })
+        assertFalse(viewModel.isLoading.value)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `codigo por gtin sin red da el producto guardado con su hora de catalogo`() = runTest {
+        connectionStateManager.setInternetConnected(false)
+        val conGtin = fakeProduct(id = "p-gtin", name = "Galletas").copy(
+            sku = "GAL-1",
+            gtin = "7501234567890",
+            catalogAt = "2026-10-20T15:00:00.000Z",
+        )
+        coEvery { productDao.getProductByCodigo("venue-1", "7501234567890") } returns guardados("venue-1", conGtin).single()
+        val viewModel = createViewModel()
+
+        var captured: Product? = null
+        var delGuardado: Boolean? = null
+        viewModel.findProductByBarcode("7501234567890") { p, guardado -> captured = p; delGuardado = guardado }
+
+        assertEquals("p-gtin", captured?.id)
+        assertEquals("2026-10-20T15:00:00.000Z", captured?.catalogAt)
+        assertEquals(true, delGuardado)
+        coVerify(exactly = 0) { productRepository.getProductByBarcode(any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `codigo con red que no existe da el texto de hoy`() = runTest {
+        coEvery { productRepository.getProductByBarcode("venue-1", "0000") } returns Result.success(null) // 404 del servidor
+        val viewModel = createViewModel()
+
+        var captured: Product? = fakeProduct()
+        var delGuardado: Boolean? = null
+        viewModel.findProductByBarcode("0000") { p, guardado -> captured = p; delGuardado = guardado }
+
+        assertNull(captured)
+        assertEquals(false, delGuardado)
+        coVerify(exactly = 0) { productDao.getProductByCodigo(any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `atajo sin red agrega desde la cache`() = runTest {
+        connectionStateManager.setInternetConnected(false)
+        coEvery { productDao.getAllProducts("venue-1") } returns
+            guardados("venue-1", fakeProduct(id = "p-3", name = "Latte", priceCents = 6500))
+        val viewModel = createViewModel()
+
+        val abrirHoja = viewModel.addShortcutToCart(
+            MosaicShortcut(id = "s-1", venueId = "venue-1", productId = "p-3", position = 0, label = "Latte"),
+        )
+
+        assertNull(abrirHoja)
+        assertEquals(1, viewModel.cartState.value.items.size)
+        assertEquals(6500, viewModel.cartState.value.subtotalCents)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `atajo de un producto con extra obligatorio abre la hoja y no agrega directo`() = runTest {
+        fun grupo(id: String, obligatorio: Boolean) = ModifierGroup(
+            id = id, name = "Leche", type = ModifierType.SINGLE_CHOICE, required = obligatorio,
+            modifiers = listOf(ProductModifier("m-$id", "Deslactosada", BigDecimal.ZERO, ModifierType.SINGLE_CHOICE)),
+        )
+        val conObligatorio = fakeProduct(id = "p-obl", name = "Capuchino").copy(modifierGroups = listOf(grupo("g-1", obligatorio = true)))
+        val conOpcional = fakeProduct(id = "p-opc", name = "Americano").copy(modifierGroups = listOf(grupo("g-2", obligatorio = false)))
+        coEvery { productRepository.getProducts("venue-1", any()) } returns Result.success(listOf(conObligatorio, conOpcional))
+        val viewModel = createViewModel()
+
+        val hoja = viewModel.addShortcutToCart(
+            MosaicShortcut(id = "s-1", venueId = "venue-1", productId = "p-obl", position = 0, label = "Capuchino"),
+        )
+        assertEquals("p-obl", hoja?.id)
+        assertTrue(viewModel.cartState.value.isEmpty)
+
+        // Sin obligatorios, igual que hoy: directo al carrito.
+        val sinHoja = viewModel.addShortcutToCart(
+            MosaicShortcut(id = "s-2", venueId = "venue-1", productId = "p-opc", position = 1, label = "Americano"),
+        )
+        assertNull(sinHoja)
+        assertEquals(1, viewModel.cartState.value.items.size)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cambio de venue muestra solo el catalogo del venue actual`() = runTest {
+        coEvery { catalogoGuardado.refrescar(any()) } returns Result.failure(java.io.IOException("sin salida"))
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-de-1"))
+        coEvery { productDao.getAllProducts("venue-2") } returns guardados("venue-2", fakeProduct(id = "p-de-2"))
+        coEvery { productDao.getAllProducts("venue-3") } returns emptyList()
+        val viewModel = createViewModel()
+        assertEquals(listOf("p-de-1"), viewModel.products.value.map { it.id })
+
+        every { secureStorage.getVenueId() } returns "venue-2"
+        viewModel.refreshProducts()
+        assertEquals(listOf("p-de-2"), viewModel.products.value.map { it.id })
+
+        // Otro negocio sin nada guardado y sin red: vacío, nunca lo del negocio anterior.
+        every { secureStorage.getVenueId() } returns "venue-3"
+        viewModel.refreshProducts()
+        assertTrue(viewModel.products.value.isEmpty())
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `el catalogo guardado se lee y se mapea en el despachador del catalogo, no en Main`() = runTest {
+        connectionStateManager.setInternetConnected(false)
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-g"))
+        CheckoutViewModel.despachadorDelCatalogo = StandardTestDispatcher(testScheduler)
+
+        val viewModel = createViewModel()
+        assertTrue(viewModel.products.value.isEmpty()) // la lectura espera en el otro despachador, Main no se bloquea
+
+        advanceUntilIdle()
+        assertEquals(listOf("p-g"), viewModel.products.value.map { it.id })
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con cache y red lenta el boton de refrescar gira y los productos siguen pintados`() = runTest {
+        val lenta = CompletableDeferred<Result<List<Product>>>()
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-g"))
+        coEvery { catalogoGuardado.refrescar("venue-1") } coAnswers { lenta.await() }
+
+        val viewModel = createViewModel()
+        assertTrue(viewModel.isLoading.value)
+        assertEquals(listOf("p-g"), viewModel.products.value.map { it.id })
+
+        // Insistir con la consulta en vuelo no la reinicia (en WiFi malo nunca terminaría).
+        viewModel.refreshProducts()
+        coVerify(exactly = 1) { catalogoGuardado.refrescar("venue-1") }
+
+        lenta.complete(Result.success(listOf(fakeProduct(id = "p-nuevo"))))
+        assertFalse(viewModel.isLoading.value)
+        assertEquals(listOf("p-nuevo"), viewModel.products.value.map { it.id })
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `la respuesta tardia del negocio anterior no pisa la del actual`() = runTest {
+        val tarde = CompletableDeferred<Result<List<Product>>>()
+        coEvery { productDao.getAllProducts("venue-1") } returns guardados("venue-1", fakeProduct(id = "p-de-1"))
+        coEvery { catalogoGuardado.refrescar("venue-1") } coAnswers { tarde.await() }
+        coEvery { catalogoGuardado.refrescar("venue-2") } returns Result.success(listOf(fakeProduct(id = "p-red-2")))
+        val viewModel = createViewModel() // la consulta de venue-1 queda en vuelo
+
+        every { secureStorage.getVenueId() } returns "venue-2"
+        viewModel.refreshProducts()
+        assertEquals(listOf("p-red-2"), viewModel.products.value.map { it.id })
+
+        tarde.complete(Result.success(listOf(fakeProduct(id = "p-tarde-de-1"))))
+        assertEquals(listOf("p-red-2"), viewModel.products.value.map { it.id })
+        assertFalse(viewModel.isLoading.value)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `atajo con minSelections 2 sin required abre la hoja`() = runTest {
+        val dosObligatorios = ModifierGroup(
+            id = "g-salsas", name = "Salsas", type = ModifierType.MULTIPLE_CHOICE, required = false, minSelections = 2,
+            modifiers = listOf(
+                ProductModifier("m-1", "Verde", BigDecimal.ZERO, ModifierType.MULTIPLE_CHOICE),
+                ProductModifier("m-2", "Roja", BigDecimal.ZERO, ModifierType.MULTIPLE_CHOICE),
+            ),
+        )
+        coEvery { productRepository.getProducts("venue-1", any()) } returns
+            Result.success(listOf(fakeProduct(id = "p-tacos", name = "Tacos").copy(modifierGroups = listOf(dosObligatorios))))
+        val viewModel = createViewModel()
+
+        val hoja = viewModel.addShortcutToCart(
+            MosaicShortcut(id = "s-1", venueId = "venue-1", productId = "p-tacos", position = 0, label = "Tacos"),
+        )
+
+        assertEquals("p-tacos", hoja?.id)
+        assertTrue(viewModel.cartState.value.isEmpty)
         viewModel.viewModelScope.cancel()
     }
 }

@@ -185,6 +185,11 @@ class AngelPayWatchdogTest {
         ledgerServerRecovery = mockk(relaxed = true),
         attemptApi = mockk(relaxed = true),
         savedStateHandle = SavedStateHandle(),
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(),
+        ventaLocalRepository = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true),
+        subirVentaGuardadaUseCase = mockk(relaxed = true),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
     )
 
     /**

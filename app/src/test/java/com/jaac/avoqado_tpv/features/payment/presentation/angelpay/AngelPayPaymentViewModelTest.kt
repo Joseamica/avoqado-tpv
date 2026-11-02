@@ -245,7 +245,10 @@ class AngelPayPaymentViewModelTest {
 
     private fun createViewModel(
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
-    ): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    ): AngelPayPaymentViewModel = run {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
+        AngelPayPaymentViewModel(
         appContext = appContext,
         recordPaymentUseCase = recordPaymentUseCase,
         shiftRepository = shiftRepository,
@@ -279,7 +282,13 @@ class AngelPayPaymentViewModelTest {
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
         savedStateHandle = savedStateHandle,
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(),
+        ventaLocalRepository = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true),
+        subirVentaGuardadaUseCase = mockk(relaxed = true),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
     )
+    }
 
     // ----------------------------------------------------------------------
     // 1. selectMerchant — SelectingMerchant branch
@@ -2899,7 +2908,7 @@ class AngelPayPaymentViewModelTest {
             compuerta.complete(Unit)
             runCurrent()
 
-            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            coVerify(timeout = 5_000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
         }

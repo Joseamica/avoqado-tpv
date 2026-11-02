@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
 import androidx.compose.runtime.Immutable
+import com.google.gson.annotations.SerializedName
 import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import java.math.BigDecimal
 
@@ -63,7 +64,14 @@ data class Product(
 
     // Familia de variantes (talla/color) a la que pertenece; null = producto suelto. Propiedad guardada, no calculada: la
     // agrupación del catálogo la lee muchas veces por producto.
-    val familia: DatosDeFamilia? = null
+    val familia: DatosDeFamilia? = null,
+
+    // Código de barras del fabricante (GTIN/EAN); null = el producto no tiene. Se busca junto con el SKU.
+    val gtin: String? = null,
+
+    // Hora del SERVIDOR (ISO) en que se leyó el catálogo de donde salió este producto: con ella el servidor reconoce el precio que
+    // vio el cliente. Viene de la raíz de la respuesta, nunca del reloj del aparato; null = sin precio visto (server viejo).
+    val catalogAt: String? = null
 ) {
     /**
      * Convenience property: Formatted price for UI
@@ -197,12 +205,22 @@ object CategoryColors {
  * Structured options that customize a product (e.g., "Extra cheese +$20", "No onions")
  * Can have additional price or be free.
  */
+// 🔴 Gson guarda esta clase en la terminal (catálogo `products.modifier_groups_json` y renglones `draft_order_items.modifiers`). Hasta la
+// v43 R8 renombraba sus campos (id→a … displayOrder→f; mapping de la 2.13.0 production, production 24-sep y nexgoProd 8-sep, iguales)
+// y eso es lo que hay guardado en las terminales; desde la v43 un `-keep` conserva los nombres reales. Los `alternate` leen los dos
+// formatos: no se reordenan, quitan ni renombran sin conservar el alterno de cada campo.
 data class ProductModifier(
+    @SerializedName(value = "id", alternate = ["a"])
     val id: String,
+    @SerializedName(value = "name", alternate = ["b"])
     val name: String,
+    @SerializedName(value = "priceAdjustment", alternate = ["c"])
     val priceAdjustment: BigDecimal,  // 0 = free, positive = extra charge
+    @SerializedName(value = "type", alternate = ["d"])
     val type: ModifierType,
+    @SerializedName(value = "required", alternate = ["e"])
     val required: Boolean = false,  // If true, customer MUST select one option from group
+    @SerializedName(value = "displayOrder", alternate = ["f"])
     val displayOrder: Int = 0
 ) {
     val formattedPrice: String
@@ -234,14 +252,23 @@ enum class ModifierType {
  * - Extras (multiple choice, optional): minSelections=null, maxSelections=null
  * - Toppings (multiple choice, pick 2-3): minSelections=2, maxSelections=3
  */
+// 🔴 Igual que [ProductModifier]: los `alternate` (a … h) son los nombres que R8 les ponía a los campos hasta la v43.
 data class ModifierGroup(
+    @SerializedName(value = "id", alternate = ["a"])
     val id: String,
+    @SerializedName(value = "name", alternate = ["b"])
     val name: String,
+    @SerializedName(value = "modifiers", alternate = ["c"])
     val modifiers: List<ProductModifier>,
+    @SerializedName(value = "type", alternate = ["d"])
     val type: ModifierType,
+    @SerializedName(value = "required", alternate = ["e"])
     val required: Boolean = false,
+    @SerializedName(value = "displayOrder", alternate = ["f"])
     val displayOrder: Int = 0,
+    @SerializedName(value = "minSelections", alternate = ["g"])
     val minSelections: Int? = null,  // null = use 'required' logic (0 or 1)
+    @SerializedName(value = "maxSelections", alternate = ["h"])
     val maxSelections: Int? = null   // null = unlimited
 ) {
     /**

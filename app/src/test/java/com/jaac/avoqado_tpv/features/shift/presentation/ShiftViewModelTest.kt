@@ -22,9 +22,17 @@ import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationResult
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
+import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
+import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -95,6 +103,8 @@ class ShiftViewModelTest {
         refundQueueRepository = mockk(relaxed = true)
         // Default: la cola de reembolsos no bloquea nada (Fase 2).
         coEvery { refundQueueRepository.blockingForVenue(any()) } returns emptyList()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre(0, emptyList(), 0)
 
         // Default returns
         every { secureStorage.getVenueId() } returns "venue-123"
@@ -113,6 +123,9 @@ class ShiftViewModelTest {
         coEvery { permissionsRepository.hasPermission("tpv-shifts:close") } returns true
 
         // Default: no active shift
+        // These legacy fixtures supply current explicitly; a relaxed nullable snapshot is a fake mock, not Room.
+        coEvery { shiftRepository.leerCajaLocal(any()) } returns null
+        coEvery { shiftRepository.getCachedOpenShift(any()) } returns null
         coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(null)
         coEvery { shiftRepository.getShiftHistory(any(), any()) } returns Result.Success(emptyList())
     }
@@ -838,4 +851,296 @@ class ShiftViewModelTest {
             turnoPermiteVender(null, sinConexion = true, ultimoConocido = abiertoGuardado.copy(isOpen = false))
         ).isFalse()
     }
+    @Test fun `ventas pendientes muestran total y pagina sin llamar al cierre`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        val page = PaginaPagosDelCierre(53, listOf(paymentForClose(1, "PENDING")), 0)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns page
+        val vm = createViewModel()
+        vm.closeShift(); advanceUntilIdle()
+        assertThat((vm.state.value as ShiftState.CloseBlockedByPayments).page).isEqualTo(page)
+        vm.acknowledgePayment(1); advanceUntilIdle()
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { shiftRepository.reconocerPago(any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `error al verificar pagos conserva bloqueo sin inventar total cero`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } throws IllegalStateException("disk error")
+        val vm = createViewModel()
+        vm.closeShift(); advanceUntilIdle()
+        val blocked = vm.state.value as ShiftState.CloseBlockedByPayments
+        assertThat(blocked.page).isNull()
+        assertThat(blocked.error).isNotEmpty()
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `error de pagina conserva total anterior y el cierre bloqueado`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        val page = PaginaPagosDelCierre(53, listOf(paymentForClose(1, "FAILED")), 0)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns page
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), 20) } throws IllegalStateException("disk error")
+        vm.loadPaymentPage(20); advanceUntilIdle()
+        val blocked = vm.state.value as ShiftState.CloseBlockedByPayments
+        assertThat(blocked.page).isEqualTo(page)
+        assertThat(blocked.error).isNotEmpty()
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `barrera tardia tras recargar otro turno no reemplaza la nueva Caja`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        val read = CompletableDeferred<PaginaPagosDelCierre>()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } coAnswers { read.await() }
+        val vm = createViewModel(); vm.closeShift()
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift.copy(id = "new-shift"))
+        vm.loadCurrentShift(); advanceUntilIdle()
+        read.complete(PaginaPagosDelCierre(1, listOf(paymentForClose(1, "FAILED")), 0)); advanceUntilIdle()
+        assertThat((vm.state.value as ShiftState.ShiftActive).shift.id).isEqualTo("new-shift")
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `pagina tardia tras cambiar sucursal se descarta`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), 0) } returns PaginaPagosDelCierre(53, listOf(paymentForClose(1, "FAILED")), 0)
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle()
+        val read = CompletableDeferred<PaginaPagosDelCierre>()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), 20) } coAnswers { read.await() }
+        vm.loadPaymentPage(20)
+        every { secureStorage.getVenueId() } returns "new-venue"
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift.copy(id = "new-shift", venueId = "new-venue"))
+        vm.loadCurrentShift(); advanceUntilIdle()
+        read.complete(PaginaPagosDelCierre(53, listOf(paymentForClose(2, "FAILED")), 20)); advanceUntilIdle()
+        assertThat((vm.state.value as ShiftState.ShiftActive).shift.venueId).isEqualTo("new-venue")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `actor que cambia durante lectura no recibe una barrera vieja ni permite cerrar`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        val read = CompletableDeferred<PaginaPagosDelCierre>()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } coAnswers { read.await() }
+        val vm = createViewModel(); vm.closeShift()
+        every { secureStorage.getStaffId() } returns "new-actor"
+        read.complete(PaginaPagosDelCierre(1, listOf(paymentForClose(1, "FAILED")), 0)); advanceUntilIdle()
+        assertThat((vm.state.value as ShiftState.Error).message).contains("sesión cambió")
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin actor actual Revisado mantiene aviso visible y no llama al repositorio`() = runTest {
+        every { secureStorage.getStaffId() } returns null
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns PaginaPagosDelCierre(1, listOf(paymentForClose(1, "FAILED")), 0)
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle(); vm.acknowledgePayment(1); advanceUntilIdle()
+        assertThat((vm.state.value as ShiftState.CloseBlockedByPayments).error).contains("Inicia sesión")
+        coVerify(exactly = 0) { shiftRepository.reconocerPago(any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `cero filas reconocidas no anuncia exito ni libera el cierre`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns PaginaPagosDelCierre(1, listOf(paymentForClose(1, "FAILED")), 0)
+        coEvery { shiftRepository.reconocerPago(any(), any(), any(), any(), any()) } returns 0
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle(); vm.acknowledgePayment(1); advanceUntilIdle()
+        val blocked = vm.state.value as ShiftState.CloseBlockedByPayments
+        assertThat(blocked.page!!.total).isEqualTo(1)
+        assertThat(blocked.error).contains("No se pudo marcar")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `Revisado de FAILED y SUCCESS con diferencia usa actor actual y permite volver al cierre`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        for ((i, status) in listOf("FAILED", "SUCCESS").withIndex()) {
+            val id = i.toLong() + 1
+            coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returnsMany listOf(
+                PaginaPagosDelCierre(1, listOf(paymentForClose(id, status).copy(requiereRevision = true)), 0),
+                PaginaPagosDelCierre(0, emptyList(), 0))
+            coEvery { shiftRepository.reconocerPago(id, "venue-123", "staff-123", any(), any()) } returns 1
+            val vm = createViewModel(); vm.closeShift(); advanceUntilIdle(); vm.acknowledgePayment(id); advanceUntilIdle()
+            assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+            coVerify(exactly = 1) { shiftRepository.reconocerPago(id, "venue-123", "staff-123", any(), any()) }
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test fun `cancelacion de lectura y respuesta de pagina tras salir no pintan Error tardio`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns PaginaPagosDelCierre(1, listOf(paymentForClose(1, "FAILED")), 0)
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle()
+        val read = CompletableDeferred<PaginaPagosDelCierre>()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } coAnswers { read.await() }
+        vm.loadPaymentPage(0); vm.onShiftScreenLeft(); vm.onShiftScreenEntered(); advanceUntilIdle()
+        read.completeExceptionally(CancellationException("screen left")); advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `una pagina en carga no permite iniciar una segunda y publica su resultado`() = runTest {
+        coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(testShift)
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), 0) } returns PaginaPagosDelCierre(53, listOf(paymentForClose(1, "FAILED")), 0)
+        val vm = createViewModel(); vm.closeShift(); advanceUntilIdle()
+        val read = CompletableDeferred<PaginaPagosDelCierre>()
+        coEvery { shiftRepository.pagosQueBloqueanCierre(any(), 20) } coAnswers { read.await() }
+        vm.loadPaymentPage(20); vm.loadPaymentPage(40)
+        coVerify(exactly = 0) { shiftRepository.pagosQueBloqueanCierre(any(), 40) }
+        read.complete(PaginaPagosDelCierre(53, listOf(paymentForClose(2, "FAILED")), 20)); advanceUntilIdle()
+        val blocked = vm.state.value as ShiftState.CloseBlockedByPayments
+        assertThat(blocked.busy).isFalse()
+        assertThat(blocked.page!!.offset).isEqualTo(20)
+        vm.viewModelScope.cancel()
+    }
+
+    private fun paymentForClose(id: Long, status: String) = PendingPaymentEntity(
+        id = id, referenceNumber = "reference-$id", venueId = "venue-123", staffId = "original-seller", amount = "150.25", tip = "0.00",
+        rating = null, merchantAccountId = "", blumonSerialNumber = "", maskedPan = null, cardBrand = null, entryMode = "CASH",
+        isInternational = false, authorizationNumber = "EFECTIVO", syncStatus = status, createdAt = 100L)
+
+
+    @Test fun `R12 cierre propio con alias exacto pulso y history lenta conserva su resultado`() = runTest {
+        checkCloseResultPublication(null, beforeHistory = false, mappedAlias = true)
+    }
+
+    @Test fun `R12 cambio identidad antes history no inicia lectura ni publica cierre A`() = runTest {
+        for (change in listOf("actor", "venue", "token")) {
+            setup(); checkCloseResultPublication(change, beforeHistory = true)
+        }
+    }
+
+    @Test fun `R12 cambio identidad durante history no publica cierre A`() = runTest {
+        for (change in listOf("actor", "venue", "token")) {
+            setup(); checkCloseResultPublication(change, beforeHistory = false)
+        }
+    }
+
+    // R21: T3 publishes the durable CLOSED pulse immediately. The guarded suspension is now
+    // its exact Room snapshot read after CLOSE, not remote History. This is a unit double;
+    // Task7CajaRoomUiTest separately exercises real Room/commit/recreation.
+    private suspend fun kotlinx.coroutines.test.TestScope.checkCloseResultPublication(change: String?, beforeHistory: Boolean, mappedAlias: Boolean = false) {
+        every { secureStorage.getToken() } returns "original-token"
+        val localId = "c000000000000000000000051"
+        val source = testShift.copy(id = if (mappedAlias) localId else testShift.id,
+            localShiftSessionId = localId, financialTotalsKnown = false)
+        val closed = source.copy(id = if (mappedAlias) "c000000000000000000000052" else source.id, status = ShiftStatus.CLOSED)
+        val openRow = com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity(
+            localId, source.venueId, "LOCAL", serverShiftId = if (mappedAlias) null else source.id,
+            openingOperationId = localId, openingStatus = if (mappedAlias) "PENDING" else "CONFIRMED",
+            originalOpenedAt = source.startTime, startingCash = "500.00", openedByStaffId = source.staffId,
+            localStatus = "OPEN", createdAt = 1, updatedAt = 1)
+        val closeKey = "c000000000000000000000053"
+        val closedAt = "2026-10-28T11:00:00Z"
+        val closedRow = openRow.copy(serverShiftId = closed.id, openingStatus = "CONFIRMED", localStatus = "CLOSED", openSlot = null,
+            closeOperationId = closeKey, cashReconciliationAction = "COUNTED", countedCash = "61.25", closedAtLocal = closedAt,
+            closedByStaffId = source.staffId, closeStatus = "PENDING", closeRequestJson = com.google.gson.Gson().toJson(
+                com.jaac.avoqado_tpv.features.shift.data.dto.LocalCloseShiftRequest(source.venueId, closeKey, closedAt,
+                    source.staffId, localId, CashReconciliationAction.COUNTED, "61.25")))
+        fun snapshot(shift: Shift, row: com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity) =
+            com.jaac.avoqado_tpv.features.shift.data.repository.CajaLocalSnapshot(shift, row,
+                com.jaac.avoqado_tpv.features.shift.domain.LocalShiftSummary(row.startingCash?.toBigDecimal(),
+                    row.countedCash?.toBigDecimal(), row.localStatus, row.openingStatus, row.closeStatus, row.adoptionNotice))
+        var active = source
+        var current = snapshot(source, openRow)
+        var historyCalls = 0
+        var ownSnapshotReads = 0
+        val releaseSnapshot = CompletableDeferred<Unit>()
+        val snapshotEntered = CompletableDeferred<Unit>()
+        val pulseRead = CompletableDeferred<Unit>()
+        var pulseInFlight = false
+        var closingResult = false
+        fun changeIdentity() { when (change) {
+            "actor" -> every { secureStorage.getStaffId() } returns "other-staff"
+            "venue" -> every { secureStorage.getVenueId() } returns "other-venue"
+            "token" -> every { secureStorage.getToken() } returns "other-token"
+        } }
+        coEvery { shiftRepository.leerCajaLocal(any()) } coAnswers {
+            val captured = current
+            if (closingResult && !pulseInFlight && captured.row.localSessionId == localId) {
+                ownSnapshotReads++; snapshotEntered.complete(Unit); releaseSnapshot.await()
+            }
+            captured
+        }
+        coEvery { shiftRepository.getCurrentShift(any()) } answers { Result.Success(active) }
+        coEvery { shiftRepository.getShiftHistory(any(), any()) } coAnswers {
+            historyCalls++
+            if (pulseInFlight) pulseRead.complete(Unit)
+            Result.Success(emptyList())
+        }
+        coEvery { shiftRepository.closeShift(any(), any(), any(), any()) } coAnswers {
+            active = closed; current = snapshot(closed, closedRow)
+            pulseInFlight = true
+            fakeShiftChanges.emit(Unit)
+            pulseRead.await() // The legitimate durable pulse has completed before local CLOSE returns.
+            pulseInFlight = false; closingResult = true
+            if (beforeHistory) changeIdentity()
+            Result.Success(closed)
+        }
+        val vm = createViewModel()
+        try {
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+            vm.closeShift(CashReconciliationAction.COUNTED, BigDecimal("61.25")); runCurrent()
+            assertThat(historyCalls).isEqualTo(2) // Init + own pulse; local Success never waits on History.
+            assertThat(ownSnapshotReads).isEqualTo(if (beforeHistory) 0 else 1)
+            if (!beforeHistory) { assertThat(snapshotEntered.isCompleted).isTrue(); changeIdentity() }
+            if (change != null) {
+                // Anchor a genuinely new B, never a fake reopened A, before releasing A's old read.
+                val bId = "c000000000000000000000054"
+                val bVenue = secureStorage.getVenueId()!!
+                active = source.copy(id = "remote-B", venueId = bVenue, localShiftSessionId = bId)
+                current = snapshot(active, openRow.copy(localSessionId = bId, venueId = bVenue,
+                    serverShiftId = "remote-B", openingOperationId = bId, openingStatus = "CONFIRMED"))
+                vm.loadCurrentShift(); runCurrent()
+                assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+                assertThat((vm.state.value as ShiftState.ShiftActive).shift.localShiftSessionId).isEqualTo(bId)
+            }
+            val before = vm.state.value
+            val factsBefore = vm.localCaja.value
+            releaseSnapshot.complete(Unit); runCurrent()
+            if (change == null) {
+                assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftClosed::class.java)
+                assertThat((vm.state.value as ShiftState.ShiftClosed).shift).isEqualTo(closed)
+                assertThat(vm.localCaja.value?.summary?.countedCash).isEqualTo(BigDecimal("61.25"))
+            } else {
+                assertThat(vm.state.value).isSameInstanceAs(before)
+                assertThat(vm.state.value).isNotInstanceOf(ShiftState.ShiftClosed::class.java)
+                assertThat(vm.localCaja.value).isSameInstanceAs(factsBefore)
+            }
+            coVerify(exactly = 1) { shiftRepository.closeShift(any(), any(), any(), any()) }
+        } finally { releaseSnapshot.complete(Unit); vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `R12 refresh demorado de resultado A no vuelve a leer despues de mostrar B`() = runTest {
+        every { secureStorage.getToken() } returns "original-token"
+        var active = testShift
+        var reads = 0
+        val pulseRead = CompletableDeferred<Unit>()
+        var pulseInFlight = false
+        coEvery { shiftRepository.getShiftHistory(any(), any()) } coAnswers {
+            if (pulseInFlight) pulseRead.complete(Unit)
+            Result.Success(emptyList())
+        }
+        coEvery { shiftRepository.getCurrentShift(any()) } answers { reads++; Result.Success(active) }
+        coEvery { shiftRepository.closeShift(any(), any(), any(), any()) } coAnswers {
+            pulseInFlight = true
+            fakeShiftChanges.emit(Unit)
+            pulseRead.await()
+            pulseInFlight = false
+            Result.Success(testShift.copy(status = ShiftStatus.CLOSED, financialTotalsKnown = false))
+        }
+        val vm = createViewModel()
+        try {
+            runCurrent(); vm.closeShift(); runCurrent()
+            assertThat(vm.state.value).isInstanceOf(ShiftState.ShiftClosed::class.java)
+            active = testShift.copy(id = "another-shift")
+            vm.loadCurrentShift(); runCurrent()
+            assertThat((vm.state.value as ShiftState.ShiftActive).shift.id).isEqualTo("another-shift")
+            val before = reads
+            advanceTimeBy(2000); runCurrent()
+            assertThat(reads).isEqualTo(before)
+            assertThat((vm.state.value as ShiftState.ShiftActive).shift.id).isEqualTo("another-shift")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
 }

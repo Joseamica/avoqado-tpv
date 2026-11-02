@@ -168,10 +168,12 @@ class AngelPaySdk119ViewModelTest {
         unmockkAll()
     }
 
-    private fun createViewModel(handle: SavedStateHandle = SavedStateHandle()) = AngelPayPaymentViewModel(
+    private fun createViewModel(handle: SavedStateHandle = SavedStateHandle()) = run {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
+        AngelPayPaymentViewModel(
         appContext = mockk<Context>(relaxed = true),
         recordPaymentUseCase = recordPaymentUseCase,
-        shiftRepository = mockk(relaxed = true),
+        shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(),
         authRepository = authRepository,
         merchantRepository = merchantRepository,
         merchantEligibilityRepository = mockk(relaxed = true),
@@ -198,7 +200,13 @@ class AngelPaySdk119ViewModelTest {
         ledgerServerRecovery = mockk(relaxed = true),
         attemptApi = mockk(relaxed = true),
         savedStateHandle = handle,
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(),
+        ventaLocalRepository = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true),
+        subirVentaGuardadaUseCase = mockk(relaxed = true),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
     )
+    }
 
     // ───────────────────── Resultados REALES del AAR 1.0.19 (mismos argumentos que su orquestador) ─────────────────────
 

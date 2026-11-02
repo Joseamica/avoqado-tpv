@@ -109,6 +109,7 @@ fun ConnectionBannerHost(
     showShiftBanner: Boolean,
     onShiftClick: () -> Unit,
     modifier: Modifier = Modifier,
+    localCaja: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation? = null,
 ) {
     val venueSuspended = venueStatus != VenueStatus.ACTIVE
     val priority = resolveVisibleBanner(
@@ -132,6 +133,7 @@ fun ConnectionBannerHost(
             shift = shift,
             isOffline = offline,
             cachedInfo = cachedShiftInfo,
+            localCaja = localCaja,
             onClick = onShiftClick,
             modifier = modifier,
         )

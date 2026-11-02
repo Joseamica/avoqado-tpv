@@ -1,7 +1,6 @@
 package com.jaac.avoqado_tpv.core.data.local.mappers
 
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toSplitType
@@ -11,7 +10,6 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
-import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -158,9 +156,6 @@ fun Order.toEntity(
  * @return Domain OrderItem model
  */
 fun DraftOrderItemEntity.toDomain(): OrderItem {
-    val gson = Gson()
-    val modifierListType = object : TypeToken<List<ProductModifier>>() {}.type
-
     return OrderItem(
         id = id,
         orderId = orderId,
@@ -170,11 +165,8 @@ fun DraftOrderItemEntity.toDomain(): OrderItem {
         quantity = quantity,
         unitPrice = BigDecimal(unitPrice),
         totalPrice = BigDecimal(totalPrice),
-        modifiers = if (modifiers.isNotBlank()) {
-            gson.fromJson(modifiers, modifierListType)
-        } else {
-            emptyList()
-        },
+        // Lee los dos formatos (nombres reales y los de R8 de antes de la v43); un JSON dañado de verdad sale sin extras, no truena.
+        modifiers = extrasDeRenglon(modifiers, "el renglón $id de la orden $orderId"),
         notes = notes,
         kitchenStatus = KitchenStatus.valueOf(kitchenStatus),
         createdAt = Instant.ofEpochMilli(createdAt),

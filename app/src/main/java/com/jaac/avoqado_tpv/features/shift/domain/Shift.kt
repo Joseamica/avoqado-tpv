@@ -58,7 +58,13 @@ data class Shift(
      * This is deliberately not inferred from persisted nullable shift columns: history and old
      * server responses leave it null because skip/ignore intent is request-scoped.
      */
-    val reconciliation: CashReconciliationResult? = null
+    val reconciliation: CashReconciliationResult? = null,
+    val cashDrawerSessionId: String? = null,
+    val localShiftSessionId: String? = null,
+    val openingDisposition: String? = null,
+    val fondoAplicado: BigDecimal? = null,
+    /** false: sólo hechos locales; los totales legacy no son un corte acreditado. null: contrato legacy. */
+    val financialTotalsKnown: Boolean? = null
 )
 
 /** Explicit additive close action. Null means the unchanged legacy close contract. */

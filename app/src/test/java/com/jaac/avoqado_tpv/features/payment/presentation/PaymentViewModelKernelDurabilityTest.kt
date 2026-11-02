@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import com.blumonpay.pax.shared.trans_process.domain.TransProcessRepository
 import com.blumonpay.pax.shared.trans_process.domain.use_case.set_select_app_code.SetSelectAppCodeUseCase
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
 import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
@@ -32,6 +33,9 @@ import com.jaac.avoqado_tpv.features.payment.domain.ProcessingClock
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
+import com.jaac.avoqado_tpv.features.payment.domain.model.withShiftBelonging
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
@@ -295,6 +299,8 @@ class PaymentViewModelKernelDurabilityTest {
         // Configure connectivity manager
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
+            // D2: el ViewModel sigue el estado de conexión mientras «Método de pago» está a la vista.
+            every { connectionState } returns MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
         }
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
@@ -348,7 +354,11 @@ class PaymentViewModelKernelDurabilityTest {
             mockk(relaxed = true),
         validateCancelUseCase: com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase =
             mockk(relaxed = true),
+        apiService: com.jaac.avoqado_tpv.core.data.network.ApiService = mockk(relaxed = true),
+        cryptoHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
     ): PaymentViewModel {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = startDetectCardUseCase,
@@ -383,7 +393,7 @@ class PaymentViewModelKernelDurabilityTest {
             tpvSettingsRepository = mockTpvSettingsRepository,
             verificationUploadManager = mockk(relaxed = true),
             paymentApiService = mockk(relaxed = true),
-            apiService = mockk(relaxed = true),
+            apiService = apiService,
             customerRepository = mockk(relaxed = true),
             secureStorage = mockSecureStorage,
             modulesRepository = mockModulesRepository,
@@ -398,7 +408,11 @@ class PaymentViewModelKernelDurabilityTest {
             blumonAttemptResolver = mockk(relaxed = true),
             observability = observabilityManager,
             authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
-            appContext = mockAppContext
+            appContext = mockAppContext,
+            ventaLocalRepository = mockk(relaxed = true),
+            pendingPaymentDao = mockk(relaxed = true),
+            subirVentaGuardadaUseCase = mockk(relaxed = true),
+            cryptoSavedState = cryptoHandle,
         )
     }
 
@@ -1182,4 +1196,355 @@ class PaymentViewModelKernelDurabilityTest {
             assertThat(filas(db).single().second).isEqualTo("DESCARTADA")
         } finally { vm.viewModelScope.cancel(); soltar.cancel(); db.close() }
     }
+
+    @Test fun `B2 chip refund false real de Room detiene StartEmv antes de cualquier efecto`() = runTest {
+        comprobarRefundCerrado(contactless = false)
+    }
+
+    @Test fun `B2 CTLS refund false real de Room conserva el guard duro antes del kernel`() = runTest {
+        comprobarRefundCerrado(contactless = true)
+    }
+
+    private suspend fun comprobarRefundCerrado(contactless: Boolean) {
+        val db = baseEnMemoria()
+        val now = System.currentTimeMillis()
+        val localId = "cabcdefghijklmnopqrstuvwx"
+        db.localShiftSessionDao().insertar(com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity(
+            localSessionId = localId, venueId = testVenueId, openingKind = "LOCAL", openingOperationId = localId,
+            openingStatus = "PENDING", originalOpenedAt = "2026-10-28T00:00:00Z", startingCash = "100.00",
+            openedByStaffId = testStaffId, localStatus = "CLOSED", openSlot = null, createdAt = now, updatedAt = now))
+        db.paymentAttemptDao().insert(PaymentAttemptEntity(attemptId = "refund-closed", venueId = testVenueId,
+            processor = "BLUMON", kind = "REFUND", state = "PREPARANDO", amountCents = 1000, tipCents = 0,
+            recordingRoute = "REFUND", paymentContextJson = "{}", shiftMembership = "MANAGED", localShiftSessionId = localId,
+            createdAt = now, updatedAt = now))
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val chip = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>()
+        val ctls = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        val vm = createViewModel(startEmvTransUseCase = chip, startCtlssTransUseCase = ctls)
+        try {
+            val field = PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }
+            val current = field.get(vm) as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession
+            field.set(vm, current.copy(refundAttemptId = "refund-closed"))
+            kotlin.coroutines.suspendCoroutine<Unit> { continuation ->
+                val types = if (contactless) arrayOf(String::class.java, kotlin.coroutines.Continuation::class.java)
+                    else arrayOf(kotlin.coroutines.Continuation::class.java)
+                val method = PaymentViewModel::class.java.getDeclaredMethod(if (contactless) "processContactlessRefund" else "processChipRefund", *types)
+                    .apply { isAccessible = true }
+                val result = if (contactless) method.invoke(vm, "10.00", continuation) else method.invoke(vm, continuation)
+                if (result !== kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resumeWith(Result.success(Unit))
+            }
+            assertThat(vm.state.value).isInstanceOf(PaymentState.Error::class.java)
+            assertThat(db.paymentAttemptDao().getById("refund-closed")?.state).isEqualTo("PREPARANDO")
+            coVerify(exactly = 0) { chip.run(any()) }
+            coVerify(exactly = 0) { ctls.run(any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test fun `B2 PAX cripto tiene owner Room antes POST y callback fuera de QR no pierde resultado`() = runTest {
+        val db = baseEnMemoria()
+        val cryptoApi = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, cryptoApi, testVenueId, testStaffId)
+        every { mockAuthRepository.getVenueId() } returns testVenueId
+        every { mockAuthRepository.getStaffId() } returns testStaffId
+        lateinit var key: String
+        fun data(recorded: Boolean) = com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResultDto(
+            paymentId = key, requestId = "task5-provider", paymentUrl = "https://example.test/pay", expiresAt = "2026-10-29T00:00:00Z", expiresInSeconds = 60,
+            operation = com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationDto(key, "ISSUED", if (recorded) "COMPLETED" else "PENDING", recorded))
+        coEvery { cryptoApi.initiateDurableCryptoPayment(testVenueId, any()) } coAnswers {
+            key = secondArg<com.jaac.avoqado_tpv.core.data.network.CryptoPaymentRequest>().idempotencyKey!!
+            assertThat(db.localCryptoOperationDao().leer(testVenueId, key)?.shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+            assertThat(db.inTransaction()).isFalse()
+            retrofit2.Response.success(com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse(true, data(false)))
+        }
+        coEvery { cryptoApi.getCryptoOperation(testVenueId, any()) } answers {
+            retrofit2.Response.success(com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse(true, data(true)))
+        }
+        val vm = createViewModel(apiService = cryptoApi)
+        try {
+            val stateField = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val mutable = stateField.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+            mutable.value = PaymentState.SelectingMerchant("10.00", "0.00", "10.00", null)
+            vm.processCryptoPayment("10.00")
+            esperarA { vm.state.value is PaymentState.AwaitingCryptoPayment || vm.state.value is PaymentState.Error }
+            assertThat(vm.state.value).isInstanceOf(PaymentState.AwaitingCryptoPayment::class.java)
+            assertThat(db.localCryptoOperationDao().contar(testVenueId)).isEqualTo(1)
+            mutable.value = PaymentState.Processing("Fuera del QR")
+            val event = SocketEvent.CryptoPaymentConfirmed("task5-provider", key, 1000, "MXN", "tx", "1", "BTC", 1, null, null, null, null, testVenueId, "2026-10-28T00:00:00Z")
+            val method = PaymentViewModel::class.java.getDeclaredMethod("handleCryptoPaymentConfirmed", SocketEvent.CryptoPaymentConfirmed::class.java).apply { isAccessible = true }
+            method.invoke(vm, event)
+            esperarA { kotlinx.coroutines.runBlocking { db.localCryptoOperationDao().leer(testVenueId, key)?.financialRecorded == true } }
+            assertThat(db.localCryptoOperationDao().leer(testVenueId, key)?.financialStatus).isEqualTo("COMPLETED")
+            coVerify(exactly = 1) { cryptoApi.initiateDurableCryptoPayment(testVenueId, any()) }
+            coVerify(exactly = 0) { cryptoApi.initiateCryptoPayment(any(), any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+
+    @Test fun `B2 kiosco confirma PIN con owner CASH OFF y ON sin OPEN no cae al fallback`() = runTest {
+        for (enabled in listOf(false, true)) {
+            val db = baseEnMemoria()
+            val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+            mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId, enabled)
+            val recorder = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder>()
+            coEvery { recorder.recordPayment(any(), any(), any(), any()) } coAnswers {
+                val context = firstArg<PaymentContext>()
+                val row = db.pendingPaymentDao().bloqueanCierre(testVenueId, 0).single()
+                assertThat(row.shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+                assertThat(row.staffId).isEqualTo("staff-kiosk-assigned")
+                assertThat(db.inTransaction()).isFalse()
+                Result.success(PaymentReceipt("payment", "", "", context.amount, context.tip))
+            }
+            mockRecordPaymentUseCase = RecordPaymentUseCase(recorder, mockk(relaxed = true),
+                com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl(db.pendingPaymentDao()), mockShiftRepository)
+            val vm = createViewModel(apiService = api)
+            try {
+                PaymentViewModel::class.java.getDeclaredField("currentVenueId").apply { isAccessible = true }.set(vm, testVenueId)
+                PaymentViewModel::class.java.getDeclaredField("currentStaffId").apply { isAccessible = true }.set(vm, testStaffId)
+                vm.setKioskPaymentMode(true, "staff-kiosk-assigned")
+                @Suppress("UNCHECKED_CAST")
+                val state = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+                state.value = PaymentState.AwaitingCashConfirmation("10.00", "0.00", "10.00", null, null, null)
+                vm.confirmCashPayment("staff-pin-other")
+                esperarA { vm.state.value is PaymentState.Success || vm.state.value is PaymentState.Error }
+                if (enabled) {
+                    assertThat(vm.state.value).isInstanceOf(PaymentState.Error::class.java)
+                    coVerify(exactly = 0) { recorder.recordPayment(any(), any(), any(), any()) }
+                    coVerify(exactly = 0) { mockPaymentQueueRepository.enqueue(any()) }
+                } else {
+                    assertThat(vm.state.value).isInstanceOf(PaymentState.Success::class.java)
+                    coVerify(exactly = 1) { recorder.recordPayment(any(), any(), any(), any()) }
+                }
+                assertThat(db.localShiftSessionDao().contar(testVenueId)).isEqualTo(0)
+            } finally { vm.viewModelScope.cancel(); db.close() }
+        }
+    }
+
+    @Test fun `B2 PAX venta operador y kiosco OFF tienen intento durable antes del lector`() = runTest {
+        for (kiosk in listOf(false, true)) {
+            val db = baseEnMemoria()
+            val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+            mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId)
+            if (kiosk) every { mockSecureStorage.getKioskVenueId() } returns testVenueId
+            mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+            coEvery { mockInitializationManager.readEffectivePosId() } returns testMerchantA.posId
+            val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+            var readerEntered = false
+            coEvery { detect.run(any()) } coAnswers {
+                val row = db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE).single()
+                assertThat(row.shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+                assertThat(row.localShiftSessionId).isNull()
+                val captured = com.google.gson.JsonParser.parseString(row.paymentContextJson).asJsonObject
+                assertThat(captured.get("staffId").asString).isEqualTo(if (kiosk) "staff-kiosk-assigned" else testStaffId)
+                assertThat(db.inTransaction()).isFalse()
+                readerEntered = true
+                com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
+            }
+            val vm = createViewModel(startDetectCardUseCase = detect, apiService = api)
+            try {
+                vm.setKioskPaymentMode(kiosk, if (kiosk) "staff-kiosk-assigned" else null)
+                vm.selectMerchant(testMerchantA)
+                esperarA { vm.currentMerchant.value != null }
+                vm.startPayment("10.00")
+                esperarA { readerEntered || vm.state.value is PaymentState.Error }
+                assertThat(readerEntered).isTrue()
+                assertThat(db.localShiftSessionDao().contar(testVenueId)).isEqualTo(0)
+            } finally { vm.viewModelScope.cancel(); db.close() }
+        }
+    }
+    @Test fun `B2 chip refund false real al guardar AUTORIZANDO no alcanza CancelIcc`() = runTest {
+        val authorizingAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries()
+            .setQueryCallback({ sql, args -> if (sql.trimStart().startsWith("UPDATE") && sql.contains("payment_attempts") && args.contains("AUTORIZANDO")) authorizingAttempted.set(true) }, java.util.concurrent.Executor { it.run() }).build()
+        val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId, true)
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val context = createRefundContext().copy(amount = BigDecimal.TEN, idempotencyKey = "refund-write-fails")
+        mockShiftRepository.guardarAperturaLocal(testVenueId, testStaffId, BigDecimal.ZERO)
+        assertThat(mockPaymentAttemptLedger.openAttemptForShift(mockShiftRepository, "refund-write-fails", testVenueId,
+            "BLUMON", 1000, 0, "REFUND", com.google.gson.Gson().toJson(context), "REFUND")).isTrue()
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER task5_no_authorizing BEFORE UPDATE OF state ON payment_attempts WHEN NEW.state='AUTORIZANDO' BEGIN SELECT RAISE(ABORT,'test durable write failed'); END")
+        val chip = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>()
+        coEvery { chip.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(mockk(relaxed = true))
+        val cancel = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase>()
+        val vm = createViewModel(startEmvTransUseCase = chip, cancelIccUseCase = cancel)
+        val tags = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tag_list.GetEmvTagListUseCase>()
+        coEvery { tags.runInfallible(any()) } returns mockk(relaxed = true)
+        val track = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_tag_value.GetTagValueUseCase>()
+        coEvery { track.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(mockk(relaxed = true))
+        PaymentViewModel::class.java.getDeclaredField("getEmvTagListUseCase\$delegate").apply { isAccessible = true }.set(vm, lazyOf(tags))
+        PaymentViewModel::class.java.getDeclaredField("getTagValueUseCase\$delegate").apply { isAccessible = true }.set(vm, lazyOf(track))
+        try {
+            val field = PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }
+            val original = field.get(vm) as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession
+            field.set(vm, original.copy(amount = BigDecimal.TEN, refundContext = context, refundAttemptId = "refund-write-fails"))
+            kotlin.coroutines.suspendCoroutine<Unit> { continuation ->
+                val method = PaymentViewModel::class.java.getDeclaredMethod("processChipRefund", kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+                val result = method.invoke(vm, continuation)
+                if (result !== kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resumeWith(Result.success(Unit))
+            }
+            assertThat(authorizingAttempted.get()).isTrue()
+            assertThat(vm.state.value).isInstanceOf(PaymentState.Error::class.java)
+            assertThat((vm.state.value as PaymentState.Error).message).contains("autorización de la devolución")
+            assertThat(db.paymentAttemptDao().getById("refund-write-fails")?.state).isEqualTo("KERNEL_ACTIVO")
+            coVerify(exactly = 1) { chip.run(any()) }
+            coVerify(exactly = 0) { cancel.run(any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+
+    @Test fun `B2 kiosco repetido muestra venta guardada sin reintento fallback POST ni SDK`() = runTest {
+        val db = baseEnMemoria()
+        val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId)
+        val recorder = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder>()
+        val queue = com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl(db.pendingPaymentDao())
+        val real = RecordPaymentUseCase(recorder, mockk(relaxed = true), queue, mockShiftRepository)
+        mockRecordPaymentUseCase = spyk(real)
+        coEvery { mockRecordPaymentUseCase.invoke(any(), any(), any(), any(), any()) } coAnswers {
+            val context = arg<PaymentContext>(0)
+            val reference = arg<String>(3)
+            // Representa el dueño durable que dejó el gesto anterior, con la cerca Room real.
+            mockShiftRepository.guardarNuevaObligacionDeCaja(context.venueId) { belonging ->
+                queue.enqueue(QueuedPayment.desdeContexto(context.withShiftBelonging(belonging), null, CardDetails.CASH,
+                    arg<String>(2), reference, null)).getOrThrow()
+            }
+            real(context, arg(1), arg(2), reference, arg(4))
+        }
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+        val vm = createViewModel(startDetectCardUseCase = detect, apiService = api)
+        try {
+            PaymentViewModel::class.java.getDeclaredField("currentVenueId").apply { isAccessible = true }.set(vm, testVenueId)
+            PaymentViewModel::class.java.getDeclaredField("currentStaffId").apply { isAccessible = true }.set(vm, testStaffId)
+            vm.setKioskPaymentMode(true, "staff-kiosk-assigned")
+            @Suppress("UNCHECKED_CAST")
+            val state = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+            state.value = PaymentState.AwaitingCashConfirmation("10.00", "0.00", "10.00", null, null, null)
+            vm.confirmCashPayment("staff-pin-other")
+            esperarA { vm.state.value is PaymentState.Error || vm.state.value is PaymentState.Success }
+            val error = vm.state.value as PaymentState.Error
+            assertThat(error.message).isEqualTo("La venta ya está guardada; no vuelvas a cobrarla.")
+            assertThat(error.canRetry).isFalse()
+            assertThat(error.showCashFallback).isFalse()
+            assertThat(error.context).isNull()
+            assertThat(db.pendingPaymentDao().getAllPending()).hasSize(1)
+            assertThat(db.pendingPaymentDao().getAllPending().single().shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+            coVerify(exactly = 0) { recorder.recordPayment(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { mockPaymentQueueRepository.enqueue(any()) }
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test fun `B2 crypto gesture PAX FAILED_GET`() = runTest { checkCryptoGesture(CryptoGestureCase.FAILED_GET) }
+    @Test fun `B2 crypto gesture PAX PENDING_GET`() = runTest { checkCryptoGesture(CryptoGestureCase.PENDING_GET) }
+    @Test fun `B2 crypto gesture PAX SAME_BODY`() = runTest { checkCryptoGesture(CryptoGestureCase.SAME_BODY) }
+    @Test fun `B2 crypto gesture PAX LATE_CALLBACK`() = runTest { checkCryptoGesture(CryptoGestureCase.LATE_CALLBACK) }
+    @Test fun `B2 crypto gesture PAX CANCEL_RETRY`() = runTest { checkCryptoGesture(CryptoGestureCase.CANCEL_RETRY) }
+
+    private suspend fun checkCryptoGesture(scenario: CryptoGestureCase) {
+        val db = baseEnMemoria()
+        val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId)
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = false, showReviewScreen = false, showTipScreen = false, showVerificationScreen = false)
+        val vm = createViewModel(apiService = api)
+        try {
+            checkCryptoGestureLifecycle(scenario, db, api, testVenueId, testStaffId,
+                begin = { order ->
+                    vm.setKioskPaymentMode(true, testStaffId)
+                    vm.submitAmountDirectToMerchant("10.00", orderId = order, skipLocalOrderValidation = true)
+                    esperarA { vm.state.value is PaymentState.SelectingMerchant }
+                    assertThat(vm.state.value).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+                },
+                pay = { vm.processCryptoPayment("10.00") }, cancel = { vm.cancelCryptoPayment() }, reset = { vm.resetPayment() },
+                confirm = { socketEventsFlow.emit(it) }, ui = {
+                    when (val state = vm.state.value) {
+                        is PaymentState.AwaitingCryptoPayment -> CryptoGestureUi("QR", state.requestId, state.paymentId, state.paymentUrl)
+                        is PaymentState.SelectingMerchant -> CryptoGestureUi("SELECT")
+                        is PaymentState.Success -> CryptoGestureUi("SUCCESS")
+                        is PaymentState.Error -> CryptoGestureUi("ERROR")
+                        is PaymentState.Idle -> CryptoGestureUi("IDLE")
+                        else -> CryptoGestureUi("OTHER")
+                    }
+                })
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+
+    @Test fun `B2 PAX restaura K exacta desde SavedState y coldstart no reemite A`() = runTest {
+        val db = baseEnMemoria()
+        val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId)
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = false, showReviewScreen = false, showTipScreen = false, showVerificationScreen = false)
+        var vm: PaymentViewModel? = null
+        try {
+            checkCryptoRestoredEntry(db, api, testVenueId,
+                create = { vm = createViewModel(apiService = api, cryptoHandle = it) },
+                destroy = { vm?.viewModelScope?.cancel() },
+                begin = { order ->
+                    vm!!.setKioskPaymentMode(true, testStaffId)
+                    vm!!.submitAmountDirectToMerchant("10.00", orderId = order, skipLocalOrderValidation = true)
+                    esperarA { vm!!.state.value is PaymentState.SelectingMerchant }
+                    assertThat(vm!!.state.value).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+                }, pay = { vm!!.processCryptoPayment("10.00") }, reset = { vm!!.resetPayment() },
+                ui = { when (val state = vm!!.state.value) {
+                    is PaymentState.AwaitingCryptoPayment -> CryptoGestureUi("QR", state.requestId, state.paymentId, state.paymentUrl)
+                    is PaymentState.Error -> CryptoGestureUi("ERROR")
+                    else -> CryptoGestureUi("OTHER")
+                } }, waitFor = { predicate -> esperarA(condicion = predicate); assertThat(predicate()).isTrue() })
+        } finally { vm?.viewModelScope?.cancel(); db.close() }
+    }
+
+
+    @Test fun `B2 apertura publica cash VM captura null conserva owner y luego mapping ACK`() = runTest {
+        val db = baseEnMemoria()
+        val api = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        mockShiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, mockSecureStorage, api, testVenueId, testStaffId, true)
+        val opened = mockShiftRepository.openShift(testVenueId, testStaffId, 50.0).getOrThrow()
+        val localId = opened.localShiftSessionId!!
+        assertThat(opened.id).isEqualTo(localId)
+        val transport = mockk<com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService>()
+        val fast = com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder(transport,
+            com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate(db, mockSecureStorage))
+        val queue = com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl(db.pendingPaymentDao())
+        mockPaymentQueueRepository = queue
+        mockRecordPaymentUseCase = RecordPaymentUseCase(fast, mockk(relaxed = true), queue, mockShiftRepository)
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = true, showReviewScreen = false, showTipScreen = false, showVerificationScreen = false)
+        val vm = createViewModel(apiService = api)
+        try {
+            vm.submitAmountDirectToMerchant("10.00", skipLocalOrderValidation = true)
+            esperarA { vm.state.value is PaymentState.SelectingMerchant }
+            assertThat(vm.state.value).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            vm.processCashPayment("10.00")
+            esperarA { vm.state.value is PaymentState.Error || vm.state.value is PaymentState.Success }
+            val original = db.pendingPaymentDao().getAllPending().single()
+            assertThat(original.localShiftSessionId).isEqualTo(localId)
+            assertThat(original.shiftId).isNull()
+            assertThat(original.cashDrawerSessionId).isNull()
+            assertThat(original.staffId).isEqualTo(testStaffId)
+            assertThat(original.lastError.orEmpty()).doesNotContain("contradictorio")
+            coVerify(exactly = 0) { transport.recordFastPayment(any(), any()) }
+            val remoteId = "c000000000000000000000011"
+            val dto = com.google.gson.Gson().fromJson("""{"id":"$remoteId","venueId":"$testVenueId","staffId":"$testStaffId","startTime":"2026-10-28T10:00:00Z","status":"OPEN","startingCash":"50.00","cashDrawerSessionId":"c000000000000000000000012","localId":"$localId","openingDisposition":"OWN","fondoAplicado":"50.00"}""", com.jaac.avoqado_tpv.features.shift.data.dto.ShiftDto::class.java)
+            mockShiftRepository.registrarResultadoAperturaLocal(testVenueId, localId, dto).getOrThrow()
+            val captured = io.mockk.slot<com.jaac.avoqado_tpv.features.payment.data.dto.FastPaymentRequest>()
+            coEvery { transport.recordFastPayment(testVenueId, capture(captured)) } returns retrofit2.Response.success(
+                com.jaac.avoqado_tpv.features.payment.data.dto.PaymentResponse(true,
+                    com.jaac.avoqado_tpv.features.payment.data.dto.PaymentData("payment", BigDecimal.TEN, BigDecimal.ZERO, "EFECTIVO", original.referenceNumber, null)))
+            val replay = queue.claimBatch(10).single()
+            val result = mockRecordPaymentUseCase(replay.toPaymentContext(), CardDetails.CASH, "EFECTIVO", replay.referenceNumber, alreadyQueued = true)
+            assertThat(result.isSuccess).isTrue()
+            assertThat(captured.captured.shiftIdDeLaVenta).isEqualTo(remoteId)
+            assertThat(captured.captured.idempotencyKey).isEqualTo(original.idempotencyKey)
+            assertThat(captured.captured.staffId).isEqualTo(testStaffId)
+            assertThat(queue.markSynced(replay.queueId, replay.claimToken!!)).isEqualTo(1)
+            val after = db.pendingPaymentDao().findByReference(original.referenceNumber, testVenueId)!!
+            assertThat(after.shiftId).isNull()
+            assertThat(after.cashDrawerSessionId).isNull()
+            assertThat(after.localShiftSessionId).isEqualTo(localId)
+            assertThat(after.amount).isEqualTo(original.amount)
+            assertThat(after.staffId).isEqualTo(original.staffId)
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
 }

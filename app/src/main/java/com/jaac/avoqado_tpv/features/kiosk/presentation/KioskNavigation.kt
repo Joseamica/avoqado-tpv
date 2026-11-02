@@ -32,6 +32,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import timber.log.Timber
 
 /**
@@ -109,26 +110,16 @@ fun KioskNavigation(
     // Note: SDK pre-initialization is handled by KioskViewModel.initializeBlumonSDK()
     // which runs when the ViewModel is created and manages isBlumonInitializing/isBlumonReady states
     LaunchedEffect(Unit) {
-        val venueId = secureStorage.getKioskVenueId() ?: secureStorage.getVenueId() ?: ""
-        val isShiftSystemEnabled = secureStorage.isShiftSystemEnabled()
-
-        Timber.d("🥝 [KIOSK-NAV] Starting shift status check (venueId: $venueId, shiftsEnabled: $isShiftSystemEnabled)")
-
-        // Initial check
-        if (isShiftSystemEnabled && venueId.isNotEmpty()) {
-            checkShiftStatus(shiftRepository, kioskModeManager, venueId)
-        } else {
-            // No shift system, mark as ready
-            kioskModeManager.setReady()
-        }
-
-        // Periodic check every 30 seconds
+        checkCurrentKioskCajaContext(shiftRepository, kioskModeManager, secureStorage)
+        // Mismo pulso periódico; cada vuelta usa la sesión vigente, no la foto de entrada A.
         while (true) {
-            delay(30_000) // 30 seconds
-            if (isShiftSystemEnabled && venueId.isNotEmpty()) {
-                checkShiftStatus(shiftRepository, kioskModeManager, venueId)
-            }
+            delay(30_000)
+            checkCurrentKioskCajaContext(shiftRepository, kioskModeManager, secureStorage)
         }
+    }
+
+    LaunchedEffect(shiftRepository) {
+        observeKioskCajaChanges(shiftRepository, kioskModeManager, secureStorage)
     }
 
     Timber.d("🥝 [KIOSK-NAV] KioskNavigation composable rendering - state: $operationalState")
@@ -318,6 +309,11 @@ fun KioskNavigation(
             )
         }
 
+        is KioskOperationalState.LocalCajaReadError -> {
+            KioskUnavailableScreen(reason = UnavailableReason.LOCAL_CAJA_READ_ERROR,
+                onAdminClick = { showAdminPinDialog = true })
+        }
+
         is KioskOperationalState.Disabled -> {
             // This shouldn't happen in KioskNavigation since we exit kiosk mode when disabled
             Timber.w("🥝 [KIOSK-NAV] Disabled state in KioskNavigation - should have exited")
@@ -366,30 +362,121 @@ fun KioskNavigation(
     }
 }
 
-/**
- * Check shift status and update operational state
- */
-private suspend fun checkShiftStatus(
+/** Contexto UI, sin mutaciones ni autoridad financiera. */
+internal data class KioskCajaUiContext(val venue: String, val staff: String?, val token: String?, val generation: Long) {
+    fun vigente(storage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+        manager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager): Boolean =
+        manager.isKioskMode.value && manager.currentContextGeneration == generation &&
+        storage.getVenueId() == venue && (storage.getKioskVenueId() ?: storage.getVenueId()) == venue &&
+        storage.getStaffId() == staff && storage.getToken() == token
+}
+
+internal fun captureKioskCajaUiContext(
+    storage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    manager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    venueHint: String? = null, staffHint: String? = null,
+): KioskCajaUiContext? {
+    if (!manager.isKioskMode.value) return null
+    val generation = manager.currentContextGeneration
+    val venue = venueHint ?: storage.getKioskVenueId() ?: storage.getVenueId() ?: return null
+    val staff = storage.getStaffId()
+    if (staffHint != null && staff != staffHint) return null
+    return KioskCajaUiContext(venue, staff, storage.getToken(), generation)
+}
+
+/** El guard de error también puede fallar: sin contexto verificable no publica en B. */
+internal fun reportKioskCajaReadError(
+    error: Exception, context: KioskCajaUiContext?,
+    storage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    manager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    onError: () -> Unit = {},
+) {
+    Timber.e(error, "No se pudo leer la caja local del kiosco")
+    try {
+        if (context != null && context.vigente(storage, manager)) {
+            manager.handleLocalCajaReadError()
+            onError()
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (guardError: Exception) { Timber.e(guardError, "No se pudo validar el contexto del error de caja") }
+}
+
+/** Cada evento se contiene por separado; el siguiente sigue suscrito. */
+internal suspend fun observeKioskCajaChanges(
     shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     kioskModeManager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
-    venueId: String
+    secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
 ) {
+    shiftRepository.shiftChanges.collect {
+        refreshKioskCajaLocal(shiftRepository, kioskModeManager, null, secureStorage)
+    }
+}
+
+internal suspend fun refreshKioskCajaLocal(
+    shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    kioskModeManager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    venue: String?,
+    secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+) {
+    var context: KioskCajaUiContext? = null
     try {
+        val current = captureKioskCajaUiContext(secureStorage, kioskModeManager, venue) ?: return
+        context = current
+        fun vigente() = current.vigente(secureStorage, kioskModeManager)
+        val local = com.jaac.avoqado_tpv.features.shift.presentation.readCajaBootstrap(shiftRepository, current.venue, ::vigente)
+        if (vigente() && local.shift != null)
+            kioskModeManager.updateShiftStatus(local.shift.status == ShiftStatus.OPEN, serverAnswered = false)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { reportKioskCajaReadError(error, context, secureStorage, kioskModeManager) }
+}
+
+/** Misma consulta inicial/periódica; captura y configuración están dentro de la frontera. */
+internal suspend fun checkCurrentKioskCajaContext(
+    shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    kioskModeManager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+) {
+    var context: KioskCajaUiContext? = null
+    try {
+        val current = captureKioskCajaUiContext(secureStorage, kioskModeManager) ?: return
+        context = current
+        if (!current.vigente(secureStorage, kioskModeManager)) return
+        val enabled = secureStorage.isShiftSystemEnabled()
+        if (!current.vigente(secureStorage, kioskModeManager)) return
+        if (enabled && current.venue.isNotEmpty()) checkShiftStatus(shiftRepository, kioskModeManager, current.venue, secureStorage)
+        else kioskModeManager.setReady() // Bypass existente cuando Caja está desactivada.
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { reportKioskCajaReadError(error, context, secureStorage, kioskModeManager) }
+}
+
+internal suspend fun checkShiftStatus(
+    shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    kioskModeManager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    venueId: String,
+    secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+) {
+    var context: KioskCajaUiContext? = null
+    try {
+        val current = captureKioskCajaUiContext(secureStorage, kioskModeManager, venueId) ?: return
+        context = current
+        fun vigente() = current.vigente(secureStorage, kioskModeManager)
+        if (!vigente()) return
+        val bootstrap = com.jaac.avoqado_tpv.features.shift.presentation.readCajaBootstrap(shiftRepository, venueId, ::vigente)
+        if (!vigente()) return
+        if (bootstrap.shift != null) kioskModeManager.updateShiftStatus(bootstrap.shift.status == ShiftStatus.OPEN, serverAnswered = false)
         val result = shiftRepository.getCurrentShift(venueId)
+        if (!vigente()) return
+        val fresh = shiftRepository.leerCajaLocal(venueId)
+        if (!vigente()) return
         when (result) {
-            is Result.Success -> {
-                val shift = result.data
-                val isOpen = shift?.status == ShiftStatus.OPEN
-                kioskModeManager.updateShiftStatus(isOpen)
-                kioskModeManager.resetNetworkFailures()
-            }
+            is Result.Success -> kioskModeManager.updateShiftStatus((fresh?.shift ?: result.data)?.status == ShiftStatus.OPEN,
+                serverAnswered = result.data?.financialTotalsKnown != false)
             is Result.Error -> {
+                if (fresh != null) kioskModeManager.updateShiftStatus(fresh.shift.status == ShiftStatus.OPEN, serverAnswered = false)
                 Timber.e(result.exception, "🥝 [KIOSK-NAV] Error checking shift status")
                 kioskModeManager.handleNetworkError()
             }
         }
-    } catch (e: Exception) {
-        Timber.e(e, "🥝 [KIOSK-NAV] Exception checking shift status")
-        kioskModeManager.handleNetworkError()
-    }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { reportKioskCajaReadError(error, context, secureStorage, kioskModeManager) }
 }

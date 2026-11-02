@@ -45,6 +45,9 @@ sealed class KioskOperationalState {
      */
     data object NetworkError : KioskOperationalState()
 
+    /** Lectura local recuperable; no acredita estado de Caja o de HTTP. */
+    data object LocalCajaReadError : KioskOperationalState()
+
     /**
      * Kiosk mode is disabled
      * This state means we should exit kiosk and return to staff mode
@@ -80,6 +83,7 @@ sealed class KioskOperationalState {
         is NoShift -> UnavailableReason.SHIFT_CLOSED
         is AuthExpired -> UnavailableReason.AUTH_EXPIRED
         is NetworkError -> UnavailableReason.NETWORK_ERROR
+        is LocalCajaReadError -> UnavailableReason.LOCAL_CAJA_READ_ERROR
         is Disabled -> UnavailableReason.DISABLED
     }
 }
@@ -92,5 +96,6 @@ enum class UnavailableReason {
     SHIFT_CLOSED,
     AUTH_EXPIRED,
     NETWORK_ERROR,
+    LOCAL_CAJA_READ_ERROR,
     DISABLED
 }

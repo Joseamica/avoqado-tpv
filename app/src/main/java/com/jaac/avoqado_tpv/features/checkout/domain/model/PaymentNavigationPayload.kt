@@ -44,4 +44,28 @@ sealed class PaymentNavigationPayload {
     ) : PaymentNavigationPayload() {
         override val origin: PaymentFlowOrigin = PaymentFlowOrigin.ORDER
     }
+
+    /**
+     * «Cobrar» sin red: la venta no se pudo mandar al servidor (o no hay red) y se cobra en SÓLO EFECTIVO como una venta local.
+     * [ventaLocalJson] es la [com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal] serializada con Gson (viaja por el `SavedStateHandle`, sobrevive a que el sistema mate el
+     * proceso). No hay `orderId`: la orden la crea el servidor cuando la venta sube.
+     */
+    data class VentaLocal(
+        override val amountPesosString: String,
+        val ventaLocalJson: String,
+    ) : PaymentNavigationPayload() {
+        override val origin: PaymentFlowOrigin = PaymentFlowOrigin.FAST
+    }
+
+    /**
+     * «Cobrar» sin red: un carrito en $0 (cortesía o descuento completo) que no se pudo mandar al servidor YA quedó guardado como
+     * fila en la terminal y se sube solo. Como [CompletedFreeCart], NO abre la pantalla de cobro (ni la PAX ni la guarda de Nexgo de
+     * monto > 0 intervienen): Cobrar muestra «Venta en $0 guardada» con [venta] para imprimir su ticket.
+     */
+    data class VentaEnCeroGuardada(
+        override val amountPesosString: String,
+        val venta: com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal,
+    ) : PaymentNavigationPayload() {
+        override val origin: PaymentFlowOrigin = PaymentFlowOrigin.FAST
+    }
 }

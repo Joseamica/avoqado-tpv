@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,12 +35,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -108,6 +111,15 @@ fun ShiftScreen(
     val canOpenShift by viewModel.canOpenShift.collectAsStateWithLifecycle()
     val canCloseShift by viewModel.canCloseShift.collectAsStateWithLifecycle()
     val isCashReconciliationEnabled by viewModel.isCashReconciliationEnabled.collectAsStateWithLifecycle()
+    val localCaja by viewModel.localCaja.collectAsStateWithLifecycle()
+    val localHistory by viewModel.localHistory.collectAsStateWithLifecycle()
+    val localReview by viewModel.localReview.collectAsStateWithLifecycle()
+    val offline by viewModel.isOffline.collectAsStateWithLifecycle()
+
+    DisposableEffect(viewModel) {
+        viewModel.onShiftScreenEntered()
+        onDispose { viewModel.onShiftScreenLeft() }
+    }
 
     // Dialog states
     var showOpenDialog by remember { mutableStateOf(false) }
@@ -124,7 +136,7 @@ fun ShiftScreen(
     Scaffold(
         topBar = {
             AvoqadoTopBar(
-                title = "Turnos de caja",
+                title = "Caja",
                 onNavigationClick = if (requiresReconciliationAcknowledgement) {
                     null
                 } else {
@@ -142,7 +154,14 @@ fun ShiftScreen(
                 onRefresh = { viewModel.refresh() },
                 enabled = isShiftPullToRefreshEnabled(state)
             ) {
-                when (val currentState = state) {
+                val caja = localCaja
+                if (caja != null && (state is ShiftState.ShiftActive || state is ShiftState.ShiftClosed || state is ShiftState.NoActiveShift)) {
+                    LocalCajaContent(caja, offline, canCloseShift, canOpenShift, requiresReconciliationAcknowledgement,
+                        onClose = { showCloseDialog = true }, onOpen = { showOpenDialog = true },
+                        onDone = viewModel::acknowledgeClosedShift, onAdopt = viewModel::adoptRemoteCaja,
+                        onReview = viewModel::reviewLocalCaja, onHistory = viewModel::loadLocalHistory, history = localHistory,
+                        financialShift = (state as? ShiftState.ShiftActive)?.shift?.takeIf { it.hasKnownFinancialTotals() })
+                } else when (val currentState = state) {
                 is ShiftState.Loading -> {
                     AvoqadoLoadingOverlay(message = "Cargando turno de caja...")
                 }
@@ -203,8 +222,34 @@ fun ShiftScreen(
                     )
                 }
 
+                is ShiftState.CloseBlockedByPayments -> {
+                    val context = LocalContext.current
+                    CloseBlockedByPaymentsContent(
+                        page = currentState.page,
+                        busy = currentState.busy,
+                        error = currentState.error,
+                        onAcknowledge = viewModel::acknowledgePayment,
+                        onPage = viewModel::loadPaymentPage,
+                        onRetry = {
+                            try {
+                                com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(context)
+                                viewModel.loadPaymentPage(currentState.page?.offset ?: 0)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                viewModel.onPaymentRetryFailed()
+                            }
+                        },
+                        onBack = viewModel::loadCurrentShift,
+                    )
+                }
+
                 is ShiftState.Error -> {
-                    ErrorContent(
+                    if (currentState.canOpenLocally) NoActiveShiftContent(
+                        onOpenShift = { showOpenDialog = true },
+                        canOpenShift = canOpenShift,
+                        unknownRemoteState = true
+                    ) else ErrorContent(
                         message = currentState.message,
                         onRetry = { viewModel.retry() }
                     )
@@ -218,6 +263,17 @@ fun ShiftScreen(
         }
 
         // Dialogs
+        localReview?.let { review ->
+            val context = LocalContext.current
+            LocalCajaReviewDialog(review, viewModel::dismissLocalReview,
+                onPage = { viewModel.reviewLocalCaja(review.sessionId, it) },
+                onCash = viewModel::acknowledgeLocalCash, onCrypto = viewModel::queryLocalCrypto,
+                onRetry = {
+                    try { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(context) }
+                    catch (error: Exception) { viewModel.onPaymentRetryFailed() }
+                    viewModel.reviewLocalCaja(review.sessionId, review.page?.offset ?: 0)
+                })
+        }
         if (showOpenDialog) {
             OpenShiftDialog(
                 onDismiss = { showOpenDialog = false },
@@ -310,7 +366,10 @@ private fun ActiveShiftContent(
                     )
 
                     Text(
-                        text = "  Abierto - ${shift.staffName}",
+                        text = if (shift.status == ShiftStatus.CLOSING) "Caja cerrándose" else
+                            if (shift.status == ShiftStatus.CLOSED) "Caja cerrada" else
+                            if (shift.financialTotalsKnown == false && shift.localShiftSessionId == null) "Última caja abierta conocida" else
+                            "Caja abierta" + shift.staffName.takeIf { it.isNotBlank() && it != "Unknown" }?.let { " · $it" }.orEmpty(),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(start = 8.dp)
@@ -322,10 +381,10 @@ private fun ActiveShiftContent(
                 // Shift details
                 ShiftDetailRow(label = "Inicio", value = formatTime(shift.startTime))
                 ShiftDetailRow(label = "Duración", value = formatDuration(shift.durationMinutes))
-                ShiftDetailRow(label = "Ventas", value = "$${shift.totalSales}", highlight = true)
-                ShiftDetailRow(label = "Productos", value = "${shift.totalProductsSold}")
-                ShiftDetailRow(label = "Órdenes", value = "${shift.totalOrders}")
-                ShiftDetailRow(label = "Propinas", value = "$${shift.totalTips}")
+                val financialLines = shift.financialDisplayLines()
+                if (financialLines != null) financialLines.forEach { (label, value) ->
+                    ShiftDetailRow(label = label, value = value, highlight = label == "Ventas")
+                } else Text("Importes pendientes de confirmar con el servidor")
 
                 Spacer(modifier = Modifier.height(20.dp))
 
@@ -333,7 +392,7 @@ private fun ActiveShiftContent(
                 Button(
                     onClick = onCloseShift,
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = canCloseShift,
+                    enabled = canCloseShift && shift.status == ShiftStatus.OPEN,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error  // ✅ Rojo del theme
                     )
@@ -363,8 +422,10 @@ private fun ActiveShiftContent(
 @Composable
 private fun NoActiveShiftContent(
     onOpenShift: () -> Unit,
-    canOpenShift: Boolean = true
+    canOpenShift: Boolean = true,
+    unknownRemoteState: Boolean = false
 ) {
+    val title = if (unknownRemoteState) "Sin caja guardada" else "Sin turno de caja"
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -384,16 +445,16 @@ private fun NoActiveShiftContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
-                    imageVector = Icons.Default.Error,
-                    contentDescription = "Sin turno de caja",
-                    tint = MaterialTheme.colorScheme.error,  // ✅ Rojo del theme
+                    imageVector = if (unknownRemoteState) Icons.Default.Info else Icons.Default.Error,
+                    contentDescription = title,
+                    tint = if (unknownRemoteState) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(48.dp)
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Sin turno de caja",
+                    text = title,
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold
                     ),
@@ -403,7 +464,8 @@ private fun NoActiveShiftContent(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "Abre la caja para comenzar a registrar ventas",
+                    text = if (unknownRemoteState) "Sin conexión: no sabemos qué caja muestran otros aparatos. Una apertura en este aparato se enviará después."
+                        else "Abre la caja para comenzar a registrar ventas",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -454,6 +516,14 @@ private fun ShiftClosedContent(
     zonaDelNegocio: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     onDone: () -> Unit = {}
 ) {
+    if (!shift.hasKnownFinancialTotals()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Cierre guardado en este aparato")
+            Text("Pendiente de confirmación. No es un corte definitivo.")
+            Button(onClick = onDone) { Text("Listo") }
+        }
+        return
+    }
     if (reconciliationAction != null) {
         CashReconciliationClosedContent(
             shift = shift,

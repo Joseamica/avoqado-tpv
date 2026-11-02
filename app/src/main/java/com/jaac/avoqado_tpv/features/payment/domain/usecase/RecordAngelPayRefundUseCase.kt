@@ -65,6 +65,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     private val clock: java.time.Clock,
     /** 🔴 «Devolución en curso» mientras se habla con AngelPay (founder, 29-sep: nada detiene las ventas). */
     private val paymentStateHolder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
 ) {
 
     /**
@@ -147,6 +148,8 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         alreadyRefundedAmount: BigDecimal,
         originalPaymentId: String,
         paymentVenueId: String,
+        originalOrderId: String? = null,
+        tipRefundCents: Int? = null,
     ): Result<AngelPayRefundApproval> {
         if (alreadyRefundedAmount > BigDecimal.ZERO || requestedAmount.compareTo(originalAmount) != 0) {
             Timber.w(
@@ -196,14 +199,14 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         // 📒 [Libreta] write-ahead ANTES de que corra el SDK (auditoría F1): si el proceso muere entre la aprobación y la fila de
         // la cola, queda evidencia con la MISMA llave. 🔴 29-sep: si la fila NO queda escrita, no se llama a AngelPay — una
         // devolución sin fila no tiene quién la cierre ni quién impida repetirla.
-        val abierta = paymentAttemptLedger.openAttempt(
+        val abierta = paymentAttemptLedger.openAttemptForShift(shiftRepository, 
             attemptId = idempotencyKey,
             venueId = paymentVenueId,
             processor = "angelpay",
             amountCents = requestedAmount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
             tipCents = 0L,
             recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
-            contextJson = contextoDeLaDevolucion(originalPaymentId, paymentReference),
+            contextJson = contextoDeLaDevolucion(originalPaymentId, paymentReference, originalOrderId, tipRefundCents),
             kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND,
         )
         if (!abierta) {
@@ -578,9 +581,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     )
 
     /** El contexto de la fila: `originalPaymentId` va escapado porque [PaymentAttemptLedger.devolucionSinResolver] lo busca así. */
-    private fun contextoDeLaDevolucion(originalPaymentId: String, paymentReference: String): String {
+    private fun contextoDeLaDevolucion(originalPaymentId: String, paymentReference: String, originalOrderId: String?, tipRefundCents: Int?): String {
         val gson = com.google.gson.Gson()
-        return "{\"originalPaymentId\":${gson.toJson(originalPaymentId)},\"reference\":${gson.toJson(paymentReference)},\"processor\":\"angelpay\"}"
+        return "{\"staffId\":${gson.toJson(authRepository.getStaffId())},\"originalPaymentId\":${gson.toJson(originalPaymentId)},\"reference\":${gson.toJson(paymentReference)},\"processor\":\"angelpay\",\"originalOrderId\":${gson.toJson(originalOrderId)},\"tipRefundCents\":${gson.toJson(tipRefundCents)}}"
     }
 
     /**
@@ -637,7 +640,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         // 🔑 La llave llegó con la aprobación del SDK (nació ANTES de tocarlo): es la MISMA en la libreta,
         // en la fila write-ahead y en el contexto que viaja al servidor.
 
-        val context = PaymentContext.RefundPayment(
+        val baseContext = PaymentContext.RefundPayment(
             venueId = paymentVenueId,
             staffId = staffId,
             shiftId = null, // AngelPay flow does not currently use shifts (Blumon does).
@@ -648,12 +651,15 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             merchantAccountId = merchantAccountId,
             originalPaymentId = paymentId,
             originalOrderId = orderId,
+            tipRefundCents = tipRefundCents,
             originalTotalAmount = originalTotalAmount,
             refundReason = refundReason,
             isPartialRefund = isPartial,
             idempotencyKey = idempotencyKey,
             originalOperationNumber = 0, // AngelPay does not use Blumon's CancelIcc opNumber.
         )
+
+        val context = shiftRepository.restaurarContextoDelIntento(baseContext) as PaymentContext.RefundPayment
 
         // Stub card details — the refund row's audit fields populate from the
         // ORIGINAL payment server-side; what we send here is just informational.
@@ -672,7 +678,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             val queued = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund(
                 idempotencyKey = idempotencyKey,
                 venueId = paymentVenueId,
-                staffId = staffId,
+                staffId = context.staffId,
+                shiftMembership = context.shiftMembership ?: "UNKNOWN", localShiftSessionId = context.localShiftSessionId,
+                cashDrawerSessionId = context.cashDrawerSessionId,
                 processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY,
                 originalPaymentId = paymentId,
                 originalOrderId = orderId,
@@ -698,7 +706,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             writeAhead.onFailure { Timber.e(it, "💸🔴 [AngelPay Direct Refund] No se pudo escribir la fila write-ahead | key=%s", idempotencyKey) }
 
             // 2️⃣ El POST
-            val recorded = if (!hasSession) {
+            val recorded = if (writeAhead.exceptionOrNull() is com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentOwnerContractConflictException) {
+                Result.failure(requireNotNull(writeAhead.exceptionOrNull()))
+            } else if (!hasSession) {
                 Result.failure(IllegalStateException("Sin sesión de staff: el reembolso quedó en cola"))
             } else {
                 refundRecorder.recordRefund(

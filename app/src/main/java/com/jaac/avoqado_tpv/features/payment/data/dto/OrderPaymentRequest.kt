@@ -60,6 +60,12 @@ data class OrderPaymentRequest(
     @SerializedName("staffId")
     val staffId: String,
 
+    @SerializedName("shiftIdDeLaVenta")
+    val shiftIdDeLaVenta: String? = null,
+
+    @SerializedName("isOfflineReplay")
+    val isOfflineReplay: Boolean? = null,
+
     @SerializedName("paidProductsId")
     val paidProductsId: List<String> = emptyList(),
 

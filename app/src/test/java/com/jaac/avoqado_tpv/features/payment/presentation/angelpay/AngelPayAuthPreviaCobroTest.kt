@@ -151,7 +151,9 @@ class AngelPayAuthPreviaCobroTest {
         unmockkAll()
     }
 
-    private fun createViewModel(): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    private fun createViewModel(): AngelPayPaymentViewModel {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
+        return AngelPayPaymentViewModel(
         appContext = mockk<Context>(relaxed = true),
         recordPaymentUseCase = mockk(relaxed = true),
         shiftRepository = mockk(relaxed = true),
@@ -182,9 +184,15 @@ class AngelPayAuthPreviaCobroTest {
         ledgerServerRecovery = mockk(relaxed = true),
         attemptApi = mockk(relaxed = true),
         savedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(),
+        ventaLocalRepository = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true),
+        subirVentaGuardadaUseCase = mockk(relaxed = true),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
     ).also {
         it.flujoSdkForzadoParaPruebas = true
         merchantsFlow.value = listOf(comercio) // un solo comercio → autoselección
+    }
     }
 
     /** El arranque sin red: sin sesión del SDK y la auth en error. */

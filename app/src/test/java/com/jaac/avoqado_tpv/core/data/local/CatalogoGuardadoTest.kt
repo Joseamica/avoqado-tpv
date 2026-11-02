@@ -5,11 +5,15 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
 import com.jaac.avoqado_tpv.core.domain.variantes.DatosDeFamilia
 import com.jaac.avoqado_tpv.core.domain.variantes.OpcionDeVariante
 import com.jaac.avoqado_tpv.core.domain.variantes.ReglasDeFamilia
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.features.ordering.data.dto.ProductsResponse
+import com.jaac.avoqado_tpv.features.ordering.data.repository.ProductRepositoryImpl
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import io.mockk.coEvery
@@ -25,6 +29,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import retrofit2.Response
 import java.io.IOException
 import java.math.BigDecimal
 
@@ -126,6 +131,60 @@ class CatalogoGuardadoTest {
         assertThat(catalogo.refrescar("v1").isSuccess).isTrue()
         assertThat(db.productDao().getAllProducts("v1").map { it.productId }).containsExactly("S")
     }
+
+    // El precio visto se reconoce por la hora del SERVIDOR en que se leyó el catálogo (`catalogAt` de la raíz), nunca por el reloj
+    // del aparato. Con el repositorio REAL y el JSON tal como lo manda `GET tpv/venues/{venueId}/products` desde S1.
+    @Test fun `CatalogoGuardado guarda catalogAt de la respuesta y el gtin de cada producto`() = runTest {
+        val api = mockk<ApiService>()
+        coEvery { api.getProducts("v1", null) } returns Response.success(
+            Gson().fromJson(
+                """{"message":"ok","correlationId":"x","catalogAt":"2026-10-20T18:00:00.000Z","data":[
+                    ${productoJson("p-1", "\"7501055300075\"")}, ${productoJson("p-2", "null")}
+                ]}""",
+                ProductsResponse::class.java,
+            ),
+        )
+
+        val resultado = CatalogoGuardado(ProductRepositoryImpl(api), db.productDao()).refrescar("v1")
+
+        assertThat(resultado.getOrThrow().map { it.catalogAt }).containsExactly("2026-10-20T18:00:00.000Z", "2026-10-20T18:00:00.000Z")
+        val guardados = db.productDao().getAllProducts("v1").associateBy { it.productId }
+        assertThat(guardados.getValue("p-1").catalogAt).isEqualTo("2026-10-20T18:00:00.000Z")
+        assertThat(guardados.getValue("p-2").catalogAt).isEqualTo("2026-10-20T18:00:00.000Z")
+        assertThat(guardados.getValue("p-1").gtin).isEqualTo("7501055300075")
+        assertThat(guardados.getValue("p-2").gtin).isNull()
+        assertThat(db.productDao().getProductByCodigo("v1", "7501055300075")?.toDomain()?.catalogAt).isEqualTo("2026-10-20T18:00:00.000Z")
+    }
+
+    @Test fun `un server sin catalogAt deja el catalogo sin fecha (sin precio visto), no inventa una`() = runTest {
+        val api = mockk<ApiService>()
+        coEvery { api.getProducts("v1", null) } returns Response.success(
+            Gson().fromJson("""{"message":"ok","correlationId":"x","data":[${productoJson("p-1", "null")}]}""", ProductsResponse::class.java),
+        )
+
+        CatalogoGuardado(ProductRepositoryImpl(api), db.productDao()).refrescar("v1")
+
+        assertThat(db.productDao().getAllProducts("v1").single().catalogAt).isNull()
+    }
+
+    // Review Focus 5: tras cambiar de negocio, Cobrar sólo lee el catálogo del negocio actual.
+    @Test fun `cambio de venue - getAllProducts del venue nuevo no trae los del viejo`() = runTest {
+        coEvery { repositorio.getProducts("v1") } returns Result.success(listOf(playera("S", "Playera básica")))
+        coEvery { repositorio.getProducts("v2") } returns Result.success(listOf(playera("B-1", "Playera de B")))
+
+        catalogo.refrescar("v1")
+        catalogo.refrescar("v2")
+
+        assertThat(db.productDao().getAllProducts("v2").map { it.productId }).containsExactly("B-1")
+        assertThat(db.productDao().getProductByCodigo("v2", "sku-S")).isNull()
+    }
+
+    private fun productoJson(id: String, gtin: String) = """{
+        "id":"$id","name":"Agua $id","description":null,"price":25.0,"type":"SIMPLE","sku":"SKU-$id","gtin":$gtin,
+        "categoryId":"cat1","active":true,"displayOrder":1,"trackInventory":false,"inventoryMethod":null,"imageUrl":null,
+        "category":{"id":"cat1","name":"Bebidas","venueId":"v1","displayOrder":1,"active":true},
+        "inventory":null,"modifierGroups":[],"availableQuantity":null
+    }"""
 
     private suspend fun guardar(venueId: String, vararg productos: Product) {
         db.productDao().upsertProducts(productos.map { it.toEntity(venueId, 100L) })

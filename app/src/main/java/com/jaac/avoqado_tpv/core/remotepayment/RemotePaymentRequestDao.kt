@@ -101,6 +101,13 @@ interface RemotePaymentRequestDao {
         WHERE request_id = :requestId AND venue_id = :venueId AND status = 'RECEIVED'""")
     suspend fun markProcessingForVenue(requestId: String, venueId: String, now: Long): Int
 
+    @Query("""UPDATE remote_payment_requests SET status = 'PROCESSING', updated_at = :now,
+        shift_membership = :membership, local_shift_session_id = :sessionId, cash_drawer_session_id = :drawerId
+        WHERE request_id = :requestId AND venue_id = :venueId AND status = 'RECEIVED'
+        AND (:membership != 'MANAGED' OR EXISTS (SELECT 1 FROM local_shift_sessions
+            WHERE venue_id = :venueId AND local_session_id = :sessionId AND local_status = 'OPEN'))""")
+    suspend fun claimWithBelonging(requestId: String, venueId: String, membership: String, sessionId: String?, drawerId: String?, now: Long): Int
+
     // ── Pieza D (22-sep): las filas de bandeja HUÉRFANAS, que ninguna recuperación alcanzaba ──────────────
     //
     // 🔴 Medido en hardware: una N86 llevaba 25 h avisando de «un cobro de $50 sin confirmar» sobre una solicitud

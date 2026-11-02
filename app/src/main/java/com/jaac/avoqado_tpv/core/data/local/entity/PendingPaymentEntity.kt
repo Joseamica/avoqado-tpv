@@ -201,6 +201,52 @@ data class PendingPaymentEntity(
      */
     @ColumnInfo(name = "permanent", defaultValue = "0")
     val permanent: Boolean = false,
+
+    // ⭐ VENTA GUARDADA SIN RED (v43, «Cobrar» sin red). Las filas de antes de la v43 quedan como «ya mostrada, sin revisión».
+
+    /** El pedido de una venta de «Cobrar» hecha sin red (cuerpo de crear orden, tal cual se guardó). NULL = pago de siempre. */
+    @ColumnInfo(name = "order_wire_request_json") val orderWireRequestJson: String? = null,
+
+    @ColumnInfo(name = "order_request_json")
+    val orderRequestJson: String? = null,
+
+    /** 0 = la pantalla de éxito no llegó a verse (la app murió): al volver se avisa que la venta ya quedó cobrada y guardada. */
+    @ColumnInfo(name = "exito_mostrado", defaultValue = "1")
+    val exitoMostrado: Boolean = true,
+
+    /** Alguien confirmó con «Revisado» un FAILED o una diferencia de cobro: deja de bloquear el cierre. */
+    @ColumnInfo(name = "acknowledged", defaultValue = "0")
+    val acknowledged: Boolean = false,
+
+    /** Los renglones del ticket de la venta, escritos en el MISMO insert: para reabrirla e imprimirla tras morir la app. */
+    @ColumnInfo(name = "ticket_json")
+    val ticketJson: String? = null,
+
+    /** `SystemClock.elapsedRealtime()` al guardar la venta: su edad se mide con un solo reloj, no con el de pared del aparato. */
+    @ColumnInfo(name = "reloj_monotono_al_vender")
+    val relojMonotonoAlVender: Long? = null,
+
+    /** `Settings.Global.BOOT_COUNT` al guardar la venta: si el aparato se reinició, [relojMonotonoAlVender] ya no sirve. */
+    @ColumnInfo(name = "arranque_al_vender")
+    val arranqueAlVender: Int? = null,
+
+    /**
+     * La venta subió, pero el servidor cobró distinto de lo que se cobró en la terminal (precio no reconocido, renglón sin pareja):
+     * cuenta como «con problema» hasta «Revisado», y la limpieza de filas SUCCESS viejas no la borra mientras no se revise.
+     */
+    @ColumnInfo(name = "requiere_revision", defaultValue = "0")
+    val requiereRevision: Boolean = false,
+
+    /** Quien revisó, distinto del vendedor; NULL conserva compatibilidad con las filas antiguas. */
+    @ColumnInfo(name = "acknowledged_by")
+    val acknowledgedBy: String? = null,
+
+    @ColumnInfo(name = "acknowledged_at")
+    val acknowledgedAt: Long? = null,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
 ) {
     companion object {
         const val SYNC_STATUS_PENDING = "PENDING" // Waiting to sync

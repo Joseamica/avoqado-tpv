@@ -1,7 +1,10 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.features.checkout.data.ActiveCartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.MosaicShortcut
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SavedCart
@@ -68,6 +71,7 @@ class CheckoutViewModelReferralTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Unconfined
 
         productRepository = mockk(relaxed = true)
         customerRepository = mockk(relaxed = true)
@@ -94,6 +98,7 @@ class CheckoutViewModelReferralTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        CheckoutViewModel.despachadorDelCatalogo = Dispatchers.Default
     }
 
     private fun createViewModel() = CheckoutViewModel(
@@ -107,6 +112,19 @@ class CheckoutViewModelReferralTest {
         secureStorage = secureStorage,
         validateReferralUseCase = validateReferralUseCase,
         captureReferralUseCase = captureReferralUseCase,
+        productDao = mockk(relaxed = true) { coEvery { getAllProducts(any()) } returns emptyList() },
+        productCategoryDao = mockk(relaxed = true) { coEvery { getAllCategories(any()) } returns emptyList() },
+        catalogoGuardado = mockk { coEvery { refrescar(any()) } coAnswers { productRepository.getProducts(firstArg()) } },
+        connectionStateManager = ConnectionStateManager(),
+        ventaSinRed = com.jaac.avoqado_tpv.features.checkout.VentaSinRedEnMemoria(),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true) {
+            io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+            io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
+        },
+        permissionsRepository = mockk(relaxed = true) {
+            io.mockk.coEvery { hasPermission(any()) } returns true
+        },
     )
 
     private fun fakeProduct(priceCents: Int = 10_000) = Product(

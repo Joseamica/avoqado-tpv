@@ -82,7 +82,7 @@ class LedgerApprovalRecovery @Inject constructor(
         return recovered
     }
 
-    private fun restoreContext(row: PaymentAttemptEntity): PaymentContext? {
+    private suspend fun restoreContext(row: PaymentAttemptEntity): PaymentContext? {
         val gson = Gson()
         val operation = row.operationId?.toIntOrNull()
         val context: PaymentContext = when {
@@ -104,7 +104,15 @@ class LedgerApprovalRecovery @Inject constructor(
             context.deviceSerialNumber.isNullOrBlank() ||
             context.amount.movePointRight(2).longValueExact() != row.amountCents ||
             context.tip.movePointRight(2).longValueExact() != row.tipCents) return null
-        return context
+        val known = row.shiftMembership == "MANAGED" || row.shiftMembership == "NO_SHIFT_SYSTEM"
+        val belonging = com.jaac.avoqado_tpv.features.shift.domain.ShiftBelonging.fromStored(
+            row.shiftMembership, row.localShiftSessionId, context.shiftId, row.cashDrawerSessionId)
+        if (known && (belonging.kind == "UNKNOWN" || context.shiftMembership != row.shiftMembership ||
+                context.localShiftSessionId != row.localShiftSessionId || context.cashDrawerSessionId != row.cashDrawerSessionId)) {
+            dao.anotarProblemaDeSnapshot(row.venueId, row.attemptId, "snapshot_caja_ilegible_o_contradictorio")
+            return null // No se inventa un registro financiero a partir de un snapshot contradictorio.
+        }
+        return context.withShiftBelonging(belonging)
     }
 
     companion object {

@@ -49,12 +49,12 @@ class RecordAngelPayRefundUseCaseTest {
         refundQueueRepository = refundQueue,
         paymentAttemptLedger = ledger,
         clock = clock,
-        paymentStateHolder = estado,
-    )
+        paymentStateHolder = estado, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     private val useCase = casoDeUso()
 
     init {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(ledger)
         // La libreta sana abre el intento y lo deja autorizar; sin duda previa de este pago.
         coEvery { ledger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
         coEvery { ledger.markAuthorizing(any()) } returns true
@@ -512,8 +512,7 @@ class RecordAngelPayRefundUseCaseTest {
         // ÚLTIMA llamada, no de la primera, para que un cobro del POS no arranque a media devolución.
         val espia = io.mockk.spyk(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder())
         val caso = RecordAngelPayRefundUseCase(
-            refundRecorder, authRepository, adapterFactory, refundQueue, ledger, mismoDia, espia,
-        )
+            refundRecorder, authRepository, adapterFactory, refundQueue, ledger, mismoDia, espia, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         val adapter = adapterConLaVenta()
         var llamadas = 0
         coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } coAnswers {

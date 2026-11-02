@@ -7,7 +7,7 @@ import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
-import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
+import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
@@ -29,7 +29,7 @@ import org.junit.Test
  */
 class SyncOutboxTest {
 
-    private lateinit var db: TablesDatabase
+    private lateinit var db: AvoqadoDatabase
     private lateinit var dao: SyncIntentDao
     private lateinit var outbox: SyncOutbox
 
@@ -37,14 +37,14 @@ class SyncOutboxTest {
     fun setup() {
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
-            TablesDatabase::class.java,
+            AvoqadoDatabase::class.java,
         ).build()
         dao = db.syncIntentDao()
+        val (storage, shifts) = shiftFixture(db)
         outbox = SyncOutbox(
             dao = dao,
             api = UnimplementedTablesApiService,
-            secureStorage = SecureStorage(ApplicationProvider.getApplicationContext()),
-        )
+            secureStorage = storage, shiftRepository = shifts)
     }
 
     @After

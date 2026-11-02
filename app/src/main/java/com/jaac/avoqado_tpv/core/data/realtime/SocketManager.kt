@@ -646,8 +646,9 @@ class SocketManager @Inject constructor(
      *   1. Snapshot current token to detect "refresh returned same token" (no-op refresh).
      *   2. Trigger explicit HTTP `authRepository.refreshAccessToken()` with 8s timeout.
      *   3. Decide outcome:
-     *      - 401/403 from /auth/refresh → refresh token itself dead → emit
-     *        SessionEvent.Expired and STOP retrying. User must re-login.
+     *      - Dead session (`ApiException.sesionMuertaAlRenovar`: 401/403 from /auth/refresh, or no
+     *        refresh token / venue on the device) → emit SessionEvent.Expired and STOP retrying.
+     *        User must re-login.
      *      - Same token/network/timeout → backoff, then retry HTTP refresh.
      *      - Success with new token → reconnect socket after jittered backoff.
      *   4. [reconnectWithFreshToken] only runs once SecureStorage holds a token
@@ -695,17 +696,18 @@ class SocketManager @Inject constructor(
                     }
                     refreshResult is Result.Error -> {
                         val ex = refreshResult.exception
-                        if (ex is ApiException.HttpError && (ex.code == 401 || ex.code == 403)) {
-                            // 🛡️ Refresh token itself dead — STOP retrying, force re-login
-                            refreshOutcome = "fail_${ex.code}"
-                            Timber.e("🚪 [Socket.IO] Refresh rejected (HTTP ${ex.code}) — emitting SessionExpired, NOT retrying socket")
-                            CrashlyticsContext.logNetworkBreadcrumb("socket refresh: rejected ${ex.code} — session expired")
+                        if (ex.sesionMuertaAlRenovar) {
+                            // 🛡️ Session dead (refresh rejected, or nothing to refresh with) — STOP retrying, force re-login
+                            val motivo = (ex as? ApiException.HttpError)?.code?.toString() ?: ex.javaClass.simpleName
+                            refreshOutcome = "fail_$motivo"
+                            Timber.e("🚪 [Socket.IO] Refresh says session is dead ($motivo) — emitting SessionExpired, NOT retrying socket")
+                            CrashlyticsContext.logNetworkBreadcrumb("socket refresh: dead session ($motivo) — session expired")
                             sessionEnded = true
                             sessionManager.notifySessionExpired()
                             return
                         }
                         if (refreshOutcome == "skipped") refreshOutcome = "fail_other"
-                        Timber.w("⚠️ [Socket.IO] Refresh failed (${ex?.javaClass?.simpleName}) — retrying refresh after backoff")
+                        Timber.w("⚠️ [Socket.IO] Refresh failed (${ex.javaClass.simpleName}) — retrying refresh after backoff")
                     }
                 }
 

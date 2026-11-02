@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 43,
-    "identityHash": "5001c02500c3e19ea4aa5810c540e3b6",
+    "identityHash": "aa1dcb7c77825f8f6d0170bac49318e7",
     "entities": [
       {
         "tableName": "pending_payments",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `reference_number` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `amount` TEXT NOT NULL, `tip` TEXT NOT NULL, `rating` INTEGER, `merchant_account_id` TEXT NOT NULL, `blumon_serial_number` TEXT NOT NULL, `device_serial_number` TEXT, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT NOT NULL, `is_international` INTEGER NOT NULL, `authorization_number` TEXT, `idempotency_key` TEXT, `payment_processor` TEXT NOT NULL DEFAULT 'BLUMON', `terminal_payment_request_id` TEXT, `order_id` TEXT, `order_number` TEXT, `shift_id` TEXT, `is_portabilidad` INTEGER NOT NULL DEFAULT 0, `serial_numbers` TEXT, `split_type` TEXT, `paid_product_ids` TEXT, `equal_parts_party_size` INTEGER, `equal_parts_payed_for` INTEGER, `created_at` INTEGER NOT NULL, `retry_count` INTEGER NOT NULL, `last_error` TEXT, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `permanent` INTEGER NOT NULL DEFAULT 0)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `reference_number` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `amount` TEXT NOT NULL, `tip` TEXT NOT NULL, `rating` INTEGER, `merchant_account_id` TEXT NOT NULL, `blumon_serial_number` TEXT NOT NULL, `device_serial_number` TEXT, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT NOT NULL, `is_international` INTEGER NOT NULL, `authorization_number` TEXT, `idempotency_key` TEXT, `payment_processor` TEXT NOT NULL DEFAULT 'BLUMON', `terminal_payment_request_id` TEXT, `order_id` TEXT, `order_number` TEXT, `shift_id` TEXT, `is_portabilidad` INTEGER NOT NULL DEFAULT 0, `serial_numbers` TEXT, `split_type` TEXT, `paid_product_ids` TEXT, `equal_parts_party_size` INTEGER, `equal_parts_payed_for` INTEGER, `created_at` INTEGER NOT NULL, `retry_count` INTEGER NOT NULL, `last_error` TEXT, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `permanent` INTEGER NOT NULL DEFAULT 0, `order_request_json` TEXT, `exito_mostrado` INTEGER NOT NULL DEFAULT 1, `acknowledged` INTEGER NOT NULL DEFAULT 0, `ticket_json` TEXT, `reloj_monotono_al_vender` INTEGER, `arranque_al_vender` INTEGER, `requiere_revision` INTEGER NOT NULL DEFAULT 0, `acknowledged_by` TEXT, `acknowledged_at` INTEGER)",
         "fields": [
           {
             "fieldPath": "id",
@@ -196,6 +196,57 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "0"
+          },
+          {
+            "fieldPath": "orderRequestJson",
+            "columnName": "order_request_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "exitoMostrado",
+            "columnName": "exito_mostrado",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "acknowledged",
+            "columnName": "acknowledged",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "ticketJson",
+            "columnName": "ticket_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "relojMonotonoAlVender",
+            "columnName": "reloj_monotono_al_vender",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "arranqueAlVender",
+            "columnName": "arranque_al_vender",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "requiereRevision",
+            "columnName": "requiere_revision",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "acknowledgedBy",
+            "columnName": "acknowledged_by",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "acknowledgedAt",
+            "columnName": "acknowledged_at",
+            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
@@ -743,7 +794,7 @@
       },
       {
         "tableName": "products",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `product_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `name` TEXT NOT NULL, `sku` TEXT NOT NULL, `price` TEXT NOT NULL, `category_id` TEXT NOT NULL, `category_name` TEXT NOT NULL, `description` TEXT, `emoji` TEXT NOT NULL, `image_url` TEXT, `available` INTEGER NOT NULL, `display_order` INTEGER NOT NULL, `track_inventory` INTEGER NOT NULL, `inventory_method` TEXT, `available_quantity` INTEGER, `modifier_groups_json` TEXT NOT NULL, `category_color` TEXT, `category_is_active` INTEGER NOT NULL, `cached_at` INTEGER NOT NULL, `product_group_id` TEXT, `product_group_name` TEXT, `product_group_image_url` TEXT, `variant_options_json` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `product_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `name` TEXT NOT NULL, `sku` TEXT NOT NULL, `price` TEXT NOT NULL, `category_id` TEXT NOT NULL, `category_name` TEXT NOT NULL, `description` TEXT, `emoji` TEXT NOT NULL, `image_url` TEXT, `available` INTEGER NOT NULL, `display_order` INTEGER NOT NULL, `track_inventory` INTEGER NOT NULL, `inventory_method` TEXT, `available_quantity` INTEGER, `modifier_groups_json` TEXT NOT NULL, `category_color` TEXT, `category_is_active` INTEGER NOT NULL, `cached_at` INTEGER NOT NULL, `product_group_id` TEXT, `product_group_name` TEXT, `product_group_image_url` TEXT, `variant_options_json` TEXT, `gtin` TEXT, `catalog_at` TEXT)",
         "fields": [
           {
             "fieldPath": "id",
@@ -878,6 +929,16 @@
           {
             "fieldPath": "variantOptionsJson",
             "columnName": "variant_options_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "gtin",
+            "columnName": "gtin",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "catalogAt",
+            "columnName": "catalog_at",
             "affinity": "TEXT"
           }
         ],
@@ -1614,7 +1675,7 @@
       },
       {
         "tableName": "payment_attempts",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attempt_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `processor` TEXT NOT NULL, `kind` TEXT NOT NULL DEFAULT 'SALE', `state` TEXT NOT NULL, `state_version` INTEGER NOT NULL DEFAULT 0, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `currency` TEXT NOT NULL DEFAULT 'MXN', `recording_route` TEXT NOT NULL, `context_schema_version` INTEGER NOT NULL DEFAULT 1, `payment_context_json` TEXT NOT NULL, `operation_id` TEXT, `reference_number` TEXT, `auth_code` TEXT, `host_approved` INTEGER, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT, `last_error` TEXT, `verify_attempts` INTEGER NOT NULL DEFAULT 0, `lease_until` INTEGER, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `legacy_shadow` INTEGER NOT NULL DEFAULT 0, `terminal_payment_request_id` TEXT, `server_payment_id` TEXT, `server_outcome` TEXT, `server_recorded_via` TEXT, `server_amount_cents` INTEGER, `server_tip_cents` INTEGER, `server_verdict_at` INTEGER, `server_winner_payment_id` TEXT, `server_checked_at` INTEGER, `server_check_count` INTEGER NOT NULL DEFAULT 0, `server_processor_evidence` TEXT, `server_processor_evidence_at` INTEGER, `server_veto` TEXT, `server_answered_at` INTEGER, `acknowledged_at` INTEGER, `acknowledged_by` TEXT, `process_token` TEXT, `sdk_returned_at` INTEGER, PRIMARY KEY(`attempt_id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attempt_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `processor` TEXT NOT NULL, `kind` TEXT NOT NULL DEFAULT 'SALE', `state` TEXT NOT NULL, `state_version` INTEGER NOT NULL DEFAULT 0, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `currency` TEXT NOT NULL DEFAULT 'MXN', `recording_route` TEXT NOT NULL, `context_schema_version` INTEGER NOT NULL DEFAULT 1, `payment_context_json` TEXT NOT NULL, `operation_id` TEXT, `reference_number` TEXT, `auth_code` TEXT, `host_approved` INTEGER, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT, `last_error` TEXT, `verify_attempts` INTEGER NOT NULL DEFAULT 0, `lease_until` INTEGER, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `legacy_shadow` INTEGER NOT NULL DEFAULT 0, `terminal_payment_request_id` TEXT, `server_payment_id` TEXT, `server_outcome` TEXT, `server_recorded_via` TEXT, `server_amount_cents` INTEGER, `server_tip_cents` INTEGER, `server_verdict_at` INTEGER, `server_winner_payment_id` TEXT, `server_checked_at` INTEGER, `server_check_count` INTEGER NOT NULL DEFAULT 0, `server_processor_evidence` TEXT, `server_processor_evidence_at` INTEGER, `server_veto` TEXT, `server_answered_at` INTEGER, `acknowledged_at` INTEGER, `acknowledged_by` TEXT, `process_token` TEXT, PRIMARY KEY(`attempt_id`))",
         "fields": [
           {
             "fieldPath": "attemptId",
@@ -1849,11 +1910,6 @@
             "fieldPath": "processToken",
             "columnName": "process_token",
             "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "sdkReturnedAt",
-            "columnName": "sdk_returned_at",
-            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
@@ -2111,7 +2167,7 @@
       },
       {
         "tableName": "remote_payment_requests",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `rating` INTEGER, `skip_review` INTEGER NOT NULL, `order_id` TEXT, `processed_by_staff_id` TEXT, `sender_device_name` TEXT, `source_timestamp` TEXT NOT NULL, `status` TEXT NOT NULL, `final_result_json` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `cancel_accepted_at` INTEGER, `execution_started_at` INTEGER, `final_emitted_at` INTEGER, `attempt_link_version` INTEGER NOT NULL DEFAULT 0, `execution_closed_at` INTEGER, PRIMARY KEY(`request_id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `rating` INTEGER, `skip_review` INTEGER NOT NULL, `order_id` TEXT, `processed_by_staff_id` TEXT, `sender_device_name` TEXT, `source_timestamp` TEXT NOT NULL, `status` TEXT NOT NULL, `final_result_json` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `cancel_accepted_at` INTEGER, `execution_started_at` INTEGER, `final_emitted_at` INTEGER, `attempt_link_version` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`request_id`))",
         "fields": [
           {
             "fieldPath": "requestId",
@@ -2213,11 +2269,6 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "0"
-          },
-          {
-            "fieldPath": "executionClosedAt",
-            "columnName": "execution_closed_at",
-            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
@@ -2247,11 +2298,59 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_payment_requests_created_at` ON `${TABLE_NAME}` (`created_at`)"
           }
         ]
+      },
+      {
+        "tableName": "cached_time_entry",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `entry_id` TEXT NOT NULL, `status` TEXT NOT NULL, `clock_in_time` TEXT, `cached_at` INTEGER NOT NULL, PRIMARY KEY(`venue_id`, `staff_id`))",
+        "fields": [
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staff_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entryId",
+            "columnName": "entry_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clockInTime",
+            "columnName": "clock_in_time",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "venue_id",
+            "staff_id"
+          ]
+        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5001c02500c3e19ea4aa5810c540e3b6')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'aa1dcb7c77825f8f6d0170bac49318e7')"
     ]
   }
 }

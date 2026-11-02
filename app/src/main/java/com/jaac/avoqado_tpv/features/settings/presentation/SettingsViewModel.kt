@@ -205,7 +205,7 @@ class SettingsViewModel @Inject constructor(
                                     it.copy(
                                         isSaving = false,
                                         showActiveShiftBlockedDialog = true,
-                                        activeShiftStaffName = currentShift.staffName
+                                        activeShiftStaffName = currentShift.staffName.takeIf { it.isNotBlank() && it != "Unknown" } ?: "Caja guardada en este aparato"
                                     )
                                 }
                                 Timber.w("⚠️ Cannot disable shift system - active shift exists (Staff: ${currentShift.staffName})")

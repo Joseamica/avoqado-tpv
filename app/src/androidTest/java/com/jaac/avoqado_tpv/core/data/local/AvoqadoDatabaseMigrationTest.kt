@@ -665,35 +665,35 @@ class AvoqadoDatabaseMigrationTest {
     }
 
     /**
-     * v42 → v43 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` y
+     * v44 → v45 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` y
      * `payment_attempts.sdk_returned_at`. Aditiva y nullable: una solicitud reclamada y el dinero de la libreta sobreviven
-     * intactos, nada se da por cerrado para ejecución y ningún SDK por regresado. Room valida contra `43.json`.
-     * (Gemelo en Robolectric: `MigracionV43RoomTest`, que sí corre sin aparato.)
+     * intactos, nada se da por cerrado para ejecución y ningún SDK por regresado. Room valida contra `45.json`.
+     * (Gemelo en Robolectric: `MigracionV45RoomTest`, que sí corre sin aparato.)
      */
     @Test
-    fun migrate42To43_conservaLaBandejaYLaLibretaYDejaLasColumnasNuevasEnNull() {
-        helper.createDatabase(TEST_DB, 42).use { db ->
+    fun migrate44To45_conservaLaBandejaYLaLibretaYDejaLasColumnasNuevasEnNull() {
+        helper.createDatabase(TEST_DB, 44).use { db ->
             db.execSQL(
                 "INSERT INTO remote_payment_requests " +
                     "(request_id, venue_id, amount_cents, tip_cents, rating, skip_review, order_id, processed_by_staff_id, " +
                     "sender_device_name, source_timestamp, status, final_result_json, created_at, updated_at, " +
                     "cancel_accepted_at, execution_started_at, final_emitted_at, attempt_link_version) " +
-                    "VALUES ('req-v42','v1',47500,4750,5,0,NULL,'staff-pos','Android POS','2026-10-21T14:00:00Z'," +
+                    "VALUES ('req-v44','v1',47500,4750,5,0,NULL,'staff-pos','Android POS','2026-10-21T14:00:00Z'," +
                     "'PROCESSING',NULL,123,123,NULL,NULL,NULL,1)",
             )
             db.execSQL(
                 "INSERT INTO payment_attempts (attempt_id, venue_id, processor, kind, state, state_version, amount_cents, " +
                     "tip_cents, currency, recording_route, context_schema_version, payment_context_json, host_approved, " +
                     "verify_attempts, created_at, updated_at, legacy_shadow, terminal_payment_request_id, server_check_count, " +
-                    "process_token) VALUES ('a-v42','v1','BLUMON','SALE','HOST_RESPONDIO',2,47500,4750,'MXN','FAST',1," +
-                    "'{\"terminalPaymentRequestId\":\"req-v42\"}',1,0,123,123,0,'req-v42',0,'proceso-v42')",
+                    "process_token) VALUES ('a-v44','v1','BLUMON','SALE','HOST_RESPONDIO',2,47500,4750,'MXN','FAST',1," +
+                    "'{\"terminalPaymentRequestId\":\"req-v44\"}',1,0,123,123,0,'req-v44',0,'proceso-v44')",
             )
         }
 
-        val migrated = helper.runMigrationsAndValidate(TEST_DB, 43, true, AvoqadoDatabase.MIGRATION_42_43)
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 45, true, AvoqadoDatabase.MIGRATION_44_45)
 
         migrated.query(
-            "SELECT status, amount_cents, tip_cents, execution_closed_at FROM remote_payment_requests WHERE request_id = 'req-v42'",
+            "SELECT status, amount_cents, tip_cents, execution_closed_at FROM remote_payment_requests WHERE request_id = 'req-v44'",
         ).use { c ->
             assertThat(c.moveToFirst()).isTrue()
             assertThat(c.getString(0)).isEqualTo("PROCESSING")
@@ -702,13 +702,13 @@ class AvoqadoDatabaseMigrationTest {
             assertThat(c.isNull(3)).isTrue() // nada se da por cerrado para ejecución al actualizar
         }
         migrated.query(
-            "SELECT state, host_approved, amount_cents, process_token, sdk_returned_at FROM payment_attempts WHERE attempt_id = 'a-v42'",
+            "SELECT state, host_approved, amount_cents, process_token, sdk_returned_at FROM payment_attempts WHERE attempt_id = 'a-v44'",
         ).use { c ->
             assertThat(c.moveToFirst()).isTrue()
             assertThat(c.getString(0)).isEqualTo("HOST_RESPONDIO")
             assertThat(c.getInt(1)).isEqualTo(1)
             assertThat(c.getLong(2)).isEqualTo(47_500L)
-            assertThat(c.getString(3)).isEqualTo("proceso-v42")
+            assertThat(c.getString(3)).isEqualTo("proceso-v44")
             assertThat(c.isNull(4)).isTrue() // ningún SDK se da por regresado al actualizar
         }
     }

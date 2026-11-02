@@ -96,6 +96,7 @@ import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.payment.domain.inicioEsperaAlLector
 import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowOrderManagementTile
 import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowTablesTile
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -182,12 +183,14 @@ fun WelcomeScreen(
     val isShiftSystemEnabled by shiftViewModel.isShiftSystemEnabled.collectAsStateWithLifecycle()
     val currentShift = when (val state = shiftState) {
         is com.jaac.avoqado_tpv.features.shift.presentation.ShiftState.ShiftActive -> state.shift
+        is com.jaac.avoqado_tpv.features.shift.presentation.ShiftState.ShiftClosed -> state.shift
         else -> null
     }
 
     // Offline state for shift status banner (Square/Toast prevention pattern)
     val isOffline by shiftViewModel.isOffline.collectAsStateWithLifecycle()
     val cachedShiftInfo by shiftViewModel.cachedShiftInfo.collectAsStateWithLifecycle()
+    val localCaja by shiftViewModel.localCaja.collectAsStateWithLifecycle()
 
     // Initial loading state (shows overlay during post-login sync)
     val isInitialLoading by shiftViewModel.isInitialLoading.collectAsStateWithLifecycle()
@@ -297,7 +300,8 @@ fun WelcomeScreen(
         currentShift = currentShift,
         isShiftSystemEnabled = isShiftSystemEnabled, // Pass setting
         isOffline = isOffline,
-        cachedShiftInfo = cachedShiftInfo,
+        cachedShiftInfo = cachedShiftInfo.takeUnless { localCaja != null },
+        localCaja = localCaja,
         venueStatus = venueStatus,  // 📊 Pass venue status for banner
         salesGoals = salesGoals,  // 🎯 Pass sales goals for progress pager
         isRefreshing = isRefreshing,
@@ -347,8 +351,10 @@ fun WelcomeScreen(
     // Shows loader while SDK initializes, blocks user from proceeding to payment
     // Progressive warnings: 0-15s normal, 15-30s slow hint, 30s+ warning + cancel
     // ═══════════════════════════════════════════════════════════════════════════
-    val shouldBlockForBlumon = BuildConfig.ENABLE_PAX_SDK && (
-        isBlumonInitializing || blumonInitError != null || !isBlumonReady
+    val shouldBlockForBlumon = inicioEsperaAlLector(
+        hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
+        lectorPendiente = isBlumonInitializing || blumonInitError != null || !isBlumonReady,
+        sinConexion = isOffline,
     )
 
     if (shouldBlockForBlumon) {
@@ -526,6 +532,7 @@ internal fun WelcomeScreenContent(
     isShiftSystemEnabled: Boolean = true, // Default true
     isOffline: Boolean = false,
     cachedShiftInfo: CachedShiftInfo? = null,
+    localCaja: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation? = null,
     venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
     salesGoals: List<ModuleSalesGoal> = emptyList(),  // 🎯 Sales goals from backend
     isRefreshing: Boolean = false,
@@ -1067,6 +1074,7 @@ internal fun WelcomeScreenContent(
                             venueStatus = venueStatus,
                             shift = currentShift,
                             cachedShiftInfo = cachedShiftInfo,
+                            localCaja = localCaja,
                             showShiftBanner = shouldShowShiftBanner,
                             onShiftClick = onNavigateToShifts,
                             modifier = Modifier.fillMaxWidth()
@@ -1199,7 +1207,7 @@ internal fun WelcomeScreenContent(
             // 🥝 Kiosk Mode Toggle - same permission as Settings
             // kioskModeAvailable: controlled from dashboard TpvSettings (shows/hides the toggle)
             // isKioskModeEnabled: local state (whether kiosk mode is currently active)
-            kioskModeAvailable = tpvSettings.kioskModeEnabled,
+            kioskModeAvailable = com.jaac.avoqado_tpv.core.data.manager.MODO_KIOSCO_DISPONIBLE && tpvSettings.kioskModeEnabled,
             isKioskModeEnabled = isKioskModeEnabled,
             onKioskModeToggle = if (hasSettingsAccess) {
                 {

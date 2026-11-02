@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data.sync
 
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
+import com.jaac.avoqado_tpv.MainDispatcherRule
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
@@ -33,6 +34,8 @@ import java.math.BigDecimal
  *    sesión ni descarta la cuarentena.
  */
 class TableSyncCoordinatorTest {
+
+    @get:org.junit.Rule val mainDispatcherRule = MainDispatcherRule()
 
     private val outbox = mockk<SyncOutbox>()
     private lateinit var session: TableSession

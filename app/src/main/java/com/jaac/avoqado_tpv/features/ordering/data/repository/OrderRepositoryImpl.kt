@@ -340,8 +340,20 @@ class OrderRepositoryImpl @Inject constructor(
                     else -> "Error al crear orden: ${response.code()}"
                 }
                 Timber.e("❌ [Checkout] createOrderWithItems failed: $errorMessage")
-                Result.failure(Exception(errorMessage))
+                // Tipado para que «Cobrar» distinga «el servidor no contestó» (502-504, 520-527: se guarda la venta local) de un
+                // rechazo real (4xx). El texto que ve el cajero es el de siempre: viaja en `userMessage`.
+                Result.failure(
+                    com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(
+                        code = response.code(),
+                        errorMessage = errorMessage,
+                        customUserMessage = errorMessage,
+                    ),
+                )
             }
+        } catch (e: java.io.IOException) {
+            // Sin red, conexión rechazada, socket cortado o tiempo agotado: de la orden no se sabe nada.
+            Timber.e(e, "❌ [Checkout] Network failure in createOrderWithItems")
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ [Checkout] Exception in createOrderWithItems")
             Result.failure(e)

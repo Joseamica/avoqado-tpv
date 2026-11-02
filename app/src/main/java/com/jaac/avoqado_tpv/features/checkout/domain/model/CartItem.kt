@@ -29,6 +29,13 @@ data class CartItem(
     val isCortesia: Boolean = false,
     val cortesiaReason: String? = null,
     val itemDiscountId: String? = null,
+
+    /**
+     * `catalogAt` (hora del SERVIDOR, ISO) del catálogo con que se AGREGÓ esta línea. Se congela aquí al agregar el producto y no se
+     * vuelve a leer del catálogo vigente: es lo que el servidor usa para reconocer el precio que vio el cliente. null = importe
+     * tecleado, producto de un servidor viejo o un carrito guardado antes de este campo (viaja sin precio visto).
+     */
+    val catalogAt: String? = null,
 ) {
     init {
         // Cortesía already wipes the line to $0; layering a per-item discount
@@ -72,3 +79,10 @@ data class CartItem(
             priceAdjustmentCents != null ||
             isCortesia
 }
+
+/**
+ * Bruto de la línea: (precio + extras) × cantidad ANTES de descuentos. En cortesía NO es 0 (el total sí). Lo usan el `subtotal` del
+ * pedido y el renglón del ticket de una venta guardada.
+ */
+fun CartItem.grossLineCents(): Int =
+    (effectiveUnitPriceCents + selectedModifiers.sumOf { it.priceInCents }) * quantity

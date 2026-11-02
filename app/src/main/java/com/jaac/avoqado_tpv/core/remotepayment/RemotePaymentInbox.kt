@@ -66,6 +66,7 @@ data class RemotePaymentCancelDecision(
 @Singleton
 class RemotePaymentInbox(
     private val dao: RemotePaymentRequestDao,
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val laTerminalRechazariaUnaVentaNueva: () -> Boolean = { true },
     private val cerrarSiCeso: suspend (requestId: String) -> Boolean = { false },
 ) {
@@ -77,10 +78,12 @@ class RemotePaymentInbox(
      */
     @Inject constructor(
         dao: RemotePaymentRequestDao,
+        shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
         libreta: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
         estadoDeLasPantallas: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider,
     ) : this(
         dao = dao,
+        shiftRepository = shiftRepository,
         laTerminalRechazariaUnaVentaNueva = {
             com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estadoDeLasPantallas)
         },
@@ -143,11 +146,18 @@ class RemotePaymentInbox(
     fun observePendingObligationCount(venueId: String) =
         dao.observePendingObligations(venueId).map { it.size }
 
-    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean =
-        dao.markProcessingForVenue(requestId, venueId, System.currentTimeMillis()) == 1
+    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean = try {
+        shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
+            dao.claimWithBelonging(requestId, venueId, belonging.kind, belonging.localSessionId,
+                belonging.cashDrawerSessionId, System.currentTimeMillis()) == 1
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+      catch (error: Exception) { Timber.w(error, "No se admitió el cobro remoto en Caja"); false }
 
-    suspend fun markProcessing(requestId: String): Boolean =
-        dao.markProcessing(requestId, System.currentTimeMillis()) == 1
+    suspend fun markProcessing(requestId: String): Boolean {
+        val row = dao.getById(requestId) ?: return false
+        return markProcessingForVenue(requestId, row.venueId)
+    }
 
     suspend fun markResolved(requestId: String, finalResultJson: String): Boolean {
         val status = runCatching { JSONObject(finalResultJson).optString("status") }.getOrNull()

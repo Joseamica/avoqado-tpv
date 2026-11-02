@@ -20,7 +20,8 @@ import org.junit.Test
  * cazaría ese tipo de regresión sin ejercitar cada camino de cobro uno por uno.
  *
  * 🔴 Es un TRIPWIRE, no una demostración (mismo límite que el guard del servidor): caza el patrón
- * textual `algo.staffId <comparación> <fuente del usuario actual>` (en cualquier orden). No sigue
+ * textual `turno/shift.staffId <comparación> <fuente del usuario actual>` (en cualquier orden), con el
+ * nombre del receptor como pista. No sigue
  * variables intermedias (`val x = shift; x.staffId == …` lo evade) ni entiende el AST. Cerrar esos
  * huecos pediría un parser; mientras tanto, la verdad de verdad la fija el comportamiento probado
  * en el servidor (`turnoDeCaja.guard.test.ts` y sus hermanas de comportamiento).
@@ -91,6 +92,8 @@ class TurnoDelNegocioNoSeVuelvePersonalTest {
             "if (currentShift?.staffId != authContext.userId) { bloquear() }",
             "val autorizado = getAuthContext().userId == currentShift.staffId",
             "return currentStaffId == shift.staffId",
+            "if (turnoActual?.staffId != authRepository.getStaffId()) bloquear()",
+            "return currentStaffId == turnoActual.staffId",
         )
         hostiles.forEach { linea ->
             assertTrue(
@@ -108,6 +111,8 @@ class TurnoDelNegocioNoSeVuelvePersonalTest {
             "Timber.d(\"valor: \" + shift.staffId)",
             "val nombre = shift.staffName",
             "if (staffId == null) return",
+            // Autor de una venta local, no dueño del turno de caja.
+            "check(authRepository.getVenueId() == venta.venueId && authRepository.getStaffId() == venta.staffId) {",
             "val staffId = if (!currentStaffId.isNullOrBlank()) currentStaffId else base.staffId",
             "val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()",
         )
@@ -124,15 +129,18 @@ class TurnoDelNegocioNoSeVuelvePersonalTest {
         private const val FUENTE_USUARIO_ACTUAL =
             """(authContext|getAuthContext|authRepository|getStaffId|secureStorage|currentStaffId|loggedInStaffId|sessionStaffId|currentUser)"""
 
+        // El campo es de un turno, no de cualquier objeto con autor (por ejemplo VentaLocal).
+        private const val CAMPO_DEL_TURNO = """\b\w*(?:[Ss]hift|[Tt]urno)\w*\??\.staffId\b"""
+
         /**
          * Dos formas de la misma comparación, en cualquier orden:
-         *   1. `algo.staffId <op> ...fuente`   (el campo del turno primero)
-         *   2. `fuente... <op> ...algo.staffId` (la fuente del usuario primero)
+         *   1. `turno.staffId <op> ...fuente`   (el campo del turno primero)
+         *   2. `fuente... <op> ...shift.staffId` (la fuente del usuario primero)
          * `<op>` es `==` o `!=`. Acotado a la MISMA línea (`[^\n;]*`, sin cruzar `;` ni saltos).
          */
         val PATRON_COMPARACION_PERSONAL = Regex(
-            """\.staffId\s*[!=]=\s*[^\n;]*$FUENTE_USUARIO_ACTUAL""" +
-                """|$FUENTE_USUARIO_ACTUAL[^\n;]*[!=]=\s*[^\n;]*\.staffId\b""",
+            """$CAMPO_DEL_TURNO\s*[!=]=\s*[^\n;]*$FUENTE_USUARIO_ACTUAL""" +
+                """|$FUENTE_USUARIO_ACTUAL[^\n;]*[!=]=\s*[^\n;]*$CAMPO_DEL_TURNO""",
         )
     }
 }

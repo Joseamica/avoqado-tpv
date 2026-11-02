@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
@@ -108,11 +109,23 @@ class TokenAuthenticator @Inject constructor(
     }
 
     /**
+     * Las rutas de órdenes remotas que entran con la «llave de órdenes» (`X-TPV-Command-Token`). Si la trae, el servidor no mira la
+     * sesión: su 401 dice que la LLAVE no coincide, no que venció la sesión del cajero. Renovar la sesión no lo arregla y reintentar
+     * con la misma llave era un bucle con «Verificando sesión...» encima. Lo repara `HeartbeatRepository.commandsReady`.
+     */
+    private fun esRechazoDeLaLlaveDeOrdenes(request: Request): Boolean =
+        request.header("X-TPV-Command-Token") != null &&
+            listOf("/tpv/commands/ready", "/tpv/commands/permit", "/tpv/command-ack").any { request.url.encodedPath.endsWith(it) }
+
+    /**
      * Called by OkHttp when a request receives 401 Unauthorized.
      *
      * **Return values:**
      * - Non-null Request: Retry with new auth header
-     * - Null: Give up (token refresh failed, user must re-login)
+     * - Null: Give up. Si la sesión está muerta (401/403 del refresh, o falta el refresh token /
+     *   venue en el aparato: `ApiException.sesionMuertaAlRenovar`) se borra y se avisa al UI para ir
+     *   al PIN. Si el refresh falló por red, tiempo agotado o 5xx, la sesión se CONSERVA: el login
+     *   por PIN necesita red y borrarla dejaría al aparato sin poder vender.
      *
      * **Thread-safe:**
      * OkHttp calls this from multiple threads. We use synchronized block
@@ -129,6 +142,11 @@ class TokenAuthenticator @Inject constructor(
         if (isAuthEndpoint(response.request)) {
             Timber.d("🔐 [Auth] 401 on auth endpoint (${response.request.url.encodedPath}) - skipping token refresh")
             return null  // Let the error propagate to LoginViewModel
+        }
+
+        if (esRechazoDeLaLlaveDeOrdenes(response.request)) {
+            Timber.w("🔑 [Auth] 401 de la llave de órdenes en ${response.request.url.encodedPath}: no se renueva la sesión")
+            return null
         }
 
         Timber.w("⚠️ [Auth] Received 401 Unauthorized - Token expired, attempting refresh...")
@@ -210,7 +228,7 @@ class TokenAuthenticator @Inject constructor(
                 }
                 val refreshElapsed = System.currentTimeMillis() - refreshStartedAt
 
-                if (refreshResult is com.jaac.avoqado_tpv.core.domain.models.Result.Success) {
+                if (refreshResult is Result.Success) {
                     Timber.i("✅ [Auth] Token refreshed successfully in ${refreshElapsed}ms, retrying original request")
 
                     // ✅ Hide loading overlay - refresh succeeded
@@ -235,17 +253,28 @@ class TokenAuthenticator @Inject constructor(
                 } else {
                     Timber.e("❌ [Auth] Token refresh failed in ${refreshElapsed}ms: $refreshResult")
 
-                    // Refresh failed (refresh token expired) → Force logout
-                    secureStorage.clearSession()
-                    Timber.w("🚪 [Auth] Session cleared due to refresh failure - User must re-login")
+                    if ((refreshResult as? Result.Error)?.exception?.sesionMuertaAlRenovar == true) {
+                        // 401/403 del refresh, o falta el refresh token / venue → sesión muerta → Force logout
+                        secureStorage.clearSession()
+                        Timber.w("🚪 [Auth] Session cleared: refresh says the session is dead - User must re-login")
 
-                    // Notify UI that session has expired → triggers navigation to Login
-                    sessionManager.notifySessionExpired()
+                        // Notify UI that session has expired → triggers navigation to Login
+                        sessionManager.notifySessionExpired()
 
-                    CrashlyticsContext.recordAuthRefresh(
-                        elapsedMs = refreshElapsed,
-                        outcome = "fail",
-                    )
+                        CrashlyticsContext.recordAuthRefresh(
+                            elapsedMs = refreshElapsed,
+                            outcome = "fail",
+                        )
+                    } else {
+                        // Red caída o servidor ocupado (NetworkError, 5xx...): la sesión sigue viva.
+                        // Se apaga el letrero "Verificando sesión..." y la siguiente petición reintenta.
+                        Timber.w("📴 [Auth] Refresh failed without a dead-session answer - keeping session (no network or server busy)")
+                        sessionManager.resetSessionExpiringState()
+                        CrashlyticsContext.recordAuthRefresh(
+                            elapsedMs = refreshElapsed,
+                            outcome = "fail_session_kept",
+                        )
+                    }
 
                     return null // Give up (return null = OkHttp stops retrying)
                 }
@@ -266,15 +295,13 @@ class TokenAuthenticator @Inject constructor(
                 return null
             } catch (e: Exception) {
                 val elapsed = System.currentTimeMillis() - refreshStartedAt
-                Timber.e(e, "❌ [Auth] Exception during token refresh after ${elapsed}ms")
-                secureStorage.clearSession()
-
-                // Notify UI that session has expired → triggers navigation to Login
-                sessionManager.notifySessionExpired()
+                // Una excepción no es una respuesta de sesión muerta: la sesión se conserva (ver ApiException.sesionMuertaAlRenovar).
+                Timber.e(e, "❌ [Auth] Exception during token refresh after ${elapsed}ms - keeping session")
+                sessionManager.resetSessionExpiringState()
 
                 CrashlyticsContext.recordAuthRefresh(
                     elapsedMs = elapsed,
-                    outcome = "fail",
+                    outcome = "fail_session_kept",
                     cause = e,
                 )
 

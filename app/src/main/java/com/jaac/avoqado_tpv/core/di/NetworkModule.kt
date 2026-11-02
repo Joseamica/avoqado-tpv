@@ -215,6 +215,11 @@ object NetworkModule {
      */
     @Provides
     @Singleton
+    fun provideVentaGuardadaApi(retrofit: Retrofit): com.jaac.avoqado_tpv.features.payment.data.api.VentaGuardadaApi =
+        retrofit.create(com.jaac.avoqado_tpv.features.payment.data.api.VentaGuardadaApi::class.java)
+
+    @Provides
+    @Singleton
     fun provideApiService(retrofit: Retrofit): ApiService {
         return retrofit.create(ApiService::class.java)
     }

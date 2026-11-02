@@ -111,6 +111,9 @@ fun AngelPayPaymentScreen(
     // device-initiated charge. Passed straight to the VM so the terminal outcome reports back.
     paymentSource: String? = null,
     socketRequestId: String? = null,
+    // 💵 D2 «Cobrar sin red»: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar).
+    soloEfectivo: Boolean = false,
+    ventaLocalJson: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
     /**
@@ -233,6 +236,8 @@ fun AngelPayPaymentScreen(
         externalTipCents,
         externalRating,
         externalSkipReview,
+        soloEfectivo,
+        ventaLocalJson,
     ) {
         if (initialAmount != null && state is AngelPayPaymentState.Idle) {
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
@@ -248,6 +253,8 @@ fun AngelPayPaymentScreen(
                 skipReview = externalSkipReview || skipReview,
                 externalTipCents = externalTipCents,
                 externalRating = externalRating,
+                soloEfectivo = soloEfectivo,
+                ventaLocalJson = ventaLocalJson,
             )
         }
     }
@@ -359,6 +366,7 @@ fun AngelPayPaymentScreen(
         showSuccessContent -> {
             val successState = state as? AngelPayPaymentState.Success
             if (successState != null) {
+                LaunchedEffect(successState.referenceNumber) { viewModel.marcarExitoDeVentaLocalMostrado() }
                 val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
                 val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
                 AngelPaySuccessContent(
@@ -391,7 +399,7 @@ fun AngelPayPaymentScreen(
                     onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
                     // Checkpoint 2 (E4): una segunda captura con ganador acreditado NO es un éxito limpio — el mismo
                     // renglón ámbar «no lo vuelvas a cobrar» que ya usa el registro pendiente.
-                    pendingSyncMessage = successState.aviso,
+                    pendingSyncMessage = successState.aviso ?: successState.pendingSyncMessage,
                     onNavigateHome = {
                         viewModel.resetPayment()
                         onNavigateHome()
@@ -649,6 +657,12 @@ fun AngelPayPaymentScreen(
                         hideAccountSelector = visibleMerchants.size <= 1,
                         // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
                         routingBannerMessage = routingBanner,
+                        // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta y cripto en gris con el motivo). Va
+                        // directo a MerchantSelectionContent y NO por bloqueoDeMetodosDePago (AngelPayMetodosDePago.kt):
+                        // ése es para operaciones de la sesión de AngelPay en vuelo y su efectivo sí se apaga; el motivo
+                        // nunca apaga el efectivo. Hueco PREVIO, sin tocar: con authState Authenticating el efectivo
+                        // también queda apagado (T26, 2026-05-19), aunque sea sin red.
+                        motivoSinTarjeta = currentState.motivoSinTarjeta,
                     )
                 }
 

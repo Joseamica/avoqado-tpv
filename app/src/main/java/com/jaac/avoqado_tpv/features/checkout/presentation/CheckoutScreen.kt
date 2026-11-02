@@ -1,16 +1,26 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -20,11 +30,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -34,7 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -42,11 +56,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.jaac.avoqado_tpv.features.checkout.presentation.components.AvisoSinConexionDeCobrar
 import com.jaac.avoqado_tpv.core.domain.variantes.AccionAlElegir
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.HojaDeVariantes
 import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
+import com.jaac.avoqado_tpv.features.checkout.domain.textoDelErrorParaElCajero
 import com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.MosaicConfigView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.NoteDialog
@@ -58,6 +77,7 @@ import com.jaac.avoqado_tpv.features.checkout.presentation.components.SearchOver
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.ShortcutsGridView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.TabSelectorView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.TaxPercentDialog
+import com.jaac.avoqado_tpv.features.checkout.presentation.components.VentaEnCeroGuardadaDialog
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartDetailsSheet
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartPanelView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CustomerSelectorSheet
@@ -97,10 +117,28 @@ fun CheckoutScreen(
     val familias by viewModel.familias.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val errorCatalogo by viewModel.errorCatalogo.collectAsState()
     val shortcuts by viewModel.shortcuts.collectAsState()
     val selectedCustomer by viewModel.selectedCustomer.collectAsState()
     val referralCode by viewModel.referralCode.collectAsState()
     val referralValidation by viewModel.referralValidation.collectAsState()
+    // 🔒 Venta en preparación: mientras se arma/manda la venta, el carrito no cambia (el ViewModel lo rechaza y la pantalla no responde).
+    val ventaEnPreparacion by viewModel.ventaEnPreparacion.collectAsState()
+    val aviso by viewModel.aviso.collectAsState()
+    val avisoSinConexion by viewModel.avisoSinConexion.collectAsState()
+    val ventaSinMostrar by viewModel.ventaSinMostrar.collectAsState()
+    val errorRecuperacion by viewModel.errorRecuperacion.collectAsState()
+    val sinRed by viewModel.sinRed.collectAsState()
+    val canCompItems by viewModel.canCompItems.collectAsState()
+    val canApplyDiscount by viewModel.canApplyDiscount.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.actualizarEstadoDeCobrar()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Product opened in the modifier-selection sheet; null = closed.
     var productForModifiers by remember {
@@ -123,6 +161,10 @@ fun CheckoutScreen(
     var amountCents by rememberSaveable { mutableIntStateOf(0) }
     var isChargeInFlight by remember { mutableStateOf(false) }
     var isPayLaterInFlight by remember { mutableStateOf(false) }
+    // 💵 Venta en $0 guardada en la terminal (sin red): su diálogo con «Imprimir ticket» y «Listo».
+    val ventaEnCero by viewModel.ventaEnCeroGuardada.collectAsState()
+    var imprimiendoVentaEnCero by remember { mutableStateOf(false) }
+    var errorAlImprimirVentaEnCero by remember { mutableStateOf<String?>(null) }
 
     // Overlays and modals
     var showSearch by rememberSaveable { mutableStateOf(false) }
@@ -131,6 +173,9 @@ fun CheckoutScreen(
     var showTaxDialog by rememberSaveable { mutableStateOf(false) }
     var showCustomerSheet by rememberSaveable { mutableStateOf(false) }
     var showCartDetailsSheet by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(sinRed) {
+        if (sinRed) showCustomerSheet = false
+    }
     val customerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val cartDetailsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -141,6 +186,13 @@ fun CheckoutScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // Avisos del ViewModel (p. ej. «Recuperamos la venta que estaba a medias»): se muestran y luego se dan por vistos.
+    LaunchedEffect(aviso) {
+        val texto = aviso ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message = texto, duration = SnackbarDuration.Long)
+        viewModel.avisoMostrado()
+    }
 
     // 👑 Plan-tier gating (fail open — null plan info ⇒ nothing is locked).
     // Gates ONLY: (a) manual ad-hoc discount creation (PROMOTIONS → Plan Pro)
@@ -182,16 +234,18 @@ fun CheckoutScreen(
                 }
                 SearchBarView(
                     isLoading = isLoading,
-                    onSearchTap = { showSearch = true },
+                    onSearchTap = { if (!ventaEnPreparacion) showSearch = true },
                     onRefresh = { viewModel.refreshProducts() },
-                    onBarcodeScan = { showBarcodeScanner = true },
+                    onBarcodeScan = { if (!ventaEnPreparacion) showBarcodeScanner = true },
                     modifier = Modifier.weight(1f),
                 )
             }
 
+            avisoSinConexion?.let { AvisoSinConexionDeCobrar(it) }
+
             TabSelectorView(
                 selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it },
+                onTabSelected = { if (!ventaEnPreparacion) selectedTab = it },
             )
 
             // Tab content — fills remaining space above the cart panel
@@ -216,14 +270,18 @@ fun CheckoutScreen(
                         useCompactSizing = true,
                     )
                     InputTab.SHORTCUTS -> ShortcutsGridView(
+                        errorCatalogo = errorCatalogo,
+                        isLoading = isLoading,
+                        onRetry = viewModel::refreshProducts,
                         cartState = cartState,
                         shortcuts = shortcuts,
                         selectedCustomer = selectedCustomer,
                         onShortcutTap = { shortcut ->
                             // No snackbar — the Cobrar button label updates
                             // immediately with the new total, which is
-                            // already strong visual feedback.
-                            viewModel.addShortcutToCart(shortcut)
+                            // already strong visual feedback. Con extras
+                            // obligatorios abre la misma hoja que la cuadrícula.
+                            viewModel.addShortcutToCart(shortcut)?.let { productForModifiers = it }
                         },
                         onConfigureTap = { selectedTab = InputTab.MOSAIC },
                         onApplyCortesia = viewModel::applyCortesiaToItem,
@@ -237,7 +295,7 @@ fun CheckoutScreen(
                         },
                         onValidateCoupon = viewModel::validateAndApplyCoupon,
                         onRemoveItem = viewModel::removeItem,
-                        onSelectCustomer = { showCustomerSheet = true },
+                        onSelectCustomer = { if (!sinRed) showCustomerSheet = true },
                         onConfirmPayLater = {
                             viewModel.createPayLaterOrder().fold(
                                 onSuccess = { order ->
@@ -255,11 +313,17 @@ fun CheckoutScreen(
                         },
                         snackbarHostState = snackbarHostState,
                         manualDiscountPlanLocked = manualDiscountPlanLocked,
+                        sinRed = sinRed,
+                        canCompItems = canCompItems,
+                        canApplyDiscount = canApplyDiscount,
                     )
                     InputTab.PRODUCTS -> ProductGridView(
+                        errorCatalogo = errorCatalogo,
+                        onRetry = viewModel::refreshProducts,
                         products = products,
                         categories = categories,
                         isLoading = isLoading,
+                        sinRed = sinRed,
                         familias = familias,
                         onFamiliaTap = { familiaAbierta = it.groupId },
                         onProductTap = { product ->
@@ -274,6 +338,9 @@ fun CheckoutScreen(
                         },
                     )
                     InputTab.MOSAIC -> MosaicConfigView(
+                        errorCatalogo = errorCatalogo,
+                        isLoading = isLoading,
+                        onRetry = viewModel::refreshProducts,
                         shortcuts = shortcuts,
                         products = products,
                         onAssignToSlot = { product, position ->
@@ -281,6 +348,9 @@ fun CheckoutScreen(
                         },
                         onClearSlot = { shortcut -> viewModel.removeShortcut(shortcut.id) },
                     )
+                }
+                if (ventaEnPreparacion) {
+                    VentaEnPreparacionVelo()
                 }
             }
 
@@ -308,6 +378,10 @@ fun CheckoutScreen(
                                     message = "Orden ${payload.orderNumber} completada como cortesía",
                                     duration = SnackbarDuration.Long,
                                 )
+                            } else if (payload is PaymentNavigationPayload.VentaEnCeroGuardada) {
+                                // El ViewModel ya guardó la fila y consumió el carrito; conserva el ticket al recrear esta pantalla.
+                                showCartDetailsSheet = false
+                                errorAlImprimirVentaEnCero = null
                             } else {
                                 showCartDetailsSheet = false
                                 onNavigateToPayment(payload)
@@ -316,7 +390,7 @@ fun CheckoutScreen(
                         onFailure = { error ->
                             Timber.e(error, "🛒 prepareForPayment failed")
                             snackbarHostState.showSnackbar(
-                                message = error.message ?: "No se pudo iniciar el cobro",
+                                message = textoDelErrorParaElCajero(error, "No se pudo iniciar el cobro"),
                                 duration = SnackbarDuration.Long,
                             )
                         },
@@ -335,21 +409,25 @@ fun CheckoutScreen(
             CartDetailsSheet(
                 cartState = cartState,
                 customerName = selectedCustomer?.displayName,
-                onCustomerTap = { showCustomerSheet = true },
+                // Con la venta preparándose, ni el cliente ni la nota cambian (el ViewModel los rechazaría en silencio).
+                onCustomerTap = { if (!ventaEnPreparacion && !sinRed) showCustomerSheet = true },
+                necesitaInternet = sinRed,
                 onClose = { showCartDetailsSheet = false },
                 onClearCart = {
-                    viewModel.clearCart()
-                    showCartDetailsSheet = false
+                    if (!ventaEnPreparacion) {
+                        viewModel.clearCart()
+                        showCartDetailsSheet = false
+                    }
                 },
                 onRemoveItem = { viewModel.removeItem(it) },
                 onIncrementQuantity = { viewModel.incrementQuantity(it) },
                 onDecrementQuantity = { viewModel.decrementQuantity(it) },
-                onAddNote = { showNoteDialog = true },
+                onAddNote = { if (!ventaEnPreparacion) showNoteDialog = true },
                 // Tax is intentionally hidden in new Cobrar V1. Backend rejects
                 // non-zero tax until payment math/receipts/dashboard support it.
                 onApplyTax = null,
                 onCharge = triggerCharge,
-                isChargeInFlight = isChargeInFlight,
+                isChargeInFlight = isChargeInFlight || ventaEnPreparacion,
                 onPayLater = if (payLaterAvailable) {
                     {
                         if (!isPayLaterInFlight) {
@@ -368,7 +446,7 @@ fun CheckoutScreen(
                                     onFailure = { error ->
                                         Timber.e(error, "🛒 createPayLaterOrder failed")
                                         snackbarHostState.showSnackbar(
-                                            message = error.message ?: "No se pudo guardar la orden",
+                                            message = textoDelErrorParaElCajero(error, "No se pudo guardar la orden"),
                                             duration = SnackbarDuration.Long,
                                         )
                                     },
@@ -378,7 +456,7 @@ fun CheckoutScreen(
                         }
                     }
                 } else null,
-                isSubmittingPayLater = isPayLaterInFlight,
+                isSubmittingPayLater = isPayLaterInFlight || ventaEnPreparacion,
                 referralSection = {
                     ReferralCaptureSection(
                         code = referralCode,
@@ -402,6 +480,7 @@ fun CheckoutScreen(
                             }
                         },
                         planLocked = referralPlanLocked,
+                        necesitaInternet = sinRed,
                     )
                 },
             )
@@ -435,7 +514,7 @@ fun CheckoutScreen(
     }
 
     // Customer selector — pulls Recientes by default, searches on type.
-    if (showCustomerSheet) {
+    if (showCustomerSheet && !sinRed) {
         ModalBottomSheet(
             onDismissRequest = {
                 viewModel.clearCustomerSearch()
@@ -498,7 +577,7 @@ fun CheckoutScreen(
     // carrito mientras se crea la orden; esa hoja se puede cerrar con la operación en vuelo) y `isPayLaterInFlight`. Con eso en vuelo o
     // con el escáner abierto la hoja NO se pinta y se cierra: un artículo que entre en ese momento saldría fuera del cobro.
     val hojaPermitida = hojaDeVariantesPermitida(
-        preparandoPago = isChargeInFlight || isPayLaterInFlight,
+        preparandoPago = isChargeInFlight || isPayLaterInFlight || ventaEnPreparacion,
         escanerAbierto = showBarcodeScanner,
     )
     val familiaDeLaHoja = if (hojaPermitida) familiaAbierta?.let { familias[it] } else null
@@ -572,11 +651,16 @@ fun CheckoutScreen(
         BarcodeScannerScreen(
             onBarcodeScanned = { barcode, _format ->
                 showBarcodeScanner = false
-                viewModel.findProductByBarcode(barcode) { product ->
+                viewModel.findProductByBarcode(barcode) { product, delCatalogoGuardado ->
                     when {
                         product == null -> scope.launch {
                             snackbarHostState.showSnackbar(
-                                message = "Producto no encontrado (código: $barcode)",
+                                // Sin red sólo se buscó en el catálogo guardado: decir «no encontrado» sería falso.
+                                message = if (delCatalogoGuardado) {
+                                    "No está en el catálogo guardado"
+                                } else {
+                                    "Producto no encontrado (código: $barcode)"
+                                },
                                 duration = SnackbarDuration.Short,
                             )
                         }
@@ -588,6 +672,94 @@ fun CheckoutScreen(
             },
             onClose = { showBarcodeScanner = false },
         )
+    }
+
+    if (errorRecuperacion != null) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Venta anterior guardada") },
+            text = { Text(errorRecuperacion.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = viewModel::actualizarEstadoDeCobrar, enabled = !ventaEnPreparacion) { Text("Reintentar") }
+            },
+        )
+    } else if (ventaEnCero == null) ventaSinMostrar?.let { vista ->
+        val venta = vista.venta
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Esta venta ya quedó cobrada y guardada: $${String.format(java.util.Locale.US, "%.2f", (venta.totalCents.toLong() + vista.propinaCents) / 100.0)}") },
+            text = {
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                    venta.renglones.forEach { renglon ->
+                        Text("${renglon.cantidad}× ${renglon.nombre} · $${String.format(java.util.Locale.US, "%.2f", renglon.totalCents / 100.0)}")
+                        renglon.extras.forEach { Text("  + ${it.nombre}", style = MaterialTheme.typography.bodySmall) }
+                        renglon.nota?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.ventaGuardadaVista(venta.llave) }, enabled = !ventaEnPreparacion) { Text("Entendido") }
+            },
+        )
+    }
+
+    // 💵 Venta en $0 guardada sin red: no pasó por la pantalla de cobro. Verla cuenta como «la venta se mostró» (exito_mostrado).
+    ventaEnCero?.let { venta ->
+        LaunchedEffect(venta.llave) { viewModel.ventaGuardadaVista(venta.llave) }
+        VentaEnCeroGuardadaDialog(
+            articulos = venta.renglones.sumOf { it.cantidad },
+            imprimiendo = imprimiendoVentaEnCero,
+            errorDeImpresion = errorAlImprimirVentaEnCero,
+            onImprimir = {
+                if (!imprimiendoVentaEnCero) {
+                    scope.launch {
+                        imprimiendoVentaEnCero = true
+                        errorAlImprimirVentaEnCero = viewModel.imprimirVentaGuardada(venta).exceptionOrNull()
+                            ?.let { textoDelErrorParaElCajero(it, "No se pudo imprimir el ticket") }
+                        imprimiendoVentaEnCero = false
+                    }
+                }
+            },
+            onListo = {
+                errorAlImprimirVentaEnCero = null
+                viewModel.cerrarVentaEnCero()
+            },
+        )
+    }
+}
+
+/**
+ * 🔒 Velo de «venta en preparación» sobre las pestañas de entrada: se traga los toques (la cuadrícula, el teclado y los atajos no
+ * responden) y dice qué pasa. Neutro, no rojo: es una espera normal.
+ */
+@Composable
+private fun VentaEnPreparacionVelo() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.6f))
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false).consume()
+                }
+            },
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            modifier = Modifier.padding(top = 16.dp),
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 3.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Preparando…", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }
 

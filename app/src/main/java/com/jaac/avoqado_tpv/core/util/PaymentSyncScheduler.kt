@@ -104,7 +104,16 @@ object PaymentSyncScheduler {
             paymentSyncWorkRequest
         )
 
+        runNow(context) // Arranque/reingreso: también puede haber sólo aperturas o cierres, sin pagos pendientes.
         Timber.d("✅ Payment sync scheduler started")
+    }
+
+    /** APPEND persiste la siguiente pasada aunque la inmediata actual aún esté RUNNING (KEEP la perdería). */
+    fun continuarDespuesDeEstaPasada(context: Context) {
+        val request = androidx.work.OneTimeWorkRequestBuilder<PaymentSyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .addTag(PAYMENT_SYNC_WORK_NAME).build()
+        WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_WORK_NAME, androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 
     /**

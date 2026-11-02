@@ -430,7 +430,7 @@ class PaymentAttemptRoomTest {
             val ledger = PaymentAttemptLedger(db.paymentAttemptDao(), settings)
             val dao = db.paymentAttemptDao()
 
-            assertTrue(ledger.openAttempt("pax", "venue", "BLUMON", 12000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
+            assertTrue(ledger.openAttempt("pax", "venue", "BLUMON", 12000, 0, "ORDER", """{"orderId":"cuenta-1","staffId":"staff-original"}"""))
             assertTrue(ledger.markAuthorizing("pax"))
             // La PAX escribe el resultado del host ANTES de cerrar el EMV, y sin motivo.
             assertEquals(1, dao.casTransition("pax", listOf("AUTORIZANDO"), "HOST_RESPONDIO", 20, "proceso-de-la-prueba"))
@@ -444,6 +444,11 @@ class PaymentAttemptRoomTest {
                 ledger.openAttempt("otra", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))
 
             // Y en cuanto el cobro llega a la cola —el camino normal— el aparato queda libre.
+            // La fixture representa ahora el sucesor realmente persistido por la versión anterior.
+            db.pendingPaymentDao().insertRow(com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity(
+                referenceNumber = "pax-ref", venueId = "venue", staffId = "staff-original", amount = "120.00", tip = "0.00",
+                rating = null, merchantAccountId = "merchant", blumonSerialNumber = "serial", maskedPan = null, cardBrand = null,
+                entryMode = "CHIP", isInternational = false, authorizationNumber = "AUTH", orderId = "cuenta-1", idempotencyKey = "pax", createdAt = 45))
             assertEquals(1, dao.casTransition("pax", listOf("REGISTRO_FALLIDO"), "ENTREGADA_A_COLA", 50, "proceso-de-la-prueba"))
             assertTrue("con el cobro ya encolado el negocio sigue cobrando",
                 ledger.openAttempt("siguiente", "venue", "BLUMON", 5000, 0, "ORDER", """{"orderId":"cuenta-2"}"""))

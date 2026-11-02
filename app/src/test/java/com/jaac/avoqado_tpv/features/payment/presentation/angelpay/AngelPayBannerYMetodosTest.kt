@@ -17,13 +17,18 @@ class AngelPayBannerYMetodosTest {
     private fun cabe(texto: String) = assertThat(texto.length).isAtMost(60)
 
     @Test
-    fun `sin red el banner lo dice en espanol y que se reintenta sola`() {
+    fun `sin red el banner lo dice en espanol y pide tocar Reintentar`() {
         val texto = textoDeAuthError(
             AngelPayAuthState.AuthError("AngelPay credentials missing from both backend config and BuildConfig", AuthErrorKind.SIN_RED),
         )
         assertThat(texto.lowercase()).contains("sin conexión")
         assertThat(texto).doesNotContain("credentials")
-        cabe(texto)
+        // D5 (2-nov-2026): este banner sólo sale en «Método de pago», y ahí la recuperación sola NUNCA corre
+        // (OMITIDA_COBRO_EN_CURSO, el candado de Amaena). Prometer «se reintenta sola» mentía: el cajero la
+        // esperaba con la red ya de vuelta. Se dice la verdad: tocar «Reintentar» del mismo banner.
+        assertThat(texto).doesNotContain("se reintenta sola")
+        assertThat(texto).contains("toca Reintentar")
+        cabe("AngelPay: $texto")
     }
 
     @Test

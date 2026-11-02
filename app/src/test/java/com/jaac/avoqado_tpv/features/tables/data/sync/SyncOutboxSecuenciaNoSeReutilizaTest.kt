@@ -7,7 +7,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
-import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
+import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -35,7 +35,7 @@ class SyncOutboxSecuenciaNoSeReutilizaTest {
 
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val secureStorage = mockk<SecureStorage>().also { every { it.getSerialNumber() } returns "term-1" }
-    private val abiertas = mutableListOf<TablesDatabase>()
+    private val abiertas = mutableListOf<AvoqadoDatabase>()
 
     @After
     fun limpiar() {
@@ -43,20 +43,20 @@ class SyncOutboxSecuenciaNoSeReutilizaTest {
         context.deleteDatabase(DB_NAME)
     }
 
-    private fun abrir(): TablesDatabase =
-        Room.databaseBuilder(context, TablesDatabase::class.java, DB_NAME)
+    private fun abrir(): AvoqadoDatabase =
+        Room.databaseBuilder(context, AvoqadoDatabase::class.java, DB_NAME)
             .allowMainThreadQueries()
             .build()
             .also { abiertas += it }
 
-    private fun outboxDe(db: TablesDatabase) = SyncOutbox(db.syncIntentDao(), mockk(relaxed = true), secureStorage)
+    private fun outboxDe(db: AvoqadoDatabase) = SyncOutbox(db.syncIntentDao(), mockk(relaxed = true), secureStorage, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     private suspend fun SyncOutbox.encola(): String = enqueue(VENUE, SyncIntentTypes.PAY_CASH, JsonObject())
 
-    private suspend fun TablesDatabase.fila(id: String): SyncIntentEntity =
+    private suspend fun AvoqadoDatabase.fila(id: String): SyncIntentEntity =
         syncIntentDao().allForVenue(VENUE).first { it.id == id }
 
-    private suspend fun TablesDatabase.maxSeq(): Long = syncIntentDao().maxSeq(VENUE) ?: 0L
+    private suspend fun AvoqadoDatabase.maxSeq(): Long = syncIntentDao().maxSeq(VENUE) ?: 0L
 
     @Test
     fun `un rechazo con el seq mas alto, resuelto y con la base reabierta, no deja reutilizar su seq`() = runTest {
@@ -150,7 +150,7 @@ class SyncOutboxSecuenciaNoSeReutilizaTest {
         }
     }
 
-    private suspend fun TablesDatabase.maxSeqSin(id: String): Long =
+    private suspend fun AvoqadoDatabase.maxSeqSin(id: String): Long =
         syncIntentDao().allForVenue(VENUE).filter { it.id != id }.maxOfOrNull { it.seq } ?: 0L
 
     @Test

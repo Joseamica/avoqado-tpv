@@ -50,12 +50,16 @@ data class RemotePaymentRequestEntity(
      * mayor sube la columna. Room v35.
      */
     @ColumnInfo(name = "attempt_link_version", defaultValue = "0") val attemptLinkVersion: Int = 0,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
     /**
      * B1 (21-oct, «ninguna duda de cobro sin salida»): esta solicitud quedó CERRADA PARA EJECUCIÓN. Ningún intento suyo
      * puede seguir vivo (todos cesaron) y ya no se admite otro: es CERCA para [PaymentAttemptDao.reserveTerminal], la
      * traducción de la pantalla y el arranque de efectivo/cripto. La escribe sólo
      * [com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao.cerrarSolicitudSiCeso]. NO resuelve la
-     * solicitud: el status sigue PROCESSING a propósito y el dinero tardío la resuelve por su camino. Room v43.
+     * solicitud: el status sigue PROCESSING a propósito y el dinero tardío la resuelve por su camino. Room v45.
      */
     @ColumnInfo(name = "execution_closed_at") val executionClosedAt: Long? = null,
 ) {

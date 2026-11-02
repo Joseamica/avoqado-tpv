@@ -1288,7 +1288,7 @@ class LedgerServerRecoveryRoomTest {
             processedByStaffId = "staff-1", senderDeviceName = "POS", venueId = venue, timestamp = "2026-10-20T19:00:00Z",
         )
         val libreta1 = libretaDeNexgo()
-        val bandeja1 = RemotePaymentInbox(db.remotePaymentRequestDao(), libreta1, PaymentStateHolder())
+        val bandeja1 = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta1, PaymentStateHolder())
         assertThat(bandeja1.receive(solicitud)).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
         assertThat(RemotePaymentCoordinator(bandeja1).prepareSocketPaymentRequest(requestId, { true }, { venue }))
             .isEqualTo(RemotePaymentAdmission.READY)
@@ -1296,7 +1296,7 @@ class LedgerServerRecoveryRoomTest {
         assertThat(libreta1.markAuthorizing(attemptId)).isTrue() // la app muere con el SDK dentro (Amaena, 20-oct)
 
         val libreta2 = libretaDeNexgo()
-        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), libreta2, PaymentStateHolder()))
+        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta2, PaymentStateHolder()))
             .probeSocketPaymentRequest(requestId, venue)
         assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
         assertThat(sonda.executionAlive).isFalse()

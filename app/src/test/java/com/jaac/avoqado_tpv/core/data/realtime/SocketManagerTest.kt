@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.core.data.realtime
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
+import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import io.mockk.*
 import io.socket.client.IO
 import io.socket.client.Socket
@@ -974,6 +976,35 @@ class SocketManagerTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // ========================================
+    // RENOVACIÓN DE LA SESIÓN DEL SOCKET (misma regla que TokenAuthenticator)
+    // ========================================
+
+    private fun dispararErrorDeAuthDelSocket(errorDelRefresh: ApiException) {
+        val authRepository = mockk<AuthRepository>()
+        every { mockAuthRepositoryLazy.get() } returns authRepository
+        coEvery { authRepository.refreshAccessToken() } returns com.jaac.avoqado_tpv.core.domain.models.Result.Error(errorDelRefresh)
+        // El middleware del servidor rechaza el JWT → el socket intenta renovar por HTTP
+        capturedListeners[Socket.EVENT_CONNECT_ERROR]?.call("Token has expired")
+    }
+
+    @Test
+    fun `socket - un 401 del refresh avisa sesion expirada y deja de reintentar`() {
+        dispararErrorDeAuthDelSocket(ApiException.HttpError(401, "Refresh token expired"))
+
+        // La renovación corre en Dispatchers.IO: se espera a que avise
+        verify(timeout = 3_000, exactly = 1) { mockSessionManager.notifySessionExpired() }
+    }
+
+    @Test
+    fun `socket - un ValidationError local del refresh tambien avisa sesion expirada`() {
+        // Sin refresh token / sin venue: no hay red de por medio y nunca podrá renovarse.
+        // Antes el socket reintentaba para siempre (con espera) y nunca mandaba al PIN.
+        dispararErrorDeAuthDelSocket(ApiException.ValidationError("No refresh token available. Please login again."))
+
+        verify(timeout = 3_000, exactly = 1) { mockSessionManager.notifySessionExpired() }
     }
 
     // ========================================

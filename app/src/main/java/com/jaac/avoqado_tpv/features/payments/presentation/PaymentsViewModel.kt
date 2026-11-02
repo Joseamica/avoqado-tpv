@@ -214,7 +214,7 @@ class PaymentsViewModel @Inject constructor(
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = displayPayments.size
+                            totalCount = data.total
                         )
                     }
 
@@ -305,7 +305,7 @@ class PaymentsViewModel @Inject constructor(
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = displayPayments.size
+                            totalCount = data.total
                         )
                     }
 
@@ -376,6 +376,7 @@ class PaymentsViewModel @Inject constructor(
                     is Result.Success -> {
                         val data = result.data
                         currentPage = nextPage
+                        totalPages = (data.total + 19) / 20
 
                         // Append new payments to existing list
                         rawPayments = (rawPayments + data.payments).associateBy { it.id }.values.toList()
@@ -388,7 +389,7 @@ class PaymentsViewModel @Inject constructor(
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = allPayments.size
+                            totalCount = data.total
                         )
                     }
 

@@ -413,7 +413,7 @@ private fun PaymentsContent(
                 onRefresh = onRefresh,
                 modifier = Modifier.fillMaxSize()
             ) {
-                if (payments.isEmpty()) {
+                if (payments.isEmpty() && !hasMore) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()

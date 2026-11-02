@@ -97,10 +97,13 @@ class SessionManager @Inject constructor() {
     /**
      * Notify that the session has expired
      *
-     * Called by TokenAuthenticator when:
-     * - Refresh token is invalid/expired
-     * - Refresh token is missing
-     * - Refresh token API call fails
+     * Called by TokenAuthenticator and SocketManager when the refresh says the session is DEAD
+     * (`ApiException.sesionMuertaAlRenovar`):
+     * - The server rejected the refresh token (HTTP 401/403): invalid/expired
+     * - The refresh token (or venue ID) is missing on the device (local ValidationError)
+     *
+     * It is NOT called when the refresh fails because of the network (offline, timeout, 5xx): the
+     * session is kept so the cashier can keep selling — the PIN login needs the network.
      *
      * This will trigger navigation to Login screen in AppNavigation.
      *

@@ -168,7 +168,10 @@ private fun bannerConfig(
  * mensaje, truncado a 60 caracteres.
  */
 internal fun textoDeAuthError(state: AngelPayAuthState.AuthError): String = when (state.kind) {
-    AuthErrorKind.SIN_RED -> "sin conexión, se reintenta sola"
+    // D5 (2-nov-2026): este banner sólo vive en «Método de pago», donde la recuperación sola no corre
+    // (OMITIDA_COBRO_EN_CURSO: el candado de Amaena no toca la sesión con un cobro abierto). Prometer
+    // «se reintenta sola» mentía; el botón «Reintentar» de este mismo banner sí recupera.
+    AuthErrorKind.SIN_RED -> "sin conexión: cuando vuelva, toca Reintentar"
     AuthErrorKind.SIN_CREDENCIALES -> "faltan credenciales en el panel"
     AuthErrorKind.CUENTA_NO_EN_CONFIG -> "la cuenta del comercio no está en el panel"
     AuthErrorKind.OTHER -> truncate(state.message, 60)

@@ -17,7 +17,10 @@ import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.resetMain
@@ -272,6 +275,220 @@ class AngelPayAuthRepositoryTest {
             assertTrue("expected AuthError, got $state", state is AngelPayAuthState.AuthError)
             // Config validation NOT run on selection failure.
             coVerify(exactly = 0) { configValidator.validate(any()) }
+        }
+
+    // ----------------------------------------------------------------------
+    // 7b. D7 (27-oct-2026, N86 real, cuenta multicomercio): el token de selección vence a los
+    // pocos minutos y la TPV lo pide al arrancar. Antes quedaba AuthError(OTHER) sin salida.
+    // ----------------------------------------------------------------------
+    private val tokenVencido = RuntimeException("El token de selección ha expirado.")
+
+    /** Arranque: el login de la cuenta acc-cuid-1 deja SelectingMerchant("token-viejo"); el siguiente, "token-nuevo". */
+    private fun loginsConTokenNuevo() {
+        var logins = 0
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+            logins++
+            Result.success(
+                AuthenticateSimpleResult.MerchantSelectionRequired(
+                    merchants = listOf(merchantOption),
+                    temporaryToken = if (logins == 1) "token-viejo" else "token-nuevo",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `completeMerchantSelection con token vencido pide otro login de la misma cuenta y elige con el token nuevo`() =
+        runTest(dispatcher) {
+            loginsConTokenNuevo()
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, "token-viejo") } returns Result.failure(tokenVencido)
+            coEvery { merchantRepository.completeInitialSelection(11, "token-nuevo") } returns Result.success(Unit)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+            val config = configWithAngelPay()
+            every { terminalConfigRepository.getCachedConfig() } returns config
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.AllClear
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isSuccess)
+            assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
+            coVerify(exactly = 1) { merchantRepository.completeInitialSelection(11, "token-nuevo") }
+            // Arranque + UN login nuevo, con la MISMA cuenta.
+            coVerify(exactly = 2) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+            assertEquals("acc-cuid-1", repo.getCurrentAngelPayAccountId())
+        }
+
+    @Test
+    fun `completeMerchantSelection con token vencido dos veces queda en AuthError sin otro login`() =
+        runTest(dispatcher) {
+            loginsConTokenNuevo()
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertTrue("expected AuthError, got ${repo.state.value}", repo.state.value is AngelPayAuthState.AuthError)
+            coVerify(exactly = 2) { sdkGateway.authenticateSimple(any(), any()) }
+            coVerify(exactly = 1) { merchantRepository.completeInitialSelection(11, "token-nuevo") }
+        }
+
+    @Test
+    fun `completeMerchantSelection sin red no pide otro login`() =
+        runTest(dispatcher) {
+            loginsConTokenNuevo()
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(AngelPayNetworkError())
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple(any(), any()) }
+        }
+
+    @Test
+    fun `completeMerchantSelection con token vencido y cuenta desconocida no pide login`() =
+        runTest(dispatcher) {
+            loginsConTokenNuevo()
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertTrue(repo.state.value is AngelPayAuthState.AuthError)
+            // Regla de Amaena: sin cuenta conocida nunca se cae al login genérico (la primaria).
+            coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+        }
+
+    @Test
+    fun `completeMerchantSelection con token vencido y cuenta que ya no resuelve no cae a la primaria`() =
+        runTest(dispatcher) {
+            loginsConTokenNuevo()
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns
+                Result.failure(RuntimeException("account not in cached config"))
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertTrue(repo.state.value is AngelPayAuthState.AuthError)
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple(any(), any()) }
+        }
+
+    // Codex r1 #2: si el login nuevo ya no pide elegir, su estado (aquí el aviso de desincronía) manda.
+    @Test
+    fun `completeMerchantSelection si el login nuevo ya no pide elegir conserva el aviso y da por elegido el mismo comercio`() =
+        runTest(dispatcher) {
+            var logins = 0
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+                logins++
+                if (logins == 1) {
+                    Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(listOf(merchantOption), "token-viejo"))
+                } else {
+                    Result.success(AuthenticateSimpleResult.Success)
+                }
+            }
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            every { merchantRepository.activeAngelPayMerchantId } returns MutableStateFlow(11)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+            val config = configWithAngelPay()
+            every { terminalConfigRepository.getCachedConfig() } returns config
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.PartialOperable(
+                operableIds = setOf(11),
+                onlyInSdk = emptySet(),
+                onlyInAvoqado = setOf(12),
+            )
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isSuccess)
+            assertTrue(
+                "expected ConfigMismatchBanner, got ${repo.state.value}",
+                repo.state.value is AngelPayAuthState.ConfigMismatchBanner,
+            )
+            coVerify(exactly = 1) { merchantRepository.completeInitialSelection(11, any()) }
+        }
+
+    // Codex r2: si el login nuevo falla sin red, se conserva SIN_RED (lo recupera T26), no el OTHER del token.
+    @Test
+    fun `completeMerchantSelection si el login nuevo falla sin red conserva SIN_RED`() =
+        runTest(dispatcher) {
+            var logins = 0
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+                logins++
+                if (logins == 1) {
+                    Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(listOf(merchantOption), "token-viejo"))
+                } else {
+                    Result.failure(AngelPayNetworkError())
+                }
+            }
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+            coVerify(exactly = 1) { merchantRepository.completeInitialSelection(11, any()) }
+        }
+
+    // Codex r2: login nuevo sin selección pero con OTRO comercio activo ⇒ falla, sin pisar el estado que cobra.
+    @Test
+    fun `completeMerchantSelection si el login nuevo deja otro comercio activo falla sin AuthError`() =
+        runTest(dispatcher) {
+            var logins = 0
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+                logins++
+                if (logins == 1) {
+                    Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(listOf(merchantOption), "token-viejo"))
+                } else {
+                    Result.success(AuthenticateSimpleResult.Success)
+                }
+            }
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            every { merchantRepository.activeAngelPayMerchantId } returns MutableStateFlow(12)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+            val config = configWithAngelPay()
+            every { terminalConfigRepository.getCachedConfig() } returns config
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.AllClear
+
+            val result = repo.completeMerchantSelection(11, "token-viejo")
+
+            assertTrue(result.isFailure)
+            assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
+        }
+
+    // Codex r1 #1: el cajero sale mientras se renueva; antes quedaba Authenticating para siempre.
+    @Test
+    fun `completeMerchantSelection cancelada a media renovacion deja Unauthenticated y no Authenticating colgado`() =
+        runTest(dispatcher) {
+            val nuncaContesta = CompletableDeferred<Result<AuthenticateSimpleResult>>()
+            var logins = 0
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } coAnswers {
+                logins++
+                if (logins == 1) {
+                    Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(listOf(merchantOption), "token-viejo"))
+                } else {
+                    nuncaContesta.await()
+                }
+            }
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-1") } returns Result.success(backendCreds)
+            coEvery { merchantRepository.completeInitialSelection(11, any()) } returns Result.failure(tokenVencido)
+            assertTrue(repo.ensureAuthenticated().isSuccess)
+
+            val cajero = launch { repo.completeMerchantSelection(11, "token-viejo") }
+            assertEquals(AngelPayAuthState.Authenticating, repo.state.value)
+            cajero.cancelAndJoin()
+
+            assertEquals(AngelPayAuthState.Unauthenticated, repo.state.value)
         }
 
     // ----------------------------------------------------------------------

@@ -39,7 +39,7 @@ class RemotePaymentInboxRoomTest {
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         coordinator = RemotePaymentCoordinator(inbox)
     }
 
@@ -129,7 +129,7 @@ class RemotePaymentInboxRoomTest {
     @Test fun `new coordinator cannot reauthorize persisted processing request`() = runTest {
         receive()
         assertThat(coordinator.claimSocketPaymentRequest("req-1")).isTrue()
-        val restoredInbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val restoredInbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         assertThat(restoredInbox.receive(request)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
         assertThat(RemotePaymentCoordinator(restoredInbox).claimSocketPaymentRequest("req-1")).isFalse()
     }
@@ -169,12 +169,12 @@ class RemotePaymentInboxRoomTest {
         context.deleteDatabase(name)
         try {
             db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
-            inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+            inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             inbox.receive(request)
             assertThat(inbox.markProcessing("req-1")).isTrue()
             db.close()
             db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
-            val restored = RemotePaymentInbox(db.remotePaymentRequestDao())
+            val restored = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             assertThat(restored.receive(request)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
             assertThat(restored.markProcessing("req-1")).isFalse()
             assertThat(restored.observePendingObligationCount("venue-1").first()).isEqualTo(1)
@@ -370,7 +370,7 @@ class RemotePaymentInboxRoomTest {
         assertThat(libreta.markAuthorizing("a1")).isTrue()
         // La app muere con el SDK dentro. Proceso nuevo: otra libreta, otra bandeja (cableada como Hilt), sin propiedad.
         val libretaNueva = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true), unaSolaPantalla).apply { marcaDelBuild = marcaPax }
-        val bandejaNueva = RemotePaymentInbox(db.remotePaymentRequestDao(), libretaNueva, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder())
+        val bandejaNueva = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libretaNueva, com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder())
         val coordinadorNuevo = RemotePaymentCoordinator(bandejaNueva)
         val sonda = coordinadorNuevo.probeSocketPaymentRequest("req-1", "venue-1")
         assertThat(sonda.closedForExecution).isTrue()

@@ -11,6 +11,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Modo kiosco: LEGACY desde el 2-nov-2026 (founder: «nadie lo usa y nadie está interesado»).
+ * Se quitaron de la terminal los dos botones para entrar: el «Modo Kiosk» del menú de opciones del inicio y la
+ * sección «Modo Kiosko» de Configuración. El código del kiosco se queda tal cual, y una terminal que ya estuviera
+ * en kiosco sigue saliendo con su PIN. Para retomarlo, basta con poner esto en `true`.
+ */
+const val MODO_KIOSCO_DISPONIBLE = false
+
+/**
  * Kiosk Mode Manager - Self-Service Terminal State Management
  *
  * **WHY**: Provides centralized state management for kiosk/self-service mode.
@@ -87,6 +95,10 @@ class KioskModeManager @Inject constructor(
     private var networkFailureCount = 0
     private val MAX_NETWORK_FAILURES = 3
 
+    // Cerca de esta entrada UI: una respuesta anterior no revive una salida/reentrada.
+    private val contextGeneration = java.util.concurrent.atomic.AtomicLong()
+    internal val currentContextGeneration: Long get() = contextGeneration.get()
+
     init {
         // Log restored state on startup
         if (_isKioskMode.value) {
@@ -108,6 +120,7 @@ class KioskModeManager @Inject constructor(
      * - Operational state starts as Checking until verified
      */
     fun enterKioskMode(venueId: String) {
+        contextGeneration.incrementAndGet()
         _kioskVenueId.value = venueId
         _isKioskMode.value = true
         _operationalState.value = KioskOperationalState.Checking
@@ -128,6 +141,7 @@ class KioskModeManager @Inject constructor(
      * Requires staff with elevated role (ADMIN/OWNER/MANAGER) to exit.
      */
     fun exitKioskMode() {
+        contextGeneration.incrementAndGet()
         _isKioskMode.value = false
         _operationalState.value = KioskOperationalState.Disabled
         _hasOrderInProgress.value = false
@@ -147,13 +161,20 @@ class KioskModeManager @Inject constructor(
      * Called periodically by KioskNavigation to verify operational status.
      * If shift closes while customer has order in progress, allows them to finish.
      */
-    fun updateShiftStatus(isShiftOpen: Boolean) {
+    fun updateShiftStatus(isShiftOpen: Boolean, serverAnswered: Boolean = true) {
+        if (!_isKioskMode.value) return
+        // Room/cache informa de la caja; sólo HTTP acredita recuperación de red.
+        if (serverAnswered) networkFailureCount = 0
         val previousState = _operationalState.value
         val hasOrder = _hasOrderInProgress.value
 
         if (isShiftOpen) {
-            // Shift is open - kiosk is ready
-            networkFailureCount = 0
+            // Una caja local no acredita recuperación HTTP ni autenticación renovada.
+            if (!serverAnswered && previousState is KioskOperationalState.AuthExpired) return
+            if (!serverAnswered && networkFailureCount >= MAX_NETWORK_FAILURES) {
+                _operationalState.value = KioskOperationalState.NetworkError
+                return
+            }
             _operationalState.value = KioskOperationalState.Ready
             Timber.d("🥝 [KIOSK] Shift is OPEN - operational state: Ready")
         } else {
@@ -168,6 +189,13 @@ class KioskModeManager @Inject constructor(
                 Timber.i("🥝 [KIOSK] Shift is CLOSED - operational state: NoShift")
             }
         }
+    }
+
+    /** Error de lectura local, sin cambiar contador HTTP, época, pedido ni autenticación. */
+    fun handleLocalCajaReadError() {
+        if (!_isKioskMode.value || _operationalState.value is KioskOperationalState.AuthExpired ||
+            _operationalState.value is KioskOperationalState.Disabled) return
+        _operationalState.value = KioskOperationalState.LocalCajaReadError
     }
 
     /**

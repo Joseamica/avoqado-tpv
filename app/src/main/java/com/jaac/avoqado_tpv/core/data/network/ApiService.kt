@@ -861,6 +861,18 @@ interface ApiService {
      * @param request Open shift request with staffId, startingCash
      * @return Created shift object
      */
+    @GET("tpv/venues/{venueId}/shift-operations/{operationId}")
+    suspend fun getShiftOperation(@Path("venueId") venueId: String, @Path("operationId") operationId: String):
+        Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftOperationResponse>
+
+    @GET("tpv/venues/{venueId}/crypto/operations/{idempotencyKey}")
+    suspend fun getCryptoOperation(@Path("venueId") venueId: String, @Path("idempotencyKey") idempotencyKey: String):
+        Response<com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse>
+
+    @POST("tpv/venues/{venueId}/crypto/initiate")
+    suspend fun initiateDurableCryptoPayment(@Path("venueId") venueId: String, @Body request: CryptoPaymentRequest):
+        Response<com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse>
+
     @POST("tpv/venues/{venueId}/shifts/open")
     suspend fun openShift(
         @Path("venueId") venueId: String,
@@ -908,6 +920,12 @@ interface ApiService {
     suspend fun getCurrentShift(
         @Path("venueId") venueId: String
     ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.CurrentShiftResponse>
+
+    @GET("dashboard/venues/{venueId}/shifts/{shiftId}?view=state")
+    suspend fun getKnownShiftState(
+        @Path("venueId") venueId: String,
+        @Path("shiftId") shiftId: String
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.KnownShiftState>
 
     /**
      * Get shift history for venue
@@ -1939,7 +1957,8 @@ data class CryptoPaymentRequest(
     val staffId: String,
     val orderId: String? = null,
     val orderNumber: String? = null,
-    val deviceSerialNumber: String
+    val deviceSerialNumber: String,
+    val idempotencyKey: String? = null
 )
 
 /**

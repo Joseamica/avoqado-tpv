@@ -2,6 +2,16 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Intent
 import android.content.Context
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
+import com.jaac.avoqado_tpv.features.checkout.data.VentaLocalYaGuardadaException
+import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal
+import com.jaac.avoqado_tpv.features.checkout.domain.model.RenglonDeTicket
+import com.jaac.avoqado_tpv.features.checkout.domain.renglonesParaImprimir
+import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
+import com.jaac.avoqado_tpv.features.payment.domain.referenciaDeEfectivo
+import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -54,6 +64,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStat
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.authWatchdogLevel
+import com.jaac.avoqado_tpv.features.payment.domain.decidirMotivoSinTarjeta
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -160,6 +171,12 @@ class AngelPayPaymentViewModel @Inject constructor(
     // 📡 Survives process/Activity death while the AngelPay SDK Activity holds the foreground —
     // see [_paymentSource] / [_socketRequestId]. Hilt provides this automatically to @HiltViewModel.
     private val savedStateHandle: SavedStateHandle,
+    // 💵 D2 «Cobrar sin red»: sin red, «Método de pago» sale en sólo efectivo ([motivoSinTarjeta]).
+    private val connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager,
+    private val ventaLocalRepository: com.jaac.avoqado_tpv.features.checkout.data.VentaLocalRepository,
+    private val pendingPaymentDao: com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao,
+    private val subirVentaGuardadaUseCase: com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase,
+    private val impresoraDeVentaGuardada: com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -501,6 +518,42 @@ class AngelPayPaymentViewModel @Inject constructor(
      * leía el fallo de red como «sin turno»— pero ahora se dice por qué ([bloquearPorTurnoSinConfirmar]).
      */
     private var turnoSinConfirmar: Boolean = false
+    /** 💵 D2 «Cobrar sin red»: argumento de la pantalla — este cobro sólo puede ir en efectivo. */
+    private var soloEfectivo: Boolean = false
+
+    @Volatile
+    private var ventaLocal: VentaLocal? = null
+
+    /** La pantalla confirma haber mostrado el éxito, no el insert ni la respuesta HTTP. */
+    fun marcarExitoDeVentaLocalMostrado() {
+        val venta = ventaLocal ?: return
+        val exito = _state.value as? AngelPayPaymentState.Success ?: return
+        if (exito.referenceNumber != referenciaDeEfectivo(venta.llave)) return
+        viewModelScope.launch {
+            try {
+                withContext(NonCancellable + Dispatchers.IO) { pendingPaymentDao.marcarExitoMostrado(venta.llave) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "No se pudo marcar el éxito de la venta guardada como mostrado")
+            }
+        }
+    }
+
+    /**
+     * 💵 D2 «Cobrar sin red» (21-oct-2026): por qué «Método de pago» sale en sólo efectivo, o null si la
+     * tarjeta puede cobrar ([decidirMotivoSinTarjeta]): con [soloEfectivo], sin INTERNET (AngelPay no necesita
+     * el servidor de Avoqado: paridad con el toque de «Tarjeta», que no revisa la conexión) o con el turno sin
+     * confirmar (la tarjeta y la cripto ya se bloqueaban al tocarlas: [bloquearPorTurnoSinConfirmar]). Nunca en
+     * un cobro que mandó el POS: no ofrece efectivo y conserva sus caminos de antes.
+     */
+    private fun motivoSinTarjeta(): String? = decidirMotivoSinTarjeta(
+        soloEfectivo = soloEfectivo,
+        ofreceEfectivo = CobroRemotoDelPos.permiteEfectivoYCripto(_paymentSource),
+        tarjetaSinRed = turnoSinConfirmar || !connectionStateManager.hasInternet(),
+        cuentasDeRespaldo = false,
+    )
+
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
@@ -701,6 +754,9 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // 🪙 B4Bit request ID currently in-flight. Used to filter Socket.IO events
     // so we only react to OUR pending crypto payment.
+    private var currentCryptoOperationKey: String?
+        get() = savedStateHandle["b2_crypto_operation_key"]
+        set(value) { savedStateHandle["b2_crypto_operation_key"] = value }
     private var currentCryptoRequestId: String? = null
 
     private fun backendRecordFailureState(paymentLabel: String, error: Throwable): AngelPayPaymentState.Error {
@@ -842,6 +898,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         // La aprobación bancaria ya ocurrió en tarjeta. El efectivo, que no tiene ese
         // comprobante, sólo se confirma al POS cuando su fila quedó guardada.
         val isCash = context.cardDetails?.isCash == true
+        if (isCash && (com.jaac.avoqado_tpv.features.payment.domain.usecase.CashAdmissionRejectedException.identifica(error) ||
+                        error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)) {
+            return AngelPayPaymentState.Error(if (error is com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException)
+                error.message ?: "Consulta la venta guardada." else "No se guardó el cobro: ${error.message}", canRetry = false)
+        }
         if (!isCash) emitSocketResultIfSocketSourced(status = "success")
 
         val queued = QueuedPayment(
@@ -872,6 +933,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             orderId = context.orderId,
             orderNumber = context.orderNumber,
             shiftId = context.shiftId,
+            shiftMembership = context.shiftMembership, localShiftSessionId = context.localShiftSessionId,
+            cashDrawerSessionId = context.cashDrawerSessionId,
             isPortabilidad = context.isPortabilidad,
             serialNumbers = context.serialNumbers,
             createdAt = System.currentTimeMillis(),
@@ -999,7 +1062,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 val json = com.google.gson.Gson().toJsonTree(context).asJsonObject.apply {
                     addProperty("processorAffiliation", pendingProcessorAffiliation)
                 }
-                if (!paymentAttemptLedger.openAttempt(
+                if (!paymentAttemptLedger.openAttemptForShift(shiftRepository, 
                         paymentAttemptId, venueId, PaymentAttemptEntity.PROCESSOR_ANGELPAY,
                         amountCents, tipCents,
                         if (pendingOrderId != null) PaymentAttemptEntity.ROUTE_ORDER else PaymentAttemptEntity.ROUTE_FAST,
@@ -1156,6 +1219,20 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
 
+        // 💵 D2: «Método de pago» sigue a la conexión mientras está a la vista (sólo efectivo ⇄ tarjeta). Con
+        // soloEfectivo el motivo es fijo; sólo reescribe si la pantalla sigue en el MISMO estado (compareAndSet).
+        viewModelScope.launch {
+            connectionStateManager.connectionState.collect {
+                val estado = _state.value as? AngelPayPaymentState.SelectingMerchant ?: return@collect
+                val motivo = motivoSinTarjeta()
+                if (motivo != estado.motivoSinTarjeta &&
+                    _state.compareAndSet(estado, estado.copy(motivoSinTarjeta = motivo))
+                ) {
+                    Timber.i("💵 [AngelPay] Cambió la conexión en «Método de pago»: sólo efectivo=${motivo != null}")
+                }
+            }
+        }
+
         // Load AngelPay merchants
         viewModelScope.launch {
             merchantRepository.getActiveMerchants().collect { allMerchants ->
@@ -1272,7 +1349,24 @@ class AngelPayPaymentViewModel @Inject constructor(
         skipReview: Boolean = false,
         externalTipCents: Long? = null,
         externalRating: Int? = null,
+        soloEfectivo: Boolean = false,
+        ventaLocalJson: String? = null,
     ) {
+        this.soloEfectivo = soloEfectivo || ventaLocalJson != null
+        val ventaAlEntrar = try {
+            ventaLocalJson?.let { json ->
+                checkNotNull(Gson().fromJson(json, VentaLocal::class.java)).also { venta ->
+                    check(venta.llave.isNotBlank() && venta.venueId.isNotBlank() && venta.staffId.isNotBlank())
+                    check(venta.totalCents >= 0 && venta.pedidoJson.isNotBlank() && venta.renglones.isNotEmpty())
+                    check(venta.renglones.all { it.cantidad > 0 && it.externalId.isNotBlank() })
+                }
+            }
+        } catch (e: Exception) {
+            ventaLocal = null
+            _state.value = AngelPayPaymentState.Error("No se pudo leer la venta guardada. Regresa a Cobrar y pide apoyo al gerente.", canRetry = false)
+            return
+        }
+        ventaLocal = ventaAlEntrar
         viewModelScope.launch {
             Timber.i("🔶 [AngelPay] initPayment | amount=$amount, orderId=$orderId")
 
@@ -1282,7 +1376,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             if (currentPaymentAttemptId == null && restaurarEvidenciaDurableDeLaSolicitud()) return@launch
 
             val amountDecimal = amount.toBigDecimalOrNull()
-            if (amountDecimal == null || amountDecimal <= BigDecimal.ZERO) {
+            if (amountDecimal == null || amountDecimal < BigDecimal.ZERO ||
+                (amountDecimal.signum() == 0 && ventaAlEntrar == null) ||
+                (ventaAlEntrar != null && amountDecimal.compareTo(BigDecimal.valueOf(ventaAlEntrar.totalCents.toLong(), 2)) != 0)
+            ) {
                 _state.value = AngelPayPaymentState.Error("Monto invalido")
                 // 📡 POS→TPV: pre-charge validation error — no money moved (no-op unless socket-sourced).
                 emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Monto invalido", outcomeEvidence = "PRE_AUTHORIZATION".takeUnless { authorizationWasLaunched })
@@ -1323,6 +1420,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 val shiftResult = withContext(Dispatchers.IO) {
                     shiftRepository.getCurrentShift(venueId)
                 }
+                if (ventaAlEntrar != null && ventaLocal !== ventaAlEntrar) return@launch
                 // 💵 Sin servidor (N86, 23-sep-2026): el fallo de red se leía como «no hay turno» y
                 // bloqueaba hasta el EFECTIVO con la caja abierta y guardada. Si el servidor no
                 // contestó, vale el último turno abierto que ESTE aparato confirmó; el efectivo se
@@ -1340,6 +1438,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     } else {
                         null
                     }
+                if (ventaAlEntrar != null && ventaLocal !== ventaAlEntrar) return@launch
                 turnoSinConfirmar = sinServidor && resolved != null
                 if (resolved == null) {
                     // Sin servidor y sin nada guardado no se inventa un turno, pero tampoco se culpa
@@ -1362,6 +1461,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             } else {
                 null
             }
+
+            if (ventaAlEntrar != null && ventaLocal !== ventaAlEntrar) return@launch
 
             // 2. Validate AngelPay credentials.
             //
@@ -1482,6 +1583,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             tipAmount = tipDecimal.toPlainString(),
             totalAmount = total.toPlainString(),
             rating = rating,
+            motivoSinTarjeta = motivoSinTarjeta(),
         )
         evaluateRoutingForCharge(total.toPlainString()) // 🧭 MERCHANT_ROUTING_RULES
         Timber.d("🔶 [AngelPay] Tip=$tipDecimal → SelectingMerchant (total=$total)")
@@ -1496,6 +1598,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             tipAmount = "0",
             totalAmount = amount,
             rating = rating,
+            motivoSinTarjeta = motivoSinTarjeta(),
         )
         evaluateRoutingForCharge(amount) // 🧭 MERCHANT_ROUTING_RULES
         Timber.d("🔶 [AngelPay] Tip skipped → SelectingMerchant")
@@ -2386,8 +2489,87 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // ── Cash Payment ─────────────────────────────────────────────────
 
+    /** C3: un único escritor Room, antes de cualquier red; después sólo se sincroniza esa misma fila. */
+    private suspend fun procesarEfectivoDeVentaLocal(venta: VentaLocal, seleccion: AngelPayPaymentState.SelectingMerchant) {
+        check(_paymentSource != "SOCKET" && _socketRequestId == null) { "Una venta local no es un cobro remoto" }
+        check(authRepository.getVenueId() == venta.venueId && authRepository.getStaffId() == venta.staffId) {
+            "La venta pertenece a otra sesión. Regresa a Cobrar y pide apoyo al gerente."
+        }
+        check(seleccion.subtotal.toBigDecimal().movePointRight(2).intValueExact() == venta.totalCents) {
+            "El importe de la venta cambió. Regresa a Cobrar y pide apoyo al gerente."
+        }
+        val propina = seleccion.tipAmount.toBigDecimal().movePointRight(2).intValueExact()
+        check(propina >= 0) { "La propina no puede ser negativa" }
+        val guardada = ventaLocalRepository.guardar(
+            venta, PendingPaymentEntity.PROCESSOR_ANGELPAY,
+            blumonSerialNumber = "", deviceSerialNumber = TerminalConfig.serialNumber, reclamada = true, propinaCents = propina,
+            relojMonotonoAlVender = android.os.SystemClock.elapsedRealtime(),
+            arranqueAlVender = runCatching {
+                android.provider.Settings.Global.getInt(appContext.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)
+                    .takeIf { it >= 0 }
+            }.getOrNull(),
+        )
+        val repetida = guardada.exceptionOrNull() is VentaLocalYaGuardadaException
+        if (!repetida) guardada.getOrThrow()
+        var fila = pendingPaymentDao.findByReference(referenciaDeEfectivo(venta.llave), venta.venueId)
+            ?: throw IllegalStateException("No se pudo recuperar la venta guardada")
+        check(fila.idempotencyKey == venta.llave && fila.orderRequestJson == venta.pedidoJson &&
+            fila.amount.toBigDecimal().movePointRight(2).intValueExact() == venta.totalCents &&
+            fila.tip.toBigDecimal().movePointRight(2).intValueExact() == propina && fila.staffId == venta.staffId &&
+            fila.paymentProcessor == PendingPaymentEntity.PROCESSOR_ANGELPAY) {
+            "Esta llave ya tiene una venta con datos distintos. Pide al gerente que la revise."
+        }
+        if (!repetida) {
+            val token = checkNotNull(guardada.getOrThrow().claimToken)
+            when (val resultado = subirVentaGuardadaUseCase(fila.toQueuedPayment())) {
+                SyncOutcome.Synced -> paymentQueueRepository.markSynced(fila.id, token)
+                is SyncOutcome.Permanent -> paymentQueueRepository.markPermanentlyFailed(fila.id, token, resultado.reason)
+                SyncOutcome.Retryable -> {
+                    paymentQueueRepository.release(fila.id, token, fila.retryCount + 1, "Pendiente de sincronizar con el servidor")
+                    runCatching { PaymentSyncScheduler.runNow(appContext) }
+                }
+            }
+            fila = pendingPaymentDao.findByReference(fila.referenceNumber, fila.venueId)
+                ?: throw IllegalStateException("No se pudo recuperar la venta guardada")
+        } else if (fila.syncStatus == PendingPaymentEntity.SYNC_STATUS_PENDING) {
+            // Una fila existente conserva su identidad y el claim de su dueño; sólo el worker puede reclamarla de nuevo.
+            runCatching { PaymentSyncScheduler.runNow(appContext) }
+        }
+        if (ventaLocal !== venta) return // Un reset no debe publicar el éxito sobre el siguiente cobro.
+        val ticket = checkNotNull(Gson().fromJson<List<RenglonDeTicket>>(fila.ticketJson, object : TypeToken<List<RenglonDeTicket>>() {}.type))
+        val ventaDelTicket = venta.copy(
+            llave = checkNotNull(fila.idempotencyKey), venueId = fila.venueId, staffId = fila.staffId, shiftId = fila.shiftId,
+            createdAtLocal = fila.createdAt, totalCents = fila.amount.toBigDecimal().movePointRight(2).intValueExact(),
+            pedidoJson = checkNotNull(fila.orderRequestJson), renglones = ticket,
+        )
+        val aviso = when {
+            fila.syncStatus == PendingPaymentEntity.SYNC_STATUS_FAILED || fila.requiereRevision ->
+                "Venta guardada: necesita revisión. Pide apoyo al gerente."
+            fila.syncStatus == PendingPaymentEntity.SYNC_STATUS_SUCCESS -> null
+            else -> "Venta guardada sin conexión: se manda sola al volver el internet"
+        }
+        val exito = AngelPayPaymentState.Success(
+            authCode = "EFECTIVO", amount = fila.amount,
+            tipAmount = fila.tip, receipt = null, isCash = true,
+            referenceNumber = fila.referenceNumber, orderId = fila.orderId, orderNumber = fila.orderNumber,
+            orderItems = renglonesParaImprimir(ventaDelTicket),
+            pendingSyncMessage = aviso,
+        )
+        withContext(Dispatchers.Main.immediate) {
+            if (ventaLocal === venta) {
+                ventaLocal = ventaDelTicket
+                _state.value = exito
+            }
+        }
+    }
+
     fun startCashPayment() {
-        authorizationWasLaunched = true // Prevent stale card proof from crossing payment methods.
+        val seleccionAlCobrar = _state.value as? AngelPayPaymentState.SelectingMerchant
+        if (soloEfectivo && seleccionAlCobrar == null) return
+        val ventaAlCobrar = ventaLocal
+        val attemptId = ventaAlCobrar?.llave ?: ensurePaymentAttemptId()
+        val referencia = referenciaDeEfectivo(attemptId)
+        authorizationWasLaunched = ventaAlCobrar == null // La venta local nunca abre una autorización bancaria.
         confirmedNegativeOutcome = false
         confirmedNegativeEvidence = null
         // 🔴 Se toma SÍNCRONO, antes de lanzar: un candado DENTRO del `launch` no protegería de
@@ -2401,6 +2583,13 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // 🛑 C.5: el efectivo de un cobro del POS se ancla ANTES de registrar. Si el cancel ya ganó,
                 // aquí se para: registrar sería cobrar algo que el servidor dio por cancelado.
                 if (!puedeArrancarEfectivoOCripto()) return@launch
+                if (ventaAlCobrar != null) {
+                    if (ventaLocal === ventaAlCobrar) _state.value = AngelPayPaymentState.ProcessingCash("Guardando venta en la terminal...")
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        procesarEfectivoDeVentaLocal(ventaAlCobrar, checkNotNull(seleccionAlCobrar))
+                    }
+                    return@launch
+                }
                 _state.value = AngelPayPaymentState.ProcessingCash()
 
                 com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
@@ -2424,7 +2613,6 @@ class AngelPayPaymentViewModel @Inject constructor(
                     return@launch
                 }
 
-                val timestamp = System.currentTimeMillis()
                 val paymentContext = PaymentContext.AngelPayPayment(
                     venueId = venueId,
                     staffId = staffId,
@@ -2434,11 +2622,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     merchantAccountId = null, // Cash = no processor
                     deviceSerialNumber = TerminalConfig.serialNumber,
-                    idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
+                    idempotencyKey = attemptId, // Misma llave capturada antes de cualquier suspensión.
                     terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
                     cardDetails = CardDetails.CASH,
                     authorizationCode = "EFECTIVO",
-                    referenceNumber = "CASH-$timestamp",
+                    referenceNumber = referencia,
                     orderId = pendingOrderId,
                     orderNumber = pendingOrderNumber,
                     // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
@@ -2456,7 +2644,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                         context = paymentContext,
                         cardDetails = CardDetails.CASH,
                         authorizationNumber = "EFECTIVO",
-                        referenceNumber = "CASH-$timestamp",
+                        referenceNumber = referencia,
                     )
                 }
 
@@ -2464,7 +2652,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     authCode = "EFECTIVO",
                     amount = pendingAmount.toPlainString(),
                     tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
-                    referenceNumber = "CASH-$timestamp",
+                    referenceNumber = referencia,
                     orderId = pendingOrderId,
                     orderNumber = pendingOrderNumber,
                     isCash = true,
@@ -2490,6 +2678,15 @@ class AngelPayPaymentViewModel @Inject constructor(
                         _state.value = handleRecordFailure("El pago en efectivo", paymentContext, error)
                     },
                 )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (ventaAlCobrar == null) throw e
+                if (ventaLocal === ventaAlCobrar) {
+                    _state.value = AngelPayPaymentState.Error(
+                        "No se pudo guardar la venta: ${e.message}. Regresa a Cobrar y pide apoyo al gerente.", canRetry = false,
+                    )
+                }
             } finally {
                 // Un solo punto de salida: cubre también el `return@launch` de
                 // «venue/staff no recuperable».
@@ -4716,7 +4913,22 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     fun printReceipt(receipt: PaymentReceipt?) {
+        val venta = ventaLocal
+        val exito = _state.value as? AngelPayPaymentState.Success
         viewModelScope.launch {
+            if (venta != null && exito?.isCash == true) {
+                if (!canPrintReceipt) {
+                    if (ventaLocal === venta && _state.value === exito) _sendReceiptMessage.value = "Esta terminal no tiene impresora"
+                    return@launch
+                }
+                val propinaCents = exito.tipAmount?.toBigDecimal()?.movePointRight(2)?.intValueExact() ?: 0
+                impresoraDeVentaGuardada.imprimir(venta, propinaCents).onFailure {
+                    withContext(Dispatchers.Main.immediate) {
+                        if (ventaLocal === venta && _state.value === exito) _sendReceiptMessage.value = "No se pudo imprimir. Intenta de nuevo."
+                    }
+                }
+                return@launch
+            }
             if (receipt == null) {
                 Timber.w("🔶 [AngelPay] No receipt to print")
                 return@launch
@@ -4908,15 +5120,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                 )
 
                 Timber.d("🪙 [AngelPay Crypto] Calling backend: amount=$amountCentavos centavos, tip=$tipCentavos")
-                val response = apiService.initiateCryptoPayment(venueId, request)
-
-                if (!response.isSuccessful || response.body()?.success != true) {
-                    val errorMessage = response.errorBody()?.string() ?: "Error iniciando pago crypto"
-                    throw Exception(errorMessage)
-                }
-
-                val cryptoData = response.body()?.data
-                    ?: throw Exception("Server returned empty crypto payment data")
+                val cryptoKey = currentCryptoOperationKey ?: com.jaac.avoqado_tpv.core.util.CuidV1.next().also { currentCryptoOperationKey = it }
+                val cryptoData = shiftRepository.iniciarCriptoDurable(venueId, request.copy(idempotencyKey = cryptoKey),
+                    terminalRequestId = _socketRequestId)
 
                 Timber.i("✅ [AngelPay Crypto] B4Bit order created: requestId=${cryptoData.requestId}")
 
@@ -4992,6 +5198,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 tipAmount = tipAmount,
                 totalAmount = totalAmount,
                 rating = rating,
+                motivoSinTarjeta = motivoSinTarjeta(),
             )
         }
     }
@@ -5006,6 +5213,13 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     private fun handleCryptoPaymentConfirmed(event: SocketEvent.CryptoPaymentConfirmed) {
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching {
+                event.paymentId?.let { shiftRepository.anotarAvisoCripto(event.venueId, it, event.requestId) }
+                // Conciliación durable de esta solicitud; no cambia la identidad del gesto en pantalla.
+                shiftRepository.consultarCriptoPorSolicitud(event.venueId, event.requestId)
+            }.onFailure { Timber.w(it, "El resultado cripto sigue pendiente de conciliación") }
+        }
         if (currentCryptoRequestId != event.requestId) {
             Timber.d("🪙 [AngelPay Crypto] Ignoring confirmation for different request: ${event.requestId}")
             return
@@ -5053,6 +5267,13 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     private fun handleCryptoPaymentFailed(event: SocketEvent.CryptoPaymentFailed) {
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching {
+                event.paymentId?.let { shiftRepository.anotarAvisoCripto(event.venueId, it, event.requestId) }
+                // Conciliación durable de esta solicitud; no cambia la identidad del gesto en pantalla.
+                shiftRepository.consultarCriptoPorSolicitud(event.venueId, event.requestId)
+            }.onFailure { Timber.w(it, "El resultado cripto sigue pendiente de conciliación") }
+        }
         if (currentCryptoRequestId != event.requestId) {
             Timber.d("🪙 [AngelPay Crypto] Ignoring failure for different request: ${event.requestId}")
             return
@@ -5325,6 +5546,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         authorizationWasLaunched = false
         confirmedNegativeOutcome = false
         confirmedNegativeEvidence = null
+        ventaLocal = null
         pendingAmount = BigDecimal.ZERO
         pendingTip = BigDecimal.ZERO
         pendingRating = null
@@ -5357,6 +5579,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         consumedResultAttemptId = null
         linkAutorizado = null
         decisionQueResolvioLaPantalla = null
+        // Termina sólo el gesto UI. Su operación/fila sigue conciliándose por su solicitud original.
+        currentCryptoOperationKey = null
         currentCryptoRequestId = null  // 🪙 Drop in-flight crypto request so old socket events are ignored
         lastSdkLaunchRequest = null    // 🔐 D308 recovery state — never reuse a request across attempts
         lastSdkLaunchUsedTipFallback = false
@@ -5425,6 +5649,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     tipAmount = pendingTip.toPlainString(),
                     totalAmount = pendingAmount.add(pendingTip).toPlainString(),
                     rating = pendingRating,
+                    motivoSinTarjeta = motivoSinTarjeta(),
                 )
             }
             PrePaymentNextStep.SELECT_MERCHANT -> {
@@ -5433,6 +5658,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     tipAmount = pendingTip.toPlainString(),
                     totalAmount = pendingAmount.add(pendingTip).toPlainString(),
                     rating = pendingRating,
+                    motivoSinTarjeta = motivoSinTarjeta(),
                 )
             }
         }

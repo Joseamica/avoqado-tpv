@@ -203,6 +203,7 @@ class HomeViewModelTest {
             observabilityManager = observabilityManager,
             orderSyncCoordinator = orderSyncCoordinator,
             timeEntryRepository = timeEntryRepository,
+            cachedTimeEntryDao = mockk(relaxed = true),
             tpvSettingsRepository = tpvSettingsRepository,
             saleVerificationRepository = saleVerificationRepository
         ).also { createdViewModels.add(it) }

@@ -24,6 +24,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +48,8 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.onStart
 
 /**
  * EntryPoint for accessing repositories in KioskAdminBottomSheet
@@ -56,6 +59,7 @@ import timber.log.Timber
 interface KioskAdminBottomSheetEntryPoint {
     fun secureStorage(): com.jaac.avoqado_tpv.core.data.local.SecureStorage
     fun shiftRepository(): com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+    fun kioskModeManager(): com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 }
 
 /**
@@ -96,8 +100,9 @@ fun KioskAdminBottomSheet(
     }
     val secureStorage = remember { entryPoint.secureStorage() }
     val shiftRepository = remember { entryPoint.shiftRepository() }
+    val kioskModeManager = remember { entryPoint.kioskModeManager() }
     // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
-    val venueId = remember { secureStorage.getKioskVenueId() ?: secureStorage.getVenueId() ?: "" }
+    val venueId = secureStorage.getKioskVenueId() ?: secureStorage.getVenueId() ?: ""
 
     // State for toggles
     var isTipsEnabled by remember { mutableStateOf(secureStorage.isTipsEnabled()) }
@@ -107,28 +112,24 @@ fun KioskAdminBottomSheet(
     // Shift state - need full Shift object to get ID for closing
     var currentShift by remember { mutableStateOf<Shift?>(null) }
     var isLoadingShift by remember { mutableStateOf(true) }
-    val isShiftOpen = currentShift?.status == ShiftStatus.OPEN
+    var shiftError by remember { mutableStateOf<String?>(null) }
+    var localCaja by remember(venueId) { mutableStateOf<com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation?>(null) }
+    var showCaja by remember { mutableStateOf(false) }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Load current shift status
-    LaunchedEffect(Unit) {
-        Timber.d("🥝 [KIOSK-ADMIN] Loading shift status for venue: $venueId")
-        try {
-            val result = shiftRepository.getCurrentShift(venueId)
-            when (result) {
-                is Result.Success -> {
-                    currentShift = result.data
-                    Timber.d("🥝 [KIOSK-ADMIN] Shift status: ${currentShift?.status}, shiftId: ${currentShift?.id}")
-                }
-                is Result.Error -> {
-                    Timber.e(result.exception, "🥝 [KIOSK-ADMIN] Error loading shift status")
-                    currentShift = null
-                }
-            }
-        } finally {
-            isLoadingShift = false
-        }
+    // El pulso existente refresca el mismo bootstrap de Caja antes de esperar HTTP.
+    LaunchedEffect(venueId, adminAuth.staffId) {
+        observeKioskAdminCajaChanges(shiftRepository, secureStorage, kioskModeManager, venueId, adminAuth.staffId,
+            onCaja = { shift, local -> currentShift = shift; localCaja = local; isLoadingShift = false },
+            onError = { message -> shiftError = message; isLoadingShift = false })
+    }
+
+    if (showCaja) androidx.compose.ui.window.Dialog(
+        onDismissRequest = { showCaja = false; onShiftStatusChanged() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        com.jaac.avoqado_tpv.features.shift.presentation.ShiftScreen(onNavigateBack = { showCaja = false; onShiftStatusChanged() })
     }
 
     Timber.d("🥝 [KIOSK-ADMIN] Admin bottom sheet opened for: ${adminAuth.staffName} (${adminAuth.role})")
@@ -170,63 +171,15 @@ fun KioskAdminBottomSheet(
             HorizontalDivider()
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Shift status option
+            // Caja usa la misma UI, permisos, COUNTED/SKIPPED y recibo que la entrada normal.
             AdminOption(
                 icon = Icons.Default.Schedule,
-                label = if (isLoadingShift) "Cargando..." else if (isShiftOpen) "Turno Abierto" else "Turno Cerrado",
-                description = if (isShiftOpen) "El kiosko puede aceptar pedidos" else "Abre un turno para recibir pedidos",
-                actionContent = {
-                    if (!isLoadingShift) {
-                        Switch(
-                            checked = isShiftOpen,
-                            onCheckedChange = { shouldOpen ->
-                                scope.launch {
-                                    Timber.i("🥝 [KIOSK-ADMIN] Toggle shift: ${if (shouldOpen) "OPEN" else "CLOSE"}")
-                                    try {
-                                        val result = if (shouldOpen) {
-                                            // Open new shift with admin's staff ID
-                                            shiftRepository.openShift(
-                                                venueId = venueId,
-                                                staffId = adminAuth.staffId,
-                                                startingCash = 0.0  // No cash drawer in kiosk mode
-                                            )
-                                        } else {
-                                            // Close current shift - need shift ID
-                                            val shiftId = currentShift?.id
-                                            if (shiftId != null) {
-                                                shiftRepository.closeShift(
-                                                    venueId = venueId,
-                                                    shiftId = shiftId
-                                                )
-                                            } else {
-                                                Timber.e("🥝 [KIOSK-ADMIN] Cannot close shift - no shift ID")
-                                                return@launch
-                                            }
-                                        }
-
-                                        when (result) {
-                                            is Result.Success -> {
-                                                currentShift = if (shouldOpen) result.data else null
-                                                Timber.i("🥝 [KIOSK-ADMIN] Shift ${if (shouldOpen) "opened" else "closed"} successfully")
-                                                onShiftStatusChanged()
-                                            }
-                                            is Result.Error -> {
-                                                Timber.e(result.exception, "🥝 [KIOSK-ADMIN] Error toggling shift")
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        Timber.e(e, "🥝 [KIOSK-ADMIN] Exception toggling shift")
-                                    }
-                                }
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
-                    }
-                }
+                label = kioskAdminCajaTitle(isLoadingShift, currentShift, localCaja, shiftError),
+                description = localCaja?.description ?: "Consulta y administra la caja de este aparato",
+                actionContent = { TextButton(onClick = { showCaja = true }) { Text("Caja") } }
             )
+
+            shiftError?.let { Text(it, modifier = Modifier.padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.error) }
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 24.dp))
 
@@ -371,4 +324,54 @@ private fun AdminToggleOption(
             )
         }
     )
+}
+
+internal fun kioskAdminCajaTitle(
+    loading: Boolean, shift: Shift?,
+    local: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation?, error: String?,
+): String = when {
+    loading -> "Cargando caja…"
+    error != null && shift == null && local == null -> "Caja sin consultar"
+    else -> local?.title ?: com.jaac.avoqado_tpv.features.shift.presentation.CajaBootstrapRead(shift, null).title
+}
+
+/** Cada evento Admin conserva su frontera, incluida captura y validación del error. */
+internal suspend fun observeKioskAdminCajaChanges(
+    shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    kioskModeManager: com.jaac.avoqado_tpv.core.data.manager.KioskModeManager,
+    venueId: String,
+    staffId: String,
+    onCaja: (Shift?, com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation?) -> Unit,
+    onError: (String?) -> Unit,
+) {
+    shiftRepository.shiftChanges.onStart { emit(Unit) }.collectLatest {
+        var context: com.jaac.avoqado_tpv.features.kiosk.presentation.KioskCajaUiContext? = null
+        try {
+            val current = com.jaac.avoqado_tpv.features.kiosk.presentation.captureKioskCajaUiContext(
+                secureStorage, kioskModeManager, venueId, staffId) ?: return@collectLatest
+            context = current
+            fun vigente() = current.vigente(secureStorage, kioskModeManager)
+            val bootstrap = com.jaac.avoqado_tpv.features.shift.presentation.readCajaBootstrap(shiftRepository, venueId, ::vigente)
+            if (!vigente()) return@collectLatest
+            onCaja(bootstrap.shift, bootstrap.presentation)
+            onError(null)
+            if (bootstrap.shift != null && kioskModeManager.operationalState.value is com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskOperationalState.LocalCajaReadError)
+                kioskModeManager.updateShiftStatus(bootstrap.shift.status == ShiftStatus.OPEN, serverAnswered = false)
+            val result = shiftRepository.getCurrentShift(venueId)
+            if (!vigente()) return@collectLatest
+            val fresh = shiftRepository.leerCajaLocal(venueId)
+            if (!vigente()) return@collectLatest
+            val visible = if (fresh != null) fresh.shift else if (result is Result.Success) result.data else bootstrap.shift
+            onCaja(visible, fresh?.let { com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation(it.row, it.summary) })
+            if (result is Result.Success && kioskModeManager.operationalState.value is com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskOperationalState.LocalCajaReadError)
+                kioskModeManager.updateShiftStatus(visible?.status == ShiftStatus.OPEN, serverAnswered = result.data?.financialTotalsKnown != false)
+            if (result is Result.Error) onError("Sin conexión: se muestra lo guardado en este aparato.")
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+          catch (error: Exception) {
+            com.jaac.avoqado_tpv.features.kiosk.presentation.reportKioskCajaReadError(error, context, secureStorage, kioskModeManager) {
+                onError("No se pudo leer la caja en este aparato. Vuelve a abrir Caja o pide ayuda a un administrador.")
+            }
+          }
+    }
 }

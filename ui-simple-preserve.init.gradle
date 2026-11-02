@@ -1,0 +1,13 @@
+gradle.projectsEvaluated {
+    allprojects { tasks.withType(Test).configureEach {
+        testLogging { exceptionFormat = 'full'; showStandardStreams = false }
+    } }
+}
+gradle.buildFinished {
+    def dest = new File('/tmp/avq-caja-simple-' + gradle.rootProject.findProperty('uiEvidence'))
+    dest.mkdirs()
+    dest.setReadable(false, false); dest.setWritable(false, false); dest.setExecutable(false, false)
+    dest.setReadable(true, true); dest.setWritable(true, true); dest.setExecutable(true, true)
+    copy { from new File(gradle.rootProject.projectDir, 'app/build/test-results'); into new File(dest, 'junit') }
+    copy { from new File(gradle.rootProject.projectDir, 'app/build/reports'); include 'lint-results*.xml'; into new File(dest, 'lint') }
+}

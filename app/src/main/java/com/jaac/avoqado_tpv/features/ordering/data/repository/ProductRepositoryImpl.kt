@@ -49,7 +49,8 @@ class ProductRepositoryImpl @Inject constructor(
 
             if (response.isSuccessful && response.body() != null) {
                 val productsResponse = response.body()!!
-                val products = productsResponse.data.map { it.toDomain() }
+                // La hora del catálogo viene UNA vez en la raíz (del servidor, no del aparato): cada producto se lleva la suya.
+                val products = productsResponse.data.map { it.toDomain(productsResponse.catalogAt) }
 
                 Timber.i("✅ Loaded ${products.size} products from backend")
                 Timber.d("📦 Products: ${products.joinToString { it.name }}")
@@ -160,7 +161,7 @@ class ProductRepositoryImpl @Inject constructor(
 
             if (response.isSuccessful && response.body() != null) {
                 val productResponse = response.body()!!
-                val product = productResponse.data.toDomain()
+                val product = productResponse.data.toDomain(productResponse.catalogAt)
 
                 Timber.i("✅ [BarcodeQuickAdd] Product found: ${product.name} (SKU: ${product.sku})")
                 Result.success(product)

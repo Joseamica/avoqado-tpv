@@ -79,10 +79,25 @@ fun ShiftStatusBanner(
     isOffline: Boolean = false,
     cachedInfo: CachedShiftInfo? = null,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    localCaja: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation? = null,
 ) {
     // Determine which UI to show based on online/offline and cached state
     when {
+        localCaja != null -> Card(modifier.fillMaxWidth().clickable(onClick = onClick)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(localCaja.title, style = MaterialTheme.typography.titleSmall)
+                if (isOffline) Text("Sin conexión · guardado en este aparato", style = MaterialTheme.typography.bodySmall)
+                localCaja.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+        shift?.financialTotalsKnown == false -> Card(modifier.fillMaxWidth().clickable(onClick = onClick)) {
+            Column(Modifier.padding(12.dp)) {
+                Text(if (shift.status != ShiftStatus.OPEN) "Cierre pendiente de confirmar" else
+                    if (shift.localShiftSessionId == null) "Última caja abierta conocida" else "Caja abierta en este aparato")
+                Text(if (isOffline) "Sin conexión · guardado en el aparato" else "Importes pendientes de confirmar")
+            }
+        }
         // Offline with cached data: Show last known state
         isOffline && cachedInfo != null -> {
             OfflineCachedBanner(

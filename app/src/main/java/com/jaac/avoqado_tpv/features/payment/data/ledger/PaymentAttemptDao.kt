@@ -16,6 +16,11 @@ class CierreParaEjecucionNoAceptado : RuntimeException("La bandeja no aceptó el
 @Dao
 interface PaymentAttemptDao {
 
+    /** Diagnóstico de restauración; conserva estados/evidencias y motivos financieros anteriores. */
+    @Query("""UPDATE payment_attempts SET last_error = COALESCE(last_error, :reason)
+        WHERE attempt_id = :key AND venue_id = :venueId""")
+    suspend fun anotarProblemaDeSnapshot(venueId: String, key: String, reason: String): Int
+
     /**
      * Re-revisión de F (I-1, 26-sep): una fila con VETO no entra (`server_veto IS NULL`). Es de Avoqado conciliar: se queda en
      * duda, cerca su venta y no aparta nada; subirla a HOST_RESPONDIO la dejaba atorada ahí (el veto impide REGISTRADO), y
@@ -159,11 +164,15 @@ interface PaymentAttemptDao {
     @Query("""INSERT OR IGNORE INTO payment_attempts (
             attempt_id, venue_id, processor, kind, state, state_version,
             amount_cents, tip_cents, currency, recording_route, context_schema_version,
-            payment_context_json, verify_attempts, created_at, updated_at, terminal_payment_request_id, process_token)
+            payment_context_json, verify_attempts, created_at, updated_at, terminal_payment_request_id, process_token,
+            shift_membership, local_shift_session_id, cash_drawer_session_id)
         SELECT :attemptId, :venueId, :processor, :kind, 'PREPARANDO', 0,
             :amountCents, :tipCents, 'MXN', :recordingRoute, 1,
-            :contextJson, 0, :now, :now, :terminalPaymentRequestId, :processToken
-        WHERE NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """)
+            :contextJson, 0, :now, :now, :terminalPaymentRequestId, :processToken,
+            :shiftMembership, :localShiftSessionId, :cashDrawerSessionId
+        WHERE (:shiftMembership != 'MANAGED' OR EXISTS (SELECT 1 FROM local_shift_sessions
+            WHERE venue_id = :venueId AND local_session_id = :localShiftSessionId AND local_status = 'OPEN'))
+        AND NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """)
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
             SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
             AND instr(payment_context_json, :orderJsonFragment) > 0))
@@ -178,6 +187,7 @@ interface PaymentAttemptDao {
         amountCents: Long, tipCents: Long, recordingRoute: String,
         contextJson: String, orderJsonFragment: String?, now: Long,
         terminalPaymentRequestId: String?, processToken: String,
+        shiftMembership: String = "UNKNOWN", localShiftSessionId: String? = null, cashDrawerSessionId: String? = null,
     ): Long
 
     /**
@@ -323,7 +333,8 @@ interface PaymentAttemptDao {
      */
     @Query("""UPDATE payment_attempts SET state = :newState, state_version = state_version + 1,
         updated_at = :now,
-        last_error = CASE WHEN COALESCE(last_error,'') = 'cuarentena_por_antiguedad'
+        last_error = CASE WHEN instr(COALESCE(last_error,''), 'handoff_contrato_contradictorio') > 0 THEN last_error
+                          WHEN COALESCE(last_error,'') = 'cuarentena_por_antiguedad'
                           THEN 'cuarentena_por_antiguedad' ELSE :error END
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
         AND lease_until > :now AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')""")
@@ -382,7 +393,10 @@ interface PaymentAttemptDao {
            SET state = :newState, state_version = state_version + 1, updated_at = :now
            WHERE attempt_id = :attemptId AND state IN (:expectedStates)
            AND (:newState NOT IN ('AUTORIZANDO','KERNEL_ACTIVO') OR (
-               NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
+               (shift_membership != 'MANAGED' OR EXISTS (SELECT 1 FROM local_shift_sessions
+                   WHERE venue_id = payment_attempts.venue_id AND local_session_id = payment_attempts.local_shift_session_id
+                   AND local_status = 'OPEN'))
+               AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                            AND """ + PaymentAttemptEntity.SQL_EJECUCION_VIVA + """)
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                    AND """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
@@ -394,7 +408,40 @@ interface PaymentAttemptDao {
                                     11 + instr(substr(payment_attempts.payment_context_json,
                                                       instr(payment_attempts.payment_context_json, '"orderId":"') + 11), '"'))) > 0)))"""
     )
-    suspend fun casTransition(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String): Int
+    suspend fun casTransitionRow(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String): Int
+
+    @Query("SELECT * FROM pending_payments WHERE venue_id = :venueId AND idempotency_key = :key LIMIT 2")
+    suspend fun queuedSalesForHandoff(venueId: String, key: String): List<com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity>
+
+    @Query("SELECT * FROM pending_refunds WHERE venue_id = :venueId AND idempotency_key = :key LIMIT 1")
+    suspend fun queuedRefundForHandoff(venueId: String, key: String): com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity?
+
+    @Query("SELECT COUNT(*) FROM payment_attempts WHERE venue_id = :venueId AND attempt_id = :attemptId AND " +
+        PaymentAttemptEntity.SQL_REGISTRO_POR_VEREDICTO)
+    suspend fun registroLoDecideVeredicto(venueId: String, attemptId: String): Int
+
+    /** Compatibilidad de callers antiguos: sólo un sucesor durable y demostrado puede asumir la obligación. */
+    @Transaction
+    suspend fun casTransition(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String): Int {
+        if (newState != PaymentAttemptEntity.STATE_ENTREGADA_A_COLA)
+            return casTransitionRow(attemptId, expectedStates, newState, now, processToken)
+        val owner = getById(attemptId) ?: return 0
+        if (owner.state !in expectedStates) return 0
+        val status = if (owner.kind == PaymentAttemptEntity.KIND_REFUND) {
+            val row = queuedRefundForHandoff(owner.venueId, attemptId) ?: return 0
+            if (!owner.checkHandoff(row).proven) return 0
+            row.syncStatus
+        } else {
+            val row = queuedSalesForHandoff(owner.venueId, attemptId).singleOrNull() ?: return 0
+            if (!owner.checkHandoff(row).proven) return 0
+            row.syncStatus
+        }
+        if (status == "SUCCESS" && registroLoDecideVeredicto(owner.venueId, attemptId) == 1)
+            return registrarPorVeredictoDelServidor(attemptId, now)
+        // Sin veredicto se conserva la confirmación HTTP del sucesor.
+        val target = if (status == "SUCCESS") PaymentAttemptEntity.STATE_REGISTRADO else newState
+        return casTransitionRow(attemptId, expectedStates, target, now, processToken)
+    }
 
     /**
      * CAS + host outcome in one statement — used the instant the host responds.
@@ -434,7 +481,8 @@ interface PaymentAttemptDao {
 
     @Query(
         """UPDATE payment_attempts
-           SET state = :newState, state_version = state_version + 1, updated_at = :now, last_error = :error
+           SET state = :newState, state_version = state_version + 1, updated_at = :now,
+               last_error = CASE WHEN instr(COALESCE(last_error,''), 'handoff_contrato_contradictorio') > 0 THEN last_error ELSE :error END
            WHERE attempt_id = :attemptId AND state IN (:expectedStates)
              AND (:newState != 'DESCARTADA' OR (
                  host_approved IS NOT 1 AND server_processor_evidence IS NOT 'APPROVED'

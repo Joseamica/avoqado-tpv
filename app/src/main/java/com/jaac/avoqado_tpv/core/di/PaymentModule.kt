@@ -140,9 +140,10 @@ object PaymentModule {
     @Provides
     @Singleton
     fun provideFastPaymentRecorder(
-        apiService: PaymentApiService
+        apiService: PaymentApiService,
+        shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate
     ): FastPaymentRecorder {
-        return FastPaymentRecorder(apiService)
+        return FastPaymentRecorder(apiService, shiftReplayGate)
     }
 
     /**
@@ -158,9 +159,10 @@ object PaymentModule {
     @Provides
     @Singleton
     fun provideOrderPaymentRecorder(
-        apiService: PaymentApiService
+        apiService: PaymentApiService,
+        shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate
     ): OrderPaymentRecorder {
-        return OrderPaymentRecorder(apiService)
+        return OrderPaymentRecorder(apiService, shiftReplayGate)
     }
 
     /**
@@ -178,12 +180,14 @@ object PaymentModule {
     fun provideRecordPaymentUseCase(
         fastPaymentRecorder: FastPaymentRecorder,
         orderPaymentRecorder: OrderPaymentRecorder,
-        paymentQueueRepository: PaymentQueueRepository
+        paymentQueueRepository: PaymentQueueRepository,
+        shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     ): RecordPaymentUseCase {
         return RecordPaymentUseCase(
             fastPaymentRecorder = fastPaymentRecorder,
             orderPaymentRecorder = orderPaymentRecorder,
-            paymentQueueRepository = paymentQueueRepository
+            paymentQueueRepository = paymentQueueRepository,
+            shiftRepository = shiftRepository,
         )
     }
 

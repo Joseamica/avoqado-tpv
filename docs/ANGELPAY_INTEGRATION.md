@@ -136,6 +136,26 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.22 — AMEX en wallet sin el tope sin contacto (23-oct-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.22-fat-release.aar` (SHA-256
+`d4faf9f36690fb921c10d892f02bdde8c3b9604d8b372ebebc49aa2493031d2e`, el que publica el portal como «SDK Android
+v1.18.0», 14-oct; el portal lo titula «angelpaySDK-v1.0.21 — v1.0.22» y lo descarga con nombre de 1.0.21: el nombre
+miente, `AngelPaySDK.version() == "1.0.22"` no). `AngelPaySdk119ReglaTest` fija las dos cosas; el 1.0.21 se queda en
+`libs/` pero ya no está auditado para la regla.
+
+**Qué cambia (portal y bytecode):** un AMEX pagado con Apple Pay / Google Pay por más de $1,500 ya no sale `E608`.
+En contactless el orquestador lee 9F34 y 9F71 y, si el titular se verificó en el teléfono (CDCVM), lo trata como
+wallet: sin tope, y `PaymentResult.authentication = "con dispositivo movil"`. La AMEX física sigue con 150 000
+centavos de tope (las demás marcas, 100 000). Sin cambios en la API pública.
+
+**Re-auditoría (23-oct, contra el 1.0.21):** fuera del método de cobro de `b0.v0`, todo el AAR es idéntico salvo
+renombres de una letra (paquete `e`, por la clase nueva `e.e`: utilidad pura de AID y TLV) y la cadena de versión. En el
+método de cobro, `m` (`authorizationAttempted`) se escribe en los mismos 3 lugares y el Cancelar (`l`) se revisa antes de
+`m = true` y del envío en chip y banda; las 25 salidas son las mismas (corridas +443 bytes tras el bloque nuevo), y entre
+la tarjeta leída y el envío la única sigue siendo `E608`. El bloque nuevo va antes del tope, no sale del método y no toca
+la red. Por eso `VERSION_SDK_AUDITADA = "1.0.22"`. Acta: `Avoqado/docs/audit/2026-10-23-angelpay-sdk-1022/`.
+
 ## SDK 1.0.21 — devoluciones que no traban, corte de las 11 pm y firma encendida (29-sep-2026)
 
 **El AAR:** `app/libs/angelpaySDK-v1.0.21-fat-release.aar` (SHA-256

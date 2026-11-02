@@ -60,6 +60,12 @@ data class FastPaymentRequest(
     @SerializedName("staffId")
     val staffId: String,
 
+    @SerializedName("shiftIdDeLaVenta")
+    val shiftIdDeLaVenta: String? = null,
+
+    @SerializedName("isOfflineReplay")
+    val isOfflineReplay: Boolean? = null,
+
     // Datos de Blumon SDK
     @SerializedName("authorizationNumber")
     val authorizationNumber: String?,

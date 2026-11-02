@@ -49,6 +49,7 @@ import com.jaac.avoqado_tpv.core.domain.variantes.EntradaDeCatalogo
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
 import com.jaac.avoqado_tpv.core.domain.variantes.TextosVariantes
 import com.jaac.avoqado_tpv.core.presentation.components.variantes.textoDePrecio
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutViewModel
 import com.jaac.avoqado_tpv.features.checkout.presentation.reglasDeCobro
@@ -75,6 +76,10 @@ fun SearchOverlayView(
     modifier: Modifier = Modifier,
     onFamiliaTap: (Familia<Product>) -> Unit = {},
 ) {
+    val sinRed by viewModel.sinRed.collectAsState()
+    val errorCatalogo by viewModel.errorCatalogo.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val products by viewModel.products.collectAsState()
     val query by viewModel.searchQuery.collectAsState()
     val results by viewModel.searchResults.collectAsState()
     val focusRequester = remember { FocusRequester() }
@@ -129,26 +134,34 @@ fun SearchOverlayView(
 
             HorizontalDivider()
 
-            if (results.isEmpty()) {
-                EmptyState(query = query)
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(
-                        items = results,
-                        key = {
-                            when (it) {
-                                is EntradaDeCatalogo.Suelto -> it.producto.id
-                                is EntradaDeCatalogo.DeFamilia -> "familia:${it.familia.groupId}"
+            AvisoDeCatalogo(
+                errorCatalogo = errorCatalogo,
+                isLoading = isLoading,
+                onRetry = viewModel::refreshProducts,
+            )
+            when {
+                isLoading && products.isEmpty() -> AvoqadoFullScreenLoading(message = "Cargando productos...")
+                errorCatalogo != null && results.isEmpty() -> Unit
+                results.isEmpty() -> EmptyState(query = query, sinRed = sinRed, catalogoVacio = products.isEmpty())
+                else -> {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(
+                            items = results,
+                            key = {
+                                when (it) {
+                                    is EntradaDeCatalogo.Suelto -> it.producto.id
+                                    is EntradaDeCatalogo.DeFamilia -> "familia:${it.familia.groupId}"
+                                }
+                            },
+                        ) { entrada ->
+                            when (entrada) {
+                                is EntradaDeCatalogo.Suelto ->
+                                    ProductResultRow(product = entrada.producto, onClick = { onProductTap(entrada.producto) })
+                                is EntradaDeCatalogo.DeFamilia ->
+                                    FamiliaResultRow(familia = entrada.familia, onClick = { onFamiliaTap(entrada.familia) })
                             }
-                        },
-                    ) { entrada ->
-                        when (entrada) {
-                            is EntradaDeCatalogo.Suelto ->
-                                ProductResultRow(product = entrada.producto, onClick = { onProductTap(entrada.producto) })
-                            is EntradaDeCatalogo.DeFamilia ->
-                                FamiliaResultRow(familia = entrada.familia, onClick = { onFamiliaTap(entrada.familia) })
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     }
                 }
             }
@@ -277,13 +290,15 @@ private fun FamiliaResultRow(familia: Familia<Product>, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EmptyState(query: String) {
+private fun EmptyState(query: String, sinRed: Boolean, catalogoVacio: Boolean) {
     Box(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = if (query.isBlank()) {
+            text = if (sinRed) {
+                if (catalogoVacio) "Conéctate para descargar el catálogo" else "No está en el catálogo guardado"
+            } else if (query.isBlank()) {
                 "Empieza a escribir para buscar productos"
             } else {
                 "Sin resultados para “$query”"

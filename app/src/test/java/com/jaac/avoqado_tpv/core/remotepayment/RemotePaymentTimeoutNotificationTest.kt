@@ -44,7 +44,7 @@ class RemotePaymentTimeoutNotificationTest {
     @Before fun setUp() = runBlocking {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         inbox.receive(request)
         assertThat(inbox.markProcessingForVenue(request.requestId, "venue-1")).isTrue()
         db.paymentAttemptDao().insert(PaymentAttemptEntity(

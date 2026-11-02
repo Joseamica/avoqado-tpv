@@ -29,8 +29,10 @@ import java.math.BigDecimal
  * Map ProductDto to Product domain model
  *
  * ✅ TOAST PATTERN: Uses unified availableQuantity field for both QUANTITY and RECIPE
+ *
+ * @param catalogAt hora del SERVIDOR de la raíz de la respuesta (`ProductsResponse.catalogAt`); el producto no la trae.
  */
-fun ProductDto.toDomain(): Product {
+fun ProductDto.toDomain(catalogAt: String? = null): Product {
     return Product(
         id = id,
         name = name,
@@ -59,7 +61,9 @@ fun ProductDto.toDomain(): Product {
         limitingIngredient = limitingIngredient?.toDomain(),
         insufficientIngredients = insufficientIngredients?.map { it.toDomain() } ?: emptyList(),
         // Familia de variantes: se arma UNA vez aquí (la agrupación la lee muchas veces por producto); null = producto suelto
-        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions)
+        familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions),
+        gtin = gtin,
+        catalogAt = catalogAt
     )
 }
 

@@ -44,7 +44,7 @@ class SyncOutboxOnAckCallbackTest {
         clearMocks(dao, api, secureStorage)
         every { secureStorage.getSerialNumber() } returns "term-1"
         coEvery { dao.resolve(any(), any(), any(), any(), any()) } returns 1
-        outbox = SyncOutbox(dao, api, secureStorage)
+        outbox = SyncOutbox(dao, api, secureStorage, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
     }
 
     @Test
@@ -52,7 +52,7 @@ class SyncOutboxOnAckCallbackTest {
         val openEntity = entity(id = "id-1", type = SyncIntentTypes.OPEN_TABLE, seq = 1)
         val addEntity = entity(id = "id-2", type = SyncIntentTypes.ADD_ITEMS, seq = 2)
         // Segunda vuelta del while(true) de replayNow: ya no queda nada PENDING.
-        coEvery { dao.pendingForVenue("venue-1") } returnsMany listOf(listOf(openEntity, addEntity), emptyList())
+        coEvery { dao.pendingBatchForVenue("venue-1", 50) } returnsMany listOf(listOf(openEntity, addEntity), emptyList())
         coEvery { api.syncIntents("venue-1", any()) } returns Response.success(
             SyncIntentsResponse(
                 data = listOf(
@@ -76,7 +76,7 @@ class SyncOutboxOnAckCallbackTest {
         val openEntity = entity(id = "id-1", type = SyncIntentTypes.OPEN_TABLE, seq = 1)
         val addEntity = entity(id = "id-2", type = SyncIntentTypes.ADD_ITEMS, seq = 2)
         val payEntity = entity(id = "id-3", type = SyncIntentTypes.PAY_CASH, seq = 3)
-        coEvery { dao.pendingForVenue("venue-1") } returns listOf(openEntity, addEntity, payEntity)
+        coEvery { dao.pendingBatchForVenue("venue-1", 50) } returns listOf(openEntity, addEntity, payEntity)
         coEvery { api.syncIntents("venue-1", any()) } returns Response.success(
             SyncIntentsResponse(
                 data = listOf(
@@ -98,7 +98,7 @@ class SyncOutboxOnAckCallbackTest {
         // El default `{ _, _ -> }` no debe cambiar el comportamiento para los
         // callers existentes (Task 3/4, `SyncOutboxReplayTest`): la persistencia
         // del ack sigue ocurriendo aunque nadie pida el callback.
-        coEvery { dao.pendingForVenue("venue-1") } returnsMany listOf(listOf(entity("id-1", SyncIntentTypes.ADD_ITEMS, 1)), emptyList())
+        coEvery { dao.pendingBatchForVenue("venue-1", 50) } returnsMany listOf(listOf(entity("id-1", SyncIntentTypes.ADD_ITEMS, 1)), emptyList())
         coEvery { api.syncIntents("venue-1", any()) } returns Response.success(
             SyncIntentsResponse(data = listOf(SyncIntentAck(id = "id-1", status = "ACKED"))),
         )

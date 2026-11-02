@@ -11,7 +11,7 @@ import org.junit.Test
 class RemotePaymentInboxTest {
 
     private val dao = mockk<RemotePaymentRequestDao>(relaxed = true)
-    private val inbox = RemotePaymentInbox(dao)
+    private val inbox = RemotePaymentInbox(dao, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
     private fun event(requestId: String = "req-1") = SocketEvent.TerminalPaymentRequest(
         requestId = requestId,
@@ -252,7 +252,7 @@ class RemotePaymentInboxTest {
     @Test
     fun `P1 con propiedad y cero intentos ni la sonda ni el cancel le preguntan a la libreta aunque el CAS del cancel falle`() = runTest {
         var preguntas = 0
-        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
+        val bandeja = RemotePaymentInbox(dao, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
         coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
         coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
         coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 0
@@ -292,7 +292,7 @@ class RemotePaymentInboxTest {
     fun `P2 ya cerrada para ejecucion pero la libreta hoy no certifica - contesta cerrada y viva, nunca sin ejecucion viva`() = runTest {
         // P. ej. la terminal pasó a app-a-app después del cierre, o la relectura encontró algo vivo: el cierre es un hecho
         // durable (la cerca rige), pero «sin ejecución viva» sólo lo dice la libreta en ESTA llamada.
-        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { false }
+        val bandeja = RemotePaymentInbox(dao, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { false }
         coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
             .copy(executionClosedAt = 1_700_000_000_000L)
         coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
@@ -312,7 +312,7 @@ class RemotePaymentInboxTest {
         // Fix round 0 (duda 2): con propiedad y sólo intentos que la pantalla puede dejar atrás (el rechazo final del banco, un
         // descarte), si el CAS del cancel no aterriza la respuesta es la del caso 1 — nunca el certificado de cese.
         var preguntas = 0
-        val bandeja = RemotePaymentInbox(dao, laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
+        val bandeja = RemotePaymentInbox(dao, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { preguntas++; true }
         coEvery { dao.getById("req-1") } returns RemotePaymentRequestEntity.from(event(), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
         coEvery { dao.resolveReceived("req-1", any(), any()) } returns 0
         coEvery { dao.contarIntentosDeSolicitud("req-1") } returns 1 // el rechazo del banco

@@ -45,6 +45,9 @@ data class QueuedRefund(
     /** Quién reconoció el rechazo y cuándo (auditoría F9): evidencia durable del «Ya lo vi». */
     val acknowledgedBy: String? = null,
     val acknowledgedAt: Long? = null,
+    val shiftMembership: String = "UNKNOWN",
+    val localShiftSessionId: String? = null,
+    val cashDrawerSessionId: String? = null,
 )
 
 /**
@@ -85,6 +88,9 @@ fun PendingRefundEntity.toDomain(): QueuedRefund = QueuedRefund(
     acknowledged = acknowledged,
     acknowledgedBy = acknowledgedBy,
     acknowledgedAt = acknowledgedAt,
+    shiftMembership = shiftMembership,
+    localShiftSessionId = localShiftSessionId,
+    cashDrawerSessionId = cashDrawerSessionId,
 )
 
 /** Dominio → fila. `BigDecimal` se guarda como `String`: nunca `Float`. */
@@ -122,4 +128,7 @@ fun QueuedRefund.toEntity(): PendingRefundEntity = PendingRefundEntity(
     acknowledged = acknowledged,
     acknowledgedBy = acknowledgedBy,
     acknowledgedAt = acknowledgedAt,
+    shiftMembership = shiftMembership,
+    localShiftSessionId = localShiftSessionId,
+    cashDrawerSessionId = cashDrawerSessionId,
 )

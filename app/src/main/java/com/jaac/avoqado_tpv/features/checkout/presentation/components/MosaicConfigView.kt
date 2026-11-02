@@ -45,6 +45,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.tooling.preview.Preview
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.MosaicShortcut
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import kotlinx.coroutines.launch
@@ -72,6 +75,9 @@ fun MosaicConfigView(
     onAssignToSlot: (Product, Int) -> Unit,
     onClearSlot: (MosaicShortcut) -> Unit,
     modifier: Modifier = Modifier,
+    errorCatalogo: String? = null,
+    isLoading: Boolean = false,
+    onRetry: () -> Unit = {},
 ) {
     var activeSlot by remember { mutableStateOf<Int?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -83,6 +89,7 @@ fun MosaicConfigView(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
+        AvisoDeCatalogo(errorCatalogo = errorCatalogo, isLoading = isLoading, onRetry = onRetry)
         Text(
             text = "Toca un slot vacío para asignar un producto. Aparecerá en la pestaña Shortcuts.",
             style = MaterialTheme.typography.bodySmall,
@@ -114,6 +121,9 @@ fun MosaicConfigView(
         ) {
             ProductPickerSheet(
                 products = products,
+                errorCatalogo = errorCatalogo,
+                isLoading = isLoading,
+                onRetry = onRetry,
                 onPick = { product ->
                     onAssignToSlot(product, selectedSlot)
                     sheetScope.launch { sheetState.hide() }
@@ -184,7 +194,13 @@ private fun EmptySlot(onClick: () -> Unit) {
 }
 
 @Composable
-private fun ProductPickerSheet(products: List<Product>, onPick: (Product) -> Unit) {
+private fun ProductPickerSheet(
+    products: List<Product>,
+    onPick: (Product) -> Unit,
+    errorCatalogo: String?,
+    isLoading: Boolean,
+    onRetry: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -197,69 +213,84 @@ private fun ProductPickerSheet(products: List<Product>, onPick: (Product) -> Uni
             modifier = Modifier.padding(vertical = 8.dp),
         )
         HorizontalDivider()
-        if (products.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "No hay productos disponibles. Sincroniza el catálogo primero.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
+        AvisoDeCatalogo(errorCatalogo = errorCatalogo, isLoading = isLoading, onRetry = onRetry)
+        when {
+            isLoading && products.isEmpty() -> AvoqadoFullScreenLoading(message = "Cargando productos...")
+            errorCatalogo != null && products.isEmpty() -> Unit
+            products.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "No hay productos disponibles. Sincroniza el catálogo primero.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(items = products, key = { it.id }) { product ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(product) }
-                            .padding(vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // Initials thumbnail — same convention as the cart row
-                        // and search overlay (no fork-and-plate emoji fallback).
-                        Box(
+            else -> {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(items = products, key = { it.id }) { product ->
+                        Row(
                             modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center,
+                                .fillMaxWidth()
+                                .clickable { onPick(product) }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            // Initials thumbnail — same convention as the cart row
+                            // and search overlay (no fork-and-plate emoji fallback).
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = product.name.take(2).uppercase(),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(modifier = Modifier.size(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = product.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = product.categoryName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             Text(
-                                text = product.name.take(2).uppercase(),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Spacer(modifier = Modifier.size(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = product.name,
+                                text = product.formattedPrice,
                                 style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = product.categoryName,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
-                        Text(
-                            text = product.formattedPrice,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                        HorizontalDivider()
                     }
-                    HorizontalDivider()
                 }
             }
         }
+    }
+}
+
+@Preview(widthDp = 360, heightDp = 640, showBackground = true)
+@Composable
+private fun ProductPickerReadErrorPreview() {
+    AvoqadoTheme {
+        ProductPickerSheet(products = emptyList(), onPick = {}, isLoading = false, onRetry = {},
+            errorCatalogo = "No se pudo leer el catálogo guardado. Se conserva lo anterior; vuelve a intentar.")
     }
 }

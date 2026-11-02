@@ -60,7 +60,7 @@ class CancelTrasReclamarRoomTest {
         // carril Nexgo la marca real con ajustes relajados daría app-a-app. Las pruebas de Nexgo fijan la suya.
         ledger = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true), UNA_SOLA_PANTALLA).apply { marcaDelBuild = MARCA_PAX }
         // B2: la bandeja se arma como la arma Hilt (constructor `@Inject`): su pregunta «¿cesó?» es la libreta REAL.
-        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), ledger, pantalla)
+        inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), ledger, pantalla)
         coordinator = RemotePaymentCoordinator(inbox)
     }
 
@@ -575,7 +575,7 @@ class CancelTrasReclamarRoomTest {
         assertThat(otraVentaEntraAlLector("b1")).isFalse()
         assertThat(db.paymentAttemptDao().getById("b1")).isNull()
 
-        // Registro fallido SIN la marca de regreso (una fila de antes de v43, o el regreso que no se pudo escribir): igual.
+        // Registro fallido SIN la marca de regreso (una fila de antes de v45, o el regreso que no se pudo escribir): igual.
         ledger.markRecordFailed("a1", "sin red")
         assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO)
         assertThat(otraVentaEntraAlLector("b2")).isFalse()
@@ -792,7 +792,7 @@ class CancelTrasReclamarRoomTest {
         assertThat(apilada.cerrarSolicitudSiCeso("req-1")).isFalse()
         assertThat(sdkEnOtraTarea.cerrarSolicitudSiCeso("req-1")).isFalse()
         // Por la sonda, el servidor no recibe la evidencia: ACTIVE, ejecución viva y sin cerrar.
-        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), apilada, PaymentStateHolder()))
+        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), apilada, PaymentStateHolder()))
             .probeSocketPaymentRequest("req-1", "venue-1")
         assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
         assertThat(sonda.executionAlive).isTrue()
@@ -846,7 +846,7 @@ class CancelTrasReclamarRoomTest {
 
     private fun procesoNuevo(): Proceso {
         val libreta = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true), UNA_SOLA_PANTALLA).apply { marcaDelBuild = MARCA_PAX }
-        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), libreta, PaymentStateHolder())
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta, PaymentStateHolder())
         return Proceso(libreta, bandeja, RemotePaymentCoordinator(bandeja))
     }
 
@@ -987,7 +987,7 @@ class CancelTrasReclamarRoomTest {
 
     @Test fun `P1 con la pantalla abierta esperando Tarjeta (cero intentos) la sonda dice ejecucion viva`() = runTest {
         var preguntasALaLibreta = 0
-        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
+        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
             preguntasALaLibreta++
             ledger.cerrarSolicitudSiCeso(requestId)
         }
@@ -1037,7 +1037,7 @@ class CancelTrasReclamarRoomTest {
 
     @Test fun `P1 dueno con el banco rechazando y la pantalla ofreciendo Reintentar - la sonda dice ejecucion viva y no cierra`() = runTest {
         var preguntasALaLibreta = 0
-        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
+        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
             preguntasALaLibreta++
             ledger.cerrarSolicitudSiCeso(requestId)
         }
@@ -1075,7 +1075,7 @@ class CancelTrasReclamarRoomTest {
 
     @Test fun `P1 dueno con el banco rechazando y la pantalla ofreciendo Reintentar - el cancel del cajero se acepta y no cierra para ejecucion`() = runTest {
         var preguntasALaLibreta = 0
-        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
+        val bandejaContada = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), laTerminalRechazariaUnaVentaNueva = { false }) { requestId ->
             preguntasALaLibreta++
             ledger.cerrarSolicitudSiCeso(requestId)
         }

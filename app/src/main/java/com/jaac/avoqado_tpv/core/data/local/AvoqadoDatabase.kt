@@ -7,6 +7,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.jaac.avoqado_tpv.core.data.local.converters.ProductTypeConverters
 import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
+import com.jaac.avoqado_tpv.core.data.local.dao.CachedTimeEntryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
@@ -17,6 +18,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.CachedTimeEntryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.FloorElementEntity
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueEntity
@@ -130,6 +132,10 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
         PendingRefundEntity::class, // ⭐ v31: cola durable de REEMBOLSOS (hermana de pending_payments)
         RemotePaymentRequestEntity::class, // ⭐ v32: inbox durable de cobros POS → TPV (acuse de recibo, nexgo-v2.9.0)
+        com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity::class, // v44: mismo dueño Room de Caja
+        CachedTimeEntryEntity::class, // ⭐ v43: el checador guardado («Cobrar» sin red)
+        com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity::class,
+        com.jaac.avoqado_tpv.core.data.local.entity.LocalCryptoOperationEntity::class,
     ],
     // ⭐ Version 31: tabla pending_refunds — el reembolso que el SDK ya hizo no se pierde.
     //
@@ -179,17 +185,21 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
     // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v42.
     //
-    // ⭐ Version 43 (21-oct-2026, «ninguna duda de cobro sin salida», B1): `remote_payment_requests.execution_closed_at` (la
+    // ⭐ Version 43 (21-oct-2026, «Cobrar» sin red): `products` gana `gtin` y `catalog_at`; `pending_payments` gana la venta guardada
+    // (`order_request_json`, `exito_mostrado`, `acknowledged`, `ticket_json`, `reloj_monotono_al_vender`, `arranque_al_vender`,
+    // `requiere_revision`); tabla nueva `cached_time_entry`. Aditiva, nullable o con default (MIGRATION_42_43).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.0) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`, con las
+    // ventas guardadas sin red), reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
+    // ⭐ Version 44: sesiones y operaciones durables de Caja (ver MIGRATION_43_44).
+    // ⭐ Version 45 (21-oct-2026, «ninguna duda de cobro sin salida», B1; renumerada el 2-nov al integrar): `remote_payment_requests.execution_closed_at` (la
     // solicitud quedó CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo ni empezar) y
     // `payment_attempts.sdk_returned_at` (el SDK regresó: terminó toda su interacción con ese intento). Aditiva y nullable
-    // (MIGRATION_42_43).
-    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.1) es un downgrade DESTRUCTIVO
+    // (MIGRATION_44_45).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v44 (p. ej. la 2.14.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
-    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
-    // ⚠️ La rama `feat/cobrar-sin-red` (TPV «Cobrar sin red», sin unir a main el 21-oct) TAMBIÉN declara una v43 distinta
-    // (gtin, catalog_at, venta y checador guardados). Quien aterrice SEGUNDO en main renumera la suya a v44 (MIGRATION_43_44)
-    // ANTES de publicar: dos APK con «v43» distintas dejan columnas faltantes o un downgrade destructivo.
-    version = 43,
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v45.
+    version = 45,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -349,6 +359,13 @@ abstract class AvoqadoDatabase : RoomDatabase() {
 
     /** Inbox durable: el request queda en disco antes del ACK y de abrir el SDK. */
     abstract fun remotePaymentRequestDao(): RemotePaymentRequestDao
+
+    /** El checador guardado (v43): la última entrada de reloj conocida por negocio y persona, para saberla sin red. */
+    abstract fun cachedTimeEntryDao(): CachedTimeEntryDao
+
+    abstract fun localShiftSessionDao(): com.jaac.avoqado_tpv.core.data.local.dao.LocalShiftSessionDao
+    abstract fun localCryptoOperationDao(): com.jaac.avoqado_tpv.core.data.local.dao.LocalCryptoOperationDao
+    abstract fun syncIntentDao(): com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -2111,13 +2128,92 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         }
 
         /**
-         * 43 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` (cerrada para
-         * ejecución) y `payment_attempts.sdk_returned_at` (el SDK regresó). Dos columnas INTEGER nullable: las filas que ya había
-         * nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es otro proceso,
-         * así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe ninguna fila.
-         * Idempotente por `PRAGMA table_info`.
+         * 43: «Cobrar» sin red — la ÚNICA subida de base del proyecto. `products` gana `gtin` y `catalog_at`; `pending_payments` gana
+         * la venta guardada; tabla nueva `cached_time_entry` (el checador guardado). Idempotente por `PRAGMA table_info` (SQLite no
+         * tiene `ADD COLUMN IF NOT EXISTS`) y por `IF NOT EXISTS`. Los nombres, tipos y DEFAULT son los de las entidades (`43.json`):
+         * si no coinciden, Room no abre la base (la deriva v23→v24 dejó terminales en bucle). Las filas que ya había quedan como
+         * «ya mostrada» (`exito_mostrado = 1`), sin «Revisado» (`acknowledged = 0`) y sin diferencia (`requiere_revision = 0`).
          */
+        fun migration43To44(context: android.content.Context): Migration = object : Migration(43, 44) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_43_44.migrate(db)
+                LegacyTablesImport.forContext(context).into(db)
+            }
+        }
+
+        /** v44: sesiones y operaciones cripto durables; pertenencia legacy UNKNOWN. Sólo aditiva. */
+        val MIGRATION_43_44 = object : Migration(43, 44) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (table in listOf("pending_payments", "payment_attempts", "pending_refunds", "remote_payment_requests")) {
+                    val columns = mutableSetOf<String>()
+                    db.query("PRAGMA table_info($table)").use { cursor ->
+                        val name = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) columns += cursor.getString(name)
+                    }
+                    for (definition in listOf("shift_membership TEXT NOT NULL DEFAULT 'UNKNOWN'", "local_shift_session_id TEXT", "cash_drawer_session_id TEXT") + if (table == "pending_payments") listOf("order_wire_request_json TEXT") else emptyList()) {
+                        if (definition.substringBefore(' ') !in columns) db.execSQL("ALTER TABLE $table ADD COLUMN $definition")
+                    }
+                }
+                db.execSQL("CREATE TABLE IF NOT EXISTS `sync_intents` (`id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `seq` INTEGER NOT NULL, `type` TEXT NOT NULL, `payload_json` TEXT NOT NULL, `status` TEXT NOT NULL DEFAULT 'PENDING', `error_code` TEXT, `message` TEXT, `result_json` TEXT, `created_at` INTEGER NOT NULL, `shift_membership` TEXT NOT NULL DEFAULT 'UNKNOWN', `local_shift_session_id` TEXT, `cash_drawer_session_id` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sync_intents_venue_id_status_seq` ON `sync_intents` (`venue_id`, `status`, `seq`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_intents_venue_id_seq` ON `sync_intents` (`venue_id`, `seq`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `local_shift_sessions` (`local_session_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `opening_kind` TEXT NOT NULL, `server_shift_id` TEXT, `cash_drawer_session_id` TEXT, `opening_operation_id` TEXT, `opening_request_json` TEXT, `opening_status` TEXT NOT NULL, `original_opened_at` TEXT NOT NULL, `starting_cash` TEXT, `opened_by_staff_id` TEXT NOT NULL, `close_operation_id` TEXT, `close_request_json` TEXT, `close_wire_request_json` TEXT, `closed_at_local` TEXT, `counted_cash` TEXT, `cash_reconciliation_action` TEXT, `closed_by_staff_id` TEXT, `local_status` TEXT NOT NULL, `open_slot` INTEGER, `close_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `lease_until` INTEGER, `opening_evidence_json` TEXT, `close_evidence_json` TEXT, `last_error` TEXT, `opening_disposition` TEXT, `remote_starting_cash` TEXT, `adoption_notice` TEXT, `adoption_accepted_at` INTEGER, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`local_session_id`))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_local_shift_sessions_venue_id_open_slot` ON `local_shift_sessions` (`venue_id`, `open_slot`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_shift_sessions_venue_id_local_status_created_at_local_session_id` ON `local_shift_sessions` (`venue_id`, `local_status`, `created_at`, `local_session_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_shift_sessions_venue_id_opening_status_created_at_local_session_id` ON `local_shift_sessions` (`venue_id`, `opening_status`, `created_at`, `local_session_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_shift_sessions_venue_id_close_status_created_at_local_session_id` ON `local_shift_sessions` (`venue_id`, `close_status`, `created_at`, `local_session_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_shift_sessions_venue_id_server_shift_id` ON `local_shift_sessions` (`venue_id`, `server_shift_id`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `local_crypto_operations` (`idempotency_key` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `request_json` TEXT NOT NULL, `request_id` TEXT, `terminal_payment_request_id` TEXT, `shift_membership` TEXT NOT NULL DEFAULT 'UNKNOWN', `local_shift_session_id` TEXT, `cash_drawer_session_id` TEXT, `server_shift_id` TEXT, `emission_status` TEXT NOT NULL, `financial_status` TEXT, `financial_recorded` INTEGER, `operation_result_json` TEXT, `claim_token` TEXT, `claimed_at` INTEGER, `lease_until` INTEGER, `last_error` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`idempotency_key`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_crypto_operations_venue_id_local_shift_session_id_created_at_idempotency_key` ON `local_crypto_operations` (`venue_id`, `local_shift_session_id`, `created_at`, `idempotency_key`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_crypto_operations_venue_id_emission_status_created_at_idempotency_key` ON `local_crypto_operations` (`venue_id`, `emission_status`, `created_at`, `idempotency_key`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_crypto_operations_venue_id_request_id` ON `local_crypto_operations` (`venue_id`, `request_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_crypto_operations_venue_id_terminal_payment_request_id` ON `local_crypto_operations` (`venue_id`, `terminal_payment_request_id`)")
+            }
+        }
+
         val MIGRATION_42_43 = object : Migration(42, 43) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun agregarColumnas(tabla: String, definiciones: List<String>) {
+                    val existentes = mutableSetOf<String>()
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) existentes += cursor.getString(indiceNombre)
+                    }
+                    for (definicion in definiciones) {
+                        if (definicion.substringBefore(' ') !in existentes) db.execSQL("ALTER TABLE $tabla ADD COLUMN $definicion")
+                    }
+                }
+                agregarColumnas("products", listOf("gtin TEXT", "catalog_at TEXT"))
+                agregarColumnas(
+                    "pending_payments",
+                    listOf(
+                        "order_request_json TEXT",
+                        "exito_mostrado INTEGER NOT NULL DEFAULT 1",
+                        "acknowledged INTEGER NOT NULL DEFAULT 0",
+                        "ticket_json TEXT",
+                        "reloj_monotono_al_vender INTEGER",
+                        "arranque_al_vender INTEGER",
+                        "requiere_revision INTEGER NOT NULL DEFAULT 0",
+                        "acknowledged_by TEXT",
+                        "acknowledged_at INTEGER",
+                    ),
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `cached_time_entry` (`venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, " +
+                        "`entry_id` TEXT NOT NULL, `status` TEXT NOT NULL, `clock_in_time` TEXT, `cached_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`venue_id`, `staff_id`))",
+                )
+            }
+        }
+
+        /**
+         * 45 (B1, «ninguna duda de cobro sin salida», 21-oct; renumerada el 2-nov): `remote_payment_requests.execution_closed_at`
+         * (cerrada para ejecución) y `payment_attempts.sdk_returned_at` (el SDK regresó). Dos columnas INTEGER nullable: las filas
+         * que ya había nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es
+         * otro proceso, así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe
+         * ninguna fila. Idempotente por `PRAGMA table_info`.
+         */
+        val MIGRATION_44_45 = object : Migration(44, 45) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 fun columnaExiste(tabla: String, columna: String): Boolean {
                     db.query("PRAGMA table_info($tabla)").use { cursor ->

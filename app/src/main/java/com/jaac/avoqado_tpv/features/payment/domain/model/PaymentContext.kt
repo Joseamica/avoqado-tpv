@@ -21,7 +21,11 @@ import java.math.BigDecimal
 sealed class PaymentContext {
     abstract val venueId: String
     abstract val staffId: String
+    abstract val queueClaimToken: String?
     abstract val shiftId: String? // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern, null = no shift validation bypass)
+    abstract val shiftMembership: String?
+    abstract val localShiftSessionId: String?
+    abstract val cashDrawerSessionId: String?
     abstract val amount: BigDecimal
     abstract val tip: BigDecimal
     abstract val rating: Int? // 🆕 Optional rating from user (1-5 stars, null if skipped)
@@ -93,6 +97,11 @@ sealed class PaymentContext {
         // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(), // ICCID(s) from scanned SIMs
+        val isOfflineReplay: Boolean = false,
+        override val queueClaimToken: String? = null,
+        override val shiftMembership: String? = "UNKNOWN",
+        override val localShiftSessionId: String? = null,
+        override val cashDrawerSessionId: String? = null,
     ) : PaymentContext()
 
     /**
@@ -146,6 +155,11 @@ sealed class PaymentContext {
         // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(),
+        val isOfflineReplay: Boolean = false,
+        override val queueClaimToken: String? = null,
+        override val shiftMembership: String? = "UNKNOWN",
+        override val localShiftSessionId: String? = null,
+        override val cashDrawerSessionId: String? = null,
     ) : PaymentContext()
 
     /**
@@ -221,6 +235,10 @@ sealed class PaymentContext {
          * accounting (shift totals, reports).
          */
         val tipRefundCents: Int? = null,
+        override val queueClaimToken: String? = null,
+        override val shiftMembership: String? = "UNKNOWN",
+        override val localShiftSessionId: String? = null,
+        override val cashDrawerSessionId: String? = null,
     ) : PaymentContext() {
 
         /**
@@ -291,6 +309,11 @@ sealed class PaymentContext {
         // SaleVerification created at record time already has the ICCID.
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(),
+        val isOfflineReplay: Boolean = false,
+        override val queueClaimToken: String? = null,
+        override val shiftMembership: String? = "UNKNOWN",
+        override val localShiftSessionId: String? = null,
+        override val cashDrawerSessionId: String? = null,
     ) : PaymentContext()
 }
 
@@ -342,4 +365,24 @@ enum class RefundReason(val displayName: String, val description: String) {
             return values().find { it.name.equals(value, ignoreCase = true) } ?: OTHER
         }
     }
+}
+
+/** Copia sólo la pertenencia capturada; montos, autor, llave y contrato de la venta no cambian. */
+fun PaymentContext.withShiftBelonging(b: com.jaac.avoqado_tpv.features.shift.domain.ShiftBelonging): PaymentContext = when (this) {
+    is PaymentContext.FastPayment -> copy(shiftMembership = b.kind, localShiftSessionId = b.localSessionId,
+        cashDrawerSessionId = b.cashDrawerSessionId, shiftId = if (b.kind == "UNKNOWN") shiftId else b.serverShiftId)
+    is PaymentContext.OrderPayment -> copy(shiftMembership = b.kind, localShiftSessionId = b.localSessionId,
+        cashDrawerSessionId = b.cashDrawerSessionId, shiftId = if (b.kind == "UNKNOWN") shiftId else b.serverShiftId)
+    is PaymentContext.AngelPayPayment -> copy(shiftMembership = b.kind, localShiftSessionId = b.localSessionId,
+        cashDrawerSessionId = b.cashDrawerSessionId, shiftId = if (b.kind == "UNKNOWN") shiftId else b.serverShiftId)
+    is PaymentContext.RefundPayment -> copy(shiftMembership = b.kind, localShiftSessionId = b.localSessionId,
+        cashDrawerSessionId = b.cashDrawerSessionId, shiftId = b.serverShiftId)
+}
+
+/** Sólo transporte de la reserva de cola; no cambia la captura ni se usa como identidad financiera. */
+fun PaymentContext.withQueueClaimToken(token: String?): PaymentContext = if (queueClaimToken == token) this else when (this) {
+    is PaymentContext.FastPayment -> copy(queueClaimToken = token)
+    is PaymentContext.OrderPayment -> copy(queueClaimToken = token)
+    is PaymentContext.AngelPayPayment -> copy(queueClaimToken = token)
+    is PaymentContext.RefundPayment -> copy(queueClaimToken = token)
 }

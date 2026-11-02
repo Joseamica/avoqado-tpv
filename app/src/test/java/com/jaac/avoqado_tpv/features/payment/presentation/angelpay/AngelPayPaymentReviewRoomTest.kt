@@ -213,7 +213,10 @@ class AngelPayPaymentReviewRoomTest {
         // Task 7 · fix 4: la recuperación por servidor y la API de la declaración REALES cuando la prueba lo pide.
         ledgerServerRecovery: com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerServerRecovery = mockk(relaxed = true),
         attemptApi: com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService = mockk(relaxed = true),
-    ): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    ): AngelPayPaymentViewModel = run {
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
+        com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
+        AngelPayPaymentViewModel(
         appContext = appContext,
         recordPaymentUseCase = recordPaymentUseCase,
         shiftRepository = shiftRepository,
@@ -247,7 +250,13 @@ class AngelPayPaymentReviewRoomTest {
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
         savedStateHandle = handle,
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(),
+        ventaLocalRepository = mockk(relaxed = true),
+        pendingPaymentDao = mockk(relaxed = true),
+        subirVentaGuardadaUseCase = mockk(relaxed = true),
+        impresoraDeVentaGuardada = mockk(relaxed = true),
     )
+    }
 
     /** Los casos SDK positivos pasan por la selección real, sin acreditar otros escenarios desde setup. */
     private fun AngelPayPaymentViewModel.prepararSesionSdkValida() {
@@ -526,7 +535,7 @@ class AngelPayPaymentReviewRoomTest {
         try {
             val requestId = "req-s5-sin-persistir"
             // La solicitud del POS, reclamada (PROCESSING), como la deja la navegación.
-            val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao())
+            val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             bandeja.receive(
                 SocketEvent.TerminalPaymentRequest(
                     requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = null,
@@ -621,7 +630,7 @@ class AngelPayPaymentReviewRoomTest {
             assertThat(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
                 .retencionDelAparato()).isNull()
             // …y un proceso NUEVO no la cierra como «no se cobró»: el cancel del POS y la sonda contestan con el COBRO.
-            val bandejaTrasReiniciar = RemotePaymentInbox(db.remotePaymentRequestDao())
+            val bandejaTrasReiniciar = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
             val cancel = bandejaTrasReiniciar.cancel(requestId)
             assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ALREADY_RESOLVED)
             assertThat(org.json.JSONObject(cancel.finalResultJson!!).getString("status")).isEqualTo("success")
@@ -686,7 +695,7 @@ class AngelPayPaymentReviewRoomTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
-        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         val coordinator = RemotePaymentCoordinator(inbox)
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
@@ -772,7 +781,7 @@ class AngelPayPaymentReviewRoomTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
-        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         val coordinator = RemotePaymentCoordinator(inbox)
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
@@ -823,7 +832,7 @@ class AngelPayPaymentReviewRoomTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(
             androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
-        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao())
+        val inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         val coordinator = RemotePaymentCoordinator(inbox)
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
@@ -875,8 +884,130 @@ class AngelPayPaymentReviewRoomTest {
         } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
         Unit
     }
+    @Test fun `B2 NEXGO cripto tiene owner Room antes POST y callback fuera de QR no pierde resultado`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(androidx.test.core.app.ApplicationProvider.getApplicationContext(), com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        
+        shiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, secureStorage, apiService, "task5-venue", "task5-staff")
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = false)
+        every { authRepository.getVenueId() } returns "task5-venue"
+        every { authRepository.getStaffId() } returns "task5-staff"
+        lateinit var key: String
+        fun data(recorded: Boolean) = com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResultDto(
+            paymentId = key, requestId = "task5-provider", paymentUrl = "https://example.test/pay", expiresAt = "2026-10-29T00:00:00Z", expiresInSeconds = 60,
+            operation = com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationDto(key, "ISSUED", if (recorded) "COMPLETED" else "PENDING", recorded))
+        coEvery { apiService.initiateDurableCryptoPayment("task5-venue", any()) } coAnswers {
+            key = secondArg<com.jaac.avoqado_tpv.core.data.network.CryptoPaymentRequest>().idempotencyKey!!
+            assertThat(db.localCryptoOperationDao().leer("task5-venue", key)?.shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+            assertThat(db.inTransaction()).isFalse()
+            retrofit2.Response.success(com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse(true, data(false)))
+        }
+        coEvery { apiService.getCryptoOperation("task5-venue", any()) } answers {
+            retrofit2.Response.success(com.jaac.avoqado_tpv.features.shift.data.dto.CryptoOperationResponse(true, data(true)))
+        }
+        val vm = createViewModel()
+        try {
+            val stateField = AngelPayPaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val mutable = stateField.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<AngelPayPaymentState>
+            mutable.value = AngelPayPaymentState.SelectingMerchant("10.00", "0.00", "10.00", null)
+            vm.processCryptoPayment("10.00")
+            task5Wait { vm.state.value is AngelPayPaymentState.AwaitingCryptoPayment || vm.state.value is AngelPayPaymentState.Error }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.AwaitingCryptoPayment::class.java)
+            assertThat(db.localCryptoOperationDao().contar("task5-venue")).isEqualTo(1)
+            mutable.value = AngelPayPaymentState.WaitingForResult("Fuera del QR")
+            val event = SocketEvent.CryptoPaymentConfirmed("task5-provider", key, 1000, "MXN", "tx", "1", "BTC", 1, null, null, null, null, "task5-venue", "2026-10-28T00:00:00Z")
+            val method = AngelPayPaymentViewModel::class.java.getDeclaredMethod("handleCryptoPaymentConfirmed", SocketEvent.CryptoPaymentConfirmed::class.java).apply { isAccessible = true }
+            method.invoke(vm, event)
+            task5Wait { kotlinx.coroutines.runBlocking { db.localCryptoOperationDao().leer("task5-venue", key)?.financialRecorded == true } }
+            assertThat(db.localCryptoOperationDao().leer("task5-venue", key)?.financialStatus).isEqualTo("COMPLETED")
+            coVerify(exactly = 1) { apiService.initiateDurableCryptoPayment("task5-venue", any()) }
+            coVerify(exactly = 0) { apiService.initiateCryptoPayment(any(), any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test fun `B2 crypto gesture Nexgo FAILED_GET`() = runTest { checkCryptoGesture(com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase.FAILED_GET) }
+    @Test fun `B2 crypto gesture Nexgo PENDING_GET`() = runTest { checkCryptoGesture(com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase.PENDING_GET) }
+    @Test fun `B2 crypto gesture Nexgo SAME_BODY`() = runTest { checkCryptoGesture(com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase.SAME_BODY) }
+    @Test fun `B2 crypto gesture Nexgo LATE_CALLBACK`() = runTest { checkCryptoGesture(com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase.LATE_CALLBACK) }
+    @Test fun `B2 crypto gesture Nexgo CANCEL_RETRY`() = runTest { checkCryptoGesture(com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase.CANCEL_RETRY) }
+
+    private suspend fun checkCryptoGesture(scenario: com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureCase) {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        shiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, secureStorage, apiService, "task5-venue", "task5-staff")
+        every { authRepository.getVenueId() } returns "task5-venue"
+        every { authRepository.getStaffId() } returns "task5-staff"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = false, showReviewScreen = false, showTipScreen = false, showVerificationScreen = false)
+        val vm = createViewModel()
+        try {
+            com.jaac.avoqado_tpv.features.payment.presentation.checkCryptoGestureLifecycle(scenario, db, apiService, "task5-venue", "task5-staff",
+                begin = { order ->
+                    vm.initPayment("10.00", orderId = order, skipReview = true)
+                    task5Wait { vm.state.value is AngelPayPaymentState.SelectingMerchant }
+                },
+                pay = { vm.processCryptoPayment("10.00") }, cancel = { vm.cancelCryptoPayment() }, reset = { vm.resetPayment() },
+                confirm = { socketEventsFlow.emit(it) }, ui = ui@{
+                    val phase = when (val state = vm.state.value) {
+                        is AngelPayPaymentState.AwaitingCryptoPayment -> return@ui com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi("QR", state.requestId, state.paymentId, state.paymentUrl)
+                        is AngelPayPaymentState.SelectingMerchant -> "SELECT"
+                        is AngelPayPaymentState.Success -> "SUCCESS"
+                        is AngelPayPaymentState.Error -> "ERROR"
+                        is AngelPayPaymentState.Idle -> "IDLE"
+                        else -> "OTHER"
+                    }
+                    com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi(phase)
+                })
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    private suspend fun task5Wait(predicate: () -> Boolean) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        // Room corre en hilos reales: el timeout virtual no puede adelantar al INSERT/SELECT real.
+        kotlinx.coroutines.withTimeout(10_000) { while (!predicate()) kotlinx.coroutines.delay(10) }
+    }
+
+    @Test fun `B2 Nexgo venta OFF guarda pertenencia antes del CAS obligatorio de autorizacion`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        shiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, secureStorage, apiService, "task5-venue", "task5-staff")
+        every { authRepository.getVenueId() } returns "task5-venue"
+        every { authRepository.getStaffId() } returns "task5-staff"
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val vm = createViewModel()
+        try {
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("task5-nexgo-card")).isTrue()
+            val row = db.paymentAttemptDao().getById("task5-nexgo-card")!!
+            assertThat(row.state).isEqualTo("AUTORIZANDO")
+            assertThat(row.shiftMembership).isEqualTo("NO_SHIFT_SYSTEM")
+            assertThat(row.localShiftSessionId).isNull()
+            assertThat(db.localShiftSessionDao().contar("task5-venue")).isEqualTo(0)
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test fun `B2 Nexgo restaura K exacta desde SavedState y coldstart no reemite A`() = runTest {
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        shiftRepository = com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository(db, secureStorage, apiService, "task5-venue", "task5-staff")
+        every { authRepository.getVenueId() } returns "task5-venue"
+        every { authRepository.getStaffId() } returns "task5-staff"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings().copy(enableShifts = false, showReviewScreen = false, showTipScreen = false, showVerificationScreen = false)
+        var vm: AngelPayPaymentViewModel? = null
+        try {
+            com.jaac.avoqado_tpv.features.payment.presentation.checkCryptoRestoredEntry(db, apiService, "task5-venue",
+                create = { vm = createViewModel(it) }, destroy = { vm?.viewModelScope?.cancel() },
+                begin = { order -> vm!!.initPayment("10.00", orderId = order, skipReview = true)
+                    task5Wait { vm!!.state.value is AngelPayPaymentState.SelectingMerchant } },
+                pay = { vm!!.processCryptoPayment("10.00") }, reset = { vm!!.resetPayment() },
+                ui = { when (val state = vm!!.state.value) {
+                    is AngelPayPaymentState.AwaitingCryptoPayment -> com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi("QR", state.requestId, state.paymentId, state.paymentUrl)
+                    is AngelPayPaymentState.Error -> com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi("ERROR")
+                    else -> com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi("OTHER")
+                } }, waitFor = { predicate -> task5Wait(predicate) })
+        } finally { vm?.viewModelScope?.cancel(); db.close() }
+    }
+
 }
 
 /** `AppErrorCatalog.toCallResult` es extensión MIEMBRO del objeto: se llama con el objeto como receptor, como lo hace el AAR. */
 private fun callResultDelSdk(codigo: com.angelpay.angelpaysdk.models.AppErrorCatalog.Code) =
-    with(com.angelpay.angelpaysdk.models.AppErrorCatalog) { codigo.toCallResult() }
+    with(com.angelpay.angelpaysdk.models.AppErrorCatalog) { codigo.toCallResult() 
+}

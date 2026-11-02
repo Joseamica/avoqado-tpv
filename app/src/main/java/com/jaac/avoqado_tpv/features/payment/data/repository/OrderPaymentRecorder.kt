@@ -68,6 +68,7 @@ import javax.inject.Inject
  */
 class OrderPaymentRecorder @Inject constructor(
     private val apiService: PaymentApiService,
+    private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
 ) : PaymentRecorder {
 
     override suspend fun recordPayment(
@@ -107,12 +108,19 @@ class OrderPaymentRecorder @Inject constructor(
 
             Timber.d("📤 OrderPaymentRequest: amount=${request.amount}cents, tip=${request.tip}cents, method=${request.method}, splitType=${request.splitType}, hasMerchant=${!request.merchantAccountId.isNullOrBlank()}")
 
+            val resolvedShift = if (context.shiftMembership == "MANAGED")
+                (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException()).reference(context, referenceNumber)
+            else context.shiftId
+            val wireRequest = if (context.shiftMembership == "MANAGED") request.copy(shiftIdDeLaVenta = resolvedShift, isOfflineReplay = true) else request
+
             // 3. Llamar al backend (diferente endpoint que fast payment)
             val response = apiService.recordOrderPayment(
                 venueId = context.venueId,
                 orderId = orderId,
-                request = request
+                request = wireRequest
             )
+
+            if (context.shiftMembership == "MANAGED") shiftReplayGate!!.reference(context, referenceNumber)
 
             // 4. Procesar response (idéntico a FastPaymentRecorder)
             when {
@@ -297,6 +305,8 @@ class OrderPaymentRecorder @Inject constructor(
             source = "AVOQADO_TPV",
             splitType = context.splitType.value,
             staffId = context.staffId,
+            shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
+            isOfflineReplay = context.isOfflineReplay.takeIf { it },
 
             // ⭐ SPLIT PAYMENT: Product IDs for PERPRODUCT mode
             paidProductsId = context.paidProductIds,
@@ -361,6 +371,8 @@ class OrderPaymentRecorder @Inject constructor(
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,
+            shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
+            isOfflineReplay = context.isOfflineReplay.takeIf { it },
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
             maskedPan = cardDetails.maskedPan,

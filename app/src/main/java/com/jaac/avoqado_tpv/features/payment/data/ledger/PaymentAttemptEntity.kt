@@ -147,13 +147,17 @@ data class PaymentAttemptEntity(
      * a la v41: nunca aparta el aparato.
      */
     @ColumnInfo(name = "process_token") val processToken: String? = null,
+    /** Capturada antes del gesto; UNKNOWN en filas legacy, nunca se infiere OFF. */
+    @ColumnInfo(name = "shift_membership", defaultValue = "'UNKNOWN'") val shiftMembership: String = "UNKNOWN",
+    @ColumnInfo(name = "local_shift_session_id") val localShiftSessionId: String? = null,
+    @ColumnInfo(name = "cash_drawer_session_id") val cashDrawerSessionId: String? = null,
     /**
-     * B1 (21-oct, «ninguna duda de cobro sin salida», Room v43): cuándo TERMINÓ toda la interacción de este intento con el
+     * B1 (21-oct, «ninguna duda de cobro sin salida», Room v45): cuándo TERMINÓ toda la interacción de este intento con el
      * SDK — el SDK REGRESÓ y la terminal ya no vuelve a él con este intento (en la PAX, después del cierre EMV; en AngelPay,
      * al recibir el resultado sin relanzar). La escribe [PaymentAttemptLedger.marcarSdkRegreso] sólo donde eso está
      * COMPROBADO: nunca en un `catch` ni en un `finally`. Con ella, HOST_RESPONDIO/AUTORIZADO/REGISTRO_FALLIDO/INDETERMINADO
      * de ESTE proceso dejan de «poder seguir vivos» ([SQL_PUEDE_SEGUIR_VIVO]). Conserva la PRIMERA vez. NULL en toda fila
-     * anterior a la v43.
+     * anterior a la v45.
      */
     @ColumnInfo(name = "sdk_returned_at") val sdkReturnedAt: Long? = null,
 ) {
@@ -214,6 +218,10 @@ data class PaymentAttemptEntity(
         const val LAST_ERROR_LIBERADA_PREFIX = "liberada_por_el_servidor:"
         /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
         const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
+
+        /** Un veredicto/veto conocido conserva su escritor financiero; la cola no lo sustituye. */
+        const val SQL_REGISTRO_POR_VEREDICTO = "(legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE' " +
+            "AND (server_outcome IS NOT NULL OR server_veto IS NOT NULL))"
 
         /**
          * 🔴 CONTRADICCIÓN = predicado DERIVADO (nunca una columna, para que no se desincronice): el servidor tiene
@@ -282,7 +290,7 @@ data class PaymentAttemptEntity(
          * 🔒 Codex TPV r1 #2 (22-oct, «ninguna duda de cobro sin salida»), la misma regla del founder del 25-sep: «sólo aparta el
          * aparato un cobro CORRIENDO; el dinero conocido cerca SU venta». `HOST_RESPONDIO`, `AUTORIZADO` y `REGISTRO_FALLIDO`
          * cuentan como corriendo SÓLO mientras no se comprobó que el SDK regresó (`sdk_returned_at IS NULL`: el cierre EMV de
-         * la PAX pendiente, o una fila anterior a v43, que no tiene la marca y sigue contando). Con el SDK fuera, el dinero de
+         * la PAX pendiente, o una fila anterior a v45, que no tiene la marca y sigue contando). Con el SDK fuera, el dinero de
          * esa fila sigue cercando SU venta ([SQL_CERCA_LA_VENTA]) y SU solicitud (cerrada para ejecución), pero no las demás
          * ventas: si no, la terminal rechazaría lo que el SERVIDOR ya dejó pasar al soltar la ranura. `KERNEL_ACTIVO`,
          * `AUTORIZANDO` y la cuarentena por reloj no cambian.

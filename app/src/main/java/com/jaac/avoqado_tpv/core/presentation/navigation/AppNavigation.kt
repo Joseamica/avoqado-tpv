@@ -78,6 +78,9 @@ import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.payment.domain.cobrarSaltaElLector
+import com.jaac.avoqado_tpv.features.payment.domain.rutaDePagoEsperaAlLector
+import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
@@ -136,6 +139,8 @@ interface AppNavigationEntryPoint {
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
+    fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
+    fun tpvSettingsRepository(): com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 
     // 🛡️ A5 — AngelPay refunds must resolve the merchant that OWNS the original
     // payment and authenticate as ITS AngelPay account before refunding.
@@ -331,6 +336,8 @@ fun AppNavigation(
     val terminalConfigRepository = remember { kioskEntryPoint.terminalConfigRepository() }
     val initializationManager = remember { kioskEntryPoint.initializationManager() }
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
+    val connectionStateManager = remember { kioskEntryPoint.connectionStateManager() }
+    val tpvSettingsRepository = remember { kioskEntryPoint.tpvSettingsRepository() }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
@@ -1431,11 +1438,30 @@ fun AppNavigation(
                 onNavigateBack = { navController.safePopBackStack() },
                 onNavigateToPayment = { payload ->
                     checkoutScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Checkout payment")) {
+                        // 💵 D2 «Cobrar sin red» (21-oct-2026): con el lector de Blumon sin preparar (sin red no
+                        // termina) y la tarjeta sin red según la MISMA regla del toque de «Tarjeta» (tarjetaSinRed),
+                        // el cobro va en sólo efectivo y NO espera al lector (antes ni el efectivo pasaba). Con red,
+                        // igual que hoy: se espera. Con el lector ya listo no hace falta: la pantalla decide sola.
+                        // 💵 C2b: una venta local (sin red, o el servidor no contestó) va SIEMPRE en sólo efectivo, y
+                        // tampoco espera al lector: la tarjeta necesita internet.
+                        val soloEfectivo = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal ||
+                            cobrarSaltaElLector(
+                                hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
+                                lectorListo = initializationManager.isInitialized.value,
+                                tarjetaSinRed = tarjetaSinRed(
+                                    requiereServidorDeAvoqado = tpvSettingsRepository.getCurrentSettings().requireAvoqadoServerForCardPayment,
+                                    // Un cobro de Cobrar sin orden (sólo importes); con productos hay orden.
+                                    esCobro = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast,
+                                    hayInternet = connectionStateManager.hasInternet(),
+                                    conexionCompleta = connectionStateManager.isFullyConnected(),
+                                ),
+                            )
+                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Checkout payment")) {
                             return@launch
                         }
                         navController.currentBackStackEntry?.savedStateHandle?.apply {
                             set("initialAmount", payload.amountPesosString)
+                            set("soloEfectivo", soloEfectivo)
                             // Tag the source so the Payment success screen knows
                             // to route "Nueva Orden" / "Nuevo Pago" back to the
                             // unified Cart instead of the legacy FastPaymentEntry
@@ -1455,6 +1481,17 @@ fun AppNavigation(
                                     // Unreachable: CheckoutScreen short-circuits this payload
                                     // (free cart already closed on the backend; UI shows a
                                     // snackbar and stays on Checkout instead of navigating).
+                                    // Branch kept exhaustive for the compiler.
+                                }
+                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal -> {
+                                    // 💵 «Cobrar» sin red: la venta guardada viaja a la pantalla de cobro (sólo efectivo, arriba),
+                                    // que inserta su fila con la MISMA llave antes de tocar la red (C3). Sin orden: la crea el
+                                    // servidor al subirla.
+                                    set("ventaLocalJson", payload.ventaLocalJson)
+                                }
+                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaEnCeroGuardada -> {
+                                    // Unreachable: CheckoutScreen short-circuits this payload (la venta en $0 ya quedó guardada
+                                    // como fila; Cobrar muestra «Venta en $0 guardada» y no abre la pantalla de cobro).
                                     // Branch kept exhaustive for the compiler.
                                 }
                             }
@@ -1761,7 +1798,30 @@ fun AppNavigation(
                 }
             }
 
-            if (BuildConfig.ENABLE_PAX_SDK && !isBlumonSdkInitialized) {
+            // 🔴 D.7 (2026-09-11): los argumentos del cobro se leen UNA vez, de la entrada PROPIA.
+            // Antes se releían del `previousBackStackEntry` en cada recomposición; ese valor se
+            // calcula contra el TOPE actual, así que la pantalla que salía se llevaba los
+            // argumentos del cobro siguiente (camino 1), y salir con el atrás del sistema dejaba
+            // los de una solicitud remota pegados en el lanzador para el próximo cobro local
+            // (camino 2). [congelarArgumentosDeCobro] los copia a esta entrada y los borra del
+            // lanzador en el mismo paso, así que ninguna salida puede dejarlos atrás.
+            // 💵 D2 (21-oct-2026): se congelan ANTES de la compuerta del lector, que necesita saber
+            // si el cobro va en sólo efectivo.
+            val argumentosDelCobro = remember(backStackEntry) {
+                congelarArgumentosDeCobro(
+                    propio = backStackEntry.savedStateHandle,
+                    lanzador = navController.previousBackStackEntry?.savedStateHandle,
+                )
+            }
+            // 💵 D2 «Cobrar sin red»: el efectivo no espera al lector de Blumon; la tarjeta sí, como hoy.
+            val soloEfectivo = argumentosDelCobro.get<Boolean>("soloEfectivo") ?: false
+
+            if (rutaDePagoEsperaAlLector(
+                    hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
+                    lectorListo = isBlumonSdkInitialized,
+                    soloEfectivo = soloEfectivo,
+                )
+            ) {
                 LaunchedEffect(Unit) {
                     val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
                     if (!ready) {
@@ -1776,20 +1836,6 @@ fun AppNavigation(
                 }
                 AvoqadoLoadingOverlay(message = "Preparando sistema de pagos...")
                 return@composable
-            }
-
-            // 🔴 D.7 (2026-09-11): los argumentos del cobro se leen UNA vez, de la entrada PROPIA.
-            // Antes se releían del `previousBackStackEntry` en cada recomposición; ese valor se
-            // calcula contra el TOPE actual, así que la pantalla que salía se llevaba los
-            // argumentos del cobro siguiente (camino 1), y salir con el atrás del sistema dejaba
-            // los de una solicitud remota pegados en el lanzador para el próximo cobro local
-            // (camino 2). [congelarArgumentosDeCobro] los copia a esta entrada y los borra del
-            // lanzador en el mismo paso, así que ninguna salida puede dejarlos atrás.
-            val argumentosDelCobro = remember(backStackEntry) {
-                congelarArgumentosDeCobro(
-                    propio = backStackEntry.savedStateHandle,
-                    lanzador = navController.previousBackStackEntry?.savedStateHandle,
-                )
             }
 
             // Get initial amount from previous screen (if coming from Home with amount)
@@ -1923,6 +1969,8 @@ fun AppNavigation(
                 paymentSource = paymentSourceStr,
                 socketRequestId = socketRequestId,
                 socketProcessedByStaffId = socketProcessedByStaffId,
+                soloEfectivo = soloEfectivo,  // 💵 D2 «Cobrar sin red»
+                ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
                 // 🥝 KIOSK MODE PARAMS
                 isKioskPayment = isKioskPayment,
                 onKioskPaymentSuccess = if (isKioskPayment) { displayOrderNumber, receipt, orderItems ->
@@ -2383,6 +2431,8 @@ fun AppNavigation(
                                 requestedAmount = refundAmount,
                                 originalAmount = originalAmount,
                                 alreadyRefundedAmount = refundedAmount,
+                                originalOrderId = orderId,
+                                tipRefundCents = tipRefundCents,
                             )
 
                             result.fold(
@@ -2928,6 +2978,8 @@ fun AppNavigation(
             // socket-sourced Nexgo charge reports its result back to the caller (POS long-poll).
             val paymentSource = argumentosDelCobro.get<String>("paymentSource")
             val socketRequestId = argumentosDelCobro.get<String>("socketRequestId")
+            // 💵 D2 «Cobrar sin red»: el cobro llegó sin red desde Cobrar ⇒ sólo efectivo.
+            val soloEfectivo = argumentosDelCobro.get<Boolean>("soloEfectivo") ?: false
 
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
@@ -2941,6 +2993,8 @@ fun AppNavigation(
                 externalSkipReview = externalSkipReview,
                 paymentSource = paymentSource,
                 socketRequestId = socketRequestId,
+                soloEfectivo = soloEfectivo,
+                ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
                 onNavigateBack = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
                     val popped = navController.safePopBackStack()
@@ -3323,6 +3377,8 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
     handle.remove<String>("paymentSource")
     handle.remove<String>("socketRequestId")
     handle.remove<String>("socketProcessedByStaffId")
+    handle.remove<Boolean>("soloEfectivo")
+    handle.remove<String>("ventaLocalJson")
 
     // 🧹 Critical: also clear inputs read by Payment screen on next manual nav.
     // Without these, a cancelled socket request leaves $50 amount + skipReview=true
@@ -3359,6 +3415,7 @@ internal val CLAVES_DE_COBRO: List<String> = listOf(
     "blumonOperationNumber", "paymentVenueId", "tipRefundCents",
     "wasPayLaterOrder", "payLaterOrdersCount", "isKioskPayment",
     "paymentSource", "socketRequestId", "socketProcessedByStaffId",
+    "soloEfectivo", "ventaLocalJson",
 )
 
 private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"

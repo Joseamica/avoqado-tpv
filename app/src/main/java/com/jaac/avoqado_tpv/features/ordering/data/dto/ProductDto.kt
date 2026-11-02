@@ -51,6 +51,10 @@ data class ProductDto(
     @SerializedName("sku")
     val sku: String,
 
+    // Código de barras del fabricante; opcional (un server viejo no lo manda).
+    @SerializedName("gtin")
+    val gtin: String? = null,
+
     @SerializedName("categoryId")
     val categoryId: String,
 
@@ -269,7 +273,11 @@ data class ProductsResponse(
     val data: List<ProductDto>,
 
     @SerializedName("correlationId")
-    val correlationId: String?
+    val correlationId: String?,
+
+    // Hora del SERVIDOR (ISO) tomada ANTES de leer los productos; opcional (un server viejo no la manda). Se copia a cada producto.
+    @SerializedName("catalogAt")
+    val catalogAt: String? = null
 )
 
 /**
@@ -286,7 +294,11 @@ data class ProductResponse(
     val data: ProductDto,
 
     @SerializedName("correlationId")
-    val correlationId: String?
+    val correlationId: String?,
+
+    // Igual que [ProductsResponse.catalogAt]: la manda la búsqueda por código (S1); el alta rápida no.
+    @SerializedName("catalogAt")
+    val catalogAt: String? = null
 )
 
 /**

@@ -55,6 +55,7 @@ import javax.inject.Inject
  */
 class FastPaymentRecorder @Inject constructor(
     private val apiService: PaymentApiService,
+    private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
 ) : PaymentRecorder {
 
     override suspend fun recordPayment(
@@ -117,11 +118,18 @@ class FastPaymentRecorder @Inject constructor(
                 Timber.e(e, "Failed to serialize request for debug logging")
             }
 
+            val resolvedShift = if (context.shiftMembership == "MANAGED")
+                (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException()).reference(context, referenceNumber)
+            else context.shiftId
+            val wireRequest = if (context.shiftMembership == "MANAGED") request.copy(shiftIdDeLaVenta = resolvedShift, isOfflineReplay = true) else request
+
             // 3. Llamar al backend
             val response = apiService.recordFastPayment(
                 venueId = context.venueId,
-                request = request
+                request = wireRequest
             )
+
+            if (context.shiftMembership == "MANAGED") shiftReplayGate!!.reference(context, referenceNumber)
 
             // 4. Procesar response
             when {
@@ -274,6 +282,8 @@ class FastPaymentRecorder @Inject constructor(
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,
+            shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
+            isOfflineReplay = context.isOfflineReplay.takeIf { it },
 
             // Card details from Blumon SDK
             authorizationNumber = authorizationNumber,
@@ -346,6 +356,8 @@ class FastPaymentRecorder @Inject constructor(
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,
+            shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
+            isOfflineReplay = context.isOfflineReplay.takeIf { it },
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
             merchantAccountId = context.merchantAccountId,

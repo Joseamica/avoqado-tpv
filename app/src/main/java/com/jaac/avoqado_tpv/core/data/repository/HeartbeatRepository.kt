@@ -100,6 +100,18 @@ class HeartbeatRepository @Inject constructor(
         Result.Error(ApiException.NetworkError(e))
     }
 
+    @Volatile private var llaveDeOrdenesReparada = false
+
+    /** Da de alta la llave con la sesión del cajero y regresa el código de la respuesta. */
+    private suspend fun darDeAltaLaLlaveDeOrdenes(terminalId: String): Int {
+        val alta = apiService.provisionCommandCredential(mapOf("terminalId" to terminalId))
+        alta.body()?.commandToken?.let {
+            secureStorage.putStringDurably("tpv_command_token", it)
+            secureStorage.putStringDurably("tpv_command_enrolled", "true")
+        }
+        return alta.code()
+    }
+
     // Event-triggered only: safe foreground, network recovery or socket notification.
     suspend fun commandsReady(terminalId: String): Result<List<PendingCommandDto>> = try {
         if (secureStorage.getString("tpv_command_enrolled") != "true" && secureStorage.getToken() != null) {
@@ -107,13 +119,17 @@ class HeartbeatRepository @Inject constructor(
                 val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
                 secureStorage.putStringDurably("tpv_command_token", bytes.joinToString("") { "%02x".format(it) })
             }
-            val credential = apiService.provisionCommandCredential(mapOf("terminalId" to terminalId))
-            credential.body()?.commandToken?.let {
-                secureStorage.putStringDurably("tpv_command_token", it)
-                secureStorage.putStringDurably("tpv_command_enrolled", "true")
-            }
+            darDeAltaLaLlaveDeOrdenes(terminalId)
         }
-        val response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
+        var response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
+        // 401 = la llave de órdenes no coincide con el servidor (base restaurada, otra app en la terminal). Con la sesión del cajero se da
+        // de alta otra vez. El servidor la da o la niega una sola vez por proceso: el latido llama esto seguido y, si no se arregla, se
+        // calla hasta el siguiente arranque. Sin respuesta, un 5xx o una sesión vencida no gastan el intento.
+        if (response.code() == 401 && !llaveDeOrdenesReparada && secureStorage.getToken() != null) {
+            val alta = darDeAltaLaLlaveDeOrdenes(terminalId)
+            if (alta in 200..299 || alta == 403) llaveDeOrdenesReparada = true
+            if (alta in 200..299) response = apiService.commandsReady(mapOf("terminalId" to terminalId, "sessionId" to commandSessionId))
+        }
         if (response.isSuccessful && response.body() != null) Result.Success(response.body()!!.pendingCommands)
         else Result.Error(ApiException.HttpError(response.code(), "No se pudieron recuperar los comandos"))
     } catch (e: Exception) {

@@ -327,6 +327,42 @@ class TokenAuthenticatorTest {
     // Helper functions
     // ═════════════════════════════════════════════════════════════════════════
 
+    // ===== La llave de órdenes rechazada no es una sesión vencida =====
+
+    private fun rechazoDeLaLlave(ruta: String, conLlave: Boolean = true): Response {
+        val request = Request.Builder()
+            .url("https://api.avoqado.io/api/v1/$ruta")
+            .header("Authorization", "Bearer $oldToken")
+            .apply { if (conLlave) header("X-TPV-Command-Token", "a".repeat(64)) }
+            .build()
+        return create401Response(request)
+    }
+
+    @Test
+    fun `una llave de ordenes rechazada no renueva la sesion ni enciende el letrero`() {
+        every { secureStorage.getToken() } returns oldToken
+
+        listOf("tpv/commands/ready", "tpv/commands/permit", "tpv/command-ack").forEach { ruta ->
+            assertNull(ruta, authenticator.authenticate(null, rechazoDeLaLlave(ruta)))
+        }
+
+        coVerify(exactly = 0) { authRepository.refreshAccessToken() }
+        verify(exactly = 0) { sessionManager.notifySessionVerifying() }
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    @Test
+    fun `sin llave de ordenes el 401 de esas rutas si es la sesion del cajero y se renueva`() {
+        coEvery { authRepository.refreshAccessToken() } returns
+            Result.Success(RefreshTokenResponse(accessToken = newToken, expiresIn = 3600, tokenType = "Bearer"))
+        every { secureStorage.getToken() } returnsMany listOf(oldToken, newToken, newToken)
+
+        val reintento = authenticator.authenticate(null, rechazoDeLaLlave("tpv/commands/ready", conLlave = false))
+
+        assertEquals("Bearer $newToken", reintento?.header("Authorization"))
+        coVerify(exactly = 1) { authRepository.refreshAccessToken() }
+    }
+
     /**
      * Create a test request with Authorization header
      */

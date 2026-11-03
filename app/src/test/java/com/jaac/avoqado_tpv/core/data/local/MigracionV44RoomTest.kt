@@ -97,7 +97,7 @@ class MigracionV44RoomTest {
             sql.query("SELECT COUNT(*) FROM local_crypto_operations").use { c -> c.moveToFirst(); assertThat(c.getInt(0)).isEqualTo(0) }
         } finally { migrated.close() }
         val reopened = DatabaseModule.provideDatabase(context)
-        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(44) } finally { reopened.close() }
+        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(45) } finally { reopened.close() }
     }
 
     private companion object {

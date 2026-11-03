@@ -115,6 +115,10 @@ internal object CobroRemotoDelPos {
      * Revertir es cambiar esta constante a `false`: la barrera durable
      * ([com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.iniciarEjecucionNoTarjeta])
      * sigue protegiendo la carrera contra el cancel en los dos casos.
+     *
+     * ⚠️ Pero ya NO basta con revertir (D6, 2-nov; M3 de su revisión): con el enlace remoto perdido (`_socketRequestId` nulo)
+     * `puedeArrancarEfectivoOCripto` devuelve true, y un ViewModel nacido remoto registraría el efectivo como venta LOCAL con el
+     * POS ya avisado de «cancelado». Antes de revertir hay que cerrar ese hueco (la guarda de identidad de D6 sólo cubre tarjeta).
      */
     const val OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO = true
 

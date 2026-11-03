@@ -17,7 +17,7 @@
 - **[Pruebas] `ShiftPaymentBarrierRoomTest` ya no se cuelga de vez en cuando**: el ViewModel de Caja corría en los hilos de Room con `UnconfinedTestDispatcher` y dos corrutinas podían cruzar sus escrituras del estado (1 minuto colgada, 2 de 100 con la CPU ocupada). Ahora corre en un solo hilo con `StandardTestDispatcher`, como en la terminal. Sólo cambia la prueba
 
 ### **⚠️ Al publicar**
-- **Sale primero el SERVIDOR** con «ninguna duda de cobro sin salida»: sólo él lee `terminalPaymentExecutionVersion`, `executionAlive` y `closedForExecution`. Un servidor anterior los ignora y la terminal se comporta como hoy (no suelta nada nuevo).
+- **Sale primero el SERVIDOR, y ese orden es OBLIGATORIO** (no sólo recomendado) con «ninguna duda de cobro sin salida»: sólo él lee `terminalPaymentExecutionVersion`, `executionAlive` y `closedForExecution`. Un servidor anterior los ignora, y con D6 la terminal ya no resuelve sola una solicitud heredada sin dueño (contesta ACTIVE y sólo certifica el cese): frente a un servidor anterior esa solicitud pasa de resolverse sola a contestar ACTIVE con veto. Publicar la TPV antes que el SERVIDOR es una regresión.
 - **La base del aparato sube de v44 a v45** («ninguna duda de cobro sin salida», B1: la solicitud del POS «cerrada para ejecución» y «el SDK regresó», dos columnas nuevas, aditivas, que nacen vacías; D6: `durable_barrier_version`, que nace en 0 para todo lo que ya existe). Subir de versión no pierde nada. **Bajar a una versión con v44 (la 2.14.0 o anteriores) BORRA la base del aparato** (cola de pagos, reembolsos y cobros remotos pendientes): para retroceder, usa sólo un APK que ya conozca la v45.
 
 ---

@@ -272,6 +272,11 @@ class RemotePaymentInbox(
      * ⚠️ Residuo aceptado (caso 1): si la pantalla muere sin escribir su final y el proceso sigue vivo, la propiedad sigue en
      * memoria y la respuesta sigue siendo «viva»: la terminal queda apartada COMO HOY (los 20 min del servidor, la declaración
      * del cajero o soporte). Sin dinero de por medio, contestar «viva» nunca libera nada.
+     * ⚠️ Salvedad (D6, 2-nov; M2 de su revisión): en una RECEIVED HEREDADA que el APK nuevo reclama (ventana de milisegundos: el
+     * proceso viejo murió entre el `insert` y el reclamo, y el servidor reentregó antes de sondear) la pantalla no escribe su
+     * negativo (`persistResult` ⇒ null) y la propiedad queda en memoria, así que cada sonda contesta «viva» y el servidor sella
+     * `probeActiveAt`: ahí la declaración del cajero TAMBIÉN se veta. La salida es REINICIAR la app de la terminal: sin dueño,
+     * el caso 3 certifica el cese. Un cobro aprobado no se afecta.
      */
     private suspend fun respuestaEnProceso(
         fila: RemotePaymentRequestEntity,

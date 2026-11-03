@@ -425,7 +425,10 @@ class LedgerServerRecovery @Inject constructor(
      * Reglas, en este orden:
      *  1. S6 manda ([LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud]): válida, de ESTE intento, limpia y sin vínculo. Si trajo
      *     Payment, PENDING, APPROVED, colisión, evidencia sin dueño o contradicción, eso ya quedó guardado ANTES y aquí no se
-     *     pregunta nada.
+     *     pregunta nada. (Defensa en profundidad A PROPÓSITO: la guarda del cuerpo, el prefiltro de la fila que lee lo recién
+     *     escrito y el CAS cubren huecos distintos —el cuerpo de ESTA respuesta aunque su escritura falle, lo que dejó una pasada
+     *     anterior, la carrera dentro del UPDATE—; quitar sólo una no tumba la prueba de S6, quitar la guarda y el prefiltro a la
+     *     vez sí, y el CAS sigue siendo la última palabra sobre cerrar.)
      *  2. La solicitud sale del contexto DURABLE de la fila ([solicitudDurableDe]), nunca de una preferencia mutable, y la bandeja
      *     local de esa solicitud —si existe— es de este negocio.
      *  3. Sólo la declaración de una PERSONA sobre ESA solicitud libera ([LiberacionDelServidor.desdeConsultaPorSolicitud]): ni

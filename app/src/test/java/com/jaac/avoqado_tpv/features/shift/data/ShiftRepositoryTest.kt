@@ -361,6 +361,21 @@ class ShiftRepositoryTest {
         coVerify(exactly = 0) { apiService.closeShift(any(), any(), any()) }
     }
 
+    @Test fun `M-3 una excepcion cruda no le llega al cajero, sale el texto generico`() = runTest {
+        database.cachedShiftDao().cacheShift(com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity(
+            "c000000000000000000000031", "venue-1", "OPEN", "staff-1", "", "fecha ilegible", "0", 0, 0, 1))
+
+        val result = repository.closeShift("venue-1", "c000000000000000000000031")
+
+        assertThat((result as Result.Error).exception.userMessage).isEqualTo("No se pudo guardar Caja en este aparato.")
+    }
+
+    @Test fun `M-3 el motivo escrito para el cajero si le llega`() = runTest {
+        val result = repository.closeShift("venue-1", "c000000000000000000000099")
+
+        assertThat((result as Result.Error).exception.userMessage).contains("No se encontró evidencia de la caja original")
+    }
+
     @Test fun `P1 si Room no se puede leer no guarda ni envia un cierre a ciegas`() = runTest {
         database.close()
         val result = repository.closeShift("venue-1", "c000000000000000000000031")

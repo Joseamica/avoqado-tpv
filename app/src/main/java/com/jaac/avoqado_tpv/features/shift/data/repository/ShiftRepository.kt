@@ -969,7 +969,7 @@ class ShiftRepository(
             }
             check(alreadyOpen == null || alreadyOpen.localSessionId == sourceLocalId) { "Ya hay otra caja abierta en este aparato." }
             val now = maxOf(System.currentTimeMillis(), (dao.ultima(venueId)?.createdAt ?: 0L) + 1)
-            check(dao.aceptarAdopcion(venueId, sourceLocalId, source.serverShiftId, source.cashDrawerSessionId, now) == 1)
+            check(dao.aceptarAdopcion(venueId, sourceLocalId, source.serverShiftId, source.cashDrawerSessionId, now) == 1) { "La caja cambió. Vuelve a abrir Caja." }
             val row = LocalShiftSessionEntity(localSessionId = CuidV1.next(), venueId = venueId, openingKind = "REMOTE",
                 serverShiftId = source.serverShiftId, cashDrawerSessionId = source.cashDrawerSessionId,
                 openingStatus = "CONFIRMED", originalOpenedAt = localGson.fromJson(source.openingEvidenceJson,
@@ -1162,7 +1162,8 @@ class ShiftRepository(
         Result.Error(error)
     } catch (error: Exception) {
         Timber.w(error, "No se pudo guardar el gesto local de Caja")
-        Result.Error(ApiException.ValidationError(error.message ?: "No se pudo guardar Caja en este aparato."))
+        // Al cajero sólo le llegan los motivos de `check`/`error`, escritos para él; nunca el texto de SQLite o de un parser (M-3).
+        Result.Error(ApiException.ValidationError((error as? IllegalStateException)?.message ?: "No se pudo guardar Caja en este aparato."))
     }
 
     private companion object {

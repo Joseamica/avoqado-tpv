@@ -204,6 +204,15 @@ class EstadoDelProcesoTest {
         assertThat(shadowOf(siguiente).nextStartedActivity).isNull()
     }
 
+    @Test fun `D5 la copia que el launcher crea y cierra enseguida no cuenta como quien pidio el cobro`() = conElGuardia {
+        // Codex (3-nov): tocar el ícono mientras la app revive apila una MainActivity que se cierra en su `onCreate`, antes de arrancar.
+        Robolectric.buildActivity(PantallaDePrueba::class.java).create().get().finish()
+
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+
+        assertThat(pantalla.abrioElLector).isFalse()
+    }
+
     @Test fun `D5 restaurada con estado no abre otra app - la nuestra sigue debajo y Android la restaura`() = conElGuardia {
         val deOtroProceso = Bundle().apply { putString(EstadoDelProceso.CLAVE, "proceso-muerto") }
 

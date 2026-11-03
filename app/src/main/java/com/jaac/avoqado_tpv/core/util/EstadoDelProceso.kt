@@ -50,21 +50,18 @@ internal object EstadoDelProceso {
  *
  * D5 (QA en la N86, 3-nov): si la app muere mientras esa pantalla todavía está abriendo, Android la conserva y quita `MainActivity`, que
  * aún no guardaba su estado (medido a 0.9 s). Al revivir llega SIN estado, igual que un cobro nuevo, y el lector se abría sin socket ni
- * nadie que oyera el resultado. Un cobro sólo lo pide una pantalla nuestra (`angelPaySdkLauncher`), así que si ninguna ha nacido en este
+ * nadie que oyera el resultado. Un cobro sólo lo pide una pantalla nuestra (`angelPaySdkLauncher`), así que si ninguna ha arrancado en este
  * proceso, nadie lo pidió: se le quita el extra y se abre la app, porque debajo ya no hay nada. Sin ella no hay socket y el POS sigue esperando.
  */
 internal class PantallaDelSdkNoSeRestaura(
     private val pantallaDelSdk: String = NOMBRE,
 ) : Application.ActivityLifecycleCallbacks {
-    private var yaNacioOtraPantalla = false
+    private var yaArrancoOtraPantalla = false
 
     override fun onActivityCreated(activity: Activity, guardado: Bundle?) {
-        if (activity.javaClass.name != pantallaDelSdk) {
-            yaNacioOtraPantalla = true
-            return
-        }
+        if (activity.javaClass.name != pantallaDelSdk) return
         val restaurada = guardado != null && EstadoDelProceso.paraCrear(guardado) == null
-        val sinQuienLaPidiera = guardado == null && !yaNacioOtraPantalla
+        val sinQuienLaPidiera = guardado == null && !yaArrancoOtraPantalla
         if (restaurada || sinQuienLaPidiera) {
             Timber.w("🧭 [PantallaDelSdk] Proceso nuevo: la pantalla del SDK ya no abre el lector | restaurada=$restaurada")
             activity.intent?.removeExtra(EXTRA_DEL_COBRO)
@@ -81,7 +78,14 @@ internal class PantallaDelSdkNoSeRestaura(
         if (activity.javaClass.name == pantallaDelSdk) EstadoDelProceso.firmar(outState)
     }
 
-    override fun onActivityStarted(activity: Activity) = Unit
+    /**
+     * Al ARRANCAR, no al crearse: la copia que el launcher apila y cierra en su `onCreate` nunca arranca, y un cobro sólo sale de una
+     * pantalla ya arrancada, porque su composición corre después.
+     */
+    override fun onActivityStarted(activity: Activity) {
+        if (activity.javaClass.name != pantallaDelSdk) yaArrancoOtraPantalla = true
+    }
+
     override fun onActivityResumed(activity: Activity) = Unit
     override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivityStopped(activity: Activity) = Unit

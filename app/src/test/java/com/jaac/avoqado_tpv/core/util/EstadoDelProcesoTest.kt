@@ -51,16 +51,6 @@ class EstadoDelProcesoTest {
         assertThat(EstadoDelProceso.paraCrear(guardadoPor(null), esteProceso = "proceso-nuevo")).isNull()
     }
 
-    /**
-     * Por qué se firma y no se cuenta «la primera creación del proceso»: la copia que el launcher de AngelPay crea y cierra enseguida
-     * (sin estado) gastaría esa cuenta, y la segunda de dos `MainActivity` apiladas restauraría el cobro. Aquí no hay nada que gastar.
-     */
-    @Test fun `D2 ni la copia del launcher ni una segunda pantalla apilada dejan restaurar el cobro`() {
-        assertThat(EstadoDelProceso.paraCrear(null, esteProceso = "proceso-nuevo")).isNull() // la copia del launcher
-        assertThat(EstadoDelProceso.paraCrear(guardadoPor("proceso-muerto"), esteProceso = "proceso-nuevo")).isNull() // la de abajo
-        assertThat(EstadoDelProceso.paraCrear(guardadoPor("proceso-muerto"), esteProceso = "proceso-nuevo")).isNull() // otra apilada
-    }
-
     // ── Con una pantalla de verdad: lo que la decisión le hace a `ComponentActivity` ─────────────────────────────────────────
 
     /** Las mismas tres líneas de `MainActivity`: firma al guardar y crea con lo que decide [EstadoDelProceso]. */

@@ -710,8 +710,8 @@ class CancelTrasReclamarRoomTest {
     }
 
     /** Una Nexgo con el SDK embebido ENCENDIDO; el respaldo app-a-app compilado o no según [respaldoCompilado]. */
-    private fun nexgoConSdk(ajustes: TpvSettingsRepository, respaldoCompilado: Boolean) =
-        PaymentAttemptLedger(db.paymentAttemptDao(), ajustes, UNA_SOLA_PANTALLA).apply {
+    private fun nexgoConSdk(ajustes: TpvSettingsRepository, respaldoCompilado: Boolean, pila: PilaDePantallas = UNA_SOLA_PANTALLA) =
+        PaymentAttemptLedger(db.paymentAttemptDao(), ajustes, pila).apply {
             marcaDelBuild = MarcaDelBuild(procesador = "ANGELPAY", sdkAngelPayCompilado = true, respaldoAppAAppCompilado = respaldoCompilado)
         }
 
@@ -834,28 +834,39 @@ class CancelTrasReclamarRoomTest {
     }
 
     /**
-     * D2 (QA 2-nov) con la pantalla del SDK restaurada encima (Codex TPV r1 #1). Android revive el proceso con `PaymentActivity`
-     * arriba: su `onCreate` (AAR 1.0.22) relanza el cobro con `angelpay_req` sin mirar `savedInstanceState`. Al terminar, `MainActivity`
-     * se crea SIN estado y su resultado no le llega a nadie (`EstadoDelProcesoTest`). Lo que tiene que quedar: el intento en DUDA, sin
-     * «no se cobró» y sin otro lector de esa solicitud.
+     * D2 (QA 2-nov) con la pantalla del SDK apilada al morir el proceso (Codex TPV r1 #1). Sólo la Nexgo tiene esa pantalla. Desde I-1
+     * un proceso nuevo ya no le deja relanzar el cobro (`EstadoDelProcesoTest`), pero mientras siga apilada la terminal no certifica.
+     * Lo que tiene que quedar: el intento en DUDA, sin «no se cobró» y sin que se admita otro cobro de esa solicitud, ni antes ni
+     * después del certificado.
+     *
+     * Antes del certificado quien lo frena es la bandeja: la libreta no cerca por solicitud una duda sin dinero. Lo único que llegaba
+     * a ella era la pantalla restaurada, y un proceso nuevo ya no la restaura (D2, I-1).
      */
-    @Test fun `D2 con el SDK restaurado encima no se certifica, y al terminar queda el intento en duda y ningun otro cobro`() = runTest {
+    @Test fun `D2 en la Nexgo con la pantalla del SDK apilada no se certifica, queda en duda, y ni antes ni despues del certificado se admite otro cobro`() = runTest {
+        val ajustes = mockk<TpvSettingsRepository>()
+        every { ajustes.getCurrentSettings() } returns TpvSettings(angelPaySdkEnabled = true, angelPaySdkFallbackEnabled = false)
         assertThat(reclamar()).isEqualTo(RemotePaymentAdmission.READY)
-        assertThat(abrirIntento("a1")).isTrue()
-        assertThat(ledger.markAuthorizing("a1")).isTrue() // el proceso 1 muere con el SDK dentro
+        val procesoMuerto = nexgoConSdk(ajustes, respaldoCompilado = false)
+        assertThat(procesoMuerto.openAttempt("a1", "venue-1", "ANGELPAY", 10_000, 0, "FAST", contexto)).isTrue()
+        assertThat(procesoMuerto.markAuthorizing("a1")).isTrue() // el proceso 1 muere con el SDK dentro
         var pila = listOf(TareaDeLaApp(pantallas = 2, arribaLaPrincipal = false))
-        val libreta = libretaConPila { pila }
-        val coordinador = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta, PaymentStateHolder()))
+        val libreta = nexgoConSdk(ajustes, respaldoCompilado = false) { pila }
+        val bandejaNueva = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta, PaymentStateHolder())
+        val coordinador = RemotePaymentCoordinator(bandejaNueva)
 
         // Al arrancar el proceso nuevo (`LedgerRecoveryTrigger.instalar`), lo que dejó el muerto pasa a «en duda».
         libreta.cuarentenaDeHuerfanos()
         assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
 
-        // Con el SDK encima la terminal no dice «ya no cobra», aunque le llegara una sonda.
+        // Con el SDK apilado la terminal no dice «ya no cobra», aunque le llegara una sonda.
         coordinador.probeSocketPaymentRequest("req-1", "venue-1").let {
             assertThat(it.executionAlive).isTrue()
             assertThat(it.closedForExecution).isFalse()
         }
+
+        // Antes del certificado no se admite otro cobro: la solicitud reentregada ni se entrega ni se puede reclamar.
+        assertThat(bandejaNueva.receive(solicitud)).isEqualTo(RemotePaymentReceiveDecision.AckOnly)
+        assertThat(coordinador.prepareSocketPaymentRequest("req-1", { true }, { "venue-1" })).isEqualTo(RemotePaymentAdmission.NOT_CLAIMABLE)
 
         // El SDK termina: sólo queda la principal, en el Inicio, y ahí sí se certifica.
         pila = listOf(TareaDeLaApp(pantallas = 1, arribaLaPrincipal = true))
@@ -869,8 +880,8 @@ class CancelTrasReclamarRoomTest {
         assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
         assertThat(libreta.cobroSinResolver()?.attemptId).isEqualTo("a1")
         assertThat(bandeja().finalResultJson).isNull()
-        // …ni un segundo cobro: esa solicitud ya no admite otro intento.
-        assertThat(libreta.openAttempt("a2", "venue-1", "BLUMON", 10_000, 0, "FAST", contexto)).isFalse()
+        // …ni un segundo cobro: ahora tampoco la libreta admite otro intento de esa solicitud.
+        assertThat(libreta.openAttempt("a2", "venue-1", "ANGELPAY", 10_000, 0, "FAST", contexto)).isFalse()
     }
 
     // ═══ B2 (22-oct, «ninguna duda de cobro sin salida»): la sonda y el cancel dicen la verdad ═══

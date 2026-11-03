@@ -89,11 +89,21 @@ class CobroRemotoDelPosTest {
         }
     }
 
-    // D1 (QA 2-nov): con el proceso nuevo en el Inicio ninguna pantalla de cobro publica nada, así que esta regla no niega el
-    // certificado de cese. Negarlo era el riesgo de conectar el socket en la «Método de Pago» restaurada, que publica cobro activo.
-    @Test fun `D1 en un proceso nuevo, sin pantalla de cobro, la regla no niega el certificado`() {
+    // D1 (QA 2-nov): en un proceso nuevo, con la app en el Inicio, esta regla no niega el certificado de cese. Lo sostienen dos
+    // cosas, y se fija cada una: nadie ha publicado nada al nacer, y el cobro activo sólo lo publican las pantallas de cobro.
+    @Test fun `D1 el estado de un proceso recien nacido no niega el certificado`() {
         val recienNacido = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder()
         assertThat(CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(recienNacido)).isFalse()
+    }
+
+    @Test fun `D1 el cobro activo solo lo publican las pantallas de cobro, que en el Inicio no existen`() {
+        val quienLoPublica = java.io.File("src").walkTopDown()
+            .filter { it.extension == "kt" && !it.path.contains("/test/") && !it.path.contains("/androidTest/") }
+            .filter { "setChargeAttemptActive(" in it.readText() }
+            .map { it.name }
+            .toSet()
+
+        assertThat(quienLoPublica).containsExactly("PaymentStateHolder.kt", "PaymentViewModel.kt", "AngelPayPaymentViewModel.kt")
     }
 
     @Test fun `P1 la navegacion admite con las banderas del proveedor - la misma entrada que lee la bandeja`() {

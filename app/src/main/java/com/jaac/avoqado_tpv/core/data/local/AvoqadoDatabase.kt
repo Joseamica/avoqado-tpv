@@ -195,7 +195,8 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // ⭐ Version 45 (21-oct-2026, «ninguna duda de cobro sin salida», B1; renumerada el 2-nov al integrar): `remote_payment_requests.execution_closed_at` (la
     // solicitud quedó CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo ni empezar) y
     // `payment_attempts.sdk_returned_at` (el SDK regresó: terminó toda su interacción con ese intento). Aditiva y nullable
-    // (MIGRATION_44_45).
+    // (MIGRATION_44_45). D6 (2-nov), en la misma v45 porque aún no se publica: `remote_payment_requests.durable_barrier_version`
+    // (la solicitud nació bajo la barrera durable de este APK), con default 0 para todo lo que ya existe.
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v44 (p. ej. la 2.14.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
     // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v45.
@@ -2212,6 +2213,10 @@ abstract class AvoqadoDatabase : RoomDatabase() {
          * que ya había nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es
          * otro proceso, así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe
          * ninguna fila. Idempotente por `PRAGMA table_info`.
+         *
+         * D6 (2-nov), en la misma versión porque la v45 aún no se publica: `remote_payment_requests.durable_barrier_version`,
+         * `INTEGER NOT NULL DEFAULT 0`. Toda solicitud que ya existe queda en 0, aunque sea reciente y tenga intentos rastreados:
+         * su historia completa no está acreditada y una versión vieja pudo cobrar sin anotarlo.
          */
         val MIGRATION_44_45 = object : Migration(44, 45) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -2229,6 +2234,10 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 }
                 if (!columnaExiste("payment_attempts", "sdk_returned_at")) {
                     db.execSQL("ALTER TABLE payment_attempts ADD COLUMN sdk_returned_at INTEGER")
+                }
+                // D6: sin backfill a propósito. Toda fila que ya existe queda en 0, también las recientes con intentos rastreados.
+                if (!columnaExiste("remote_payment_requests", "durable_barrier_version")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN durable_barrier_version INTEGER NOT NULL DEFAULT 0")
                 }
             }
         }

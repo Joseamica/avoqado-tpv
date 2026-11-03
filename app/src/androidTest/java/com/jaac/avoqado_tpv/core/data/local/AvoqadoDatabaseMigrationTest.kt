@@ -667,7 +667,8 @@ class AvoqadoDatabaseMigrationTest {
     /**
      * v44 → v45 (B1, «ninguna duda de cobro sin salida», 21-oct): `remote_payment_requests.execution_closed_at` y
      * `payment_attempts.sdk_returned_at`. Aditiva y nullable: una solicitud reclamada y el dinero de la libreta sobreviven
-     * intactos, nada se da por cerrado para ejecución y ningún SDK por regresado. Room valida contra `45.json`.
+     * intactos, nada se da por cerrado para ejecución y ningún SDK por regresado. D6: lo que ya existía queda heredado
+     * (`durable_barrier_version` = 0). Room valida contra `45.json`.
      * (Gemelo en Robolectric: `MigracionV45RoomTest`, que sí corre sin aparato.)
      */
     @Test
@@ -693,13 +694,14 @@ class AvoqadoDatabaseMigrationTest {
         val migrated = helper.runMigrationsAndValidate(TEST_DB, 45, true, AvoqadoDatabase.MIGRATION_44_45)
 
         migrated.query(
-            "SELECT status, amount_cents, tip_cents, execution_closed_at FROM remote_payment_requests WHERE request_id = 'req-v44'",
+            "SELECT status, amount_cents, tip_cents, execution_closed_at, durable_barrier_version FROM remote_payment_requests WHERE request_id = 'req-v44'",
         ).use { c ->
             assertThat(c.moveToFirst()).isTrue()
             assertThat(c.getString(0)).isEqualTo("PROCESSING")
             assertThat(c.getLong(1)).isEqualTo(47_500L)
             assertThat(c.getLong(2)).isEqualTo(4_750L)
             assertThat(c.isNull(3)).isTrue() // nada se da por cerrado para ejecución al actualizar
+            assertThat(c.getInt(4)).isEqualTo(0) // D6: una fila que ya existía nunca nace bajo la barrera
         }
         migrated.query(
             "SELECT state, host_approved, amount_cents, process_token, sdk_returned_at FROM payment_attempts WHERE attempt_id = 'a-v44'",

@@ -62,6 +62,17 @@ data class RemotePaymentRequestEntity(
      * solicitud: el status sigue PROCESSING a propósito y el dinero tardío la resuelve por su camino. Room v45.
      */
     @ColumnInfo(name = "execution_closed_at") val executionClosedAt: Long? = null,
+    /**
+     * D6 (2-nov, «ninguna duda de cobro sin salida»): PROCEDENCIA local de la fila. [VERSION_DE_LA_BARRERA_DURABLE] = esta
+     * solicitud NACIÓ en un APK que obliga a reservar el intento, con la identidad original de la solicitud, antes de entrar
+     * a cualquier SDK; 0 = su historia completa no está acreditada (heredada, o lápida). Decide si la AUSENCIA de intentos
+     * significa algo: sin esa garantía, «no hay fila en la libreta» no prueba «no se cobró».
+     *
+     * 🔴 No es la versión del APK ni una capacidad del servidor ([attemptLinkVersion] mide lo segundo) y NUNCA se promociona:
+     * el único escritor de 1 es [from] al preparar el primer insert. Ni un duplicado, ni un reclamo, ni un intento nuevo, ni la
+     * migración la suben: un falso «heredada» conserva una duda; un falso «nueva» puede permitir un cobro doble. Room v45.
+     */
+    @ColumnInfo(name = "durable_barrier_version", defaultValue = "0") val durableBarrierVersion: Int = 0,
 ) {
     fun sameMoneyContract(event: SocketEvent.TerminalPaymentRequest): Boolean =
         venueId == event.venueId &&
@@ -93,6 +104,8 @@ data class RemotePaymentRequestEntity(
          * contrato de dinero) y NUNCA se ejecuta: si la solicitud con ese `requestId` llega después, `receive` la rechaza.
          */
         const val STATUS_NOT_FOUND_ANSWERED = "NOT_FOUND_ANSWERED"
+        /** D6: el valor de [durableBarrierVersion] de una solicitud que nace en este APK. */
+        const val VERSION_DE_LA_BARRERA_DURABLE = 1
 
         fun tombstone(requestId: String, venueId: String, now: Long = System.currentTimeMillis()) = RemotePaymentRequestEntity(
             requestId = requestId,
@@ -130,6 +143,8 @@ data class RemotePaymentRequestEntity(
             status = status,
             finalResultJson = finalResultJson,
             attemptLinkVersion = event.attemptLinkVersion,
+            // D6: el ÚNICO escritor de 1. No viene del socket; el `INSERT IGNORE` de `receive` decide si la fila nació aquí.
+            durableBarrierVersion = VERSION_DE_LA_BARRERA_DURABLE,
             createdAt = now,
             updatedAt = now,
         )

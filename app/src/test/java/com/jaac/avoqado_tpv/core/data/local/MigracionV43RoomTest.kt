@@ -87,6 +87,8 @@ class MigracionV43RoomTest {
                 .isEqualTo("ref-dev-1:50.00:PENDING")
             assertThat(unaFila(db, "SELECT request_id || ':' || status || ':' || amount_cents FROM remote_payment_requests"))
                 .isEqualTo("req-1:EXECUTING:20000")
+            // D6, por la cadena desde la v42: lo que ya existía queda heredado.
+            assertThat(unaFila(db, "SELECT durable_barrier_version FROM remote_payment_requests")).isEqualTo("0")
         } finally {
             db.close()
         }

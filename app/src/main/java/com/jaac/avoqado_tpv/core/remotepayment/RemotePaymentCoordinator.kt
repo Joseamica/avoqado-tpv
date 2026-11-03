@@ -99,7 +99,7 @@ class RemotePaymentCoordinator @Inject constructor(
      * memoria a propósito: muere con el proceso. B2 (T3, 22-oct): sin ella y SIN intentos, la solicitud la dejó un
      * proceso muerto que nunca tocó el SDK (la libreta es write-ahead obligatoria), así que el cancel y la sonda la
      * resuelven por `resolverDesenlaceNegativo` (ACCEPTED / RECEIVED_CANCELLED, con la cerca puesta); con intentos
-     * pendientes, la libreta certifica o no el cese. No se registra desde
+     * pendientes, o en una fila heredada que no nació bajo la barrera durable (D6), la libreta certifica o no el cese. No se registra desde
      * [claimSocketPaymentRequest], que no abre ninguna pantalla (sólo lo usan las pruebas).
      */
     private val reclamadasEnEsteProceso = mutableSetOf<String>()

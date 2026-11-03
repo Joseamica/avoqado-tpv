@@ -326,6 +326,8 @@ interface RemotePaymentRequestDao {
      *  - si NO hay intentos, sólo con PRUEBA DE PROPIEDAD en este proceso (el `requestId` lo reclamó este
      *    proceso): sin ella este CAS devuelve false, y `RemotePaymentInbox.cancel` sigue por `resolverDesenlaceNegativo`
      *    (B2/T3, 22-oct: con la libreta write-ahead, cero intentos = nadie tocó el SDK ⇒ ACCEPTED con la cerca puesta);
+     *  - D6 (2-nov): sin esa prueba, una fila HEREDADA ([RemotePaymentRequestEntity.durableBarrierVersion]) tampoco se acepta,
+     *    con los intentos que tenga: un PREPARANDO, una DESCARTADA o un rechazo no prueban que no hubo otro intento invisible;
      *  - «entre intentos» (sólo DESCARTADA, p. ej. tras un rechazo reintentable): se acepta, porque en la
      *    MISMA transacción se escribe `cancel_accepted_at` y la cerca de [PaymentAttemptDao.reserveTerminal]
      *    impide ese reintento.
@@ -343,6 +345,7 @@ interface RemotePaymentRequestDao {
         if (fila.status != RemotePaymentRequestEntity.STATUS_PROCESSING || fila.executionStartedAt != null ||
             fila.cancelAcceptedAt != null || fila.finalEmittedAt != null
         ) return false
+        if (!propiedadEnEsteProceso && fila.durableBarrierVersion < RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE) return false
         if (contarIntentosBloqueadores(requestId) > 0) return false
         if (contarIntentosDeSolicitud(requestId) == 0 && !propiedadEnEsteProceso) return false
         descartarPreparandoDeSolicitud(requestId, now, "remote_cancel")
@@ -357,6 +360,9 @@ interface RemotePaymentRequestDao {
      * 🛑 H.3 + evidencia POR INTENTO — el ÚNICO punto que escribe un desenlace NEGATIVO (failed/cancelled)
      * de una solicitud remota. La evidencia no la decide la pantalla sino la libreta, en la misma
      * transacción que el commit del final:
+     *  - D6 (2-nov): una solicitud reclamada que no nació bajo la barrera durable
+     *    ([RemotePaymentRequestEntity.durableBarrierVersion]) ⇒ NO se escribe nada (null), con los intentos que tenga: su
+     *    libreta no cuenta la historia completa, una versión vieja pudo cobrar sin anotarlo. Ese «no se cobró» lo dice una persona;
      *  - un intento correlacionado incierto, en curso o ya cobrado, una fila heredada, o efectivo/cripto
      *    arrancado ⇒ NO se escribe nada (null): la solicitud se conserva como incierta y nunca viaja con
      *    la evidencia de un intento anterior;
@@ -373,6 +379,9 @@ interface RemotePaymentRequestDao {
         val fila = getById(requestId) ?: return null
         if (fila.status != RemotePaymentRequestEntity.STATUS_RECEIVED &&
             fila.status != RemotePaymentRequestEntity.STATUS_PROCESSING
+        ) return null
+        if (fila.status == RemotePaymentRequestEntity.STATUS_PROCESSING &&
+            fila.durableBarrierVersion < RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE
         ) return null
         if (fila.executionStartedAt != null) return null
         if (contarIntentosBloqueadores(requestId) > 0) return null

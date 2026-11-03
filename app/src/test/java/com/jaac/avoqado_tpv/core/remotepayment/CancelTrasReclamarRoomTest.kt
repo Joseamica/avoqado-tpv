@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud
@@ -1134,5 +1135,215 @@ class CancelTrasReclamarRoomTest {
         assertThat(db.paymentAttemptDao().getById("a1")).isEqualTo(intentoLiberado)
         assertThat(abrirIntento("a2")).isFalse()
         assertThat(ledger.cercaDeSolicitud("req-1")).isEqualTo(CercaDeSolicitud.CERRADA)
+    }
+
+    // ═══ D6 (2-nov, «ninguna duda de cobro sin salida»): sólo la libreta de una fila que NACIÓ bajo la barrera prueba algo ═══
+    //
+    // Una versión vieja de la app pudo cobrar sin anotarlo. En una fila heredada (`durable_barrier_version` = 0), «la libreta no
+    // tiene nada que bloquee» no prueba «no se cobró»: ni con cero intentos, ni con un PREPARANDO/DESCARTADA nuevo, ni con un
+    // rechazo A rastreado (un intento B invisible no deja rastro). Lo que sí se puede certificar es que ya nada corre: el «no se
+    // cobró» de esa venta lo dice una persona.
+
+    private enum class Historia { CERO_INTENTOS, PREPARANDO, DESCARTADA, RECHAZO_DEL_BANCO }
+
+    /** Una solicitud reclamada por un proceso que ya murió, con su procedencia y su historia en la libreta. */
+    private suspend fun sembrarSinDueno(id: String, barrera: Int, historia: Historia) {
+        db.remotePaymentRequestDao().insert(
+            RemotePaymentRequestEntity.from(solicitud.copy(requestId = id), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+                .copy(durableBarrierVersion = barrera),
+        )
+        val estado = when (historia) {
+            Historia.CERO_INTENTOS -> return
+            Historia.PREPARANDO -> PaymentAttemptEntity.STATE_PREPARANDO
+            Historia.DESCARTADA, Historia.RECHAZO_DEL_BANCO -> PaymentAttemptEntity.STATE_DESCARTADA
+        }
+        db.paymentAttemptDao().insert(
+            PaymentAttemptEntity(
+                attemptId = "a-$id", venueId = "venue-1", processor = "BLUMON", state = estado,
+                amountCents = 10_000, tipCents = 0, recordingRoute = "FAST",
+                paymentContextJson = """{"terminalPaymentRequestId":"$id"}""", createdAt = 1, updatedAt = 1,
+                terminalPaymentRequestId = id, processToken = "proceso-muerto",
+                hostApproved = false.takeIf { historia == Historia.RECHAZO_DEL_BANCO },
+            ),
+        )
+    }
+
+    /** Sin propiedad y sin la pregunta a la libreta: lo que queda a la vista es sólo el camino del negativo. */
+    private fun bandejaSinCertificarElCese() = RemotePaymentInbox(
+        db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(),
+        laTerminalRechazariaUnaVentaNueva = { false },
+    )
+
+    private suspend fun sinNingunFinal(id: String, contexto: String) {
+        val fila = db.remotePaymentRequestDao().getById(id)!!
+        assertWithMessage(contexto).that(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        assertWithMessage(contexto).that(fila.finalResultJson).isNull()
+        assertWithMessage(contexto).that(fila.finalEmittedAt).isNull()
+        assertWithMessage(contexto).that(fila.cancelAcceptedAt).isNull()
+    }
+
+    @Test fun `D6 P1 heredada sin dueno - ni la sonda ni el cancel fabrican un negativo y no descartan nada`() = runTest {
+        val bandejaSinDueno = bandejaSinCertificarElCese()
+        for (historia in Historia.values()) {
+            val enSonda = "sonda-$historia"
+            val enCancel = "cancel-$historia"
+            sembrarSinDueno(enSonda, barrera = 0, historia)
+            sembrarSinDueno(enCancel, barrera = 0, historia)
+            val intentoEnSonda = db.paymentAttemptDao().getById("a-$enSonda")
+            val intentoEnCancel = db.paymentAttemptDao().getById("a-$enCancel")
+
+            val sonda = bandejaSinDueno.probe(enSonda, "venue-1")
+            val cancel = bandejaSinDueno.cancel(enCancel)
+
+            assertWithMessage("sonda $historia").that(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+            assertWithMessage("sonda $historia").that(sonda.finalResultJson).isNull()
+            assertWithMessage("cancel $historia").that(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            assertWithMessage("cancel $historia").that(cancel.finalResultJson).isNull()
+            sinNingunFinal(enSonda, "sonda $historia")
+            sinNingunFinal(enCancel, "cancel $historia")
+            // Ese negativo tampoco se llevó la reserva: un PREPARANDO sigue PREPARANDO y nadie le escribió un motivo.
+            assertWithMessage("sonda $historia").that(db.paymentAttemptDao().getById("a-$enSonda")).isEqualTo(intentoEnSonda)
+            assertWithMessage("cancel $historia").that(db.paymentAttemptDao().getById("a-$enCancel")).isEqualTo(intentoEnCancel)
+        }
+    }
+
+    @Test fun `D6 P1 control - la MISMA historia nacida bajo la barrera conserva las reglas de hoy`() = runTest {
+        val bandejaSinDueno = bandejaSinCertificarElCese()
+        val nueva = RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE
+        for (historia in Historia.values()) {
+            val enSonda = "sonda-$historia"
+            val enCancel = "cancel-$historia"
+            sembrarSinDueno(enSonda, nueva, historia)
+            sembrarSinDueno(enCancel, nueva, historia)
+
+            val sonda = bandejaSinDueno.probe(enSonda, "venue-1")
+            val cancel = bandejaSinDueno.cancel(enCancel)
+
+            // La sonda pasa por el resolutor: rechazo final sin veto ⇒ PROCESSOR_DECLINED; lo demás, PRE_AUTHORIZATION.
+            assertWithMessage("sonda $historia").that(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.RECEIVED_CANCELLED)
+            val rechazoAcreditado = historia == Historia.RECHAZO_DEL_BANCO
+            val jsonSonda = JSONObject(sonda.finalResultJson!!)
+            assertWithMessage("sonda $historia").that(jsonSonda.optString("status")).isEqualTo(if (rechazoAcreditado) "failed" else "cancelled")
+            assertWithMessage("sonda $historia").that(jsonSonda.optString("outcomeEvidence"))
+                .isEqualTo(if (rechazoAcreditado) "PROCESSOR_DECLINED" else "PRE_AUTHORIZATION")
+            // El cancel acepta con la cerca puesta y sin dejar viva ninguna reserva.
+            assertWithMessage("cancel $historia").that(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACCEPTED)
+            assertWithMessage("cancel $historia").that(JSONObject(cancel.finalResultJson!!).optString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+            assertWithMessage("cancel $historia").that(ledger.openAttempt("otro-$enCancel", "venue-1", "BLUMON", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"$enCancel"}""")).isFalse()
+            if (historia == Historia.PREPARANDO) {
+                assertThat(db.paymentAttemptDao().getById("a-$enSonda")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+                assertThat(db.paymentAttemptDao().getById("a-$enCancel")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+            }
+        }
+    }
+
+    @Test fun `D6 P1 una fila que nacio por receive y cuyo proceso murio antes de abrir intento sigue saliendo por PRE_AUTHORIZATION`() = runTest {
+        assertThat(reclamar()).isEqualTo(RemotePaymentAdmission.READY)
+
+        val sonda = procesoNuevo().coordinador.probeSocketPaymentRequest("req-1", "venue-1")
+
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.RECEIVED_CANCELLED)
+        assertThat(JSONObject(sonda.finalResultJson!!).optString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+    }
+
+    @Test fun `D6 P1 heredada sin dueno - lo unico que la libreta certifica es que ya nada corre`() = runTest {
+        for (historia in Historia.values()) {
+            val enSonda = "sonda-$historia"
+            val enCancel = "cancel-$historia"
+            sembrarSinDueno(enSonda, barrera = 0, historia)
+            sembrarSinDueno(enCancel, barrera = 0, historia)
+            val nuevo = procesoNuevo()
+
+            val sonda = nuevo.coordinador.probeSocketPaymentRequest(enSonda, "venue-1")
+            val cancel = nuevo.coordinador.cancelSocketPaymentRequest(enCancel)
+
+            // El servidor suelta SÓLO la ranura; el «no se cobró» sigue siendo de una persona.
+            assertWithMessage("sonda $historia").that(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+            assertWithMessage("sonda $historia").that(sonda.executionAlive).isFalse()
+            assertWithMessage("sonda $historia").that(sonda.closedForExecution).isTrue()
+            assertWithMessage("cancel $historia").that(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            assertWithMessage("cancel $historia").that(cancel.executionAlive).isFalse()
+            assertWithMessage("cancel $historia").that(cancel.closedForExecution).isTrue()
+            for (id in listOf(enSonda, enCancel)) {
+                sinNingunFinal(id, "$id $historia")
+                assertWithMessage("$id $historia").that(db.remotePaymentRequestDao().getById(id)!!.executionClosedAt).isNotNull()
+                assertWithMessage("$id $historia").that(db.remotePaymentRequestDao().getById(id)!!.durableBarrierVersion).isEqualTo(0)
+                assertWithMessage("$id $historia").that(nuevo.libreta.cercaDeSolicitud(id)).isEqualTo(CercaDeSolicitud.CERRADA)
+            }
+        }
+    }
+
+    @Test fun `D6 P1 heredada con dueno vivo - el cancel conserva su contrato y la propiedad no sube la procedencia`() = runTest {
+        db.remotePaymentRequestDao().insert(RemotePaymentRequestEntity.from(solicitud).copy(durableBarrierVersion = 0))
+        assertThat(coordinator.prepareSocketPaymentRequest("req-1", { true }, { "venue-1" })).isEqualTo(RemotePaymentAdmission.READY)
+
+        // La pantalla de este proceso sigue esperando «Tarjeta»: viva, como siempre.
+        val sonda = coordinator.probeSocketPaymentRequest("req-1", "venue-1")
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+        assertThat(sonda.executionAlive).isTrue()
+        assertThat(sonda.closedForExecution).isFalse()
+
+        val cancel = coordinator.cancelSocketPaymentRequest("req-1")
+
+        assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACCEPTED)
+        assertThat(bandeja().durableBarrierVersion).isEqualTo(0)
+        assertThat(bandeja().cancelAcceptedAt).isNotNull()
+        assertThat(abrirIntento("a1")).isFalse()
+    }
+
+    @Test fun `D6 P1 heredada - el negativo de la pantalla tampoco se escribe y un exito real si`() = runTest {
+        db.remotePaymentRequestDao().insert(RemotePaymentRequestEntity.from(solicitud).copy(durableBarrierVersion = 0))
+        assertThat(coordinator.prepareSocketPaymentRequest("req-1", { true }, { "venue-1" })).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(abrirIntento("a1")).isTrue()
+
+        assertThat(inbox.persistResult("req-1", """{"requestId":"req-1","status":"cancelled"}""")).isNull()
+
+        sinNingunFinal("req-1", "negativo de la pantalla")
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_PREPARANDO)
+        // La guarda es de los NEGATIVOS: el dinero acreditado cierra la solicitud igual.
+        val exito = """{"requestId":"req-1","status":"success","paymentId":"pay-1"}"""
+        assertThat(inbox.persistResult("req-1", exito)).isEqualTo(exito)
+        assertThat(bandeja().status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+        assertThat(bandeja().durableBarrierVersion).isEqualTo(0)
+    }
+
+    @Test fun `D6 P1 lo que ya bloqueaba sigue bloqueando con las dos procedencias, y la procedencia nunca amplia lo elegible`() = runTest {
+        val bandejaSinDueno = bandejaSinCertificarElCese()
+        for (barrera in listOf(0, RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE)) {
+            for (caso in listOf("kernel", "autorizando", "aprobado", "heredado", "evidencia")) {
+                val id = "$caso-$barrera"
+                db.remotePaymentRequestDao().insert(
+                    RemotePaymentRequestEntity.from(solicitud.copy(requestId = id), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+                        .copy(durableBarrierVersion = barrera),
+                )
+                val base = intentoDeOtroProceso("a-$id", PaymentAttemptEntity.STATE_DESCARTADA)
+                    .copy(paymentContextJson = """{"terminalPaymentRequestId":"$id"}""", terminalPaymentRequestId = id)
+                db.paymentAttemptDao().insert(
+                    when (caso) {
+                        "kernel" -> base.copy(state = PaymentAttemptEntity.STATE_KERNEL_ACTIVO)
+                        "autorizando" -> base.copy(state = PaymentAttemptEntity.STATE_AUTORIZANDO)
+                        "aprobado" -> base.copy(state = PaymentAttemptEntity.STATE_HOST_RESPONDIO, hostApproved = true)
+                        "heredado" -> base.copy(legacyShadow = true)
+                        else -> base.copy(serverProcessorEvidence = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+                    },
+                )
+
+                val sonda = bandejaSinDueno.probe(id, "venue-1")
+                val cancel = bandejaSinDueno.cancel(id)
+
+                assertWithMessage(id).that(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+                assertWithMessage(id).that(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+                sinNingunFinal(id, id)
+            }
+            // Efectivo o cripto ya arrancado tampoco se resuelve solo.
+            val conEfectivo = "efectivo-$barrera"
+            db.remotePaymentRequestDao().insert(
+                RemotePaymentRequestEntity.from(solicitud.copy(requestId = conEfectivo), status = RemotePaymentRequestEntity.STATUS_PROCESSING)
+                    .copy(durableBarrierVersion = barrera, executionStartedAt = 1),
+            )
+            assertThat(bandejaSinDueno.probe(conEfectivo, "venue-1").disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+            assertThat(bandejaSinDueno.cancel(conEfectivo).disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
+            sinNingunFinal(conEfectivo, conEfectivo)
+        }
     }
 }

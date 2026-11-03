@@ -388,4 +388,117 @@ class RemotePaymentInboxRoomTest {
         assertThat(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
         assertThat(fila.finalResultJson).isNull()
     }
+
+    // ═══ D6 (2-nov): la procedencia nace con la fila y NUNCA se promociona ═══
+    //
+    // 1 = esta solicitud nació bajo la barrera durable de este APK. Todo lo demás conserva lo que encontró: una fila heredada que
+    // recibe una capacidad mayor, un reclamo o una reapertura sigue sin tener acreditada su historia.
+
+    private suspend fun barrera(id: String) = db.remotePaymentRequestDao().getById(id)!!.durableBarrierVersion
+
+    private suspend fun heredada(id: String, status: String = RemotePaymentRequestEntity.STATUS_RECEIVED, json: String? = null) {
+        assertThat(db.remotePaymentRequestDao().insert(
+            RemotePaymentRequestEntity.from(request.copy(requestId = id), status = status, finalResultJson = json)
+                .copy(durableBarrierVersion = 0),
+        )).isNotEqualTo(-1L)
+    }
+
+    @Test fun `D6 P1 una solicitud que nace por receive queda con la barrera durable y un duplicado no la cambia`() = runTest {
+        val nueva = inbox.receive(request)
+        assertThat(nueva).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(barrera("req-1")).isEqualTo(RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE)
+
+        // El duplicado sube la CAPACIDAD del servidor; no vuelve a escribir la procedencia.
+        inbox.receive(request.copy(attemptLinkVersion = 1))
+        val fila = db.remotePaymentRequestDao().getById("req-1")!!
+        assertThat(fila.attemptLinkVersion).isEqualTo(1)
+        assertThat(fila.durableBarrierVersion).isEqualTo(RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE)
+    }
+
+    @Test fun `D6 P1 una heredada no se promociona con un duplicado de capacidad mayor ni con ninguno de los dos reclamos`() = runTest {
+        heredada("h-simple")
+        heredada("h-venue")
+
+        // El duplicado RECEIVED se entrega y sube la capacidad…
+        val duplicado = inbox.receive(request.copy(requestId = "h-simple", attemptLinkVersion = 1))
+        assertThat((duplicado as RemotePaymentReceiveDecision.Deliver).request.attemptLinkVersion).isEqualTo(1)
+        assertThat(db.remotePaymentRequestDao().getById("h-simple")!!.attemptLinkVersion).isEqualTo(1)
+        // …y subir la capacidad no sube la procedencia.
+        assertThat(barrera("h-simple")).isEqualTo(0)
+
+        assertThat(inbox.markProcessing("h-simple")).isTrue()
+        assertThat(barrera("h-simple")).isEqualTo(0)
+        assertThat(inbox.markProcessingForVenue("h-venue", "venue-1")).isTrue()
+        assertThat(barrera("h-venue")).isEqualTo(0)
+
+        // Reclamada: sigue siendo AckOnly, sin otra autorización, aunque el servidor reentregue con capacidad mayor.
+        assertThat(inbox.receive(request.copy(requestId = "h-simple", attemptLinkVersion = 2)))
+            .isEqualTo(RemotePaymentReceiveDecision.AckOnly)
+        assertThat(barrera("h-simple")).isEqualTo(0)
+    }
+
+    @Test fun `D6 P1 un contrato distinto y una lapida no escriben procedencia`() = runTest {
+        heredada("h-contrato")
+        assertThat(inbox.receive(request.copy(requestId = "h-contrato", amountCents = 99_999)))
+            .isInstanceOf(RemotePaymentReceiveDecision.Reject::class.java)
+        assertThat(barrera("h-contrato")).isEqualTo(0)
+        assertThat(db.remotePaymentRequestDao().getById("h-contrato")!!.amountCents).isEqualTo(10_000L)
+
+        // La lápida nace en 0 y la entrega tardía no la convierte en una solicitud nueva.
+        assertThat(inbox.probe("lapida", "venue-1").disposition).isEqualTo(RemotePaymentProbeDisposition.NOT_FOUND)
+        assertThat(barrera("lapida")).isEqualTo(0)
+        assertThat(inbox.receive(request.copy(requestId = "lapida")))
+            .isInstanceOf(RemotePaymentReceiveDecision.Reject::class.java)
+        assertThat(barrera("lapida")).isEqualTo(0)
+        assertThat(db.remotePaymentRequestDao().getById("lapida")!!.status)
+            .isEqualTo(RemotePaymentRequestEntity.STATUS_NOT_FOUND_ANSWERED)
+    }
+
+    @Test fun `D6 P1 la procedencia sobrevive a cerrar y reabrir la base`() = runTest {
+        db.close()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val name = "remote-inbox-provenance-test"
+        context.deleteDatabase(name)
+        try {
+            db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
+            inbox = RemotePaymentInbox(db.remotePaymentRequestDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
+            inbox.receive(request.copy(requestId = "nueva"))
+            heredada("vieja", RemotePaymentRequestEntity.STATUS_PROCESSING)
+            db.close()
+            db = Room.databaseBuilder(context, AvoqadoDatabase::class.java, name).allowMainThreadQueries().build()
+            assertThat(barrera("nueva")).isEqualTo(RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE)
+            assertThat(barrera("vieja")).isEqualTo(0)
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test fun `D6 P1 una heredada ya resuelta reproduce su resultado byte a byte`() = runTest {
+        val guardado = """{"requestId":"h-final","status":"failed","outcomeEvidence":"PROCESSOR_DECLINED","errorMessage":"Declinada"}"""
+        heredada("h-final", RemotePaymentRequestEntity.STATUS_RESOLVED, guardado)
+
+        assertThat(inbox.receive(request.copy(requestId = "h-final"))).isEqualTo(RemotePaymentReceiveDecision.ReplayResult(guardado))
+        val sonda = inbox.probe("h-final", "venue-1")
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.RESOLVED)
+        assertThat(sonda.finalResultJson).isEqualTo(guardado)
+        assertThat(inbox.cancel("h-final").finalResultJson).isEqualTo(guardado)
+        assertThat(barrera("h-final")).isEqualTo(0)
+    }
+
+    @Test fun `D6 P1 una heredada todavia RECEIVED conserva su cancelacion segura y se resuelve una sola vez`() = runTest {
+        heredada("h-sonda")
+        heredada("h-cancel")
+        heredada("h-rechazo")
+
+        val sonda = inbox.probe("h-sonda", "venue-1")
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.RECEIVED_CANCELLED)
+        assertThat(org.json.JSONObject(sonda.finalResultJson!!).optString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+        val cancel = inbox.cancel("h-cancel")
+        assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACCEPTED)
+        assertThat(org.json.JSONObject(cancel.finalResultJson!!).optString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+        // `rejectUnclaimed` tampoco sube la procedencia: sólo cierra lo que nadie reclamó.
+        assertThat(inbox.rejectUnclaimed("h-rechazo")).isNotNull()
+        for (id in listOf("h-sonda", "h-cancel", "h-rechazo")) assertThat(barrera(id)).isEqualTo(0)
+    }
 }

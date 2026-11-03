@@ -177,7 +177,8 @@ class RemotePaymentInbox(
      * B2 (22-oct): si ese CAS no acepta y la solicitud sigue reclamada sin efectivo/cripto arrancado, se contesta como la
      * sonda ([respuestaEnProceso]): con propiedad y la pantalla todavía capaz de seguir (cero intentos, o sólo rechazos/descartes
      * sin dinero), ACTIVE viva; sin propiedad, `resolverDesenlaceNegativo` (T3: un reclamo sin dueño y sin intentos lo dejó
-     * un proceso muerto que nunca tocó el SDK ⇒ ACCEPTED); si no, la libreta certifica o no el cese ([certificarCese]).
+     * un proceso muerto que nunca tocó el SDK ⇒ ACCEPTED, sólo si la fila nació bajo la barrera durable: D6); si no, la libreta
+     * certifica o no el cese ([certificarCese]).
      */
     suspend fun cancel(requestId: String, propiedadEnEsteProceso: Boolean = false): RemotePaymentCancelDecision {
         val cancelled = JSONObject().put("requestId", requestId).put("status", "cancelled")
@@ -260,7 +261,7 @@ class RemotePaymentInbox(
      *     `cerrarSolicitudSiCeso` no ve la pantalla y cerraría, y «cerrada para ejecución» tiene que ser verdad (decisión del
      *     controlador, 22-oct, duda 2 de B2).
      *  2. sin propiedad ⇒ [resolverSinPropiedad] (`resolverDesenlaceNegativo`, el ÚNICO camino que escribe un «no se cobró»:
-     *     exige cero intentos bloqueadores). Si escribe ⇒ [RespuestaEnProceso.Resuelta].
+     *     exige cero intentos bloqueadores y, D6, una fila nacida bajo la barrera durable). Si escribe ⇒ [RespuestaEnProceso.Resuelta].
      *  3. si no resolvió (o con propiedad y algún intento pendiente, con dinero o contradicción) ⇒ [certificarCese], SALVO que
      *     la terminal rechace ahora una venta nueva del POS ([laTerminalRechazariaUnaVentaNueva], Codex TPV r1 ronda 2, N1: la
      *     PAX en «Cobrado. Sincronización pendiente» con la bandera de cobro activo arriba) ⇒ ACTIVE viva, sin preguntarle a la
@@ -391,6 +392,8 @@ class RemotePaymentInbox(
         // `STATUS_RECEIVED`: la tarjeta jamás se pasó. Se resuelve por el ÚNICO camino que ya protege el
         // dinero (`resolverDesenlaceNegativo` exige `executionStartedAt == null` y cero intentos
         // bloqueadores); si algo de eso no se cumple, devuelve null y se conserva ACTIVE.
+        // 🔒 D6 (2-nov): y sólo si la fila nació bajo la barrera durable. En una heredada, «nunca empezó» es justo lo que su
+        // libreta no puede probar: una versión vieja pudo cobrar sin anotarlo. Ahí sólo se certifica el cese.
         //
         // B2 (22-oct): ACTIVE ya no basta. Si no se resolvió, la libreta dice si la ejecución puede seguir viva y, si no
         // puede, deja la solicitud CERRADA PARA EJECUCIÓN ([respuestaEnProceso]). Con propiedad y la pantalla todavía capaz

@@ -80,6 +80,8 @@ class BandejaHuerfanaRoomTest {
 
         assertThat(dao.getById("req-huerfana")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
         assertThat(dao.observePendingObligationsCount(venue)).isEqualTo(0)   // ← lo que el cajero necesita
+        // D6: esta fila es heredada. Lo que acredita el SERVIDOR sí la cierra, y cerrarla no le inventa procedencia.
+        assertThat(dao.getById("req-huerfana")!!.durableBarrierVersion).isEqualTo(0)
     }
 
     @Test fun `P1 D · una fila que SÍ tiene intento no se toca - esa la resuelve la libreta`() = runTest {

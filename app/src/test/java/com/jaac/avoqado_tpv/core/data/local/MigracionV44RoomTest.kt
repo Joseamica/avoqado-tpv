@@ -85,6 +85,10 @@ class MigracionV44RoomTest {
                     }
                 }
             }
+            // D6, por la cadena: lo que ya existía queda heredado.
+            sql.query("SELECT durable_barrier_version FROM remote_payment_requests").use { c ->
+                while (c.moveToNext()) assertThat(c.getInt(0)).isEqualTo(0)
+            }
             sql.query("SELECT order_wire_request_json FROM pending_payments").use { c ->
                 while (c.moveToNext()) assertThat(c.isNull(0)).isTrue()
             }

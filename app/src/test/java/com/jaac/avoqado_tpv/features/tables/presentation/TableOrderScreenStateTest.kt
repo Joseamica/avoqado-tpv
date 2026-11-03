@@ -246,4 +246,10 @@ class TableOrderScreenStateTest {
         assertThat(roundLabel(null, 3, mexico)).isEqualTo("Ronda 3")
         assertThat(roundLabel("ayer", 3, mexico)).isEqualTo("Ronda 3")
     }
+    // Codex r1 (D10): «Acciones por revisar» usaba la zona del aparato, y una N86 o una PAX traen reglas viejas.
+    @Test fun `la hora de una accion por revisar tambien sale en la hora del negocio`() {
+        val instante = java.time.Instant.parse("2026-11-03T11:21:00Z").toEpochMilli()
+        assertThat(formatQuarantineTime(instante, com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)).endsWith("05:21")
+        assertThat(formatQuarantineTime(instante, java.time.ZoneOffset.ofHours(-7))).endsWith("04:21")
+    }
 }

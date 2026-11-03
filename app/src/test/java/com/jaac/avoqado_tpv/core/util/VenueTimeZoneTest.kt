@@ -56,4 +56,27 @@ class VenueTimeZoneTest {
         assertEquals(-6 * 3600 * 1000, tz.rawOffset)
         assertFalse(tz.useDaylightTime())
     }
+    // Codex r1 (D10): la lectura de la zona vieja, ya en camino, volvía a guardarla DESPUÉS de que la config nueva invalidó.
+    @Test(timeout = 10_000) fun `una lectura vieja en camino no le gana a la invalidacion`() {
+        var zonaGuardada = "America/Mexico_City"
+        val leyendo = java.util.concurrent.CountDownLatch(1)
+        val suelta = java.util.concurrent.CountDownLatch(1)
+        val storage = mockk<SecureStorage>()
+        every { storage.getVenueTimezone() } answers {
+            val leida = zonaGuardada
+            leyendo.countDown()
+            suelta.await()
+            leida
+        }
+        val lector = kotlin.concurrent.thread { VenueTimeZone.get(storage) }
+        leyendo.await()
+        zonaGuardada = "America/Tijuana"
+        val invalidador = kotlin.concurrent.thread { VenueTimeZone.invalidateCache() }
+        invalidador.join(300) // sin el candado termina aquí, antes que el lector; con él, espera al lector
+        suelta.countDown()
+        lector.join()
+        invalidador.join()
+
+        assertEquals(VenueTimeZone.zona("America/Tijuana"), VenueTimeZone.get(storage))
+    }
 }

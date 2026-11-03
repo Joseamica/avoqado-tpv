@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.verification.data
 import android.content.Context
 import android.content.SharedPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,12 +23,17 @@ class ProofCaptureSequence @Inject constructor(@ApplicationContext context: Cont
     @Synchronized
     fun next(): Long {
         val n = prefs.getLong("seq", 0L) + 1
-        prefs.edit().putLong("seq", n).commit()
+        // Un número que no se guardó no se entrega: tras reiniciar volvería el viejo y el servidor tiraría una captura NUEVA.
+        if (!prefs.edit().putLong("seq", n).commit()) throw IOException(SAVE_FAILED)
         return n
     }
 
     @Synchronized
     fun deviceId(): String =
         prefs.getString("install_id", null)
-            ?: UUID.randomUUID().toString().also { prefs.edit().putString("install_id", it).commit() }
+            ?: UUID.randomUUID().toString().also { if (!prefs.edit().putString("install_id", it).commit()) throw IOException(SAVE_FAILED) }
+
+    private companion object {
+        const val SAVE_FAILED = "No se pudo guardar el contador de capturas"
+    }
 }

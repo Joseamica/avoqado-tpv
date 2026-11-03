@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import kotlinx.coroutines.test.runTest
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -63,6 +64,31 @@ class BandejaHuerfanaRoomTest {
             status = status, createdAt = now - 25 * 3_600_000, updatedAt = now - 25 * 3_600_000 + desfase,
         ),
     )
+
+    /** Lo que deja una pasada cuando el servidor contesta [codigo] a la única fila. */
+    private suspend fun pasadaConHttp(codigo: Int): BandejaServerRecovery.Resultado {
+        enBandeja("req-http-$codigo")
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, any()) } returns retrofit2.Response.error(codigo, "{}".toResponseBody(null))
+        return BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000)
+    }
+
+    @Test fun `M-2 un 5xx no es una respuesta para el cajero, y la pasada del worker no se repite por el`() = runTest {
+        val r = pasadaConHttp(503)
+
+        assertThat(r.consultadas).isEqualTo(0)
+        assertThat(r.conErrorDelServidor).isEqualTo(1)
+        // `sinRespuesta` es lo que repite la pasada a los 31 s: el worker no reintenta un 5xx, igual que el de los intentos.
+        assertThat(r.sinRespuesta).isEqualTo(0)
+    }
+
+    @Test fun `M-2 un 404 si es una respuesta`() = runTest {
+        val r = pasadaConHttp(404)
+
+        assertThat(r.consultadas).isEqualTo(1)
+        assertThat(r.conErrorDelServidor).isEqualTo(0)
+        assertThat(r.sinRespuesta).isEqualTo(0)
+    }
 
     @Test fun `P1 D · una fila PROCESSING SIN intento es candidata a conciliar`() = runTest {
         enBandeja("req-huerfana")

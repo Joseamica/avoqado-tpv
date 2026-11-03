@@ -37,7 +37,7 @@ class ConsultaDelCierreDeCaja @Inject constructor(
             for (intento in pendientes) {
                 if (intento.owner != OBLIGACION_DE_INTENTO) continue
                 val lectura = recuperacion.recoverOne(venueId, intento.ownerId, estampar = false)
-                if (lectura.servidorContesto) contesto = true
+                if (lectura.servidorContesto && !lectura.sinRespuesta) contesto = true
                 if (lectura.sinRespuesta) sinRespuesta = true
                 // Como el trigger y el worker: un `success` durable de bandeja recién escrito se le emite al servidor.
                 lectura.bandejaResueltaJson?.let(socket.get()::emitDurableTerminalPaymentResult)
@@ -45,7 +45,7 @@ class ConsultaDelCierreDeCaja @Inject constructor(
             if (pendientes.any { it.owner == OBLIGACION_REMOTA }) {
                 val conciliacion = bandeja.conciliar(venueId)
                 if (conciliacion.consultadas > 0) contesto = true
-                if (conciliacion.sinRespuesta > 0) sinRespuesta = true
+                if (conciliacion.sinRespuesta > 0 || conciliacion.conErrorDelServidor > 0) sinRespuesta = true
             }
             true
         } ?: false

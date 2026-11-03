@@ -104,6 +104,18 @@ class ConsultaDelCierreDeCajaTest {
         assertThat(consulta.preguntar("v1", listOf(remota("r1")))).isTrue()
     }
 
+    @Test fun `M-2 si S6 contesto pero la solicitud se quedo sin respuesta es falta de conexion`() = runTest {
+        coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null, servidorContesto = true, sinRespuesta = true)
+
+        assertThat(consulta.preguntar("v1", listOf(intento("a1")))).isTrue()
+    }
+
+    @Test fun `M-2 una remota con un error del servidor es falta de conexion`() = runTest {
+        coEvery { bandeja.conciliar("v1", any()) } returns BandejaServerRecovery.Resultado(consultadas = 0, conciliadas = 0, sinRespuesta = 0, conErrorDelServidor = 1)
+
+        assertThat(consulta.preguntar("v1", listOf(remota("r1")))).isTrue()
+    }
+
     @Test fun `sin remotas no se toca la bandeja`() = runTest {
         coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null, servidorContesto = true)
 
@@ -115,15 +127,39 @@ class ConsultaDelCierreDeCajaTest {
     // ── El mensaje: qué falta y qué hacer ───────────────────────────────────────────────────────────────────────────────────
 
     @Test fun `el mensaje cuenta lo que falta, en singular y en plural`() {
-        for ((operaciones, cobros, esperado) in listOf(
+        for ((operaciones, delPos, esperado) in listOf(
             Triple(1, 0, "1 operación con tarjeta sin confirmar"),
             Triple(3, 0, "3 operaciones con tarjeta sin confirmar"),
-            Triple(0, 1, "1 cobro del POS sin terminar"),
-            Triple(0, 2, "2 cobros del POS sin terminar"),
-            Triple(1, 2, "1 operación con tarjeta sin confirmar y 2 cobros del POS sin terminar"),
+            Triple(0, 1, "1 operación del POS sin terminar"),
+            Triple(0, 2, "2 operaciones del POS sin terminar"),
+            Triple(1, 2, "1 operación con tarjeta sin confirmar y 2 operaciones del POS sin terminar"),
         )) {
-            assertThat(textoDelCierreBloqueado(operaciones, cobros, sinRespuesta = false)).contains(esperado)
-            assertThat(textoDelCierreBloqueado(operaciones, cobros, sinRespuesta = true)).contains(esperado)
+            assertThat(textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = false)).contains(esperado)
+            assertThat(textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = true)).contains(esperado)
+        }
+    }
+
+    /** Todas las combinaciones que pueden bloquear un cierre, con y sin respuesta de Avoqado. */
+    private fun cadaMensaje(prueba: (total: Int, texto: String) -> Unit) {
+        for (operaciones in 0..3) for (delPos in 0..3) for (sinRespuesta in listOf(false, true)) {
+            if (operaciones + delPos > 0) prueba(operaciones + delPos, textoDelCierreBloqueado(operaciones, delPos, sinRespuesta))
+        }
+    }
+
+    @Test fun `M-1 el mensaje no dice cobro ni venta, porque lo que esta en duda puede ser una devolucion`() = cadaMensaje { _, texto ->
+        assertThat(texto.lowercase()).doesNotContain("cobr")
+        assertThat(texto.lowercase()).doesNotContain("venta")
+    }
+
+    @Test fun `M-1 con una sola habla en singular y con varias en plural`() = cadaMensaje { total, texto ->
+        if (total == 1) {
+            assertThat(texto).contains("No la repitas")
+            assertThat(texto).doesNotContain("Las que")
+            assertThat(texto).doesNotContain("siguen")
+        } else {
+            assertThat(texto).contains("No las repitas")
+            assertThat(texto).doesNotContain("Si vino")
+            assertThat(texto).doesNotContain("sigue igual")
         }
     }
 

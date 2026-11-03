@@ -490,6 +490,55 @@ class LiberacionPorSolicitudRoomTest {
         assertThat(dao.getById("a-d3c")!!.state).isEqualTo("INDETERMINADO")
     }
 
+    // M-2: con el servidor caído, el POS tampoco podrá responder: el cajero lee «sin conexión», no «responde ahí».
+
+    /** El mensaje del cierre con una duda de la PAX, según lo que conteste el servidor en [servidor]. */
+    private suspend fun mensajeDelCierre(id: String, servidor: () -> Unit): String {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-$id", id, caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        servidor()
+        return shifts.closeShift(venue, sesion.localSessionId).mensaje()
+    }
+
+    @Test fun `M-2 un 5xx de S6 se dice sin conexion`() = runBlocking<Unit> {
+        val mensaje = mensajeDelCierre("a-m2a") { coEvery { api.getAttemptStatus(venue, "a-m2a") } returns httpS6(503) }
+
+        assertThat(mensaje).contains("Sin conexión")
+        assertThat(mensaje).doesNotContain("responde")
+    }
+
+    @Test fun `M-2 S6 contesta y la solicitud da 5xx, se dice sin conexion`() = runBlocking<Unit> {
+        val mensaje = mensajeDelCierre("a-m2b") {
+            coEvery { api.getAttemptStatus(venue, "a-m2b") } returns s6(s6Literal("a-m2b"))
+            coEvery { api.getRequestStatus(venue, "req-a-m2b") } returns httpPorSolicitud(502)
+        }
+
+        assertThat(mensaje).contains("Sin conexión")
+        assertThat(mensaje).doesNotContain("responde")
+    }
+
+    @Test fun `M-2 S6 contesta y la solicitud se queda sin respuesta, se dice sin conexion`() = runBlocking<Unit> {
+        val mensaje = mensajeDelCierre("a-m2c") {
+            coEvery { api.getAttemptStatus(venue, "a-m2c") } returns s6(s6Literal("a-m2c"))
+            coEvery { api.getRequestStatus(venue, "req-a-m2c") } throws java.io.IOException("se cayó")
+        }
+
+        assertThat(mensaje).contains("Sin conexión")
+        assertThat(mensaje).doesNotContain("responde")
+    }
+
+    @Test fun `M-2 un 4xx si es una respuesta, no falta de conexion`() = runBlocking<Unit> {
+        val mensaje = mensajeDelCierre("a-m2d") {
+            coEvery { api.getAttemptStatus(venue, "a-m2d") } returns s6(s6Literal("a-m2d"))
+            coEvery { api.getRequestStatus(venue, "req-a-m2d") } returns httpPorSolicitud(404)
+        }
+
+        assertThat(mensaje).doesNotContain("Sin conexión")
+        assertThat(mensaje).contains("responde")
+    }
+
     @Test fun `D3 P1 sin nada pendiente no le pregunta nada a nadie y cierra como siempre`() = runBlocking<Unit> {
         val (shifts, sesion) = cajaQuePregunta()
 
@@ -539,7 +588,7 @@ class LiberacionPorSolicitudRoomTest {
 
         val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
 
-        assertThat(mensaje).contains("1 cobro del POS")
+        assertThat(mensaje).contains("1 operación del POS")
         assertThat(mensaje).doesNotContain("Sin conexión")
         assertThat(db.remotePaymentRequestDao().getById("req-d3e")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
     }

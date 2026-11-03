@@ -11,26 +11,22 @@ data class LocalShiftObligationPage(val total: Int, val rows: List<LocalShiftObl
 /**
  * 🔒 D3: lo que lee el cajero cuando el cierre sigue sin poder guardarse: qué falta y qué hacer. [sinRespuesta] = Avoqado no contestó
  * al preguntarle ([com.jaac.avoqado_tpv.features.shift.data.repository.ConsultaDelCierreDeCaja]): sin conexión se dice con todas
- * sus letras, y entonces lo único por hacer es recuperarla, porque la consulta se repite al volver a cerrar.
+ * sus letras, y entonces lo único por hacer es recuperarla, porque la consulta se repite al volver a cerrar. Nunca dice «cobro»: lo
+ * que está en duda también puede ser una devolución, porque la rama ATTEMPT de la obligación no filtra por tipo (M-1).
  */
-internal fun textoDelCierreBloqueado(operaciones: Int, cobrosDelPos: Int, sinRespuesta: Boolean): String {
-    val falta = listOfNotNull(
-        when (operaciones) {
-            0 -> null
-            1 -> "1 operación con tarjeta sin confirmar"
-            else -> "$operaciones operaciones con tarjeta sin confirmar"
-        },
-        when (cobrosDelPos) {
-            0 -> null
-            1 -> "1 cobro del POS sin terminar"
-            else -> "$cobrosDelPos cobros del POS sin terminar"
-        },
-    ).joinToString(" y ")
-    val queHacer = if (sinRespuesta) {
-        "Sin conexión con Avoqado no se puede confirmar qué pasó. No la vuelvas a cobrar. Revisa el internet de la terminal y vuelve a cerrar."
-    } else {
-        "Falta confirmar qué pasó con ese cobro. Si esa venta la mandó el POS, responde ahí si se cobró; " +
-            "si no, o si sigue igual, llama a soporte. No la vuelvas a cobrar. Después vuelve a cerrar."
+internal fun textoDelCierreBloqueado(operaciones: Int, delPos: Int, sinRespuesta: Boolean): String {
+    fun cuenta(cuantas: Int, cuales: String) = when (cuantas) {
+        0 -> null
+        1 -> "1 operación $cuales"
+        else -> "$cuantas operaciones $cuales"
+    }
+    val falta = listOfNotNull(cuenta(operaciones, "con tarjeta sin confirmar"), cuenta(delPos, "del POS sin terminar")).joinToString(" y ")
+    val varias = operaciones + delPos > 1
+    val noRepetir = if (varias) "No las repitas." else "No la repitas."
+    val queHacer = when {
+        sinRespuesta -> "Sin conexión con Avoqado no se puede confirmar qué pasó. $noRepetir Revisa el internet de la terminal y vuelve a cerrar."
+        varias -> "Las que vinieron del POS se responden ahí; para las demás, o si siguen igual, llama a soporte. $noRepetir Después vuelve a cerrar."
+        else -> "Si vino del POS, responde ahí qué pasó; si no, o si sigue igual, llama a soporte. $noRepetir Después vuelve a cerrar."
     }
     return "No se puede cerrar la caja: hay $falta.\n\n$queHacer"
 }

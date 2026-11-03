@@ -162,7 +162,7 @@ class LedgerServerRecovery @Inject constructor(
                             PorSolicitud.SIN_RESPUESTA -> { sinRespuesta++; sinRed += fila.attemptId; continue }
                             // Contestó y la escritura falló: atasco (r14), con el turno intacto.
                             PorSolicitud.ESCRITURA_FALLIDA -> { sinRespuesta++; atascadas++; atoradasEnEstaPasada += fila.attemptId; continue }
-                            PorSolicitud.NADA -> Unit
+                            PorSolicitud.NADA, PorSolicitud.ERROR_DEL_SERVIDOR -> Unit
                         }
                         dao.estamparConsultaAlServidor(fila.attemptId, now)
                         continue
@@ -372,15 +372,19 @@ class LedgerServerRecovery @Inject constructor(
                 var liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
                 // D12: la MISMA decisión que la pasada del worker para un intento sin vínculo (la PAX): por la SOLICITUD.
                 var gastaElTurno = true
+                // M-2: un 5xx no es una respuesta para quien pregunta: el POS tampoco podrá contestar. No cambia lo que se escribe ni el turno.
+                var sinRespuesta = respuesta.code() >= 500
                 if (!liberada) when (liberarPorSolicitud(venueId, attemptId, cuerpo, now)) {
                     PorSolicitud.LIBERADA -> liberada = true
                     // Sin respuesta del GET, o la escritura falló: el turno se conserva para volver a preguntar pronto.
-                    PorSolicitud.SIN_RESPUESTA, PorSolicitud.ESCRITURA_FALLIDA -> gastaElTurno = false
+                    PorSolicitud.SIN_RESPUESTA -> { gastaElTurno = false; sinRespuesta = true }
+                    PorSolicitud.ESCRITURA_FALLIDA -> gastaElTurno = false
+                    PorSolicitud.ERROR_DEL_SERVIDOR -> sinRespuesta = true
                     PorSolicitud.NADA -> Unit
                 }
                 // Codex r12 (P2-2): si el veto o la evidencia no quedaron, el turno se conserva para que el worker vuelva.
                 if (!liberada && estampar && guardado && gastaElTurno) anotar(attemptId) { dao.estamparConsultaAlServidor(attemptId, now) }
-                LecturaDelIntento(null, evidenciaPositivaSinRegistro = evidenciaSinRegistro, servidorContesto = respuesta.isSuccessful, vetoDelServidor = veto)
+                LecturaDelIntento(null, evidenciaPositivaSinRegistro = evidenciaSinRegistro, servidorContesto = respuesta.isSuccessful, vetoDelServidor = veto, sinRespuesta = sinRespuesta)
             } else {
                 // Un veredicto sólo sale de un 2xx: contestó. 🔴 Codex r9 (P1-2): todo veredicto trae un Payment; si no se pudo
                 // GUARDAR, vuelve como evidencia de dinero (la fila puede conservar una liberación vieja) y no se anota la respuesta.
@@ -410,6 +414,8 @@ class LedgerServerRecovery @Inject constructor(
         SIN_RESPUESTA,
         /** El GET sí aceptó liberar, pero la escritura del CAS falló: es atasco de escritura (r14), con el turno intacto. */
         ESCRITURA_FALLIDA,
+        /** M-2: el GET dio 5xx. Para la pasada es como [NADA] (gasta el turno); a quien pregunta se le dice que no hubo respuesta. */
+        ERROR_DEL_SERVIDOR,
         /** No aplica, no es la declaración de una persona sobre ESA solicitud, o el dinero/el veto ganó: la duda se conserva. */
         NADA,
     }
@@ -479,7 +485,7 @@ class LedgerServerRecovery @Inject constructor(
         if (!respuesta.isSuccessful) {
             // 404 (otra terminal, ruta vieja), 401/403, 5xx: nada acredita nada.
             Timber.d("🔎 [LedgerServer] D12: %s ⇒ HTTP %d al preguntar por la solicitud: la duda se conserva", attemptId, respuesta.code())
-            return PorSolicitud.NADA
+            return if (respuesta.code() >= 500) PorSolicitud.ERROR_DEL_SERVIDOR else PorSolicitud.NADA
         }
         val liberacion = LiberacionDelServidor.desdeConsultaPorSolicitud(venueId, attemptId, requestId, respuesta.body())
             ?: return PorSolicitud.NADA
@@ -595,7 +601,10 @@ class LedgerServerRecovery @Inject constructor(
          * la fila puede conservar una liberación VIEJA; sin esto, la pantalla la leía y volvía a decir «puedes cobrar».
          */
         val vetoDelServidor: String? = null,
-        /** D3: se le preguntó al servidor y no hubo respuesta (red, tope). Distinto de `servidorContesto = false`, que también es «no había nada que preguntar». */
+        /**
+         * D3: se le preguntó al servidor y no hubo respuesta (red, tope, o un 5xx: M-2), también si S6 contestó y lo que faltó fue
+         * el GET de la solicitud. Distinto de `servidorContesto = false`, que también es «no había nada que preguntar».
+         */
         val sinRespuesta: Boolean = false,
     )
 

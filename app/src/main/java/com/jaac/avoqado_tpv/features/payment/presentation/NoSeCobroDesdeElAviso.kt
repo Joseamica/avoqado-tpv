@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -26,6 +27,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -338,7 +340,9 @@ private fun PinDeGerenteDialog(
                 label = "PIN de gerente",
                 errorMessage = if (pinRechazado) "Ese PIN no tiene permiso para confirmarlo." else null,
                 enabled = !enviando,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                // Con el teclado abierto no se ve «Confirmar» (QA en la N86): la palomita del teclado también confirma.
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (pinDeGerenteValido(pin) && !enviando) onConfirmar(pin) }),
                 isPassword = true,
             )
         },

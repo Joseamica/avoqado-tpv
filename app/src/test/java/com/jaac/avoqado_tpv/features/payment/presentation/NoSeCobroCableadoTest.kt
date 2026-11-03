@@ -70,4 +70,11 @@ class NoSeCobroCableadoTest {
             "BannerConBotonPreview", "ListaPreview", "ConfirmacionPreview", "PinPreview", "AvisoPreview",
         )
     }
+
+    @Test fun `el PIN se confirma tambien con la palomita del teclado - con el teclado abierto no se ve Confirmar`() {
+        // QA en la N86, 3-nov: la palomita no hacía nada y el gerente tenía que cerrar el teclado para encontrar el botón.
+        val fuente = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/NoSeCobroDesdeElAviso.kt").readText()
+        com.google.common.truth.Truth.assertThat(fuente).contains("imeAction = ImeAction.Done")
+        com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin) && !enviando) onConfirmar(pin) }")
+    }
 }

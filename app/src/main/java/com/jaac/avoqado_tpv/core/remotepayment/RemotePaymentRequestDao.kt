@@ -17,7 +17,7 @@ import org.json.JSONObject
  * él lo sabe. Nombrar el importe y la antigüedad es lo que convierte el aviso en una decisión
  * que alguien puede tomar (hallazgo de Codex sobre F0, 2026-09-12).
  */
-/** Una fila de bandeja PROCESSING sin intento correlacionado (pieza D). */
+/** Una fila de bandeja PROCESSING a la que hay que preguntarle al servidor: sin intento correlacionado (pieza D) o con él DESCARTADA (D8). */
 data class HuerfanaDeBandeja(val requestId: String, val createdAt: Long)
 
 data class ObligacionPendiente(
@@ -115,17 +115,23 @@ interface RemotePaymentRequestDao {
     // intento de esa solicitud — el caso que el propio repo ya describía como «requiere conciliación explícita».
     // Toda la recuperación consulta por INTENTO, así que nada podía tocarla y el aviso no se podía quitar.
     //
-    // El `NOT EXISTS` es EL MISMO de `observePendingObligations`: las candidatas son exactamente las filas que
-    // producen ese aviso, ni una más.
+    // Las candidatas son las filas que producen ese aviso (el `NOT EXISTS` de `observePendingObligations`) más las de D8: un intento
+    // DESCARTADA no impide preguntar. Ésas no salen en el aviso, y `observePendingObligations` no cambia.
 
-    /** Filas PROCESSING de este venue SIN ningún intento correlacionado: las que hoy avisan para siempre. */
+    /**
+     * Filas PROCESSING de este venue a las que hay que preguntarles al servidor: sin intento correlacionado, las que hoy avisan para siempre.
+     *
+     * 🔴 D8 (QA en aparato, 3-nov): y con su intento DESCARTADA. Con la TPV publicada, declarar «no se cobró» deja el intento así y la bandeja
+     * PROCESSING, con `execution_closed_at` nulo: Caja la contaba como operación del POS sin terminar y aquí nadie preguntaba por ella (medido:
+     * 0 peticiones, y la caja sin poder cerrarse). La libreta ya terminó con ese intento; cerrar la fila sigue exigiendo `resuelta` del servidor.
+     */
     @Query(
         """SELECT r.request_id AS requestId, r.created_at AS createdAt FROM remote_payment_requests r
            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
                WHERE p.venue_id = :venueId
                AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
-                               'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+                               'REGISTRADO','CERRADA','ENTREGADA_A_COLA')
                AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
            -- 🔴 Codex r6 (P2-11): por `created_at` las 20 más VIEJAS salían siempre, así que 20 que nunca se
            -- resuelven —un 404 permanente, por ejemplo— dejaban a la 21 sin consultar nunca (reproducido en SQLite:
@@ -164,8 +170,10 @@ interface RemotePaymentRequestDao {
              -- `KERNEL_ACTIVO` ya puede aprobar en local: D cerraba la bandeja de un cobro VIVO con un negativo del servidor.
              -- Reproducido por Codex con el SQL real (cerraba y el intento pasaba a AUTORIZANDO). Un intento que sí existe
              -- lo resuelve la libreta, que es la que sabe de dinero.
+             -- 🔴 D8: salvo uno DESCARTADA, con el que la libreta ya terminó: si trae dinero, su obligación sigue contando aparte en Caja.
              AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""",
+                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0
+                 AND p.state != 'DESCARTADA')""",
     )
     suspend fun conciliarHuerfanaConElServidorConResultado(requestId: String, venueId: String, resultadoReproducible: String, now: Long): Int
 

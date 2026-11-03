@@ -25,7 +25,8 @@ import javax.inject.Singleton
  *
  * 🔴 Lo que NO hace, a propósito:
  *  · no libera nada por antigüedad — el plazo nunca acredita ausencia de cobro;
- *  · no toca filas CON intento — ésas las resuelve la libreta, que sabe de dinero;
+ *  · no toca filas con un intento que no esté DESCARTADA — ésas las resuelve la libreta, que sabe de dinero (D8: con uno DESCARTADA
+ *    ya terminó; si trae dinero, su obligación sigue contando aparte en Caja);
  *  · no interpreta un 404, un error de red ni una respuesta sin `resuelta` como «no se cobró»: se conserva la fila.
  *
  * Es de sólo lectura contra el servidor e idempotente: repetirla sobre una fila ya cerrada no hace nada.

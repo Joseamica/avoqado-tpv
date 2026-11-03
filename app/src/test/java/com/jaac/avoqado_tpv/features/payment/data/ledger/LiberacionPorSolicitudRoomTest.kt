@@ -1078,4 +1078,116 @@ class LiberacionPorSolicitudRoomTest {
         assertThat(dao.getById("a-co")!!.state).isEqualTo("INDETERMINADO")
         assertThat(dao.getById("a-co")!!.serverCheckedAt).isNull()
     }
+
+    // ── D8 (QA en aparato, 3-nov): lo que deja la TPV publicada al declarar «no se cobró» ───────────────────────────────────
+    //
+    // El intento queda DESCARTADA y la bandeja PROCESSING, con `execution_closed_at` nulo: no hubo sonda que la cerrara. Al actualizar, Caja
+    // no cerraba nunca («hay 1 operación del POS sin terminar»; medido 3 veces, también tras reiniciar y a los 57 min) y nadie preguntaba
+    // por esa solicitud (0 peticiones). Con la Caja de verdad: es lo que cuenta `LocalShiftObligation`.
+
+    private suspend fun declaradaPorLaTpvPublicada(caja: ShiftRepository, requestId: String, attemptId: String, marca: String = "server_veto = NULL"): PaymentAttemptLedger {
+        val libreta = libretaDeLaPax()
+        val entrada = RemotePaymentInbox(db.remotePaymentRequestDao(), caja, libreta, PaymentStateHolder())
+        assertThat(entrada.receive(solicitudDelPos(requestId))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(RemotePaymentCoordinator(entrada).prepareSocketPaymentRequest(requestId, { true }, { venue })).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(libreta.openAttemptForShift(caja, attemptId, venue, "BLUMON", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"$requestId"}""")).isTrue()
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', server_outcome = 'OPERATOR_NO_INSTRUMENT', " +
+                "last_error = 'liberada_por_el_servidor:OPERATOR_RECONCILED', $marca WHERE attempt_id = '$attemptId'",
+        )
+        val bandeja = db.remotePaymentRequestDao().getById(requestId)!!
+        assertThat(bandeja.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        assertThat(bandeja.executionClosedAt).isNull()
+        return libretaDeLaPax() // la versión nueva: otro proceso
+    }
+
+    @Test fun `D8 P1 lo medido en aparato - al cerrar la caja se pregunta por esa solicitud, se cierra y Caja ya no la cuenta`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = declaradaPorLaTpvPublicada(shifts, "req-d8", "a-d8")
+        preguntaCon(libreta)
+        val turno = db.localShiftSessionDao()
+        assertThat(turno.ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(1)
+        coEvery { api.getRequestStatus(venue, "req-d8") } returns porSolicitud(getLiteral("req-d8"))
+
+        val cierre = shifts.closeShift(venue, sesion.localSessionId)
+
+        assertThat(cierre).isInstanceOf(AppResult.Success::class.java)
+        coVerify(exactly = 1) { api.getRequestStatus(venue, "req-d8") }
+        assertThat(db.remotePaymentRequestDao().getById("req-d8")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+        assertThat(turno.ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(0)
+        assertThat(db.localShiftSessionDao().leer(venue, sesion.localSessionId)!!.localStatus).isEqualTo("CLOSED")
+    }
+
+    @Test fun `D8 P1 con resuelta falso, ausente, 404 o sin red no se cierra, sigue bloqueando y se estampa la consulta`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = declaradaPorLaTpvPublicada(shifts, "req-d8b", "a-d8b")
+        preguntaCon(libreta)
+        val turno = db.localShiftSessionDao()
+        val casos = listOf<Pair<String, () -> Unit>>(
+            "resuelta falso" to { coEvery { api.getRequestStatus(venue, "req-d8b") } returns porSolicitud(getRanuraSoltada("req-d8b")) },
+            "resuelta ausente" to { coEvery { api.getRequestStatus(venue, "req-d8b") } returns porSolicitud(getLiteral("req-d8b").cambia(""","resuelta":true""", "")) },
+            "404" to { coEvery { api.getRequestStatus(venue, "req-d8b") } returns httpPorSolicitud(404) },
+            "sin red" to { coEvery { api.getRequestStatus(venue, "req-d8b") } throws java.io.IOException("sin red") },
+        )
+        for ((nombre, contesta) in casos) {
+            contesta()
+            db.openHelper.writableDatabase.execSQL("UPDATE remote_payment_requests SET updated_at = 1 WHERE request_id = 'req-d8b'")
+
+            val cierre = shifts.closeShift(venue, sesion.localSessionId)
+
+            assertWithMessage(nombre).that(cierre).isInstanceOf(AppResult.Error::class.java)
+            assertWithMessage(nombre).that(cierre.mensaje()).contains("1 operación del POS")
+            val bandeja = db.remotePaymentRequestDao().getById("req-d8b")!!
+            assertWithMessage(nombre).that(bandeja.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+            assertWithMessage(nombre).that(bandeja.updatedAt).isGreaterThan(1L)
+            assertWithMessage(nombre).that(turno.ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(1)
+            assertWithMessage(nombre).that(turno.leer(venue, sesion.localSessionId)!!.localStatus).isEqualTo("OPEN")
+        }
+    }
+
+    @Test fun `D8 P1 con host_approved, veto o aprobacion la fila de bandeja se puede cerrar, pero la obligacion del INTENTO sigue - no se suelta dinero`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val turno = db.localShiftSessionDao()
+        val marcas = mapOf(
+            "aprobado del host" to "host_approved = 1",
+            "veto del servidor" to "server_veto = 'PAYMENT_CONTRADICTION'",
+            "aprobacion del banco" to "server_processor_evidence = 'APPROVED'",
+        )
+        var i = 0
+        val fallos = mutableListOf<String>()
+        for ((nombre, marca) in marcas) {
+            i++
+            val req = "req-d8c-$i"
+            val libreta = declaradaPorLaTpvPublicada(shifts, req, "a-d8c-$i", marca)
+            coEvery { api.getRequestStatus(venue, req) } returns porSolicitud(getLiteral(req))
+
+            val r = BandejaServerRecovery(db.remotePaymentRequestDao(), api).conciliar(venue)
+
+            if (r.conciliadas != 1) fallos += "«$nombre»: la fila de bandeja no se cerró"
+            if (db.remotePaymentRequestDao().getById(req)!!.status != RemotePaymentRequestEntity.STATUS_RESOLVED) fallos += "«$nombre»: no quedó RESOLVED"
+            if (turno.intentosSinRepresentar(venue, sesion.localSessionId) != i) fallos += "«$nombre»: Caja ya no cuenta el intento"
+            if (turno.ejecucionesRemotas(venue, sesion.localSessionId) != 0) fallos += "«$nombre»: Caja la sigue contando como operación del POS"
+            if (shifts.guardarCierreLocal(venue, sesion.localSessionId) !is AppResult.Error) fallos += "«$nombre»: el turno se dejó cerrar"
+            assertThat(dao.getById("a-d8c-$i")!!.state).isEqualTo("DESCARTADA")
+            assertThat(libreta).isNotNull()
+        }
+        assertWithMessage("el dinero que se soltó").that(fallos).isEmpty()
+    }
+
+    @Test fun `D8 con el intento todavia en duda la solicitud no se consulta por la bandeja, aunque Caja cuente el intento`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaAbierta()
+        val libreta = libretaDeLaPax()
+        val entrada = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, libreta, PaymentStateHolder())
+        entrada.receive(solicitudDelPos("req-d8d"))
+        RemotePaymentCoordinator(entrada).prepareSocketPaymentRequest("req-d8d", { true }, { venue })
+        assertThat(libreta.openAttemptForShift(shifts, "a-d8d", venue, "BLUMON", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"req-d8d"}""")).isTrue()
+        assertThat(libreta.markAuthorizing("a-d8d")).isTrue()
+        assertThat(libretaDeLaPax().cuarentenaDeHuerfanos()).isEqualTo(1)
+
+        val r = BandejaServerRecovery(db.remotePaymentRequestDao(), api).conciliar(venue)
+
+        assertThat(r.consultadas).isEqualTo(0)
+        coVerify(exactly = 0) { api.getRequestStatus(any(), any()) }
+        assertThat(db.localShiftSessionDao().intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(1)
+    }
 }

@@ -100,6 +100,17 @@ class ProofOfSaleQueueDaoTest {
         assertThat(r.outcome).isNull()
     }
 
+    @Test fun `savePhotoUrl hace CAS por token y localPaths trae los archivos que siguen en la cola`() = runTest {
+        dao.insertRow(row("a"))
+        dao.insertRow(row("b", created = 2).copy(localPath = null, kind = "NUMBER_ONLY"))
+        dao.claimBatch(1, "mio", now = 1, staleBefore = 0)
+        assertThat(dao.savePhotoUrl("a", "ajeno", "https://fb/a.jpg")).isEqualTo(0)
+        assertThat(dao.observeKey("a").first()!!.photoUrl).isNull()
+        assertThat(dao.savePhotoUrl("a", "mio", "https://fb/a.jpg")).isEqualTo(1)
+        assertThat(dao.observeKey("a").first()!!.photoUrl).isEqualTo("https://fb/a.jpg")
+        assertThat(dao.localPaths()).containsExactly("/x/a.jpg")
+    }
+
     @Test fun `claimBatch respeta el limite y toma por retry_count y created_at`() = runTest {
         dao.insertRow(row("c", created = 3, retry = 0))
         dao.insertRow(row("a", created = 1, retry = 1))

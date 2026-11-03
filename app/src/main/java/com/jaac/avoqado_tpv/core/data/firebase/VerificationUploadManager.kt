@@ -24,6 +24,9 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** La foto local no existe, está vacía o no se puede decodificar: reintentar no la arregla (no es la red ni Firebase). */
+class UnreadablePhotoException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 /**
  * Manages verification photo uploads to Firebase Storage.
  *
@@ -276,17 +279,27 @@ class VerificationUploadManager @Inject constructor(
 
     /**
      * Sube una foto (comprimida) a una ruta dada, sin el prefijo de ambiente: la cola de comprobantes arma la suya,
-     * única por fila. La cancelación pasa tal cual; cualquier otro fallo vuelve como `Result.failure`.
+     * única por fila. Se comprime ANTES de tocar Firebase, y un archivo que no se puede leer vuelve como
+     * [UnreadablePhotoException] (definitivo); un fallo de Firebase, como cualquier otra excepción (se reintenta).
+     * La cancelación pasa tal cual.
      */
-    suspend fun uploadToPath(localPath: String, path: String): Result<String> = try {
-        val photoRef = storageRef.child(buildStoragePath(path))
-        photoRef.putBytes(compressImage(localPath)).await()
-        Result.success(photoRef.downloadUrl.await().toString())
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Timber.e(e, "📸 [$TAG] Upload to $path failed")
-        Result.failure(e)
+    suspend fun uploadToPath(localPath: String, path: String): Result<String> {
+        val bytes = try {
+            compressImage(localPath)
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] La foto local no se puede leer: $localPath")
+            return Result.failure(UnreadablePhotoException("La foto de la terminal no se puede leer", e))
+        }
+        return try {
+            val photoRef = storageRef.child(buildStoragePath(path))
+            photoRef.putBytes(bytes).await()
+            Result.success(photoRef.downloadUrl.await().toString())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Upload to $path failed")
+            Result.failure(e)
+        }
     }
 
     /**

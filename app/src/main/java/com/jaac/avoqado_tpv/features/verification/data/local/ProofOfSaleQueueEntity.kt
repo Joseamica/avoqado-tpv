@@ -35,4 +35,8 @@ data class ProofOfSaleQueueEntity(
     @ColumnInfo(name = "outcome") val outcome: String? = null, // SALE_ALREADY_APPROVED | SALE_REJECTED | NUMBER_DISABLED | PERMANENT
     @ColumnInfo(name = "last_error") val lastError: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
+    /** Tienda donde se tomó (la carpeta de Firebase); null en filas sin tienda conocida: se usa la de la sesión. */
+    @ColumnInfo(name = "venue_slug") val venueSlug: String? = null,
+    /** URL de Firebase tras la primera subida buena: un reintento del POST ya no vuelve a subir la foto. */
+    @ColumnInfo(name = "photo_url") val photoUrl: String? = null,
 )

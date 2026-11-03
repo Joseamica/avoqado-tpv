@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 45,
-    "identityHash": "33f851d08594273a3fb3d5aa5d911368",
+    "identityHash": "74de3c097a1e7d6fd54856532236e360",
     "entities": [
       {
         "tableName": "pending_payments",
@@ -1470,7 +1470,7 @@
       },
       {
         "tableName": "proof_of_sale_queue",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, PRIMARY KEY(`idempotency_key`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, `venue_slug` TEXT, `photo_url` TEXT, PRIMARY KEY(`idempotency_key`))",
         "fields": [
           {
             "fieldPath": "idempotencyKey",
@@ -1590,6 +1590,16 @@
             "columnName": "created_at",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "venueSlug",
+            "columnName": "venue_slug",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "photoUrl",
+            "columnName": "photo_url",
+            "affinity": "TEXT"
           }
         ],
         "primaryKey": {
@@ -3084,7 +3094,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '33f851d08594273a3fb3d5aa5d911368')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '74de3c097a1e7d6fd54856532236e360')"
     ]
   }
 }

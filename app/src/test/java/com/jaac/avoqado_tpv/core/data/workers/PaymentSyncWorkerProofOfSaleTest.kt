@@ -7,6 +7,7 @@ import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
+import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
@@ -14,7 +15,11 @@ import com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUs
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import io.mockk.coEvery
 import io.mockk.coVerifyOrder
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -38,6 +43,22 @@ class PaymentSyncWorkerProofOfSaleTest {
         coEvery { proofs.drain(any()) } throws IllegalStateException("db cerrada")
 
         assertThat(buildWorker().doWork()).isEqualTo(ListenableWorker.Result.success())
+    }
+
+    @Test fun `si quedan fotos por subir el worker encadena otra pasada, y si no, no`() = runTest {
+        mockkObject(PaymentSyncScheduler)
+        try {
+            every { PaymentSyncScheduler.continuarDespuesDeEstaPasada(any()) } returns Unit
+            coEvery { proofs.drain(any()) } returns true
+            buildWorker().doWork()
+            verify(exactly = 1) { PaymentSyncScheduler.continuarDespuesDeEstaPasada(any()) }
+
+            coEvery { proofs.drain(any()) } returns false
+            buildWorker().doWork()
+            verify(exactly = 1) { PaymentSyncScheduler.continuarDespuesDeEstaPasada(any()) }
+        } finally {
+            unmockkObject(PaymentSyncScheduler)
+        }
     }
 
     private fun buildWorker(): PaymentSyncWorker =

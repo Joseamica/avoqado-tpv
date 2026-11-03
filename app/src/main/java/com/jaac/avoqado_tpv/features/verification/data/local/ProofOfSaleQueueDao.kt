@@ -80,6 +80,13 @@ interface ProofOfSaleQueueDao {
     @Query("DELETE FROM proof_of_sale_queue WHERE idempotency_key = :key")
     suspend fun delete(key: String): Int
 
+    @Query("UPDATE proof_of_sale_queue SET photo_url = :url WHERE idempotency_key = :key AND claim_token = :token")
+    suspend fun savePhotoUrl(key: String, token: String, url: String): Int
+
+    /** Los archivos que todavía tienen fila (el barrido de huérfanos no los toca). */
+    @Query("SELECT local_path FROM proof_of_sale_queue WHERE local_path IS NOT NULL")
+    suspend fun localPaths(): List<String>
+
     @Query("SELECT * FROM proof_of_sale_queue WHERE staff_id = :staffId ORDER BY created_at DESC")
     fun observeStaff(staffId: String): Flow<List<ProofOfSaleQueueEntity>>
 

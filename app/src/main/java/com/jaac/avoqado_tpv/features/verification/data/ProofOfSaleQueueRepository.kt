@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.verification.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.jaac.avoqado_tpv.core.data.firebase.UnreadablePhotoException
 import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -39,7 +40,7 @@ enum class ProofSlot(val backendLabel: String) { VINCULACION("Vinculacion"), POR
 
 data class PhotoCapture(
     val venueId: String,
-    /** No se guarda: la v45 no tiene la columna; la ruta de Firebase usa la tienda de la sesión (ver [ProofOfSaleQueueRepository.drain]). */
+    /** Se guarda en la fila: la foto va a la carpeta de SU tienda aunque se suba con la sesión en otra. */
     val venueSlug: String?,
     val staffId: String,
     val paymentId: String,
@@ -63,7 +64,7 @@ data class ProofSyncResult(val key: String, val outcome: String, val linkingDupl
 
 /**
  * Cola durable de la foto de comprobante y del número de vinculación (PlayTelecom). Ninguna pantalla sube por su
- * cuenta: encola (archivo primero, fila después, sin red de por medio) y pide `runNow`; la subida la hace
+ * cuenta: encola (archivo primero, fila después, sin red de por medio) y pide otra pasada del worker; la subida la hace
  * `PaymentSyncWorker` con [drain], un intento por fila y por corrida, CAS por `claim_token`.
  *
  * Desenlace de cada fila: por el `code` del cuerpo del error primero y por el status sólo si no hay uno conocido
@@ -90,11 +91,11 @@ class ProofOfSaleQueueRepository @Inject constructor(
         val key = UUID.randomUUID().toString()
         val file = File(File(context.filesDir, DIR), "$key.jpg")
         File(c.sourcePath).copyTo(file, overwrite = true)
-        insert(key, KIND_PHOTO, c.venueId, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number)
+        insert(key, KIND_PHOTO, c.venueId, c.venueSlug, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number)
     }
 
     suspend fun enqueueNumberOnly(c: NumberCapture): String = withContext(NonCancellable + Dispatchers.IO) {
-        insert(UUID.randomUUID().toString(), KIND_NUMBER_ONLY, c.venueId, c.staffId, c.paymentId, c.verificationId, c.slot, null, c.number)
+        insert(UUID.randomUUID().toString(), KIND_NUMBER_ONLY, c.venueId, null, c.staffId, c.paymentId, c.verificationId, c.slot, null, c.number)
     }
 
     fun observeStaff(staffId: String): Flow<List<ProofOfSaleQueueEntity>> = queueDao.observeStaff(staffId)
@@ -115,25 +116,34 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
     /**
      * Un intento por fila reclamada, de cualquier tienda (el servidor busca la venta en la organización del token).
-     * Una fila que truena se suelta y no frena a las demás.
+     * Una fila que truena se suelta y no frena a las demás. Al final barre los archivos huérfanos.
+     *
+     * @return true si reclamó una tanda llena Y resolvió al menos una: puede haber más, que el worker pida otra pasada.
+     *   Una tanda llena que sólo se soltó (diez filas de otra organización) devuelve false: otra pasada sería un bucle.
      */
-    suspend fun drain(limit: Int = 10) {
+    suspend fun drain(limit: Int = 10): Boolean {
         val now = System.currentTimeMillis()
         val token = UUID.randomUUID().toString()
-        for (row in queueDao.claimBatch(limit, token, now, now - LEASE_MS)) {
-            try {
+        val rows = queueDao.claimBatch(limit, token, now, now - LEASE_MS)
+        var resolved = 0
+        for (row in rows) {
+            val done = try {
                 sync(row, token)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📸 [ProofQueue] Fallo inesperado | key=${row.idempotencyKey}")
                 runCatching { queueDao.release(row.idempotencyKey, token, row.retryCount + 1, e.message ?: "error inesperado") }
+                false
             }
+            if (done) resolved++
         }
+        sweepOrphans()
+        return rows.size == limit && resolved > 0
     }
 
     private suspend fun insert(
-        key: String, kind: String, venueId: String, staffId: String, paymentId: String, verificationId: String?,
+        key: String, kind: String, venueId: String, venueSlug: String?, staffId: String, paymentId: String, verificationId: String?,
         slot: ProofSlot, localPath: String?, number: String?,
     ): String {
         val now = System.currentTimeMillis()
@@ -144,23 +154,26 @@ class ProofOfSaleQueueRepository @Inject constructor(
                 linkingNumber = number.takeIf { slot == ProofSlot.VINCULACION },
                 portedNumber = number.takeIf { slot == ProofSlot.PORTABILIDAD },
                 capturedAt = now, captureSeq = sequence.next(), captureDeviceId = sequence.deviceId(), createdAt = now,
+                venueSlug = venueSlug,
             ),
         )
-        // La fila ya está guardada: si WorkManager no responde, la sube el siguiente disparo (red de vuelta o 15 min).
-        runCatching { PaymentSyncScheduler.runNow(context) }
+        // La fila ya está guardada. APPEND y no runNow/KEEP: con un worker a media pasada (ya después de las fotos), KEEP
+        // descartaba el pedido y la foto esperaba al periódico de 15 min. Si WorkManager no responde, la sube el siguiente disparo.
+        runCatching { PaymentSyncScheduler.continuarDespuesDeEstaPasada(context) }
         return key
     }
 
-    private suspend fun sync(row: ProofOfSaleQueueEntity, token: String) {
+    /** @return true si la fila quedó resuelta (entregada, a la vista o definitiva); false si se soltó para reintentar. */
+    private suspend fun sync(row: ProofOfSaleQueueEntity, token: String): Boolean {
         val response = try {
-            if (row.kind == KIND_NUMBER_ONLY) remote.submitNumber(row) else remote.submitPhoto(row, uploadPhoto(row, token) ?: return)
+            if (row.kind == KIND_NUMBER_ONLY) remote.submitNumber(row) else remote.submitPhoto(row, uploadPhoto(row, token))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return onError(row, token, e)
         }
         val numberDisabled = response.linkingNumberOutcome == DISABLED || response.portedNumberOutcome == DISABLED
-        when {
+        return when {
             response.outcome == SALE_ALREADY_APPROVED -> needsAttention(row, token, SALE_ALREADY_APPROVED, response)
             numberDisabled -> needsAttention(row, token, NUMBER_DISABLED, response)
             else -> {
@@ -171,66 +184,78 @@ class ProofOfSaleQueueRepository @Inject constructor(
                 }
                 row.localPath?.let { File(it).delete() }
                 emit(row, response.outcome ?: APPLIED, response) // un 2xx sin outcome (servidor viejo) guardó la foto como hoy
+                true
             }
         }
     }
 
-    /** La URL de Firebase, o null si la fila ya quedó resuelta (soltada o permanente). */
-    private suspend fun uploadPhoto(row: ProofOfSaleQueueEntity, token: String): String? {
-        val path = row.localPath
-        if (path == null || !File(path).exists()) {
-            fail(row, token, PERMANENT, "La foto ya no está en la terminal")
-            return null
-        }
-        // ponytail: la fila no guarda el slug de su tienda (la v45 no tiene la columna), así que va la tienda de la sesión.
-        // La carpeta sólo es nombre: el servidor guarda la URL. Si importa, columna `venue_slug` en una migración.
-        val slug = secureStorage.getVenueSlug() ?: run {
-            release(row, token, "Sin tienda en la sesión para guardar la foto")
-            return null
-        }
+    /**
+     * La URL de Firebase. Si ya se subió en un intento anterior, la misma sin volver a subir. Lanza
+     * [UnreadablePhotoException] si el archivo local falta, está vacío o no se decodifica (definitivo), y cualquier
+     * otra cosa si es Firebase o no hay tienda (se reintenta): el reparto lo hace [onError].
+     */
+    private suspend fun uploadPhoto(row: ProofOfSaleQueueEntity, token: String): String {
+        row.photoUrl?.let { return it }
+        val path = row.localPath?.takeIf { File(it).length() > 0 }
+            ?: throw UnreadablePhotoException("La foto ya no está en la terminal o está vacía")
+        val slug = row.venueSlug ?: secureStorage.getVenueSlug() ?: throw IllegalStateException("Sin tienda para guardar la foto")
         val fecha = STORAGE_DATE.format(Instant.ofEpochMilli(row.capturedAt))
-        return uploader.uploadToPath(path, "venues/$slug/proof-of-sale/$fecha/${row.paymentId}_${row.slot}_${row.idempotencyKey}.jpg")
-            .getOrElse {
-                release(row, token, "No se pudo subir la foto: ${it.message}")
-                return null
-            }
+        val url = uploader.uploadToPath(path, "venues/$slug/proof-of-sale/$fecha/${row.paymentId}_${row.slot}_${row.idempotencyKey}.jpg")
+            .getOrThrow()
+        queueDao.savePhotoUrl(row.idempotencyKey, token, url)
+        return url
     }
 
     /** Por `code` primero; por status sólo si el código no se conoce o no viene. Ante la duda, se reintenta. */
-    private suspend fun onError(row: ProofOfSaleQueueEntity, token: String, e: Exception) {
+    private suspend fun onError(row: ProofOfSaleQueueEntity, token: String, e: Exception): Boolean {
         val why = e.message ?: "error"
+        if (e is UnreadablePhotoException) return fail(row, token, PERMANENT, why)
         when ((e as? BackendHttpException)?.errorCode) {
             SALE_REJECTED -> return fail(row, token, SALE_REJECTED, why)
             LINKING_NUMBER_DISABLED -> return needsAttention(row, token, NUMBER_DISABLED, null)
             VERIFICATION_MOVED, MODULE_DISABLED -> return release(row, token, why)
             INVALID_LINKING_NUMBER, CAPTURE_REQUIRED -> return fail(row, token, PERMANENT, why)
         }
-        when {
-            // Otra organización (la terminal cambió): no es definitivo, se sube cuando vuelva una sesión de su tienda.
-            e is BackendHttpException && e.statusCode == 404 && row.venueId != secureStorage.getVenueId() ->
-                release(row, token, WAITING_FOR_STORE)
+        val notFound = e is BackendHttpException && e.statusCode == 404
+        return when {
+            // Otra organización (la terminal cambió) u otro promotor: no es definitivo, se sube cuando vuelva su sesión.
+            notFound && row.venueId != secureStorage.getVenueId() -> release(row, token, WAITING_FOR_STORE)
+            notFound && row.staffId != secureStorage.getStaffId() -> release(row, token, WAITING_FOR_STAFF)
             classifySyncFailure(e) is SyncOutcome.Permanent -> fail(row, token, PERMANENT, why) // otro 400, 404 propio, 422
-            else -> release(row, token, why) // red, 401/403/408/409/426/429, 5xx, 2xx vacío
+            else -> release(row, token, why) // red, Firebase, sin tienda, 401/403/408/409/426/429, 5xx, 2xx vacío
         }
     }
 
-    private suspend fun release(row: ProofOfSaleQueueEntity, token: String, why: String) {
+    private suspend fun release(row: ProofOfSaleQueueEntity, token: String, why: String): Boolean {
         Timber.w("📸 [ProofQueue] Se reintenta | key=${row.idempotencyKey} | $why")
         queueDao.release(row.idempotencyKey, token, row.retryCount + 1, why)
+        return false
     }
 
-    private suspend fun fail(row: ProofOfSaleQueueEntity, token: String, outcome: String, why: String) {
+    private suspend fun fail(row: ProofOfSaleQueueEntity, token: String, outcome: String, why: String): Boolean {
         Timber.e("📸 [ProofQueue] Definitivo $outcome | key=${row.idempotencyKey} | $why")
         queueDao.markPermanentlyFailed(row.idempotencyKey, token, outcome, why)
         emit(row, outcome, null)
+        return true
     }
 
-    private suspend fun needsAttention(row: ProofOfSaleQueueEntity, token: String, outcome: String, response: ProofOfSaleResponse?) {
+    private suspend fun needsAttention(row: ProofOfSaleQueueEntity, token: String, outcome: String, response: ProofOfSaleResponse?): Boolean {
         db.withTransaction {
             if (outcome == NUMBER_DISABLED) markDelivered(row) // la foto sí entró; sólo el número no
             queueDao.markNeedsAttention(row.idempotencyKey, token, outcome)
         }
         emit(row, outcome, response)
+        return true
+    }
+
+    /** Archivos de `proof_of_sale/` sin fila, de más de una hora (uno recién copiado todavía no tiene la suya). */
+    private suspend fun sweepOrphans() = withContext(Dispatchers.IO) {
+        runCatching {
+            val files = File(context.filesDir, DIR).listFiles() ?: return@runCatching
+            val inQueue = queueDao.localPaths().toSet()
+            val cutoff = System.currentTimeMillis() - ORPHAN_AGE_MS
+            files.filter { it.absolutePath !in inQueue && it.lastModified() < cutoff }.forEach { it.delete() }
+        }.onFailure { Timber.w(it, "📸 [ProofQueue] No se pudieron barrer los archivos huérfanos") }
     }
 
     /** Suma la ranura a `delivered_slots` de la venta guardada (sólo filas PHOTO). Va dentro de la transacción del llamador. */
@@ -268,6 +293,10 @@ class ProofOfSaleQueueRepository @Inject constructor(
         const val CAPTURE_REQUIRED = "CAPTURE_REQUIRED"
 
         const val WAITING_FOR_STORE = "Esperando una sesión de su tienda"
+        const val WAITING_FOR_STAFF = "Esperando la sesión de quien la tomó"
+
+        /** Un archivo sin fila más viejo que esto ya no está a medio encolar (copiar y luego insertar tarda milisegundos). */
+        const val ORPHAN_AGE_MS = 60 * 60 * 1000L
 
         /** Un claim abandonado más viejo que esto lo puede rescatar otro worker (como los reembolsos). */
         const val LEASE_MS = 10 * 60 * 1000L

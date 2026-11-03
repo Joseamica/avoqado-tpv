@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **[PlayTelecom] Las fotos de comprobante ya no se pierden (cola durable, aún sin pantallas)**: cada foto y cada corrección del número de vinculación se guarda primero en la terminal (archivo y luego fila, sin red de por medio) y se sube sola en la misma pasada que los pagos y los reembolsos, después de ellos; una foto ya subida a Firebase no se vuelve a subir al reintentar. Lo que el servidor no acepta se queda a la vista con su motivo («venta ya aprobada», «venta rechazada», «número apagado», «no se pudo subir») en vez de borrarse; lo que falla por la red se reintenta solo. Room v45 (cola de fotos y lista guardada de ventas; se borra `verification_queue`, que nunca tuvo datos); contador de capturas con id de instalación para que una captura vieja no pise a una nueva, fuera del respaldo de Android. Las pantallas todavía suben como hoy: pasan a la cola en la siguiente entrega
+
 ### **Changed**
 - **[Reportes] Los reportes de días anteriores ya no piden plan**: cambiar de día, la comparación y la pestaña Historial pedían «Plan Pro» y, pasada la medianoche, un negocio sin plan ya no podía ver lo que vendió ayer (founder, 2-nov). Ahora todos los reportes de la terminal se ven en cualquier plan
 

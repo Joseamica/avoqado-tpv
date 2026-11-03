@@ -215,11 +215,12 @@ class PaymentSyncWorker @AssistedInject constructor(
             // por su id de servidor, así que primero tiene que existir el pago allá.
             drainRefunds()
             // 📸 Las fotos de comprobante van al final: cuelgan de un pago que ya tiene que existir en el servidor.
-            drainProofOfSale()
+            val moreProofs = drainProofOfSale()
             sessionProgress += shiftRepository?.sincronizarCierresLocales() ?: 0
             if ((tableProgress.resolved > 0 && tableProgress.moreAfterLimit) ||
                 (paymentProgress > 0 && batch.size == MAX_PAYMENTS_PER_RUN && paymentQueueRepository.getPendingCount() > 0) ||
-                (sessionProgress > 0 && shiftRepository?.haySesionesPorReproducir() == true)) {
+                (sessionProgress > 0 && shiftRepository?.haySesionesPorReproducir() == true) ||
+                moreProofs) {
                 com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext)
             }
 
@@ -581,15 +582,17 @@ class PaymentSyncWorker @AssistedInject constructor(
         }
     }
 
-    /** 📸 Cola de fotos/números de comprobante. Su fallo nunca tumba al worker (cada fila ya se aísla adentro). */
-    private suspend fun drainProofOfSale() {
-        try {
-            proofOfSaleQueueRepository?.drain()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "📸 [Proof Sync] No se pudo drenar la cola de comprobantes")
-        }
+    /**
+     * 📸 Cola de fotos/números de comprobante. Su fallo nunca tumba al worker (cada fila ya se aísla adentro).
+     * @return true si quedó una tanda llena con avance: hay que encadenar otra pasada.
+     */
+    private suspend fun drainProofOfSale(): Boolean = try {
+        proofOfSaleQueueRepository?.drain() ?: false
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "📸 [Proof Sync] No se pudo drenar la cola de comprobantes")
+        false
     }
 
     // ─── 💸 Reembolsos (Fase 1, Task 8) ──────────────────────────────────────────

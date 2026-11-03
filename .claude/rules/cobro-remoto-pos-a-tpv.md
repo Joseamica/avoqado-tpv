@@ -119,7 +119,7 @@ Dos pendientes declarados:
    del mismo `requestId`; no basta observar el último intento, ausencia de handshake o cero bytes
    de cuerpo. Sin esa evidencia se conserva la misma llave y se concilia; timeout y GET 404 no
    acreditan ausencia de cargo. Mantener la persistencia antes del POST. Diseñar y probar esta
-   distinción con TDD en Android e iOS, incluyendo conexiones reutilizadas, HTTP/2, intermediarios,
+   distinción con TDD en Android (lo de iOS va a su ficha: iOS va después), incluyendo conexiones reutilizadas, HTTP/2, intermediarios,
    reintentos y muerte del proceso.
 2. Si la misma venta se cobra y registra mediante Pago rápido en la TPV y además se registra
    manualmente en la tablet como tarjeta de otra terminal, pueden quedar dos registros de ingreso

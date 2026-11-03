@@ -7,8 +7,8 @@ package com.jaac.avoqado_tpv.features.checkout.domain.model
  * [pedidoJson] es el cuerpo de `POST mobile/venues/{v}/orders` TAL CUAL se armó (en centavos): al subir viaja byte a byte, sin
  * re-armarlo con un catálogo más nuevo. [renglones] son los del ticket, con las mismas llaves por renglón que el pedido.
  *
- * Gson-serializable (entra en el `SavedStateHandle` como `"ventaLocalJson"` y sobrevive a que el sistema mate el proceso): sólo
- * tipos simples, nada sellado.
+ * Gson-serializable (entra en el `SavedStateHandle` como `"ventaLocalJson"` y sobrevive a que se recree la pantalla; un proceso
+ * nuevo no la restaura, ver `EstadoDelProceso`, y lo que cuenta es la fila ya guardada): sólo tipos simples, nada sellado.
  */
 data class VentaLocal(
     val llave: String,

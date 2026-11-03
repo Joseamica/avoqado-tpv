@@ -295,8 +295,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         // la pantalla de B sigue cobrando. Por eso la PRIMERA llamada fija el vínculo (la de un
         // cobro local también: llega con null, null) y desde ahí ningún otro id se adopta — ni
         // siquiera tras [resetPayment]: un VM limpio que sale es justo el caso del cancel falso.
-        // Vive en el SavedStateHandle para que un VM restaurado tras la muerte del proceso lo
-        // respete igual. La navegación ya lee los argumentos una sola vez; esto es la segunda
+        // Vive en el SavedStateHandle para que un VM recreado con el proceso vivo lo respete igual
+        // (un proceso nuevo no restaura la pantalla: `EstadoDelProceso`). La navegación ya lee los argumentos una sola vez; esto es la segunda
         // puerta, y si alguna vez se toca se registra (Crashlytics, sin datos del cobro).
         if (vinculoFijado) {
             if (source != null && requestId != null && requestId != solicitudVinculada) {
@@ -587,6 +587,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     // arbitration row stays CANCELLED/FAILED for a charge whose money actually MOVED, and the 🚨
     // reconcile alert never fires. (That the app loses foreground here is already codified by
     // ForegroundRecoveryGate.arm(reason = "angelpay_sdk_approved") in AngelPayPaymentScreen.)
+    // Sólo con el proceso vivo: desde D1 (3-nov) un proceso NUEVO no restaura esta pantalla (`EstadoDelProceso`), y el
+    // intento que dejó el muerto lo cubren la libreta y el servidor.
     // Cleared in [resetPayment]; the emit clears only the emitted-flag, never the request id.
     private var _paymentSource: String?              // "SOCKET" | null
         get() = savedStateHandle[KEY_PAYMENT_SOURCE]

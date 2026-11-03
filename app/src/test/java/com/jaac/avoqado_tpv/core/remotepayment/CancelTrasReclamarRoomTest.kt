@@ -833,6 +833,46 @@ class CancelTrasReclamarRoomTest {
         assertThat(dao.getById("a-reserva")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
     }
 
+    /**
+     * D2 (QA 2-nov) con la pantalla del SDK restaurada encima (Codex TPV r1 #1). Android revive el proceso con `PaymentActivity`
+     * arriba: su `onCreate` (AAR 1.0.22) relanza el cobro con `angelpay_req` sin mirar `savedInstanceState`. Al terminar, `MainActivity`
+     * se crea SIN estado y su resultado no le llega a nadie (`EstadoDelProcesoTest`). Lo que tiene que quedar: el intento en DUDA, sin
+     * «no se cobró» y sin otro lector de esa solicitud.
+     */
+    @Test fun `D2 con el SDK restaurado encima no se certifica, y al terminar queda el intento en duda y ningun otro cobro`() = runTest {
+        assertThat(reclamar()).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(abrirIntento("a1")).isTrue()
+        assertThat(ledger.markAuthorizing("a1")).isTrue() // el proceso 1 muere con el SDK dentro
+        var pila = listOf(TareaDeLaApp(pantallas = 2, arribaLaPrincipal = false))
+        val libreta = libretaConPila { pila }
+        val coordinador = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta, PaymentStateHolder()))
+
+        // Al arrancar el proceso nuevo (`LedgerRecoveryTrigger.instalar`), lo que dejó el muerto pasa a «en duda».
+        libreta.cuarentenaDeHuerfanos()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+
+        // Con el SDK encima la terminal no dice «ya no cobra», aunque le llegara una sonda.
+        coordinador.probeSocketPaymentRequest("req-1", "venue-1").let {
+            assertThat(it.executionAlive).isTrue()
+            assertThat(it.closedForExecution).isFalse()
+        }
+
+        // El SDK termina: sólo queda la principal, en el Inicio, y ahí sí se certifica.
+        pila = listOf(TareaDeLaApp(pantallas = 1, arribaLaPrincipal = true))
+        coordinador.probeSocketPaymentRequest("req-1", "venue-1").let {
+            assertThat(it.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+            assertThat(it.executionAlive).isFalse()
+            assertThat(it.closedForExecution).isTrue()
+        }
+
+        // No es un cobro perdido: sigue en duda y nadie dijo «no se cobró»…
+        assertThat(db.paymentAttemptDao().getById("a1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertThat(libreta.cobroSinResolver()?.attemptId).isEqualTo("a1")
+        assertThat(bandeja().finalResultJson).isNull()
+        // …ni un segundo cobro: esa solicitud ya no admite otro intento.
+        assertThat(libreta.openAttempt("a2", "venue-1", "BLUMON", 10_000, 0, "FAST", contexto)).isFalse()
+    }
+
     // ═══ B2 (22-oct, «ninguna duda de cobro sin salida»): la sonda y el cancel dicen la verdad ═══
     //
     // En PROCESSING sin efectivo/cripto arrancado:

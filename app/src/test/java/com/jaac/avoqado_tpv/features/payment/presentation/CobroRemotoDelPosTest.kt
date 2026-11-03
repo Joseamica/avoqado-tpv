@@ -89,6 +89,13 @@ class CobroRemotoDelPosTest {
         }
     }
 
+    // D1 (QA 2-nov): con el proceso nuevo en el Inicio ninguna pantalla de cobro publica nada, así que esta regla no niega el
+    // certificado de cese. Negarlo era el riesgo de conectar el socket en la «Método de Pago» restaurada, que publica cobro activo.
+    @Test fun `D1 en un proceso nuevo, sin pantalla de cobro, la regla no niega el certificado`() {
+        val recienNacido = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder()
+        assertThat(CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(recienNacido)).isFalse()
+    }
+
     @Test fun `P1 la navegacion admite con las banderas del proveedor - la misma entrada que lee la bandeja`() {
         val navegacion = java.io.File(
             "src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt",

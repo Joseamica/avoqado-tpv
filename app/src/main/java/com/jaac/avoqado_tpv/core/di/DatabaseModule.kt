@@ -172,7 +172,7 @@ object DatabaseModule {
             // ⚠️ WARNING: This will DELETE all local data including:
             // - pending_payments (queued payments not yet synced)
             // - draft_orders (local orders)
-            // - verification_queue (pending verifications)
+            // - proof_of_sale_queue (fotos/números pendientes; reemplazó a verification_queue, eliminada en v45 por MIGRATION_44_45)
             // - All cache tables (can be recovered from server)
             //
             // RECOMMENDATION: Before downgrading via INSTALL_VERSION:

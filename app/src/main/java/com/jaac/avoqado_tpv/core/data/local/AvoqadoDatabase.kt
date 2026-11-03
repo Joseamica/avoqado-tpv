@@ -54,7 +54,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * - v10 → v11: Added paidAmount/remainingBalance for split payments (2025-11-26)
  * - v11 → v12: Added lastSplitType for split payment type restriction (2025-11-28)
  * - v12 → v13: Added color fields to ProductCategoryEntity and ProductEntity (2025-12-01)
- * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11)
+ * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11) [eliminada en v45, MIGRATION_44_45]
  * - v14 → v15: Added isActive to ProductCategoryEntity (filter inactive categories - 2025-01-13)
  * - v15 → v16: Added categoryIsActive to ProductEntity (category status in product cache - 2025-01-13)
  * - v16 → v17: **🔴 CRITICAL FIX** - Added missing columns to PendingPaymentEntity (venue_id, blumon_serial_number, is_international, authorization_number, device_serial_number) - Fixes production crash on update from v1.1.x (2026-01-19)
@@ -85,7 +85,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * - TableEntity: Cache tables for floor plan + table service (offline-friendly)
  * - FloorElementEntity: Cache floor elements for floor plan (offline-friendly)
  * - CachedShiftEntity: Offline cache for shift status (prevention pattern - shows last known state)
- * - VerificationQueueEntity: Offline queue for Step 4 sale verification (photos, barcodes)
+ * - (VerificationQueueEntity: eliminada en v45, MIGRATION_44_45; la reemplaza ProofOfSaleQueueEntity)
  *
  * **Future Entities:**
  * - PaymentHistoryEntity: Local cache of successful payments for offline access
@@ -109,7 +109,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * val productDao = database.productDao()
  * val productCategoryDao = database.productCategoryDao()
  * val cachedShiftDao = database.cachedShiftDao()
- * val verificationQueueDao = database.verificationQueueDao()
+ * val proofOfSaleQueueDao = database.proofOfSaleQueueDao() // reemplazó a verificationQueueDao (eliminado en v45)
  * ```
  *
  * **World-Class Examples:**

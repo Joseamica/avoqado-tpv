@@ -87,4 +87,25 @@ class ProofOfSaleQueueDaoTest {
         assertThat(dao.observeStaff("s1").first().single().syncStatus).isEqualTo("SUCCESS")
         assertThat(dao.delete("a")).isEqualTo(1)
     }
+
+    @Test fun `markPermanentlyFailed y markNeedsAttention con token ajeno devuelven 0 y no tocan la fila`() = runTest {
+        dao.insertRow(row("a"))
+        dao.claimBatch(1, "mio", now = 1, staleBefore = 0)
+        assertThat(dao.markPermanentlyFailed("a", "ajeno", "PERMANENT", "400")).isEqualTo(0)
+        assertThat(dao.markNeedsAttention("a", "ajeno", "SALE_ALREADY_APPROVED")).isEqualTo(0)
+        val r = dao.observeKey("a").first()!!
+        assertThat(r.syncStatus).isEqualTo("SYNCING")
+        assertThat(r.claimToken).isEqualTo("mio")
+        assertThat(r.permanent).isFalse()
+        assertThat(r.outcome).isNull()
+    }
+
+    @Test fun `claimBatch respeta el limite y toma por retry_count y created_at`() = runTest {
+        dao.insertRow(row("c", created = 3, retry = 0))
+        dao.insertRow(row("a", created = 1, retry = 1))
+        dao.insertRow(row("b", created = 2, retry = 0))
+        val claimed = dao.claimBatch(2, "t", now = 100, staleBefore = 0)
+        assertThat(claimed.map { it.idempotencyKey }).containsExactly("b", "c").inOrder()
+        assertThat(dao.observeKey("a").first()!!.syncStatus).isEqualTo("PENDING")
+    }
 }

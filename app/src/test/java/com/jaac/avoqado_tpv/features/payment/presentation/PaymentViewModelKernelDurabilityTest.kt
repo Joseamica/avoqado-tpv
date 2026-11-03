@@ -1547,4 +1547,346 @@ class PaymentViewModelKernelDurabilityTest {
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 
+    // ═══ D6 (2-nov, «ninguna duda de cobro sin salida»): un cobro remoto sólo entra al lector con SU identidad original ═══
+    //
+    // Una fila nacida bajo la barrera conserva el «no se cobró» automático porque su libreta dice la historia COMPLETA. La libreta
+    // acepta contextos locales, así que sólo este VM sabe que el cobro nació remoto: si el enlace mutable se perdió o cambió, seguir
+    // lo cobraría como venta local y la sonda de esa solicitud no encontraría nada.
+
+    private val detectConTipos get() = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>()
+
+    private inner class CajaConLibretaReal {
+        val db = baseEnMemoria()
+        val filasEnElLector = java.util.concurrent.CopyOnWriteArrayList<PaymentAttemptEntity>()
+        val lectoresAbiertos = java.util.concurrent.atomic.AtomicInteger(0)
+        /** Sin completar, el lector se queda esperando la tarjeta: el flujo no sigue y la prueba mira la frontera. */
+        val tarjeta = CompletableDeferred<Unit>()
+        val detect = detectConTipos
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
+        val vm: PaymentViewModel
+
+        init {
+            mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+            coEvery { detect.run(any()) } coAnswers {
+                filasEnElLector += db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE)
+                lectoresAbiertos.incrementAndGet()
+                tarjeta.await()
+                com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
+            }
+            vm = createViewModel(startDetectCardUseCase = detect, startCtlssTransUseCase = kernel)
+        }
+
+        fun filasDeLaLibreta(): Int = db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM payment_attempts").use { it.moveToFirst(); it.getInt(0) }
+
+        /** Comercio elegido: sin él, otra guarda rechazaría el cobro y la prueba pasaría por el motivo equivocado. */
+        fun elegirComercio() {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            assertWithMessage("precondición: comercio seleccionado").that(vm.currentMerchant.value).isNotNull()
+        }
+
+        fun cerrar() { tarjeta.cancel(); vm.viewModelScope.cancel(); db.close() }
+    }
+
+    private fun verificarNingunDesenlace() = verify(exactly = 0) {
+        mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+    }
+
+    /** El rechazo de ESTA frontera, no otra guarda: sin lector, sin fila, sin nombre prestado y sin desenlace. */
+    private fun CajaConLibretaReal.intentarYVerRechazo(contexto: String) {
+        vm.startPayment("100.00")
+        esperarA { vm.state.value is PaymentState.Error || lectoresAbiertos.get() > 0 }
+        val estado = vm.state.value
+        assertWithMessage("$contexto: estado = $estado").that(estado).isInstanceOf(PaymentState.Error::class.java)
+        assertWithMessage(contexto).that((estado as PaymentState.Error).message).isEqualTo(CobroRemotoDelPos.SOLICITUD_CERRADA)
+        assertWithMessage(contexto).that(estado.canRetry).isFalse()
+        assertWithMessage(contexto).that(lectoresAbiertos.get()).isEqualTo(0)
+        assertWithMessage("$contexto: ninguna reserva local").that(filasDeLaLibreta()).isEqualTo(0)
+        assertWithMessage(contexto).that(vm.isPaymentInProgress.value).isFalse()
+    }
+
+    @Test fun `D6 P1 un remoto reserva con su id original en el JSON y en la columna antes de abrir el lector, FAST y ORDER`() = runTest {
+        for (conOrden in listOf(false, true)) {
+            val caja = CajaConLibretaReal()
+            try {
+                caja.vm.setSocketPaymentSource("SOCKET", "REQ-A")
+                caja.elegirComercio()
+                if (conOrden) {
+                    caja.vm.submitAmountWithExternalInputs(amount = "100.00", skipReview = true, orderId = "orden-1", orderNumber = "7", skipLocalOrderValidation = true)
+                    esperarA { caja.vm.state.value is PaymentState.SelectingMerchant }
+                }
+
+                caja.vm.startPayment("100.00")
+                esperarA { caja.lectoresAbiertos.get() > 0 || caja.vm.state.value is PaymentState.Error }
+
+                assertWithMessage("orden=$conOrden, estado = ${caja.vm.state.value}").that(caja.lectoresAbiertos.get()).isEqualTo(1)
+                val fila = caja.filasEnElLector.single()
+                assertThat(fila.terminalPaymentRequestId).isEqualTo("REQ-A")
+                val json = com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject
+                assertThat(json.get("terminalPaymentRequestId").asString).isEqualTo("REQ-A")
+                assertThat(fila.recordingRoute).isEqualTo(if (conOrden) "ORDER" else "FAST")
+                if (conOrden) assertThat(json.get("orderId").asString).isEqualTo("orden-1")
+            } finally { caja.cerrar() }
+        }
+    }
+
+    @Test fun `D6 P1 una entrada remota sin id valido se rechaza y no se degrada a venta local`() = runTest {
+        for (idInvalido in listOf(null, "", "   ")) {
+            val caja = CajaConLibretaReal()
+            try {
+                caja.vm.setSocketPaymentSource("SOCKET", idInvalido)
+                caja.elegirComercio()
+                caja.intentarYVerRechazo("id = «$idInvalido»")
+                verificarNingunDesenlace()
+            } finally { caja.cerrar() }
+        }
+    }
+
+    @Test fun `D6 P1 tras resetPayment el VM de A no cobra como local ni adopta a B`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            caja.vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            caja.elegirComercio()
+            caja.vm.resetPayment() // A sale una sola vez, aquí: es la salida de hoy
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult("REQ-A", "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            clearMocks(mockSocketManager, answers = false)
+            // La pantalla que sale relee los argumentos del cobro siguiente.
+            caja.vm.setSocketPaymentSource("SOCKET", "REQ-B")
+
+            caja.intentarYVerRechazo("tras reset")
+            verificarNingunDesenlace()
+        } finally { caja.cerrar() }
+    }
+
+    @Test fun `D6 P1 tras la cancelacion aceptada del POS no queda una reserva local`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            caja.vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            caja.elegirComercio()
+            caja.vm.manejarCancelacionRemota(SocketEvent.TerminalPaymentCancel("REQ-A", "pos", "2026-11-02T12:00:00Z", disposition = "ACCEPTED"))
+
+            caja.vm.startPayment("100.00")
+            esperarA { caja.vm.state.value is PaymentState.Error && !caja.vm.isPaymentInProgress.value }
+
+            assertThat(caja.lectoresAbiertos.get()).isEqualTo(0)
+            assertWithMessage("ninguna reserva local").that(caja.filasDeLaLibreta()).isEqualTo(0)
+            verificarNingunDesenlace()
+        } finally { caja.cerrar() }
+    }
+
+    @Test fun `D6 P1 un enlace que cambio a otra solicitud no reserva ni publica un negativo prestado`() = runTest {
+        for (enlace in listOf(null, "REQ-B")) {
+            val caja = CajaConLibretaReal()
+            try {
+                caja.vm.setSocketPaymentSource("SOCKET", "REQ-A")
+                caja.elegirComercio()
+                // Ninguna rama de hoy deja otro id: se fuerza para fijar la frontera, no es una carrera reproducida en aparato.
+                PaymentViewModel::class.java.getDeclaredField("_socketRequestId").apply { isAccessible = true }.set(caja.vm, enlace)
+
+                caja.intentarYVerRechazo("enlace = $enlace")
+                testDispatcher.scheduler.advanceUntilIdle()
+                verificarNingunDesenlace()
+                caja.vm.resetPayment()
+                verificarNingunDesenlace()
+            } finally { caja.cerrar() }
+        }
+    }
+
+    @Test fun `D6 P1 control - un VM local sigue vendiendo y no se vuelve remoto por los argumentos de B`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            caja.vm.setSocketPaymentSource(null, null)
+            caja.vm.setSocketPaymentSource("SOCKET", "REQ-B")
+            caja.elegirComercio()
+
+            caja.vm.startPayment("100.00")
+            esperarA { caja.lectoresAbiertos.get() > 0 || caja.vm.state.value is PaymentState.Error }
+
+            assertWithMessage("estado = ${caja.vm.state.value}").that(caja.lectoresAbiertos.get()).isEqualTo(1)
+            assertThat(caja.filasEnElLector.single().terminalPaymentRequestId).isNull()
+        } finally { caja.cerrar() }
+    }
+
+    @Test fun `D6 P1 control - Reintentar conserva la solicitud A con una llave de intento nueva`() = runTest {
+        val caja = CajaConLibretaReal()
+        // Un lector que falla a la primera, sin dinero de por medio. Sin adelantar el reloj virtual: dispararía el de abandono.
+        val lecturas = java.util.concurrent.atomic.AtomicInteger(0)
+        coEvery { caja.detect.run(any()) } coAnswers {
+            caja.filasEnElLector += caja.db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE)
+            if (lecturas.incrementAndGet() == 2) caja.tarjeta.await()
+            com.blumonpay.pax.utils.clean.Either.Left(mockk(relaxed = true))
+        }
+        fun esperarSinAdelantarElReloj(condicion: () -> Boolean) {
+            val limite = System.nanoTime() + 5_000_000_000L
+            while (System.nanoTime() < limite && !condicion()) {
+                testDispatcher.scheduler.runCurrent()
+                Thread.sleep(10)
+            }
+            testDispatcher.scheduler.runCurrent()
+        }
+        try {
+            caja.vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            caja.elegirComercio()
+            caja.vm.startPayment("100.00")
+            esperarSinAdelantarElReloj { caja.vm.state.value is PaymentState.Error }
+            val error = caja.vm.state.value as PaymentState.Error
+            assertThat(error.canRetry).isTrue()
+
+            caja.vm.retryPayment(error.context)
+            esperarSinAdelantarElReloj { lecturas.get() == 2 }
+
+            assertWithMessage("estado = ${caja.vm.state.value}").that(lecturas.get()).isEqualTo(2)
+            val (primera, segunda) = caja.filasEnElLector.toList()
+            assertThat(primera.terminalPaymentRequestId).isEqualTo("REQ-A")
+            assertThat(segunda.terminalPaymentRequestId).isEqualTo("REQ-A")
+            assertThat(segunda.attemptId).isNotEqualTo(primera.attemptId)
+            verificarNingunDesenlace()
+        } finally { caja.cerrar() }
+    }
+
+    @Test fun `D6 P1 chip remoto llega al kernel con su fila durable correlacionada`() = runTest {
+        val db = baseEnMemoria()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.ICC
+        val detect = detectConTipos
+        coEvery { detect.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(
+            com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap))
+        val filas = java.util.concurrent.CopyOnWriteArrayList<PaymentAttemptEntity>()
+        val emv = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>()
+        coEvery { emv.run(any()) } coAnswers {
+            filas += db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE)
+            com.blumonpay.pax.utils.clean.Either.Left(
+                mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure.WithdrawnCardFailure>(relaxed = true))
+        }
+        val vm = createViewModel(startDetectCardUseCase = detect, startEmvTransUseCase = emv)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { filas.isNotEmpty() || vm.state.value is PaymentState.Error }
+
+            assertWithMessage("estado = ${vm.state.value}").that(filas).hasSize(1)
+            assertThat(filas.single().terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    /**
+     * La entrada REAL al kernel contactless. Por el flujo normal las guardas del lector impiden llegar aquí con el id perdido
+     * (`paymentAttemptId != preparationAttemptId`), así que se entra directo al borde, igual que `comprobarRefundCerrado`: fija la
+     * frontera, no es una carrera reproducida en aparato.
+     */
+    private suspend fun entrarAlKernelContactless(vm: PaymentViewModel) = kotlin.coroutines.suspendCoroutine<Unit> { continuation ->
+        val metodo = PaymentViewModel::class.java.getDeclaredMethod("processContactlessPayment", String::class.java, kotlin.coroutines.Continuation::class.java)
+            .apply { isAccessible = true }
+        val resultado = metodo.invoke(vm, "10000", continuation)
+        if (resultado !== kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resumeWith(Result.success(Unit))
+    }
+
+    private fun fijarIntentoDelKernel(vm: PaymentViewModel, attemptId: String?) {
+        val campo = PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }
+        val actual = campo.get(vm) as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession
+        campo.set(vm, actual.copy(paymentAttemptId = attemptId))
+    }
+
+    private fun kernelQueRechaza() = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>().also { kernel ->
+        coEvery { kernel.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(
+            com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.CtlssDeniedFailure(12))
+    }
+
+    @Test fun `D6 P1 contactless sin id de intento no entra al kernel ni sale un exito o un negativo`() = runTest {
+        val kernel = kernelQueRechaza()
+        val vm = createViewModel(startCtlssTransUseCase = kernel)
+        try {
+            entrarAlKernelContactless(vm)
+
+            coVerify(exactly = 0) { kernel.run(any()) }
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markKernelEntered(any()) }
+            val estado = vm.state.value as PaymentState.Error
+            assertThat(estado.message).isEqualTo("No se pudo guardar el intento. No se inició el cobro.")
+            assertThat(estado.canRetry).isFalse()
+            esperarA { true }
+            verificarNingunDesenlace()
+            coVerify(exactly = 0) { mockRecordPaymentUseCase(any(), any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 contactless de un remoto que ya salio con reset tampoco entra al kernel ni publica otro desenlace`() = runTest {
+        val kernel = kernelQueRechaza()
+        val vm = createViewModel(startCtlssTransUseCase = kernel)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            fijarIntentoDelKernel(vm, "a-kernel")
+            vm.resetPayment()
+            clearMocks(mockSocketManager, answers = false)
+
+            entrarAlKernelContactless(vm)
+
+            coVerify(exactly = 0) { kernel.run(any()) }
+            esperarA { true }
+            verificarNingunDesenlace()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 contactless con el CAS de la barrera perdido no entra al kernel y lo dice`() = runTest {
+        val kernel = kernelQueRechaza()
+        coEvery { mockPaymentAttemptLedger.markKernelEntered("a-kernel") } returns false
+        val vm = createViewModel(startCtlssTransUseCase = kernel)
+        try {
+            fijarIntentoDelKernel(vm, "a-kernel")
+
+            entrarAlKernelContactless(vm)
+
+            coVerify(exactly = 0) { kernel.run(any()) }
+            assertThat((vm.state.value as PaymentState.Error).message).isEqualTo("No se pudo guardar el intento. No se inició el cobro.")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 control - contactless con id valido compromete el CAS antes del kernel y marca el regreso sobre ESA id`() = runTest {
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        val vm = createViewModel(startCtlssTransUseCase = kernel)
+        coEvery { kernel.run(any()) } answers {
+            // La pantalla cambia con el SDK dentro: el regreso sigue siendo del intento que ENTRÓ.
+            fijarIntentoDelKernel(vm, null)
+            com.blumonpay.pax.utils.clean.Either.Left(
+                com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.CtlssDeniedFailure(12))
+        }
+        try {
+            fijarIntentoDelKernel(vm, "a-kernel")
+
+            entrarAlKernelContactless(vm)
+
+            coVerifyOrder {
+                mockPaymentAttemptLedger.markKernelEntered("a-kernel")
+                kernel.run(any())
+                mockPaymentAttemptLedger.marcarSdkRegreso("a-kernel")
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 control - el contactless completo de un remoto correlaciona la fila antes del kernel`() = runTest {
+        val db = baseEnMemoria()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(db.paymentAttemptDao(), mockTpvSettingsRepository)
+        val filas = java.util.concurrent.CopyOnWriteArrayList<PaymentAttemptEntity>()
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        coEvery { kernel.run(any()) } coAnswers {
+            filas += db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("KERNEL_ACTIVO"), Long.MAX_VALUE)
+            com.blumonpay.pax.utils.clean.Either.Left(
+                com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.CtlssDeniedFailure(12))
+        }
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { filas.isNotEmpty() || vm.state.value is PaymentState.Error }
+
+            assertWithMessage("el arnés debe ALCANZAR el kernel; estado = ${vm.state.value}").that(filas).hasSize(1)
+            assertThat(filas.single().terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
 }

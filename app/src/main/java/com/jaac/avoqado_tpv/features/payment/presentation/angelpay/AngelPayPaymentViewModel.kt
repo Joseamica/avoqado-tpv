@@ -313,13 +313,20 @@ class AngelPayPaymentViewModel @Inject constructor(
             return
         }
         vinculoFijado = true
-        if (source == null || requestId == null) return
-        solicitudVinculada = requestId
-        if (requestId == _socketRequestId && source == _paymentSource) return
+        entradaOriginalRemota = source != null
+        if (source == null) return
+        val idValido = requestId?.takeIf { it.isNotBlank() }
+        if (idValido == null) {
+            // 🔒 D6: un cobro del POS sin identidad se rechaza al cobrar, no se degrada a local: tampoco ofrece efectivo.
+            _paymentSource = source
+            return
+        }
+        solicitudVinculada = idValido
+        if (idValido == _socketRequestId && source == _paymentSource) return
         // Un reloj de abandono armado emitiría con el id que tenga el VM al vencer.
         cancelarCierrePorAbandono()
         _paymentSource = source
-        _socketRequestId = requestId
+        _socketRequestId = idValido
         _socketResultEmitted = false
         solicitudCerradaAntesDeAutorizar = false
         finalPreAutorizacionRetenido = null
@@ -607,6 +614,20 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var solicitudVinculada: String?
         get() = savedStateHandle[KEY_SOLICITUD_VINCULADA]
         set(value) { savedStateHandle[KEY_SOLICITUD_VINCULADA] = value }
+    // 🔒 D6 (2-nov): ¿la PRIMERA entrada de este VM fue remota? También con un id inválido, y también tras [resetPayment] o la
+    // muerte del proceso: un cobro del POS sin su identidad se rechaza, nunca se degrada a venta local.
+    private var entradaOriginalRemota: Boolean
+        get() = savedStateHandle[KEY_ENTRADA_REMOTA] ?: false
+        set(value) { savedStateHandle[KEY_ENTRADA_REMOTA] = value }
+
+    /**
+     * 🔒 D6 (2-nov, «ninguna duda de cobro sin salida»): ¿este cobro conserva la identidad con la que nació? La libreta acepta
+     * contextos locales, así que sólo este VM sabe que nació remoto. Una entrada local siempre pasa; una remota sólo con su id
+     * original, tal cual, en el enlace que va al contexto. Nunca se reconstruye el id desde otro lado: se rechaza.
+     * `RemotePaymentRequestEntity.from` marca la fila como nacida bajo la barrera porque esta guarda existe.
+     */
+    private fun laIdentidadRemotaSigueIntacta(): Boolean =
+        !entradaOriginalRemota || (solicitudVinculada != null && _socketRequestId == solicitudVinculada)
 
     // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
     // UUID v4 generated ONCE per logical payment attempt and reused on every retry.
@@ -1035,6 +1056,11 @@ class AngelPayPaymentViewModel @Inject constructor(
     @VisibleForTesting
     internal suspend fun openLedgerAttemptAndMarkAuthorizing(paymentAttemptId: String): Boolean {
         return try {
+            // 🔒 D6: ANTES del atajo de «ya abierto»: misma llave y mismo dinero no prueban la procedencia.
+            if (!laIdentidadRemotaSigueIntacta()) {
+                Timber.e("🚨 [AngelPay Socket] Cobro remoto sin su identidad original (era %s): no entra al procesador", solicitudVinculada)
+                return false
+            }
             val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId() ?: return false
             val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId() ?: return false
             val amountCents = pendingAmount.movePointRight(2).longValueExact()
@@ -2371,7 +2397,19 @@ class AngelPayPaymentViewModel @Inject constructor(
             fallarIdentidadAntesDeLanzar(intentoNoLanzado = intentoNoLanzado)
             return
         }
+        // 🔒 D6: la barrera ya pasó, pero esta entrada suspende: la última palabra antes de publicar el lanzamiento.
+        if (!laIdentidadRemotaSigueIntacta()) {
+            rechazarCobroSinIdentidadRemota(intentoNoLanzado)
+            return
+        }
         launchSdkRequest(request, usedQaTipFallback)
+    }
+
+    /** 🔒 D6: esta invocación abrió la fila y no va a lanzar nada con ella: se cierra acreditada y se dice que ya se cerró. */
+    private suspend fun rechazarCobroSinIdentidadRemota(intentoNoLanzado: String) {
+        withContext(NonCancellable) { cerrarIntentoQueNoSeLanzo(intentoNoLanzado, causa = "identidad_remota") }
+        aplicarSolicitudCerrada()
+        clearChargingOnTerminal()
     }
 
     private suspend fun fallarIdentidadAntesDeLanzar(
@@ -2456,12 +2494,22 @@ class AngelPayPaymentViewModel @Inject constructor(
                 clearChargingOnTerminal()
                 return
             }
+            // 🔒 D6: el respaldo llega con la fila de esta invocación ya abierta y sin lanzar.
+            if (intentoNoLanzado != null && !laIdentidadRemotaSigueIntacta()) {
+                rechazarCobroSinIdentidadRemota(intentoNoLanzado)
+                return
+            }
             // 🛑 La cerca de la solicitud remota se traduce a lo que pasó, nunca a «no se pudo guardar».
             traducirBarreraRechazada()
             clearChargingOnTerminal()
             return
         }
 
+        // 🔒 D6: la barrera suspende: la última palabra antes de publicar el lanzamiento.
+        if (!laIdentidadRemotaSigueIntacta()) {
+            rechazarCobroSinIdentidadRemota(paymentAttemptId)
+            return
+        }
         if (_currentMerchant.value != merchant || angelPayAuthRepository.state.value is AngelPayAuthState.AuthError) {
             fallarIdentidadAntesDeLanzar(intentoNoLanzado = paymentAttemptId)
             return
@@ -4310,17 +4358,14 @@ class AngelPayPaymentViewModel @Inject constructor(
      * sobre una solicitud cancelada por el POS manda a llamar a soporte por algo que ya está resuelto.
      */
     private suspend fun traducirBarreraRechazada() {
+        // 🔒 D6: sin su identidad no hay cerca que consultar, ni un final que emitir en nombre de un enlace perdido o ajeno.
+        if (!laIdentidadRemotaSigueIntacta()) {
+            aplicarSolicitudCerrada()
+            return
+        }
         when (paymentAttemptLedger.cercaDeSolicitud(_socketRequestId)) {
             CercaDeSolicitud.CANCELADA_POR_EL_POS -> aplicarCancelacionDelPos()
-            CercaDeSolicitud.CERRADA -> {
-                cancelarCierrePorAbandono()
-                _socketResultEmitted = true
-                solicitudCerradaAntesDeAutorizar = true
-                declinacionRetenida = null
-                finalPreAutorizacionRetenido = null
-                _mensajeDelPos.value = CobroRemotoDelPos.SOLICITUD_CERRADA
-                _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.SOLICITUD_CERRADA, canRetry = false)
-            }
+            CercaDeSolicitud.CERRADA -> aplicarSolicitudCerrada()
             CercaDeSolicitud.LIBRE -> {
                 if (_paymentSource == CobroRemotoDelPos.FUENTE_SOCKET && _socketRequestId != null && !_socketResultEmitted) {
                     cerrarCobroDelPosNoIniciado()
@@ -4334,6 +4379,16 @@ class AngelPayPaymentViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun aplicarSolicitudCerrada() {
+        cancelarCierrePorAbandono()
+        _socketResultEmitted = true
+        solicitudCerradaAntesDeAutorizar = true
+        declinacionRetenida = null
+        finalPreAutorizacionRetenido = null
+        _mensajeDelPos.value = CobroRemotoDelPos.SOLICITUD_CERRADA
+        _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.SOLICITUD_CERRADA, canRetry = false)
     }
 
     /**
@@ -4465,6 +4520,13 @@ class AngelPayPaymentViewModel @Inject constructor(
                     "🔐 [AngelPay SDK] Post-expiry re-auth landed on a different merchant than selected — NOT relaunching | attemptId=%s",
                     attemptId,
                 )
+                return false
+            }
+            // 🔒 D6: este relanzamiento entra por el seam, sin pasar por la barrera, y el re-login suspendió: si el enlace se perdió,
+            // no se relanza y este VM ya no habla en nombre de nadie.
+            if (!laIdentidadRemotaSigueIntacta()) {
+                Timber.e("🚨 [AngelPay Socket] Sesión renovada, pero el cobro perdió su identidad original (era %s): NO se relanza", solicitudVinculada)
+                _socketResultEmitted = true
                 return false
             }
             launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
@@ -5712,6 +5774,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         private const val KEY_SOCKET_EMITTED = "angelpay_socket_result_emitted"
         private const val KEY_VINCULO_FIJADO = "angelpay_socket_binding_fixed"
         private const val KEY_SOLICITUD_VINCULADA = "angelpay_socket_bound_request_id"
+        private const val KEY_ENTRADA_REMOTA = "angelpay_socket_remote_entry"
 
         /**
          * Nexgo terminal models that ship with a built-in thermal

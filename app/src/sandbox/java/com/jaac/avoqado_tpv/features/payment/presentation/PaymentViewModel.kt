@@ -465,6 +465,9 @@ class PaymentViewModel @Inject constructor(
     // [_socketRequestId] ya se haya limpiado tras emitir.
     private var vinculoDeSolicitudFijado = false
     private var solicitudVinculada: String? = null
+    // 🔒 D6 (2-nov): ¿la PRIMERA entrada de este VM fue remota? También con un id inválido, y también tras [resetPayment]: un
+    // cobro del POS sin su identidad se rechaza, nunca se degrada a venta local. Lo lee [laIdentidadRemotaSigueIntacta].
+    private var entradaOriginalRemota = false
 
     // 💸 REFUND SUPPORT: Refund context now stored in PaymentSession (no mutable field)
 
@@ -2280,13 +2283,26 @@ class PaymentViewModel @Inject constructor(
             return
         }
         vinculoDeSolicitudFijado = true
-        solicitudVinculada = requestId?.takeIf { source != null }
+        entradaOriginalRemota = source != null
+        val idValido = requestId?.takeIf { it.isNotBlank() }
+        solicitudVinculada = idValido?.takeIf { source != null }
         _paymentSource = source
-        _socketRequestId = requestId
+        _socketRequestId = idValido
         if (source == "SOCKET") {
             Timber.i("📡 [Socket-Payment] Source set: source=$source, requestId=$requestId")
         }
     }
+
+    /**
+     * 🔒 D6 (2-nov, «ninguna duda de cobro sin salida»): ¿este cobro conserva la identidad con la que nació? La libreta acepta
+     * contextos locales, así que sólo este VM sabe que nació remoto. Una entrada local siempre pasa; una remota sólo con su id
+     * original, tal cual, en el enlace que va al contexto. Sin esto, tras limpiar el enlace (final ya emitido, cancel del POS,
+     * [resetPayment]) el mismo VM cobraría como venta local y la sonda de esa solicitud no encontraría su ejecución. Nunca se
+     * reconstruye el id desde otro lado: se rechaza. `RemotePaymentRequestEntity.from` marca la fila como nacida bajo la barrera
+     * porque esta guarda existe.
+     */
+    private fun laIdentidadRemotaSigueIntacta(): Boolean =
+        !entradaOriginalRemota || (solicitudVinculada != null && _socketRequestId == solicitudVinculada)
 
     fun setSocketProcessedByStaffId(staffId: String?) {
         updateSessionSnapshot(
@@ -3512,6 +3528,13 @@ class PaymentViewModel @Inject constructor(
             */
 
             // Freeze complete business context after shift validation, BEFORE any card SDK work.
+            // 🔒 D6: después de todo lo que suspende y antes de formar el contexto. `aplicarSolicitudCerrada` limpia el enlace ANTES
+            // de pintar el error: un enlace ajeno no puede llevarse el negativo de este cobro.
+            if (!laIdentidadRemotaSigueIntacta()) {
+                Timber.e("🚨 [Socket-Payment] Cobro remoto sin su identidad original (era %s): no se reserva ni se pide tarjeta", solicitudVinculada)
+                aplicarSolicitudCerrada()
+                return@launch
+            }
             val persisted = runCatching {
                 val attemptId = sessionSnapshot.paymentAttemptId ?: return@runCatching false
                 val merchant = _currentMerchant.value
@@ -5983,19 +6006,18 @@ class PaymentViewModel @Inject constructor(
             // la llamada, porque si el proceso muere después de un RESULT_OFFLINE_APPROVED la
             // fila diría PREPARANDO — el estado que autoriza a afirmar «no se cobró».
             // 🔒 B1: el intento que ENTRA al kernel, fijado aquí: el regreso del SDK se marca sobre ÉL, aunque la pantalla cambie.
+            // 🔒 D6: sin id tampoco se entra. Con `?.let`, un id perdido (reset, cancel) se saltaba la barrera y llamaba al kernel.
             val intentoDelKernel = sessionSnapshot.paymentAttemptId
-            sessionSnapshot.paymentAttemptId?.let { durableId ->
-                if (!paymentAttemptLedger.markKernelEntered(durableId)) {
-                    Timber.e("📒 [Libreta] no se pudo comprometer la entrada al kernel — no se inicia el cobro")
-                    // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
-                    if (!traducirCercaDeSolicitud()) {
-                        _state.value = PaymentState.Error(
-                            message = "No se pudo guardar el intento. No se inició el cobro.",
-                            context = createPaymentContext(), canRetry = false,
-                        )
-                    }
-                    return
+            if (intentoDelKernel == null || !paymentAttemptLedger.markKernelEntered(intentoDelKernel)) {
+                Timber.e("📒 [Libreta] no se pudo comprometer la entrada al kernel — no se inicia el cobro")
+                // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
+                if (!traducirCercaDeSolicitud()) {
+                    _state.value = PaymentState.Error(
+                        message = "No se pudo guardar el intento. No se inició el cobro.",
+                        context = createPaymentContext(), canRetry = false,
+                    )
                 }
+                return
             }
             val ctlssParams = StartCtlssTransParams()
             paymentPhaseTracker.enterPhase(PaymentSdkPhase.START_CTLS_TRANS)

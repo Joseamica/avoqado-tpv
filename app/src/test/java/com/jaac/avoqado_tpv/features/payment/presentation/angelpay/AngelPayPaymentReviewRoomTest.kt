@@ -363,6 +363,44 @@ class AngelPayPaymentReviewRoomTest {
         Unit
     }
 
+    /** D6, con la libreta REAL: A intacta queda en el JSON y en la columna; un enlace perdido no deja ninguna fila local. */
+    @Test
+    fun `D6 P1 con la libreta REAL A queda en el JSON y en la columna, y un enlace perdido no reserva`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined) // Reloj real: mismo motivo que la prueba de arriba.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java)
+            .allowMainThreadQueries().build()
+        val handle = androidx.lifecycle.SavedStateHandle()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val vm = createViewModel(handle)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            vm.initPayment("100.00")
+
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+
+            val fila = db.paymentAttemptDao().getById("a-1")!!
+            assertThat(fila.state).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_AUTORIZANDO)
+            assertThat(fila.terminalPaymentRequestId).isEqualTo("REQ-A")
+            assertThat(com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("terminalPaymentRequestId").asString)
+                .isEqualTo("REQ-A")
+
+            // Con la terminal libre: el rechazo de abajo sólo puede ser por la identidad, no porque a-1 aparte el aparato.
+            assertThat(paymentAttemptLedger.markSinAutorizacion("a-1", "v1", "prueba")).isTrue()
+            handle.set<String?>("angelpay_socket_request_id", null)
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-2")).isFalse()
+            assertThat(db.paymentAttemptDao().getById("a-2")).isNull()
+        } finally {
+            vm.viewModelScope.cancel()
+            db.close()
+        }
+        Unit
+    }
+
     @Test
     fun `review una declinacion tras recrear el ViewModel cierra la fila en vez de retener la terminal`() = kotlinx.coroutines.runBlocking {
         // 🔴 ESTE es el caso que la adopción del intento salva y el del callback vacío NO.

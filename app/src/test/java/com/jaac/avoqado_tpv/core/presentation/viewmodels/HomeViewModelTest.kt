@@ -94,7 +94,9 @@ class HomeViewModelTest {
     private lateinit var orderSyncCoordinator: OrderSyncCoordinator
     private lateinit var timeEntryRepository: com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
     private lateinit var tpvSettingsRepository: com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
-    private lateinit var saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
+    private lateinit var actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
+    private lateinit var modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+    private val pendientes = MutableStateFlow(com.jaac.avoqado_tpv.features.verification.data.ActionableState(emptyList(), isOffline = false, nextCursor = null))
     private lateinit var printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
@@ -138,8 +140,11 @@ class HomeViewModelTest {
         orderSyncCoordinator = mockk(relaxed = true)
         timeEntryRepository = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
-        saleVerificationRepository = mockk(relaxed = true)
-        coEvery { saleVerificationRepository.getPendingVerifications() } returns Result.success(emptyList())
+        actionableSales = mockk(relaxed = true)
+        every { actionableSales.observe(any()) } returns pendientes
+        coEvery { actionableSales.refresh() } returns Result.success(Unit)
+        modulesRepository = mockk(relaxed = true)
+        every { modulesRepository.isModuleEnabled("SERIALIZED_INVENTORY") } returns true
         printerManager = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
@@ -205,7 +210,8 @@ class HomeViewModelTest {
             timeEntryRepository = timeEntryRepository,
             cachedTimeEntryDao = mockk(relaxed = true),
             tpvSettingsRepository = tpvSettingsRepository,
-            saleVerificationRepository = saleVerificationRepository
+            actionableSales = actionableSales,
+            modulesRepository = modulesRepository,
         ).also { createdViewModels.add(it) }
     }
 
@@ -594,7 +600,6 @@ class HomeViewModelTest {
                 serviceChargeAmount = any()
             )
         } returns kotlin.Result.success(Unit)
-        coEvery { saleVerificationRepository.getPendingVerifications() } returns kotlin.Result.success(emptyList())
         val printer = mockk<com.nexgo.oaf.apiv3.device.printer.Printer>(relaxed = true)
         val lines = java.util.concurrent.CopyOnWriteArrayList<String>()
         every { printer.status } returns statusCode
@@ -746,5 +751,81 @@ class HomeViewModelTest {
                 Timber.uproot(tree)
             }
         }
+    }
+
+    // ========================================
+    // C6 — la puerta de «Pendientes» también sin señal
+    // ========================================
+
+    private fun tarjeta(payment: String, status: String = "PENDING", local: Boolean = false) =
+        com.jaac.avoqado_tpv.features.verification.data.ActionableItem(
+            detail = com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto(
+                id = if (local) "" else "ver-$payment", paymentId = payment, amount = 149.0, orderNumber = null,
+                date = "2026-11-01T10:00:00.000Z", serialNumbers = listOf("8952"), isPortabilidad = false,
+                photos = listOf("https://fb/v.jpg"), requiredPhotos = 1, status = status,
+            ),
+            paymentId = payment, queued = emptyList(), localOnly = local,
+        )
+
+    private fun guardadas(vararg items: com.jaac.avoqado_tpv.features.verification.data.ActionableItem, sinRed: Boolean = false) {
+        pendientes.value = com.jaac.avoqado_tpv.features.verification.data.ActionableState(items.toList(), isOffline = sinRed, nextCursor = null)
+    }
+
+    @Test
+    fun `C6 sin senal tras reiniciar la tarjeta de Pendientes cuenta la lista guardada`() = runTest(testDispatcher) {
+        every { secureStorage.getStaffId() } returns "staff-1"
+        coEvery { actionableSales.refresh() } returns Result.failure(java.io.IOException("sin red"))
+        guardadas(tarjeta("pay-1"), tarjeta("pay-2"), sinRed = true)
+
+        val vm = createViewModel()
+        advanceTimeBy(3_500); runCurrent()
+
+        assertThat(vm.pendingVerificationsCount.value).isEqualTo(2) // > 0: la tarjeta de Inicio (la única puerta) se ve
+        verify { actionableSales.observe("staff-1") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `C6 una venta sola en Revisar o una venta local tambien abren la puerta`() = runTest(testDispatcher) {
+        every { secureStorage.getStaffId() } returns "staff-1"
+        val vm = createViewModel()
+        runCurrent()
+
+        guardadas(tarjeta("pay-f", status = "FAILED")); runCurrent()
+        assertThat(vm.pendingVerificationsCount.value).isEqualTo(1)
+        guardadas(tarjeta("pay-l", local = true)); runCurrent()
+        assertThat(vm.pendingVerificationsCount.value).isEqualTo(1)
+        guardadas(); runCurrent()
+        assertThat(vm.pendingVerificationsCount.value).isEqualTo(0)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `C6 al volver a Inicio refresca la lista guardada y un fallo del servidor no pone la cuenta en cero`() = runTest(testDispatcher) {
+        every { secureStorage.getStaffId() } returns "staff-1"
+        guardadas(tarjeta("pay-1"))
+        val vm = createViewModel()
+        advanceTimeBy(3_500); runCurrent()
+        coEvery { actionableSales.refresh() } returns Result.failure(
+            com.jaac.avoqado_tpv.core.data.network.BackendHttpException(500, "boom"),
+        )
+
+        vm.refreshPendingVerifications(); runCurrent()
+
+        coVerify(atLeast = 2) { actionableSales.refresh() } // el arranque diferido y el regreso
+        assertThat(vm.pendingVerificationsCount.value).isEqualTo(1)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `C6 sin el modulo de inventario serializado Inicio no le pregunta al servidor`() = runTest(testDispatcher) {
+        every { modulesRepository.isModuleEnabled("SERIALIZED_INVENTORY") } returns false
+        val vm = createViewModel()
+        advanceTimeBy(3_500); runCurrent()
+
+        vm.refreshPendingVerifications(); runCurrent()
+
+        coVerify(exactly = 0) { actionableSales.refresh() }
+        vm.viewModelScope.cancel()
     }
 }

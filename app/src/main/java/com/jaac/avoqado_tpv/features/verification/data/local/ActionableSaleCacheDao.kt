@@ -24,10 +24,7 @@ interface ActionableSaleCacheDao {
     @Query("UPDATE actionable_sale_cache SET delivered_slots = :slots WHERE payment_id = :paymentId")
     suspend fun setDeliveredSlots(paymentId: String, slots: String): Int
 
+    /** La única forma de quitar una tarjeta: el servidor contestó COMPLETED o REJECTED (nunca por no venir en una página). */
     @Query("DELETE FROM actionable_sale_cache WHERE payment_id = :paymentId")
     suspend fun delete(paymentId: String): Int
-
-    /** Reemplazo de la lista del servidor: borra lo no local de ese promotor que ya no vino. */
-    @Query("DELETE FROM actionable_sale_cache WHERE staff_id = :staffId AND local_only = 0")
-    suspend fun deleteServerRows(staffId: String): Int
 }

@@ -10,7 +10,10 @@ import com.jaac.avoqado_tpv.features.verification.data.ActionableState
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -126,6 +129,30 @@ class PendingVerificationsViewModel @Inject constructor(
     private companion object {
         val EMPTY = ActionableState(emptyList(), isOffline = false, nextCursor = null)
     }
+}
+
+/** Lo que el back-office pidió revisar: la venta está en «Revisar» (FAILED). Mismas etiquetas que la corrección. */
+data class CardReview(val reasons: List<String>, val notes: String?)
+
+const val REVIEW_CHIP_TEXT = "Revisar"
+
+fun ActionableItem.review(): CardReview? = detail?.takeIf { it.status == "FAILED" }?.let { d ->
+    CardReview(RejectionReason.parseList(d.rejectionReasons).map { it.label }, d.reviewNotes?.takeIf { it.isNotBlank() })
+}
+
+/** Ranuras requeridas que ya tienen foto (servidor, entregada desde la terminal o en la cola) y si la tarjeta va completa. */
+data class CardProgress(val filled: Int, val required: Int, val complete: Boolean)
+
+fun cardProgress(
+    card: PendingVerificationDto, queued: List<ProofOfSaleQueueEntity>, delivered: Set<ProofSlot>, review: CardReview?,
+): CardProgress {
+    val slots = if (card.isPortabilidad) ProofSlot.entries else listOf(ProofSlot.VINCULACION)
+    val filled = slots.count { slot ->
+        card.photos.getOrNull(slot.ordinal)?.isNotEmpty() == true || slot in delivered ||
+            queued.any { it.slot == slot.name && !canDiscardCapture(it) }
+    }
+    // Una venta en «Revisar» nunca se pinta completa aunque tenga todas sus fotos: el back-office pidió algo.
+    return CardProgress(filled, card.requiredPhotos, complete = review == null && filled >= card.requiredPhotos)
 }
 
 /** La tarjeta de siempre a partir de lo guardado; de una venta con sólo capturas en la cola salen las ranuras de esas. */

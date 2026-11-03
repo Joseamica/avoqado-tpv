@@ -180,6 +180,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val impresoraDeVentaGuardada: com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada,
     // 📸 Bloque 0: la cola durable de la foto de comprobante. Hilt siempre la da; null sólo en pruebas que no la usan.
     private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+    // 📋 C6: la venta con SIM que confirma el SERVIDOR (S5/S6) no pasa por RecordPaymentUseCase; se guarda en «Pendientes» aquí.
+    private val actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -3716,6 +3718,31 @@ class AngelPayPaymentViewModel @Inject constructor(
                 amount = pendingAmount, tipAmount = pendingTip, serverRecordedVia = "s6", solicitudLigada = _socketRequestId,
             ),
         )
+        guardarVentaConSimEnPendientes(fila.serverPaymentId)
+    }
+
+    /**
+     * 📋 C6: el webhook no crea la verificación, así que una venta con SIM que confirma el SERVIDOR (S5/S6, también «Pago
+     * rápido») nunca saldría en «Pendientes». Se guarda en la terminal con lo que este VM ya sabe del cobro. Nunca toca el cobro.
+     */
+    private fun guardarVentaConSimEnPendientes(paymentId: String?) {
+        val id = paymentId?.takeIf { it.isNotBlank() } ?: return
+        val sales = actionableSales ?: return
+        if (pendingSerialNumbers.isEmpty()) return
+        // Se copia ANTES de lanzar: «Nuevo Pago» limpia estos campos.
+        val amount = pendingAmount
+        val orderNumber = pendingOrderNumber
+        val portabilidad = pendingIsPortabilidad
+        val seriales = pendingSerialNumbers
+        viewModelScope.launch {
+            try {
+                sales.addLocalSale(id, amount, orderNumber, portabilidad, seriales)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "📋 [AngelPay] No se pudo guardar la venta con SIM en Pendientes | paymentId=$id")
+            }
+        }
     }
 
     private fun mostrarLiberada(evidencia: String) {
@@ -4116,6 +4143,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 amount = pendingAmount, tipAmount = pendingTip, serverRecordedVia = "webhook", solicitudLigada = event.requestId,
             ),
         )
+        guardarVentaConSimEnPendientes(event.paymentId)
     }
 
     /** Aviso en pantalla del cancel del POS, filtrado por la solicitud de ESTE cobro. */

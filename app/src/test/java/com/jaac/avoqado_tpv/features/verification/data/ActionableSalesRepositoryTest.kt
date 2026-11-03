@@ -338,8 +338,8 @@ class ActionableSalesRepositoryTest {
     // ─── páginas ────────────────────────────────────────────────────────────────
 
     @Test fun `Cargar mas agrega la siguiente pagina sin borrar nada`() = runBlocking<Unit> {
-        servidor.paginas[null] = pagina(venta("pay-1", dia = 3), venta("pay-2", dia = 2), cursor = "c2")
-        servidor.paginas["c2"] = pagina(venta("pay-3", dia = 1))
+        servidor.paginas[null] = pagina(venta("pay-1", dia = 1), venta("pay-2", dia = 2), cursor = "c2")
+        servidor.paginas["c2"] = pagina(venta("pay-3", dia = 3))
         repo.refresh()
         assertThat(estado().nextCursor).isEqualTo("c2")
 
@@ -426,19 +426,38 @@ class ActionableSalesRepositoryTest {
 
         servidor.caido = true
         repo = nuevoRepo()
-        val detalle = repo.detail("ver-pay-1")
+        val detalle = repo.detail("ver-pay-1").getOrThrow()
 
-        assertThat(detalle!!.paymentId).isEqualTo("pay-1")
+        assertThat(detalle.paymentId).isEqualTo("pay-1")
         assertThat(detalle.status).isEqualTo("FAILED")
-        assertThat(repo.detail("ver-otra")).isNull()
+        // Una que no está guardada: el fallo dice POR QUÉ (sin respuesta), para que la pantalla no diga «error» sin señal.
+        assertThat(repo.detail("ver-otra").exceptionOrNull()).isInstanceOf(IOException::class.java)
     }
 
     @Test fun `con red la correccion trae el detalle del servidor y lo guarda para despues`() = runBlocking<Unit> {
         servidor.detalles["ver-pay-9"] = venta("pay-9", status = "FAILED")
 
-        assertThat(repo.detail("ver-pay-9")!!.status).isEqualTo("FAILED")
+        assertThat(repo.detail("ver-pay-9").getOrThrow().status).isEqualTo("FAILED")
 
         servidor.caido = true
-        assertThat(nuevoRepo().detail("ver-pay-9")!!.paymentId).isEqualTo("pay-9")
+        assertThat(nuevoRepo().detail("ver-pay-9").getOrThrow().paymentId).isEqualTo("pay-9")
+    }
+
+    @Test fun `con red y una venta que el servidor no conoce el fallo no es sin senal`() = runBlocking<Unit> {
+        assertThat(repo.detail("ver-nada").exceptionOrNull()).isNotInstanceOf(IOException::class.java)
+    }
+
+    // ─── orden ──────────────────────────────────────────────────────────────────
+
+    @Test fun `el orden es el del servidor - falta foto primero, luego la mas vieja - con las ventas locales arriba`() = runBlocking<Unit> {
+        servidor.paginas[null] = pagina(
+            venta("pay-completa-vieja", fotos = """"https://fb/v.jpg"""", dia = 1),
+            venta("pay-sin-foto-nueva", dia = 5),
+            venta("pay-sin-foto-vieja", dia = 2),
+        )
+        repo.refresh()
+        repo.addLocalSale("pay-local", BigDecimal.TEN, null, isPortabilidad = false, serialNumbers = emptyList())
+
+        assertThat(ids()).containsExactly("pay-local", "pay-sin-foto-vieja", "pay-sin-foto-nueva", "pay-completa-vieja").inOrder()
     }
 }

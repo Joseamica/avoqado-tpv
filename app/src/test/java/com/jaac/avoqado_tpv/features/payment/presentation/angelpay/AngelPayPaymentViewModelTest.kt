@@ -246,6 +246,7 @@ class AngelPayPaymentViewModelTest {
     private fun createViewModel(
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+        actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -289,6 +290,7 @@ class AngelPayPaymentViewModelTest {
         subirVentaGuardadaUseCase = mockk(relaxed = true),
         impresoraDeVentaGuardada = mockk(relaxed = true),
         proofOfSaleQueue = proofOfSaleQueue,
+        actionableSales = actionableSales,
     )
     }
 
@@ -2949,11 +2951,14 @@ class AngelPayPaymentViewModelTest {
         return result
     }
 
-    private fun kotlinx.coroutines.test.TestScope.vmConCobroDelPos(requestId: String = "req-incierto"): AngelPayPaymentViewModel {
+    private fun kotlinx.coroutines.test.TestScope.vmConCobroDelPos(
+        requestId: String = "req-incierto",
+        actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
+    ): AngelPayPaymentViewModel {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        val vm = createViewModel()
+        val vm = createViewModel(actionableSales = actionableSales)
         vm.initPayment(amount = "100.00")
         runCurrent()
         vm.setSocketPaymentSource("SOCKET", requestId)
@@ -3263,6 +3268,53 @@ class AngelPayPaymentViewModelTest {
             // Fix 1 · Minor #5: el JSON durable que resolvió `recoverOne` se EMITE al servidor, como hacen el trigger y el worker.
             verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(bandeja) }
         } finally { vm.viewModelScope.cancel() }
+    }
+
+    // C6: el webhook no crea la verificación; la venta con SIM que confirma el SERVIDOR se guarda en «Pendientes» aquí.
+    @Test fun `C6 S6 RECORDED de una venta con SIM la guarda en Pendientes con lo que el cobro ya sabe`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        val bandeja = """{"requestId":"REQ-C6S6","status":"success","paymentId":"pay-s6"}"""
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null) andThen LecturaDelIntento(bandeja)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaRegistrada("att")
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val vm = vmConCobroDelPos("REQ-C6S6", actionableSales = sales)
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000006", isPortabilidad = true)
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Success).receipt?.serverRecordedVia).isEqualTo("s6")
+            coVerify(exactly = 1) {
+                sales.addLocalSale("pay-s6", match { it.compareTo(BigDecimal("100")) == 0 }, null, true, listOf("8952000000000000006"), any(), any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `C6 S5 registrado de una venta con SIM la guarda en Pendientes y un cobro sin SIM no`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val vm = vmConCobroDelPos("REQ-C6S5", actionableSales = sales)
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000005", isPortabilidad = false)
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-C6S5", ids.last(), "pay-s5", 10000, 0, registrado = true)); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Success).receipt?.paymentId).isEqualTo("pay-s5")
+            coVerify(exactly = 1) {
+                sales.addLocalSale("pay-s5", match { it.compareTo(BigDecimal("100")) == 0 }, null, false, listOf("8952000000000000005"), any(), any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+
+        val sinSim = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val normal = vmConCobroDelPos("REQ-C6S5B", actionableSales = sinSim)
+        try {
+            normal.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            normal.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-C6S5B", ids.last(), "pay-n", 10000, 0, registrado = true)); runCurrent()
+            assertThat(normal.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            coVerify(exactly = 0) { sinSim.addLocalSale(any(), any(), any(), any(), any(), any(), any()) }
+        } finally { normal.viewModelScope.cancel() }
     }
 
     @Test fun `una fila DESCARTADA con RECORDED encima es contradiccion — la pantalla dice que Avoqado registro dinero y NUNCA que se puede volver a cobrar`() = runTest(testDispatcher) {

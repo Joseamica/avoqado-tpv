@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.io.IOException
 import javax.inject.Inject
 
 /**
@@ -44,10 +45,14 @@ data class SaleCorrectionUiState(
     val isUploading: Boolean = false,
     val resubmitted: Boolean = false, // true once the verification left FAILED state
     val error: String? = null,
+    /** Sin señal y la venta no está guardada en la terminal: texto neutro, nunca un error. */
+    val offlineNotice: String? = null,
     /** Las capturas de esta venta en la cola, la más nueva primero. */
     val queued: List<ProofOfSaleQueueEntity> = emptyList(),
     val deliveredSlots: Set<ProofSlot> = emptySet(),
 )
+
+const val CORRECTION_NOT_SAVED_OFFLINE = "Sin conexión: esta venta no está guardada en la terminal; ábrela cuando vuelva la señal"
 
 /**
  * ViewModel for [SaleCorrectionScreen], también sin señal.
@@ -88,11 +93,16 @@ class SaleCorrectionViewModel @Inject constructor(
 
     fun load() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
-            val detail = sales.detail(verificationId)
+            _uiState.update { it.copy(isLoading = true, error = null, offlineNotice = null) }
+            val result = sales.detail(verificationId)
+            val detail = result.getOrNull()
             if (detail == null) {
-                Timber.e("📸 [SaleCorrection] Sin detalle del servidor ni guardado | id=$verificationId")
-                _uiState.update { it.copy(isLoading = false, error = "Error al cargar la venta") }
+                Timber.e(result.exceptionOrNull(), "📸 [SaleCorrection] Sin detalle del servidor ni guardado | id=$verificationId")
+                // Sin señal no es un error: la venta no está en la terminal y se abre cuando vuelva la señal (neutro).
+                _uiState.update {
+                    if (result.exceptionOrNull() is IOException) it.copy(isLoading = false, offlineNotice = CORRECTION_NOT_SAVED_OFFLINE)
+                    else it.copy(isLoading = false, error = "Error al cargar la venta")
+                }
                 return@launch
             }
             if (!verdictCaptured) {

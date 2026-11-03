@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -173,7 +174,12 @@ fun SaleCorrectionScreen(
                 }
 
                 uiState.detail == null -> {
-                    CorrectionErrorState(onRetry = { viewModel.load() })
+                    // Sin señal y sin la venta guardada: se dice en neutro; con señal, el error de siempre.
+                    CorrectionErrorState(
+                        message = uiState.offlineNotice ?: "No se pudo cargar la venta",
+                        isError = uiState.offlineNotice == null,
+                        onRetry = { viewModel.load() },
+                    )
                 }
 
                 else -> {
@@ -346,7 +352,7 @@ private fun ResubmittedBanner() {
 }
 
 @Composable
-private fun CorrectionErrorState(onRetry: () -> Unit) {
+private fun CorrectionErrorState(message: String, isError: Boolean, onRetry: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -355,9 +361,10 @@ private fun CorrectionErrorState(onRetry: () -> Unit) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "No se pudo cargar la venta",
+                text = message,
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.error,
+                color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
             Spacer(modifier = Modifier.height(16.dp))
             Button(

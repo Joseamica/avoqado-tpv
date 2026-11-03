@@ -260,6 +260,7 @@ fun PendingVerificationsScreen(
                                     queued = item.queued,
                                     deliveredSlots = item.deliveredSlots,
                                     showAmount = item.detail != null,
+                                    review = item.review(),
                                     onDiscard = viewModel::discard,
                                     onTakePhoto = { label, _ ->
                                         if (showCamera) return@PendingVerificationItem
@@ -350,6 +351,8 @@ fun PendingVerificationItem(
     deliveredSlots: Set<ProofSlot> = emptySet(),
     /** false en una venta de la que sólo hay capturas en la cola: no se sabe el importe. */
     showAmount: Boolean = true,
+    /** La venta está en «Revisar» (FAILED): chip ámbar, motivos del back-office y nunca «completa». */
+    review: CardReview? = null,
     onDiscard: (idempotencyKey: String) -> Unit = {},
     onTakePhoto: (label: String, replaceIndex: Int?) -> Unit
 ) {
@@ -359,12 +362,10 @@ fun PendingVerificationItem(
     // Por ranura: la foto del servidor; si no, la de su captura más nueva en la cola (el archivo de la terminal).
     fun serverPhoto(slot: ProofSlot) = item.photos.getOrNull(slot.ordinal)?.takeIf { it.isNotEmpty() }
     fun queuedPhoto(slot: ProofSlot) = queued.firstOrNull { it.slot == slot.name }?.localPath
-    fun filled(slot: ProofSlot) = serverPhoto(slot) != null || slot in deliveredSlots ||
-        queued.any { it.slot == slot.name && !canDiscardCapture(it) }
-    val requiredSlots = if (item.isPortabilidad) ProofSlot.entries else listOf(ProofSlot.VINCULACION)
 
-    val nonEmptyPhotos = requiredSlots.count(::filled)
-    val photosComplete = nonEmptyPhotos >= item.requiredPhotos
+    val progress = cardProgress(item, queued, deliveredSlots, review)
+    val nonEmptyPhotos = progress.filled
+    val photosComplete = progress.complete
     val chipColor = if (photosComplete) {
         MaterialTheme.avoqadoColors.statusSuccess
     } else {
@@ -444,10 +445,15 @@ fun PendingVerificationItem(
                     Spacer(modifier = Modifier.width(8.dp))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (review != null) {
+                        ReviewChip(color = MaterialTheme.avoqadoColors.statusWarning)
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     PhotoStatusChip(
                         current = nonEmptyPhotos,
                         required = item.requiredPhotos,
-                        color = chipColor
+                        color = chipColor,
+                        complete = photosComplete
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Icon(
@@ -456,6 +462,33 @@ fun PendingVerificationItem(
                         modifier = Modifier.size(20.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+
+            // «Revisar»: lo que pidió el back-office, a la vista sin abrir la tarjeta (mismas etiquetas que la corrección).
+            review?.let { r ->
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    if (r.reasons.isEmpty() && r.notes == null) {
+                        Text(
+                            text = "Vuelve a tomar las fotos de la documentación.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    r.reasons.forEach { reason ->
+                        Text(
+                            text = "• $reason",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    r.notes?.let { notes ->
+                        Text(
+                            text = notes,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -776,12 +809,27 @@ private fun PhotoPreviewDialog(
 
 // ========== Supporting Composables ==========
 
+/** «Revisar» en ámbar (no rojo): el back-office regresó la venta, no es un error de la terminal. */
+@Composable
+private fun ReviewChip(color: Color) {
+    Surface(shape = RoundedCornerShape(16.dp), color = color.copy(alpha = 0.15f)) {
+        Text(
+            text = REVIEW_CHIP_TEXT,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            fontWeight = FontWeight.Medium,
+            color = color,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}
+
 @Composable
 private fun PhotoStatusChip(
     current: Int,
     required: Int,
     color: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    complete: Boolean = current >= required
 ) {
     Surface(
         modifier = modifier,
@@ -793,7 +841,7 @@ private fun PhotoStatusChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            if (current >= required) {
+            if (complete) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = null,

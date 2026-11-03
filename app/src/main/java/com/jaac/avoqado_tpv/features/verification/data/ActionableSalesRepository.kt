@@ -82,7 +82,7 @@ class ActionableSalesRepository @Inject constructor(
             }
             val savedIds = cached.mapTo(HashSet()) { it.paymentId }
             val onlyQueued = byPayment.filterKeys { it !in savedIds }.map { (paymentId, rows) -> ActionableItem(null, paymentId, rows, localOnly = true) }
-            ActionableState((saved + onlyQueued).sortedByDescending { sortTime(it) }, isOffline, next)
+            ActionableState(ordered(saved + onlyQueued), isOffline, next)
         }
 
     /**
@@ -108,13 +108,18 @@ class ActionableSalesRepository @Inject constructor(
         }
     }
 
-    /** El detalle para la corrección: del servidor si contesta, si no el de la lista guardada. */
-    suspend fun detail(verificationId: String): VerificationDetailDto? = withContext(Dispatchers.IO) {
-        verifications.getVerificationDetail(verificationId).getOrNull()?.let { fresh ->
+    /**
+     * El detalle para la corrección: del servidor si contesta, si no el de la lista guardada. Si no hay ninguno, el fallo es
+     * el del servidor tal cual (una `IOException` = no hubo respuesta), para que la pantalla no diga «error» sin señal.
+     */
+    suspend fun detail(verificationId: String): Result<VerificationDetailDto> = withContext(Dispatchers.IO) {
+        val fromServer = verifications.getVerificationDetail(verificationId)
+        fromServer.getOrNull()?.let { fresh ->
             if (fresh.status in ACTIONABLE) secureStorage.getStaffId()?.let { save(listOf(fresh), it) }
-            return@withContext fresh
+            return@withContext Result.success(fresh)
         }
-        cacheDao.getByVerification(verificationId)?.let { parse(it.json) }
+        cacheDao.getByVerification(verificationId)?.let { parse(it.json) }?.let { return@withContext Result.success(it) }
+        Result.failure(fromServer.exceptionOrNull() ?: IllegalStateException("Sin detalle de la venta"))
     }
 
     private suspend fun load(after: String?): Result<Unit> = withContext(Dispatchers.IO) {
@@ -175,6 +180,19 @@ class ActionableSalesRepository @Inject constructor(
 
     private fun slotsOf(csv: String): Set<ProofSlot> =
         csv.split(',').mapNotNullTo(LinkedHashSet()) { name -> ProofSlot.entries.firstOrNull { it.name == name } }
+
+    /**
+     * Arriba lo que sólo sabe la terminal (ventas recién cobradas y capturas sin tarjeta), la más nueva primero; después las
+     * del servidor en SU orden (`terminalPage`): falta foto primero, luego la más vieja, luego el id.
+     */
+    private fun ordered(items: List<ActionableItem>): List<ActionableItem> {
+        val (server, local) = items.partition { it.detail != null && !it.localOnly }
+        return local.sortedByDescending { sortTime(it) } + server.sortedWith(
+            compareBy<ActionableItem>({ hasAllPhotos(it.detail!!) }, { sortTime(it) }, { it.detail!!.id }),
+        )
+    }
+
+    private fun hasAllPhotos(d: VerificationDetailDto) = d.photos.count { it.isNotEmpty() } >= d.requiredPhotos
 
     private fun sortTime(item: ActionableItem): Long =
         item.detail?.date?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }

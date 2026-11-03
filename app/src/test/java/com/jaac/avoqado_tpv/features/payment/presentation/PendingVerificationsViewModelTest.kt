@@ -157,4 +157,29 @@ class PendingVerificationsViewModelTest {
         assertThat(card.requiredPhotos).isEqualTo(2)
         assertThat(card.id).isEmpty()
     }
+
+    @Test fun `una venta en Revisar con sus dos fotos no se pinta completa y trae los motivos del back-office`() {
+        val revisar = detalle("pay-r").copy(
+            isPortabilidad = true, requiredPhotos = 2, photos = listOf("https://fb/v.jpg", "https://fb/p.jpg"), status = "FAILED",
+            rejectionReasons = listOf("REVIEW_ILLEGIBLE_IMAGES", "REVIEW_DUPLICATE_VINCULACION"), reviewNotes = "La INE no se lee",
+        )
+        val item = ActionableItem(revisar, "pay-r", emptyList(), localOnly = false)
+
+        val review = item.review()
+        val progreso = cardProgress(item.toPendingCard(), item.queued, item.deliveredSlots, review)
+
+        assertThat(review).isEqualTo(CardReview(listOf("Imágenes ilegibles", "# de vinculación duplicada"), "La INE no se lee"))
+        assertThat(REVIEW_CHIP_TEXT).isEqualTo("Revisar")
+        assertThat(progreso).isEqualTo(CardProgress(filled = 2, required = 2, complete = false))
+    }
+
+    @Test fun `una venta pendiente con su foto si va completa y no trae motivos`() {
+        val item = ActionableItem(detalle("pay-1").copy(photos = listOf("https://fb/v.jpg")), "pay-1", emptyList(), localOnly = false)
+
+        assertThat(item.review()).isNull()
+        assertThat(cardProgress(item.toPendingCard(), emptyList(), emptySet(), null)).isEqualTo(CardProgress(1, 1, complete = true))
+        // Notas en blanco y sin motivos: la tarjeta en «Revisar» dice que vuelva a tomar las fotos.
+        val sinMotivos = ActionableItem(detalle("pay-2").copy(status = "FAILED", reviewNotes = "  "), "pay-2", emptyList(), false)
+        assertThat(sinMotivos.review()).isEqualTo(CardReview(emptyList(), null))
+    }
 }

@@ -2,7 +2,9 @@ package com.jaac.avoqado_tpv.core.util
 
 import android.app.Activity
 import android.app.Application
+import android.content.Intent
 import android.os.Bundle
+import com.jaac.avoqado_tpv.MainActivity
 import timber.log.Timber
 import java.util.UUID
 
@@ -45,14 +47,33 @@ internal object EstadoDelProceso {
  * con «Missing request» sin tocar el lector. El intento sigue en duda en la libreta, sin «no se cobró». Una recreación con el proceso vivo
  * va firmada y sigue con su cobro. La clase va por nombre porque en la PAX no existe. Depende de ese `onCreate`: lo fija
  * `EstadoDelProcesoTest` contra el AAR real, y subir el AAR obliga a revisarlo.
+ *
+ * D5 (QA en la N86, 3-nov): si la app muere mientras esa pantalla todavía está abriendo, Android la conserva y quita `MainActivity`, que
+ * aún no guardaba su estado (medido a 0.9 s). Al revivir llega SIN estado, igual que un cobro nuevo, y el lector se abría sin socket ni
+ * nadie que oyera el resultado. Un cobro sólo lo pide una pantalla nuestra (`angelPaySdkLauncher`), así que si ninguna ha nacido en este
+ * proceso, nadie lo pidió: se le quita el extra y se abre la app, porque debajo ya no hay nada. Sin ella no hay socket y el POS sigue esperando.
  */
 internal class PantallaDelSdkNoSeRestaura(
     private val pantallaDelSdk: String = NOMBRE,
 ) : Application.ActivityLifecycleCallbacks {
+    private var yaNacioOtraPantalla = false
+
     override fun onActivityCreated(activity: Activity, guardado: Bundle?) {
-        if (activity.javaClass.name == pantallaDelSdk && guardado != null && EstadoDelProceso.paraCrear(guardado) == null) {
-            Timber.w("🧭 [PantallaDelSdk] Proceso nuevo: la pantalla del SDK restaurada ya no vuelve a abrir el lector")
+        if (activity.javaClass.name != pantallaDelSdk) {
+            yaNacioOtraPantalla = true
+            return
+        }
+        val restaurada = guardado != null && EstadoDelProceso.paraCrear(guardado) == null
+        val sinQuienLaPidiera = guardado == null && !yaNacioOtraPantalla
+        if (restaurada || sinQuienLaPidiera) {
+            Timber.w("🧭 [PantallaDelSdk] Proceso nuevo: la pantalla del SDK ya no abre el lector | restaurada=$restaurada")
             activity.intent?.removeExtra(EXTRA_DEL_COBRO)
+        }
+        if (sinQuienLaPidiera) {
+            // CLEAR_TASK: una sola MainActivity, aunque quedara otra debajo (dos apiladas le roban el cobro a la de abajo).
+            activity.startActivity(
+                Intent(activity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+            )
         }
     }
 

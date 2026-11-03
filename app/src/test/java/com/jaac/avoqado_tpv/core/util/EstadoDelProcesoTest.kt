@@ -154,6 +154,7 @@ class EstadoDelProcesoTest {
     }
 
     @Test fun `I-1 recreada en el MISMO proceso sigue con su cobro, como hoy`() = conElGuardia {
+        Robolectric.buildActivity(PantallaDePrueba::class.java).setup()
         val original = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup()
         val estado = Bundle()
         original.pause().saveInstanceState(estado).stop()
@@ -163,10 +164,52 @@ class EstadoDelProcesoTest {
         assertThat(recreada.abrioElLector).isTrue()
     }
 
-    @Test fun `I-1 un cobro nuevo, sin estado, abre el lector`() = conElGuardia {
+    @Test fun `I-1 un cobro nuevo, pedido por una pantalla nuestra, abre el lector y no toca nada mas`() = conElGuardia {
+        Robolectric.buildActivity(PantallaDePrueba::class.java).setup()
+
         val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
 
         assertThat(pantalla.abrioElLector).isTrue()
+        assertThat(shadowOf(pantalla).nextStartedActivity).isNull()
+    }
+
+    // ── D5 (QA en la N86, 3-nov): la app muere mientras la pantalla del SDK todavía está abriendo ───────────────────────────────
+    //
+    // Android conserva la que estaba naciendo y quita la nuestra, que aún no guardaba su estado. Al revivir, la pantalla del SDK llega
+    // SIN estado, igual que un cobro nuevo: abría el lector en un proceso sin socket ni nadie que oyera el resultado.
+
+    @Test fun `D5 sin ninguna pantalla nuestra en este proceso nadie pidio el cobro - no abre el lector`() = conElGuardia {
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+
+        assertThat(pantalla.abrioElLector).isFalse()
+    }
+
+    @Test fun `D5 y abre la app como en frio, una sola copia - sin ella no hay socket y el POS sigue esperando`() = conElGuardia {
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+
+        val abierta = shadowOf(pantalla).nextStartedActivity
+        assertThat(abierta.component?.className).isEqualTo("com.jaac.avoqado_tpv.MainActivity")
+        assertThat(abierta.flags and Intent.FLAG_ACTIVITY_NEW_TASK).isNotEqualTo(0)
+        assertThat(abierta.flags and Intent.FLAG_ACTIVITY_CLEAR_TASK).isNotEqualTo(0)
+    }
+
+    @Test fun `D5 ya revivida la app, el siguiente cobro abre el lector`() = conElGuardia {
+        val revivida = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+        assertThat(shadowOf(revivida).nextStartedActivity).isNotNull() // la cola de Robolectric es de toda la app: se vacía aquí
+        Robolectric.buildActivity(PantallaDePrueba::class.java).setup()
+
+        val siguiente = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+
+        assertThat(siguiente.abrioElLector).isTrue()
+        assertThat(shadowOf(siguiente).nextStartedActivity).isNull()
+    }
+
+    @Test fun `D5 restaurada con estado no abre otra app - la nuestra sigue debajo y Android la restaura`() = conElGuardia {
+        val deOtroProceso = Bundle().apply { putString(EstadoDelProceso.CLAVE, "proceso-muerto") }
+
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup(deOtroProceso).get()
+
+        assertThat(shadowOf(pantalla).nextStartedActivity).isNull()
     }
 
     @Test fun `I-1 no toca el Intent ni el estado de ninguna otra pantalla`() = conElGuardia(pantalla = "otra.Pantalla") {

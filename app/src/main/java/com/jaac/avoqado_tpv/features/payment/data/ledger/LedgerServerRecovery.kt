@@ -470,7 +470,9 @@ class LedgerServerRecovery @Inject constructor(
             Timber.w(error, "🔎 [LedgerServer] D12: sin respuesta al preguntar por la solicitud de %s", attemptId)
             null
         } catch (error: Exception) {
-            // Un cuerpo que no se puede leer no es una declaración: la duda se conserva, y como el servidor SÍ contestó, gasta el turno.
+            // Una excepción que no es de red (un tipo inesperado del conversor) no es una declaración: la duda se conserva y, como el servidor SÍ
+            // contestó, gasta el turno. Un JSON roto o truncado sale de Gson como MalformedJsonException/EOFException, que son IOException: ésos
+            // van a SIN_RESPUESTA (no gastan turno, vuelven a los 31 s).
             Timber.w(error, "🔎 [LedgerServer] D12: respuesta ilegible al preguntar por la solicitud de %s — la duda se conserva", attemptId)
             return PorSolicitud.NADA
         } ?: return PorSolicitud.SIN_RESPUESTA

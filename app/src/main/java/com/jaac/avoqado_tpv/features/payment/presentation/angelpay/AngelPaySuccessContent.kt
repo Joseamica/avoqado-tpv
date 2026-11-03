@@ -57,6 +57,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.ReceiptPerf
 import com.jaac.avoqado_tpv.features.payment.presentation.components.ReceiptTicketBackground
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.payment.presentation.components.receiptChromeFill
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import java.math.BigDecimal
 import java.util.Locale
 
@@ -109,8 +110,12 @@ fun AngelPaySuccessContent(
     isPortabilidad: Boolean = false,
     isUploadingProofOfSale: Boolean = false,
     proofOfSaleComplete: Boolean = false,
-    onProofOfSalePhotoTaken: (photoPath: String, photoLabel: String) -> Unit = { _, _ -> },
-    onRetakeProofOfSalePhoto: (photoLabel: String) -> Unit = {},
+    onProofOfSalePhotoTaken: (photoPath: String, slot: ProofSlot) -> Unit = { _, _ -> },
+    onRetakeProofOfSalePhoto: (slot: ProofSlot) -> Unit = {},
+    /** false = la venta todavía no tiene paymentId (quedó en cola): no se deja tomar una foto que no tendría a dónde ir. */
+    canTakeProofOfSalePhoto: Boolean = true,
+    /** Lo que pasa con las fotos (en cola, sin conexión, a la vista, o «sube desde Pendientes»). Sólo en el flujo serializado. */
+    proofOfSaleMessage: String? = null,
     /**
      * F-1 (spec §4.2): non-null ONLY for the [AngelPayPaymentState.Queued] case — the
      * card charged, but the backend record is still pending offline sync. Renders an
@@ -130,9 +135,9 @@ fun AngelPaySuccessContent(
 
     // 📸 Proof-of-sale local UI state (mirrors Blumon's PaymentScreen locals)
     var showProofOfSaleCamera by remember { mutableStateOf(false) }
-    var currentPhotoLabel by remember { mutableStateOf("linea") }
+    var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }
     var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
-    var viewingPhotoLabel by remember { mutableStateOf<String?>(null) }
+    var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }
     var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
     var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
 
@@ -324,7 +329,7 @@ fun AngelPaySuccessContent(
 
                         Spacer(modifier = Modifier.height(16.dp))
                     }
-                } else {
+                } else if (canTakeProofOfSalePhoto) {
                     com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoSection(
                         isPortabilidad = isPortabilidad,
                         lineaPhotoPath = lineaPhotoPath,
@@ -333,23 +338,35 @@ fun AngelPaySuccessContent(
                         isComplete = proofOfSaleComplete,
                         onTapLinea = {
                             if (lineaPhotoPath != null) {
-                                viewingPhotoLabel = "linea"
+                                viewingPhotoLabel = ProofSlot.VINCULACION
                             } else {
-                                currentPhotoLabel = "linea"
+                                currentPhotoLabel = ProofSlot.VINCULACION
                                 showProofOfSaleCamera = true
                             }
                         },
                         onTapPortabilidad = {
                             if (portabilidadPhotoPath != null) {
-                                viewingPhotoLabel = "portabilidad"
+                                viewingPhotoLabel = ProofSlot.PORTABILIDAD
                             } else {
-                                currentPhotoLabel = "portabilidad"
+                                currentPhotoLabel = ProofSlot.PORTABILIDAD
                                 showProofOfSaleCamera = true
                             }
                         },
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
+                }
+                if (isSerializedFlow && proofOfSaleMessage != null) {
+                    Text(
+                        text = proofOfSaleMessage,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
 
                 // ── Cash indicator ───────────────────────────────────────────
@@ -676,9 +693,8 @@ fun AngelPaySuccessContent(
             dir
         }
         val cameraLabel = when (currentPhotoLabel) {
-            "linea" -> "1. Vinculación"
-            "portabilidad" -> "2. Portabilidad"
-            else -> null
+            ProofSlot.VINCULACION -> "1. Vinculación"
+            ProofSlot.PORTABILIDAD -> "2. Portabilidad"
         }
 
         com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen(
@@ -697,7 +713,7 @@ fun AngelPaySuccessContent(
         com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
             onConfirm = {
-                if (currentPhotoLabel == "linea") {
+                if (currentPhotoLabel == ProofSlot.VINCULACION) {
                     lineaPhotoPath = photoPath
                 } else {
                     portabilidadPhotoPath = photoPath
@@ -707,12 +723,12 @@ fun AngelPaySuccessContent(
 
                 if (isPortabilidad) {
                     when {
-                        currentPhotoLabel == "linea" && portabilidadPhotoPath == null -> {
-                            currentPhotoLabel = "portabilidad"
+                        currentPhotoLabel == ProofSlot.VINCULACION && portabilidadPhotoPath == null -> {
+                            currentPhotoLabel = ProofSlot.PORTABILIDAD
                             showProofOfSaleCamera = true
                         }
-                        currentPhotoLabel == "portabilidad" && lineaPhotoPath == null -> {
-                            currentPhotoLabel = "linea"
+                        currentPhotoLabel == ProofSlot.PORTABILIDAD && lineaPhotoPath == null -> {
+                            currentPhotoLabel = ProofSlot.VINCULACION
                             showProofOfSaleCamera = true
                         }
                     }
@@ -728,7 +744,7 @@ fun AngelPaySuccessContent(
 
     // 📸 View existing photo with retake option
     viewingPhotoLabel?.let { label ->
-        val viewingPath = if (label == "linea") lineaPhotoPath else portabilidadPhotoPath
+        val viewingPath = if (label == ProofSlot.VINCULACION) lineaPhotoPath else portabilidadPhotoPath
         viewingPath?.let { path ->
             com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
                 photoPath = path,
@@ -736,7 +752,7 @@ fun AngelPaySuccessContent(
                 onRetake = {
                     viewingPhotoLabel = null
                     onRetakeProofOfSalePhoto(label)
-                    if (label == "linea") lineaPhotoPath = null else portabilidadPhotoPath = null
+                    if (label == ProofSlot.VINCULACION) lineaPhotoPath = null else portabilidadPhotoPath = null
                     currentPhotoLabel = label
                     showProofOfSaleCamera = true
                 },

@@ -245,6 +245,7 @@ class AngelPayPaymentViewModelTest {
 
     private fun createViewModel(
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -287,6 +288,7 @@ class AngelPayPaymentViewModelTest {
         pendingPaymentDao = mockk(relaxed = true),
         subirVentaGuardadaUseCase = mockk(relaxed = true),
         impresoraDeVentaGuardada = mockk(relaxed = true),
+        proofOfSaleQueue = proofOfSaleQueue,
     )
     }
 
@@ -5875,6 +5877,58 @@ class AngelPayPaymentViewModelTest {
             committed.complete(Unit)
             action.cancel()
             action.join()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // C5 — bloque 0: la foto de comprobante se encola, no se sube desde el cobro
+    // ----------------------------------------------------------------------
+    @Test
+    fun `C5 la foto de una portabilidad se encola por ranura con la tienda de la sesion y Nuevo Pago no borra nada`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { authRepository.getVenueSlug() } returns "tienda-a"
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returnsMany listOf("k1", "k2")
+        coEvery { queue.awaitResult("k1", any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", false, false)
+        coEvery { queue.awaitResult("k2", any()) } returns null
+        val vm = createViewModel(proofOfSaleQueue = queue)
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        val portabilidad = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.PORTABILIDAD
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000001", isPortabilidad = true)
+
+            vm.confirmProofOfSalePhoto("/cache/v.jpg", "pay-1", vinculacion, null)
+            runCurrent()
+            assertThat(vm.proofSlotStates.value[vinculacion])
+                .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Uploaded)
+            assertThat(vm.proofOfSaleComplete.value).isFalse() // falta la segunda foto
+
+            vm.confirmProofOfSalePhoto("/cache/p.jpg", "pay-1", portabilidad, null)
+            runCurrent()
+            coVerify(exactly = 1) {
+                queue.enqueuePhoto(
+                    com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                        "v1", "tienda-a", "s1", "pay-1", null, portabilidad, "/cache/p.jpg", null,
+                    ),
+                )
+            }
+            assertThat(vm.proofSlotStates.value[portabilidad])
+                .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Queued("Se subirá sola"))
+            assertThat(vm.proofOfSaleComplete.value).isTrue()
+
+            vm.retakeProofOfSalePhoto(portabilidad)
+            vm.resetPayment()
+            runCurrent()
+
+            assertThat(vm.proofSlotStates.value).isEmpty()
+            assertThat(vm.proofOfSaleComplete.value).isFalse()
+            coVerify(exactly = 0) { queue.discard(any()) }
+            coVerify(exactly = 0) { verificationUploadManager.deletePhoto(any()) }
+            coVerify(exactly = 0) { verificationUploadManager.uploadProofOfSale(any(), any(), any(), any(), any(), any()) }
+        } finally {
             vm.viewModelScope.cancel()
         }
     }

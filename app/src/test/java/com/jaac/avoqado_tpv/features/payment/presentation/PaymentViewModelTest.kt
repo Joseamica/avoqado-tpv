@@ -341,6 +341,8 @@ class PaymentViewModelTest {
             mockk(relaxed = true),
         startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
             mockk(relaxed = true),
+        verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager = mockk(relaxed = true),
+        proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -376,7 +378,7 @@ class PaymentViewModelTest {
             orderRepository = mockk(relaxed = true),
             orderSyncCoordinator = mockk(relaxed = true),
             tpvSettingsRepository = mockTpvSettingsRepository,
-            verificationUploadManager = mockk(relaxed = true),
+            verificationUploadManager = verificationUploadManager,
             paymentApiService = mockk(relaxed = true),
             apiService = mockk(relaxed = true),
             customerRepository = mockk(relaxed = true),
@@ -397,6 +399,7 @@ class PaymentViewModelTest {
             ventaLocalRepository = mockk(relaxed = true),
             pendingPaymentDao = mockk(relaxed = true),
             subirVentaGuardadaUseCase = mockk(relaxed = true),
+            proofOfSaleQueue = proofOfSaleQueue,
         )
     }
 
@@ -3500,5 +3503,45 @@ class PaymentViewModelTest {
             .filterNot { it.trimStart().startsWith("//") }
             .joinToString("\n")
         assertThat(bloque).doesNotContain("LaunchedEffect(currentState)")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // C5. BLOQUE 0: la foto de comprobante se encola, no se sube desde el cobro
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `C5 la foto de comprobante se encola con la tienda de la sesion y ni Retomar ni Nuevo Pago borran nada`() = runTest {
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult(any(), any()) } returns null
+        every { mockAuthRepository.getVenueSlug() } returns "tienda-a"
+        val uploader = mockk<com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager>(relaxed = true)
+        val viewModel = createViewModel(verificationUploadManager = uploader, proofOfSaleQueue = queue)
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+
+        viewModel.confirmProofOfSalePhoto("/cache/cam.jpg", "pay-1", vinculacion, null)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            queue.enqueuePhoto(
+                com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                    testVenueId, "tienda-a", testStaffId, "pay-1", null, vinculacion, "/cache/cam.jpg", null,
+                ),
+            )
+        }
+        assertThat(viewModel.proofSlotStates.value[vinculacion])
+            .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Queued("Se subirá sola"))
+        assertThat(viewModel.proofOfSaleComplete.value).isTrue()
+
+        viewModel.retakeProofOfSalePhoto(vinculacion)
+        assertThat(viewModel.proofOfSaleComplete.value).isFalse()
+        viewModel.resetPayment()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(viewModel.proofSlotStates.value).isEmpty()
+        coVerify(exactly = 0) { queue.discard(any()) }
+        coVerify(exactly = 0) { uploader.deletePhoto(any()) }
+        coVerify(exactly = 0) { uploader.uploadProofOfSale(any(), any(), any(), any(), any(), any()) }
+        viewModel.viewModelScope.cancel()
     }
 }

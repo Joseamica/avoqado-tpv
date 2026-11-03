@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal
 import com.jaac.avoqado_tpv.features.checkout.domain.model.RenglonDeTicket
 import com.jaac.avoqado_tpv.features.checkout.domain.renglonesParaImprimir
 import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.payment.domain.referenciaDeEfectivo
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import androidx.lifecycle.SavedStateHandle
@@ -177,6 +178,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val pendingPaymentDao: com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao,
     private val subirVentaGuardadaUseCase: com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase,
     private val impresoraDeVentaGuardada: com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada,
+    // 📸 Bloque 0: la cola durable de la foto de comprobante. Hilt siempre la da; null sólo en pruebas que no la usan.
+    private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -332,124 +335,38 @@ class AngelPayPaymentViewModel @Inject constructor(
     /** Whether the in-flight/just-completed payment is a serialized (SIM) sale. */
     val isSerializedSale: Boolean get() = pendingSerialNumbers.isNotEmpty()
 
-    // ── Post-payment proof-of-sale (serialized SIM sale) — mirrors Blumon exactly ──
-    // Photos are captured AFTER the charge, on the success screen (replacing the QR),
-    // non-blocking. Gated purely by isSerializedSale — a normal AngelPay payment never
-    // reaches this code.
-    private val _isUploadingProofOfSale = MutableStateFlow(false)
-    val isUploadingProofOfSale: StateFlow<Boolean> = _isUploadingProofOfSale.asStateFlow()
-
-    private val _proofOfSaleComplete = MutableStateFlow(false)
-    val proofOfSaleComplete: StateFlow<Boolean> = _proofOfSaleComplete.asStateFlow()
-
-    private val _pendingProofOfSaleUrls = mutableMapOf<String, String>() // label -> Firebase URL
-    private val _sentToBackendUrls = mutableSetOf<String>()
-
-    /**
-     * 📸 Upload a proof-of-sale photo to Firebase, then attach it to the just-recorded
-     * payment's PENDING SaleVerification via a dedicated endpoint keyed by paymentId.
-     * Mirrors Blumon's `PaymentViewModel.uploadProofOfSale` byte-for-byte.
-     */
-    fun uploadProofOfSale(
-        photoPath: String,
-        paymentId: String,
-        orderNumber: String,
-        amount: String,
-        photoLabel: String = "linea",
-    ) {
-        viewModelScope.launch {
-            try {
-                _isUploadingProofOfSale.value = true
-                val requiredCount = if (pendingIsPortabilidad) 2 else 1
-                Timber.i("📸 [AngelPay PROOF-OF-SALE] Starting upload | label=$photoLabel | paymentId=$paymentId | order=$orderNumber | required=$requiredCount")
-
-                val venueSlug = authRepository.getVenueSlug() ?: run {
-                    Timber.e("📸 [AngelPay PROOF-OF-SALE] No venueSlug available")
-                    return@launch
-                }
-
-                val uploadResult = verificationUploadManager.uploadProofOfSale(
-                    localPath = photoPath,
-                    venueSlug = venueSlug,
-                    orderNumber = orderNumber,
-                    amount = amount,
-                    photoLabel = photoLabel,
-                )
-
-                uploadResult.onSuccess { photoUrl ->
-                    Timber.i("📸 [AngelPay PROOF-OF-SALE] Firebase upload success: $photoUrl")
-                    _pendingProofOfSaleUrls[photoLabel] = photoUrl
-                    sendSinglePhotoToBackend(paymentId, photoUrl, photoLabel)
-                    if (_pendingProofOfSaleUrls.size >= requiredCount) {
-                        _proofOfSaleComplete.value = true
-                    }
-                }.onFailure { error ->
-                    Timber.e(error, "📸 [AngelPay PROOF-OF-SALE] Firebase upload failed")
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "📸 [AngelPay PROOF-OF-SALE] Unexpected error")
-            } finally {
-                _isUploadingProofOfSale.value = false
-            }
-        }
-    }
-
-    private suspend fun sendSinglePhotoToBackend(paymentId: String, photoUrl: String, photoLabel: String?) {
-        val backendLabel = when (photoLabel) {
-            "linea" -> "Vinculacion"
-            "portabilidad" -> "Portabilidad"
-            else -> photoLabel
-        }
-        try {
-            val response = paymentApiService.uploadProofOfSale(
-                com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
-                    paymentId = paymentId,
-                    photoUrls = listOf(photoUrl),
-                    photoLabel = backendLabel,
-                )
-            )
-            if (response.isSuccessful && response.body()?.success == true) {
-                Timber.i("✅ [AngelPay PROOF-OF-SALE] Backend recorded photo for payment $paymentId")
-                _sentToBackendUrls.add(photoUrl)
-            } else {
-                Timber.e("❌ [AngelPay PROOF-OF-SALE] Backend failed: ${response.body()?.message}")
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ [AngelPay PROOF-OF-SALE] Backend call error")
-        }
-    }
-
-    /** 📸 Retake a proof-of-sale photo — deletes the existing Firebase upload for the slot. */
-    fun retakeProofOfSalePhoto(photoLabel: String) {
-        val existingUrl = _pendingProofOfSaleUrls.remove(photoLabel)
-        _proofOfSaleComplete.value = false
-        if (existingUrl != null) {
-            viewModelScope.launch {
-                verificationUploadManager.deletePhoto(existingUrl)
-                    .onSuccess { Timber.d("📸 [AngelPay PROOF-OF-SALE] Deleted old $photoLabel photo") }
-                    .onFailure { Timber.w(it, "📸 [AngelPay PROOF-OF-SALE] Failed to delete old $photoLabel photo") }
-            }
-        }
-    }
+    // ── Post-payment proof-of-sale (serialized SIM sale), bloque 0 — igual que Blumon ──
+    // Las fotos se toman DESPUÉS del cobro, en la pantalla de éxito (en lugar del QR), sin bloquear. Sólo con
+    // isSerializedSale: un cobro normal de AngelPay nunca llega aquí. «Confirmar» encola en la cola durable; no sube nada.
+    private val proofSlots = com.jaac.avoqado_tpv.features.verification.presentation.ProofOfSaleSlots(
+        scope = viewModelScope,
+        queue = proofOfSaleQueue,
+        isOnline = { connectionStateManager.isFullyConnected() },
+        isPortabilidad = { pendingIsPortabilidad },
+    )
+    val proofSlotStates: StateFlow<Map<ProofSlot, com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState>> =
+        proofSlots.states
+    val isUploadingProofOfSale: StateFlow<Boolean> = proofSlots.saving
+    val proofOfSaleComplete: StateFlow<Boolean> = proofSlots.complete
 
     /**
-     * 📸 Cleanup photos uploaded to Firebase but never sent to the backend (e.g. app
-     * closed mid-flow before completing all required photos). Mirrors Blumon.
+     * 📸 «Confirmar» de la foto de comprobante: la encola con el número en su ranura y la tienda de la sesión, y la
+     * pantalla ve el estado de esa ranura en [proofSlotStates]. Sin `paymentId` la pantalla no deja tomarla (manda a
+     * «Pendientes»), igual que la PAX.
      */
-    private fun cleanupOrphanedProofOfSalePhotos() {
-        if (_pendingProofOfSaleUrls.isEmpty()) return
-        val urlsToDelete = _pendingProofOfSaleUrls.values.filter { it !in _sentToBackendUrls }
-        _pendingProofOfSaleUrls.clear()
-        _sentToBackendUrls.clear()
-        if (urlsToDelete.isEmpty()) return
-        viewModelScope.launch {
-            urlsToDelete.forEach { url ->
-                verificationUploadManager.deletePhoto(url)
-                    .onSuccess { Timber.d("📸 [AngelPay PROOF-OF-SALE] Deleted orphan: $url") }
-                    .onFailure { Timber.w(it, "📸 [AngelPay PROOF-OF-SALE] Failed to delete orphan: $url") }
-            }
-        }
+    fun confirmProofOfSalePhoto(photoPath: String, paymentId: String, slot: ProofSlot, number: String?) {
+        Timber.i("📸 [AngelPay PROOF-OF-SALE] Confirmada | slot=$slot | paymentId=$paymentId")
+        proofSlots.confirm(
+            photoPath, paymentId, slot, number,
+            venueId = authRepository.getVenueId(),
+            venueSlug = authRepository.getVenueSlug(),
+            staffId = authRepository.getStaffId(),
+        )
     }
+
+    /** 📸 Retomar: la ranura vuelve a pedir foto. No borra nada, ni en Firebase ni en la cola: la nueva captura es otra fila. */
+    fun retakeProofOfSalePhoto(slot: ProofSlot) = proofSlots.retake(slot)
+
     /**
      * Whether the print button should be visible on the AngelPay success
      * screen. Bifurcates by build flavor because PAX and Nexgo terminals
@@ -5477,9 +5394,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         // ⬅️ Sin esto, un cobro empujado por el POS dejaría el flag encendido y el SIGUIENTE
         // cobro iniciado en la terminal saldría al primer back sin mostrar su wizard.
         isSkipReviewFlow = false
-        cleanupOrphanedProofOfSalePhotos()
-        _isUploadingProofOfSale.value = false
-        _proofOfSaleComplete.value = false
+        // 📸 «Nuevo Pago»: la pantalla olvida sus ranuras; lo ya encolado se sube solo (no se borra nada).
+        proofSlots.reset()
         cachedShiftId = null
         turnoSinConfirmar = false
         cachedVenueId = null

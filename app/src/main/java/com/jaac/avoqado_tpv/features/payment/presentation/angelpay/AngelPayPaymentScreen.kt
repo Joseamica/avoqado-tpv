@@ -73,6 +73,8 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPayme
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.watchdogMessage
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -345,6 +347,10 @@ fun AngelPayPaymentScreen(
                 showReceiptScreen = false,
                 onPrintReceipt = {},
                 pendingSyncMessage = queuedState.message,
+                isSerializedFlow = viewModel.isSerializedSale,
+                isPortabilidad = isPortabilidad,
+                canTakeProofOfSalePhoto = false,
+                proofOfSaleMessage = PROOF_SALE_QUEUED_MESSAGE,
                 onNavigateHome = {
                     viewModel.resetPayment()
                     onNavigateHome()
@@ -369,6 +375,8 @@ fun AngelPayPaymentScreen(
                 LaunchedEffect(successState.referenceNumber) { viewModel.marcarExitoDeVentaLocalMostrado() }
                 val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
                 val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
+                val proofSlotStates by viewModel.proofSlotStates.collectAsStateWithLifecycle()
+                val proofPaymentId = successState.receipt?.paymentId
                 AngelPaySuccessContent(
                     state = successState,
                     showReceiptScreen = viewModel.showReceiptScreen,
@@ -384,16 +392,18 @@ fun AngelPayPaymentScreen(
                     isPortabilidad = isPortabilidad,
                     isUploadingProofOfSale = isUploadingProofOfSale,
                     proofOfSaleComplete = proofOfSaleComplete,
-                    onProofOfSalePhotoTaken = { photoPath, photoLabel ->
-                        val paymentId = successState.receipt?.paymentId
-                        if (paymentId != null) {
-                            viewModel.uploadProofOfSale(
-                                photoPath = photoPath,
-                                paymentId = paymentId,
-                                orderNumber = successState.orderNumber ?: "",
-                                amount = successState.amount,
-                                photoLabel = photoLabel,
-                            )
+                    // 📸 Bloque 0. Sin paymentId (la venta quedó en cola) no se deja tomar la foto, que antes se tiraba
+                    // sin avisar: se manda a «Pendientes», igual que la PAX.
+                    canTakeProofOfSalePhoto = proofPaymentId != null,
+                    proofOfSaleMessage = if (proofPaymentId == null) {
+                        PROOF_SALE_QUEUED_MESSAGE
+                    } else {
+                        proofOfSaleMessage(proofSlotStates, isPortabilidad)
+                    },
+                    onProofOfSalePhotoTaken = { photoPath, slot ->
+                        // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker.
+                        if (proofPaymentId != null) {
+                            viewModel.confirmProofOfSalePhoto(photoPath, proofPaymentId, slot, number = null)
                         }
                     },
                     onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,

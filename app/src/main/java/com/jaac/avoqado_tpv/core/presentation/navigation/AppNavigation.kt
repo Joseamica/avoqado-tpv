@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
@@ -136,6 +135,7 @@ interface AppNavigationEntryPoint {
     fun updateRequestManager(): UpdateRequestManager
     fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
     fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+    fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
@@ -974,32 +974,18 @@ fun AppNavigation(
                 }
                 val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
                 if (aviso != null) {
-                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                        Row(
-                            // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo
-                            // ofrecía «Ayuda»: le decía al cajero que hay un cobro sin confirmar y lo dejaba
-                            // sin ningún sitio donde comprobar si entró. No se puede descartar a propósito —
-                            // desaparece cuando la obligación se resuelve, nunca porque alguien la tape.
-                            // Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { navController.navigate(NavRoute.Payments.createRoute()) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = aviso,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = { navController.navigate(NavRoute.Payments.createRoute()) }) {
-                                Text("Revisar")
-                            }
-                            TextButton(onClick = { navController.navigate(NavRoute.Support.route) }) {
-                                Text("Ayuda")
-                            }
-                        }
-                    }
+                    // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo ofrecía «Ayuda»: le decía al
+                    // cajero que hay un cobro sin confirmar y lo dejaba sin ningún sitio donde comprobar si entró. Sigue sin poder
+                    // taparse: se resuelve declarando («No se cobró», founder, 3-nov) o cuando la obligación se resuelve, nunca
+                    // porque alguien lo esconda. Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
+                    com.jaac.avoqado_tpv.features.payment.presentation.BannerDeCobrosPendientes(
+                        aviso = aviso,
+                        venueId = bannerVenueId,
+                        ahora = ahora,
+                        declaracion = remember { kioskEntryPoint.declaracionDesdeElAviso() },
+                        onRevisar = { navController.navigate(NavRoute.Payments.createRoute()) },
+                        onAyuda = { navController.navigate(NavRoute.Support.route) },
+                    )
                 }
             }
         }

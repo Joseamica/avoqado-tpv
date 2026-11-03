@@ -400,6 +400,16 @@ fun AppNavigation(
                     Timber.w("⚠️ [Remote] Request not claimable in active venue; no SDK launch (requestId=$durableRequestId)")
                     return@collect
                 }
+                is com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted -> {
+                    // D8: no se abrió nada y nadie reclamó la solicitud: se contesta en el acto para que el POS no espere 5 min.
+                    Timber.w("⚠️ [Remote] La Caja no admite el cobro: ${admission.motivo} (requestId=$durableRequestId)")
+                    rejectRemotePaymentBeforeAuthorization(
+                        socketManager = socketManager,
+                        requestId = durableRequestId,
+                        errorMessage = "En la terminal: ${admission.motivo}",
+                    )
+                    return@collect
+                }
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_READY,
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.VENUE_CHANGED -> {
                     // This collector owns the claim and has not started any SDK.

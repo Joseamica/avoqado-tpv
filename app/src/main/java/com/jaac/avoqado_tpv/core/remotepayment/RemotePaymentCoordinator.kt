@@ -77,7 +77,15 @@ data class RemoteRefundRequest(
  * dispositivos — todo eso murió con el transporte BLE. Lo único que el flujo vivo (SOCKET)
  * usaba era este bus de requests + cancelaciones, y es lo único que se conservó.
  */
-enum class RemotePaymentAdmission { READY, NOT_READY, NOT_CLAIMABLE, VENUE_CHANGED }
+sealed interface RemotePaymentAdmission {
+    data object READY : RemotePaymentAdmission
+    data object NOT_READY : RemotePaymentAdmission
+    data object NOT_CLAIMABLE : RemotePaymentAdmission
+    data object VENUE_CHANGED : RemotePaymentAdmission
+
+    /** D8: la Caja no deja iniciar este cobro (cerrada, sin sesión, sin permiso). Nada se abrió y el POS sigue esperando. */
+    data class NotAdmitted(val motivo: String) : RemotePaymentAdmission
+}
 
 @Singleton
 class RemotePaymentCoordinator @Inject constructor(
@@ -139,9 +147,8 @@ class RemotePaymentCoordinator @Inject constructor(
         synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
         val venueId = currentVenueId()?.takeIf { it.isNotBlank() }
             ?: return RemotePaymentAdmission.NOT_CLAIMABLE
-        if (!remotePaymentInbox.markProcessingForVenue(requestId, venueId)) {
-            return RemotePaymentAdmission.NOT_CLAIMABLE
-        }
+        val reclamo = remotePaymentInbox.reclamarParaVenue(requestId, venueId)
+        if (reclamo != RemotePaymentAdmission.READY) return reclamo
         synchronized(reclamadasEnEsteProceso) { reclamadasEnEsteProceso += requestId }
         // The Room call suspended: activation may have changed while it ran. This
         // collector owns the claim but has not opened any SDK, so it may fail safely.

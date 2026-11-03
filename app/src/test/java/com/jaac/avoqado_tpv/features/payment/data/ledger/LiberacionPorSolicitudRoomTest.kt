@@ -7,7 +7,11 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity
+import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
@@ -16,6 +20,8 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -39,6 +45,7 @@ import org.robolectric.annotation.Config
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.math.BigDecimal
 import java.util.concurrent.TimeUnit
 
 /**
@@ -237,25 +244,31 @@ class LiberacionPorSolicitudRoomTest {
         PilaDePantallas { listOf(TareaDeLaApp(pantallas = 1, arribaLaPrincipal = true)) },
     ).apply { marcaDelBuild = paxEmbebida }
 
+    private fun solicitudDelPos(requestId: String) = SocketEvent.TerminalPaymentRequest(
+        requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = null,
+        processedByStaffId = "staff-1", senderDeviceName = "POS", venueId = venue, timestamp = "2026-10-20T19:00:00Z",
+    )
+
     /**
      * La venta de la tablet que la PAX dejó a medias, hasta que la sonda la CIERRA para ejecución (B1/B2): el proceso 1 reclama la
      * solicitud y entra al lector; muere; el proceso 2 contesta la sonda con el cese certificado. Devuelve la libreta del proceso 2.
+     * [caja] = el turno de Caja de verdad (sesión MANAGED); sin él, la frontera legacy de pruebas (sin Caja).
      */
-    private suspend fun ventaDeLaTabletDeLaPax(requestId: String, attemptId: String): PaymentAttemptLedger {
-        val solicitud = SocketEvent.TerminalPaymentRequest(
-            requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = null,
-            processedByStaffId = "staff-1", senderDeviceName = "POS", venueId = venue, timestamp = "2026-10-20T19:00:00Z",
-        )
+    private suspend fun ventaDeLaTabletDeLaPax(requestId: String, attemptId: String, caja: ShiftRepository? = null): PaymentAttemptLedger {
+        val frontera = caja ?: com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture()
         val libreta1 = libretaDeLaPax()
-        val bandeja1 = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta1, PaymentStateHolder())
-        assertThat(bandeja1.receive(solicitud)).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        val bandeja1 = RemotePaymentInbox(db.remotePaymentRequestDao(), frontera, libreta1, PaymentStateHolder())
+        assertThat(bandeja1.receive(solicitudDelPos(requestId))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
         assertThat(RemotePaymentCoordinator(bandeja1).prepareSocketPaymentRequest(requestId, { true }, { venue }))
             .isEqualTo(RemotePaymentAdmission.READY)
-        assertThat(libreta1.openAttempt(attemptId, venue, "BLUMON", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"$requestId"}""")).isTrue()
+        val contexto = """{"terminalPaymentRequestId":"$requestId"}"""
+        val reservado = if (caja == null) libreta1.openAttempt(attemptId, venue, "BLUMON", 10_000, 0, "FAST", contexto)
+            else libreta1.openAttemptForShift(caja, attemptId, venue, "BLUMON", 10_000, 0, "FAST", contexto)
+        assertThat(reservado).isTrue()
         assertThat(libreta1.markAuthorizing(attemptId)).isTrue() // la app muere con el lector dentro
 
         val libreta2 = libretaDeLaPax()
-        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta2, PaymentStateHolder()))
+        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), frontera, libreta2, PaymentStateHolder()))
             .probeSocketPaymentRequest(requestId, venue)
         assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
         assertThat(sonda.executionAlive).isFalse()
@@ -285,6 +298,97 @@ class LiberacionPorSolicitudRoomTest {
         assertThat(libreta.openAttempt("a-otra-vez", venue, "BLUMON", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"req-pax"}""")).isFalse()
         // …y la terminal sigue lista para una venta nueva del POS.
         assertThat(libreta.openAttempt("a-nueva", venue, "BLUMON", 5_000, 0, "FAST", """{"terminalPaymentRequestId":"req-nueva"}""")).isTrue()
+    }
+
+    // ── Caja: tras la declaración, la solicitud cerrada para ejecución ya no cuenta como una ejecución pendiente ───────
+    //
+    // Codex final-r1 (LA-PROMESA-LO-NECESITA): D12 descarta el intento, pero la bandeja conserva PROCESSING y su cerca A PROPÓSITO.
+    // La rama `REMOTE` de `SQL_SHIFT_OBLIGATIONS` la seguía contando (su NOT EXISTS sólo excluye intentos activos o con dinero) y
+    // `guardarCierreLocal` no dejaba cerrar el turno. Una solicitud CERRADA PARA EJECUCIÓN ya no puede arrancar nada: lo que tenga
+    // dinero o siga en duda lo cuenta la rama `ATTEMPT`. Aquí el turno es una sesión MANAGED de verdad (Room, autoridad y
+    // transacción de producto; sólo el transporte es de mentira), no la frontera legacy del resto de la clase.
+
+    private val storage = mockk<SecureStorage>(relaxed = true)
+
+    private suspend fun cajaAbierta(): Pair<ShiftRepository, LocalShiftSessionEntity> {
+        val shifts = task5RoomShiftRepository(db, storage, mockk<ApiService>(), venue, "staff-a", enabled = true)
+        return shifts to (shifts.guardarAperturaLocal(venue, "staff-a", BigDecimal("100.00")) as AppResult.Success).data
+    }
+
+    @Test fun `P1 Caja MANAGED real, tras la declaracion del cajero la solicitud cerrada ya no cuenta y el turno se deja cerrar`() = runTest {
+        val (shifts, sesion) = cajaAbierta()
+        val libreta = ventaDeLaTabletDeLaPax("req-caja", "a-caja", caja = shifts)
+        val turno = db.localShiftSessionDao()
+        coEvery { api.getAttemptStatus(venue, "a-caja") } returns s6(s6Literal("a-caja"))
+        coEvery { api.getRequestStatus(venue, "req-caja") } returns porSolicitud(getRanuraSoltada("req-caja"))
+        val recuperador = LedgerServerRecovery(dao, libreta, api)
+        val t0 = System.currentTimeMillis()
+
+        // 1. Antes de la declaración la duda es del INTENTO (INDETERMINADO): Caja no deja cerrar el turno.
+        assertThat(recuperador.recover(venue, t0).liberadas).isEqualTo(0)
+        assertThat(dao.getById("a-caja")!!.state).isEqualTo("INDETERMINADO")
+        assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(1)
+        assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Error::class.java)
+
+        // 2. El cajero declara en el POS: D12 descarta el intento; la solicitud sigue PROCESSING y cerrada para ejecución.
+        coEvery { api.getRequestStatus(venue, "req-caja") } returns porSolicitud(getLiteral("req-caja"))
+        assertThat(recuperador.recover(venue, t0 + LedgerServerRecovery.ESPACIADO_TOPE_MS + 1).liberadas).isEqualTo(1)
+        assertThat(dao.getById("a-caja")!!.state).isEqualTo("DESCARTADA")
+        val bandeja = db.remotePaymentRequestDao().getById("req-caja")!!
+        assertThat(bandeja.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        assertThat(bandeja.executionClosedAt).isNotNull()
+        assertThat(bandeja.finalResultJson).isNull()
+        assertThat(bandeja.shiftMembership).isEqualTo("MANAGED")
+        assertThat(bandeja.localShiftSessionId).isEqualTo(sesion.localSessionId) // es de ESTE turno
+
+        // …y Caja ya no la cuenta: ni como ejecución remota ni como intento, y el turno se deja cerrar.
+        assertThat(turno.ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(0)
+        assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(0)
+        assertThat(shifts.obligacionesDelCierreLocal(venue, sesion.localSessionId).rows).isEmpty()
+        assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
+    }
+
+    @Test fun `P1 Caja MANAGED real, una solicitud PROCESSING sin cerrar y sin intentos sigue bloqueando el turno`() = runTest {
+        val (shifts, sesion) = cajaAbierta()
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, libretaDeLaPax(), PaymentStateHolder())
+        assertThat(bandeja.receive(solicitudDelPos("req-viva"))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(RemotePaymentCoordinator(bandeja).prepareSocketPaymentRequest("req-viva", { true }, { venue }))
+            .isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(db.remotePaymentRequestDao().getById("req-viva")!!.executionClosedAt).isNull() // todavía puede arrancar un cobro
+
+        assertThat(db.localShiftSessionDao().ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(1)
+        assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Error::class.java)
+    }
+
+    @Test fun `P1 Caja MANAGED real, cerrada para ejecucion pero con su intento aun en duda sigue bloqueando el turno`() = runTest {
+        val (shifts, sesion) = cajaAbierta()
+        val libreta = ventaDeLaTabletDeLaPax("req-duda", "a-duda", caja = shifts)
+        libreta.cuarentenaDeHuerfanos() // lo que dejó el proceso muerto pasa a «en duda»
+        assertThat(dao.getById("a-duda")!!.state).isEqualTo("INDETERMINADO")
+        assertThat(db.remotePaymentRequestDao().getById("req-duda")!!.executionClosedAt).isNotNull()
+
+        assertThat(db.localShiftSessionDao().intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(1)
+        assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Error::class.java)
+    }
+
+    @Test fun `P1 Caja MANAGED real, cerrada con el intento descartado pero con dinero o veto del servidor sigue bloqueando el turno`() = runTest {
+        val (shifts, sesion) = cajaAbierta()
+        val libreta = ventaDeLaTabletDeLaPax("req-dinero", "a-dinero", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        val turno = db.localShiftSessionDao()
+        val fallos = mutableListOf<String>()
+        listOf(
+            "aprobado del host" to "host_approved = 1",
+            "aprobacion del banco" to "server_processor_evidence = 'APPROVED'",
+            "veto del servidor" to "server_veto = 'PAYMENT_CONTRADICTION'",
+        ).forEach { (nombre, marca) ->
+            val sql = db.openHelper.writableDatabase
+            sql.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA', host_approved = NULL, server_processor_evidence = NULL, server_veto = NULL WHERE attempt_id = 'a-dinero'")
+            sql.execSQL("UPDATE payment_attempts SET $marca WHERE attempt_id = 'a-dinero'")
+            if (turno.intentosSinRepresentar(venue, sesion.localSessionId) != 1) fallos += "«$nombre»: Caja ya no cuenta el intento descartado"
+            if (shifts.guardarCierreLocal(venue, sesion.localSessionId) !is AppResult.Error) fallos += "«$nombre»: el turno se dejó cerrar"
+        }
+        assertWithMessage("descartadas con dinero o veto que debían seguir bloqueando el turno").that(fallos).isEmpty()
     }
 
     // ── Lo que NO es la declaración de una persona no cierra nada ───────────────────────────────────────────────────
@@ -320,6 +424,7 @@ class LiberacionPorSolicitudRoomTest {
             val r = recuperacion().recover(venue, ahora)
 
             val fila = dao.getById(id)!!
+            if (!preguntoPorLaSolicitud()) fallos += "«$nombre»: ni siquiera preguntó por la solicitud (la variante no llegó al predicado)"
             if (r.liberadas != 0) fallos += "«$nombre»: LIBERÓ la duda"
             if (fila.state != "INDETERMINADO") fallos += "«$nombre»: la fila ya no está en duda (${fila.state})"
             if (fila.serverCheckedAt != ahora) fallos += "«$nombre»: el servidor contestó y no se gastó el turno"
@@ -592,6 +697,25 @@ class LiberacionPorSolicitudRoomTest {
         assertThat(r.liberadas).isEqualTo(0)
         assertThat(dao.getById("a-vd")!!.state).isEqualTo("INDETERMINADO")
         assertThat(dao.getById("a-vd")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_UNATTRIBUTED_EVIDENCE)
+    }
+
+    @Test fun `P1 el veto de S6 que no se pudo guardar sigue impidiendo preguntar por la solicitud (recoverOne)`() = runTest {
+        // I-1 de la revisión: sin la guarda del CUERPO de S6 no hay otra capa. El veto de ESTA respuesta no se escribe (falla el
+        // guardado, y esa escritura no deja nada en memoria), así que ni el prefiltro de la fila ni el CAS lo pueden ver.
+        duda("a-vf")
+        val sinDisco = spyk(ledger)
+        coEvery { sinDisco.marcarVetoDelServidor(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("disco lleno"))
+        coEvery { api.getAttemptStatus(venue, "a-vf") } returns
+            s6(s6Literal("a-vf").cambia(""""unattributedEvidence":false""", """"unattributedEvidence":true"""))
+        coEvery { api.getRequestStatus(venue, "req-a-vf") } returns porSolicitud(getLiteral("req-a-vf")) // el POS ya declaró
+
+        val lectura = LedgerServerRecovery(dao, sinDisco, api).recoverOne(venue, "a-vf", ahora, estampar = false)
+
+        coVerify(exactly = 0) { api.getRequestStatus(any(), any()) }
+        val fila = dao.getById("a-vf")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.serverVeto).isNull() // la escritura NO quedó…
+        assertThat(lectura.vetoDelServidor).isEqualTo(PaymentAttemptEntity.VETO_UNATTRIBUTED_EVIDENCE) // …y el veto llega igual a quien consultó
     }
 
     // ── El proceso muere o la escritura falla: nada se pierde ni se cierra a medias ─────────────────────────────────

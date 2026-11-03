@@ -8,7 +8,15 @@ data class LocalShiftObligation(val owner: String, val ownerId: String, val crea
 
 data class LocalShiftObligationPage(val total: Int, val rows: List<LocalShiftObligation>, val offset: Int)
 
-/** Predicado único para conteo, página y reconocimiento: B sólo se excluye con sesión demostrada. */
+/**
+ * Predicado único para conteo, página y reconocimiento: B sólo se excluye con sesión demostrada.
+ *
+ * REMOTE (D12, Codex final-r1): una solicitud PROCESSING ya CERRADA PARA EJECUCIÓN (`execution_closed_at`) no puede arrancar nada,
+ * así que no es una ejecución pendiente. Lo que tenga dinero o siga en duda lo cuenta la rama ATTEMPT (que no cambia) y lo demás
+ * lo resuelve la venta en el SERVIDOR. Sin esto, la declaración «no se cobró» —que descarta el intento y deja la solicitud
+ * PROCESSING con su cerca— bloqueaba el cierre del turno. Es una regla de CAJA: el aviso de pendientes
+ * (`RemotePaymentRequestDao.observePendingObligations`) cuenta otra cosa (filas SIN ningún intento) y no cambia.
+ */
 internal const val SQL_SHIFT_OBLIGATIONS = """
 SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
   SELECT owner, ownerId, createdAt, localSessionId, venue,
@@ -34,7 +42,7 @@ SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
     WHERE sync_status IN ('PENDING','SYNCING') OR (sync_status = 'FAILED' AND acknowledged = 0)
     UNION ALL
     SELECT 'REMOTE', request_id, created_at, shift_membership, local_shift_session_id, cash_drawer_session_id, NULL, venue_id FROM remote_payment_requests r
-    WHERE status = 'PROCESSING'
+    WHERE status = 'PROCESSING' AND r.execution_closed_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM payment_attempts a WHERE a.venue_id = r.venue_id AND a.terminal_payment_request_id = r.request_id AND (a.state != 'DESCARTADA' OR a.host_approved = 1 OR a.server_processor_evidence = 'APPROVED' OR a.server_veto IS NOT NULL))
       AND NOT EXISTS (SELECT 1 FROM pending_payments p WHERE p.venue_id = r.venue_id AND p.terminal_payment_request_id = r.request_id)
       AND NOT EXISTS (SELECT 1 FROM local_crypto_operations c WHERE c.venue_id = r.venue_id AND c.terminal_payment_request_id = r.request_id)

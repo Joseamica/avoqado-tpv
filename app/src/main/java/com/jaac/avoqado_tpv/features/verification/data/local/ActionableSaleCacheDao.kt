@@ -17,6 +17,10 @@ interface ActionableSaleCacheDao {
     @Query("SELECT * FROM actionable_sale_cache WHERE payment_id = :paymentId LIMIT 1")
     suspend fun get(paymentId: String): ActionableSaleCacheEntity?
 
+    /** La corrección sin señal: el detalle guardado de esa verificación. */
+    @Query("SELECT * FROM actionable_sale_cache WHERE verification_id = :verificationId LIMIT 1")
+    suspend fun getByVerification(verificationId: String): ActionableSaleCacheEntity?
+
     @Query("UPDATE actionable_sale_cache SET delivered_slots = :slots WHERE payment_id = :paymentId")
     suspend fun setDeliveredSlots(paymentId: String, slots: String): Int
 

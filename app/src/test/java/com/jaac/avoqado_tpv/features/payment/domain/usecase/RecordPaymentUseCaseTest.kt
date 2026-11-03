@@ -424,4 +424,48 @@ class RecordPaymentUseCaseTest {
         coVerify(exactly = 0) { queue.release(any(), any(), any(), any()) }
         coVerify(exactly = 0) { queue.markPermanentlyFailed(any(), any(), any()) }
     }
+
+    // --- «Pendientes» sin señal (C6): la venta con SIM recién registrada se guarda en la terminal --------------------
+
+    private val tarjeta = CardDetails(maskedPan = "411111******1111", cardBrand = CardBrand.VISA, entryMode = CardEntryMode.CHIP, isCash = false)
+
+    @Test
+    fun `una venta con SIM registrada queda en Pendientes con su tienda y su promotor`() = runTest {
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val conPendientes = RecordPaymentUseCase(fastRecorder, orderRecorder, queue, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), sales)
+        val sim = cashContext.copy(merchantAccountId = "FULLTEST-merchant", isPortabilidad = true, serialNumbers = listOf("8952140061234567890"))
+        val angel = PaymentContext.AngelPayPayment(
+            venueId = "FULLTEST-venue", staffId = "FULLTEST-staff", amount = BigDecimal("99.00"), orderNumber = "SN-7",
+            serialNumbers = listOf("8952777"),
+        )
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt)
+
+        assertThat(conPendientes(sim, tarjeta, "auth", "ref").getOrNull()).isSameInstanceAs(receipt)
+        conPendientes(angel, tarjeta, "auth", "ref")
+
+        coVerify(exactly = 1) {
+            sales.addLocalSale(
+                "FULLTEST-payment", BigDecimal("187.00"), null, true, listOf("8952140061234567890"), "FULLTEST-venue", "FULLTEST-staff",
+            )
+        }
+        coVerify(exactly = 1) {
+            sales.addLocalSale("FULLTEST-payment", BigDecimal("99.00"), "SN-7", false, listOf("8952777"), "FULLTEST-venue", "FULLTEST-staff")
+        }
+    }
+
+    @Test
+    fun `un cobro sin SIM no toca Pendientes y si guardarla falla el cobro sigue registrado`() = runTest {
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>()
+        coEvery { sales.addLocalSale(any(), any(), any(), any(), any(), any(), any()) } throws IllegalStateException("disco lleno")
+        val conPendientes = RecordPaymentUseCase(fastRecorder, orderRecorder, queue, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), sales)
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt)
+        val normal = cashContext.copy(merchantAccountId = "FULLTEST-merchant")
+        val sim = normal.copy(serialNumbers = listOf("8952"))
+
+        assertThat(conPendientes(normal, tarjeta, "auth", "ref").getOrNull()).isSameInstanceAs(receipt)
+        coVerify(exactly = 0) { sales.addLocalSale(any(), any(), any(), any(), any(), any(), any()) }
+
+        assertThat(conPendientes(sim, tarjeta, "auth", "ref").getOrNull()).isSameInstanceAs(receipt)
+        coVerify(exactly = 1) { sales.addLocalSale(any(), any(), any(), any(), any(), any(), any()) }
+    }
 }

@@ -49,6 +49,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -85,6 +86,11 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
+import com.jaac.avoqado_tpv.features.verification.data.ACTIONABLE_OFFLINE_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
+import com.jaac.avoqado_tpv.features.verification.presentation.queuedCaptureMessage
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.ZoneId
@@ -115,9 +121,11 @@ fun PendingVerificationsScreen(
     navController: NavController,
     viewModel: PendingVerificationsViewModel = hiltViewModel()
 ) {
-    val verifications by viewModel.pendingVerifications.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val verifications = state.items
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
-    val uploadingId by viewModel.uploadingId.collectAsStateWithLifecycle()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val uploadingId by viewModel.savingPaymentId.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -130,10 +138,8 @@ fun PendingVerificationsScreen(
 
     // Camera state
     var showCamera by rememberSaveable { mutableStateOf(false) }
-    var selectedVerificationId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPaymentId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedLabel by rememberSaveable { mutableStateOf("") }
-    var selectedReplaceIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     // In-app CameraX camera (has close button — PAX system camera doesn't)
@@ -152,8 +158,8 @@ fun PendingVerificationsScreen(
             },
             onClose = {
                 showCamera = false
-                selectedReplaceIndex = null
             },
+            // cacheDir: la cola copia la foto a su carpeta; el barrido de C4 limpia la suya, no ésta.
             outputDirectory = context.cacheDir,
             photoLabel = cameraLabel
         )
@@ -171,12 +177,11 @@ fun PendingVerificationsScreen(
             },
             onConfirm = {
                 capturedPhotoPath = null
-                val vId = selectedVerificationId
                 val pId = selectedPaymentId
-                if (vId != null && pId != null && photoPath.isNotEmpty()) {
-                    viewModel.uploadPhoto(vId, pId, selectedLabel, photoPath, selectedReplaceIndex)
+                if (pId != null && photoPath.isNotEmpty()) {
+                    // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
+                    viewModel.enqueuePhoto(pId, proofSlotOf(selectedLabel), photoPath)
                 }
-                selectedReplaceIndex = null
             },
             onRetake = {
                 capturedPhotoPath = null
@@ -184,15 +189,14 @@ fun PendingVerificationsScreen(
             },
             onDismiss = {
                 capturedPhotoPath = null
-                selectedReplaceIndex = null
             }
         )
     }
 
-    // Block back navigation while uploading to prevent cancelling the coroutine
+    // Mientras la foto se guarda en la terminal (milisegundos) no se sale: la copia y la fila van juntas.
     val isUploading = uploadingId != null
     BackHandler(enabled = isUploading) {
-        // Swallow back press while uploading — user must wait
+        // Swallow back press while saving — user must wait
     }
 
     Scaffold(
@@ -223,7 +227,10 @@ fun PendingVerificationsScreen(
                 }
 
                 verifications.isEmpty() -> {
-                    EmptyVerificationsState()
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        if (state.isOffline) SavedListBanner(Modifier.padding(12.dp))
+                        EmptyVerificationsState()
+                    }
                 }
 
                 else -> {
@@ -239,23 +246,39 @@ fun PendingVerificationsScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            if (state.isOffline) {
+                                item(key = "lista-guardada") { SavedListBanner() }
+                            }
                             items(
                                 items = verifications,
-                                key = { it.id }
+                                key = { it.paymentId } // una venta local todavía no tiene id de verificación
                             ) { item ->
                                 PendingVerificationItem(
-                                    item = item,
-                                    isUploading = uploadingId == item.id,
+                                    item = item.toPendingCard(),
+                                    isUploading = uploadingId == item.paymentId,
                                     isCameraActive = showCamera,
-                                    onTakePhoto = { label, replaceIndex ->
+                                    queued = item.queued,
+                                    deliveredSlots = item.deliveredSlots,
+                                    showAmount = item.detail != null,
+                                    onDiscard = viewModel::discard,
+                                    onTakePhoto = { label, _ ->
                                         if (showCamera) return@PendingVerificationItem
-                                        selectedVerificationId = item.id
                                         selectedPaymentId = item.paymentId
                                         selectedLabel = label
-                                        selectedReplaceIndex = replaceIndex
                                         showCamera = true
                                     }
                                 )
+                            }
+                            if (state.nextCursor != null) {
+                                item(key = "cargar-mas") {
+                                    OutlinedButton(
+                                        onClick = viewModel::loadMore,
+                                        enabled = !isLoadingMore,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(if (isLoadingMore) "Cargando…" else "Cargar más")
+                                    }
+                                }
                             }
                         }
                     }
@@ -280,7 +303,7 @@ fun PendingVerificationsScreen(
                     ) {
                         CircularProgressIndicator(color = Color.White)
                         Text(
-                            text = "Subiendo foto...",
+                            text = "Guardando foto…",
                             color = Color.White,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
@@ -292,6 +315,27 @@ fun PendingVerificationsScreen(
     }
 }
 
+/** La etiqueta fija de la ranura ("Vinculacion" / "Portabilidad") a su ranura de la cola. */
+internal fun proofSlotOf(label: String): ProofSlot =
+    if (label == ProofSlot.PORTABILIDAD.backendLabel) ProofSlot.PORTABILIDAD else ProofSlot.VINCULACION
+
+/** Sin señal la lista es la guardada: se dice con todas sus letras, en neutro (no es un error). */
+@Composable
+private fun SavedListBanner(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Text(
+            text = ACTIONABLE_OFFLINE_MESSAGE,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(12.dp)
+        )
+    }
+}
+
 // ========== Verification Card ==========
 
 @Composable
@@ -300,12 +344,26 @@ fun PendingVerificationItem(
     isUploading: Boolean,
     isCameraActive: Boolean = false,
     initiallyExpanded: Boolean = false,
+    /** Las capturas de esta venta en la cola, la más nueva primero: cada una dice su estado. */
+    queued: List<ProofOfSaleQueueEntity> = emptyList(),
+    /** Ranuras que esta terminal ya entregó, aunque la lista guardada todavía no traiga la foto. */
+    deliveredSlots: Set<ProofSlot> = emptySet(),
+    /** false en una venta de la que sólo hay capturas en la cola: no se sabe el importe. */
+    showAmount: Boolean = true,
+    onDiscard: (idempotencyKey: String) -> Unit = {},
     onTakePhoto: (label: String, replaceIndex: Int?) -> Unit
 ) {
     var isExpanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     var previewPhotoUrl by remember { mutableStateOf<String?>(null) }
 
-    val nonEmptyPhotos = item.photos.count { it.isNotEmpty() }
+    // Por ranura: la foto del servidor; si no, la de su captura más nueva en la cola (el archivo de la terminal).
+    fun serverPhoto(slot: ProofSlot) = item.photos.getOrNull(slot.ordinal)?.takeIf { it.isNotEmpty() }
+    fun queuedPhoto(slot: ProofSlot) = queued.firstOrNull { it.slot == slot.name }?.localPath
+    fun filled(slot: ProofSlot) = serverPhoto(slot) != null || slot in deliveredSlots ||
+        queued.any { it.slot == slot.name && !canDiscardCapture(it) }
+    val requiredSlots = if (item.isPortabilidad) ProofSlot.entries else listOf(ProofSlot.VINCULACION)
+
+    val nonEmptyPhotos = requiredSlots.count(::filled)
     val photosComplete = nonEmptyPhotos >= item.requiredPhotos
     val chipColor = if (photosComplete) {
         MaterialTheme.avoqadoColors.statusSuccess
@@ -356,12 +414,14 @@ fun PendingVerificationItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Text(
-                    text = CurrencyFormatter.format(BigDecimal.valueOf(item.amount)),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                if (showAmount) {
+                    Text(
+                        text = CurrencyFormatter.format(BigDecimal.valueOf(item.amount)),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -426,7 +486,7 @@ fun PendingVerificationItem(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Subiendo foto...",
+                                text = "Guardando foto…",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -435,8 +495,8 @@ fun PendingVerificationItem(
 
                     // Photo slots — fixed positions: index 0 = Vinculacion, index 1 = Portabilidad
                     // Empty strings represent unfilled slots (backend pads when photo uploaded out of order)
-                    val lineaPhoto = item.photos.getOrNull(0)?.takeIf { it.isNotEmpty() }
-                    val portabilidadPhoto = item.photos.getOrNull(1)?.takeIf { it.isNotEmpty() }
+                    val lineaPhoto = serverPhoto(ProofSlot.VINCULACION) ?: queuedPhoto(ProofSlot.VINCULACION)
+                    val portabilidadPhoto = serverPhoto(ProofSlot.PORTABILIDAD) ?: queuedPhoto(ProofSlot.PORTABILIDAD)
 
                     val canInteract = !isUploading && !isCameraActive
 
@@ -445,6 +505,7 @@ fun PendingVerificationItem(
                         PhotoSlot(
                             label = "Vinculacion",
                             photoUrl = lineaPhoto,
+                            delivered = ProofSlot.VINCULACION in deliveredSlots,
                             enabled = canInteract,
                             onTakePhoto = {
                                 // If photo exists at index 0 → replace; otherwise append
@@ -464,6 +525,7 @@ fun PendingVerificationItem(
                             PhotoSlot(
                                 label = "Vinculacion",
                                 photoUrl = lineaPhoto,
+                                delivered = ProofSlot.VINCULACION in deliveredSlots,
                                 enabled = canInteract,
                                 onTakePhoto = {
                                     onTakePhoto("Vinculacion", if (lineaPhoto != null) 0 else null)
@@ -476,6 +538,7 @@ fun PendingVerificationItem(
                             PhotoSlot(
                                 label = "Portabilidad",
                                 photoUrl = portabilidadPhoto,
+                                delivered = ProofSlot.PORTABILIDAD in deliveredSlots,
                                 enabled = canInteract,
                                 onTakePhoto = {
                                     onTakePhoto("Portabilidad", if (portabilidadPhoto != null) 1 else null)
@@ -487,8 +550,34 @@ fun PendingVerificationItem(
                             )
                         }
                     }
+
+                    // Lo que pasa con cada captura de la cola; «Descartar» en las que ya no se suben solas.
+                    queued.forEach { row ->
+                        QueuedCaptureRow(row = row, onDiscard = { onDiscard(row.idempotencyKey) })
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun QueuedCaptureRow(row: ProofOfSaleQueueEntity, onDiscard: () -> Unit) {
+    val slotName = if (row.slot == ProofSlot.PORTABILIDAD.name) "Portabilidad" else "Vinculación"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "$slotName: ${queuedCaptureMessage(row)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
+        )
+        if (canDiscardCapture(row)) {
+            TextButton(onClick = onDiscard) { Text("Descartar") }
         }
     }
 }
@@ -499,11 +588,13 @@ fun PendingVerificationItem(
  * Visual photo placeholder — matches the dashed-border pattern from PaymentScreen.
  * - Empty: dashed border + camera icon + label (tap to capture)
  * - Filled: thumbnail with tap-to-preview and re-take overlay button
+ * - Delivered: esta terminal ya la entregó pero la lista guardada aún no trae la foto (sin señal): «Foto entregada»
  */
 @Composable
 private fun PhotoSlot(
     label: String,
     photoUrl: String?,
+    delivered: Boolean = false,
     enabled: Boolean,
     onTakePhoto: () -> Unit,
     onPreview: () -> Unit,
@@ -511,6 +602,7 @@ private fun PhotoSlot(
 ) {
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
     val warningColor = MaterialTheme.avoqadoColors.statusWarning
+    val borderColor = if (delivered) MaterialTheme.avoqadoColors.statusSuccess else warningColor
 
     Box(
         modifier = modifier
@@ -523,7 +615,7 @@ private fun PhotoSlot(
                     // Dashed border for empty slot
                     Modifier.drawBehind {
                         drawRoundRect(
-                            color = warningColor,
+                            color = borderColor,
                             style = Stroke(
                                 width = 2.dp.toPx(),
                                 pathEffect = PathEffect.dashPathEffect(
@@ -602,30 +694,35 @@ private fun PhotoSlot(
             }
         } else {
             // Empty: dashed border + camera icon + label
+            val tint = when {
+                !enabled -> mutedColor
+                delivered -> MaterialTheme.avoqadoColors.statusSuccess
+                else -> warningColor
+            }
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
                 modifier = Modifier.padding(8.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.PhotoCamera,
+                    imageVector = if (delivered) Icons.Default.CheckCircle else Icons.Default.PhotoCamera,
                     contentDescription = label,
                     modifier = Modifier.size(28.dp),
-                    tint = if (enabled) warningColor else mutedColor
+                    tint = tint
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = label,
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (enabled) warningColor else mutedColor,
+                    color = tint,
                     textAlign = TextAlign.Center,
                     maxLines = 1
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Toca para foto",
+                    text = if (delivered) "Foto entregada" else "Toca para foto",
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                    color = if (enabled) warningColor.copy(alpha = 0.7f) else mutedColor,
+                    color = if (enabled) tint.copy(alpha = 0.7f) else mutedColor,
                     textAlign = TextAlign.Center
                 )
             }

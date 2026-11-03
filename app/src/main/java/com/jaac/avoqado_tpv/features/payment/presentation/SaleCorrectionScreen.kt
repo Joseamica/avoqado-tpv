@@ -102,7 +102,6 @@ fun SaleCorrectionScreen(
     // Camera + photo-preview state
     var showCamera by rememberSaveable { mutableStateOf(false) }
     var selectedLabel by rememberSaveable { mutableStateOf("") }
-    var selectedReplaceIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun displayLabel(label: String): String = when (label) {
@@ -120,8 +119,8 @@ fun SaleCorrectionScreen(
             },
             onClose = {
                 showCamera = false
-                selectedReplaceIndex = null
             },
+            // cacheDir: la cola copia la foto a su carpeta; el barrido de C4 limpia la suya, no ésta.
             outputDirectory = context.cacheDir,
             photoLabel = displayLabel(selectedLabel).takeIf { selectedLabel.isNotEmpty() },
         )
@@ -136,9 +135,9 @@ fun SaleCorrectionScreen(
             onConfirm = {
                 capturedPhotoPath = null
                 if (photoPath.isNotEmpty()) {
-                    viewModel.uploadPhoto(selectedLabel, photoPath, selectedReplaceIndex)
+                    // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
+                    viewModel.enqueuePhoto(proofSlotOf(selectedLabel), photoPath)
                 }
-                selectedReplaceIndex = null
             },
             onRetake = {
                 capturedPhotoPath = null
@@ -146,7 +145,6 @@ fun SaleCorrectionScreen(
             },
             onDismiss = {
                 capturedPhotoPath = null
-                selectedReplaceIndex = null
             },
         )
     }
@@ -202,10 +200,12 @@ fun SaleCorrectionScreen(
                             isUploading = isUploading,
                             isCameraActive = showCamera,
                             initiallyExpanded = true,
-                            onTakePhoto = { label, replaceIndex ->
+                            queued = uiState.queued,
+                            deliveredSlots = uiState.deliveredSlots,
+                            onDiscard = viewModel::discard,
+                            onTakePhoto = { label, _ ->
                                 if (showCamera) return@PendingVerificationItem
                                 selectedLabel = label
-                                selectedReplaceIndex = replaceIndex
                                 showCamera = true
                             },
                         )
@@ -238,7 +238,7 @@ fun SaleCorrectionScreen(
                     ) {
                         CircularProgressIndicator(color = Color.White)
                         Text(
-                            text = "Subiendo foto...",
+                            text = "Guardando foto…",
                             color = Color.White,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium,

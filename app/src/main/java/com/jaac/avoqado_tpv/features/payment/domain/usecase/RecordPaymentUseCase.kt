@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepos
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.payment.domain.model.withQueueClaimToken
+import com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
 import kotlinx.coroutines.delay
 import timber.log.Timber
 import javax.inject.Inject
@@ -86,6 +87,8 @@ class RecordPaymentUseCase @Inject constructor(
     private val orderPaymentRecorder: OrderPaymentRecorder,
     private val paymentQueueRepository: PaymentQueueRepository,
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    /** «Pendientes» sin señal: la venta con SIM recién registrada se guarda en la terminal. null en pruebas viejas. */
+    private val actionableSales: ActionableSalesRepository? = null,
 ) {
     private suspend fun revisionDeDueno(context: PaymentContext, reference: String, cause: Throwable? = null): CashOwnerReviewRequiredException {
         val compatible = runCatching { shiftRepository.contratoDelPagoGuardadoCoincide(context, reference) }.getOrDefault(false)
@@ -268,7 +271,31 @@ class RecordPaymentUseCase @Inject constructor(
                 )
             }
         }
+        result.getOrNull()?.let { rememberSimSale(recordingContext, it) }
         return result
+    }
+
+    /**
+     * Una venta con SIM recién registrada (en vivo o al subirla desde la cola) queda en «Pendientes» de la terminal: si se
+     * reinicia sin señal antes de la primera foto, la venta sigue ahí. Los tres cobros (PAX y Nexgo) pasan por aquí.
+     * Nunca cambia el resultado del cobro.
+     */
+    private suspend fun rememberSimSale(context: PaymentContext, receipt: PaymentReceipt) {
+        val sales = actionableSales ?: return
+        val (portabilidad, seriales, orden) = when (context) {
+            is PaymentContext.FastPayment -> Triple(context.isPortabilidad, context.serialNumbers, context.orderReference)
+            is PaymentContext.OrderPayment -> Triple(context.isPortabilidad, context.serialNumbers, null)
+            is PaymentContext.AngelPayPayment -> Triple(context.isPortabilidad, context.serialNumbers, context.orderNumber)
+            is PaymentContext.RefundPayment -> return
+        }
+        if (seriales.isEmpty() || receipt.paymentId.isBlank()) return
+        try {
+            sales.addLocalSale(receipt.paymentId, context.amount, orden, portabilidad, seriales, context.venueId, context.staffId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "📋 No se pudo guardar la venta con SIM en Pendientes | paymentId=${receipt.paymentId}")
+        }
     }
 
     /**

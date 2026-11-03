@@ -4,6 +4,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -44,6 +45,17 @@ fun proofSlotStateFor(outcome: String): ProofSlotState = when (outcome) {
     "NUMBER_DISABLED" -> ProofSlotState.NeedsAttention("La foto se subió, pero el número no se guardó")
     else -> ProofSlotState.NeedsAttention(PROOF_FAILED_MESSAGE) // PERMANENT
 }
+
+/** Lo que dice una captura de la cola en «Pendientes» y en la corrección, mientras siga ahí. */
+fun queuedCaptureMessage(row: ProofOfSaleQueueEntity): String =
+    if (canDiscardCapture(row)) {
+        (proofSlotStateFor(row.outcome.orEmpty()) as? ProofSlotState.NeedsAttention)?.message ?: PROOF_FAILED_MESSAGE
+    } else {
+        PROOF_QUEUED_MESSAGE // PENDING o SYNCING: el worker la sube
+    }
+
+/** «Descartar» sólo en lo que ya no se va a subir solo: lo mismo que acepta [ProofOfSaleQueueRepository.discard]. */
+fun canDiscardCapture(row: ProofOfSaleQueueEntity): Boolean = row.syncStatus == "FAILED" || row.syncStatus == "NEEDS_ATTENTION"
 
 /**
  * El texto bajo las fotos: el de cada ranura en cola o a la vista. Con dos ranuras y textos distintos, cada uno con el

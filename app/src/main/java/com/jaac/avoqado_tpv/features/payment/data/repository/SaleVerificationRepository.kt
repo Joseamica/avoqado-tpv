@@ -2,7 +2,6 @@ package com.jaac.avoqado_tpv.features.payment.data.repository
 
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.PendingVerificationDto
-import com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest
 import com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto
 import timber.log.Timber
 import javax.inject.Inject
@@ -54,36 +53,5 @@ class SaleVerificationRepository @Inject constructor(
             Result.failure(e)
         }
     }
-
-    suspend fun uploadPhoto(
-        verificationId: String,
-        paymentId: String,
-        photoUrls: List<String>,
-        replaceIndex: Int? = null,
-        photoLabel: String? = null
-    ): Result<String> {
-        return try {
-            val request = ProofOfSaleRequest(
-                paymentId = paymentId,
-                photoUrls = photoUrls,
-                verificationId = verificationId,
-                replaceIndex = replaceIndex,
-                photoLabel = photoLabel
-            )
-            val response = apiService.uploadProofOfSale(request)
-            if (response.isSuccessful) {
-                val body = response.body()
-                if (body?.success == true) {
-                    Result.success(body.status ?: "PENDING")
-                } else {
-                    Result.failure(Exception("Upload failed"))
-                }
-            } else {
-                Result.failure(Exception("HTTP ${response.code()}: ${response.message()}"))
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "📸 [SaleVerificationRepo] Error uploading photo")
-            Result.failure(e)
-        }
-    }
+    // La subida de fotos ya no vive aquí: «Pendientes» y la corrección encolan en ProofOfSaleQueueRepository (C6).
 }

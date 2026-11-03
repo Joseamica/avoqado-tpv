@@ -69,7 +69,7 @@ class MigracionV44RoomTest {
         val migrated = DatabaseModule.provideDatabase(context)
         try {
             val sql = migrated.openHelper.readableDatabase
-            assertThat(sql.version).isEqualTo(44)
+            assertThat(sql.version).isEqualTo(45) // la cadena sigue hasta la v45 (B1, «ninguna duda»)
             for (table in OWNERS) {
                 val names = columns.getValue(table)
                 sql.query("SELECT ${names.joinToString { "`$it`" }} FROM `$table` ORDER BY rowid").use { c ->
@@ -85,6 +85,10 @@ class MigracionV44RoomTest {
                     }
                 }
             }
+            // D6, por la cadena: lo que ya existía queda heredado.
+            sql.query("SELECT durable_barrier_version FROM remote_payment_requests").use { c ->
+                while (c.moveToNext()) assertThat(c.getInt(0)).isEqualTo(0)
+            }
             sql.query("SELECT order_wire_request_json FROM pending_payments").use { c ->
                 while (c.moveToNext()) assertThat(c.isNull(0)).isTrue()
             }
@@ -97,7 +101,7 @@ class MigracionV44RoomTest {
             sql.query("SELECT COUNT(*) FROM local_crypto_operations").use { c -> c.moveToFirst(); assertThat(c.getInt(0)).isEqualTo(0) }
         } finally { migrated.close() }
         val reopened = DatabaseModule.provideDatabase(context)
-        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(44) } finally { reopened.close() }
+        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(45) } finally { reopened.close() }
     }
 
     private companion object {

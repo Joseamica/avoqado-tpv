@@ -136,7 +136,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_40_41,  // 🔴 founder 25-sep: qué proceso abrió cada cobro (ninguna duda apaga la terminal)
                 AvoqadoDatabase.MIGRATION_41_42,  // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
                 AvoqadoDatabase.migration43To44(context),  // B2-T1: gesto durable de Caja y pertenencia
-                AvoqadoDatabase.MIGRATION_42_43   // 💵 «Cobrar» sin red: gtin/catalog_at, la venta guardada y el checador guardado
+                AvoqadoDatabase.MIGRATION_42_43,  // 💵 «Cobrar» sin red: gtin/catalog_at, la venta guardada y el checador guardado
+                AvoqadoDatabase.MIGRATION_44_45   // 🔒 B1: solicitud «cerrada para ejecución» + «el SDK regresó» (aditiva)
             )
 
             .addCallback(object : RoomDatabase.Callback() {

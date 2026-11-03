@@ -64,6 +64,7 @@ class AngelPayAuthPreviaCobroTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
 
+    private lateinit var intentBuilder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
     private lateinit var sdkGateway: AngelPaySdkGateway
     private lateinit var angelPayAuthRepository: AngelPayAuthRepository
     private lateinit var angelPayMerchantRepository: AngelPayMerchantRepository
@@ -97,6 +98,7 @@ class AngelPayAuthPreviaCobroTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+        intentBuilder = mockk(relaxed = true)
         sdkGateway = mockk(relaxed = true)
         angelPayAuthRepository = mockk(relaxed = true)
         angelPayMerchantRepository = mockk(relaxed = true)
@@ -151,7 +153,7 @@ class AngelPayAuthPreviaCobroTest {
         unmockkAll()
     }
 
-    private fun createViewModel(): AngelPayPaymentViewModel {
+    private fun createViewModel(merchant: MerchantAccount? = comercio): AngelPayPaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
         return AngelPayPaymentViewModel(
         appContext = mockk<Context>(relaxed = true),
@@ -162,7 +164,7 @@ class AngelPayAuthPreviaCobroTest {
         merchantEligibilityRepository = mockk(relaxed = true),
         secureStorage = mockk(relaxed = true),
         terminalConfigRepository = mockk(relaxed = true),
-        intentBuilder = mockk(relaxed = true),
+        intentBuilder = intentBuilder,
         sdkGateway = sdkGateway,
         angelPayAuthRepository = angelPayAuthRepository,
         angelPayMerchantRepository = angelPayMerchantRepository,
@@ -191,7 +193,7 @@ class AngelPayAuthPreviaCobroTest {
         impresoraDeVentaGuardada = mockk(relaxed = true),
     ).also {
         it.flujoSdkForzadoParaPruebas = true
-        merchantsFlow.value = listOf(comercio) // un solo comercio → autoselección
+        merchantsFlow.value = listOfNotNull(merchant) // un solo comercio → autoselección
     }
     }
 
@@ -712,4 +714,215 @@ class AngelPayAuthPreviaCobroTest {
             vm.viewModelScope.cancel()
         }
     }
+    @Test
+    fun `D4 cuenta de sesion desconocida no equivale al login elegido aunque coincida el comercio`() = runTest(testDispatcher) {
+        activeMerchantIdFlow.value = 11
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } returns null
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            coVerify(atLeast = 1) { angelPayAuthRepository.ensureAuthenticatedAs("acc-A") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 configuracion invalida no lanza tarjeta ni abre libreta aun llamando directo`() = runTest(testDispatcher) {
+        activeMerchantIdFlow.value = 11
+        val invalidas = listOf(null, comercio.copy(processorType = ProcessorType.BLUMON),
+            comercio.copy(externalMerchantId = "0"), comercio.copy(externalMerchantId = "+11"),
+            comercio.copy(externalMerchantId = "AWAITING_1"), comercio.copy(externalMerchantId = "2147483648"))
+        for (merchant in invalidas) {
+            val vm = createViewModel(merchant)
+            try {
+                vm.startCardPayment()
+                runCurrent()
+                assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            } finally { vm.viewModelScope.cancel() }
+        }
+        coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+        verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+    }
+
+    private suspend fun sesionCacheadaBAntesDeCobrarA(incluirB: Boolean) {
+        val configRepo = mockk<com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository>(relaxed = true)
+        val authA = com.jaac.avoqado_tpv.core.data.network.dto.AngelPayAuthDto("acc-A", "a@tienda.test", "123456", "QA")
+        val authB = authA.copy(accountId = "acc-B", email = "b@tienda.test")
+        val config = mockk<com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigData>(relaxed = true) {
+            every { merchantAccounts } returns (if (incluirB) listOf("acc-A", "acc-B") else listOf("acc-A")).map { cuenta ->
+                mockk<com.jaac.avoqado_tpv.core.data.network.dto.MerchantAccountDto>(relaxed = true) {
+                    every { providerCode } returns "ANGELPAY"
+                    every { externalMerchantId } returns "11"
+                    every { angelpayUserAccountId } returns cuenta
+                }
+            }
+        }
+        every { configRepo.getCachedConfig() } returns config
+        every { configRepo.getCachedAngelPayAuth() } returns authA
+        every { configRepo.getCachedAngelPayAccounts() } returns if (incluirB) listOf(authA, authB) else listOf(authA)
+        coEvery { configRepo.fetchConfig(any()) } returns Result.success(mockk<com.jaac.avoqado_tpv.core.domain.repository.TerminalInfo>() to listOf(comercio))
+        val validator = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayConfigValidator> {
+            coEvery { validate(any(), any()) } returns com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ValidationResult.AllClear
+        }
+        val crash = mockk<com.google.firebase.crashlytics.FirebaseCrashlytics>(relaxed = true)
+        val resolver = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentialResolver(configRepo, crash) { null }
+        val authReal = AngelPayAuthRepository(sdkGateway, resolver, validator, configRepo, mockk(relaxed = true),
+            angelPayMerchantRepository, paymentStateHolder, crash)
+        angelPayAuthRepository = authReal
+        activeMerchantIdFlow.value = 11 // B/X sigue viva; ambas cuentas pueden ver X.
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { sdkGateway.authenticateSimple("a@tienda.test", "123456") } coAnswers {
+            puerta.await()
+            com.angelpay.angelpaysdk.models.AuthenticateSimpleResult.Success.let { Result.success(it) }
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple("a@tienda.test", "123456") }
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            assertThat(authReal.getCurrentAngelPayAccountId()).isNull()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            puerta.complete(Unit)
+            assertThat(authReal.getCurrentAngelPayAccountId()).isEqualTo("acc-A")
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally { puerta.complete(Unit); vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 repo REAL autentica A antes de cobrar con B cacheada y A primero en config`() = runTest(testDispatcher) {
+        sesionCacheadaBAntesDeCobrarA(incluirB = true)
+    }
+
+    @Test
+    fun `D4 repo REAL autentica A antes de cobrar aun cuando B ya no aparece en config`() = runTest(testDispatcher) {
+        sesionCacheadaBAntesDeCobrarA(incluirB = false)
+    }
+
+    @Test
+    fun `D4 AuthError no puede cobrar aunque la funcion se llame sin pasar por boton`() = runTest(testDispatcher) {
+        activeMerchantIdFlow.value = 11
+        authStateFlow.value = AngelPayAuthState.AuthError("Comercio no autorizado")
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D4 el canal legacy sin login conocido conserva app to app con comercio valido`() = runTest(testDispatcher) {
+        activeMerchantIdFlow.value = 11
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, angelPaySdkEnabled = false, angelPaySdkFallbackEnabled = true,
+            showReviewScreen = false, showTipScreen = false,
+        )
+        val vm = createViewModel(comercio.copy(angelpayUserAccountId = null))
+        vm.flujoSdkForzadoParaPruebas = false
+        try {
+            vm.startCardPayment()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    private fun legacyConFallback(sdk: Boolean) {
+        activeMerchantIdFlow.value = 11
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, angelPaySdkEnabled = sdk, angelPaySdkFallbackEnabled = true,
+            showReviewScreen = false, showTipScreen = false,
+        )
+    }
+
+    private fun verificarSinIntentExterno() = verify(exactly = 0) {
+        intentBuilder.buildSaleIntent(any(), any(), any(), any(), any())
+    }
+
+    @Test
+    fun `R1 legacy con AuthError no abre app externa al llamar directo sin SDK`() = runTest(testDispatcher) {
+        legacyConFallback(sdk = false)
+        authStateFlow.value = AngelPayAuthState.AuthError("No se pudo autenticar")
+        val vm = createViewModel(comercio.copy(angelpayUserAccountId = null))
+        vm.flujoSdkForzadoParaPruebas = false
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verificarSinIntentExterno()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    private suspend fun segundaAuthFallidaNoAbreExterna(publicaAuthError: Boolean) {
+        legacyConFallback(sdk = true)
+        sesionViva = false
+        authStateFlow.value = AngelPayAuthState.Unauthenticated
+        var llamadas = 0
+        coEvery { angelPayAuthRepository.ensureAuthenticated(any()) } answers {
+            llamadas++
+            if (llamadas == 1) {
+                sesionViva = true
+                authStateFlow.value = AngelPayAuthState.Authenticated
+                Result.success(Unit)
+            } else {
+                if (publicaAuthError) authStateFlow.value = AngelPayAuthState.AuthError("Falló la segunda auth")
+                Result.failure(IllegalStateException("Falló la segunda auth"))
+            }
+        }
+        val vm = createViewModel(comercio.copy(angelpayUserAccountId = null))
+        try {
+            vm.startCardPayment()
+            assertThat(llamadas).isEqualTo(2)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verificarSinIntentExterno()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `R1 auth previa valida y segunda auth fallida con AuthError no deriva a app externa`() = runTest(testDispatcher) {
+        segundaAuthFallidaNoAbreExterna(publicaAuthError = true)
+    }
+
+    @Test
+    fun `R1 un resultado AUTH fallido tampoco deriva a externa aunque su estado anterior siga Authenticated`() = runTest(testDispatcher) {
+        segundaAuthFallidaNoAbreExterna(publicaAuthError = false)
+    }
+
+    private suspend fun errorDuranteLibretaNoLanza(cierrePermitido: Boolean) {
+        legacyConFallback(sdk = false)
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } coAnswers {
+            puerta.await()
+            authStateFlow.value = AngelPayAuthState.AuthError("Sesión perdió autorización durante la espera")
+            true
+        }
+        coEvery { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) } returns cierrePermitido
+        val vm = createViewModel(comercio.copy(angelpayUserAccountId = null))
+        vm.flujoSdkForzadoParaPruebas = false
+        vm.cobroRemoto("req-r1-await")
+        try {
+            vm.startCardPayment()
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+            puerta.complete(Unit)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            val estado = vm.state.value as AngelPayPaymentState.Error
+            assertThat(estado.canRetry).isEqualTo(cierrePermitido)
+            verificarSinIntentExterno()
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), any(), "no_lanzado:identidad") }
+            verificarSinEmision()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `R1 AuthError durante await legacy cierra solo el intento propio no lanzado`() = runTest(testDispatcher) {
+        errorDuranteLibretaNoLanza(cierrePermitido = true)
+    }
+
+    @Test
+    fun `R1 AuthError durante await legacy con veto conserva obligacion sin negativo falso`() = runTest(testDispatcher) {
+        errorDuranteLibretaNoLanza(cierrePermitido = false)
+    }
+
 }

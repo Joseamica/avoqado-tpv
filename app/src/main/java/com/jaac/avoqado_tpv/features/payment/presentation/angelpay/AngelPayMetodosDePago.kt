@@ -28,7 +28,7 @@ internal fun bloqueoDeMetodosDePago(
     val cambioDesdeLaPantalla = selectionInProgress || inFlightSwitch != null
     val authDeLaPantalla = authState is AngelPayAuthState.Authenticating
     return BloqueoMetodosDePago(
-        tarjeta = cambioDesdeLaPantalla || authDeLaPantalla || authState is AngelPayAuthState.Recuperando,
+        tarjeta = cambioDesdeLaPantalla || authDeLaPantalla || authState is AngelPayAuthState.Recuperando || authState is AngelPayAuthState.AuthError,
         efectivo = cambioDesdeLaPantalla || authDeLaPantalla,
     )
 }

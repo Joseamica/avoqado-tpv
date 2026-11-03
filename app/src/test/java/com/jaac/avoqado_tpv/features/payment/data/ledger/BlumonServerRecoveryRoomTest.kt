@@ -163,4 +163,19 @@ class BlumonServerRecoveryRoomTest {
         assertThat(restarted.puedeConciliarBlumon(aged.copy(state = "AUTORIZANDO"), "venue")).isFalse()
     }
 
+    @Test fun `the same guard covers Nexgo for the checked declaration, and the PAX screen still only accepts PAX`() = runTest {
+        assertThat(ledger.openAttempt("live", "venue", "ANGELPAY", 10000, 500, "FAST", "{}")).isTrue()
+        val aged = attempt("live").copy(processor = "ANGELPAY", lastError = PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD)
+        assertThat(ledger.puedeDeclararseEnDuda(aged, "venue")).isFalse()
+        assertThat(ledger.puedeDeclararseEnDuda(aged.copy(lastError = "proceso_terminado"), "venue")).isTrue()
+        val restarted = PaymentAttemptLedger(dao, mockk(relaxed = true))
+        assertThat(restarted.puedeDeclararseEnDuda(aged, "venue")).isTrue()
+        assertThat(restarted.puedeDeclararseEnDuda(aged.copy(state = "AUTORIZANDO"), "venue")).isFalse()
+        assertThat(restarted.puedeDeclararseEnDuda(aged.copy(kind = PaymentAttemptEntity.KIND_REFUND), "venue")).isFalse()
+        assertThat(restarted.puedeDeclararseEnDuda(aged.copy(legacyShadow = true), "venue")).isFalse()
+        assertThat(restarted.puedeDeclararseEnDuda(aged, "other-venue")).isFalse()
+        assertThat(restarted.puedeDeclararseEnDuda(aged.copy(processor = "OTRO"), "venue")).isFalse()
+        assertThat(restarted.puedeConciliarBlumon(aged, "venue")).isFalse()
+    }
+
 }

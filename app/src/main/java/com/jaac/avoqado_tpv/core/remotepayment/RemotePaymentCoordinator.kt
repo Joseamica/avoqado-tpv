@@ -96,8 +96,10 @@ class RemotePaymentCoordinator @Inject constructor(
      *
      * Es lo único que permite aceptar un cancel del POS sobre una solicitud reclamada que todavía NO tiene
      * fila en la libreta (la espera de calificación, propina, método o comercio ocurre sin fila). Vive en
-     * memoria a propósito: tras la muerte del proceso nadie puede afirmar qué quedó a medias, así que el
-     * cancel contesta ACTIVE y la solicitud pasa a conciliación. No se registra desde
+     * memoria a propósito: muere con el proceso. B2 (T3, 22-oct): sin ella y SIN intentos, la solicitud la dejó un
+     * proceso muerto que nunca tocó el SDK (la libreta es write-ahead obligatoria), así que el cancel y la sonda la
+     * resuelven por `resolverDesenlaceNegativo` (ACCEPTED / RECEIVED_CANCELLED, con la cerca puesta); con intentos
+     * pendientes, o en una fila heredada que no nació bajo la barrera durable (D6), la libreta certifica o no el cese. No se registra desde
      * [claimSocketPaymentRequest], que no abre ninguna pantalla (sólo lo usan las pruebas).
      */
     private val reclamadasEnEsteProceso = mutableSetOf<String>()

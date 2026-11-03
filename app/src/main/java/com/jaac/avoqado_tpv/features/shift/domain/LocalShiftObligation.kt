@@ -8,7 +8,38 @@ data class LocalShiftObligation(val owner: String, val ownerId: String, val crea
 
 data class LocalShiftObligationPage(val total: Int, val rows: List<LocalShiftObligation>, val offset: Int)
 
-/** Predicado único para conteo, página y reconocimiento: B sólo se excluye con sesión demostrada. */
+/**
+ * 🔒 D3: lo que lee el cajero cuando el cierre sigue sin poder guardarse: qué falta y qué hacer. [sinRespuesta] = Avoqado no contestó
+ * al preguntarle ([com.jaac.avoqado_tpv.features.shift.data.repository.ConsultaDelCierreDeCaja]): sin conexión se dice con todas
+ * sus letras, y entonces lo único por hacer es recuperarla, porque la consulta se repite al volver a cerrar. Nunca dice «cobro»: lo
+ * que está en duda también puede ser una devolución, porque la rama ATTEMPT de la obligación no filtra por tipo (M-1).
+ */
+internal fun textoDelCierreBloqueado(operaciones: Int, delPos: Int, sinRespuesta: Boolean): String {
+    fun cuenta(cuantas: Int, cuales: String) = when (cuantas) {
+        0 -> null
+        1 -> "1 operación $cuales"
+        else -> "$cuantas operaciones $cuales"
+    }
+    val falta = listOfNotNull(cuenta(operaciones, "con tarjeta sin confirmar"), cuenta(delPos, "del POS sin terminar")).joinToString(" y ")
+    val varias = operaciones + delPos > 1
+    val noRepetir = if (varias) "No las repitas." else "No la repitas."
+    val queHacer = when {
+        sinRespuesta -> "Sin conexión con Avoqado no se puede confirmar qué pasó. $noRepetir Revisa el internet de la terminal y vuelve a cerrar."
+        varias -> "Las que vinieron del POS se responden ahí; para las demás, o si siguen igual, llama a soporte. $noRepetir Después vuelve a cerrar."
+        else -> "Si vino del POS, responde ahí qué pasó; si no, o si sigue igual, llama a soporte. $noRepetir Después vuelve a cerrar."
+    }
+    return "No se puede cerrar la caja: hay $falta.\n\n$queHacer"
+}
+
+/**
+ * Predicado único para conteo, página y reconocimiento: B sólo se excluye con sesión demostrada.
+ *
+ * REMOTE (D12, Codex final-r1): una solicitud PROCESSING ya CERRADA PARA EJECUCIÓN (`execution_closed_at`) no puede arrancar nada,
+ * así que no es una ejecución pendiente. Lo que tenga dinero o siga en duda lo cuenta la rama ATTEMPT (que no cambia) y lo demás
+ * lo resuelve la venta en el SERVIDOR. Sin esto, la declaración «no se cobró» —que descarta el intento y deja la solicitud
+ * PROCESSING con su cerca— bloqueaba el cierre del turno. Es una regla de CAJA: el aviso de pendientes
+ * (`RemotePaymentRequestDao.observePendingObligations`) cuenta otra cosa (filas SIN ningún intento) y no cambia.
+ */
 internal const val SQL_SHIFT_OBLIGATIONS = """
 SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
   SELECT owner, ownerId, createdAt, localSessionId, venue,
@@ -34,7 +65,7 @@ SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
     WHERE sync_status IN ('PENDING','SYNCING') OR (sync_status = 'FAILED' AND acknowledged = 0)
     UNION ALL
     SELECT 'REMOTE', request_id, created_at, shift_membership, local_shift_session_id, cash_drawer_session_id, NULL, venue_id FROM remote_payment_requests r
-    WHERE status = 'PROCESSING'
+    WHERE status = 'PROCESSING' AND r.execution_closed_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM payment_attempts a WHERE a.venue_id = r.venue_id AND a.terminal_payment_request_id = r.request_id AND (a.state != 'DESCARTADA' OR a.host_approved = 1 OR a.server_processor_evidence = 'APPROVED' OR a.server_veto IS NOT NULL))
       AND NOT EXISTS (SELECT 1 FROM pending_payments p WHERE p.venue_id = r.venue_id AND p.terminal_payment_request_id = r.request_id)
       AND NOT EXISTS (SELECT 1 FROM local_crypto_operations c WHERE c.venue_id = r.venue_id AND c.terminal_payment_request_id = r.request_id)

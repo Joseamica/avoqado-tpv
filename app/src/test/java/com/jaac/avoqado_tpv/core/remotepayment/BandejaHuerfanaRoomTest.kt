@@ -4,8 +4,11 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -64,6 +67,31 @@ class BandejaHuerfanaRoomTest {
         ),
     )
 
+    /** Lo que deja una pasada cuando el servidor contesta [codigo] a la única fila. */
+    private suspend fun pasadaConHttp(codigo: Int): BandejaServerRecovery.Resultado {
+        enBandeja("req-http-$codigo")
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, any()) } returns retrofit2.Response.error(codigo, "{}".toResponseBody(null))
+        return BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000)
+    }
+
+    @Test fun `M-2 un 5xx no es una respuesta para el cajero, y la pasada del worker no se repite por el`() = runTest {
+        val r = pasadaConHttp(503)
+
+        assertThat(r.consultadas).isEqualTo(0)
+        assertThat(r.conErrorDelServidor).isEqualTo(1)
+        // `sinRespuesta` es lo que repite la pasada a los 31 s: el worker no reintenta un 5xx, igual que el de los intentos.
+        assertThat(r.sinRespuesta).isEqualTo(0)
+    }
+
+    @Test fun `M-2 un 404 si es una respuesta`() = runTest {
+        val r = pasadaConHttp(404)
+
+        assertThat(r.consultadas).isEqualTo(1)
+        assertThat(r.conErrorDelServidor).isEqualTo(0)
+        assertThat(r.sinRespuesta).isEqualTo(0)
+    }
+
     @Test fun `P1 D · una fila PROCESSING SIN intento es candidata a conciliar`() = runTest {
         enBandeja("req-huerfana")
 
@@ -80,6 +108,8 @@ class BandejaHuerfanaRoomTest {
 
         assertThat(dao.getById("req-huerfana")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
         assertThat(dao.observePendingObligationsCount(venue)).isEqualTo(0)   // ← lo que el cajero necesita
+        // D6: esta fila es heredada. Lo que acredita el SERVIDOR sí la cierra, y cerrarla no le inventa procedencia.
+        assertThat(dao.getById("req-huerfana")!!.durableBarrierVersion).isEqualTo(0)
     }
 
     @Test fun `P1 D · una fila que SÍ tiene intento no se toca - esa la resuelve la libreta`() = runTest {
@@ -133,6 +163,49 @@ class BandejaHuerfanaRoomTest {
 
         assertThat(dao.conciliarHuerfanaConElServidor("req-carrera", venue, "FAILED", "OPERATOR_RECONCILED_NO_CHARGE", now)).isEqualTo(0)
         assertThat(dao.getById("req-carrera")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+    }
+
+    @Test fun `el banner consulta UNA solicitud - la alcanza aunque 20 huerfanas viejas ocupen la pagina, y no toca a las demas`() = runTest {
+        repeat(25) { enBandeja("vieja-$it", desfase = it.toLong()) }
+        enBandeja("la-del-banner", desfase = 100)
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, "la-del-banner") } returns retrofit2.Response.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse(
+                success = true, requestId = "la-del-banner", resuelta = true,
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","failureCode":"OPERATOR_RECONCILED_NO_CHARGE"}""").asJsonObject,
+            ),
+        )
+
+        val r = BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000, soloLaSolicitud = "la-del-banner")
+
+        assertThat(r.consultadas).isEqualTo(1)
+        assertThat(r.conciliadas).isEqualTo(1)
+        assertThat(dao.getById("la-del-banner")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+        assertThat(dao.getById("vieja-0")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        io.mockk.coVerify(exactly = 1) { api.getRequestStatus(any(), any()) }
+    }
+
+    @Test fun `consultar una sola solicitud no salta las guardas - con intento no se cierra`() = runTest {
+        enBandeja("con-intento")
+        db.paymentAttemptDao().insert(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                attemptId = "a-1", venueId = venue, processor = "ANGELPAY", state = "KERNEL_ACTIVO", amountCents = 5000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"con-intento"}""",
+                terminalPaymentRequestId = "con-intento", createdAt = now, updatedAt = now,
+            ),
+        )
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, "con-intento") } returns retrofit2.Response.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse(
+                success = true, requestId = "con-intento", resuelta = true,
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED"}""").asJsonObject,
+            ),
+        )
+
+        val r = BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000, soloLaSolicitud = "con-intento")
+
+        assertThat(r.conciliadas).isEqualTo(0)
+        assertThat(dao.getById("con-intento")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
     }
 
     @Test fun `P1 r6 P2-9 · el resultado guardado es REPRODUCIBLE - lleva requestId y el vocabulario del servidor`() = runTest {
@@ -240,5 +313,119 @@ class BandejaHuerfanaRoomTest {
         consultadas.clear()
         recuperador.conciliar(venue, now + 2_000)
         assertThat(consultadas).contains("r20")
+    }
+
+    // ═══ D8 (QA en aparato, 3-nov): la TPV publicada declaró «no se cobró» y la bandeja se quedó PROCESSING ═══
+    //
+    // El intento quedó DESCARTADA y `execution_closed_at` nulo, así que Caja la cuenta como operación del POS sin terminar, y nadie
+    // preguntaba por esa solicitud: el recuperador sólo miraba filas sin intento. Medido 3 veces, también tras reiniciar y a los 57 min.
+    // El intento DESCARTADA ya terminó para la libreta: no impide preguntar ni cerrar. Lo único que cierra sigue siendo `resuelta` del servidor.
+
+    private fun apiQueContesta(respuesta: suspend () -> retrofit2.Response<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse>) =
+        io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>().also { api ->
+            io.mockk.coEvery { api.getRequestStatus(venue, any()) } coAnswers { respuesta() }
+        }
+
+    private fun solicitud(requestId: String, resuelta: Boolean?, status: String = "FAILED") = retrofit2.Response.success(
+        com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse(
+            success = true, requestId = requestId, resuelta = resuelta,
+            request = com.google.gson.JsonParser.parseString("""{"status":"$status","failureCode":"OPERATOR_RECONCILED_NO_CHARGE"}""").asJsonObject,
+        ),
+    )
+
+    @Test fun `D8 una fila PROCESSING con su intento DESCARTADA es candidata, y con resuelta se cierra`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-d8", "DESCARTADA")
+        assertThat(dao.getById("req-d8")!!.executionClosedAt).isNull()
+        assertThat(dao.candidatasHuerfanas(venue).map { it.requestId }).containsExactly("req-d8")
+
+        val r = BandejaServerRecovery(dao, apiQueContesta { solicitud("req-d8", resuelta = true) }).conciliar(venue, now + 1_000)
+
+        assertThat(r.conciliadas).isEqualTo(1)
+        val fila = dao.getById("req-d8")!!
+        assertThat(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+        assertThat(fila.finalEmittedAt).isEqualTo(now + 1_000) // la cerca: esa solicitud ya no admite otro intento
+        assertThat(org.json.JSONObject(fila.finalResultJson!!).getString("status")).isEqualTo("failed")
+        assertThat(dao.candidatasHuerfanas(venue)).isEmpty()
+    }
+
+    @Test fun `D8 esa fila no sale en el aviso ni se ofrece declararla - sólo se le pregunta al servidor`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-d8", "DESCARTADA")
+
+        assertThat(dao.observePendingObligationsCount(venue)).isEqualTo(0)
+        assertThat(dao.observePendingObligations(venue).first()).isEmpty()
+        val ledger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), io.mockk.mockk(relaxed = true))
+        assertThat(ledger.observarCobrosDeclarables(venue).first()).isEmpty()
+    }
+
+    @Test fun `D8 con resuelta falso, ausente, 404 o sin red no se cierra y se estampa la consulta`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-d8", "DESCARTADA")
+        val casos = listOf<Pair<String, suspend () -> retrofit2.Response<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse>>>(
+            "resuelta falso" to { solicitud("req-d8", resuelta = false) },
+            "resuelta ausente" to { solicitud("req-d8", resuelta = null) },
+            "404" to { retrofit2.Response.error(404, "{}".toResponseBody(null)) },
+            "503" to { retrofit2.Response.error(503, "{}".toResponseBody(null)) },
+            "sin red" to { throw java.io.IOException("sin red") },
+        )
+        casos.forEachIndexed { i, (nombre, respuesta) ->
+            val cuando = now + 1_000 + i
+            val r = BandejaServerRecovery(dao, apiQueContesta(respuesta)).conciliar(venue, cuando)
+
+            assertWithMessage(nombre).that(r.conciliadas).isEqualTo(0)
+            val fila = dao.getById("req-d8")!!
+            assertWithMessage(nombre).that(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+            assertWithMessage(nombre).that(fila.finalEmittedAt).isNull()
+            assertWithMessage(nombre).that(fila.updatedAt).isEqualTo(cuando)
+        }
+    }
+
+    @Test fun `D8 un estado en vuelo o COMPLETED tampoco la cierra, aunque diga resuelta`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-d8", "DESCARTADA")
+        for (status in listOf("SENT", "UNKNOWN", "COMPLETED")) {
+            BandejaServerRecovery(dao, apiQueContesta { solicitud("req-d8", resuelta = true, status = status) }).conciliar(venue, now + 1_000)
+            assertWithMessage(status).that(dao.getById("req-d8")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        }
+    }
+
+    @Test fun `D8 con un intento en cualquier otro estado sigue sin ser candidata y sin poder cerrarse`() = runTest {
+        val estados = listOf("INDETERMINADO", "AUTORIZANDO", "REGISTRADO", "CERRADA", "HOST_RESPONDIO", "AUTORIZADO", "REGISTRO_FALLIDO", "ENTREGADA_A_COLA")
+        for (estado in estados) {
+            val req = "req-$estado"
+            enBandeja(req)
+            intentoDe(req, "a-$estado", estado)
+            assertWithMessage(estado).that(dao.candidatasHuerfanas(venue).map { it.requestId }).doesNotContain(req)
+            assertWithMessage(estado).that(dao.conciliarHuerfanaConElServidor(req, venue, "FAILED", "OPERATOR_RECONCILED_NO_CHARGE", now)).isEqualTo(0)
+            assertWithMessage(estado).that(dao.getById(req)!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        }
+    }
+
+    @Test fun `D8 un intento DESCARTADA con otro de la misma solicitud en duda no abre nada`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-descartado", "DESCARTADA")
+        intentoDe("req-d8", "a-en-duda", "INDETERMINADO")
+
+        assertThat(dao.candidatasHuerfanas(venue)).isEmpty()
+        assertThat(dao.conciliarHuerfanaConElServidor("req-d8", venue, "FAILED", "OPERATOR_RECONCILED_NO_CHARGE", now)).isEqualTo(0)
+    }
+
+    @Test fun `D8 un intento que entra en PREPARANDO o KERNEL_ACTIVO junto a uno DESCARTADA tampoco deja cerrar`() = runTest {
+        for (estado in listOf("PREPARANDO", "KERNEL_ACTIVO")) {
+            val req = "req-$estado"
+            enBandeja(req)
+            intentoDe(req, "a-descartado-$estado", "DESCARTADA")
+            intentoDe(req, "a-vivo-$estado", estado)
+            assertWithMessage(estado).that(dao.conciliarHuerfanaConElServidor(req, venue, "FAILED", "OPERATOR_RECONCILED_NO_CHARGE", now)).isEqualTo(0)
+        }
+    }
+
+    @Test fun `D8 una fila con efectivo arrancado sigue sin poder cerrarse, aunque su intento este DESCARTADA`() = runTest {
+        enBandeja("req-d8")
+        intentoDe("req-d8", "a-d8", "DESCARTADA")
+        assertThat(db.paymentAttemptDao().iniciarEjecucionNoTarjeta("req-d8", now)).isEqualTo(1)
+
+        assertThat(dao.conciliarHuerfanaConElServidor("req-d8", venue, "FAILED", "OPERATOR_RECONCILED_NO_CHARGE", now)).isEqualTo(0)
     }
 }

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.data.ledger
 
+import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
 
@@ -222,6 +223,43 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
             if (outcome != "NOT_CHARGED" || evidencia !in EVIDENCIAS) return null
             return LiberacionDelServidor(venueId, attemptId, requestId, evidencia!!)
         }
+
+        /**
+         * 🔴 D12 («ninguna duda de cobro sin salida», hallazgo #3 de Codex TPV r1), PASO 1 de la consulta por SOLICITUD: ¿puede la
+         * terminal preguntar por la solicitud de un intento que NUNCA ligó? La PAX no emite `terminal:payment_attempt_opened`
+         * (sólo la Nexgo liga): sin vínculo ni Payment, S6 contesta `requestId:null, request:null`, y el «no se cobró» que el cajero
+         * declaró en el POS no le llega a ese intento.
+         *
+         * Sólo si S6 es una respuesta VÁLIDA de ESTE intento, LIMPIA y SIN vínculo: `success` explícito; la misma identidad en la
+         * raíz y en el intento; ni `requestId` ni `request` (con vínculo manda la ruta de S6); y nada de lo que S6 sabe del dinero
+         * ([acreditaDinero]) ni de sus avisos ([motivoDelVeto]). Una respuesta ausente, ilegible o de otro intento no es «sin
+         * dinero»: la ausencia de respuesta no es ausencia de evidencia. Lo que S6 aporta sigue mandando.
+         */
+        fun s6DejaPreguntarPorLaSolicitud(attemptId: String, s6: TerminalAttemptStatusResponse?): Boolean =
+            s6 != null && s6.success == true && s6.attemptId == attemptId && s6.attempt?.attemptId == attemptId &&
+                s6.requestId.isNullOrBlank() && s6.request == null &&
+                !acreditaDinero(s6.attempt) && motivoDelVeto(s6.attempt) == null
+
+        /**
+         * 🔴 D12, PASO 2: la liberación que acredita la consulta por SOLICITUD (`GET …/requests/{requestId}`) del [requestId] DURABLE
+         * del intento. Sólo la declaración de una PERSONA sobre ESA solicitud: `success`, `resuelta` (el servidor ya no la cuenta
+         * como pendiente), la misma identidad en la raíz y dentro de `request` —sin recortar ni normalizar nada hacia otra
+         * solicitud— y `outcome = NOT_CHARGED` con `outcomeEvidence = OPERATOR_RECONCILED`. Nunca el silencio del banco
+         * (`NO_EVIDENCE_AFTER_WINDOW`), el reloj (`AUTO_RELEASED`, `TIMED_OUT`), el monto ni el serial. No exige importe ni terminal:
+         * el endpoint ya autentica la terminal y busca por clave exacta; si la proyección publica el negocio, debe ser el de la
+         * sesión. Un JSON que no cuadra es una duda que se conserva, nunca una liberación.
+         */
+        fun desdeConsultaPorSolicitud(venueId: String, attemptId: String, requestId: String, respuesta: TerminalRequestStatusResponse?): LiberacionDelServidor? {
+            if (respuesta == null || respuesta.success != true || respuesta.resuelta != true || respuesta.requestId != requestId) return null
+            val solicitud = respuesta.request ?: return null
+            if (textoDe(solicitud, "requestId") != requestId) return null
+            if (solicitud.get("venueId")?.isJsonNull == false && textoDe(solicitud, "venueId") != venueId) return null
+            if (textoDe(solicitud, "outcome") != "NOT_CHARGED" || textoDe(solicitud, "outcomeEvidence") != "OPERATOR_RECONCILED") return null
+            return LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
+        }
+
+        private fun textoDe(objeto: JsonObject, campo: String): String? =
+            runCatching { objeto.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
 
         /**
          * El 2xx de la declaración del cajero (`POST …/no-instrument-resolution`): por contrato el servidor sólo contesta 200

@@ -9,6 +9,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.nexgo.oaf.apiv3.device.pinpad.P2PEUtils
 import com.blumonpay.pax.utils.AppManager
+import com.jaac.avoqado_tpv.core.util.PantallaDelSdkNoSeRestaura
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -102,6 +103,9 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
 
         // ✅ Initialize critical components only (startup optimization)
         initializeTimber()
+
+        // 🔒 I-1: un proceso nuevo tampoco restaura la pantalla del SDK de AngelPay con su cobro adentro.
+        registerActivityLifecycleCallbacks(PantallaDelSdkNoSeRestaura())
 
         // Checkpoint 2 · N4: la libreta avisa al nacer una incertidumbre; sin esto sólo cubren el barrido y la reconexión.
         runCatching { ledgerRecoveryTrigger.instalar() }.onFailure { timber.log.Timber.e(it, "No se pudo instalar el hook de recuperación por servidor") }

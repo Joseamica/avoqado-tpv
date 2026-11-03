@@ -88,6 +88,10 @@ interface LocalShiftSessionDao {
     @Query("SELECT COUNT(*) FROM (" + com.jaac.avoqado_tpv.features.shift.domain.SQL_SHIFT_OBLIGATIONS + ") WHERE owner = 'REMOTE'")
     suspend fun ejecucionesRemotas(venueId: String, sessionId: String, recognizedPaymentId: Long? = null): Int
 
+    /** D3: por lo que se pregunta antes de rechazar un cierre. Las MISMAS filas que cuentan [intentosSinRepresentar] y [ejecucionesRemotas]. */
+    @Query("SELECT * FROM (" + com.jaac.avoqado_tpv.features.shift.domain.SQL_SHIFT_OBLIGATIONS + ") WHERE owner IN ('ATTEMPT','REMOTE') ORDER BY createdAt, owner, ownerId LIMIT 20")
+    suspend fun ejecucionesPorResolver(venueId: String, sessionId: String, recognizedPaymentId: Long? = null): List<com.jaac.avoqado_tpv.features.shift.domain.LocalShiftObligation>
+
     @Query("SELECT COUNT(*) FROM (" + com.jaac.avoqado_tpv.features.shift.domain.SQL_SHIFT_OBLIGATIONS + ")")
     suspend fun contarObligaciones(venueId: String, sessionId: String, recognizedPaymentId: Long? = null): Int
 

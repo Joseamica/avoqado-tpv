@@ -19,6 +19,7 @@ import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -105,6 +106,10 @@ class ShiftViewModel @Inject constructor(
     val localReview = _localReview.asStateFlow()
 
     // Pull-to-refresh state
+    /** M-4: al cerrar se le pregunta a Avoqado hasta 5 s (D3); mientras tanto la pantalla dice que está cerrando. */
+    private val _cerrandoCaja = MutableStateFlow(false)
+    val cerrandoCaja: StateFlow<Boolean> = _cerrandoCaja.asStateFlow()
+
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
@@ -317,7 +322,9 @@ class ShiftViewModel @Inject constructor(
                 Timber.d("   Reconnected after ${event.attemptsBeforeReconnection} attempts at ${event.timestamp}")
                 // Este evento proviene del latido HTTP, a diferencia de un Success local de Room.
                 alContestarElServidor()
-                loadCurrentShift()
+                // M-4: una recarga aquí invalidaría el cierre en curso, y su mensaje de bloqueo ya no se mostraría. El cierre siempre
+                // termina publicando un resultado, así que no se pierde nada.
+                if (!_cerrandoCaja.value) loadCurrentShift()
             }
         }
     }
@@ -530,6 +537,8 @@ class ShiftViewModel @Inject constructor(
 
             val version = solicitudesDeCierre.incrementAndGet()
             _state.value = ShiftState.Loading
+            _cerrandoCaja.value = true
+            coroutineContext[Job]?.invokeOnCompletion { _cerrandoCaja.value = false }
 
             val venueId = secureStorage.getVenueId()
             if (venueId == null) {

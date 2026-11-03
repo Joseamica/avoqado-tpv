@@ -400,7 +400,7 @@ class AngelPayAuthRecoveryTest {
     }
 
     @Test
-    fun `P1 en un venue con varias cuentas vuelve a la cuenta del ultimo comercio activo`() = runTest(dispatcher) {
+    fun `D4 en multicuenta el ultimo comercio cacheado no acredita la cuenta de recuperacion`() = runTest(dispatcher) {
         arrancarSinRed()
         hayRed = true
         cuentasDelVenue = listOf(dtoPrimaria, dtoSecundaria)
@@ -419,9 +419,9 @@ class AngelPayAuthRecoveryTest {
 
         val resultado = recovery.recoverIfStuck(DisparadorRecuperacion.RED_RECUPERADA)
 
-        assertEquals(ResultadoRecuperacion.RECUPERADA, resultado)
-        coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
-        coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+        assertEquals(ResultadoRecuperacion.OMITIDA_SIN_CUENTA, resultado)
+        assertEquals(AngelPayAuthState.Unauthenticated, repo.state.value)
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
     }
 
     @Test

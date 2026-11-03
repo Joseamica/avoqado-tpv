@@ -25,7 +25,8 @@ import javax.inject.Singleton
  *
  * 🔴 Lo que NO hace, a propósito:
  *  · no libera nada por antigüedad — el plazo nunca acredita ausencia de cobro;
- *  · no toca filas CON intento — ésas las resuelve la libreta, que sabe de dinero;
+ *  · no toca filas con un intento que no esté DESCARTADA — ésas las resuelve la libreta, que sabe de dinero (D8: con uno DESCARTADA
+ *    ya terminó; si trae dinero, su obligación sigue contando aparte en Caja);
  *  · no interpreta un 404, un error de red ni una respuesta sin `resuelta` como «no se cobró»: se conserva la fila.
  *
  * Es de sólo lectura contra el servidor e idempotente: repetirla sobre una fila ya cerrada no hace nada.
@@ -35,18 +36,29 @@ class BandejaServerRecovery @Inject constructor(
     private val dao: RemotePaymentRequestDao,
     private val api: TerminalAttemptApiService,
 ) {
-    data class Resultado(val consultadas: Int, val conciliadas: Int, val sinRespuesta: Int)
+    /**
+     * @param sinRespuesta sin respuesta HTTP: repite la pasada del worker a los 31 s.
+     * @param conErrorDelServidor un 5xx (M-2): para el cajero es «sin conexión», porque el POS tampoco podrá responder; el worker no
+     * lo repite, igual que un 5xx de la consulta por intento (sólo gasta el turno), para no insistirle a un servidor con problemas.
+     */
+    data class Resultado(val consultadas: Int, val conciliadas: Int, val sinRespuesta: Int, val conErrorDelServidor: Int = 0)
 
-    suspend fun conciliar(venueId: String, now: Long = System.currentTimeMillis()): Resultado {
+    /**
+     * [soloLaSolicitud]: el banner pregunta por una a la vez, para que una lenta no tape a las demás. Pasa aunque no esté entre las 20 de
+     * la página, porque cerrar sigue revalidando dentro del UPDATE que sea huérfana, de este negocio y que esté PROCESSING.
+     */
+    suspend fun conciliar(venueId: String, now: Long = System.currentTimeMillis(), soloLaSolicitud: String? = null): Resultado {
         var consultadas = 0
         var conciliadas = 0
         var sinRespuesta = 0
+        var conErrorDelServidor = 0
 
-        val candidatas = runCatching { dao.candidatasHuerfanas(venueId) }.getOrDefault(emptyList())
+        val candidatas = soloLaSolicitud?.let { listOf(HuerfanaDeBandeja(it, now)) }
+            ?: runCatching { dao.candidatasHuerfanas(venueId) }.getOrDefault(emptyList())
         for (fila in candidatas) {
             try {
                 val respuesta = api.getRequestStatus(venueId, fila.requestId)
-                consultadas++
+                if (respuesta.code() >= 500) conErrorDelServidor++ else consultadas++
                 if (!respuesta.isSuccessful) {
                     // 404, 403, 5xx: nada acredita nada. La fila se conserva con su aviso, que es lo honesto.
                     // Codex r6 (P2-11): pero se manda al final de la fila, o 20 filas con un 404 permanente dejarían
@@ -87,9 +99,9 @@ class BandejaServerRecovery @Inject constructor(
                 }
             }
         }
-        if (consultadas + sinRespuesta > 0) {
-            Timber.i("🧾 [BandejaD] pasada | consultadas=%d conciliadas=%d sinRespuesta=%d", consultadas, conciliadas, sinRespuesta)
+        if (consultadas + sinRespuesta + conErrorDelServidor > 0) {
+            Timber.i("🧾 [BandejaD] pasada | consultadas=%d conciliadas=%d sinRespuesta=%d 5xx=%d", consultadas, conciliadas, sinRespuesta, conErrorDelServidor)
         }
-        return Resultado(consultadas, conciliadas, sinRespuesta)
+        return Resultado(consultadas, conciliadas, sinRespuesta, conErrorDelServidor)
     }
 }

@@ -465,6 +465,9 @@ class PaymentViewModel @Inject constructor(
     // [_socketRequestId] ya se haya limpiado tras emitir.
     private var vinculoDeSolicitudFijado = false
     private var solicitudVinculada: String? = null
+    // 🔒 D6 (2-nov): ¿la PRIMERA entrada de este VM fue remota? También con un id inválido, y también tras [resetPayment]: un
+    // cobro del POS sin su identidad se rechaza, nunca se degrada a venta local. Lo lee [laIdentidadRemotaSigueIntacta].
+    private var entradaOriginalRemota = false
 
     // 💸 REFUND SUPPORT: Refund context now stored in PaymentSession (no mutable field)
 
@@ -2280,13 +2283,26 @@ class PaymentViewModel @Inject constructor(
             return
         }
         vinculoDeSolicitudFijado = true
-        solicitudVinculada = requestId?.takeIf { source != null }
+        entradaOriginalRemota = source != null
+        val idValido = requestId?.takeIf { it.isNotBlank() }
+        solicitudVinculada = idValido?.takeIf { source != null }
         _paymentSource = source
-        _socketRequestId = requestId
+        _socketRequestId = idValido
         if (source == "SOCKET") {
             Timber.i("📡 [Socket-Payment] Source set: source=$source, requestId=$requestId")
         }
     }
+
+    /**
+     * 🔒 D6 (2-nov, «ninguna duda de cobro sin salida»): ¿este cobro conserva la identidad con la que nació? La libreta acepta
+     * contextos locales, así que sólo este VM sabe que nació remoto. Una entrada local siempre pasa; una remota sólo con su id
+     * original, tal cual, en el enlace que va al contexto. Sin esto, tras limpiar el enlace (final ya emitido, cancel del POS,
+     * [resetPayment]) el mismo VM cobraría como venta local y la sonda de esa solicitud no encontraría su ejecución. Nunca se
+     * reconstruye el id desde otro lado: se rechaza. `RemotePaymentRequestEntity.from` marca la fila como nacida bajo la barrera
+     * porque esta guarda existe.
+     */
+    private fun laIdentidadRemotaSigueIntacta(): Boolean =
+        !entradaOriginalRemota || (solicitudVinculada != null && _socketRequestId == solicitudVinculada)
 
     fun setSocketProcessedByStaffId(staffId: String?) {
         updateSessionSnapshot(
@@ -3512,6 +3528,13 @@ class PaymentViewModel @Inject constructor(
             */
 
             // Freeze complete business context after shift validation, BEFORE any card SDK work.
+            // 🔒 D6: después de todo lo que suspende y antes de formar el contexto. `aplicarSolicitudCerrada` limpia el enlace ANTES
+            // de pintar el error: un enlace ajeno no puede llevarse el negativo de este cobro.
+            if (!laIdentidadRemotaSigueIntacta()) {
+                Timber.e("🚨 [Socket-Payment] Cobro remoto sin su identidad original (era %s): no se reserva ni se pide tarjeta", solicitudVinculada)
+                aplicarSolicitudCerrada()
+                return@launch
+            }
             val persisted = runCatching {
                 val attemptId = sessionSnapshot.paymentAttemptId ?: return@runCatching false
                 val merchant = _currentMerchant.value
@@ -4053,6 +4076,9 @@ class PaymentViewModel @Inject constructor(
                     paymentPhaseTracker.enterPhase(PaymentSdkPhase.COMPLETE_EMV_TRANS)
                     val completeResult = completeEmvTransUseCase.run(completeParams)
                     paymentPhaseTracker.exitPhase(PaymentSdkPhase.COMPLETE_EMV_TRANS, if (completeResult.isRight) PhaseOutcome.OK else PhaseOutcome.FAILED)
+                    // 🔒 B1: `CompleteEmvTrans` REGRESÓ (con éxito o con error): aquí termina TODA la interacción de este
+                    // intento con el SDK. El registro que falte es dinero y lo decide el servidor.
+                    marcarFinDelSdk(preparationAttemptId)
 
                     if (completeResult.isLeft) {
                         val error = completeResult.leftValue()
@@ -4065,6 +4091,8 @@ class PaymentViewModel @Inject constructor(
                 } else {
                     // Card does NOT require ARPC - Skip CompleteEmvTrans
                     Timber.i("✅ [PHASE 5] Skipping CompleteEmvTrans (card does not require ARPC)")
+                    // 🔒 B1: sin cierre EMV, la respuesta del host fue la última llamada al SDK de este intento.
+                    marcarFinDelSdk(preparationAttemptId)
                 }
 
                 Timber.i("🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
@@ -4110,6 +4138,16 @@ class PaymentViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 🔒 B1 (21-oct, «ninguna duda de cobro sin salida»): el SDK de Blumon REGRESÓ y este intento ya no vuelve a él — después
+     * de `CompleteEmvTrans`, o donde el host contestó sin cierre EMV, o en una salida de rechazo / sin veredicto que no vuelve al
+     * SDK. Es lo que deja certificar el cese de un intento de ESTE proceso ([PaymentAttemptLedger.marcarSdkRegreso]).
+     * 🔴 NUNCA en un `catch` ni en un `finally`: una excepción no prueba que la llamada nativa terminó.
+     */
+    private suspend fun marcarFinDelSdk(attemptId: String?) {
+        attemptId?.let { paymentAttemptLedger.marcarSdkRegreso(it) }
     }
 
     /** A failed read never reached SaleIcc. Persist that fact BEFORE enabling retry/navigation. */
@@ -5441,6 +5479,9 @@ class PaymentViewModel @Inject constructor(
                         }
                         showUnresolvedAuthorization()
                     }
+                    // 🔒 B1: SaleIcc/SaleCtls REGRESÓ (con rechazo o sin veredicto) y quien llama ya no vuelve al SDK con
+                    // este intento (ni cierre EMV ni otra llamada): aquí termina su interacción con el SDK.
+                    marcarFinDelSdk(durableAttemptId)
                     AuthorizationResult(
                         response = null,
                         userFriendlyError = if (definitive) userMessage else
@@ -5509,6 +5550,8 @@ class PaymentViewModel @Inject constructor(
                         sessionSnapshot.paymentAttemptId?.let {
                             paymentAttemptLedger.markIndeterminate(it, "IncompleteHostResponse")
                         }
+                        // 🔒 B1: el SDK regresó con una respuesta incompleta y no se sigue al cierre EMV.
+                        marcarFinDelSdk(durableAttemptId)
                         showUnresolvedAuthorization()
                         return AuthorizationResult(response = null, userFriendlyError = "Estamos confirmando el cobro. No vuelvas a pasar la tarjeta.")
                     }
@@ -5532,14 +5575,21 @@ class PaymentViewModel @Inject constructor(
                         negativeOutcomeEvidence = "PROCESSOR_DECLINED"
                         authorizationUnresolved = false
                         Timber.w("❌ [$saleType] Issuer DECLINE (authorization blank) — emv=${response.saleData.emvResponseCode} desc='${response.saleData.description}'")
+                        // 🔒 B1: rechazo del emisor — quien llama no sigue al cierre EMV: termina la interacción con el SDK.
+                        marcarFinDelSdk(durableAttemptId)
                         AuthorizationResult(response = null, userFriendlyError = declineMessage)
                     } else {
+                        // 🔒 B1: en CONTACTLESS la autorización es la última llamada al SDK (no hay cierre EMV). En CHIP no:
+                        // falta `CompleteEmvTrans`, y lo marca quien lo llama cuando regresa (nunca aquí).
+                        if (isContactless) marcarFinDelSdk(durableAttemptId)
                         AuthorizationResult(response = response, userFriendlyError = null)
                     }
                 }
                 else -> {
                     Timber.e("❌ [$saleType] Unexpected state: both response and failure are null")
                     authAttemptOutcomeCode = "ERROR_UNEXPECTED_STATE"
+                    // 🔒 B1: el SDK sí regresó (vacío) y quien llama no vuelve a él. La fila sigue AUTORIZANDO: cuenta como viva igual.
+                    marcarFinDelSdk(durableAttemptId)
                     AuthorizationResult(response = null, userFriendlyError = "Error inesperado procesando el pago.")
                 }
             }
@@ -5955,18 +6005,19 @@ class PaymentViewModel @Inject constructor(
             // nunca por la barrera online de AUTORIZANDO. Se compromete KERNEL_ACTIVO ANTES de
             // la llamada, porque si el proceso muere después de un RESULT_OFFLINE_APPROVED la
             // fila diría PREPARANDO — el estado que autoriza a afirmar «no se cobró».
-            sessionSnapshot.paymentAttemptId?.let { durableId ->
-                if (!paymentAttemptLedger.markKernelEntered(durableId)) {
-                    Timber.e("📒 [Libreta] no se pudo comprometer la entrada al kernel — no se inicia el cobro")
-                    // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
-                    if (!traducirCercaDeSolicitud()) {
-                        _state.value = PaymentState.Error(
-                            message = "No se pudo guardar el intento. No se inició el cobro.",
-                            context = createPaymentContext(), canRetry = false,
-                        )
-                    }
-                    return
+            // 🔒 B1: el intento que ENTRA al kernel, fijado aquí: el regreso del SDK se marca sobre ÉL, aunque la pantalla cambie.
+            // 🔒 D6: sin id tampoco se entra. Con `?.let`, un id perdido (reset, cancel) se saltaba la barrera y llamaba al kernel.
+            val intentoDelKernel = sessionSnapshot.paymentAttemptId
+            if (intentoDelKernel == null || !paymentAttemptLedger.markKernelEntered(intentoDelKernel)) {
+                Timber.e("📒 [Libreta] no se pudo comprometer la entrada al kernel — no se inicia el cobro")
+                // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
+                if (!traducirCercaDeSolicitud()) {
+                    _state.value = PaymentState.Error(
+                        message = "No se pudo guardar el intento. No se inició el cobro.",
+                        context = createPaymentContext(), canRetry = false,
+                    )
                 }
+                return
             }
             val ctlssParams = StartCtlssTransParams()
             paymentPhaseTracker.enterPhase(PaymentSdkPhase.START_CTLS_TRANS)
@@ -6008,6 +6059,8 @@ class PaymentViewModel @Inject constructor(
                         paymentAttemptLedger.markIndeterminate(durableId, verdict.outcome.name)
                     }
                 }
+                // 🔒 B1: `StartCtlssTrans` REGRESÓ (rechazo o sin veredicto) y este intento no vuelve al SDK.
+                marcarFinDelSdk(intentoDelKernel)
                 _state.value = PaymentState.Error(
                     message = verdict.userMessage,
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -6024,6 +6077,7 @@ class PaymentViewModel @Inject constructor(
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResult is null in SDK response")
                 // 🔴 Codex H4: el kernel YA regresó, sin veredicto — nada corre. En duda ANTES del error, no KERNEL_ACTIVO.
                 sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:transResult_nulo") }
+                marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto y no se vuelve a él
                 _state.value = PaymentState.Error(
                     message = "Error procesando resultado contactless",
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -6034,6 +6088,7 @@ class PaymentViewModel @Inject constructor(
             if (transResultEnum == null) {
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResultEnum is null (resultCode=${transResult.resultCode})")
                 sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:resultado_nulo") }
+                marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto y no se vuelve a él
                 _state.value = PaymentState.Error(
                     message = "Error procesando resultado contactless",
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -6081,6 +6136,7 @@ class PaymentViewModel @Inject constructor(
                     sessionSnapshot.paymentAttemptId?.let { durableId ->
                         paymentAttemptLedger.markKernelRefused(durableId, "RESULT_OFFLINE_DENIED")
                     }
+                    marcarFinDelSdk(intentoDelKernel) // 🔒 B1: negativa del chip; no se vuelve al SDK
                     _state.value = PaymentState.Error(
                         message = "Tarjeta declinada",
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -6091,6 +6147,7 @@ class PaymentViewModel @Inject constructor(
                     // Unknown result
                     Timber.e("❌ [CONTACTLESS PHASE 3] Unknown transaction result: $transResultEnum")
                     sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:$transResultEnum") }
+                    marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto conocido y no se vuelve a él
                     _state.value = PaymentState.Error(
                         message = "Resultado desconocido: $transResultEnum",
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry

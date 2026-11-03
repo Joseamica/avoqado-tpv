@@ -71,4 +71,40 @@ class RespuestasRealesDelServidorTest {
         assertThat(r.attempt?.resolution?.get("kind")?.asString).isEqualTo("NO_INSTRUMENT_PRESENTED")
         assertThat(LiberacionDelServidor.desdeConsultaS6("v1", "21830498-1fff-40a7-a80d-6fb29ac9ff5f", r)).isNotNull()
     }
+
+    @Test
+    fun `D12 la S6 real de un cobro sin vinculo deja preguntar por la solicitud, y la pieza D real de una declaracion del cajero la libera`() {
+        val intento = "21830498-1fff-40a7-a80d-6fb29ac9ff5f"
+        val s6 = gson.fromJson(s6CobroLocalReal, TerminalAttemptStatusResponse::class.java)
+        assertThat(LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud(intento, s6)).isTrue()
+        // La S6 de OTRO intento, o ninguna, no dice nada de éste: ausencia de respuesta no es ausencia de evidencia.
+        assertThat(LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud("otro-intento", s6)).isFalse()
+        assertThat(LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud(intento, null)).isFalse()
+
+        val porSolicitud = gson.fromJson(piezaDReal, TerminalRequestStatusResponse::class.java)
+        val solicitud = "ad5fb00b-fa24-48f0-86be-8fb449b925cd"
+        val negocio = "cmtwfpana001ic996lz8q2uuq"
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud(negocio, intento, solicitud, porSolicitud))
+            .isEqualTo(LiberacionDelServidor(negocio, intento, solicitud, "OPERATOR_RECONCILED"))
+        // Otra solicitud, otro negocio o ninguna respuesta: nada.
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud(negocio, intento, "otra-solicitud", porSolicitud)).isNull()
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud("otro-negocio", intento, solicitud, porSolicitud)).isNull()
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud(negocio, intento, solicitud, null)).isNull()
+    }
+
+    @Test
+    fun `D12 la consulta por solicitud con sus null (request null, evidencia null) no libera nada`() {
+        val negocio = "cmtwfpana001ic996lz8q2uuq"
+        val solicitud = "ad5fb00b-fa24-48f0-86be-8fb449b925cd"
+        val sinDeclaracion = gson.fromJson(
+            """{"success":true,"requestId":"$solicitud","request":{"requestId":"$solicitud","venueId":"$negocio","terminalId":"n860w173397",""" +
+                """"status":"TIMED_OUT","amount":50,"tip":0,"orderId":null,"paymentId":null,"senderDevice":null,"lateResult":false,""" +
+                """"cancelDisposition":null,"failureCode":"AUTO_RELEASED","outcome":"UNRESOLVED","outcomeEvidence":null,""" +
+                """"evidenceClass":null,"closedVia":null},"resuelta":false}""",
+            TerminalRequestStatusResponse::class.java,
+        )
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud(negocio, "a", solicitud, sinDeclaracion)).isNull()
+        val sinRequest = gson.fromJson("""{"success":true,"requestId":"$solicitud","request":null,"resuelta":true}""", TerminalRequestStatusResponse::class.java)
+        assertThat(LiberacionDelServidor.desdeConsultaPorSolicitud(negocio, "a", solicitud, sinRequest)).isNull()
+    }
 }

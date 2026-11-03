@@ -63,7 +63,40 @@ interface TerminalAttemptApiService {
         @Path("attemptId") attemptId: String,
         @retrofit2.http.Body body: NoInstrumentResolutionRequest,
     ): Response<TerminalAttemptStatusResponse>
+
+    /**
+     * El botón «No se cobró» del banner verde (founder, 3-nov): la MISMA declaración del POS, por la ruta de la terminal.
+     *  · 2xx ⇒ `released: true` quedó declarada; `released: false` = apareció dinero y no se liberó nada.
+     *  · 403 `SUPERVISOR_AUTHORIZATION_REQUIRED` ⇒ pedir el PIN de un gerente y repetir con el MISMO `resolutionId`.
+     *  · 404 ⇒ un servidor anterior a esta ruta: se contesta en el POS. 🔴 Nunca se vuelve declaración local.
+     *  · 409 `POSITIVE_EVIDENCE_EXISTS` · `EXECUTION_STILL_ACTIVE` · `RESOLUTION_CONFLICT`… ⇒ su `message` está escrito para el cajero.
+     * El `requestId` lo pone la ruta: el esquema del servidor es estricto y no se manda en el cuerpo.
+     */
+    @retrofit2.http.POST("tpv/venues/{venueId}/terminal-payment/requests/{requestId}/uncharged-declaration")
+    suspend fun declararSinCobro(
+        @Path("venueId") venueId: String,
+        @Path("requestId") requestId: String,
+        @retrofit2.http.Body body: DeclaracionSinCobroRequest,
+    ): Response<DeclaracionSinCobroResponse>
 }
+
+/** Cuerpo de [TerminalAttemptApiService.declararSinCobro]. Gson omite los nulos: sin PIN, `supervisorPin` no viaja. */
+data class DeclaracionSinCobroRequest(
+    @SerializedName("resolutionId") val resolutionId: String,
+    @SerializedName("statement") val statement: String = "UNCHARGED_VERIFIED",
+    @SerializedName("statementVersion") val statementVersion: Int = 1,
+    @SerializedName("supervisorPin") val supervisorPin: String? = null,
+)
+
+/** Lo que contesta el 2xx de la declaración. Todo nulo por defecto: Gson no respeta la no-nulabilidad. */
+data class DeclaracionSinCobroResponse(
+    @SerializedName("success") val success: Boolean? = null,
+    @SerializedName("released") val released: Boolean? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("requestId") val requestId: String? = null,
+    @SerializedName("paymentId") val paymentId: String? = null,
+    @SerializedName("message") val message: String? = null,
+)
 
 /** Respuesta de la consulta por SOLICITUD (pieza D). Todo nulo por defecto: Gson no respeta la no-nulabilidad. */
 data class TerminalRequestStatusResponse(

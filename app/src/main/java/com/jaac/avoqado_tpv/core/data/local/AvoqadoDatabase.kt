@@ -191,7 +191,16 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`, con las
     // ventas guardadas sin red), reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
-    version = 44,
+    // ⭐ Version 44: sesiones y operaciones durables de Caja (ver MIGRATION_43_44).
+    // ⭐ Version 45 (21-oct-2026, «ninguna duda de cobro sin salida», B1; renumerada el 2-nov al integrar): `remote_payment_requests.execution_closed_at` (la
+    // solicitud quedó CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo ni empezar) y
+    // `payment_attempts.sdk_returned_at` (el SDK regresó: terminó toda su interacción con ese intento). Aditiva y nullable
+    // (MIGRATION_44_45). D6 (2-nov), en la misma v45 porque aún no se publica: `remote_payment_requests.durable_barrier_version`
+    // (la solicitud nació bajo la barrera durable de este APK), con default 0 para todo lo que ya existe.
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v44 (p. ej. la 2.14.0) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v45.
+    version = 45,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2195,6 +2204,41 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                         "`entry_id` TEXT NOT NULL, `status` TEXT NOT NULL, `clock_in_time` TEXT, `cached_at` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`venue_id`, `staff_id`))",
                 )
+            }
+        }
+
+        /**
+         * 45 (B1, «ninguna duda de cobro sin salida», 21-oct; renumerada el 2-nov): `remote_payment_requests.execution_closed_at`
+         * (cerrada para ejecución) y `payment_attempts.sdk_returned_at` (el SDK regresó). Dos columnas INTEGER nullable: las filas
+         * que ya había nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es
+         * otro proceso, así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe
+         * ninguna fila. Idempotente por `PRAGMA table_info`.
+         *
+         * D6 (2-nov), en la misma versión porque la v45 aún no se publica: `remote_payment_requests.durable_barrier_version`,
+         * `INTEGER NOT NULL DEFAULT 0`. Toda solicitud que ya existe queda en 0, aunque sea reciente y tenga intentos rastreados:
+         * su historia completa no está acreditada y una versión vieja pudo cobrar sin anotarlo.
+         */
+        val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                if (!columnaExiste("remote_payment_requests", "execution_closed_at")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN execution_closed_at INTEGER")
+                }
+                if (!columnaExiste("payment_attempts", "sdk_returned_at")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN sdk_returned_at INTEGER")
+                }
+                // D6: sin backfill a propósito. Toda fila que ya existe queda en 0, también las recientes con intentos rastreados.
+                if (!columnaExiste("remote_payment_requests", "durable_barrier_version")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN durable_barrier_version INTEGER NOT NULL DEFAULT 0")
+                }
             }
         }
 

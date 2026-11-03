@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
@@ -136,6 +135,7 @@ interface AppNavigationEntryPoint {
     fun updateRequestManager(): UpdateRequestManager
     fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
     fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+    fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
@@ -438,10 +438,10 @@ fun AppNavigation(
             // open), so a socket charge only reaches here when the slot is free.
             // 🔴 29-sep-2026: también una DEVOLUCIÓN que está hablando con AngelPay (unos segundos): navegar al cobro le
             // arrancaba la pantalla a media llamada. La marca caduca sola a los 2 min, así que nunca traba las ventas.
+            // N1 (22-oct): las banderas se leen DENTRO de la regla, la misma que mira la bandeja antes de certificar el cese.
             val motivoParaNoIniciar = CobroRemotoDelPos.motivoParaNoIniciar(
                 enPantallaDeCobro = onBlumonPayment || onAngelPayPayment,
-                cobroActivo = paymentStateProvider.isChargeAttemptActive(),
-                devolucionEnCurso = paymentStateProvider.isRefundInFlight(),
+                estado = paymentStateProvider,
             )
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
@@ -974,32 +974,18 @@ fun AppNavigation(
                 }
                 val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
                 if (aviso != null) {
-                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                        Row(
-                            // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo
-                            // ofrecía «Ayuda»: le decía al cajero que hay un cobro sin confirmar y lo dejaba
-                            // sin ningún sitio donde comprobar si entró. No se puede descartar a propósito —
-                            // desaparece cuando la obligación se resuelve, nunca porque alguien la tape.
-                            // Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { navController.navigate(NavRoute.Payments.createRoute()) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = aviso,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = { navController.navigate(NavRoute.Payments.createRoute()) }) {
-                                Text("Revisar")
-                            }
-                            TextButton(onClick = { navController.navigate(NavRoute.Support.route) }) {
-                                Text("Ayuda")
-                            }
-                        }
-                    }
+                    // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo ofrecía «Ayuda»: le decía al
+                    // cajero que hay un cobro sin confirmar y lo dejaba sin ningún sitio donde comprobar si entró. Sigue sin poder
+                    // taparse: se resuelve declarando («No se cobró», founder, 3-nov) o cuando la obligación se resuelve, nunca
+                    // porque alguien lo esconda. Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
+                    com.jaac.avoqado_tpv.features.payment.presentation.BannerDeCobrosPendientes(
+                        aviso = aviso,
+                        venueId = bannerVenueId,
+                        ahora = ahora,
+                        declaracion = remember { kioskEntryPoint.declaracionDesdeElAviso() },
+                        onRevisar = { navController.navigate(NavRoute.Payments.createRoute()) },
+                        onAyuda = { navController.navigate(NavRoute.Support.route) },
+                    )
                 }
             }
         }
@@ -3426,12 +3412,13 @@ private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
  *
  * La primera vez que se compone una pantalla de cobro, copia sus argumentos del handle de quien
  * la lanzó a SU propia entrada ([propio]) y los BORRA del lanzador, en el mismo paso. Después
- * la pantalla lee sólo de [propio] (sobrevive a la recreación y a la muerte del proceso), y:
+ * la pantalla lee sólo de [propio] (sobrevive a una recreación en el mismo proceso; un proceso nuevo ya no restaura
+ * esta pantalla, ver `EstadoDelProceso`), y:
  *  - la pantalla que sale ya no puede leer los argumentos de la solicitud remota siguiente,
  *    que el colector escribe en ese mismo handle antes de empujar otra entrada (camino 1);
- *  - salir por CUALQUIER vía —callbacks, atrás del sistema, un pop del colector, la muerte del
- *    proceso— deja al lanzador limpio: el siguiente cobro local no nace remoto ni hereda la
- *    propina o la orden de otra solicitud (camino 2).
+ *  - salir por CUALQUIER vía —callbacks, atrás del sistema, un pop del colector— deja al lanzador
+ *    limpio: el siguiente cobro local no nace remoto ni hereda la propina o la orden de otra
+ *    solicitud (camino 2).
  * Idempotente: una segunda llamada sobre la misma entrada no vuelve a copiar nada.
  */
 internal fun congelarArgumentosDeCobro(propio: SavedStateHandle, lanzador: SavedStateHandle?): SavedStateHandle {

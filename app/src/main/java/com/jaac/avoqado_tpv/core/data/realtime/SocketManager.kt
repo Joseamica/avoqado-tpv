@@ -218,6 +218,9 @@ class SocketManager @Inject constructor(
                     put("terminalPaymentCancelDispositionVersion", "2")
                     // v1 = responde `terminal:payment_probe` desde la bandeja durable, sin entregar.
                     put("terminalPaymentProbeVersion", "1")
+                    // v1 = la sonda y la disposición del cancel traen `executionAlive`/`closedForExecution` (B3, 22-oct):
+                    // sin esta capacidad el servidor no los toma como evidencia de que la ejecución cesó.
+                    put("terminalPaymentExecutionVersion", "1")
                 }
 
                 // Transports: WebSocket preferred, fallback to polling
@@ -1606,6 +1609,7 @@ class SocketManager @Inject constructor(
                     socket?.emit("terminal:payment_cancel_disposition", JSONObject().apply {
                         put("requestId", requestId)
                         put("disposition", decision.disposition.name)
+                        ponerEstadoDeEjecucion(decision.executionAlive, decision.closedForExecution)
                     })
                     decision.finalResultJson?.let(::emitPersistedTerminalPaymentResult)
                     // …y recién ENTONCES se avisa a la pantalla: primero lo durable, después el efecto
@@ -1650,6 +1654,7 @@ class SocketManager @Inject constructor(
                         put("requestId", requestId)
                         put("disposition", answer.disposition.name)
                         answer.finalResultJson?.let { put("finalResult", JSONObject(it)) }
+                        ponerEstadoDeEjecucion(answer.executionAlive, answer.closedForExecution)
                     }
                     socket?.emit("terminal:payment_probe_result", payload)
                     ack?.call(JSONObject().put("accepted", true).put("requestId", requestId))
@@ -1662,6 +1667,28 @@ class SocketManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_probe")
         }
+    }
+
+    /**
+     * B3 (22-oct, «ninguna duda de cobro sin salida»): lo que la bandeja certificó de la ejecución, en la sonda y en la
+     * disposición del cancel. El SERVIDOR suelta SÓLO la ranura de la terminal con `ACTIVE` + `executionAlive = false` +
+     * `closedForExecution = true` y la capacidad `terminalPaymentExecutionVersion`; nunca lo lee como «no se cobró». Van como
+     * booleanos de JSON (el servidor compara con `===`). «Sin ejecución viva» sólo sale junto con el cierre que lo respalda: a
+     * medias, sale «puede seguir viva», el lado seguro, y queda un aviso en el log (revisión B3, m1).
+     *
+     * Viajan en TODA disposición (también RESOLVED, NOT_FOUND, RECEIVED_CANCELLED, ACCEPTED y ALREADY_RESOLVED, con lo que traiga
+     * la bandeja; por defecto «viva» y «sin cerrar»), pero el SERVIDOR sólo los lee con `ACTIVE` (`ejecucionCerradaAcreditada`):
+     * fuera de `ACTIVE` no significan nada y nadie debe leerlos (revisión B3, m2).
+     */
+    private fun JSONObject.ponerEstadoDeEjecucion(executionAlive: Boolean, closedForExecution: Boolean): JSONObject = apply {
+        if (!executionAlive && !closedForExecution) {
+            Timber.w(
+                "⚠️ [Socket] %s: la bandeja dijo executionAlive=false sin closedForExecution — sale «puede seguir viva»",
+                optString("requestId"),
+            )
+        }
+        put("executionAlive", executionAlive || !closedForExecution)
+        put("closedForExecution", closedForExecution)
     }
 
     /**

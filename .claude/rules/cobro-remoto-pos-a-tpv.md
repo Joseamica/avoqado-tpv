@@ -216,8 +216,9 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
 - 🔒 **Un proceso nuevo nunca restaura una pantalla** (D1/D2, 3-nov; `core/util/EstadoDelProceso.kt`): si la app muere con la
   pantalla del SDK arriba, Android la revive, pero `MainActivity` descarta el estado que firmó otro proceso y arranca como en frío.
   El Inicio conecta el socket, certifica el cese y suelta la terminal, y no queda una «Método de Pago» desde donde abrir otro lector
-  de la misma solicitud. Una recreación con el proceso vivo conserva su estado. Si Android restaura `PaymentActivity` encima, su
-  `onCreate` relanza el cobro con `angelpay_req` (AAR 1.0.22) y su resultado ya no le llega a nadie: el intento queda en duda.
+  de la misma solicitud. Una recreación con el proceso vivo conserva su estado. Si Android restaura `PaymentActivity` encima (estaba
+  detenida al morir el proceso), `PantallaDelSdkNoSeRestaura` le quita `angelpay_req` antes de que el AAR lo lea: termina con «Missing
+  request» sin tocar el lector, y el intento queda en duda. Depende del `onCreate` del AAR 1.0.22: subirlo obliga a revisarlo.
 
 ## Defectos conocidos (no reinventar el diagnóstico)
 

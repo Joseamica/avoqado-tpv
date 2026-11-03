@@ -15,6 +15,8 @@ import javax.inject.Inject
  * (`savedInstanceState`) de un arranque. Con dos `MainActivity` apiladas y la pantalla del SDK entre ellas, matar el proceso y
  * restaurar la de arriba conectaba el socket y certificaba; al volver atrás, el SDK relanzaba el cobro de una solicitud ya
  * cerrada, sin pasar por la libreta. Por eso la libreta sólo certifica cuando la app tiene UNA pantalla por tarea y es la nuestra.
+ * Desde I-1 (3-nov) esa pantalla ya no relanza en un proceso nuevo (`PantallaDelSdkNoSeRestaura`); esto queda de defensa: mientras
+ * siga apilada no se certifica.
  *
  * Lanza si no se puede leer: quien pregunta lo trata como «no certifica» (fail-closed).
  */

@@ -7,6 +7,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.test.core.app.ApplicationProvider
+import com.angelpay.angelpaysdk.AngelPaySDK
+import com.angelpay.angelpaysdk.ui.PaymentActivity
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -98,17 +101,113 @@ class EstadoDelProcesoTest {
         assertThat(recreada.resultadoEntregado?.resultCode).isEqualTo(Activity.RESULT_OK)
     }
 
-    @Test fun `D2 en un proceso NUEVO no restaura la pantalla y el resultado que devuelva el SDK no cae en ella ni la tumba`() {
+    @Test fun `D2 en un proceso NUEVO no restaura la pantalla, y el Missing request de la pantalla del SDK no la tumba`() {
         val (estado, codigo) = pantallaTapadaPorElSdk()
         estado.putString(EstadoDelProceso.CLAVE, "proceso-muerto") // otro proceso: el token de éste ya no es el que firmó
 
         val nueva = Robolectric.buildActivity(PantallaDePrueba::class.java).setup(estado).get()
 
         assertThat(nueva.restaurado).isNull()
-        // Codex TPV r1 #1: si Android restauró la pantalla del SDK encima, su resultado llega con un código que esta instancia
-        // nunca registró. No se entrega ni truena: el intento se queda en duda en la libreta (CancelTrasReclamarRoomTest).
+        // Codex TPV r1 #1: si Android restauró la pantalla del SDK encima, ésta ya no cobra (I-1, abajo): lo único que devuelve es
+        // «Missing request», con un código que esta instancia nunca registró. Nada que registrar, y no truena: el intento sigue
+        // en duda en la libreta (CancelTrasReclamarRoomTest).
         shadowOf(nueva).callOnActivityResult(codigo, Activity.RESULT_OK, Intent())
         assertThat(nueva.resultadoEntregado).isNull()
+    }
+
+    // ── I-1 (revisión de D1/D2): la pantalla del SDK tampoco se restaura en un proceso nuevo ───────────────────────────────────
+    //
+    // Si la pantalla del SDK estaba DETENIDA al morir el proceso (pantalla apagada u Home esperando tarjeta), Android la recrea:
+    // su `onCreate` relanza el cobro con `angelpay_req` sin mirar el estado, y era otro lector de la misma solicitud con el intento
+    // anterior en duda, cuyo aprobado ya no le llegaba a nadie.
+
+    /** Hace de la pantalla del SDK: igual que `PaymentActivity.onCreate` (AAR 1.0.22), lee el extra DESPUÉS de `super.onCreate`. */
+    class PantallaDelSdkDePrueba : ComponentActivity() {
+        var abrioElLector = false
+
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+            abrioElLector = intent.hasExtra(PantallaDelSdkNoSeRestaura.EXTRA_DEL_COBRO)
+        }
+    }
+
+    private val conElExtra get() = Intent().putExtra(PantallaDelSdkNoSeRestaura.EXTRA_DEL_COBRO, Bundle())
+
+
+    /** Registra el guardia en la app de la prueba mientras corre [prueba], como lo hace `AvoqadoTPVApplication`. */
+    private fun conElGuardia(
+        pantalla: String = PantallaDelSdkDePrueba::class.java.name,
+        prueba: () -> Unit,
+    ) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val guardia = PantallaDelSdkNoSeRestaura(pantalla)
+        app.registerActivityLifecycleCallbacks(guardia)
+        try {
+            prueba()
+        } finally {
+            app.unregisterActivityLifecycleCallbacks(guardia)
+        }
+    }
+
+    @Test fun `I-1 restaurada en un proceso NUEVO no abre el lector`() = conElGuardia {
+        val deOtroProceso = Bundle().apply { putString(EstadoDelProceso.CLAVE, "proceso-muerto") }
+
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup(deOtroProceso).get()
+
+        assertThat(pantalla.abrioElLector).isFalse()
+    }
+
+    @Test fun `I-1 un estado sin firma tampoco abre el lector - lo guardo la version anterior`() = conElGuardia {
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup(Bundle()).get()
+
+        assertThat(pantalla.abrioElLector).isFalse()
+    }
+
+    @Test fun `I-1 recreada en el MISMO proceso sigue con su cobro, como hoy`() = conElGuardia {
+        val original = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup()
+        val estado = Bundle()
+        original.pause().saveInstanceState(estado).stop()
+
+        val recreada = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup(estado).get()
+
+        assertThat(recreada.abrioElLector).isTrue()
+    }
+
+    @Test fun `I-1 un cobro nuevo, sin estado, abre el lector`() = conElGuardia {
+        val pantalla = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup().get()
+
+        assertThat(pantalla.abrioElLector).isTrue()
+    }
+
+    @Test fun `I-1 no toca el Intent ni el estado de ninguna otra pantalla`() = conElGuardia(pantalla = "otra.Pantalla") {
+        val deOtroProceso = Bundle().apply { putString(EstadoDelProceso.CLAVE, "proceso-muerto") }
+
+        val controlador = Robolectric.buildActivity(PantallaDelSdkDePrueba::class.java, conElExtra).setup(deOtroProceso)
+
+        assertThat(controlador.get().abrioElLector).isTrue()
+        val estado = Bundle()
+        controlador.pause().saveInstanceState(estado).stop()
+        assertThat(estado.containsKey(EstadoDelProceso.CLAVE)).isFalse()
+    }
+
+    @Test fun `I-1 lo auditado del AAR - subirlo obliga a revisar esta salida otra vez`() {
+        // La `PaymentActivity` real no se puede crear aquí (AppCompat pide recursos que estas pruebas no cargan). Lo que el guardia
+        // necesita de ella se comprobó con `javap` en el AAR 1.0.22, cuyo hash fija `AngelPaySdk119ReglaTest`:
+        //  - `onCreate` llama primero a `FragmentActivity.onCreate`, y ahí corre el guardia;
+        //  - después lee `angelpay_req` del Intent, y sin él (`ifnonnull`) arma «Missing request» y sale por `finishWith`
+        //    (`setResult(-1, …)` + `finish()`) sin tocar el lector;
+        //  - `onDestroy` sólo toca el hardware dentro de un `runCatching`, así que la pantalla sin armar no tumba la app.
+        // 🔴 Si esto cae porque llegó un SDK nuevo: NO cambies el número a ciegas. Vuelve a comprobar esos tres puntos con `javap`.
+        assertThat(AngelPaySDK.version()).isEqualTo("1.0.22")
+        assertThat(PaymentActivity::class.java.name).isEqualTo(PantallaDelSdkNoSeRestaura.NOMBRE)
+        // Por reflexión: el compañero del AAR está ofuscado y Kotlin no ve la constante.
+        assertThat(PaymentActivity::class.java.getField("EXTRA_REQ").get(null)).isEqualTo(PantallaDelSdkNoSeRestaura.EXTRA_DEL_COBRO)
+    }
+
+    @Test fun `I-1 la app registra el guardia`() {
+        // Hilt no se levanta en estas pruebas (ver NexgoFlavorHiltGraphTest): se lee la fuente.
+        assertThat(File("src/main/java/com/jaac/avoqado_tpv/AvoqadoTPVApplication.kt").readText())
+            .contains("registerActivityLifecycleCallbacks(PantallaDelSdkNoSeRestaura())")
     }
 
     // ── La guardia: `MainActivity` no se puede probar con Hilt aquí (ver NexgoFlavorHiltGraphTest); se lee su fuente ───────────

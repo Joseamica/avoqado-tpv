@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.features.verification.data.remote
 
-import com.google.gson.JsonParseException
 import com.jaac.avoqado_tpv.core.data.network.ActionableVerificationsResponse
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
@@ -10,9 +9,9 @@ import com.jaac.avoqado_tpv.core.data.network.SetVerificationNumberRequest
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
-import java.io.IOException
 import java.time.Instant
 import javax.inject.Inject
 
@@ -59,15 +58,18 @@ class ProofOfSaleRemote @Inject constructor(private val api: ApiService) {
         return body(api.setVerificationNumber(verificationId, request))
     }
 
-    /** true/false si el servidor contesta a tiempo; null sin red, con cualquier error o pasados [duplicateTimeoutMs]. */
+    /**
+     * true/false si el servidor contesta a tiempo; null sin red, con cualquier error o pasados [duplicateTimeoutMs].
+     * Nunca le lanza a quien pregunta (es una pregunta de cortesía), salvo la cancelación, que también es la del plazo.
+     */
     suspend fun isDuplicate(number: String, kind: String, verificationId: String?): Boolean? =
         withTimeoutOrNull(duplicateTimeoutMs) {
             try {
                 val response = api.checkLinkingNumber(number, kind, verificationId)
                 if (response.isSuccessful) response.body()?.duplicate else null
-            } catch (_: IOException) {
-                null
-            } catch (_: JsonParseException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
                 null
             }
         }

@@ -8,6 +8,9 @@ import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import io.mockk.coEvery
+import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -151,19 +154,37 @@ class ProofOfSaleRemoteTest {
         assertThat(remote.isDuplicate("5512345678", "linking", null)).isNull()
     }
 
+    @Test fun `isDuplicate nunca le lanza a quien pregunta, salvo la cancelacion`() {
+        val api = mockk<ApiService>()
+        coEvery { api.checkLinkingNumber(any(), any(), any()) } throws IllegalStateException("convertidor roto")
+        assertThat(runBlocking { ProofOfSaleRemote(api).isDuplicate("5512345678", "linking", null) }).isNull()
+
+        coEvery { api.checkLinkingNumber(any(), any(), any()) } throws CancellationException("se cerró la pantalla")
+        assertThrows(CancellationException::class.java) {
+            runBlocking { ProofOfSaleRemote(api).isDuplicate("5512345678", "linking", null) }
+        }
+    }
+
     @Test fun `actionable trae la pagina con total y cursor`() = runBlocking {
         json(200, """{"success":true,"total":205,"nextCursor":"abc","data":[{"id":"v1","paymentId":"p1","amount":100.0,"orderNumber":null,"date":"2026-11-01T00:00:00.000Z","serialNumbers":["8952"],"isPortabilidad":false,"photos":[],"requiredPhotos":1,"status":"FAILED","rejectionReasons":["X"],"reviewNotes":"n","linkingNumber":"5512345678","portedNumber":null,"linkingNumberLocked":true,"portedNumberLocked":false,"alerts":["LINKING_DUPLICATE"]}]}""")
         val page = remote.actionable("cur1")
         assertThat(servidor.takeRequest().path).isEqualTo("/tpv/verification/actionable?cursor=cur1")
         assertThat(page.total).isEqualTo(205)
         assertThat(page.nextCursor).isEqualTo("abc")
-        val d = page.data.single()
+        val d = page.data.orEmpty().single()
         assertThat(d.status).isEqualTo("FAILED")
         assertThat(d.linkingNumberLocked).isTrue()
         assertThat(d.alerts).containsExactly("LINKING_DUPLICATE")
         json(200, """{"success":true,"total":0,"nextCursor":null,"data":[]}""")
         remote.actionable(null)
         assertThat(servidor.takeRequest().path).isEqualTo("/tpv/verification/actionable")
+    }
+
+    @Test fun `actionable sin data se lee como lista vacia`() = runBlocking {
+        json(200, """{"success":true,"total":0}""")
+        val page = remote.actionable(null)
+        assertThat(page.data).isNull() // Gson no aplica el default de Kotlin: quien la use, .orEmpty()
+        assertThat(page.data.orEmpty()).isEmpty()
     }
 
     @Test fun `actionable sin modulo lleva MODULE_DISABLED`() {

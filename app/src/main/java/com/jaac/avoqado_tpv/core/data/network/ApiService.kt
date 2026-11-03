@@ -1935,7 +1935,7 @@ data class VerificationStatusesResponse(
 /** GET tpv/verification/actionable: las PENDING y FAILED del promotor, en el formato del detalle. */
 data class ActionableVerificationsResponse(
     val success: Boolean,
-    val data: List<VerificationDetailDto> = emptyList(),
+    val data: List<VerificationDetailDto>? = null, // Gson ignora el default de Kotlin: quien la lea, .orEmpty()
     val total: Int? = null,
     val nextCursor: String? = null,
 )

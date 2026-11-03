@@ -69,7 +69,7 @@ class MigracionV44RoomTest {
         val migrated = DatabaseModule.provideDatabase(context)
         try {
             val sql = migrated.openHelper.readableDatabase
-            assertThat(sql.version).isEqualTo(44)
+            assertThat(sql.version).isEqualTo(45) // la cadena sigue hasta la v45 (B1, «ninguna duda»)
             for (table in OWNERS) {
                 val names = columns.getValue(table)
                 sql.query("SELECT ${names.joinToString { "`$it`" }} FROM `$table` ORDER BY rowid").use { c ->

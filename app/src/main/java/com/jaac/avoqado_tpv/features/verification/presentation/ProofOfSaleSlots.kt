@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.verification.presentation
 
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
@@ -28,6 +29,12 @@ const val PROOF_QUEUED_MESSAGE = "Se subirá sola"
 const val PROOF_OFFLINE_MESSAGE = "Sin conexión: la foto y el número se guardaron en la terminal y se subirán solos"
 const val PROOF_FAILED_MESSAGE = "No se pudo subir: tómala de nuevo"
 const val PROOF_SALE_QUEUED_MESSAGE = "La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre"
+
+/**
+ * El `paymentId` con el que se puede encolar la foto, o null si la venta todavía no está registrada. Un id vacío cuenta
+ * como ausente: el S6 de la Nexgo arma el recibo con `serverPaymentId ?: ""`, y esa fila el servidor la rechazaría.
+ */
+fun proofOfSalePaymentId(receipt: PaymentReceipt?): String? = receipt?.paymentId?.takeIf { it.isNotBlank() }
 
 /** El estado de la ranura según el desenlace final de su fila en la cola (C4). */
 fun proofSlotStateFor(outcome: String): ProofSlotState = when (outcome) {

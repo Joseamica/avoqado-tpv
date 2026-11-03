@@ -376,7 +376,7 @@ fun AngelPayPaymentScreen(
                 val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
                 val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
                 val proofSlotStates by viewModel.proofSlotStates.collectAsStateWithLifecycle()
-                val proofPaymentId = successState.receipt?.paymentId
+                val proofPaymentId = com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId(successState.receipt)
                 AngelPaySuccessContent(
                     state = successState,
                     showReceiptScreen = viewModel.showReceiptScreen,

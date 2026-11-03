@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
@@ -9,6 +10,7 @@ import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED
 import com.jaac.avoqado_tpv.features.verification.presentation.ProofOfSaleSlots
 import com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
+import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -22,6 +24,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import java.io.File
+import java.math.BigDecimal
 
 /**
  * Bloque 0 en el cobro: la foto de comprobante ya no se sube desde la pantalla. [ProofOfSaleSlots] es lo que usan los
@@ -220,5 +223,14 @@ class ProofOfSaleBlock0Test {
     @Test fun `en la Nexgo sin paymentId la pantalla manda a Pendientes con el texto exacto`() {
         assertThat(PROOF_SALE_QUEUED_MESSAGE)
             .isEqualTo("La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre")
+    }
+
+    @Test fun `un paymentId vacio cuenta como venta sin registrar - la camara no encola una fila que el servidor rechaza`() {
+        fun recibo(id: String) = PaymentReceipt(paymentId = id, receiptUrl = "", accessKey = "", amount = BigDecimal.TEN, tipAmount = BigDecimal.ZERO)
+        // El S6 de la Nexgo arma el recibo con `fila.serverPaymentId ?: ""`.
+        assertThat(proofOfSalePaymentId(recibo(""))).isNull()
+        assertThat(proofOfSalePaymentId(recibo("   "))).isNull()
+        assertThat(proofOfSalePaymentId(null)).isNull()
+        assertThat(proofOfSalePaymentId(recibo("pay-1"))).isEqualTo("pay-1")
     }
 }

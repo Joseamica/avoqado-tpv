@@ -79,6 +79,7 @@ import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
+import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import java.io.File
@@ -897,19 +898,19 @@ fun PaymentScreen(
                                 onLoadRecentCustomers = viewModel::loadRecentCustomersForReceipt,
                                 onResetCustomerSearch = viewModel::resetCustomerSearch,
                                 // 📸 PROOF-OF-SALE: Show camera FAB when SERIALIZED_INVENTORY is active and we have paymentId
-                                showProofOfSaleButton = showProofOfSale && currentState.receipt?.paymentId != null,
+                                showProofOfSaleButton = showProofOfSale && proofOfSalePaymentId(currentState.receipt) != null,
                                 isPortabilidad = isPortabilidadState,
                                 proofOfSaleComplete = proofOfSaleComplete,
                                 // 📸 Bloque 0: el estado de cada ranura, o a «Pendientes» si la venta quedó en cola sin paymentId.
                                 proofOfSaleMessage = when {
                                     !showProofOfSale -> null
-                                    currentState.receipt?.paymentId != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
+                                    proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
                                     currentState.pendingSyncMessage != null -> PROOF_SALE_QUEUED_MESSAGE
                                     else -> null
                                 },
                                 onProofOfSalePhotoTaken = { photoPath, slot ->
                                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker.
-                                    currentState.receipt?.paymentId?.let { paymentId ->
+                                    proofOfSalePaymentId(currentState.receipt)?.let { paymentId ->
                                         viewModel.confirmProofOfSalePhoto(photoPath, paymentId, slot, number = null)
                                     }
                                 },
@@ -2450,7 +2451,7 @@ private fun PaymentSuccessContent(
     // 📸 Show loading overlay during proof-of-sale upload
     if (isUploadingProofOfSale) {
         com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay(
-            message = "Subiendo foto de comprobante..."
+            message = "Guardando foto…"
         )
     }
 

@@ -15,6 +15,7 @@
 - **[Reportes] Los reportes de días anteriores ya no piden plan**: cambiar de día, la comparación y la pestaña Historial pedían «Plan Pro» y, pasada la medianoche, un negocio sin plan ya no podía ver lo que vendió ayer (founder, 2-nov). Ahora todos los reportes de la terminal se ven en cualquier plan
 
 ### **Fixed**
+- **[PlayTelecom] [Nexgo] La cámara del comprobante ya no encola una foto sin venta registrada**: cuando el servidor confirmaba el cobro sin decir su pago (recibo con id vacío), la foto se guardaba en una fila que el servidor iba a rechazar. Ahora un id vacío cuenta como «la venta quedó en cola» (manda a «Pendientes»), igual en la PAX. El aviso mientras se guarda dice «Guardando foto…»
 - **[Pruebas] `ShiftPaymentBarrierRoomTest` ya no se cuelga de vez en cuando**: el ViewModel de Caja corría en los hilos de Room con `UnconfinedTestDispatcher` y dos corrutinas podían cruzar sus escrituras del estado (1 minuto colgada, 2 de 100 con la CPU ocupada). Ahora corre en un solo hilo con `StandardTestDispatcher`, como en la terminal. Sólo cambia la prueba
 
 ---

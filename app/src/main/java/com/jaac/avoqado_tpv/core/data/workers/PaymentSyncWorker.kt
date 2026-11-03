@@ -107,6 +107,8 @@ class PaymentSyncWorker @AssistedInject constructor(
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository? = null,
     private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
     private val tableSyncCoordinator: com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator,
+    /** Cola de fotos de comprobante y números de vinculación; último y con default porque las pruebas construyen por posición. */
+    private val proofOfSaleQueueRepository: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -212,6 +214,8 @@ class PaymentSyncWorker @AssistedInject constructor(
             // 💸 Los reembolsos van DESPUÉS de los cobros: un reembolso apunta al pago original
             // por su id de servidor, así que primero tiene que existir el pago allá.
             drainRefunds()
+            // 📸 Las fotos de comprobante van al final: cuelgan de un pago que ya tiene que existir en el servidor.
+            drainProofOfSale()
             sessionProgress += shiftRepository?.sincronizarCierresLocales() ?: 0
             if ((tableProgress.resolved > 0 && tableProgress.moreAfterLimit) ||
                 (paymentProgress > 0 && batch.size == MAX_PAYMENTS_PER_RUN && paymentQueueRepository.getPendingCount() > 0) ||
@@ -574,6 +578,17 @@ class PaymentSyncWorker @AssistedInject constructor(
                 payment.referenceNumber,
                 payment.queueId,
             )
+        }
+    }
+
+    /** 📸 Cola de fotos/números de comprobante. Su fallo nunca tumba al worker (cada fila ya se aísla adentro). */
+    private suspend fun drainProofOfSale() {
+        try {
+            proofOfSaleQueueRepository?.drain()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [Proof Sync] No se pudo drenar la cola de comprobantes")
         }
     }
 

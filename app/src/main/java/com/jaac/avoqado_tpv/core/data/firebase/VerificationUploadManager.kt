@@ -275,6 +275,21 @@ class VerificationUploadManager @Inject constructor(
     }
 
     /**
+     * Sube una foto (comprimida) a una ruta dada, sin el prefijo de ambiente: la cola de comprobantes arma la suya,
+     * única por fila. La cancelación pasa tal cual; cualquier otro fallo vuelve como `Result.failure`.
+     */
+    suspend fun uploadToPath(localPath: String, path: String): Result<String> = try {
+        val photoRef = storageRef.child(buildStoragePath(path))
+        photoRef.putBytes(compressImage(localPath)).await()
+        Result.success(photoRef.downloadUrl.await().toString())
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "📸 [$TAG] Upload to $path failed")
+        Result.failure(e)
+    }
+
+    /**
      * Compress image to reduce upload size and storage costs.
      *
      * **Compression Strategy:**

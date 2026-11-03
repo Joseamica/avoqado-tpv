@@ -5,7 +5,12 @@ import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.NumberCheckResponse
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
+import androidx.compose.ui.window.DialogProperties
+import com.jaac.avoqado_tpv.features.payment.presentation.components.proofPreviewDialogProperties
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LINKING_NUMBER_LOCKED_TEXT
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts
+import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberConfirmText
+import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberDisplay
 import com.jaac.avoqado_tpv.features.verification.presentation.components.canConfirmLinkingNumber
 import com.jaac.avoqado_tpv.features.verification.presentation.components.isValidLinkingNumber
 import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberInput
@@ -20,6 +25,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import retrofit2.Response
+import java.io.File
 import java.io.IOException
 
 /**
@@ -148,5 +154,71 @@ class NumberCaptureControllerTest {
         backgroundScope.submitLinkingNumber("551234567", NumberKind.LINKING, null, capture = null) { guardados += it }
 
         assertThat(guardados).containsExactly("551234567")
+    }
+
+    // ── Ronda de arreglos 1 ────────────────────────────────────────────────────
+
+    @Test fun `C7r1 con el interruptor apagado la ventana de la foto es exactamente la de antes de C7`() {
+        val antes = DialogProperties(usePlatformDefaultWidth = false)
+        val apagado = proofPreviewDialogProperties(withNumberField = false)
+        val conCampo = proofPreviewDialogProperties(withNumberField = true)
+
+        assertThat(listOf(apagado.usePlatformDefaultWidth, apagado.decorFitsSystemWindows, apagado.dismissOnBackPress, apagado.dismissOnClickOutside, apagado.securePolicy))
+            .isEqualTo(listOf(antes.usePlatformDefaultWidth, antes.decorFitsSystemWindows, antes.dismissOnBackPress, antes.dismissOnClickOutside, antes.securePolicy))
+        assertThat(apagado.decorFitsSystemWindows).isTrue()
+        // Sólo con el campo: sin decor, para que el teclado encoja la foto en vez de tapar el número.
+        assertThat(conCampo.decorFitsSystemWindows).isFalse()
+        assertThat(conCampo.usePlatformDefaultWidth).isFalse()
+        // El relleno de insets va con la misma condición (con el interruptor apagado, el Column es el de antes).
+        val dialogo = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/components/ProofOfSaleComponents.kt").readText()
+        assertThat(dialogo).contains("if (withNumberField) Modifier.safeDrawingPadding() else Modifier")
+        assertThat(Regex("""\.safeDrawingPadding\(\)""").findAll(dialogo).count()).isEqualTo(1)
+    }
+
+    @Test fun `C7r1 lo escrito y no confirmado sobrevive Retomar, por ranura`() {
+        val borradores = LinkingNumberDrafts()
+
+        borradores.update("VINCULACION", "5512345678")
+
+        // «Retomar» cierra la vista previa; al volver se abre con lo escrito, no con lo confirmado antes.
+        assertThat(borradores.initial("VINCULACION", confirmed = "5500000000")).isEqualTo("5512345678")
+        assertThat(borradores.initial("PORTABILIDAD", confirmed = "5598765432")).isEqualTo("5598765432")
+        assertThat(borradores.initial("PORTABILIDAD", confirmed = null)).isNull()
+        borradores.clear("VINCULACION")
+        assertThat(borradores.initial("VINCULACION", confirmed = "5512345678")).isEqualTo("5512345678")
+    }
+
+    @Test fun `C7r1 las cuatro vistas previas con campo guardan lo escrito para Retomar`() {
+        val pantallas = listOf(
+            "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt",
+            "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/angelpay/AngelPaySuccessContent.kt",
+            "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PendingVerificationsScreen.kt",
+            "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/SaleCorrectionScreen.kt",
+        )
+        pantallas.forEach { ruta ->
+            val texto = File(ruta).readText()
+            val conCampo = Regex("""numberLabel = """).findAll(texto).count()
+            assertThat(conCampo).isAtLeast(1)
+            assertThat(Regex("""onNumberChange = """).findAll(texto).count()).isEqualTo(conCampo)
+        }
+    }
+
+    @Test fun `C7r1 mientras pregunta el boton dice Revisando`() {
+        assertThat(linkingNumberConfirmText("Confirmar", checking = true)).isEqualTo("Revisando…")
+        assertThat(linkingNumberConfirmText("Confirmar", checking = false)).isEqualTo("Confirmar")
+        assertThat(linkingNumberConfirmText("Guardar", checking = true)).isEqualTo("Revisando…")
+    }
+
+    @Test fun `C7r1 solo cuentan los digitos ASCII - un 5 de ancho completo no entra`() {
+        assertThat(linkingNumberInput("", "\uFF15\uFF1512345678")).isEqualTo("12345678")
+        assertThat(linkingNumberInput("", "\u0665\u0665\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668")).isEmpty()
+        assertThat(isValidLinkingNumber("\uFF15\uFF15\uFF11\uFF12\uFF13\uFF14\uFF15\uFF16\uFF17\uFF18")).isFalse()
+        assertThat(isValidLinkingNumber("55123456\uFF17\uFF18")).isFalse()
+    }
+
+    @Test fun `C7r1 sin numero se dice sin capturar, en el campo bloqueado y en la tarjeta`() {
+        assertThat(linkingNumberDisplay(null)).isEqualTo("sin capturar")
+        assertThat(linkingNumberDisplay("")).isEqualTo("sin capturar")
+        assertThat(linkingNumberDisplay("5512345678")).isEqualTo("5512345678")
     }
 }

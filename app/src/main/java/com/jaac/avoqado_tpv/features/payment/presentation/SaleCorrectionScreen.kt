@@ -54,6 +54,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSale
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts
 import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 
@@ -106,6 +107,8 @@ fun SaleCorrectionScreen(
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
     // «Corregir número»: la ranura cuyo número se está corrigiendo (sin foto).
     var correctingSlot by remember { mutableStateOf<ProofSlot?>(null) }
+    // Lo escrito y no confirmado, por ranura: sobrevive «Retomar» (la cámara cierra la vista previa).
+    val numberDrafts = remember { LinkingNumberDrafts() }
 
     fun displayLabel(label: String): String = when (label) {
         "Vinculacion" -> "1. Vinculación"
@@ -138,12 +141,14 @@ fun SaleCorrectionScreen(
             photoPath = photoPath,
             title = displayLabel(selectedLabel),
             numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = current?.number,
+            initialNumber = numberDrafts.initial(slot.name, current?.number),
             numberLocked = current?.locked == true,
             numberKind = slot.numberKind,
             verificationId = uiState.detail?.id,
             numberCapture = viewModel.numberCapture,
+            onNumberChange = { numberDrafts.update(slot.name, it) },
             onConfirm = { number ->
+                numberDrafts.clear(slot.name)
                 capturedPhotoPath = null
                 if (photoPath.isNotEmpty()) {
                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.

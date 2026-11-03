@@ -56,4 +56,27 @@ class SerializedSaleOfflineTest {
         v.onBarcodeScanned(iccid)
         assertThat(v.uiState.value.error).isEqualTo("SIM no encontrada")
     }
+
+    @Test
+    fun `un IOException al confirmar la venta dice que se necesita senal, no el error crudo`() {
+        coEvery { repo.quickSell(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(IOException("timeout"))
+        val v = vm()
+
+        v.onConfirmSale {}
+
+        assertThat(v.uiState.value.error).isEqualTo("Sin conexión: para vender una SIM se necesita señal")
+        assertThat(v.uiState.value.isLoading).isFalse()
+    }
+
+    @Test
+    fun `al confirmar, un error del servidor sigue mostrando su mensaje`() {
+        coEvery { repo.quickSell(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(Exception("Este SIM ya fue vendido"))
+        val v = vm()
+
+        v.onConfirmSale {}
+
+        assertThat(v.uiState.value.error).isEqualTo("Este SIM ya fue vendido")
+    }
 }

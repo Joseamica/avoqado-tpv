@@ -39,9 +39,14 @@ const val LINKING_NUMBER_MAX_DIGITS = 10
 const val LINKING_NUMBER_LOCKED_TEXT = "Corregido por el back-office"
 const val LINKING_NUMBER_NEEDS_SALE_TEXT = "Disponible cuando se registre la venta"
 const val CORRECT_NUMBER_TEXT = "Corregir número"
+const val LINKING_NUMBER_CHECKING_TEXT = "Revisando…"
+const val LINKING_NUMBER_EMPTY_TEXT = "sin capturar"
+
+/** Sin controlador (pruebas viejas) nunca está preguntando. Lo usan las dos pantallas del número. */
+internal val NOT_CHECKING: StateFlow<Boolean> = MutableStateFlow(false)
 
 /** 9 o 10 dígitos (Isaac, 2-nov: «mínimo 9 y no más de 10»). El de 9 se sube así y el back-office lo ve marcado. */
-fun isValidLinkingNumber(digits: String): Boolean = digits.length in 9..LINKING_NUMBER_MAX_DIGITS && digits.all(Char::isDigit)
+fun isValidLinkingNumber(digits: String): Boolean = digits.length in 9..LINKING_NUMBER_MAX_DIGITS && digits.all(::isAsciiDigit)
 
 /**
  * Lo que queda en el campo después de escribir o pegar [typed]: sólo dígitos y nunca más de 10. Si lo pegado tiene más
@@ -49,9 +54,39 @@ fun isValidLinkingNumber(digits: String): Boolean = digits.length in 9..LINKING_
  */
 fun linkingNumberInput(current: String, typed: String, locked: Boolean = false): String {
     if (locked) return current
-    val digits = typed.filter(Char::isDigit)
+    val digits = typed.filter(::isAsciiDigit)
     return if (digits.length <= LINKING_NUMBER_MAX_DIGITS) digits else current
 }
+
+/**
+ * Lo escrito y todavía no confirmado, por ranura ([key]: la ranura, o venta + ranura en «Pendientes»). «Retomar» una foto
+ * borrosa cierra la vista previa; al volver, el campo trae lo escrito y el promotor no teclea los 10 dígitos otra vez.
+ * Vive lo que vive la pantalla (es de la pantalla, no se guarda en la terminal: lo confirmado sí va a la cola).
+ */
+class LinkingNumberDrafts {
+    private val drafts = HashMap<String, String>()
+
+    /** Lo escrito si hay; si no, lo ya confirmado. */
+    fun initial(key: String, confirmed: String?): String? = drafts[key] ?: confirmed
+
+    fun update(key: String, value: String) {
+        drafts[key] = value
+    }
+
+    /** Al confirmar: desde ahí manda lo confirmado. */
+    fun clear(key: String) {
+        drafts.remove(key)
+    }
+}
+
+/** Mientras pregunta por repetido (hasta 3 s) el botón lo dice, no sólo se pone en gris. */
+fun linkingNumberConfirmText(base: String, checking: Boolean): String = if (checking) LINKING_NUMBER_CHECKING_TEXT else base
+
+/** Sin número se dice igual en el campo bloqueado y en la tarjeta. */
+fun linkingNumberDisplay(value: String?): String = value?.takeIf { it.isNotEmpty() } ?: LINKING_NUMBER_EMPTY_TEXT
+
+/** Sólo 0-9: `isDigit` también acepta «５» (ancho completo) o «٥» (arábigo), que el servidor rechaza. */
+private fun isAsciiDigit(c: Char): Boolean = c in '0'..'9'
 
 /** «Confirmar» con el campo: 9 o 10 dígitos. Sin salida «no se lee» (la quitó el cliente). Bloqueado manda el back-office. */
 fun canConfirmLinkingNumber(value: String, locked: Boolean): Boolean = locked || isValidLinkingNumber(value)
@@ -85,7 +120,7 @@ fun LinkingNumberField(
     if (locked) {
         Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(text = label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(text = value.ifEmpty { "—" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(text = linkingNumberDisplay(value), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(text = LINKING_NUMBER_LOCKED_TEXT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
@@ -148,14 +183,12 @@ fun LinkingNumberDialog(
             TextButton(
                 onClick = { scope.submitLinkingNumber(value, kind, verificationId, capture, onConfirm) },
                 enabled = canConfirmLinkingNumber(value, locked = false) && !checking,
-            ) { Text("Guardar") }
+            ) { Text(linkingNumberConfirmText("Guardar", checking)) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
     DuplicatePromptDialog(capture)
 }
-
-private val NOT_CHECKING: StateFlow<Boolean> = MutableStateFlow(false)
 
 @Preview(widthDp = 360, heightDp = 640, name = "Número de vinculación - PAX A910S")
 @Composable

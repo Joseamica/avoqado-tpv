@@ -80,6 +80,7 @@ import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScree
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts
 import com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
@@ -1665,6 +1666,7 @@ private fun PaymentSuccessContent(
     var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
     var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }  // which photo camera is capturing
     var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }  // photo being previewed for retake
+    val numberDrafts = remember { LinkingNumberDrafts() }  // 📸 C7: lo escrito sobrevive «Retomar»
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -2396,11 +2398,13 @@ private fun PaymentSuccessContent(
         ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
             numberLabel = currentPhotoLabel.numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = proofNumber(currentPhotoLabel),
+            initialNumber = numberDrafts.initial(currentPhotoLabel.name, proofNumber(currentPhotoLabel)),
             numberKind = currentPhotoLabel.numberKind,
             verificationId = proofVerificationId,
             numberCapture = numberCapture,
+            onNumberChange = { numberDrafts.update(currentPhotoLabel.name, it) },
             onConfirm = { number ->
+                numberDrafts.clear(currentPhotoLabel.name)
                 Timber.d("📸 [PROOF-OF-SALE] Photo confirmed ($currentPhotoLabel), starting upload")
                 // Store path in the correct slot
                 if (currentPhotoLabel == ProofSlot.VINCULACION) {

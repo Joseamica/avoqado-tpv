@@ -278,7 +278,8 @@ class PendingVerificationsViewModelTest {
             numero to "Se subirá solo",
             numero.copy(syncStatus = "NEEDS_ATTENTION", outcome = "SALE_ALREADY_APPROVED") to "La venta ya estaba aprobada; este número no se guardó",
             numero.copy(syncStatus = "FAILED", outcome = "SALE_REJECTED") to "La venta fue rechazada; este número no se guardó",
-            numero.copy(syncStatus = "NEEDS_ATTENTION", outcome = "NUMBER_DISABLED") to "El número no se guardó",
+            numero.copy(syncStatus = "NEEDS_ATTENTION", outcome = "NUMBER_DISABLED") to
+                "El número no se guardó: esta función está apagada para tu organización",
             numero.copy(syncStatus = "FAILED", outcome = "PERMANENT") to "No se pudo guardar el número: corrígelo de nuevo",
         )
         casos.forEach { (row, texto) -> assertThat(queuedCaptureMessage(row)).isEqualTo(texto) }

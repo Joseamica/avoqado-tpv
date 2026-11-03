@@ -54,11 +54,11 @@ import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureCont
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberKind
 import com.jaac.avoqado_tpv.features.verification.presentation.components.DuplicatePromptDialog
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberField
+import com.jaac.avoqado_tpv.features.verification.presentation.components.NOT_CHECKING
 import com.jaac.avoqado_tpv.features.verification.presentation.components.canConfirmLinkingNumber
+import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberConfirmText
 import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberInput
 import com.jaac.avoqado_tpv.features.verification.presentation.components.submitLinkingNumber
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Proof-of-sale (post-payment, non-blocking) photo capture UI.
@@ -215,15 +215,17 @@ fun ProofOfSalePhotoPreviewDialog(
     numberKind: NumberKind = NumberKind.LINKING,
     verificationId: String? = null,
     numberCapture: NumberCaptureController? = null,
+    /** Cada cambio del campo, para guardar el borrador de la ranura: «Retomar» no obliga a escribirlo otra vez. */
+    onNumberChange: (String) -> Unit = {},
 ) {
+    val withNumberField = numberLabel != null
     var number by remember(photoPath) { mutableStateOf(linkingNumberInput("", initialNumber.orEmpty())) }
     val scope = rememberCoroutineScope()
     val checking by (numberCapture?.checking ?: NOT_CHECKING).collectAsStateWithLifecycle()
     val confirmEnabled = (numberLabel == null || canConfirmLinkingNumber(number, numberLocked)) && !checking
     Dialog(
         onDismissRequest = onDismiss,
-        // Sin decor: el teclado del número encoge la foto (imePadding) en vez de tapar el campo.
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        properties = proofPreviewDialogProperties(withNumberField),
     ) {
         Surface(
             modifier = Modifier
@@ -234,7 +236,7 @@ fun ProofOfSalePhotoPreviewDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .safeDrawingPadding(),
+                    .then(if (withNumberField) Modifier.safeDrawingPadding() else Modifier),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(
@@ -286,7 +288,10 @@ fun ProofOfSalePhotoPreviewDialog(
                         LinkingNumberField(
                             label = label,
                             value = number,
-                            onValueChange = { number = it },
+                            onValueChange = {
+                                number = it
+                                onNumberChange(it)
+                            },
                             locked = numberLocked,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
@@ -332,7 +337,7 @@ fun ProofOfSalePhotoPreviewDialog(
                             modifier = Modifier.size(20.dp),
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(confirmText)
+                        Text(linkingNumberConfirmText(confirmText, checking))
                     }
                 }
             }
@@ -342,4 +347,13 @@ fun ProofOfSalePhotoPreviewDialog(
     }
 }
 
-private val NOT_CHECKING: StateFlow<Boolean> = MutableStateFlow(false)
+/**
+ * La ventana de la vista previa. Sin campo (interruptor apagado, o sólo ver la foto) es EXACTAMENTE la de antes de C7.
+ * Con el campo va sin decor, para que el teclado encoja la foto (`safeDrawingPadding`) en vez de tapar el número.
+ */
+fun proofPreviewDialogProperties(withNumberField: Boolean): DialogProperties =
+    if (withNumberField) {
+        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    } else {
+        DialogProperties(usePlatformDefaultWidth = false)
+    }

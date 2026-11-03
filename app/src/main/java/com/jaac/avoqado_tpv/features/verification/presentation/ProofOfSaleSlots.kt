@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult
+import com.jaac.avoqado_tpv.features.verification.data.local.PROOF_ROW_NUMBER_ONLY
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -58,7 +59,7 @@ fun proofSlotStateFor(result: ProofSyncResult, slot: ProofSlot): ProofSlotState 
 
 /** Lo que dice una captura de la cola en «Pendientes» y en la corrección, mientras siga ahí. */
 fun queuedCaptureMessage(row: ProofOfSaleQueueEntity): String = when {
-    row.kind == KIND_NUMBER_ONLY -> numberOnlyMessage(row) // «Corregir número»: no hay foto de por medio
+    row.kind == PROOF_ROW_NUMBER_ONLY -> numberOnlyMessage(row) // «Corregir número»: no hay foto de por medio
     canDiscardCapture(row) ->
         (proofSlotStateFor(row.outcome.orEmpty()) as? ProofSlotState.NeedsAttention)?.message ?: PROOF_FAILED_MESSAGE
     else -> PROOF_QUEUED_MESSAGE // PENDING o SYNCING: el worker la sube
@@ -69,14 +70,12 @@ private fun numberOnlyMessage(row: ProofOfSaleQueueEntity): String = when {
     !canDiscardCapture(row) -> "Se subirá solo"
     row.outcome == "SALE_ALREADY_APPROVED" -> "La venta ya estaba aprobada; este número no se guardó"
     row.outcome == "SALE_REJECTED" -> "La venta fue rechazada; este número no se guardó"
-    row.outcome == "NUMBER_DISABLED" -> "El número no se guardó"
+    row.outcome == "NUMBER_DISABLED" -> "El número no se guardó: esta función está apagada para tu organización"
     else -> "No se pudo guardar el número: corrígelo de nuevo" // PERMANENT
 }
 
 /** Una captura de la cola que lleva foto (las de «Corregir número» sólo llevan el número). */
-fun isPhotoCapture(row: ProofOfSaleQueueEntity): Boolean = row.kind != KIND_NUMBER_ONLY
-
-private const val KIND_NUMBER_ONLY = "NUMBER_ONLY"
+fun isPhotoCapture(row: ProofOfSaleQueueEntity): Boolean = row.kind != PROOF_ROW_NUMBER_ONLY
 
 /** «Descartar» sólo en lo que ya no se va a subir solo: lo mismo que acepta [ProofOfSaleQueueRepository.discard]. */
 fun canDiscardCapture(row: ProofOfSaleQueueEntity): Boolean = row.syncStatus == "FAILED" || row.syncStatus == "NEEDS_ATTENTION"

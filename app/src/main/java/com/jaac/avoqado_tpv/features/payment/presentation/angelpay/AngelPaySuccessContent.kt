@@ -147,6 +147,7 @@ fun AngelPaySuccessContent(
     var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }
     var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
     var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }
+    val numberDrafts = remember { com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts() }
     var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
     var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
 
@@ -723,11 +724,13 @@ fun AngelPaySuccessContent(
         com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
             numberLabel = numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = proofNumber(currentPhotoLabel),
+            initialNumber = numberDrafts.initial(currentPhotoLabel.name, proofNumber(currentPhotoLabel)),
             numberKind = numberKind,
             verificationId = proofVerificationId,
             numberCapture = numberCapture,
+            onNumberChange = { numberDrafts.update(currentPhotoLabel.name, it) },
             onConfirm = { number ->
+                numberDrafts.clear(currentPhotoLabel.name)
                 if (currentPhotoLabel == ProofSlot.VINCULACION) {
                     lineaPhotoPath = photoPath
                 } else {

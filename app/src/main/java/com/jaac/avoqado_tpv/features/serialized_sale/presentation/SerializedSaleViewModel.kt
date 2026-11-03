@@ -327,7 +327,12 @@ class SerializedSaleViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             simNotAcceptedError = notAccepted,
-                            error = if (notAccepted) null else raw.ifEmpty { "Error al procesar venta" }
+                            error = when {
+                                notAccepted -> null
+                                // Igual que al escanear: sin señal es un estado normal, no el error crudo
+                                error is java.io.IOException -> SIN_SENAL_AL_ESCANEAR
+                                else -> raw.ifEmpty { "Error al procesar venta" }
+                            }
                         )
                     }
                 }

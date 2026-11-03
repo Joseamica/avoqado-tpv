@@ -12,6 +12,8 @@ import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.verification.data.local.ActionableSaleCacheDao
+import com.jaac.avoqado_tpv.features.verification.data.local.PROOF_ROW_NUMBER_ONLY
+import com.jaac.avoqado_tpv.features.verification.data.local.PROOF_ROW_PHOTO
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueDao
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
@@ -100,11 +102,11 @@ class ProofOfSaleQueueRepository @Inject constructor(
         val key = UUID.randomUUID().toString()
         val file = File(File(context.filesDir, DIR), "$key.jpg")
         File(c.sourcePath).copyTo(file, overwrite = true)
-        insert(key, KIND_PHOTO, c.venueId, c.venueSlug, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number)
+        insert(key, PROOF_ROW_PHOTO, c.venueId, c.venueSlug, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number)
     }
 
     suspend fun enqueueNumberOnly(c: NumberCapture): String = withContext(NonCancellable + Dispatchers.IO) {
-        insert(UUID.randomUUID().toString(), KIND_NUMBER_ONLY, c.venueId, null, c.staffId, c.paymentId, c.verificationId, c.slot, null, c.number)
+        insert(UUID.randomUUID().toString(), PROOF_ROW_NUMBER_ONLY, c.venueId, null, c.staffId, c.paymentId, c.verificationId, c.slot, null, c.number)
     }
 
     fun observeStaff(staffId: String): Flow<List<ProofOfSaleQueueEntity>> = queueDao.observeStaff(staffId)
@@ -175,7 +177,7 @@ class ProofOfSaleQueueRepository @Inject constructor(
     /** @return true si la fila quedó resuelta (entregada, a la vista o definitiva); false si se soltó para reintentar. */
     private suspend fun sync(row: ProofOfSaleQueueEntity, token: String): Boolean {
         val response = try {
-            if (row.kind == KIND_NUMBER_ONLY) remote.submitNumber(row) else remote.submitPhoto(row, uploadPhoto(row, token))
+            if (row.kind == PROOF_ROW_NUMBER_ONLY) remote.submitNumber(row) else remote.submitPhoto(row, uploadPhoto(row, token))
         } catch (e: CancellationException) {
             throw e
         } catch (e: ClaimLostException) {
@@ -275,7 +277,7 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
     /** Suma la ranura a `delivered_slots` de la venta guardada (sólo filas PHOTO). Va dentro de la transacción del llamador. */
     private suspend fun markDelivered(row: ProofOfSaleQueueEntity) {
-        if (row.kind != KIND_PHOTO) return
+        if (row.kind != PROOF_ROW_PHOTO) return
         val sale = cacheDao.get(row.paymentId) ?: return
         val slots = (sale.deliveredSlots.split(',').filter { it.isNotBlank() } + row.slot).distinct().joinToString(",")
         cacheDao.setDeliveredSlots(row.paymentId, slots)
@@ -292,8 +294,6 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
     private companion object {
         const val DIR = "proof_of_sale"
-        const val KIND_PHOTO = "PHOTO"
-        const val KIND_NUMBER_ONLY = "NUMBER_ONLY"
         const val STATUS_FAILED = "FAILED"
         const val STATUS_NEEDS_ATTENTION = "NEEDS_ATTENTION"
 

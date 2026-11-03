@@ -90,6 +90,8 @@ import com.jaac.avoqado_tpv.features.verification.presentation.components.CORREC
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LINKING_NUMBER_LOCKED_TEXT
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LINKING_NUMBER_NEEDS_SALE_TEXT
 import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts
+import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberDisplay
 import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
 import com.jaac.avoqado_tpv.features.verification.presentation.queuedCaptureMessage
 import java.math.BigDecimal
@@ -145,6 +147,8 @@ fun PendingVerificationsScreen(
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
     // «Corregir número»: la venta y la ranura cuyo número se está corrigiendo (sin foto).
     var correcting by remember { mutableStateOf<Pair<String, ProofSlot>?>(null) }
+    // Lo escrito y no confirmado, por venta y ranura: sobrevive «Retomar» (la cámara cierra la vista previa).
+    val numberDrafts = remember { LinkingNumberDrafts() }
 
     // In-app CameraX camera (has close button — PAX system camera doesn't)
     if (showCamera) {
@@ -183,12 +187,14 @@ fun PendingVerificationsScreen(
                 else -> selectedLabel
             },
             numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = current?.number,
+            initialNumber = numberDrafts.initial("$selectedPaymentId/${slot.name}", current?.number),
             numberLocked = current?.locked == true,
             numberKind = slot.numberKind,
             verificationId = selected?.verificationId,
             numberCapture = viewModel.numberCapture,
+            onNumberChange = { numberDrafts.update("$selectedPaymentId/${slot.name}", it) },
             onConfirm = { number ->
+                numberDrafts.clear("$selectedPaymentId/${slot.name}")
                 capturedPhotoPath = null
                 val pId = selectedPaymentId
                 if (pId != null && photoPath.isNotEmpty()) {
@@ -661,7 +667,7 @@ private fun SlotNumberRow(slot: ProofSlot, number: SlotNumber, enabled: Boolean,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "${slot.numberKind.label}: ${number.number ?: "sin capturar"}",
+                text = "${slot.numberKind.label}: ${linkingNumberDisplay(number.number)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface
             )

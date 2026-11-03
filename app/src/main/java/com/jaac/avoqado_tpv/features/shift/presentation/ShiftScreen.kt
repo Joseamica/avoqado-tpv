@@ -108,6 +108,7 @@ fun ShiftScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val cerrandoCaja by viewModel.cerrandoCaja.collectAsStateWithLifecycle()
     val canOpenShift by viewModel.canOpenShift.collectAsStateWithLifecycle()
     val canCloseShift by viewModel.canCloseShift.collectAsStateWithLifecycle()
     val isCashReconciliationEnabled by viewModel.isCashReconciliationEnabled.collectAsStateWithLifecycle()
@@ -163,7 +164,7 @@ fun ShiftScreen(
                         financialShift = (state as? ShiftState.ShiftActive)?.shift?.takeIf { it.hasKnownFinancialTotals() })
                 } else when (val currentState = state) {
                 is ShiftState.Loading -> {
-                    AvoqadoLoadingOverlay(message = "Cargando turno de caja...")
+                    AvoqadoLoadingOverlay(message = textoDelCargando(cerrandoCaja))
                 }
 
                 is ShiftState.ShiftActive -> {
@@ -499,6 +500,9 @@ private fun NoActiveShiftContent(
 
 internal fun requiresCashReconciliationAcknowledgement(state: ShiftState): Boolean =
     state is ShiftState.ShiftClosed && state.reconciliationAction != null
+
+internal fun textoDelCargando(cerrandoCaja: Boolean): String =
+    if (cerrandoCaja) "Cerrando la caja..." else "Cargando turno de caja..."
 
 internal fun isShiftPullToRefreshEnabled(state: ShiftState): Boolean =
     state !is ShiftState.Loading && !requiresCashReconciliationAcknowledgement(state)

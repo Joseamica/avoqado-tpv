@@ -82,6 +82,10 @@ object AvisoDeCobrosPendientes {
     fun importeYAntiguedad(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
         "${pesos(totalCentavos)}, ${antiguedad(ahoraMillis - desdeMillis)}"
 
+    /** «$120.00 · hace 3 min»: el renglón de la lista del botón «No se cobró». */
+    fun renglonDeCobro(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
+        "${pesos(totalCentavos)} · ${antiguedad(ahoraMillis - desdeMillis)}"
+
     /**
      * 🔴 Decisión del founder (23-sep, «corrige y avisa»): lo que ve el cajero cuando la terminal se enteró TARDE de que un
      * cobro que dio por no cobrado SÍ pasó (el lector dijo «cancelado» y el banco aprobó un segundo después — Testarudo, 16-sep).

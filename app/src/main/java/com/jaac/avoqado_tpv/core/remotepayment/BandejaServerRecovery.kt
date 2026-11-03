@@ -42,13 +42,18 @@ class BandejaServerRecovery @Inject constructor(
      */
     data class Resultado(val consultadas: Int, val conciliadas: Int, val sinRespuesta: Int, val conErrorDelServidor: Int = 0)
 
-    suspend fun conciliar(venueId: String, now: Long = System.currentTimeMillis()): Resultado {
+    /**
+     * [soloLaSolicitud]: el banner pregunta por una a la vez, para que una lenta no tape a las demás. Pasa aunque no esté entre las 20 de
+     * la página, porque cerrar sigue revalidando dentro del UPDATE que sea huérfana, de este negocio y que esté PROCESSING.
+     */
+    suspend fun conciliar(venueId: String, now: Long = System.currentTimeMillis(), soloLaSolicitud: String? = null): Resultado {
         var consultadas = 0
         var conciliadas = 0
         var sinRespuesta = 0
         var conErrorDelServidor = 0
 
-        val candidatas = runCatching { dao.candidatasHuerfanas(venueId) }.getOrDefault(emptyList())
+        val candidatas = soloLaSolicitud?.let { listOf(HuerfanaDeBandeja(it, now)) }
+            ?: runCatching { dao.candidatasHuerfanas(venueId) }.getOrDefault(emptyList())
         for (fila in candidatas) {
             try {
                 val respuesta = api.getRequestStatus(venueId, fila.requestId)

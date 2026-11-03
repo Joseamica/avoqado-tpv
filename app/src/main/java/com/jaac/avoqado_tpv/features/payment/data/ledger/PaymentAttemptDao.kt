@@ -504,8 +504,8 @@ interface PaymentAttemptDao {
      * módulo ya pagó varias veces:
      *  1. `terminal_payment_request_id IS NULL` — sólo cobros locales. Los del POS conservan su camino, que
      *     además libera la ranura del servidor y deja su propia bitácora.
-     *  2. `state = 'INDETERMINADO'` — un cobro que quedó sin veredicto; el único llamador, la PAX, sólo pasa INDETERMINADO
-     *     (`puedeConciliarBlumon`). Nunca AUTORIZANDO (revisión final, M-4, 26-sep): puede ser un cobro en vuelo.
+     *  2. `state = 'INDETERMINADO'` — un cobro que quedó sin veredicto; su único llamador, `declareChecked`, sólo pasa INDETERMINADO
+     *     (`puedeDeclararseEnDuda`). Nunca AUTORIZANDO (revisión final, M-4, 26-sep): puede ser un cobro en vuelo.
      *  3. `host_approved` no verdadero — jamás sobre una aprobación del host: eso es dinero.
      *  4. `server_processor_evidence IS NOT 'APPROVED'` — el veto DURABLE manda sobre el testimonio de una persona.
      *  5. `server_answered_at IS NOT NULL` y sin veredicto con dinero — **primero el servidor tiene que haber
@@ -532,6 +532,51 @@ interface PaymentAttemptDao {
                   OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))"""
     )
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long): Int
+
+    /**
+     * 🔴 Botón «No se cobró» del banner verde (founder, 3-nov: «A»): a qué cobros se les puede afirmar que no se cobraron. Lista para
+     * ofrecer el botón, no para decidir: quien decide es el servidor o el CAS de [declararSinCobroLocal].
+     *
+     * **Intentos:** lo mismo que excluye [declararSinCobroLocal], salvo `terminal_payment_request_id` y `server_answered_at`, que deciden el
+     * camino; `kind = 'SALE'` y sin contradicción. Quedan fuera `AUTORIZANDO`, `HOST_RESPONDIO`, `AUTORIZADO` y `REGISTRO_FALLIDO`, y la
+     * cuarentena por reloj de ESTE proceso: nadie comprobó que el lector terminara. La declaración es de toda la solicitud, así que otro
+     * intento suyo corriendo o con dinero también la deja fuera: el servidor no sabe lo que la libreta sabe de un aprobado sin registrar.
+     *
+     * **Solicitudes de la bandeja:** `PROCESSING` sin NINGÚN intento, y sin efectivo o cripto arrancado. Más estricto que el aviso, que cuenta
+     * como «sin intento» a un `PREPARANDO` o un `KERNEL_ACTIVO`: el lector puede estar corriendo (la misma guarda de
+     * [com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao.conciliarHuerfanaConElServidorConResultado]).
+     *
+     * La ventana de 10 min va en Kotlin, con la misma constante del aviso ([DeclaracionDesdeElAviso.vigentes]).
+     */
+    @Query(
+        """SELECT * FROM (
+            SELECT d.attempt_id AS attempt_id, d.terminal_payment_request_id AS request_id,
+                (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at
+            FROM payment_attempts d
+            WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0 AND d.state = 'INDETERMINADO'
+            AND d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
+            AND (d.server_outcome IS NULL
+                 OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+            AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
+            -- Dentro de este FROM los nombres sin prefijo son los del hermano.
+            AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
+                WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
+                AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
+                     OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
+            ORDER BY d.created_at DESC LIMIT 50)
+        UNION ALL
+        SELECT * FROM (
+            SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
+                r.created_at AS desde_millis, NULL AS server_answered_at
+            FROM remote_payment_requests r
+            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+                WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+            ORDER BY r.created_at DESC LIMIT 50)
+        ORDER BY desde_millis DESC"""
+    )
+    fun observarCobrosDeclarables(venueId: String, processToken: String): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>>
 
     /**
      * SDK 1.0.19 (18-sep): la petición NO salió al host — lo acreditó el SDK de AngelPay (`authorizationAttempted = false`

@@ -134,9 +134,18 @@ class PaymentAttemptLedger(
 
     /** PAX operator recovery is never offered for a call still alive in this process. */
     fun puedeConciliarBlumon(fila: PaymentAttemptEntity, venueId: String): Boolean =
-        fila.venueId == venueId && !fila.legacyShadow && fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON &&
+        fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && puedeDeclararseEnDuda(fila, venueId)
+
+    /** La misma guarda para la PAX y la Nexgo: lo que usa la declaración revisada (`declareChecked`), abierta a la Nexgo por el banner verde. */
+    fun puedeDeclararseEnDuda(fila: PaymentAttemptEntity, venueId: String): Boolean =
+        fila.venueId == venueId && !fila.legacyShadow &&
+            (fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON || fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY) &&
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+
+    /** Lo que el banner verde puede ofrecer declarar: con el token de ESTE proceso, que sabe qué cuarentena por reloj sigue viva. */
+    fun observarCobrosDeclarables(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>> =
+        dao.observarCobrosDeclarables(venueId, processToken)
 
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.

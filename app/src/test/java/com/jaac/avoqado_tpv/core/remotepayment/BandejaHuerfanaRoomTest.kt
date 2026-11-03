@@ -163,6 +163,49 @@ class BandejaHuerfanaRoomTest {
         assertThat(dao.getById("req-carrera")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
     }
 
+    @Test fun `el banner consulta UNA solicitud - la alcanza aunque 20 huerfanas viejas ocupen la pagina, y no toca a las demas`() = runTest {
+        repeat(25) { enBandeja("vieja-$it", desfase = it.toLong()) }
+        enBandeja("la-del-banner", desfase = 100)
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, "la-del-banner") } returns retrofit2.Response.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse(
+                success = true, requestId = "la-del-banner", resuelta = true,
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","failureCode":"OPERATOR_RECONCILED_NO_CHARGE"}""").asJsonObject,
+            ),
+        )
+
+        val r = BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000, soloLaSolicitud = "la-del-banner")
+
+        assertThat(r.consultadas).isEqualTo(1)
+        assertThat(r.conciliadas).isEqualTo(1)
+        assertThat(dao.getById("la-del-banner")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+        assertThat(dao.getById("vieja-0")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        io.mockk.coVerify(exactly = 1) { api.getRequestStatus(any(), any()) }
+    }
+
+    @Test fun `consultar una sola solicitud no salta las guardas - con intento no se cierra`() = runTest {
+        enBandeja("con-intento")
+        db.paymentAttemptDao().insert(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                attemptId = "a-1", venueId = venue, processor = "ANGELPAY", state = "KERNEL_ACTIVO", amountCents = 5000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"con-intento"}""",
+                terminalPaymentRequestId = "con-intento", createdAt = now, updatedAt = now,
+            ),
+        )
+        val api = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalAttemptApiService>()
+        io.mockk.coEvery { api.getRequestStatus(venue, "con-intento") } returns retrofit2.Response.success(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.TerminalRequestStatusResponse(
+                success = true, requestId = "con-intento", resuelta = true,
+                request = com.google.gson.JsonParser.parseString("""{"status":"FAILED"}""").asJsonObject,
+            ),
+        )
+
+        val r = BandejaServerRecovery(dao, api).conciliar(venue, now + 1_000, soloLaSolicitud = "con-intento")
+
+        assertThat(r.conciliadas).isEqualTo(0)
+        assertThat(dao.getById("con-intento")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+    }
+
     @Test fun `P1 r6 P2-9 · el resultado guardado es REPRODUCIBLE - lleva requestId y el vocabulario del servidor`() = runTest {
         // La bandeja emite ese JSON tal cual en reentregas y sondas. Sin `requestId` y con `FAILED` en vez de `failed`
         // el servidor lo rechazaba; dejarlo NULL era peor (la sonda contestaría ACTIVE por algo YA cerrado).

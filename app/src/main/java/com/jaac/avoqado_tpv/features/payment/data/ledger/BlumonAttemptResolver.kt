@@ -54,17 +54,17 @@ class BlumonAttemptResolver @Inject constructor(
         consultLocked(venueId, attemptId)
     }
 
-    private suspend fun consultLocked(venueId: String, attemptId: String): Result {
-        if (scopedRow(venueId, attemptId) == null) return Result(State.UNAVAILABLE)
+    private suspend fun consultLocked(venueId: String, attemptId: String, procesadores: Set<String> = SOLO_PAX): Result {
+        if (scopedRow(venueId, attemptId, procesadores) == null) return Result(State.UNAVAILABLE)
         val reading = try {
             recovery.recoverOne(venueId, attemptId, System.currentTimeMillis(), false)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            return inspect(venueId, attemptId)
+            return inspect(venueId, attemptId, procesadores)
         }
         if (reading.vetoDelServidor != null && ledger.leerIntento(attemptId)?.serverVeto == null) unsavedVetoes.add(attemptId)
-        val result = inspect(venueId, attemptId).copy(serverAnswered = reading.servidorContesto, resultJson = reading.bandejaResueltaJson)
+        val result = inspect(venueId, attemptId, procesadores).copy(serverAnswered = reading.servidorContesto, resultJson = reading.bandejaResueltaJson)
         // The response wins even when a durable write failed and the row still says RELEASED.
         return if (reading.evidenciaPositivaSinRegistro || reading.vetoDelServidor != null)
             result.copy(state = State.MONEY_EVIDENCE)
@@ -131,18 +131,31 @@ class BlumonAttemptResolver @Inject constructor(
      * El cajero deja constancia de que revisó la terminal y no se cobró, con o sin red (founder, 25-sep; antes sólo sin red
      * y sólo gerencia). Sólo cobros LOCALES: los del POS tienen su propio camino. Primero se consulta a Avoqado; con
      * evidencia de dinero no se declara, y la libreta exige que Avoqado haya contestado alguna vez por ese cobro. Queda
-     * quién y cuándo; si después aparece el cobro, la terminal avisa.
+     * quién y cuándo; si después aparece el cobro, la terminal avisa. También en la Nexgo, desde el botón del banner verde
+     * (founder, 3-nov): con las mismas condiciones, y lo demás de esta clase sigue siendo sólo de la pantalla de la PAX.
      */
     suspend fun declareChecked(venueId: String, attemptId: String): Result = mutex.withLock {
         if (!hasCheckPermission()) return@withLock Result(State.PERMISSION_REQUIRED)
-        val reading = consultLocked(venueId, attemptId)
+        val reading = consultLocked(venueId, attemptId, LOS_DOS)
         if (reading.state != State.PENDING) return@withLock reading
         val row = reading.row ?: return@withLock Result(State.UNAVAILABLE)
-        if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeConciliarBlumon(row, venueId)) return@withLock reading
+        if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeDeclararseEnDuda(row, venueId)) return@withLock reading
         // Recheck session and effective permission AFTER the network suspension as well as in the UI.
         if (!hasCheckPermission()) return@withLock reading.copy(state = State.PERMISSION_REQUIRED)
         ledger.declararSinCobroLocal(attemptId, venueId, storage.getStaffId())
-        inspect(venueId, attemptId).copy(resultJson = reading.resultJson)
+        inspect(venueId, attemptId, LOS_DOS).copy(resultJson = reading.resultJson)
+    }
+
+    /**
+     * La misma consulta de [declareChecked], ANTES de ofrecer confirmar (Codex plan r1 #2): el banner no ofrece lo que no se puede cumplir.
+     * PENDING = se puede ofrecer si [PaymentAttemptEntity.serverAnsweredAt] ya existe; UNAVAILABLE = la llamada puede seguir viva en este proceso.
+     */
+    suspend fun prepareChecked(venueId: String, attemptId: String): Result = mutex.withLock {
+        if (!hasCheckPermission()) return@withLock Result(State.PERMISSION_REQUIRED)
+        val reading = consultLocked(venueId, attemptId, LOS_DOS)
+        val row = reading.row
+        if (reading.state == State.PENDING && (row == null || !ledger.puedeDeclararseEnDuda(row, venueId))) reading.copy(state = State.UNAVAILABLE)
+        else reading
     }
 
     private suspend fun saveMoney(venueId: String, attemptId: String): Boolean {
@@ -151,18 +164,18 @@ class BlumonAttemptResolver @Inject constructor(
         return saved
     }
 
-    private suspend fun scopedRow(venueId: String, attemptId: String): PaymentAttemptEntity? =
+    private suspend fun scopedRow(venueId: String, attemptId: String, procesadores: Set<String> = SOLO_PAX): PaymentAttemptEntity? =
         ledger.leerIntento(attemptId)?.takeIf {
             storage.getVenueId() == venueId && it.venueId == venueId && it.attemptId == attemptId &&
-                it.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && it.kind == PaymentAttemptEntity.KIND_SALE && !it.legacyShadow
+                it.processor in procesadores && it.kind == PaymentAttemptEntity.KIND_SALE && !it.legacyShadow
         }
 
-    private suspend fun inspect(venueId: String, attemptId: String): Result =
-        classify(venueId, attemptId, scopedRow(venueId, attemptId))
+    private suspend fun inspect(venueId: String, attemptId: String, procesadores: Set<String> = SOLO_PAX): Result =
+        classify(venueId, attemptId, scopedRow(venueId, attemptId, procesadores), procesadores)
 
-    private fun classify(venueId: String, attemptId: String, row: PaymentAttemptEntity?): Result {
+    private fun classify(venueId: String, attemptId: String, row: PaymentAttemptEntity?, procesadores: Set<String> = SOLO_PAX): Result {
         if (row == null || storage.getVenueId() != venueId || row.venueId != venueId || row.attemptId != attemptId ||
-            row.processor != PaymentAttemptEntity.PROCESSOR_BLUMON || row.kind != PaymentAttemptEntity.KIND_SALE || row.legacyShadow)
+            row.processor !in procesadores || row.kind != PaymentAttemptEntity.KIND_SALE || row.legacyShadow)
             return Result(State.UNAVAILABLE)
         val state = when {
             attemptId in unsavedVetoes || ledger.tieneEvidenciaSinGuardar(attemptId) || row.serverVeto != null -> State.MONEY_EVIDENCE
@@ -172,11 +185,18 @@ class BlumonAttemptResolver @Inject constructor(
             }
             attemptId in unsavedMoney -> State.MONEY_EVIDENCE
             row.hostApproved == true || row.serverProcessorEvidence == "APPROVED" || row.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO -> State.MONEY_EVIDENCE
+            // RELEASED_NO_EVIDENCE sólo lo tiene la Nexgo (su CAS lo exige): la pantalla de la PAX no cambia.
             row.state == PaymentAttemptEntity.STATE_DESCARTADA &&
-                (row.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT || row.lastError?.startsWith("declarado_sin_cobro:") == true) -> State.RELEASED
+                (row.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT || row.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE ||
+                    row.lastError?.startsWith("declarado_sin_cobro:") == true) -> State.RELEASED
             row.state == PaymentAttemptEntity.STATE_INDETERMINADO -> State.PENDING
             else -> State.UNAVAILABLE
         }
         return Result(state, row)
+    }
+
+    private companion object {
+        val SOLO_PAX = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON)
+        val LOS_DOS = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON, PaymentAttemptEntity.PROCESSOR_ANGELPAY)
     }
 }

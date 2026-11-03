@@ -219,6 +219,15 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
   de la misma solicitud. Una recreación con el proceso vivo conserva su estado. Si Android restaura `PaymentActivity` encima (estaba
   detenida al morir el proceso), `PantallaDelSdkNoSeRestaura` le quita `angelpay_req` antes de que el AAR lo lea: termina con «Missing
   request» sin tocar el lector, y el intento queda en duda. Depende del `onCreate` del AAR 1.0.22: subirlo obliga a revisarlo.
+  Si la app muere mientras esa pantalla todavía abre (D5, medido a 0.9 s), Android la revive SIN estado y quita `MainActivity`. Un cobro
+  sólo lo pide una pantalla nuestra y ninguna ha nacido en ese proceso: se quita el extra igual y se abre la app con `CLEAR_TASK`.
+- 🔒 **Una solicitud heredada de una versión vieja nunca recibe un «no se cobró» automático** (D6, 3-nov): una libreta sin intentos
+  correlacionables no prueba que no se cobró, y un cobro de la tablet sólo entra al procesador con su identidad original.
+- 🔒 **El «no se cobró» que el cajero declara en el POS también apaga la duda de la terminal** (D12, 3-nov): vale para una PAX que nunca
+  ligó su intento, y ya no bloquea el cierre del turno.
+- 🔒 **Al cerrar Caja, primero se pregunta** (D3, 3-nov; `ConsultaDelCierreDeCaja`): con un tope de 5 s se consulta al servidor antes de
+  rechazar, y el cajero lee qué falta, sin «Validation error:». La TPV publicada (`8f0f5128`) se queda bloqueada tras declarar, aunque el
+  intento ya esté DESCARTADA (deuda, QA R8): por eso esta versión importa aunque la terminal cobre bien.
 
 ## Defectos conocidos (no reinventar el diagnóstico)
 

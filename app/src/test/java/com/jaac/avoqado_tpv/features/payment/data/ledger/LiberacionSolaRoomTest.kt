@@ -8,6 +8,8 @@ import com.google.common.truth.Truth.assertWithMessage
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor
+import com.jaac.avoqado_tpv.features.shift.data.repository.ConsultaDelCierreDeCaja
+import com.jaac.avoqado_tpv.features.shift.domain.LocalShiftObligation
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -16,6 +18,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -221,6 +224,29 @@ class LiberacionSolaRoomTest {
         assertThat(f.serverOutcome).isEqualTo(PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE)
         assertThat(f.lastError).isEqualTo(PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "NO_EVIDENCE_AFTER_WINDOW")
         assertThat(otroCobroEntra("nuevo")).isTrue()
+    }
+
+    @Test fun `M-5 al cerrar la caja la duda local se libera sin esperar al worker, si el servidor lo acepta`() = runBlocking<Unit> {
+        // `runBlocking`: la consulta lleva un tope de reloj y Room corre en sus hilos (ver `LiberacionPorSolicitudRoomTest`).
+        filaDeOtroProceso("l", PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso("l")
+        val consulta = ConsultaDelCierreDeCaja(LedgerServerRecovery(dao, ledger, api(declaracionSola())), mockk(), dagger.Lazy { mockk() })
+
+        assertThat(consulta.preguntar(venue, listOf(LocalShiftObligation("ATTEMPT", "l", 1, "MANAGED", "s1")))).isFalse()
+
+        val fila = dao.getById("l")!!
+        assertThat(fila.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(fila.serverOutcome).isEqualTo(PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE)
+    }
+
+    @Test fun `M-5 sin aviso del banco comprobado el cierre no libera nada`() = runBlocking<Unit> {
+        filaDeOtroProceso("l", PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso("l")
+        val consulta = ConsultaDelCierreDeCaja(LedgerServerRecovery(dao, ledger, api(error(409, "WEBHOOK_NOT_CONFIRMED"))), mockk(), dagger.Lazy { mockk() })
+
+        consulta.preguntar(venue, listOf(LocalShiftObligation("ATTEMPT", "l", 1, "MANAGED", "s1")))
+
+        assertThat(dao.getById("l")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
     }
 
     @Test fun `sin aviso del banco comprobado (409 WEBHOOK_NOT_CONFIRMED) NO se libera — queda el boton del cajero`() = runTest {

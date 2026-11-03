@@ -28,6 +28,10 @@ class ConsultaDelCierreDeCajaTest {
     private val socket = mockk<SocketManager>(relaxed = true)
     private val consulta = ConsultaDelCierreDeCaja(recuperacion, bandeja, dagger.Lazy { socket })
 
+    init {
+        coEvery { recuperacion.liberarDudasLocales("v1", any()) } returns LedgerServerRecovery.Solas()
+    }
+
     private fun intento(id: String) = LocalShiftObligation("ATTEMPT", id, 1, "MANAGED", "s1")
     private fun remota(id: String) = LocalShiftObligation("REMOTE", id, 1, "MANAGED", "s1")
 
@@ -114,6 +118,50 @@ class ConsultaDelCierreDeCajaTest {
         coEvery { bandeja.conciliar("v1", any()) } returns BandejaServerRecovery.Resultado(consultadas = 0, conciliadas = 0, sinRespuesta = 0, conErrorDelServidor = 1)
 
         assertThat(consulta.preguntar("v1", listOf(remota("r1")))).isTrue()
+    }
+
+    @Test fun `M-5 con un intento en duda tambien pide la liberacion de las dudas locales`() = runTest {
+        coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null, servidorContesto = true)
+
+        consulta.preguntar("v1", listOf(intento("a1")))
+
+        coVerify(exactly = 1) { recuperacion.liberarDudasLocales("v1", any()) }
+    }
+
+    @Test fun `M-5 sin intentos no la pide`() = runTest {
+        coEvery { bandeja.conciliar("v1", any()) } returns BandejaServerRecovery.Resultado(consultadas = 1, conciliadas = 0, sinRespuesta = 0)
+
+        consulta.preguntar("v1", listOf(remota("r1")))
+
+        coVerify(exactly = 0) { recuperacion.liberarDudasLocales(any(), any()) }
+    }
+
+    @Test fun `M-5 si esa peticion se queda sin respuesta es falta de conexion`() = runTest {
+        coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null)
+        coEvery { recuperacion.liberarDudasLocales("v1", any()) } returns LedgerServerRecovery.Solas(sinRespuesta = 1)
+
+        assertThat(consulta.preguntar("v1", listOf(intento("a1")))).isTrue()
+    }
+
+    @Test fun `M-5 una duda liberada es que Avoqado contesto`() = runTest {
+        coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null, sinRespuesta = true)
+        coEvery { recuperacion.liberarDudasLocales("v1", any()) } returns LedgerServerRecovery.Solas(liberadas = 1)
+
+        assertThat(consulta.preguntar("v1", listOf(intento("a1")))).isFalse()
+    }
+
+    @Test fun `M-5 va dentro del mismo tope de la consulta`() = runTest {
+        coEvery { recuperacion.recoverOne("v1", "a1", any(), false) } returns LecturaDelIntento(null)
+        coEvery { recuperacion.liberarDudasLocales("v1", any()) } coAnswers {
+            delay(60_000)
+            LedgerServerRecovery.Solas()
+        }
+        val inicio = currentTime
+
+        val sinRespuesta = consulta.preguntar("v1", listOf(intento("a1")))
+
+        assertThat(currentTime - inicio).isEqualTo(ConsultaDelCierreDeCaja.TOPE_MS)
+        assertThat(sinRespuesta).isTrue()
     }
 
     @Test fun `sin remotas no se toca la bandeja`() = runTest {

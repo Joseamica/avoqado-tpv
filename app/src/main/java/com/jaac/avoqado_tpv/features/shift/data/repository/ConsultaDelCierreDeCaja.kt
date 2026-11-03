@@ -42,6 +42,13 @@ class ConsultaDelCierreDeCaja @Inject constructor(
                 // Como el trigger y el worker: un `success` durable de bandeja recién escrito se le emite al servidor.
                 lectura.bandejaResueltaJson?.let(socket.get()::emitDurableTerminalPaymentResult)
             }
+            // M-5: lo que el worker hace de todos modos hasta 2 min después. Una duda local que el servidor ya puede soltar (aviso del
+            // banco comprobado, sin rastro) no llega a decirle al cajero «llama a soporte». Sin aviso comprobado, el servidor no la suelta.
+            if (pendientes.any { it.owner == OBLIGACION_DE_INTENTO }) {
+                val solas = recuperacion.liberarDudasLocales(venueId)
+                if (solas.liberadas > 0) contesto = true
+                if (solas.sinRespuesta > 0) sinRespuesta = true
+            }
             if (pendientes.any { it.owner == OBLIGACION_REMOTA }) {
                 val conciliacion = bandeja.conciliar(venueId)
                 if (conciliacion.consultadas > 0) contesto = true

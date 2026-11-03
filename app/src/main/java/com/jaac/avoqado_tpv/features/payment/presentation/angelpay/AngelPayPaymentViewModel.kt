@@ -616,8 +616,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var solicitudVinculada: String?
         get() = savedStateHandle[KEY_SOLICITUD_VINCULADA]
         set(value) { savedStateHandle[KEY_SOLICITUD_VINCULADA] = value }
-    // 🔒 D6 (2-nov): ¿la PRIMERA entrada de este VM fue remota? También con un id inválido, y también tras [resetPayment] o la
-    // muerte del proceso: un cobro del POS sin su identidad se rechaza, nunca se degrada a venta local.
+    // 🔒 D6 (2-nov): ¿la PRIMERA entrada de este VM fue remota? También con un id inválido, y también tras [resetPayment] o una
+    // recreación en el mismo proceso: un cobro del POS sin su identidad se rechaza, nunca se degrada a venta local.
     private var entradaOriginalRemota: Boolean
         get() = savedStateHandle[KEY_ENTRADA_REMOTA] ?: false
         set(value) { savedStateHandle[KEY_ENTRADA_REMOTA] = value }

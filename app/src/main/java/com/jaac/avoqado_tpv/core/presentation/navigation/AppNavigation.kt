@@ -3426,12 +3426,13 @@ private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
  *
  * La primera vez que se compone una pantalla de cobro, copia sus argumentos del handle de quien
  * la lanzó a SU propia entrada ([propio]) y los BORRA del lanzador, en el mismo paso. Después
- * la pantalla lee sólo de [propio] (sobrevive a la recreación y a la muerte del proceso), y:
+ * la pantalla lee sólo de [propio] (sobrevive a una recreación en el mismo proceso; un proceso nuevo ya no restaura
+ * esta pantalla, ver `EstadoDelProceso`), y:
  *  - la pantalla que sale ya no puede leer los argumentos de la solicitud remota siguiente,
  *    que el colector escribe en ese mismo handle antes de empujar otra entrada (camino 1);
- *  - salir por CUALQUIER vía —callbacks, atrás del sistema, un pop del colector, la muerte del
- *    proceso— deja al lanzador limpio: el siguiente cobro local no nace remoto ni hereda la
- *    propina o la orden de otra solicitud (camino 2).
+ *  - salir por CUALQUIER vía —callbacks, atrás del sistema, un pop del colector— deja al lanzador
+ *    limpio: el siguiente cobro local no nace remoto ni hereda la propina o la orden de otra
+ *    solicitud (camino 2).
  * Idempotente: una segunda llamada sobre la misma entrada no vuelve a copiar nada.
  */
 internal fun congelarArgumentosDeCobro(propio: SavedStateHandle, lanzador: SavedStateHandle?): SavedStateHandle {

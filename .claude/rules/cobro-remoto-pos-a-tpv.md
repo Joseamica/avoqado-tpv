@@ -228,6 +228,9 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
 - 🔒 **Al cerrar Caja, primero se pregunta** (D3, 3-nov; `ConsultaDelCierreDeCaja`): con un tope de 5 s se consulta al servidor antes de
   rechazar, y el cajero lee qué falta, sin «Validation error:». La TPV publicada (`8f0f5128`) se queda bloqueada tras declarar, aunque el
   intento ya esté DESCARTADA (deuda, QA R8): por eso esta versión importa aunque la terminal cobre bien.
+- 🔒 **El banner verde trae «No se cobró»** (founder, 3-nov: «A»; `DeclaracionDesdeElAviso`): con solicitud es la MISMA declaración del POS, por
+  una ruta de la terminal (el PIN de gerente lo pide el servidor; un 404 manda al POS, nunca se vuelve local); sin solicitud, `declareChecked`,
+  abierta a la Nexgo. Sólo dudas sin dinero conocido (`observarCobrosDeclarables`), 10 min, y mientras se ve el banner consulta una por vuelta.
 
 ## Defectos conocidos (no reinventar el diagnóstico)
 

@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **[PAX/Nexgo] El banner verde de cobros sin confirmar trae «No se cobró»** («ninguna duda de cobro sin salida», founder, 3-nov: «A»): con un cobro pide confirmar el importe y con varios deja elegir cuál. Si vino del POS es la misma declaración que la del POS: la venta se libera allá, quien no tiene permiso necesita el PIN de un gerente, y sin red lo dice y no pasa nada. Si fue un Pago rápido es la declaración local, sólo con permiso: funciona sin red si Avoqado ya contestó alguna vez por ese cobro; si no, pide conectarse primero. Mientras se ve el banner consulta un cobro cada 15 s, así que si se declara en el POS se va en segundos. Cobros con respuesta del banco o evidencia de dinero no traen botón. Si el banco avisa después que sí se cobró, se registra y salta la alerta, como hoy.
+
 ### **Changed**
 - **[Reportes] Los reportes de días anteriores ya no piden plan**: cambiar de día, la comparación y la pestaña Historial pedían «Plan Pro» y, pasada la medianoche, un negocio sin plan ya no podía ver lo que vendió ayer (founder, 2-nov). Ahora todos los reportes de la terminal se ven en cualquier plan
 
@@ -23,6 +26,7 @@
 - **[Pruebas] `ShiftPaymentBarrierRoomTest` ya no se cuelga de vez en cuando**: el ViewModel de Caja corría en los hilos de Room con `UnconfinedTestDispatcher` y dos corrutinas podían cruzar sus escrituras del estado (1 minuto colgada, 2 de 100 con la CPU ocupada). Ahora corre en un solo hilo con `StandardTestDispatcher`, como en la terminal. Sólo cambia la prueba
 
 ### **⚠️ Al publicar**
+- **«No se cobró» necesita la ruta nueva del SERVIDOR** (`…/requests/:requestId/uncharged-declaration`): contra un servidor anterior, un cobro del POS contesta «Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS», sin escribir nada. El Pago rápido no la usa.
 - **Sale primero el SERVIDOR, y ese orden es OBLIGATORIO** (no sólo recomendado) con «ninguna duda de cobro sin salida»: sólo él lee `terminalPaymentExecutionVersion`, `executionAlive` y `closedForExecution`. Un servidor anterior los ignora, y con D6 la terminal ya no resuelve sola una solicitud heredada sin dueño (contesta ACTIVE y sólo certifica el cese): frente a un servidor anterior esa solicitud pasa de resolverse sola a contestar ACTIVE con veto. Publicar la TPV antes que el SERVIDOR es una regresión.
 - **La base del aparato sube de v44 a v45** («ninguna duda de cobro sin salida», B1: la solicitud del POS «cerrada para ejecución» y «el SDK regresó», dos columnas nuevas, aditivas, que nacen vacías; D6: `durable_barrier_version`, que nace en 0 para todo lo que ya existe). Subir de versión no pierde nada. **Bajar a una versión con v44 (la 2.14.0 o anteriores) BORRA la base del aparato** (cola de pagos, reembolsos y cobros remotos pendientes): para retroceder, usa sólo un APK que ya conozca la v45.
 

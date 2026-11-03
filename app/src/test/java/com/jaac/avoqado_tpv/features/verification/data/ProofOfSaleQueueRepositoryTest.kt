@@ -480,6 +480,28 @@ class ProofOfSaleQueueRepositoryTest {
         assertThat(fila(key)).isNull()
     }
 
+    @Test fun `si otro worker se quedo con la fila mientras subia a Firebase, no hace el POST y se la deja a su nuevo dueno`() = runBlocking {
+        val key = repo.enqueuePhoto(foto())
+        coEvery { uploader.uploadToPath(any(), any()) } answers {
+            // Venció el lease a media subida y otro worker reclamó la fila.
+            db.openHelper.writableDatabase.execSQL(
+                "UPDATE proof_of_sale_queue SET claim_token = 'otro' WHERE idempotency_key = ?", arrayOf<Any>(key),
+            )
+            Result.success("https://fb/x.jpg")
+        }
+        json(200, ok())
+
+        assertThat(repo.drain(limit = 1)).isFalse()
+
+        assertThat(servidor.requestCount).isEqualTo(0)
+        val f = fila(key)!!
+        assertThat(f.claimToken).isEqualTo("otro")
+        assertThat(f.syncStatus).isEqualTo("SYNCING")
+        assertThat(f.photoUrl).isNull()
+        assertThat(f.retryCount).isEqualTo(0)
+        assertThat(repo.awaitResult(key, 200)).isNull()
+    }
+
     @Test fun `una foto vacia o que no se puede leer queda PERMANENT y no se reintenta`() = runBlocking {
         val vacia = repo.enqueuePhoto(foto(payment = "pvacia"))
         File(fila(vacia)!!.localPath!!).writeBytes(ByteArray(0))

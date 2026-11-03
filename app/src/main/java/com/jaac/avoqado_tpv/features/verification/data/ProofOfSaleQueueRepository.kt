@@ -169,6 +169,9 @@ class ProofOfSaleQueueRepository @Inject constructor(
             if (row.kind == KIND_NUMBER_ONLY) remote.submitNumber(row) else remote.submitPhoto(row, uploadPhoto(row, token))
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ClaimLostException) {
+            Timber.w("📸 [ProofQueue] Otro worker ya tiene la fila; no se hace el POST | key=${row.idempotencyKey}")
+            return false // la fila es de su nuevo dueño: ni release ni desenlace
         } catch (e: Exception) {
             return onError(row, token, e)
         }
@@ -202,9 +205,12 @@ class ProofOfSaleQueueRepository @Inject constructor(
         val fecha = STORAGE_DATE.format(Instant.ofEpochMilli(row.capturedAt))
         val url = uploader.uploadToPath(path, "venues/$slug/proof-of-sale/$fecha/${row.paymentId}_${row.slot}_${row.idempotencyKey}.jpg")
             .getOrThrow()
-        queueDao.savePhotoUrl(row.idempotencyKey, token, url)
+        // 0 = venció el lease y otro worker reclamó la fila a media subida: el POST es suyo.
+        if (queueDao.savePhotoUrl(row.idempotencyKey, token, url) == 0) throw ClaimLostException()
         return url
     }
+
+    private class ClaimLostException : Exception()
 
     /** Por `code` primero; por status sólo si el código no se conoce o no viene. Ante la duda, se reintenta. */
     private suspend fun onError(row: ProofOfSaleQueueEntity, token: String, e: Exception): Boolean {

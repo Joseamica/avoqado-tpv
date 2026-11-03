@@ -20,8 +20,10 @@ import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedTimeEntryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.FloorElementEntity
-import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
-import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueEntity
+import com.jaac.avoqado_tpv.features.verification.data.local.ActionableSaleCacheDao
+import com.jaac.avoqado_tpv.features.verification.data.local.ActionableSaleCacheEntity
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueDao
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.HistoricalPeriodEntity
@@ -126,7 +128,8 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
         TableEntity::class,
         FloorElementEntity::class,
         CachedShiftEntity::class,
-        VerificationQueueEntity::class,
+        ProofOfSaleQueueEntity::class, // ⭐ v45: cola de fotos/números de vinculación (reemplaza verification_queue, código muerto)
+        ActionableSaleCacheEntity::class, // ⭐ v45: lista guardada de ventas con acción pendiente
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
@@ -191,7 +194,10 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`, con las
     // ventas guardadas sin red), reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
-    version = 44,
+    // ⭐ Version 45 (3-nov-2026, número de vinculación): tablas nuevas `proof_of_sale_queue` y `actionable_sale_cache`; se borra
+    // `verification_queue` (código muerto, sin lectores ni escritores). Aditiva salvo ese DROP (MIGRATION_44_45).
+    // 🔴 Cruza versión de esquema: instalar encima un APK con base v44 es un downgrade DESTRUCTIVO que BORRA la base local.
+    version = 45,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -296,22 +302,11 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      */
     abstract fun cachedShiftDao(): CachedShiftDao
 
-    /**
-     * DAO for verification queue (Step 4 sale verification).
-     *
-     * **Use Cases:**
-     * - Store verification photos and scanned barcodes locally
-     * - Queue verifications for upload when offline
-     * - Sync photos to Firebase Storage, metadata to backend
-     * - Track sync status (PENDING, UPLOADING_PHOTOS, SYNCING, SYNCED, FAILED)
-     *
-     * **Pattern (Offline-First):**
-     * - Capture: Save photos locally + barcode data
-     * - Upload: Photos → Firebase Storage, get URLs
-     * - Sync: Send metadata + URLs to backend API
-     * - Cleanup: Delete synced records after confirmation
-     */
-    abstract fun verificationQueueDao(): VerificationQueueDao
+    /** Cola durable de fotos y números de vinculación (v45). Su `@Provides` vive en DatabaseModule. */
+    abstract fun proofOfSaleQueueDao(): ProofOfSaleQueueDao
+
+    /** Lista guardada de ventas con acción pendiente (v45). */
+    abstract fun actionableSaleCacheDao(): ActionableSaleCacheDao
 
     /**
      * DAO for checkout shortcut tiles (Mosaic/Shortcuts tab).
@@ -2130,6 +2125,21 @@ abstract class AvoqadoDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_43_44.migrate(db)
                 LegacyTablesImport.forContext(context).into(db)
+            }
+        }
+
+        /** v45: cola de fotos/números y lista guardada; `verification_queue` (muerta) se borra. DDL copiado de `45.json`. */
+        val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `proof_of_sale_queue` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, PRIMARY KEY(`idempotency_key`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_venue_id` ON `proof_of_sale_queue` (`venue_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_payment_id` ON `proof_of_sale_queue` (`payment_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_sync_status` ON `proof_of_sale_queue` (`sync_status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_claim_token` ON `proof_of_sale_queue` (`claim_token`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `actionable_sale_cache` (`payment_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `verification_id` TEXT, `json` TEXT NOT NULL, `delivered_slots` TEXT NOT NULL DEFAULT '', `local_only` INTEGER NOT NULL DEFAULT 0, `cached_at` INTEGER NOT NULL, PRIMARY KEY(`payment_id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_venue_id` ON `actionable_sale_cache` (`venue_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_staff_id` ON `actionable_sale_cache` (`staff_id`)")
+                db.execSQL("DROP TABLE IF EXISTS `verification_queue`")
             }
         }
 

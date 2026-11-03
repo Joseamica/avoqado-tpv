@@ -25,7 +25,7 @@ class DeclaracionDesdeElAvisoTest {
     private val bandeja = mockk<BandejaServerRecovery>()
     private val socket = mockk<SocketManager>(relaxed = true)
     private val declaracion = DeclaracionDesdeElAviso(
-        mockk(relaxed = true), mockk(), recuperacion, bandeja, mockk(), dagger.Lazy { socket },
+        mockk(relaxed = true), mockk(relaxed = true), recuperacion, bandeja, mockk(), dagger.Lazy { socket },
     )
 
     private fun intento(id: String) = CobroDeclarable(id, null, 100, 1, null)

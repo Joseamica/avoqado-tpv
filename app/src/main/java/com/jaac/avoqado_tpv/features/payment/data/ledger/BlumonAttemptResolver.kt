@@ -63,12 +63,22 @@ class BlumonAttemptResolver @Inject constructor(
         } catch (_: Exception) {
             return inspect(venueId, attemptId, procesadores)
         }
-        if (reading.vetoDelServidor != null && ledger.leerIntento(attemptId)?.serverVeto == null) unsavedVetoes.add(attemptId)
+        recordarVetoSinGuardar(attemptId, reading)
         val result = inspect(venueId, attemptId, procesadores).copy(serverAnswered = reading.servidorContesto, resultJson = reading.bandejaResueltaJson)
         // The response wins even when a durable write failed and the row still says RELEASED.
         return if (reading.evidenciaPositivaSinRegistro || reading.vetoDelServidor != null)
             result.copy(state = State.MONEY_EVIDENCE)
         else result
+    }
+
+    /**
+     * El veto que trajo esta lectura y no se pudo escribir se recuerda aquí, venga de quien venga la consulta: si no, la fila se ve limpia y
+     * se podría declarar «no se cobró» sin red (Codex código r1: la consulta de cada 15 s del banner).
+     */
+    suspend fun recordarVetoSinGuardar(attemptId: String, lectura: LedgerServerRecovery.LecturaDelIntento) {
+        if (lectura.vetoDelServidor == null) return
+        // Si ni se puede leer la fila, tampoco consta que se escribió: se recuerda igual.
+        if (runCatching { ledger.leerIntento(attemptId)?.serverVeto }.getOrNull() == null) unsavedVetoes.add(attemptId)
     }
 
     suspend fun declare(venueId: String, attemptId: String): Result = mutex.withLock {

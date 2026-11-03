@@ -192,6 +192,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
         }
         val lectura = recuperacion.recoverOne(venueId, attemptId, estampar = false)
         lectura.bandejaResueltaJson?.let(socket.get()::emitDurableTerminalPaymentResult)
+        resolver.recordarVetoSinGuardar(attemptId, lectura)
         return lectura
     }
 

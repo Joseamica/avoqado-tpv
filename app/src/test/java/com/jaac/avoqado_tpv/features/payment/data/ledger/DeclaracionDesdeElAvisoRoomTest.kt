@@ -544,6 +544,24 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
     }
 
+    @Test fun `P1 Codex codigo r1 - el refresco recuerda el veto que no pudo guardar y sin red tampoco se declara`() = runBlocking<Unit> {
+        val cobro = duda("a-1", serverAnsweredAt = 1L)
+        val sinDisco = spyk(ledger)
+        coEvery { sinDisco.marcarVetoDelServidor(venue, "a-1", any(), any()) } returns Result.failure(java.io.IOException("disco lleno"))
+        val conFalla = declaracionCon(sinDisco)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Contradiccion("a-1")
+
+        conFalla.refrescarUno(venue, listOf(cobro)) // la consulta de cada 15 s oye el veto y no lo puede escribir
+
+        coEvery { api.getAttemptStatus(venue, "a-1") } throws java.io.IOException("sin red")
+        assertThat(conFalla.preparar(venue, cobro)).isEqualTo(HayEvidencia)
+        assertThat(conFalla.declarar(venue, cobro)).isEqualTo(HayEvidencia)
+
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.lastError).isNull()
+    }
+
     @Test fun `P1 con evidencia positiva sin guardar tampoco - el dinero que dijo el servidor manda`() = runBlocking<Unit> {
         val cobro = duda("a-1", serverAnsweredAt = 1L)
         val sinDisco = spyk(ledger)

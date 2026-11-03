@@ -16,6 +16,8 @@ import javax.inject.Singleton
  * Paso 1 (con red): consulta S6 por las candidatas —sin veredicto o con veredicto no final— con avance y espaciado por
  * intento (E3), y aplica lo que conteste ([PaymentAttemptDao.aplicarVeredictoDelServidor]); `NOT_RECORDED`, 404 (intento
  * desconocido o ruta vieja), 401/403/5xx sólo estampan el turno de la fila; sin respuesta HTTP no se gasta el turno.
+ * D12: si S6 no trae vínculo ni dinero (la PAX nunca liga sus intentos), pregunta además por la SOLICITUD del contexto durable
+ * del intento ([liberarPorSolicitud]) y sólo la declaración de una persona cierra la duda.
  *
  * Nunca autoriza nada, nunca discards por ausencia, nunca toca filas heredadas. Idempotente y sin lease propio: S6 es de
  * sólo lectura y toda transición es CAS. El resultado de la bandeja (un `success` durable nuevo) se devuelve para que
@@ -153,6 +155,15 @@ class LedgerServerRecovery @Inject constructor(
                         // Task 6: sin veredicto sobre el INTENTO, la SOLICITUD puede venir liberada por el servidor (ventana / cajero).
                         val liberacion = cuerpo?.let { LiberacionDelServidor.desdeConsultaS6(venueId, fila.attemptId, it) }
                         if (liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)) { liberadas++; continue }
+                        // D12: S6 sin vínculo ni dinero (la PAX no liga): la declaración del cajero en el POS llega por la SOLICITUD.
+                        when (liberarPorSolicitud(venueId, fila.attemptId, cuerpo, now)) {
+                            PorSolicitud.LIBERADA -> { liberadas++; continue }
+                            // El GET sin respuesta no es un GET negativo: no se gasta el turno y el worker vuelve a los 31 s (N3).
+                            PorSolicitud.SIN_RESPUESTA -> { sinRespuesta++; sinRed += fila.attemptId; continue }
+                            // Contestó y la escritura falló: atasco (r14), con el turno intacto.
+                            PorSolicitud.ESCRITURA_FALLIDA -> { sinRespuesta++; atascadas++; atoradasEnEstaPasada += fila.attemptId; continue }
+                            PorSolicitud.NADA -> Unit
+                        }
                         dao.estamparConsultaAlServidor(fila.attemptId, now)
                         continue
                     }
@@ -358,9 +369,17 @@ class LedgerServerRecovery @Inject constructor(
                 // guardar lo que trae; si no quedó, la marca no se pone y la poda sigue sin poder tocar la fila.
                 if (cuerpo != null && guardado) anotar(attemptId) { dao.estamparRespuestaDelServidor(attemptId, now) }
                 val liberacion = cuerpo?.let { LiberacionDelServidor.desdeConsultaS6(venueId, attemptId, it) }
-                val liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
+                var liberada = liberacion != null && ledger.aplicarLiberacionDelServidor(liberacion, now).getOrDefault(false)
+                // D12: la MISMA decisión que la pasada del worker para un intento sin vínculo (la PAX): por la SOLICITUD.
+                var gastaElTurno = true
+                if (!liberada) when (liberarPorSolicitud(venueId, attemptId, cuerpo, now)) {
+                    PorSolicitud.LIBERADA -> liberada = true
+                    // Sin respuesta del GET, o la escritura falló: el turno se conserva para volver a preguntar pronto.
+                    PorSolicitud.SIN_RESPUESTA, PorSolicitud.ESCRITURA_FALLIDA -> gastaElTurno = false
+                    PorSolicitud.NADA -> Unit
+                }
                 // Codex r12 (P2-2): si el veto o la evidencia no quedaron, el turno se conserva para que el worker vuelva.
-                if (!liberada && estampar && guardado) anotar(attemptId) { dao.estamparConsultaAlServidor(attemptId, now) }
+                if (!liberada && estampar && guardado && gastaElTurno) anotar(attemptId) { dao.estamparConsultaAlServidor(attemptId, now) }
                 LecturaDelIntento(null, evidenciaPositivaSinRegistro = evidenciaSinRegistro, servidorContesto = respuesta.isSuccessful, vetoDelServidor = veto)
             } else {
                 // Un veredicto sólo sale de un 2xx: contestó. 🔴 Codex r9 (P1-2): todo veredicto trae un Payment; si no se pudo
@@ -381,6 +400,108 @@ class LedgerServerRecovery @Inject constructor(
             Timber.w(error, "🔎 [LedgerServer] consulta inmediata sin respuesta para %s", attemptId)
             LecturaDelIntento(null)
         }
+    }
+
+    /** D12: lo que dejó [liberarPorSolicitud]. Sólo [LIBERADA] cierra algo; las demás conservan la duda. */
+    private enum class PorSolicitud {
+        /** El CAS remoto cerró la fila INDETERMINADO: una persona declaró «no se cobró» y nada del dinero lo desmiente. */
+        LIBERADA,
+        /** El GET no tuvo respuesta HTTP (red, tope): no es un GET negativo y NO gasta el turno — la pasada vuelve a los 31 s. */
+        SIN_RESPUESTA,
+        /** El GET sí aceptó liberar, pero la escritura del CAS falló: es atasco de escritura (r14), con el turno intacto. */
+        ESCRITURA_FALLIDA,
+        /** No aplica, no es la declaración de una persona sobre ESA solicitud, o el dinero/el veto ganó: la duda se conserva. */
+        NADA,
+    }
+
+    /**
+     * 🔴 D12 («ninguna duda de cobro sin salida», hallazgo #3 de Codex TPV r1): el «no se cobró» que el cajero declara en el POS
+     * llega a un intento que la terminal NUNCA ligó a su solicitud. La PAX no emite `terminal:payment_attempt_opened` (sólo la
+     * Nexgo liga), así que S6 —que busca la solicitud por vínculo o por un Payment exacto— contesta `request:null` y la duda
+     * quedaba en el aviso de la terminal hasta que el banco conciliara. No aparta la terminal ni la venta y no hay dinero en
+     * juego: es ruido que confunde. Se pregunta por la SOLICITUD con el GET que ya existe (sin endpoint nuevo, sin correlación por
+     * monto ni serial), y NO ampliando S6.
+     *
+     * Reglas, en este orden:
+     *  1. S6 manda ([LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud]): válida, de ESTE intento, limpia y sin vínculo. Si trajo
+     *     Payment, PENDING, APPROVED, colisión, evidencia sin dueño o contradicción, eso ya quedó guardado ANTES y aquí no se
+     *     pregunta nada.
+     *  2. La solicitud sale del contexto DURABLE de la fila ([solicitudDurableDe]), nunca de una preferencia mutable, y la bandeja
+     *     local de esa solicitud —si existe— es de este negocio.
+     *  3. Sólo la declaración de una PERSONA sobre ESA solicitud libera ([LiberacionDelServidor.desdeConsultaPorSolicitud]): ni
+     *     silencio, ni reloj, ni monto.
+     *  4. El cierre es el CAS remoto de siempre ([PaymentAttemptLedger.aplicarLiberacionDelServidor]), que relee dentro del UPDATE
+     *     el dinero, el veto y el aprobado del host: la evidencia positiva que llegue entre el GET y el CAS gana. NUNCA el CAS local.
+     *     No toca la bandeja: la cerca de la solicitud ya cerrada se queda, sin inventarle un final.
+     * Nunca lanza (salvo cancelación): sin respuesta, con un HTTP de error o con un JSON ilegible la duda se conserva.
+     */
+    private suspend fun liberarPorSolicitud(venueId: String, attemptId: String, s6: TerminalAttemptStatusResponse?, now: Long): PorSolicitud {
+        if (!LiberacionDelServidor.s6DejaPreguntarPorLaSolicitud(attemptId, s6)) return PorSolicitud.NADA
+        // La fila se relee: S6 pudo tardar segundos y la que traíamos puede ser vieja.
+        val fila = try {
+            dao.getById(attemptId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            null
+        } ?: return PorSolicitud.NADA
+        val requestId = solicitudDurableDe(fila, venueId) ?: return PorSolicitud.NADA
+        // Esto sólo ahorra la llamada: quien decide es el CAS, que lo vuelve a comprobar todo dentro del UPDATE.
+        if (fila.state != PaymentAttemptEntity.STATE_INDETERMINADO || fila.hostApproved == true || fila.serverOutcome != null ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED || !fila.serverVeto.isNullOrBlank() ||
+            ledger.tieneEvidenciaSinGuardar(attemptId)
+        ) return PorSolicitud.NADA
+        val bandeja = try {
+            dao.bandejaDe(requestId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return PorSolicitud.NADA // no se pudo comprobar la solicitud local: sin identidad completa no se pregunta
+        }
+        if (bandeja != null && bandeja.venueId != venueId) return PorSolicitud.NADA
+        val respuesta = try {
+            kotlinx.coroutines.withTimeoutOrNull(CONSULTA_TIMEOUT_MS) { api.getRequestStatus(venueId, requestId) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: java.io.IOException) {
+            Timber.w(error, "🔎 [LedgerServer] D12: sin respuesta al preguntar por la solicitud de %s", attemptId)
+            null
+        } catch (error: Exception) {
+            // Un cuerpo que no se puede leer no es una declaración: la duda se conserva, y como el servidor SÍ contestó, gasta el turno.
+            Timber.w(error, "🔎 [LedgerServer] D12: respuesta ilegible al preguntar por la solicitud de %s — la duda se conserva", attemptId)
+            return PorSolicitud.NADA
+        } ?: return PorSolicitud.SIN_RESPUESTA
+        if (!respuesta.isSuccessful) {
+            // 404 (otra terminal, ruta vieja), 401/403, 5xx: nada acredita nada.
+            Timber.d("🔎 [LedgerServer] D12: %s ⇒ HTTP %d al preguntar por la solicitud: la duda se conserva", attemptId, respuesta.code())
+            return PorSolicitud.NADA
+        }
+        val liberacion = LiberacionDelServidor.desdeConsultaPorSolicitud(venueId, attemptId, requestId, respuesta.body())
+            ?: return PorSolicitud.NADA
+        val aplicada = ledger.aplicarLiberacionDelServidor(liberacion, now)
+        return when {
+            aplicada.isFailure -> PorSolicitud.ESCRITURA_FALLIDA
+            aplicada.getOrDefault(false) -> {
+                Timber.w("🔎 [LedgerServer] D12: %s liberado — una persona declaró «no se cobró» para la solicitud %s", attemptId, requestId)
+                PorSolicitud.LIBERADA
+            }
+            else -> PorSolicitud.NADA
+        }
+    }
+
+    /**
+     * D12: la solicitud a la que pertenece ESA fila — la de su COLUMNA, sólo si el CONTEXTO durable que la libreta guardó al abrirla
+     * dice exactamente lo mismo y la fila es de este negocio. Sin recortar ni normalizar: un id que no coincide al carácter no es
+     * esa solicitud. Un cobro local (sin solicitud) o un contexto ilegible dan null.
+     */
+    private fun solicitudDurableDe(fila: PaymentAttemptEntity, venueId: String): String? {
+        if (fila.venueId != venueId) return null
+        val columna = fila.terminalPaymentRequestId?.takeIf { it.isNotBlank() } ?: return null
+        val delContexto = runCatching {
+            com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("terminalPaymentRequestId")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        return columna.takeIf { it == delContexto }
     }
 
     /**

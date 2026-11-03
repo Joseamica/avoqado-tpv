@@ -343,6 +343,7 @@ class PaymentViewModelTest {
             mockk(relaxed = true),
         verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager = mockk(relaxed = true),
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+        proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -400,6 +401,7 @@ class PaymentViewModelTest {
             pendingPaymentDao = mockk(relaxed = true),
             subirVentaGuardadaUseCase = mockk(relaxed = true),
             proofOfSaleQueue = proofOfSaleQueue,
+            proofOfSaleRemote = proofOfSaleRemote,
         )
     }
 
@@ -3542,6 +3544,59 @@ class PaymentViewModelTest {
         coVerify(exactly = 0) { queue.discard(any()) }
         coVerify(exactly = 0) { uploader.deletePhoto(any()) }
         coVerify(exactly = 0) { uploader.uploadProofOfSale(any(), any(), any(), any(), any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // C7. El número de vinculación con la foto, detrás del interruptor del módulo
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `C7 el interruptor sale de features linkingNumber y la foto se encola con su numero`() = runTest {
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", true, false, verificationId = "ver-1")
+        every { mockAuthRepository.getVenueSlug() } returns "tienda-a"
+        val viewModel = createViewModel(
+            proofOfSaleQueue = queue,
+            proofOfSaleRemote = com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote(mockk(relaxed = true)),
+        )
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.linkingNumberEnabled.value).isFalse()
+
+        modulesFlow.value = listOf(
+            com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule(
+                "m1", ModulesRepository.MODULE_SERIALIZED_INVENTORY, "Inventario",
+                com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig(
+                    features = com.jaac.avoqado_tpv.features.modules.domain.model.ModuleFeatures(linkingNumber = true),
+                ),
+            ),
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.linkingNumberEnabled.value).isTrue()
+        assertThat(viewModel.numberCapture).isNotNull()
+
+        viewModel.confirmProofOfSalePhoto("/cache/cam.jpg", "pay-1", vinculacion, "5512345678")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            queue.enqueuePhoto(
+                com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                    testVenueId, "tienda-a", testStaffId, "pay-1", null, vinculacion, "/cache/cam.jpg", "5512345678",
+                ),
+            )
+        }
+        // Al subir llegó linkingDuplicate: se avisa en pantalla, y la venta sigue completa (avisa y deja guardar).
+        assertThat(viewModel.proofSlotStates.value[vinculacion]).isEqualTo(
+            com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.UploadedWithWarning(
+                "Este número de vinculación ya fue registrado en otra venta",
+            ),
+        )
+        assertThat(viewModel.proofOfSaleComplete.value).isTrue()
+        assertThat(viewModel.proofNumber(vinculacion)).isEqualTo("5512345678")
+        assertThat(viewModel.proofVerificationId()).isEqualTo("ver-1")
         viewModel.viewModelScope.cancel()
     }
 }

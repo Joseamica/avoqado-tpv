@@ -376,6 +376,7 @@ fun AngelPayPaymentScreen(
                 val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
                 val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
                 val proofSlotStates by viewModel.proofSlotStates.collectAsStateWithLifecycle()
+                val linkingNumberEnabled by viewModel.linkingNumberEnabled.collectAsStateWithLifecycle()
                 val proofPaymentId = com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId(successState.receipt)
                 AngelPaySuccessContent(
                     state = successState,
@@ -400,12 +401,17 @@ fun AngelPayPaymentScreen(
                     } else {
                         proofOfSaleMessage(proofSlotStates, isPortabilidad)
                     },
-                    onProofOfSalePhotoTaken = { photoPath, slot ->
-                        // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker.
+                    onProofOfSalePhotoTaken = { photoPath, slot, number ->
+                        // Se encola con el número de su ranura (archivo y fila antes de la red); la sube PaymentSyncWorker.
                         if (proofPaymentId != null) {
-                            viewModel.confirmProofOfSalePhoto(photoPath, proofPaymentId, slot, number = null)
+                            viewModel.confirmProofOfSalePhoto(photoPath, proofPaymentId, slot, number)
                         }
                     },
+                    // 📸 C7: el campo del número (interruptor features.linkingNumber) y la pregunta de repetido.
+                    linkingNumberEnabled = linkingNumberEnabled,
+                    numberCapture = viewModel.numberCapture,
+                    proofNumber = viewModel::proofNumber,
+                    proofVerificationId = viewModel.proofVerificationId(),
                     onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
                     // Checkpoint 2 (E4): una segunda captura con ganador acreditado NO es un éxito limpio — el mismo
                     // renglón ámbar «no lo vuelvas a cobrar» que ya usa el registro pendiente.

@@ -59,8 +59,17 @@ data class NumberCapture(
     val number: String,
 )
 
-/** `outcome`: APPLIED | SUPERSEDED_BY_NEWER | SALE_ALREADY_APPROVED | NUMBER_DISABLED | SALE_REJECTED | PERMANENT. */
-data class ProofSyncResult(val key: String, val outcome: String, val linkingDuplicate: Boolean, val portedDuplicate: Boolean)
+/**
+ * `outcome`: APPLIED | SUPERSEDED_BY_NEWER | SALE_ALREADY_APPROVED | NUMBER_DISABLED | SALE_REJECTED | PERMANENT.
+ * [verificationId]: el de la venta si el servidor contestó (con él, `number-check` no la cuenta como repetida consigo misma).
+ */
+data class ProofSyncResult(
+    val key: String,
+    val outcome: String,
+    val linkingDuplicate: Boolean,
+    val portedDuplicate: Boolean,
+    val verificationId: String? = null,
+)
 
 /**
  * Cola durable de la foto de comprobante y del número de vinculación (PlayTelecom). Ninguna pantalla sube por su
@@ -274,7 +283,10 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
     private fun emit(row: ProofOfSaleQueueEntity, outcome: String, response: ProofOfSaleResponse?) {
         _results.tryEmit(
-            ProofSyncResult(row.idempotencyKey, outcome, response?.linkingDuplicate == true, response?.portedDuplicate == true),
+            ProofSyncResult(
+                row.idempotencyKey, outcome, response?.linkingDuplicate == true, response?.portedDuplicate == true,
+                verificationId = response?.verificationId?.takeIf { it.isNotBlank() },
+            ),
         )
     }
 

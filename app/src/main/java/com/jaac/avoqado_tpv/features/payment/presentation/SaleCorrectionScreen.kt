@@ -2,7 +2,6 @@ package com.jaac.avoqado_tpv.features.payment.presentation
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,18 +18,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,29 +32,29 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.jaac.avoqado_tpv.core.data.network.PendingVerificationDto
 import com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 
 private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
@@ -76,6 +70,11 @@ private fun VerificationDetailDto.toPendingDto(): PendingVerificationDto = Pendi
     isPortabilidad = isPortabilidad,
     photos = photos,
     requiredPhotos = requiredPhotos,
+    linkingNumber = linkingNumber,
+    portedNumber = portedNumber,
+    linkingNumberLocked = linkingNumberLocked,
+    portedNumberLocked = portedNumberLocked,
+    alerts = alerts,
 )
 
 /**
@@ -91,6 +90,7 @@ fun SaleCorrectionScreen(
     viewModel: SaleCorrectionViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val linkingNumberEnabled by viewModel.linkingNumberEnabled.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     LaunchedEffect(uiState.error) {
@@ -104,6 +104,8 @@ fun SaleCorrectionScreen(
     var showCamera by rememberSaveable { mutableStateOf(false) }
     var selectedLabel by rememberSaveable { mutableStateOf("") }
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
+    // «Corregir número»: la ranura cuyo número se está corrigiendo (sin foto).
+    var correctingSlot by remember { mutableStateOf<ProofSlot?>(null) }
 
     fun displayLabel(label: String): String = when (label) {
         "Vinculacion" -> "1. Vinculación"
@@ -128,16 +130,24 @@ fun SaleCorrectionScreen(
         return
     }
 
-    // Confirm / retake dialog before uploading
+    // Confirm / retake dialog before uploading (con el número de su ranura si el interruptor está encendido)
     capturedPhotoPath?.let { photoPath ->
-        SaleCorrectionPhotoPreviewDialog(
+        val slot = proofSlotOf(selectedLabel)
+        val current = uiState.detail?.let { slotNumber(it.toPendingDto(), uiState.queued, slot) }
+        ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
-            label = displayLabel(selectedLabel),
-            onConfirm = {
+            title = displayLabel(selectedLabel),
+            numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
+            initialNumber = current?.number,
+            numberLocked = current?.locked == true,
+            numberKind = slot.numberKind,
+            verificationId = uiState.detail?.id,
+            numberCapture = viewModel.numberCapture,
+            onConfirm = { number ->
                 capturedPhotoPath = null
                 if (photoPath.isNotEmpty()) {
                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
-                    viewModel.enqueuePhoto(proofSlotOf(selectedLabel), photoPath)
+                    viewModel.enqueuePhoto(slot, photoPath, number)
                 }
             },
             onRetake = {
@@ -147,6 +157,21 @@ fun SaleCorrectionScreen(
             onDismiss = {
                 capturedPhotoPath = null
             },
+        )
+    }
+
+    // «Corregir número»: el campo solo; se encola sólo el número (NUMBER_ONLY), sin volver a tomar la foto.
+    correctingSlot?.let { slot ->
+        LinkingNumberDialog(
+            kind = slot.numberKind,
+            initialNumber = uiState.detail?.let { slotNumber(it.toPendingDto(), uiState.queued, slot).number },
+            verificationId = uiState.detail?.id,
+            capture = viewModel.numberCapture,
+            onConfirm = { number ->
+                correctingSlot = null
+                viewModel.correctNumber(slot, number)
+            },
+            onDismiss = { correctingSlot = null },
         )
     }
 
@@ -208,6 +233,8 @@ fun SaleCorrectionScreen(
                             initiallyExpanded = true,
                             queued = uiState.queued,
                             deliveredSlots = uiState.deliveredSlots,
+                            linkingNumberEnabled = linkingNumberEnabled,
+                            onCorrectNumber = { slot -> correctingSlot = slot },
                             onDiscard = viewModel::discard,
                             onTakePhoto = { label, _ ->
                                 if (showCamera) return@PendingVerificationItem
@@ -372,108 +399,6 @@ private fun CorrectionErrorState(message: String, isError: Boolean, onRetry: () 
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             ) {
                 Text("Reintentar")
-            }
-        }
-    }
-}
-
-@Composable
-private fun SaleCorrectionPhotoPreviewDialog(
-    photoPath: String,
-    label: String,
-    onConfirm: () -> Unit,
-    onRetake: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
-            color = Color.Black,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White,
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Cerrar",
-                            tint = Color.White,
-                        )
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    AsyncImage(
-                        model = java.io.File(photoPath),
-                        contentDescription = "Vista previa de foto",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Fit,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = onRetake,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CameraAlt,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Retomar")
-                    }
-
-                    Button(
-                        onClick = onConfirm,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                        ),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Confirmar")
-                    }
-                }
             }
         }
     }

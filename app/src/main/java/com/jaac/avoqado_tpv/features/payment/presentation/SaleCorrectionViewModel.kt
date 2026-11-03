@@ -6,20 +6,28 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.modules.domain.repository.linkingNumberEnabled
 import com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
+import com.jaac.avoqado_tpv.features.verification.data.NumberCapture
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -68,7 +76,14 @@ class SaleCorrectionViewModel @Inject constructor(
     private val queue: ProofOfSaleQueueRepository,
     private val authRepository: AuthRepository,
     savedStateHandle: SavedStateHandle,
+    // C7: el interruptor del número (features.linkingNumber) y su pregunta de repetido. Hilt siempre los da.
+    modulesRepository: ModulesRepository? = null,
+    proofOfSaleRemote: ProofOfSaleRemote? = null,
 ) : ViewModel() {
+
+    val linkingNumberEnabled: StateFlow<Boolean> = (modulesRepository?.modules?.map { it.linkingNumberEnabled() } ?: flowOf(false))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val numberCapture: NumberCaptureController? = proofOfSaleRemote?.let { NumberCaptureController(it) }
 
     private val verificationId: String = savedStateHandle.get<String>("verificationId").orEmpty()
 
@@ -117,8 +132,24 @@ class SaleCorrectionViewModel @Inject constructor(
         }
     }
 
-    /** Encola la foto retomada de [slot] (archivo y fila antes de la red). */
-    fun enqueuePhoto(slot: ProofSlot, photoPath: String) {
+    /** Encola la foto retomada de [slot], con el número de su ranura si el interruptor está encendido. */
+    fun enqueuePhoto(slot: ProofSlot, photoPath: String, number: String? = null) {
+        save { detail, venueId, staffId ->
+            queue.enqueuePhoto(
+                PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, detail.paymentId, detail.id, slot, photoPath, number),
+            )
+        }
+    }
+
+    /** «Corregir número»: sólo el número de [slot], sin volver a tomar la foto (fila `NUMBER_ONLY`). */
+    fun correctNumber(slot: ProofSlot, number: String) {
+        save { detail, venueId, staffId ->
+            queue.enqueueNumberOnly(NumberCapture(venueId, staffId, detail.paymentId, detail.id, slot, number))
+        }
+    }
+
+    /** Archivo y fila antes de la red; al entregarse, vuelve a pedir el detalle. */
+    private fun save(enqueue: suspend (detail: VerificationDetailDto, venueId: String, staffId: String) -> String) {
         val detail = _uiState.value.detail ?: return
         val venueId = authRepository.getVenueId()
         val staffId = authRepository.getStaffId()
@@ -129,9 +160,7 @@ class SaleCorrectionViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isUploading = true, error = null) }
             try {
-                val key = queue.enqueuePhoto(
-                    PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, detail.paymentId, detail.id, slot, photoPath, null),
-                )
+                val key = enqueue(detail, venueId, staffId)
                 _uiState.update { it.copy(isUploading = false) }
                 val result = queue.awaitResult(key, Long.MAX_VALUE)
                 if (result?.outcome == "APPLIED" || result?.outcome == "SUPERSEDED_BY_NEWER") load()

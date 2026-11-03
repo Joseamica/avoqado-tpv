@@ -233,4 +233,55 @@ class ProofOfSaleBlock0Test {
         assertThat(proofOfSalePaymentId(null)).isNull()
         assertThat(proofOfSalePaymentId(recibo("pay-1"))).isEqualTo("pay-1")
     }
+
+    // ── C7: el número con la foto ──────────────────────────────────────────────
+
+    @Test fun `C7 si al subir llega linkingDuplicate se avisa en pantalla con el texto de Isaac y la venta sigue completa`() = runTest {
+        val s = slots()
+        s.confirmar(number = "5512345678"); runCurrent()
+
+        results.emit(ProofSyncResult("k1", "APPLIED", linkingDuplicate = true, portedDuplicate = false)); runCurrent()
+
+        val aviso = "Este número de vinculación ya fue registrado en otra venta"
+        assertThat(s.de()).isEqualTo(ProofSlotState.UploadedWithWarning(aviso))
+        assertThat(s.complete.value).isTrue()
+        assertThat(proofOfSaleMessage(s.states.value, isPortabilidad = false)).isEqualTo(aviso)
+    }
+
+    @Test fun `C7 en portabilidad cada ranura avisa de SU numero repetido, tambien si llega despues de los 10 s`() = runTest {
+        portabilidad = true
+        val s = slots()
+        s.confirmar(ProofSlot.VINCULACION, number = "5512345678"); runCurrent()
+        s.confirmar(ProofSlot.PORTABILIDAD, path = "/cache/cam-2.jpg", number = "5598765432"); runCurrent()
+        results.emit(ProofSyncResult("k1", "APPLIED", linkingDuplicate = false, portedDuplicate = true)); runCurrent()
+        advanceTimeBy(10_001); runCurrent()
+        assertThat(s.de(ProofSlot.PORTABILIDAD)).isEqualTo(ProofSlotState.Queued("Se subirá sola"))
+
+        results.emit(ProofSyncResult("k2", "APPLIED", linkingDuplicate = false, portedDuplicate = true)); runCurrent()
+
+        assertThat(s.de(ProofSlot.VINCULACION)).isEqualTo(ProofSlotState.Uploaded)
+        assertThat(s.de(ProofSlot.PORTABILIDAD))
+            .isEqualTo(ProofSlotState.UploadedWithWarning("Este número portado ya fue registrado en otra venta"))
+        assertThat(s.complete.value).isTrue()
+    }
+
+    @Test fun `C7 recuerda el numero de cada ranura para retomar y aprende la verificacion de la venta, Nuevo Pago los olvida`() = runTest {
+        val s = slots()
+        s.confirmar(number = "5512345678"); runCurrent()
+        assertThat(s.number(ProofSlot.VINCULACION)).isEqualTo("5512345678")
+        assertThat(s.number(ProofSlot.PORTABILIDAD)).isNull()
+        assertThat(s.verificationId).isNull()
+
+        results.emit(ProofSyncResult("k1", "APPLIED", false, false, verificationId = "ver-1")); runCurrent()
+        s.retake(ProofSlot.VINCULACION)
+
+        // Retomar no borra el número (rellena el campo) y con la verificación number-check no choca con esta venta.
+        assertThat(s.number(ProofSlot.VINCULACION)).isEqualTo("5512345678")
+        assertThat(s.verificationId).isEqualTo("ver-1")
+        assertThat(capturas.single().number).isEqualTo("5512345678")
+
+        s.reset()
+        assertThat(s.number(ProofSlot.VINCULACION)).isNull()
+        assertThat(s.verificationId).isNull()
+    }
 }

@@ -27,8 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -36,9 +34,6 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,7 +69,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -89,7 +83,14 @@ import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
 import com.jaac.avoqado_tpv.features.verification.data.ACTIONABLE_OFFLINE_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog
 import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
+import com.jaac.avoqado_tpv.features.verification.presentation.isPhotoCapture
+import com.jaac.avoqado_tpv.features.verification.presentation.components.CORRECT_NUMBER_TEXT
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LINKING_NUMBER_LOCKED_TEXT
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LINKING_NUMBER_NEEDS_SALE_TEXT
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
 import com.jaac.avoqado_tpv.features.verification.presentation.queuedCaptureMessage
 import java.math.BigDecimal
 import java.time.Instant
@@ -127,6 +128,7 @@ fun PendingVerificationsScreen(
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val uploadingId by viewModel.savingPaymentId.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val linkingNumberEnabled by viewModel.linkingNumberEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     LaunchedEffect(error) {
@@ -141,6 +143,8 @@ fun PendingVerificationsScreen(
     var selectedPaymentId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedLabel by rememberSaveable { mutableStateOf("") }
     var capturedPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
+    // «Corregir número»: la venta y la ranura cuyo número se está corrigiendo (sin foto).
+    var correcting by remember { mutableStateOf<Pair<String, ProofSlot>?>(null) }
 
     // In-app CameraX camera (has close button — PAX system camera doesn't)
     if (showCamera) {
@@ -166,21 +170,30 @@ fun PendingVerificationsScreen(
         return // Full-screen camera overlay — don't render the list behind it
     }
 
-    // Photo preview dialog — confirm/retake before uploading
+    // Photo preview dialog — confirm/retake before uploading (con el número de su ranura si el interruptor está encendido)
     capturedPhotoPath?.let { photoPath ->
-        PhotoPreviewDialog(
+        val slot = proofSlotOf(selectedLabel)
+        val selected = verifications.firstOrNull { it.paymentId == selectedPaymentId }
+        val current = selected?.let { slotNumber(it.toPendingCard(), it.queued, slot) }
+        ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
-            label = when (selectedLabel) {
+            title = when (selectedLabel) {
                 "Vinculacion" -> "1. Vinculación"
                 "Portabilidad" -> "2. Portabilidad"
                 else -> selectedLabel
             },
-            onConfirm = {
+            numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
+            initialNumber = current?.number,
+            numberLocked = current?.locked == true,
+            numberKind = slot.numberKind,
+            verificationId = selected?.verificationId,
+            numberCapture = viewModel.numberCapture,
+            onConfirm = { number ->
                 capturedPhotoPath = null
                 val pId = selectedPaymentId
                 if (pId != null && photoPath.isNotEmpty()) {
                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
-                    viewModel.enqueuePhoto(pId, proofSlotOf(selectedLabel), photoPath)
+                    viewModel.enqueuePhoto(pId, slot, photoPath, number)
                 }
             },
             onRetake = {
@@ -190,6 +203,22 @@ fun PendingVerificationsScreen(
             onDismiss = {
                 capturedPhotoPath = null
             }
+        )
+    }
+
+    // «Corregir número»: el campo solo; se encola sólo el número (NUMBER_ONLY), sin volver a tomar la foto.
+    correcting?.let { (paymentId, slot) ->
+        val item = verifications.firstOrNull { it.paymentId == paymentId }
+        LinkingNumberDialog(
+            kind = slot.numberKind,
+            initialNumber = item?.let { slotNumber(it.toPendingCard(), it.queued, slot).number },
+            verificationId = item?.verificationId,
+            capture = viewModel.numberCapture,
+            onConfirm = { number ->
+                correcting = null
+                viewModel.correctNumber(paymentId, slot, number)
+            },
+            onDismiss = { correcting = null },
         )
     }
 
@@ -261,6 +290,9 @@ fun PendingVerificationsScreen(
                                     deliveredSlots = item.deliveredSlots,
                                     showAmount = item.detail != null,
                                     review = item.review(),
+                                    linkingNumberEnabled = linkingNumberEnabled,
+                                    // Sin verificación (venta que el servidor aún no registra) el botón queda en gris.
+                                    onCorrectNumber = item.verificationId?.let { { slot: ProofSlot -> correcting = item.paymentId to slot } },
                                     onDiscard = viewModel::discard,
                                     onTakePhoto = { label, _ ->
                                         if (showCamera) return@PendingVerificationItem
@@ -353,6 +385,10 @@ fun PendingVerificationItem(
     showAmount: Boolean = true,
     /** La venta está en «Revisar» (FAILED): chip ámbar, motivos del back-office y nunca «completa». */
     review: CardReview? = null,
+    /** Interruptor `features.linkingNumber`: bajo cada foto, su número, el aviso de repetido y «Corregir número». */
+    linkingNumberEnabled: Boolean = false,
+    /** «Corregir número» de una ranura; null = la venta todavía no tiene verificación (botón en gris, con su razón). */
+    onCorrectNumber: ((ProofSlot) -> Unit)? = null,
     onDiscard: (idempotencyKey: String) -> Unit = {},
     onTakePhoto: (label: String, replaceIndex: Int?) -> Unit
 ) {
@@ -361,9 +397,11 @@ fun PendingVerificationItem(
 
     // Por ranura: la foto del servidor; si no, la de su captura más nueva en la cola (el archivo de la terminal).
     fun serverPhoto(slot: ProofSlot) = item.photos.getOrNull(slot.ordinal)?.takeIf { it.isNotEmpty() }
-    fun queuedPhoto(slot: ProofSlot) = queued.firstOrNull { it.slot == slot.name }?.localPath
+    fun queuedPhoto(slot: ProofSlot) = queued.firstOrNull { it.slot == slot.name && isPhotoCapture(it) }?.localPath
 
     val progress = cardProgress(item, queued, deliveredSlots, review)
+    val numberSlots = if (item.isPortabilidad) ProofSlot.entries else listOf(ProofSlot.VINCULACION)
+    val numbers = if (linkingNumberEnabled) numberSlots.associateWith { slotNumber(item, queued, it) } else emptyMap()
     val nonEmptyPhotos = progress.filled
     val photosComplete = progress.complete
     val chipColor = if (photosComplete) {
@@ -492,6 +530,16 @@ fun PendingVerificationItem(
                 }
             }
 
+            // Número repetido: el aviso de Isaac a la vista sin abrir la tarjeta (ámbar: avisa, no bloquea).
+            numbers.filterValues { it.duplicate }.keys.forEach { slot ->
+                Text(
+                    text = slot.numberKind.duplicateText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.avoqadoColors.statusWarning,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
             // Expanded section: photo slots
             AnimatedVisibility(
                 visible = isExpanded,
@@ -584,6 +632,11 @@ fun PendingVerificationItem(
                         }
                     }
 
+                    // El número bajo las fotos, con «Corregir número» (sin volver a tomar la foto).
+                    numbers.forEach { (slot, number) ->
+                        SlotNumberRow(slot = slot, number = number, enabled = !isUploading, onCorrect = onCorrectNumber?.let { { it(slot) } })
+                    }
+
                     // Lo que pasa con cada captura de la cola; «Descartar» en las que ya no se suben solas.
                     queued.forEach { row ->
                         QueuedCaptureRow(row = row, onDiscard = { onDiscard(row.idempotencyKey) })
@@ -594,9 +647,51 @@ fun PendingVerificationItem(
     }
 }
 
+/**
+ * «Número de vinculación: 5512345678» con «Corregir número». Bloqueado: «Corregido por el back-office» y sin botón. Sin
+ * verificación: el botón en gris con «Disponible cuando se registre la venta».
+ */
+@Composable
+private fun SlotNumberRow(slot: ProofSlot, number: SlotNumber, enabled: Boolean, onCorrect: (() -> Unit)?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${slot.numberKind.label}: ${number.number ?: "sin capturar"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            when {
+                number.locked -> LINKING_NUMBER_LOCKED_TEXT
+                onCorrect == null -> LINKING_NUMBER_NEEDS_SALE_TEXT
+                else -> null
+            }?.let { caption ->
+                Text(
+                    text = caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (!number.locked) {
+            TextButton(onClick = { onCorrect?.invoke() }, enabled = enabled && onCorrect != null) { Text(CORRECT_NUMBER_TEXT) }
+        }
+    }
+}
+
 @Composable
 private fun QueuedCaptureRow(row: ProofOfSaleQueueEntity, onDiscard: () -> Unit) {
-    val slotName = if (row.slot == ProofSlot.PORTABILIDAD.name) "Portabilidad" else "Vinculación"
+    val slot = if (row.slot == ProofSlot.PORTABILIDAD.name) ProofSlot.PORTABILIDAD else ProofSlot.VINCULACION
+    // Una corrección de número (sin foto) se nombra por su número, no por su foto.
+    val slotName = when {
+        !isPhotoCapture(row) -> slot.numberKind.label
+        slot == ProofSlot.PORTABILIDAD -> "Portabilidad"
+        else -> "Vinculación"
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -880,113 +975,6 @@ private fun EmptyVerificationsState(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-    }
-}
-
-// ========== Photo Preview Dialog ==========
-
-@Composable
-private fun PhotoPreviewDialog(
-    photoPath: String,
-    label: String,
-    onConfirm: () -> Unit,
-    onRetake: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
-            color = Color.Black
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Top bar with label and close button
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Cerrar",
-                            tint = Color.White
-                        )
-                    }
-                }
-
-                // Photo preview
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AsyncImage(
-                        model = java.io.File(photoPath),
-                        contentDescription = "Vista previa de foto",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Fit
-                    )
-                }
-
-                // Confirm / Retake buttons
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onRetake,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CameraAlt,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Retomar")
-                    }
-
-                    Button(
-                        onClick = onConfirm,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Confirmar")
-                    }
-                }
-            }
         }
     }
 }

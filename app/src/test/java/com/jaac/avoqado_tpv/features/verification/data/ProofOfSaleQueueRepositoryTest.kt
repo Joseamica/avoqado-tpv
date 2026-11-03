@@ -196,7 +196,9 @@ class ProofOfSaleQueueRepositoryTest {
         assertThat(fila(key)).isNull()
         assertThat(File(f.localPath!!).exists()).isFalse()
         assertThat(ranuras("pay-1")).isEqualTo("VINCULACION")
-        assertThat(repo.awaitResult(key, 1_000)).isEqualTo(ProofSyncResult(key, "APPLIED", linkingDuplicate = true, portedDuplicate = false))
+        // C7: el resultado trae la verificación de la venta (con ella number-check no choca con esta misma venta).
+        assertThat(repo.awaitResult(key, 1_000))
+            .isEqualTo(ProofSyncResult(key, "APPLIED", linkingDuplicate = true, portedDuplicate = false, verificationId = "ver-1"))
     }
 
     @Test fun `SUPERSEDED_BY_NEWER tambien se da por entregada y la ranura se suma a la que ya habia`() = runBlocking {
@@ -384,7 +386,8 @@ class ProofOfSaleQueueRepositoryTest {
         coVerify(exactly = 0) { uploader.uploadToPath(any(), any()) }
         assertThat(fila(key)).isNull()
         assertThat(ranuras("pay-1")).isEmpty()
-        assertThat(repo.awaitResult(key, 1_000)).isEqualTo(ProofSyncResult(key, "APPLIED", linkingDuplicate = false, portedDuplicate = true))
+        assertThat(repo.awaitResult(key, 1_000))
+            .isEqualTo(ProofSyncResult(key, "APPLIED", linkingDuplicate = false, portedDuplicate = true, verificationId = "ver-1"))
     }
 
     // ─── drenar: tiendas y organizaciones ───────────────────────────────────────

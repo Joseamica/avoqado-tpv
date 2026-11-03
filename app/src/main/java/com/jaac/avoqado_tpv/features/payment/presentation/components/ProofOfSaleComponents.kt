@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,16 +49,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberKind
+import com.jaac.avoqado_tpv.features.verification.presentation.components.DuplicatePromptDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberField
+import com.jaac.avoqado_tpv.features.verification.presentation.components.canConfirmLinkingNumber
+import com.jaac.avoqado_tpv.features.verification.presentation.components.linkingNumberInput
+import com.jaac.avoqado_tpv.features.verification.presentation.components.submitLinkingNumber
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Proof-of-sale (post-payment, non-blocking) photo capture UI.
  *
- * This is a byte-for-byte duplicate of Blumon's `ProofOfSalePhotoSection` /
- * `ProofOfSalePlaceholder` / `ProofOfSalePhotoPreviewDialog` (private to
- * `PaymentScreen.kt`) — extracted here so the AngelPay success screen can reuse the
- * exact same UX without modifying any Blumon file. If you change one, check whether
- * the other needs the same change; they're intentionally not shared to keep Blumon
- * completely untouched.
+ * `ProofOfSalePhotoSection` / `ProofOfSalePlaceholder` are a byte-for-byte duplicate of
+ * Blumon's (private to `PaymentScreen.kt`), extracted here so the AngelPay success screen
+ * reuses the exact same UX. If you change one, check whether the other needs the same
+ * change. [ProofOfSalePhotoPreviewDialog] ya NO es copia: desde C7 (campo del número) es
+ * la única vista previa de la foto y la usan las cuatro pantallas.
  */
 @Composable
 fun ProofOfSalePhotoSection(
@@ -177,21 +192,38 @@ fun ProofOfSalePlaceholder(
 }
 
 /**
- * Photo preview dialog for proof-of-sale confirmation. Shows captured photo with
- * Confirm/Retake buttons before uploading.
+ * La vista previa de la foto de comprobante, con «Confirmar» / «Retomar». Es la ÚNICA de la app: la usan el cobro de la
+ * PAX y el de la Nexgo, «Pendientes» y la corrección (antes eran cuatro copias).
+ *
+ * Con [numberLabel] (interruptor `features.linkingNumber` encendido) pide el número debajo de la foto y «Confirmar» sólo
+ * se habilita con 9 o 10 dígitos (sin número no se sube la foto, Isaac 2-nov); con señal pregunta por repetido antes de
+ * seguir ([numberCapture], con el [verificationId] de la venta para que no choque consigo misma). [onConfirm] recibe el
+ * número, o null si no hay campo o si está [numberLocked] (lo corrigió el back-office: el servidor no lo pisa).
  */
 @Composable
 fun ProofOfSalePhotoPreviewDialog(
     photoPath: String,
-    onConfirm: () -> Unit,
+    onConfirm: (number: String?) -> Unit,
     onRetake: () -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Vista Previa",
     confirmText: String = "Confirmar",
     retakeText: String = "Retomar",
+    numberLabel: String? = null,
+    initialNumber: String? = null,
+    numberLocked: Boolean = false,
+    numberKind: NumberKind = NumberKind.LINKING,
+    verificationId: String? = null,
+    numberCapture: NumberCaptureController? = null,
 ) {
+    var number by remember(photoPath) { mutableStateOf(linkingNumberInput("", initialNumber.orEmpty())) }
+    val scope = rememberCoroutineScope()
+    val checking by (numberCapture?.checking ?: NOT_CHECKING).collectAsStateWithLifecycle()
+    val confirmEnabled = (numberLabel == null || canConfirmLinkingNumber(number, numberLocked)) && !checking
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        // Sin decor: el teclado del número encoge la foto (imePadding) en vez de tapar el campo.
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         Surface(
             modifier = Modifier
@@ -200,7 +232,9 @@ fun ProofOfSalePhotoPreviewDialog(
             color = Color.Black,
         ) {
             Column(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .safeDrawingPadding(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(
@@ -211,7 +245,7 @@ fun ProofOfSalePhotoPreviewDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Vista Previa",
+                        text = title,
                         style = MaterialTheme.typography.titleLarge,
                         color = Color.White,
                     )
@@ -241,6 +275,24 @@ fun ProofOfSalePhotoPreviewDialog(
                     )
                 }
 
+                numberLabel?.let { label ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        LinkingNumberField(
+                            label = label,
+                            value = number,
+                            onValueChange = { number = it },
+                            locked = numberLocked,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -263,7 +315,14 @@ fun ProofOfSalePhotoPreviewDialog(
                     }
 
                     Button(
-                        onClick = onConfirm,
+                        onClick = {
+                            if (numberLabel == null || numberLocked) {
+                                onConfirm(null)
+                            } else {
+                                scope.submitLinkingNumber(number, numberKind, verificationId, numberCapture, onConfirm)
+                            }
+                        },
+                        enabled = confirmEnabled,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     ) {
@@ -278,5 +337,9 @@ fun ProofOfSalePhotoPreviewDialog(
                 }
             }
         }
+        // Dentro del diálogo: el aviso de repetido queda encima de la foto, y «Corregir» regresa a este campo.
+        DuplicatePromptDialog(numberCapture)
     }
 }
+
+private val NOT_CHECKING: StateFlow<Boolean> = MutableStateFlow(false)

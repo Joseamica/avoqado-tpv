@@ -247,6 +247,8 @@ class AngelPayPaymentViewModelTest {
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
         actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
+        proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
+        modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -291,6 +293,8 @@ class AngelPayPaymentViewModelTest {
         impresoraDeVentaGuardada = mockk(relaxed = true),
         proofOfSaleQueue = proofOfSaleQueue,
         actionableSales = actionableSales,
+        proofOfSaleRemote = proofOfSaleRemote,
+        modulesRepository = modulesRepository,
     )
     }
 
@@ -5980,6 +5984,70 @@ class AngelPayPaymentViewModelTest {
             coVerify(exactly = 0) { queue.discard(any()) }
             coVerify(exactly = 0) { verificationUploadManager.deletePhoto(any()) }
             coVerify(exactly = 0) { verificationUploadManager.uploadProofOfSale(any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // C7 — el número de vinculación con la foto, detrás del interruptor
+    // ----------------------------------------------------------------------
+    @Test
+    fun `C7 con el interruptor encendido la foto se encola con su numero y el campo se rellena al retomar`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { authRepository.getVenueSlug() } returns "tienda-a"
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult("k1", any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", false, false, verificationId = "ver-1")
+        val modulos = kotlinx.coroutines.flow.MutableStateFlow<List<com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule>>(emptyList())
+        val repo = mockk<com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository> { every { modules } returns modulos }
+        val vm = createViewModel(
+            proofOfSaleQueue = queue,
+            proofOfSaleRemote = com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote(apiService),
+            modulesRepository = repo,
+        )
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        try {
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isFalse()
+            modulos.value = listOf(
+                com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule(
+                    "m1", "SERIALIZED_INVENTORY", "Inventario",
+                    com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig(
+                        features = com.jaac.avoqado_tpv.features.modules.domain.model.ModuleFeatures(linkingNumber = true),
+                    ),
+                ),
+            )
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isTrue()
+            assertThat(vm.numberCapture).isNotNull()
+
+            vm.confirmProofOfSalePhoto("/cache/v.jpg", "pay-1", vinculacion, "5512345678")
+            runCurrent()
+
+            coVerify(exactly = 1) {
+                queue.enqueuePhoto(
+                    com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                        "v1", "tienda-a", "s1", "pay-1", null, vinculacion, "/cache/v.jpg", "5512345678",
+                    ),
+                )
+            }
+            assertThat(vm.proofNumber(vinculacion)).isEqualTo("5512345678")
+            assertThat(vm.proofVerificationId()).isEqualTo("ver-1")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `C7 sin modulos el interruptor queda apagado y no hay campo`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isFalse()
+            assertThat(vm.numberCapture).isNull()
         } finally {
             vm.viewModelScope.cancel()
         }

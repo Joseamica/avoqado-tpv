@@ -8,13 +8,19 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import com.jaac.avoqado_tpv.features.verification.data.ActionableItem
 import com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
 import com.jaac.avoqado_tpv.features.verification.data.ActionableState
+import com.jaac.avoqado_tpv.features.verification.data.NumberCapture
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
+import com.jaac.avoqado_tpv.features.verification.presentation.isPhotoCapture
 import com.jaac.avoqado_tpv.features.verification.presentation.queuedCaptureMessage
+import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig
+import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleFeatures
+import com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -38,6 +44,7 @@ class PendingVerificationsViewModelTest {
     private val auth = mockk<AuthRepository>()
     private val lista = MutableStateFlow(ActionableState(emptyList(), isOffline = false, nextCursor = null))
     private val capturas = mutableListOf<PhotoCapture>()
+    private val numeros = mutableListOf<NumberCapture>()
     private val entregada = CompletableDeferred<ProofSyncResult?>()
 
     private fun vm(refresh: Result<Unit> = Result.success(Unit)): PendingVerificationsViewModel {
@@ -48,6 +55,7 @@ class PendingVerificationsViewModelTest {
         coEvery { sales.refresh() } returns refresh
         coEvery { sales.loadMore() } returns Result.success(Unit)
         coEvery { queue.enqueuePhoto(any()) } answers { capturas += firstArg<PhotoCapture>(); "k${capturas.size}" }
+        coEvery { queue.enqueueNumberOnly(any()) } answers { numeros += firstArg<NumberCapture>(); "n${numeros.size}" }
         coEvery { queue.awaitResult(any(), any()) } coAnswers { entregada.await() }
         coEvery { queue.discard(any()) } returns Unit
         return PendingVerificationsViewModel(sales, queue, auth)
@@ -181,5 +189,99 @@ class PendingVerificationsViewModelTest {
         // Notas en blanco y sin motivos: la tarjeta en «Revisar» dice que vuelva a tomar las fotos.
         val sinMotivos = ActionableItem(detalle("pay-2").copy(status = "FAILED", reviewNotes = "  "), "pay-2", emptyList(), false)
         assertThat(sinMotivos.review()).isEqualTo(CardReview(emptyList(), null))
+    }
+
+    // ── C7: el número con la foto y «Corregir número» ─────────────────────────
+
+    @Test fun `C7 la foto se encola con el numero de su ranura`() = runTest {
+        lista.value = ActionableState(listOf(ActionableItem(detalle("pay-1"), "pay-1", emptyList(), localOnly = false)), false, null)
+        val vm = vm()
+
+        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg", "5512345678")
+
+        assertThat(capturas.single())
+            .isEqualTo(PhotoCapture("v1", "tienda-a", "s1", "pay-1", "ver-pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg", "5512345678"))
+    }
+
+    @Test fun `C7 Corregir numero encola solo el numero con la verificacion de la tarjeta y al entregarse refresca`() = runTest {
+        lista.value = ActionableState(listOf(ActionableItem(detalle("pay-1"), "pay-1", emptyList(), localOnly = false)), false, null)
+        val vm = vm()
+
+        vm.correctNumber("pay-1", ProofSlot.PORTABILIDAD, "5598765432")
+        entregada.complete(ProofSyncResult("n1", "APPLIED", linkingDuplicate = false, portedDuplicate = false))
+
+        assertThat(numeros).containsExactly(NumberCapture("v1", "s1", "pay-1", "ver-pay-1", ProofSlot.PORTABILIDAD, "5598765432"))
+        assertThat(capturas).isEmpty()
+        coVerify(exactly = 2) { sales.refresh() }
+    }
+
+    @Test fun `C7 en una venta que el servidor aun no registra Corregir numero no encola nada`() = runTest {
+        lista.value = ActionableState(
+            listOf(ActionableItem(detalle("pay-2").copy(id = ""), "pay-2", emptyList(), localOnly = true)), true, null,
+        )
+        val vm = vm()
+
+        vm.correctNumber("pay-2", ProofSlot.VINCULACION, "5512345678")
+        vm.correctNumber("pay-desconocida", ProofSlot.VINCULACION, "5512345678")
+
+        assertThat(numeros).isEmpty()
+        assertThat(lista.value.items.single().verificationId).isNull() // la pantalla deja el botón en gris
+    }
+
+    @Test fun `C7 bajo cada foto va el numero en camino, si no el del servidor con su aviso de repetido`() {
+        val card = detalle("pay-1").copy(
+            isPortabilidad = true, requiredPhotos = 2, linkingNumber = "5511111111", portedNumber = "5522222222",
+            alerts = listOf("PORTED_DUPLICATE"),
+        ).let { ActionableItem(it, "pay-1", emptyList(), false).toPendingCard() }
+        val enCamino = fila("PENDING").copy(linkingNumber = "5533333333")
+        val fallida = fila("FAILED", "PERMANENT").copy(idempotencyKey = "k-f", slot = "PORTABILIDAD", portedNumber = "5544444444")
+
+        assertThat(slotNumber(card, listOf(enCamino), ProofSlot.VINCULACION)).isEqualTo(SlotNumber("5533333333", locked = false, duplicate = false))
+        assertThat(slotNumber(card, emptyList(), ProofSlot.VINCULACION)).isEqualTo(SlotNumber("5511111111", locked = false, duplicate = false))
+        // Lo que ya no se sube solo no cambió el número: manda el del servidor, con el aviso de Isaac.
+        assertThat(slotNumber(card, listOf(fallida), ProofSlot.PORTABILIDAD)).isEqualTo(SlotNumber("5522222222", locked = false, duplicate = true))
+    }
+
+    @Test fun `C7 un numero corregido por el back-office se muestra bloqueado y la foto lo deja como esta`() {
+        val card = detalle("pay-1").copy(linkingNumber = "5511111111", linkingNumberLocked = true, alerts = listOf("LINKING_DUPLICATE"))
+            .let { ActionableItem(it, "pay-1", emptyList(), false).toPendingCard() }
+
+        assertThat(slotNumber(card, listOf(fila("PENDING").copy(linkingNumber = "5533333333")), ProofSlot.VINCULACION))
+            .isEqualTo(SlotNumber("5511111111", locked = true, duplicate = false))
+    }
+
+    @Test fun `C7 el campo del numero sale con el interruptor del modulo`() = runTest {
+        val modulos = MutableStateFlow<List<VenueModule>>(emptyList())
+        val repo = mockk<ModulesRepository> { every { modules } returns modulos }
+        vm()
+        val conModulos = PendingVerificationsViewModel(sales, queue, auth, repo)
+        assertThat(conModulos.linkingNumberEnabled.value).isFalse()
+
+        modulos.value = listOf(
+            VenueModule("m1", "SERIALIZED_INVENTORY", "Inventario", ModuleConfig(features = ModuleFeatures(linkingNumber = true))),
+        )
+
+        assertThat(conModulos.linkingNumberEnabled.value).isTrue()
+        assertThat(PendingVerificationsViewModel(sales, queue, auth).linkingNumberEnabled.value).isFalse()
+    }
+
+    @Test fun `C7 una correccion de numero en la cola no cuenta como foto y dice lo que pasa con el numero`() {
+        val numero = fila("PENDING").copy(idempotencyKey = "n", kind = "NUMBER_ONLY", localPath = null, linkingNumber = "5512345678")
+        val foto = fila("PENDING")
+        val card = ActionableItem(detalle("pay-1"), "pay-1", listOf(numero), false).toPendingCard()
+
+        // Corregir el número no llena la ranura de la foto, y la miniatura en cola sigue siendo la de la foto.
+        assertThat(cardProgress(card, listOf(numero), emptySet(), null)).isEqualTo(CardProgress(0, 1, complete = false))
+        assertThat(cardProgress(card, listOf(numero, foto), emptySet(), null)).isEqualTo(CardProgress(1, 1, complete = true))
+        assertThat(listOf(numero, foto).filter(::isPhotoCapture)).containsExactly(foto)
+        val casos = listOf(
+            numero to "Se subirá solo",
+            numero.copy(syncStatus = "NEEDS_ATTENTION", outcome = "SALE_ALREADY_APPROVED") to "La venta ya estaba aprobada; este número no se guardó",
+            numero.copy(syncStatus = "FAILED", outcome = "SALE_REJECTED") to "La venta fue rechazada; este número no se guardó",
+            numero.copy(syncStatus = "NEEDS_ATTENTION", outcome = "NUMBER_DISABLED") to "El número no se guardó",
+            numero.copy(syncStatus = "FAILED", outcome = "PERMANENT") to "No se pudo guardar el número: corrígelo de nuevo",
+        )
+        casos.forEach { (row, texto) -> assertThat(queuedCaptureMessage(row)).isEqualTo(texto) }
+        assertThat(casos.map { canDiscardCapture(it.first) }).containsExactly(false, true, true, true, true).inOrder()
     }
 }

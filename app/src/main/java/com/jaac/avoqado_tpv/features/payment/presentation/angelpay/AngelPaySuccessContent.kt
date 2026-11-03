@@ -58,6 +58,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.ReceiptTick
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.payment.presentation.components.receiptChromeFill
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
 import java.math.BigDecimal
 import java.util.Locale
 
@@ -110,12 +111,20 @@ fun AngelPaySuccessContent(
     isPortabilidad: Boolean = false,
     isUploadingProofOfSale: Boolean = false,
     proofOfSaleComplete: Boolean = false,
-    onProofOfSalePhotoTaken: (photoPath: String, slot: ProofSlot) -> Unit = { _, _ -> },
+    onProofOfSalePhotoTaken: (photoPath: String, slot: ProofSlot, number: String?) -> Unit = { _, _, _ -> },
     onRetakeProofOfSalePhoto: (slot: ProofSlot) -> Unit = {},
     /** false = la venta todavía no tiene paymentId (quedó en cola): no se deja tomar una foto que no tendría a dónde ir. */
     canTakeProofOfSalePhoto: Boolean = true,
     /** Lo que pasa con las fotos (en cola, sin conexión, a la vista, o «sube desde Pendientes»). Sólo en el flujo serializado. */
     proofOfSaleMessage: String? = null,
+    /** 📸 C7: pedir el número con la foto (interruptor features.linkingNumber), igual que la PAX. */
+    linkingNumberEnabled: Boolean = false,
+    /** 📸 C7: la pregunta de repetido al confirmar (null = sin pregunta: el servidor revisa al recibir). */
+    numberCapture: com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController? = null,
+    /** 📸 C7: el número ya confirmado de la ranura en esta venta (rellena el campo al retomar). */
+    proofNumber: (ProofSlot) -> String? = { null },
+    /** 📸 C7: la verificación de esta venta si ya se conoce: number-check no choca consigo misma. */
+    proofVerificationId: String? = null,
     /**
      * F-1 (spec §4.2): non-null ONLY for the [AngelPayPaymentState.Queued] case — the
      * card charged, but the backend record is still pending offline sync. Renders an
@@ -710,15 +719,21 @@ fun AngelPaySuccessContent(
 
     // 📸 Photo preview dialog with confirm/retake (multi-photo wizard for portabilidad)
     capturedPhotoPath?.let { photoPath ->
+        val numberKind = currentPhotoLabel.numberKind
         com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
-            onConfirm = {
+            numberLabel = numberKind.label.takeIf { linkingNumberEnabled },
+            initialNumber = proofNumber(currentPhotoLabel),
+            numberKind = numberKind,
+            verificationId = proofVerificationId,
+            numberCapture = numberCapture,
+            onConfirm = { number ->
                 if (currentPhotoLabel == ProofSlot.VINCULACION) {
                     lineaPhotoPath = photoPath
                 } else {
                     portabilidadPhotoPath = photoPath
                 }
-                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel)
+                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel, number)
                 capturedPhotoPath = null
 
                 if (isPortabilidad) {

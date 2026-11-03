@@ -4,6 +4,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,8 @@ sealed interface ProofSlotState {
     /** Guardándose en la terminal y esperando la respuesta de su fila (hasta 10 s). */
     data object Saving : ProofSlotState
     data object Uploaded : ProofSlotState
+    /** Subida, pero el servidor dice que su número ya está en otra venta (texto de Isaac). Cuenta como lista: avisa y deja guardar. */
+    data class UploadedWithWarning(val message: String) : ProofSlotState
     /** Guardada en la cola: se sube sola. Cuenta como lista. */
     data class Queued(val message: String) : ProofSlotState
     /** Una persona tiene que verla (en «Pendientes» queda con «Descartar»). No cuenta como lista. */
@@ -46,13 +49,34 @@ fun proofSlotStateFor(outcome: String): ProofSlotState = when (outcome) {
     else -> ProofSlotState.NeedsAttention(PROOF_FAILED_MESSAGE) // PERMANENT
 }
 
+/** Como [proofSlotStateFor], y si se subió con su número repetido (`linkingDuplicate` / `portedDuplicate`), lo avisa. */
+fun proofSlotStateFor(result: ProofSyncResult, slot: ProofSlot): ProofSlotState {
+    val state = proofSlotStateFor(result.outcome)
+    val duplicate = if (slot == ProofSlot.PORTABILIDAD) result.portedDuplicate else result.linkingDuplicate
+    return if (state == ProofSlotState.Uploaded && duplicate) ProofSlotState.UploadedWithWarning(slot.numberKind.duplicateText) else state
+}
+
 /** Lo que dice una captura de la cola en «Pendientes» y en la corrección, mientras siga ahí. */
-fun queuedCaptureMessage(row: ProofOfSaleQueueEntity): String =
-    if (canDiscardCapture(row)) {
+fun queuedCaptureMessage(row: ProofOfSaleQueueEntity): String = when {
+    row.kind == KIND_NUMBER_ONLY -> numberOnlyMessage(row) // «Corregir número»: no hay foto de por medio
+    canDiscardCapture(row) ->
         (proofSlotStateFor(row.outcome.orEmpty()) as? ProofSlotState.NeedsAttention)?.message ?: PROOF_FAILED_MESSAGE
-    } else {
-        PROOF_QUEUED_MESSAGE // PENDING o SYNCING: el worker la sube
-    }
+    else -> PROOF_QUEUED_MESSAGE // PENDING o SYNCING: el worker la sube
+}
+
+/** El número corregido sin foto (fila `NUMBER_ONLY`): los mismos desenlaces que la foto, dichos del número. */
+private fun numberOnlyMessage(row: ProofOfSaleQueueEntity): String = when {
+    !canDiscardCapture(row) -> "Se subirá solo"
+    row.outcome == "SALE_ALREADY_APPROVED" -> "La venta ya estaba aprobada; este número no se guardó"
+    row.outcome == "SALE_REJECTED" -> "La venta fue rechazada; este número no se guardó"
+    row.outcome == "NUMBER_DISABLED" -> "El número no se guardó"
+    else -> "No se pudo guardar el número: corrígelo de nuevo" // PERMANENT
+}
+
+/** Una captura de la cola que lleva foto (las de «Corregir número» sólo llevan el número). */
+fun isPhotoCapture(row: ProofOfSaleQueueEntity): Boolean = row.kind != KIND_NUMBER_ONLY
+
+private const val KIND_NUMBER_ONLY = "NUMBER_ONLY"
 
 /** «Descartar» sólo en lo que ya no se va a subir solo: lo mismo que acepta [ProofOfSaleQueueRepository.discard]. */
 fun canDiscardCapture(row: ProofOfSaleQueueEntity): Boolean = row.syncStatus == "FAILED" || row.syncStatus == "NEEDS_ATTENTION"
@@ -67,6 +91,7 @@ fun proofOfSaleMessage(states: Map<ProofSlot, ProofSlotState>, isPortabilidad: B
         when (val s = states[slot]) {
             is ProofSlotState.Queued -> slot to s.message
             is ProofSlotState.NeedsAttention -> slot to s.message
+            is ProofSlotState.UploadedWithWarning -> slot to s.message
             else -> null
         }
     }
@@ -111,11 +136,24 @@ class ProofOfSaleSlots(
 
     private val jobs = mutableMapOf<ProofSlot, Job>()
 
+    /** El último número confirmado por ranura en ESTA venta: rellena el campo al retomar la foto. */
+    private val numbers = mutableMapOf<ProofSlot, String>()
+
+    /**
+     * La verificación de ESTA venta, en cuanto el servidor contesta una de sus fotos. Con ella `number-check` no cuenta
+     * como repetido el número que la misma venta ya tiene (retomar la foto, o el portado igual al de vinculación).
+     */
+    var verificationId: String? = null
+        private set
+
+    fun number(slot: ProofSlot): String? = numbers[slot]
+
     fun confirm(
         photoPath: String, paymentId: String, slot: ProofSlot, number: String?,
         venueId: String?, venueSlug: String?, staffId: String?,
     ) {
         jobs.remove(slot)?.cancel()
+        number?.let { numbers[slot] = it }
         val q = queue
         if (q == null || venueId == null || staffId == null) {
             Timber.e("📸 [PROOF-OF-SALE] Sin sesión para guardar la foto | slot=$slot | paymentId=$paymentId")
@@ -135,7 +173,7 @@ class ProofOfSaleSlots(
             }
             Timber.i("📸 [PROOF-OF-SALE] En la cola | slot=$slot | key=$key")
             val first = if (isOnline()) {
-                q.awaitResult(key, FIRST_WAIT_MS)?.let { proofSlotStateFor(it.outcome) }
+                q.awaitResult(key, FIRST_WAIT_MS)?.let { stateOf(it, slot) }
                     ?: ProofSlotState.Queued(PROOF_QUEUED_MESSAGE)
             } else {
                 ProofSlotState.Queued(PROOF_OFFLINE_MESSAGE)
@@ -143,7 +181,7 @@ class ProofOfSaleSlots(
             set(slot, first)
             if (first is ProofSlotState.Queued) {
                 // Sigue escuchando: si la fila se resuelve con la pantalla abierta, la ranura dice la verdad.
-                q.awaitResult(key, Long.MAX_VALUE)?.let { set(slot, proofSlotStateFor(it.outcome)) }
+                q.awaitResult(key, Long.MAX_VALUE)?.let { set(slot, stateOf(it, slot)) }
             }
         }
     }
@@ -158,8 +196,15 @@ class ProofOfSaleSlots(
     fun reset() {
         jobs.values.forEach { it.cancel() }
         jobs.clear()
+        numbers.clear()
+        verificationId = null
         _states.value = emptyMap()
         refresh()
+    }
+
+    private fun stateOf(result: ProofSyncResult, slot: ProofSlot): ProofSlotState {
+        result.verificationId?.let { verificationId = it }
+        return proofSlotStateFor(result, slot)
     }
 
     private fun set(slot: ProofSlot, state: ProofSlotState) {
@@ -170,7 +215,9 @@ class ProofOfSaleSlots(
     private fun refresh() {
         val s = _states.value
         _saving.value = s.values.any { it == ProofSlotState.Saving }
-        _complete.value = requiredSlots(isPortabilidad()).all { s[it] is ProofSlotState.Uploaded || s[it] is ProofSlotState.Queued }
+        _complete.value = requiredSlots(isPortabilidad()).all {
+            s[it] is ProofSlotState.Uploaded || s[it] is ProofSlotState.UploadedWithWarning || s[it] is ProofSlotState.Queued
+        }
     }
 
     private companion object {

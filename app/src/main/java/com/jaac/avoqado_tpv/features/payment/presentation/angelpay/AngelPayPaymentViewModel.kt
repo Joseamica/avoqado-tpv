@@ -101,6 +101,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import com.jaac.avoqado_tpv.features.modules.domain.repository.linkingNumberEnabled
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -182,6 +186,10 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
     // 📋 C6: la venta con SIM que confirma el SERVIDOR (S5/S6) no pasa por RecordPaymentUseCase; se guarda en «Pendientes» aquí.
     private val actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
+    // 📸 C7: la pregunta de repetido del número de vinculación y su interruptor (features.linkingNumber). Hilt siempre los
+    // da; null en pruebas viejas = sin campo, como hoy.
+    proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
+    private val modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -351,6 +359,13 @@ class AngelPayPaymentViewModel @Inject constructor(
     val isUploadingProofOfSale: StateFlow<Boolean> = proofSlots.saving
     val proofOfSaleComplete: StateFlow<Boolean> = proofSlots.complete
 
+    // 📸 C7: el campo del número en la vista previa de la foto y su aviso de repetido, igual que la PAX.
+    val linkingNumberEnabled: StateFlow<Boolean> = (modulesRepository?.modules ?: MutableStateFlow(emptyList()))
+        .map { it.linkingNumberEnabled() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val numberCapture: com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController? =
+        proofOfSaleRemote?.let { com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController(it) }
+
     /**
      * 📸 «Confirmar» de la foto de comprobante: la encola con el número en su ranura y la tienda de la sesión, y la
      * pantalla ve el estado de esa ranura en [proofSlotStates]. Sin `paymentId` la pantalla no deja tomarla (manda a
@@ -368,6 +383,12 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     /** 📸 Retomar: la ranura vuelve a pedir foto. No borra nada, ni en Firebase ni en la cola: la nueva captura es otra fila. */
     fun retakeProofOfSalePhoto(slot: ProofSlot) = proofSlots.retake(slot)
+
+    /** 📸 C7: el número ya confirmado de esa ranura en esta venta (rellena el campo al retomar la foto). */
+    fun proofNumber(slot: ProofSlot): String? = proofSlots.number(slot)
+
+    /** 📸 C7: la verificación de esta venta si el servidor ya contestó una foto: así number-check no choca consigo misma. */
+    fun proofVerificationId(): String? = proofSlots.verificationId
 
     /**
      * Whether the print button should be visible on the AngelPay success

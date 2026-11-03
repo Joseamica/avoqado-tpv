@@ -7,13 +7,19 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import com.jaac.avoqado_tpv.features.verification.data.ActionableItem
 import com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
 import com.jaac.avoqado_tpv.features.verification.data.ActionableState
+import com.jaac.avoqado_tpv.features.verification.data.NumberCapture
 import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
 import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.modules.domain.repository.linkingNumberEnabled
 import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
+import com.jaac.avoqado_tpv.features.verification.presentation.isPhotoCapture
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +27,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -38,7 +45,14 @@ class PendingVerificationsViewModel @Inject constructor(
     private val sales: ActionableSalesRepository,
     private val queue: ProofOfSaleQueueRepository,
     private val authRepository: AuthRepository,
+    // C7: el interruptor del número (features.linkingNumber) y su pregunta de repetido. Hilt siempre los da.
+    modulesRepository: ModulesRepository? = null,
+    proofOfSaleRemote: ProofOfSaleRemote? = null,
 ) : ViewModel() {
+
+    val linkingNumberEnabled: StateFlow<Boolean> = (modulesRepository?.modules?.map { it.linkingNumberEnabled() } ?: flowOf(false))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val numberCapture: NumberCaptureController? = proofOfSaleRemote?.let { NumberCaptureController(it) }
 
     val state: StateFlow<ActionableState> = (authRepository.getStaffId()?.let { sales.observe(it) } ?: flowOf(EMPTY))
         .stateIn(viewModelScope, SharingStarted.Eagerly, EMPTY)
@@ -77,26 +91,45 @@ class PendingVerificationsViewModel @Inject constructor(
         }
     }
 
-    /** Encola la foto de [slot] de esa venta (archivo y fila antes de la red). Sin señal se queda «Se subirá sola». */
-    fun enqueuePhoto(paymentId: String, slot: ProofSlot, photoPath: String) {
+    /**
+     * Encola la foto de [slot] de esa venta, con el número de su ranura si el interruptor está encendido (archivo y fila
+     * antes de la red). Sin señal se queda «Se subirá sola».
+     */
+    fun enqueuePhoto(paymentId: String, slot: ProofSlot, photoPath: String, number: String? = null) {
+        val item = state.value.items.firstOrNull { it.paymentId == paymentId }
+        save(paymentId, slot) { venueId, staffId ->
+            queue.enqueuePhoto(
+                PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, paymentId, item?.verificationId, slot, photoPath, number),
+            )
+        }
+    }
+
+    /**
+     * «Corregir número»: sólo el número de [slot], sin foto (fila `NUMBER_ONLY`). Necesita la verificación: en una venta que
+     * el servidor todavía no registra, la pantalla lo deja en gris («Disponible cuando se registre la venta»).
+     */
+    fun correctNumber(paymentId: String, slot: ProofSlot, number: String) {
+        val verificationId = state.value.items.firstOrNull { it.paymentId == paymentId }?.verificationId ?: return
+        save(paymentId, slot) { venueId, staffId ->
+            queue.enqueueNumberOnly(NumberCapture(venueId, staffId, paymentId, verificationId, slot, number))
+        }
+    }
+
+    private fun save(paymentId: String, slot: ProofSlot, enqueue: suspend (venueId: String, staffId: String) -> String) {
         val venueId = authRepository.getVenueId()
         val staffId = authRepository.getStaffId()
         if (venueId == null || staffId == null) {
             _error.value = PROOF_FAILED_MESSAGE
             return
         }
-        val item = state.value.items.firstOrNull { it.paymentId == paymentId }
         viewModelScope.launch {
             _savingPaymentId.value = paymentId
             try {
-                val key = queue.enqueuePhoto(
-                    PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, paymentId, item?.verificationId, slot, photoPath, null),
-                )
-                refreshWhenDelivered(key)
+                refreshWhenDelivered(enqueue(venueId, staffId))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Timber.e(e, "📋 [Pendientes] No se pudo guardar la foto | paymentId=$paymentId | slot=$slot")
+                Timber.e(e, "📋 [Pendientes] No se pudo guardar en la terminal | paymentId=$paymentId | slot=$slot")
                 _error.value = PROOF_FAILED_MESSAGE
             } finally {
                 _savingPaymentId.value = null
@@ -149,7 +182,7 @@ fun cardProgress(
     val slots = if (card.isPortabilidad) ProofSlot.entries else listOf(ProofSlot.VINCULACION)
     val filled = slots.count { slot ->
         card.photos.getOrNull(slot.ordinal)?.isNotEmpty() == true || slot in delivered ||
-            queued.any { it.slot == slot.name && !canDiscardCapture(it) }
+            queued.any { it.slot == slot.name && isPhotoCapture(it) && !canDiscardCapture(it) }
     }
     // Una venta en «Revisar» nunca se pinta completa aunque tenga todas sus fotos: el back-office pidió algo.
     return CardProgress(filled, card.requiredPhotos, complete = review == null && filled >= card.requiredPhotos)
@@ -168,5 +201,32 @@ fun ActionableItem.toPendingCard(): PendingVerificationDto {
         isPortabilidad = portabilidad,
         photos = detail?.photos.orEmpty(),
         requiredPhotos = detail?.requiredPhotos ?: if (portabilidad) 2 else 1,
+        linkingNumber = detail?.linkingNumber,
+        portedNumber = detail?.portedNumber,
+        linkingNumberLocked = detail?.linkingNumberLocked,
+        portedNumberLocked = detail?.portedNumberLocked,
+        alerts = detail?.alerts,
     )
+}
+
+/** El número de una ranura en la tarjeta, si lo bloqueó el back-office y si el servidor dice que está repetido. */
+data class SlotNumber(val number: String?, val locked: Boolean, val duplicate: Boolean)
+
+/**
+ * Bajo cada foto: el número de la captura más nueva que va en camino (aún sin respuesta del servidor), si no el del
+ * servidor. El aviso de repetido es del número del servidor: el de una captura en camino todavía no se sabe. Bloqueado
+ * (lo corrigió el back-office) manda el del servidor y no se avisa nada: ya lo decidió el back-office.
+ */
+fun slotNumber(card: PendingVerificationDto, queued: List<ProofOfSaleQueueEntity>, slot: ProofSlot): SlotNumber {
+    val ported = slot == ProofSlot.PORTABILIDAD
+    val server = if (ported) card.portedNumber else card.linkingNumber
+    if ((if (ported) card.portedNumberLocked else card.linkingNumberLocked) == true) return SlotNumber(server, locked = true, duplicate = false)
+    // La cola viene la más nueva primero; lo que ya no se sube solo (FAILED, NEEDS_ATTENTION) no cambió el número.
+    val onTheWay = queued.asSequence()
+        .filter { it.slot == slot.name && !canDiscardCapture(it) }
+        .mapNotNull { if (ported) it.portedNumber else it.linkingNumber }
+        .firstOrNull()
+    if (onTheWay != null) return SlotNumber(onTheWay, locked = false, duplicate = false)
+    val alert = if (ported) "PORTED_DUPLICATE" else "LINKING_DUPLICATE"
+    return SlotNumber(server, locked = false, duplicate = card.alerts.orEmpty().contains(alert))
 }

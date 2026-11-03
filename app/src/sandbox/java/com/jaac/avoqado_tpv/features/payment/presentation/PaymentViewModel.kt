@@ -104,6 +104,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsReposito
 // 📊 Task 6 — local telemetry of authorization attempts (fire-and-forget, rides the heartbeat)
 import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.modules.domain.repository.linkingNumberEnabled
 // 🔄 Connection event for receipt-on-reconnect + offline-queue sync
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
@@ -139,6 +140,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineStart
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.ProofOfSaleSlots
 import com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState
 import kotlinx.coroutines.Dispatchers
@@ -305,6 +308,8 @@ class PaymentViewModel @Inject constructor(
     private val cryptoSavedState: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
     // 📸 Bloque 0: la cola durable de la foto de comprobante. Hilt siempre la da; null sólo en pruebas que no la usan.
     private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+    // 📸 C7: la pregunta de repetido del número de vinculación (number-check). Hilt siempre la da; null en pruebas viejas.
+    proofOfSaleRemote: ProofOfSaleRemote? = null,
 ) : ViewModel() {
 
     // 🔒 True while handlePaymentSuccess's recording coroutine is running. PaymentState.Success is
@@ -416,6 +421,11 @@ class PaymentViewModel @Inject constructor(
     val proofSlotStates: StateFlow<Map<ProofSlot, ProofSlotState>> = proofSlots.states
     val isUploadingProofOfSale: StateFlow<Boolean> = proofSlots.saving
     val proofOfSaleComplete: StateFlow<Boolean> = proofSlots.complete
+
+    // 📸 C7: el campo del número en la vista previa de la foto (interruptor features.linkingNumber) y su aviso de repetido.
+    private val _linkingNumberEnabled = MutableStateFlow(false)
+    val linkingNumberEnabled: StateFlow<Boolean> = _linkingNumberEnabled.asStateFlow()
+    val numberCapture: NumberCaptureController? = proofOfSaleRemote?.let { NumberCaptureController(it) }
 
     // 📱 Serialized item info for receipt (ICCID + category)
     private var _serialNumber: String? = null
@@ -773,6 +783,7 @@ class PaymentViewModel @Inject constructor(
                 }
                 val previous = _isSerializedInventoryActive.value
                 _isSerializedInventoryActive.value = isActive
+                _linkingNumberEnabled.value = modules.linkingNumberEnabled()
                 if (previous != isActive) {
                     updateSessionSnapshot(reason = "modulesUpdated")
                 }
@@ -9415,6 +9426,12 @@ class PaymentViewModel @Inject constructor(
 
     /** 📸 Retomar: la ranura vuelve a pedir foto. No borra nada, ni en Firebase ni en la cola: la nueva captura es otra fila. */
     fun retakeProofOfSalePhoto(slot: ProofSlot) = proofSlots.retake(slot)
+
+    /** 📸 C7: el número ya confirmado de esa ranura en esta venta (rellena el campo al retomar la foto). */
+    fun proofNumber(slot: ProofSlot): String? = proofSlots.number(slot)
+
+    /** 📸 C7: la verificación de esta venta si el servidor ya contestó una foto: así number-check no choca consigo misma. */
+    fun proofVerificationId(): String? = proofSlots.verificationId
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 👤 CUSTOMER SEARCH (for email receipt dialog)

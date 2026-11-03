@@ -338,7 +338,7 @@ class LedgerServerRecovery @Inject constructor(
             val respuesta = kotlinx.coroutines.withTimeoutOrNull(CONSULTA_TIMEOUT_MS) { api.getAttemptStatus(venueId, attemptId) }
             if (respuesta == null) {
                 Timber.w("🔎 [LedgerServer] consulta inmediata sin respuesta (tope) para %s", attemptId)
-                return LecturaDelIntento(null)
+                return LecturaDelIntento(null, sinRespuesta = true)
             }
             // 🔴 Codex r9 (P1-2): TODO lo que decide la lectura sale del CUERPO antes de escribir nada. Anotar la respuesta iba
             // primero y, si esa escritura fallaba, el `catch` devolvía una lectura VACÍA: sin el veto, la pantalla leía una
@@ -398,7 +398,7 @@ class LedgerServerRecovery @Inject constructor(
             throw cancelled
         } catch (error: Exception) {
             Timber.w(error, "🔎 [LedgerServer] consulta inmediata sin respuesta para %s", attemptId)
-            LecturaDelIntento(null)
+            LecturaDelIntento(null, sinRespuesta = true)
         }
     }
 
@@ -595,6 +595,8 @@ class LedgerServerRecovery @Inject constructor(
          * la fila puede conservar una liberación VIEJA; sin esto, la pantalla la leía y volvía a decir «puedes cobrar».
          */
         val vetoDelServidor: String? = null,
+        /** D3: se le preguntó al servidor y no hubo respuesta (red, tope). Distinto de `servidorContesto = false`, que también es «no había nada que preguntar». */
+        val sinRespuesta: Boolean = false,
     )
 
     /** Ronda 20: lo que resultó de pedirle al servidor que libere SOLA una duda local. */

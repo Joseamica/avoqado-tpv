@@ -9,6 +9,33 @@ data class LocalShiftObligation(val owner: String, val ownerId: String, val crea
 data class LocalShiftObligationPage(val total: Int, val rows: List<LocalShiftObligation>, val offset: Int)
 
 /**
+ * 🔒 D3: lo que lee el cajero cuando el cierre sigue sin poder guardarse: qué falta y qué hacer. [sinRespuesta] = Avoqado no contestó
+ * al preguntarle ([com.jaac.avoqado_tpv.features.shift.data.repository.ConsultaDelCierreDeCaja]): sin conexión se dice con todas
+ * sus letras, y entonces lo único por hacer es recuperarla, porque la consulta se repite al volver a cerrar.
+ */
+internal fun textoDelCierreBloqueado(operaciones: Int, cobrosDelPos: Int, sinRespuesta: Boolean): String {
+    val falta = listOfNotNull(
+        when (operaciones) {
+            0 -> null
+            1 -> "1 operación con tarjeta sin confirmar"
+            else -> "$operaciones operaciones con tarjeta sin confirmar"
+        },
+        when (cobrosDelPos) {
+            0 -> null
+            1 -> "1 cobro del POS sin terminar"
+            else -> "$cobrosDelPos cobros del POS sin terminar"
+        },
+    ).joinToString(" y ")
+    val queHacer = if (sinRespuesta) {
+        "Sin conexión con Avoqado no se puede confirmar qué pasó. No la vuelvas a cobrar. Revisa el internet de la terminal y vuelve a cerrar."
+    } else {
+        "Falta confirmar qué pasó con ese cobro. Si esa venta la mandó el POS, responde ahí si se cobró; " +
+            "si no, o si sigue igual, llama a soporte. No la vuelvas a cobrar. Después vuelve a cerrar."
+    }
+    return "No se puede cerrar la caja: hay $falta.\n\n$queHacer"
+}
+
+/**
  * Predicado único para conteo, página y reconocimiento: B sólo se excluye con sesión demostrada.
  *
  * REMOTE (D12, Codex final-r1): una solicitud PROCESSING ya CERRADA PARA EJECUCIÓN (`execution_closed_at`) no puede arrancar nada,

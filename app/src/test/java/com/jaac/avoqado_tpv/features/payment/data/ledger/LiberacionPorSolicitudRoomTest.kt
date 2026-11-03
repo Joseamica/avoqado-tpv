@@ -10,8 +10,10 @@ import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
+import com.jaac.avoqado_tpv.core.remotepayment.BandejaServerRecovery
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
@@ -20,10 +22,12 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.shift.data.repository.ConsultaDelCierreDeCaja
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.data.task5RoomShiftRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import kotlinx.coroutines.CancellationException
@@ -389,6 +393,214 @@ class LiberacionPorSolicitudRoomTest {
             if (shifts.guardarCierreLocal(venue, sesion.localSessionId) !is AppResult.Error) fallos += "«$nombre»: el turno se dejó cerrar"
         }
         assertWithMessage("descartadas con dinero o veto que debían seguir bloqueando el turno").that(fallos).isEmpty()
+    }
+
+    // ── D3 (QA 2-nov): al intentar cerrar el turno, primero se PREGUNTA ─────────────────────────────────────────────────
+    //
+    // Tras declarar «no se cobró» en el POS, la duda seguía en la terminal hasta una pasada del worker que nadie dispara: el
+    // re-consulto se espacia 10 min × 2^consultas (medido: 23 min en la PAX). Caja decía «Validation error: … Consúltala» y no había
+    // dónde consultar. El cierre hace lo que hace «Consultar»: pregunta sin gastar el turno, y vuelve a contar.
+    //
+    // `runBlocking` y no `runTest`: la consulta lleva un tope de reloj y Room corre en sus propios hilos. Con el reloj virtual, el tope
+    // vencería en cuanto el cuerpo esperara a Room. (El tope se prueba aparte, sin Room, en `ConsultaDelCierreDeCajaTest`.)
+
+    private var consulta: ConsultaDelCierreDeCaja? = null
+    private var consultasDelCierre = 0
+    private val socket = mockk<SocketManager>(relaxed = true)
+
+    private suspend fun cajaQuePregunta(alTerminarDePreguntar: () -> Unit = {}): Pair<ShiftRepository, LocalShiftSessionEntity> {
+        val shifts = task5RoomShiftRepository(db, storage, mockk<ApiService>(), venue, "staff-a", enabled = true) { venueId, pendientes ->
+            consultasDelCierre++
+            consulta!!.preguntar(venueId, pendientes).also { alTerminarDePreguntar() }
+        }
+        return shifts to (shifts.guardarAperturaLocal(venue, "staff-a", BigDecimal("100.00")) as AppResult.Success).data
+    }
+
+    private fun preguntaCon(libreta: PaymentAttemptLedger) {
+        consulta = ConsultaDelCierreDeCaja(
+            LedgerServerRecovery(dao, libreta, api),
+            BandejaServerRecovery(db.remotePaymentRequestDao(), api),
+            dagger.Lazy { socket },
+        )
+    }
+
+    private fun AppResult<*>.mensaje() = (this as AppResult.Error).exception.userMessage
+
+    @Test fun `D3 P1 tras declarar en el POS el cierre pregunta, apaga la duda y la caja se cierra, aunque a la fila no le toque turno`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-d3", "a-d3", caja = shifts)
+        preguntaCon(libreta)
+        coEvery { api.getAttemptStatus(venue, "a-d3") } returns s6(s6Literal("a-d3"))
+        coEvery { api.getRequestStatus(venue, "req-d3") } returns porSolicitud(getRanuraSoltada("req-d3"))
+        val recuperador = LedgerServerRecovery(dao, libreta, api)
+        val t0 = System.currentTimeMillis()
+
+        // La pasada del worker preguntó antes de la declaración y gastó el turno de la fila…
+        assertThat(recuperador.recover(venue, t0).liberadas).isEqualTo(0)
+        assertThat(dao.getById("a-d3")!!.serverCheckCount).isEqualTo(1)
+        // …el cajero declara en el POS, y otra pasada dentro del espaciado ni pregunta: lo que se midió en la PAX (23 min).
+        coEvery { api.getRequestStatus(venue, "req-d3") } returns porSolicitud(getLiteral("req-d3"))
+        assertThat(recuperador.recover(venue, t0 + 60_000).liberadas).isEqualTo(0)
+        assertThat(dao.getById("a-d3")!!.state).isEqualTo("INDETERMINADO")
+
+        val cierre = shifts.closeShift(venue, sesion.localSessionId)
+
+        assertThat(cierre).isInstanceOf(AppResult.Success::class.java)
+        assertThat(db.localShiftSessionDao().leer(venue, sesion.localSessionId)!!.localStatus).isEqualTo("CLOSED")
+        val fila = dao.getById("a-d3")!!
+        assertThat(fila.state).isEqualTo("DESCARTADA")
+        assertThat(fila.serverOutcome).isEqualTo(PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT)
+        assertThat(fila.serverCheckCount).isEqualTo(1) // como «Consultar»: no gasta el turno ni inventa otro espaciado
+    }
+
+    @Test fun `D3 P1 sin declaracion no cierra, y el mensaje dice en español qué falta y qué hacer`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-d3b", "a-d3b", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        coEvery { api.getAttemptStatus(venue, "a-d3b") } returns s6(s6Literal("a-d3b"))
+        coEvery { api.getRequestStatus(venue, "req-d3b") } returns porSolicitud(getRanuraSoltada("req-d3b"))
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        assertThat(mensaje).doesNotContain("Validation error")
+        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).contains("POS") // dónde se resuelve
+        assertThat(mensaje).doesNotContain("Sin conexión") // Avoqado sí contestó
+        coVerify(exactly = 1) { api.getAttemptStatus(venue, "a-d3b") }
+        val turno = db.localShiftSessionDao().leer(venue, sesion.localSessionId)!!
+        assertThat(turno.localStatus).isEqualTo("OPEN")
+        assertThat(turno.closeOperationId).isNull()
+        assertThat(dao.getById("a-d3b")!!.state).isEqualTo("INDETERMINADO")
+    }
+
+    @Test fun `D3 P1 sin red no cierra y lo dice con todas sus letras`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-d3c", "a-d3c", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        coEvery { api.getAttemptStatus(venue, "a-d3c") } throws java.io.IOException("sin red")
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        assertThat(mensaje).contains("Sin conexión")
+        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).doesNotContain("Validation error")
+        assertThat(db.localShiftSessionDao().leer(venue, sesion.localSessionId)!!.localStatus).isEqualTo("OPEN")
+        assertThat(dao.getById("a-d3c")!!.state).isEqualTo("INDETERMINADO")
+    }
+
+    @Test fun `D3 P1 sin nada pendiente no le pregunta nada a nadie y cierra como siempre`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+
+        assertThat(shifts.closeShift(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
+
+        assertThat(consultasDelCierre).isEqualTo(0)
+    }
+
+    @Test fun `D3 P1 lo demas que el cierre espera no dispara la consulta y sigue sin bloquear al guardar`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        db.localCryptoOperationDao().insertar(
+            com.jaac.avoqado_tpv.core.data.local.entity.LocalCryptoOperationEntity(
+                idempotencyKey = "c000000000000000000000099", venueId = venue, staffId = "staff-a", requestJson = "{}",
+                shiftMembership = "MANAGED", localShiftSessionId = sesion.localSessionId, createdAt = 1, updatedAt = 1,
+            ),
+        )
+        assertThat(db.localShiftSessionDao().contarObligaciones(venue, sesion.localSessionId)).isEqualTo(1)
+
+        assertThat(shifts.closeShift(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
+
+        assertThat(consultasDelCierre).isEqualTo(0)
+    }
+
+    @Test fun `D3 P1 un cobro del POS que el servidor ya resolvio se concilia y deja cerrar`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = libretaDeLaPax()
+        preguntaCon(libreta)
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, libreta, PaymentStateHolder())
+        assertThat(bandeja.receive(solicitudDelPos("req-d3d"))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(RemotePaymentCoordinator(bandeja).prepareSocketPaymentRequest("req-d3d", { true }, { venue })).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(db.localShiftSessionDao().ejecucionesRemotas(venue, sesion.localSessionId)).isEqualTo(1)
+        coEvery { api.getRequestStatus(venue, "req-d3d") } returns porSolicitud(getLiteral("req-d3d"))
+
+        assertThat(shifts.closeShift(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
+
+        assertThat(db.remotePaymentRequestDao().getById("req-d3d")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_RESOLVED)
+    }
+
+    @Test fun `D3 P1 un cobro del POS que el servidor no ha resuelto sigue bloqueando, y lo nombra`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = libretaDeLaPax()
+        preguntaCon(libreta)
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, libreta, PaymentStateHolder())
+        assertThat(bandeja.receive(solicitudDelPos("req-d3e"))).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(RemotePaymentCoordinator(bandeja).prepareSocketPaymentRequest("req-d3e", { true }, { venue })).isEqualTo(RemotePaymentAdmission.READY)
+        coEvery { api.getRequestStatus(venue, "req-d3e") } returns porSolicitud(getRanuraSoltada("req-d3e"))
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        assertThat(mensaje).contains("1 cobro del POS")
+        assertThat(mensaje).doesNotContain("Sin conexión")
+        assertThat(db.remotePaymentRequestDao().getById("req-d3e")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+    }
+
+    @Test fun `D3 P1 el dinero manda - si el banco aprobo, preguntar no libera ni deja cerrar`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-d3f", "a-d3f", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        coEvery { api.getAttemptStatus(venue, "a-d3f") } returns
+            s6(s6Literal("a-d3f").cambia(""""processorEvidence":"NONE"""", """"processorEvidence":"APPROVED""""))
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        assertThat(mensaje).contains("1 operación con tarjeta")
+        val fila = dao.getById("a-d3f")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        coVerify(exactly = 0) { api.getRequestStatus(any(), any()) }
+    }
+
+    @Test fun `D3 P2 lo que no se le pregunta al servidor tampoco se anuncia como falta de conexion`() = runBlocking<Unit> {
+        val (shifts, sesion) = cajaQuePregunta()
+        val libreta = ventaDeLaTabletDeLaPax("req-d3g", "a-d3g", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        // Avoqado ya acreditó este cobro y no se pudo aplicar: `recoverOne` no vuelve a preguntar por él.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_outcome = 'RECORDED', server_payment_id = 'p-1', server_processor_evidence = 'APPROVED', state = 'DESCARTADA' WHERE attempt_id = 'a-d3g'")
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        coVerify(exactly = 0) { api.getAttemptStatus(any(), any()) }
+        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).doesNotContain("Sin conexión")
+    }
+
+    @Test fun `D3 P1 si la sesion cambia mientras se pregunta, el cierre no se guarda a nombre de otro`() = runBlocking<Unit> {
+        // Con hasta 5 s de pregunta de por medio, otro cajero pudo entrar con su PIN: el conteo es de quien tocó «Cerrar».
+        val (shifts, sesion) = cajaQuePregunta {
+            every { storage.getStaffId() } returns "staff-b"
+            every { storage.getString("permissions_cache", null) } returns "$venue|staff-b\ntpv-shifts:create,tpv-shifts:close,shifts:read,payments:create"
+        }
+        val libreta = ventaDeLaTabletDeLaPax("req-d3h", "a-d3h", caja = shifts)
+        libreta.cuarentenaDeHuerfanos()
+        preguntaCon(libreta)
+        coEvery { api.getAttemptStatus(venue, "a-d3h") } returns s6(s6Literal("a-d3h"))
+        coEvery { api.getRequestStatus(venue, "req-d3h") } returns porSolicitud(getLiteral("req-d3h"))
+
+        val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
+
+        assertThat(mensaje).contains("La sesión")
+        assertThat(db.localShiftSessionDao().leer(venue, sesion.localSessionId)!!.localStatus).isEqualTo("OPEN")
+    }
+
+    @Test fun `D3 la causa del prefijo - un mensaje de Caja anidado ya no sale como Validation error`() = runBlocking<Unit> {
+        // Con Caja apagada, `openShift` falla en el MISMO anidamiento que el cierre: `resultadoLocal` dentro de `resultadoLocal`.
+        val shifts = task5RoomShiftRepository(db, storage, mockk<ApiService>(), venue, "staff-a", enabled = false)
+
+        val mensaje = shifts.openShift(venue, "staff-a", 100.0).mensaje()
+
+        assertThat(mensaje).isEqualTo("Verifica la sesión y la configuración de Caja.")
     }
 
     // ── Lo que NO es la declaración de una persona no cierra nada ───────────────────────────────────────────────────

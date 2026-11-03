@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity
 import com.jaac.avoqado_tpv.core.util.CuidV1
 import com.jaac.avoqado_tpv.features.shift.data.dto.LocalCloseShiftRequest
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftBelonging
+import com.jaac.avoqado_tpv.features.shift.domain.LocalShiftObligation
 import com.jaac.avoqado_tpv.features.shift.domain.LocalShiftSummary
 import kotlinx.coroutines.ensureActive
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
@@ -72,15 +73,32 @@ import javax.inject.Singleton
  * ```
  */
 @Singleton
-class ShiftRepository @Inject constructor(
+class ShiftRepository(
     private val apiService: ApiService,
     private val database: com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     private val cachedShiftDao: com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao,
     /** 💸 La cola de reembolsos: BARRERA del cierre por debajo de TODAS las pantallas (auditoría de Codex F8). */
     private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
-    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
+    private val appContext: android.content.Context,
+    /** 🔒 D3: [ConsultaDelCierreDeCaja.preguntar]. Sin cablear no se le pregunta nada a nadie, como antes. */
+    private val consultarAntesDeCerrar: suspend (venueId: String, pendientes: List<LocalShiftObligation>) -> Boolean = { _, _ -> false },
 ) {
+    /**
+     * D3: Hilt cablea la consulta. Constructor SECUNDARIO a propósito (mismo patrón que `RemotePaymentInbox`): un default en el
+     * constructor `@Inject` genera una sobrecarga sintética que Dagger rechaza. `Lazy` porque `SocketManager` ya llega a este
+     * repositorio por la bandeja, y la consulta sólo hace falta si hay algo que preguntar.
+     */
+    @Inject constructor(
+        apiService: ApiService,
+        database: com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase,
+        secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+        cachedShiftDao: com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao,
+        refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
+        @dagger.hilt.android.qualifiers.ApplicationContext appContext: android.content.Context,
+        consulta: dagger.Lazy<ConsultaDelCierreDeCaja>,
+    ) : this(apiService, database, secureStorage, cachedShiftDao, refundQueueRepository, appContext,
+        { venueId, pendientes -> consulta.get().preguntar(venueId, pendientes) })
 
     private val _shiftChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -159,15 +177,13 @@ class ShiftRepository @Inject constructor(
     ): Result<Shift> {
         val saved = resultadoLocal {
             val authority = autoridadLocal(venueId, "tpv-shifts:close")
+            // Con la autoridad ya capturada: si la sesión cambia mientras se pregunta, la transacción no guarda el conteo a nombre de otro.
+            val sinRespuesta = preguntarAntesDeCerrar(venueId, shiftId)
             database.withTransaction {
                 verificarAutoridad(authority, "tpv-shifts:close")
-                val dao = database.localShiftSessionDao()
-                val local = dao.leer(venueId, shiftId)
-                    ?: dao.abierta(venueId)?.takeIf { it.serverShiftId == shiftId }
-                    ?: dao.porServidor(venueId, shiftId)
-                    ?: importarCacheParaCierre(venueId, shiftId)
+                val local = cajaDelCierre(venueId, shiftId) ?: importarCacheParaCierre(venueId, shiftId)
                 val nuevaIntencion = local.closeOperationId == null
-                guardarCierreLocal(venueId, local.localSessionId, action, countedCash).getOrThrow() to nuevaIntencion
+                guardarCierreLocal(venueId, local.localSessionId, action, countedCash, sinRespuesta).getOrThrow() to nuevaIntencion
             }
         }
         if (saved is Result.Error) return saved
@@ -175,6 +191,33 @@ class ShiftRepository @Inject constructor(
         despertarReplay(venueId, row.localSessionId, nuevaIntencion)
         _shiftChanges.tryEmit(Unit)
         return Result.Success(proyectar(row))
+    }
+
+    private suspend fun cajaDelCierre(venueId: String, shiftId: String): LocalShiftSessionEntity? {
+        val dao = database.localShiftSessionDao()
+        return dao.leer(venueId, shiftId)
+            ?: dao.abierta(venueId)?.takeIf { it.serverShiftId == shiftId }
+            ?: dao.porServidor(venueId, shiftId)
+    }
+
+    /**
+     * 🔒 D3 («ninguna duda de cobro sin salida», QA 2-nov): antes de rechazar el cierre por una operación de tarjeta o remota sin
+     * resolver, se le pregunta a Avoqado ([ConsultaDelCierreDeCaja]). Va FUERA de la transacción de Caja, porque en ella no hay red: la
+     * transacción vuelve a contar y es la que decide, y qué cuenta como obligación no cambia. Sin nada de eso pendiente no se
+     * pregunta nada. Caja sin red sigue igual: no cierra y lo dice.
+     *
+     * @return true si Avoqado no contestó. Nunca lanza, salvo que cancelen a quien llama: un fallo aquí sólo deja decidir a la
+     * transacción (también la cancelación de un alcance ajeno: Room contesta así con la base cerrada).
+     */
+    private suspend fun preguntarAntesDeCerrar(venueId: String, shiftId: String): Boolean = try {
+        val caja = cajaDelCierre(venueId, shiftId)
+        val pendientes = if (caja != null && caja.localStatus != "OPEN") emptyList()
+            else database.localShiftSessionDao().ejecucionesPorResolver(venueId, caja?.localSessionId ?: shiftId)
+        pendientes.isNotEmpty() && consultarAntesDeCerrar(venueId, pendientes)
+    } catch (error: Exception) {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        Timber.w(error, "No se pudo preguntar antes de cerrar la caja; decide la transacción")
+        false
     }
 
     private suspend fun importarCacheParaCierre(venueId: String, shiftId: String): LocalShiftSessionEntity {
@@ -564,6 +607,8 @@ class ShiftRepository @Inject constructor(
 
     suspend fun guardarCierreLocal(
         venueId: String, localSessionId: String, action: CashReconciliationAction? = null, countedCash: BigDecimal? = null,
+        /** D3: [preguntarAntesDeCerrar] no obtuvo respuesta de Avoqado; sólo cambia lo que dice el mensaje. */
+        sinRespuesta: Boolean = false,
     ): Result<LocalShiftSessionEntity> = resultadoLocal {
         val count = conteoLocal(action, countedCash)
         val authority = autoridadLocal(venueId, "tpv-shifts:close")
@@ -577,8 +622,10 @@ class ShiftRepository @Inject constructor(
             }
             check(original.localStatus == "OPEN") { "La caja ya está cerrada en este aparato." }
             // PENDING/SYNCING de la cola ya representa el dinero. Una ejecución todavía capaz de autorizar no.
-            check(dao.intentosSinRepresentar(venueId, localSessionId) == 0 && dao.ejecucionesRemotas(venueId, localSessionId) == 0) {
-                "Hay una operación de tarjeta o remota sin resolver. Consúltala antes de guardar el cierre."
+            val intentos = dao.intentosSinRepresentar(venueId, localSessionId)
+            val remotas = dao.ejecucionesRemotas(venueId, localSessionId)
+            check(intentos == 0 && remotas == 0) {
+                com.jaac.avoqado_tpv.features.shift.domain.textoDelCierreBloqueado(intentos, remotas, sinRespuesta)
             }
             val id = CuidV1.next()
             val now = System.currentTimeMillis()
@@ -1108,6 +1155,11 @@ class ShiftRepository @Inject constructor(
         Result.Success(block())
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
+    } catch (error: ApiException) {
+        // Uno anidado (`guardarCierreLocal` dentro de `closeShift`) ya trae su mensaje: envolverlo otra vez en ValidationError le
+        // pegaba al cajero el «Validation error: » de `ApiException.message` (D3, QA 2-nov).
+        Timber.w(error, "No se pudo guardar el gesto local de Caja")
+        Result.Error(error)
     } catch (error: Exception) {
         Timber.w(error, "No se pudo guardar el gesto local de Caja")
         Result.Error(ApiException.ValidationError(error.message ?: "No se pudo guardar Caja en este aparato."))

@@ -191,7 +191,7 @@ class ProofOfSaleBlock0Test {
 
         s.confirmar(path = camara.absolutePath); runCurrent()
 
-        assertThat(s.de()).isEqualTo(ProofSlotState.NeedsAttention("No se pudo subir: tómala de nuevo"))
+        assertThat(s.de()).isEqualTo(ProofSlotState.NeedsAttention("No se pudo guardar la foto en la terminal. Intenta de nuevo."))
         assertThat(camara.readBytes()).isEqualTo(byteArrayOf(1, 2, 3))
 
         // Sin sesión (sin tienda o promotor) tampoco se finge.

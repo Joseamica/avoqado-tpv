@@ -33,6 +33,9 @@ sealed interface ProofSlotState {
 const val PROOF_QUEUED_MESSAGE = "Se subirá sola"
 const val PROOF_OFFLINE_MESSAGE = "Sin conexión: la foto y el número se guardaron en la terminal y se subirán solos"
 const val PROOF_FAILED_MESSAGE = "No se pudo subir: tómala de nuevo"
+
+/** La terminal no pudo guardar la foto (disco lleno, copia fallida): neutro, y se puede confirmar otra vez. */
+const val PROOF_SAVE_FAILED_MESSAGE = "No se pudo guardar la foto en la terminal. Intenta de nuevo."
 const val PROOF_SALE_QUEUED_MESSAGE = "La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre"
 
 /**
@@ -167,7 +170,7 @@ class ProofOfSaleSlots(
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📸 [PROOF-OF-SALE] No se pudo guardar la foto en la terminal | slot=$slot | paymentId=$paymentId")
-                set(slot, ProofSlotState.NeedsAttention(PROOF_FAILED_MESSAGE))
+                set(slot, ProofSlotState.NeedsAttention(PROOF_SAVE_FAILED_MESSAGE))
                 return@launch
             }
             Timber.i("📸 [PROOF-OF-SALE] En la cola | slot=$slot | key=$key")

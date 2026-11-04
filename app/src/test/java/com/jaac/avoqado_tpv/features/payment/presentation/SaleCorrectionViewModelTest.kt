@@ -71,4 +71,20 @@ class SaleCorrectionViewModelTest {
         coVerify(exactly = 1) { queue.enqueueNumberOnly(NumberCapture("v1", "s1", "pay-1", "ver-1", ProofSlot.PORTABILIDAD, "551234567")) }
         assertThat(vm.uiState.value.error).isNull()
     }
+
+    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y se puede intentar otra vez`() {
+        every { auth.getVenueId() } returns "v1"
+        every { auth.getVenueSlug() } returns "tienda-a"
+        coEvery { queue.enqueuePhoto(any()) } throws IOException("disco lleno")
+        val detalle = com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto(
+            id = "ver-1", paymentId = "pay-1", amount = 149.0, orderNumber = null, date = "2026-11-01T10:00:00.000Z",
+            serialNumbers = listOf("8952"), isPortabilidad = false, photos = emptyList(), requiredPhotos = 1, status = "FAILED",
+        )
+        val vm = vm(Result.success(detalle))
+
+        vm.enqueuePhoto(ProofSlot.VINCULACION, "/cache/cam.jpg")
+
+        assertThat(vm.uiState.value.error).isEqualTo("No se pudo guardar la foto en la terminal. Intenta de nuevo.")
+        assertThat(vm.uiState.value.isUploading).isFalse()
+    }
 }

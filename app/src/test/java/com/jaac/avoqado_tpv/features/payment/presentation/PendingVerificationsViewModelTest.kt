@@ -155,6 +155,18 @@ class PendingVerificationsViewModelTest {
         assertThat(vm.error.value).isEqualTo("No se pudo subir: tómala de nuevo")
     }
 
+    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y se puede intentar otra vez`() = runTest {
+        val vm = vm()
+        coEvery { queue.enqueuePhoto(any()) } throws IOException("disco lleno") andThen "k1"
+
+        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg")
+
+        assertThat(vm.error.value).isEqualTo("No se pudo guardar la foto en la terminal. Intenta de nuevo.")
+        assertThat(vm.savingPaymentId.value).isNull()
+        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg")
+        coVerify(exactly = 2) { queue.enqueuePhoto(any()) }
+    }
+
     @Test fun `una tarjeta de una venta con solo capturas en la cola arma sus ranuras de esas`() {
         val item = ActionableItem(null, "pay-1", listOf(fila("PENDING").copy(slot = "PORTABILIDAD", createdAt = 7L)), localOnly = true)
 

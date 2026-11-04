@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEnt
 import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_FAILED_MESSAGE
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -168,7 +169,7 @@ class SaleCorrectionViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📸 [SaleCorrection] No se pudo guardar la foto | id=${detail.id}")
-                _uiState.update { it.copy(isUploading = false, error = PROOF_FAILED_MESSAGE) }
+                _uiState.update { it.copy(isUploading = false, error = PROOF_SAVE_FAILED_MESSAGE) }
             }
         }
     }

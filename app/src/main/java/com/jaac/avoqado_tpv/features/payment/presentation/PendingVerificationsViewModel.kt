@@ -18,6 +18,7 @@ import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEnt
 import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_FAILED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
 import com.jaac.avoqado_tpv.features.verification.presentation.isPhotoCapture
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -130,7 +131,7 @@ class PendingVerificationsViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📋 [Pendientes] No se pudo guardar en la terminal | paymentId=$paymentId | slot=$slot")
-                _error.value = PROOF_FAILED_MESSAGE
+                _error.value = PROOF_SAVE_FAILED_MESSAGE
             } finally {
                 _savingPaymentId.value = null
             }

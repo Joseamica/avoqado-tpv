@@ -105,7 +105,7 @@ class SoloEfectivoSinRedTest {
         // El lector de Blumon que nunca termina de prepararse: lo que pasa en una PAX que arrancó sin red.
         lector = mockk(relaxed = true) {
             every { isInitialized } returns MutableStateFlow(false)
-            coEvery { awaitInitialization() } coAnswers { awaitCancellation() }
+            coEvery { awaitInitialization(any()) } coAnswers { awaitCancellation() }
             coEvery { ensureInitialized(any()) } coAnswers { awaitCancellation() }
         }
         registrarPago = mockk(relaxed = true)

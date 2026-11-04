@@ -85,7 +85,7 @@ fun MerchantSelectionContent(
     motivoSinTarjeta: String? = null,
 ) {
     // D20 (N86, 4-nov): tras «Reintentar», el segundo toque de un doble toque caía en esta lista y elegía OTRA cuenta de cobro. Los toques
-    // del primer medio segundo después de abrirla no cuentan: ni eligen cuenta ni arrancan un cobro.
+    // del primer segundo después de abrirla no cuentan: ni eligen cuenta ni arrancan un cobro.
     val abiertaEn = remember { android.os.SystemClock.uptimeMillis() }
     val aceptaToque = { SeleccionDeCuenta.aceptaToque(abiertaEn, android.os.SystemClock.uptimeMillis()) }
     // 💵 State for cash payment confirmation dialog
@@ -971,8 +971,12 @@ private fun MerchantSelectionThreeMerchantsPreview() {
 
 /** D20: la regla de los toques de la lista de cuentas, aparte para probarla sin pantalla. */
 internal object SeleccionDeCuenta {
-    /** El doble toque más rápido que se midió en la N86 cayó a ~200 ms del primero; medio segundo deja margen sin estorbar. */
-    const val IGNORAR_TOQUES_AL_ABRIR_MS = 500L
+    /**
+     * Un doble toque humano cae a ~200 ms, pero dos toques nerviosos seguidos pueden caer a casi un segundo: en la N86 (4-nov) el
+     * segundo cayó a 844 ms de «Reintentar» y eligió otra cuenta con 500 ms de margen. Un segundo no estorba: el cajero lo necesita
+     * para leer la lista.
+     */
+    const val IGNORAR_TOQUES_AL_ABRIR_MS = 1_000L
 
     fun aceptaToque(abiertaEnMs: Long, ahoraMs: Long): Boolean = ahoraMs - abiertaEnMs >= IGNORAR_TOQUES_AL_ABRIR_MS
 }

@@ -10,7 +10,7 @@
 ### **Fixed**
 - **La PAX repara sola el lector con el token vencido (D15)**: si Blumon contesta con el SDK en mal estado (`invalid_token`, `NA_002`, `NO AUTORIZADO` sin código del emisor), el siguiente cobro o devolución que pida el cajero reinicializa el lector antes de pedir la tarjeta, como máximo una vez cada 5 min y nunca encima de un cambio de comercio o de otra inicialización. Antes cada intento salía «Pago rechazado» hasta reiniciar la app. Nunca se reintenta el cobro solo
 - **El aviso «Sin conexión» ya no mueve los botones del error del cobro (D22)**: en la PAX los empujaba 120 px y en la N86 60 px, y un toque pensado para «Cancelar» cayó en «Reintentar». Ahora el mensaje se centra arriba y los botones quedan pegados al fondo: el aviso sólo encoge el espacio de arriba
-- **Un doble toque en «Reintentar» ya no cambia la cuenta de cobro (D20)**: en la N86, el segundo toque caía en la lista de cuentas que se abre debajo y elegía otra. Durante el primer medio segundo la lista ya no acepta toques: ni elige cuenta ni arranca un cobro (PAX y Nexgo, misma pantalla)
+- **Un doble toque en «Reintentar» ya no cambia la cuenta de cobro (D20)**: en la N86, el segundo toque caía en la lista de cuentas que se abre debajo y elegía otra. Durante el primer segundo la lista ya no acepta toques: ni elige cuenta ni arranca un cobro (PAX y Nexgo, misma pantalla)
 - **Sin red, el cobro del POS ya no ofrece un efectivo que no tiene (D18)**: la PAX decía «Sin conexión a internet. ¿Cobrar en efectivo?» en un cobro mandado desde el POS, que no trae botón de efectivo; ahora dice «Sin conexión a internet: no se cobró. Reintenta cuando vuelva la red», que también le llega al POS. El cobro local sigue ofreciendo efectivo
 
 ---

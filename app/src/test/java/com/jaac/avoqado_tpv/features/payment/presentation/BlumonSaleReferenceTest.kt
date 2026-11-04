@@ -151,7 +151,7 @@ class BlumonSaleReferenceTest {
         mockInitializationManager = mockk(relaxed = true) {
             every { isInitialized } returns MutableStateFlow(true)
             coEvery { ensureInitialized(any()) } returns Result.success(Unit)
-            coEvery { awaitInitialization() } returns Result.success(Unit)
+            coEvery { awaitInitialization(any()) } returns Result.success(Unit)
         }
 
         mockMultiMerchantSDKManager = mockk(relaxed = true) {

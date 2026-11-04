@@ -251,6 +251,22 @@ class ProofOfSaleQueueRepositoryTest {
         assertThat(db.proofOfSaleQueueDao().observeStaff("s1").first()).hasSize(1)
     }
 
+    @Test fun `una subida a Firebase que nunca termina se suelta a los 90 s para reintentar, no es definitiva`() = kotlinx.coroutines.test.runTest {
+        guardada("pay-1")
+        val key = repo.enqueuePhoto(foto())
+        coEvery { uploader.uploadToPath(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+
+        val inicio = testScheduler.currentTime
+        repo.drain()
+
+        assertThat(testScheduler.currentTime - inicio).isAtMost(90_000L)
+        val f = fila(key)!!
+        assertThat(f.syncStatus).isEqualTo("PENDING") // release, NO FAILED
+        assertThat(f.permanent).isFalse()
+        assertThat(f.retryCount).isEqualTo(1)
+        assertThat(servidor.requestCount).isEqualTo(0)
+    }
+
     // ─── drenar: entregadas ─────────────────────────────────────────────────────
 
     @Test fun `drain sube la foto a su ruta y la entrega - borra archivo y fila, marca la ranura y avisa`() = runBlocking {

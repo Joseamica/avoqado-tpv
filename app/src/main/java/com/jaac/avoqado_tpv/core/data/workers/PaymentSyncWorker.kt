@@ -214,9 +214,10 @@ class PaymentSyncWorker @AssistedInject constructor(
             // 💸 Los reembolsos van DESPUÉS de los cobros: un reembolso apunta al pago original
             // por su id de servidor, así que primero tiene que existir el pago allá.
             drainRefunds()
-            // 📸 Las fotos de comprobante van al final: cuelgan de un pago que ya tiene que existir en el servidor.
-            val moreProofs = drainProofOfSale()
             sessionProgress += shiftRepository?.sincronizarCierresLocales() ?: 0
+            // 📸 Las fotos de comprobante van al final de todo (también después de los cierres de caja): cuelgan de un pago que
+            // ya tiene que existir en el servidor, y una subida lenta a Firebase no debe retrasar el dinero.
+            val moreProofs = drainProofOfSale()
             if ((tableProgress.resolved > 0 && tableProgress.moreAfterLimit) ||
                 (paymentProgress > 0 && batch.size == MAX_PAYMENTS_PER_RUN && paymentQueueRepository.getPendingCount() > 0) ||
                 (sessionProgress > 0 && shiftRepository?.haySesionesPorReproducir() == true) ||

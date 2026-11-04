@@ -243,8 +243,10 @@ class ProofOfSaleQueueRepository @Inject constructor(
             ?: throw UnreadablePhotoException("La foto ya no está en la terminal o está vacía")
         val slug = row.venueSlug ?: secureStorage.getVenueSlug() ?: throw IllegalStateException("Sin tienda para guardar la foto")
         val fecha = STORAGE_DATE.format(Instant.ofEpochMilli(row.capturedAt))
-        val url = uploader.uploadToPath(path, "venues/$slug/proof-of-sale/$fecha/${row.paymentId}_${row.slot}_${row.idempotencyKey}.jpg")
-            .getOrThrow()
+        // Firebase sin respuesta no traba la pasada: a los 90 s se suelta y se reintenta (no es definitivo).
+        val url = withTimeoutOrNull(UPLOAD_TIMEOUT_MS) {
+            uploader.uploadToPath(path, "venues/$slug/proof-of-sale/$fecha/${row.paymentId}_${row.slot}_${row.idempotencyKey}.jpg")
+        }?.getOrThrow() ?: throw IOException("Firebase no respondió a tiempo")
         // 0 = venció el lease y otro worker reclamó la fila a media subida: el POST es suyo.
         if (queueDao.savePhotoUrl(row.idempotencyKey, token, url) == 0) throw ClaimLostException()
         return url
@@ -341,6 +343,9 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
         const val WAITING_FOR_STORE = "Esperando una sesión de su tienda"
         const val WAITING_FOR_STAFF = "Esperando la sesión de quien la tomó"
+
+        /** Tope de cada subida (archivo + liga) a Firebase. */
+        const val UPLOAD_TIMEOUT_MS = 90_000L
 
         /** Un archivo sin fila más viejo que esto ya no está a medio encolar (copiar y luego insertar tarda milisegundos). */
         const val ORPHAN_AGE_MS = 60 * 60 * 1000L

@@ -28,6 +28,13 @@ class PaymentSyncWorkerProofOfSaleTest {
     private val payments = mockk<PaymentQueueRepository>(relaxed = true).also { coEvery { it.claimBatch(any()) } returns emptyList() }
     private val refunds = mockk<RefundQueueRepository>(relaxed = true).also { coEvery { it.claimBatch(any()) } returns emptyList() }
     private val proofs = mockk<ProofOfSaleQueueRepository>(relaxed = true)
+    // Real con colaboradores falsos y sin tienda (no hace nada, devuelve 0): un mock relaxed truena en los argumentos por defecto.
+    private val shifts = io.mockk.spyk(
+        com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository(
+            mockk(relaxed = true), mockk(relaxed = true), mockk { every { getVenueId() } returns null }, mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true),
+        ),
+    )
 
     @Test fun `el worker drena pagos, luego reembolsos y al final las fotos`() = runTest {
         buildWorker().doWork()
@@ -35,6 +42,15 @@ class PaymentSyncWorkerProofOfSaleTest {
         coVerifyOrder {
             payments.claimBatch(any())
             refunds.claimBatch(any())
+            proofs.drain(any())
+        }
+    }
+
+    @Test fun `las fotos van despues de los cierres de caja locales`() = runTest {
+        buildWorker().doWork()
+
+        coVerifyOrder {
+            shifts.sincronizarCierresLocales(any())
             proofs.drain(any())
         }
     }
@@ -70,6 +86,7 @@ class PaymentSyncWorkerProofOfSaleTest {
                         mockk<PaymentAttemptLedger>(relaxed = true), mockk<SubirVentaGuardadaUseCase>(),
                         tableSyncCoordinator = com.jaac.avoqado_tpv.features.shift.data.emptyTableReplayFixture(),
                         proofOfSaleQueueRepository = proofs,
+                        shiftRepository = shifts,
                     )
             })
             .build()

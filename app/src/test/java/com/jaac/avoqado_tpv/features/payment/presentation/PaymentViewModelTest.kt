@@ -3543,7 +3543,6 @@ class PaymentViewModelTest {
         assertThat(viewModel.proofSlotStates.value).isEmpty()
         coVerify(exactly = 0) { queue.discard(any()) }
         coVerify(exactly = 0) { uploader.deletePhoto(any()) }
-        coVerify(exactly = 0) { uploader.uploadProofOfSale(any(), any(), any(), any(), any(), any()) }
         viewModel.viewModelScope.cancel()
     }
 

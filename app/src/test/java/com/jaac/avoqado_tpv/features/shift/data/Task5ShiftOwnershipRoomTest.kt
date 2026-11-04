@@ -200,6 +200,42 @@ class Task5ShiftOwnershipRoomTest {
         assertThat(db.remotePaymentRequestDao().getById("cancel-first")?.shiftMembership).isEqualTo("UNKNOWN")
     }
 
+    // D8 (3-nov, N86): con la caja cerrada la terminal daba acuse, no abría nada y no contestaba: el POS esperaba hasta 5 min.
+    @Test fun `caja cerrada no reclama, dice por que y la solicitud se cierra sin cobro`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "sin-caja", "v1", 1000, 0, null, false, null, null, null, "2026-10-28", "RECEIVED", createdAt = 1, updatedAt = 1))
+        val admision = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+            .prepareSocketPaymentRequest("sin-caja", { true }, { "v1" })
+        assertThat(admision).isEqualTo(
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted("Abre la caja antes de iniciar otra venta."))
+        assertThat(db.remotePaymentRequestDao().getById("sin-caja")?.status).isEqualTo("RECEIVED")
+        // Lo que manda rejectRemotePaymentBeforeAuthorization: queda en disco ANTES del socket, y la reentrega lo reproduce.
+        val rechazo = org.json.JSONObject().put("requestId", "sin-caja").put("status", "failed")
+            .put("outcomeEvidence", "PRE_AUTHORIZATION").put("errorMessage", "En la terminal: Abre la caja antes de iniciar otra venta.")
+        val escrito = org.json.JSONObject(inbox.persistResult("sin-caja", rechazo.toString())!!)
+        assertThat(escrito.getString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+        assertThat(db.remotePaymentRequestDao().getById("sin-caja")?.status).isEqualTo("RESOLVED")
+    }
+
+    @Test fun `sin permiso de cobrar tampoco se calla`() = runTest {
+        every { storage.getString("permissions_cache", null) } returns "v1|staff-a\ntpv-shifts:create"
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "sin-permiso", "v1", 1000, 0, null, false, null, null, null, "2026-10-28", "RECEIVED", createdAt = 1, updatedAt = 1))
+        assertThat(inbox.reclamarParaVenue("sin-permiso", "v1")).isEqualTo(
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted("No tienes permiso para esta operación."))
+    }
+
+    // 🔴 Lo reclamado no se rechaza: puede tener el lector abierto. Sólo una solicitud aún RECEIVED admite este «no».
+    @Test fun `una solicitud ya reclamada sigue sin reclamarse dos veces aunque la caja este cerrada`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "reclamada", "v1", 1000, 0, null, false, null, null, null, "2026-10-28", "PROCESSING", createdAt = 1, updatedAt = 1))
+        assertThat(inbox.reclamarParaVenue("reclamada", "v1"))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE)
+    }
+
     @Test fun `Mesas PAY_CASH usa Room comun y tag OFF no requiere apertura`() = runTest {
         val a = open()
         val outbox = com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox(db.syncIntentDao(), mockk(), storage, shifts)

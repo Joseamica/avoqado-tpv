@@ -233,4 +233,23 @@ class TableOrderScreenStateTest {
             OrderDetailItem(id = "i3", productName = "Cerveza Corona", quantity = 1, total = BigDecimal("45"), sentToKitchenAt = null),
         ),
     )
+    // D10 (3-nov, N86): la ronda decía «11:21» cuando eran las 05:21: se pintaba el desfase que trae el servidor.
+    @Test fun `la hora de la ronda sale en la hora del negocio`() {
+        val mexico = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
+        assertThat(roundLabel("2026-11-03T11:21:00.000Z", 2, mexico)).isEqualTo("Ronda 2 · 05:21")
+        assertThat(roundLabel("2026-11-03T11:21:00+00:00", 2, mexico)).isEqualTo("Ronda 2 · 05:21")
+        assertThat(roundLabel("2026-11-03T11:21:00Z", 1, java.time.ZoneOffset.ofHours(-7))).isEqualTo("Ronda 1 · 04:21")
+    }
+
+    @Test fun `una ronda sin hora legible sigue diciendo su numero`() {
+        val mexico = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO
+        assertThat(roundLabel(null, 3, mexico)).isEqualTo("Ronda 3")
+        assertThat(roundLabel("ayer", 3, mexico)).isEqualTo("Ronda 3")
+    }
+    // Codex r1 (D10): «Acciones por revisar» usaba la zona del aparato, y una N86 o una PAX traen reglas viejas.
+    @Test fun `la hora de una accion por revisar tambien sale en la hora del negocio`() {
+        val instante = java.time.Instant.parse("2026-11-03T11:21:00Z").toEpochMilli()
+        assertThat(formatQuarantineTime(instante, com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)).endsWith("05:21")
+        assertThat(formatQuarantineTime(instante, java.time.ZoneOffset.ofHours(-7))).endsWith("04:21")
+    }
 }

@@ -77,7 +77,15 @@ data class RemoteRefundRequest(
  * dispositivos — todo eso murió con el transporte BLE. Lo único que el flujo vivo (SOCKET)
  * usaba era este bus de requests + cancelaciones, y es lo único que se conservó.
  */
-enum class RemotePaymentAdmission { READY, NOT_READY, NOT_CLAIMABLE, VENUE_CHANGED }
+sealed interface RemotePaymentAdmission {
+    data object READY : RemotePaymentAdmission
+    data object NOT_READY : RemotePaymentAdmission
+    data object NOT_CLAIMABLE : RemotePaymentAdmission
+    data object VENUE_CHANGED : RemotePaymentAdmission
+
+    /** D8: la Caja no deja iniciar este cobro (cerrada, sin sesión, sin permiso). Nada se abrió y el POS sigue esperando. */
+    data class NotAdmitted(val motivo: String) : RemotePaymentAdmission
+}
 
 @Singleton
 class RemotePaymentCoordinator @Inject constructor(
@@ -96,8 +104,10 @@ class RemotePaymentCoordinator @Inject constructor(
      *
      * Es lo único que permite aceptar un cancel del POS sobre una solicitud reclamada que todavía NO tiene
      * fila en la libreta (la espera de calificación, propina, método o comercio ocurre sin fila). Vive en
-     * memoria a propósito: tras la muerte del proceso nadie puede afirmar qué quedó a medias, así que el
-     * cancel contesta ACTIVE y la solicitud pasa a conciliación. No se registra desde
+     * memoria a propósito: muere con el proceso. B2 (T3, 22-oct): sin ella y SIN intentos, la solicitud la dejó un
+     * proceso muerto que nunca tocó el SDK (la libreta es write-ahead obligatoria), así que el cancel y la sonda la
+     * resuelven por `resolverDesenlaceNegativo` (ACCEPTED / RECEIVED_CANCELLED, con la cerca puesta); con intentos
+     * pendientes, o en una fila heredada que no nació bajo la barrera durable (D6), la libreta certifica o no el cese. No se registra desde
      * [claimSocketPaymentRequest], que no abre ninguna pantalla (sólo lo usan las pruebas).
      */
     private val reclamadasEnEsteProceso = mutableSetOf<String>()
@@ -137,9 +147,8 @@ class RemotePaymentCoordinator @Inject constructor(
         synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
         val venueId = currentVenueId()?.takeIf { it.isNotBlank() }
             ?: return RemotePaymentAdmission.NOT_CLAIMABLE
-        if (!remotePaymentInbox.markProcessingForVenue(requestId, venueId)) {
-            return RemotePaymentAdmission.NOT_CLAIMABLE
-        }
+        val reclamo = remotePaymentInbox.reclamarParaVenue(requestId, venueId)
+        if (reclamo != RemotePaymentAdmission.READY) return reclamo
         synchronized(reclamadasEnEsteProceso) { reclamadasEnEsteProceso += requestId }
         // The Room call suspended: activation may have changed while it ran. This
         // collector owns the claim but has not opened any SDK, so it may fail safely.

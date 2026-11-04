@@ -47,8 +47,8 @@ sealed class PaymentNavigationPayload {
 
     /**
      * «Cobrar» sin red: la venta no se pudo mandar al servidor (o no hay red) y se cobra en SÓLO EFECTIVO como una venta local.
-     * [ventaLocalJson] es la [com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal] serializada con Gson (viaja por el `SavedStateHandle`, sobrevive a que el sistema mate el
-     * proceso). No hay `orderId`: la orden la crea el servidor cuando la venta sube.
+     * [ventaLocalJson] es la [com.jaac.avoqado_tpv.features.checkout.domain.model.VentaLocal] serializada con Gson (viaja por el `SavedStateHandle`, sobrevive a que se recree la
+     * pantalla). No hay `orderId`: la orden la crea el servidor cuando la venta sube.
      */
     data class VentaLocal(
         override val amountPesosString: String,

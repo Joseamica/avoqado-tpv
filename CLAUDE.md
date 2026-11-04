@@ -36,10 +36,9 @@ behind a paywall.
   `avoqado-server/.claude/rules/feature-gating.md`. PREMIUM-only codes today: `CFDI`, `INVENTORY_TRACKING`.
 - **Dashboard display/CTA map:** `avoqado-web-dashboard/src/config/plan-catalog.ts`
   (`TierId`, `PLAN_TIERS`, `getTierForFeature()` → FeatureGate upsell).
-- **Enforcement status:** ✅ only **avoqado-web-dashboard** enforces tiers today.
-  ⚠️ **avoqado-ios** and **avoqado-android** have NO tier gating yet — **start adding it now**,
-  mirroring the backend feature codes by exact name. Treat tier codes like permissions: mirrored
-  across backend + every client by exact name — a mismatch fails silently.
+- **Enforcement status:** ✅ **avoqado-web-dashboard** enforces tiers. **avoqado-android** and **avoqado-ios** have partial plan
+  gates (`PlanManager` / `PlanGate`); don't touch iOS for a change here (iOS va después: `../AGENTS.md`). Treat tier codes like
+  permissions: mirrored across backend + every client by exact name — a mismatch fails silently.
 - **Activación (regla completa en `../CLAUDE.md`):** esta app **lee** el estado del switch; solo se construye aquí si se
   toca durante el turno desde el piso. Apagado se ve y se explica, nunca desaparece en silencio.
 

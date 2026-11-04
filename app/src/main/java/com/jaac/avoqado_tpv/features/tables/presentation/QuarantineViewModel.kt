@@ -74,7 +74,11 @@ class QuarantineViewModel @Inject constructor(
     private val outbox: SyncOutbox,
     private val deviceInfoManager: DeviceInfoManager,
     private val permissionsRepository: PermissionsRepository,
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
 ) : ViewModel() {
+
+    /** La hora que se le enseña al mesero es la del negocio, no la del aparato. */
+    val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
 
     private val _state = MutableStateFlow(QuarantineUiState())
     val state: StateFlow<QuarantineUiState> = _state.asStateFlow()

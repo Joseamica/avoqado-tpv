@@ -30,6 +30,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceTimeBy
@@ -312,6 +313,74 @@ class ShiftViewModelTest {
         coVerify { shiftRepository.closeShift("venue-123", "shift-123") }
         assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
         coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
+    }
+
+    // M-4: el cierre puede tardar hasta 5 s preguntándole a Avoqado (D3).
+
+    /** Un cierre a media pregunta: el repositorio no contesta hasta que se complete [respuesta]. */
+    private fun TestScope.cierreEsperando(respuesta: CompletableDeferred<Result<Shift>>): ShiftViewModel {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        coEvery { shiftRepository.closeShift("venue-123", "shift-123") } coAnswers { respuesta.await() }
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        viewModel.closeShift()
+        advanceUntilIdle()
+        return viewModel
+    }
+
+    private val motivoDelBloqueo = Result.Error(
+        ApiException.ValidationError("No se puede cerrar la caja: hay 1 operación con tarjeta sin confirmar."),
+    )
+
+    @Test
+    fun `M-4 mientras cierra la pantalla lo dice, y al terminar deja de decirlo`() = runTest {
+        val respuesta = CompletableDeferred<Result<Shift>>()
+        val viewModel = cierreEsperando(respuesta)
+
+        assertThat(viewModel.state.value).isEqualTo(ShiftState.Loading)
+        assertThat(viewModel.cerrandoCaja.value).isTrue()
+
+        respuesta.complete(motivoDelBloqueo)
+        advanceUntilIdle()
+
+        assertThat(viewModel.cerrandoCaja.value).isFalse()
+    }
+
+    @Test
+    fun `M-4 cargar y cerrar dicen cosas distintas`() {
+        assertThat(textoDelCargando(cerrandoCaja = true)).isEqualTo("Cerrando la caja...")
+        assertThat(textoDelCargando(cerrandoCaja = false)).isEqualTo("Cargando turno de caja...")
+    }
+
+    @Test
+    fun `M-4 un connectionRestored en esa ventana no se come el mensaje de bloqueo`() = runTest {
+        val respuesta = CompletableDeferred<Result<Shift>>()
+        val viewModel = cierreEsperando(respuesta)
+        clearMocks(shiftRepository, answers = false, recordedCalls = true)
+
+        fakeConnectionRestoredEvents.emit(ConnectionRestoredEvent(timestamp = "2026-11-03T08:00:00Z", attemptsBeforeReconnection = 1))
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value).isEqualTo(ShiftState.Loading) // sigue diciendo que está cerrando
+        coVerify(exactly = 0) { shiftRepository.getCurrentShift(any()) }
+
+        respuesta.complete(motivoDelBloqueo)
+        advanceUntilIdle()
+
+        assertThat((viewModel.state.value as ShiftState.Error).message).contains("No se puede cerrar la caja")
+    }
+
+    @Test
+    fun `M-4 sin cierre en curso, la reconexion si recarga`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        clearMocks(shiftRepository, answers = false, recordedCalls = true)
+
+        fakeConnectionRestoredEvents.emit(ConnectionRestoredEvent(timestamp = "2026-11-03T08:00:00Z", attemptsBeforeReconnection = 1))
+        advanceUntilIdle()
+
+        assertThat(viewModel.cerrandoCaja.value).isFalse()
+        coVerify(exactly = 1) { shiftRepository.getCurrentShift(any()) }
     }
 
     @Test

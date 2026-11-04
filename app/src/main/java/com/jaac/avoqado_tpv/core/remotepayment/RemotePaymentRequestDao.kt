@@ -17,7 +17,7 @@ import org.json.JSONObject
  * él lo sabe. Nombrar el importe y la antigüedad es lo que convierte el aviso en una decisión
  * que alguien puede tomar (hallazgo de Codex sobre F0, 2026-09-12).
  */
-/** Una fila de bandeja PROCESSING sin intento correlacionado (pieza D). */
+/** Una fila de bandeja PROCESSING a la que hay que preguntarle al servidor: sin intento correlacionado (pieza D) o con él DESCARTADA (D8). */
 data class HuerfanaDeBandeja(val requestId: String, val createdAt: Long)
 
 data class ObligacionPendiente(
@@ -115,17 +115,23 @@ interface RemotePaymentRequestDao {
     // intento de esa solicitud — el caso que el propio repo ya describía como «requiere conciliación explícita».
     // Toda la recuperación consulta por INTENTO, así que nada podía tocarla y el aviso no se podía quitar.
     //
-    // El `NOT EXISTS` es EL MISMO de `observePendingObligations`: las candidatas son exactamente las filas que
-    // producen ese aviso, ni una más.
+    // Las candidatas son las filas que producen ese aviso (el `NOT EXISTS` de `observePendingObligations`) más las de D8: un intento
+    // DESCARTADA no impide preguntar. Ésas no salen en el aviso, y `observePendingObligations` no cambia.
 
-    /** Filas PROCESSING de este venue SIN ningún intento correlacionado: las que hoy avisan para siempre. */
+    /**
+     * Filas PROCESSING de este venue a las que hay que preguntarles al servidor: sin intento correlacionado, las que hoy avisan para siempre.
+     *
+     * 🔴 D8 (QA en aparato, 3-nov): y con su intento DESCARTADA. Con la TPV publicada, declarar «no se cobró» deja el intento así y la bandeja
+     * PROCESSING, con `execution_closed_at` nulo: Caja la contaba como operación del POS sin terminar y aquí nadie preguntaba por ella (medido:
+     * 0 peticiones, y la caja sin poder cerrarse). La libreta ya terminó con ese intento; cerrar la fila sigue exigiendo `resuelta` del servidor.
+     */
     @Query(
         """SELECT r.request_id AS requestId, r.created_at AS createdAt FROM remote_payment_requests r
            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING'
            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
                WHERE p.venue_id = :venueId
                AND p.state IN ('AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO',
-                               'REGISTRADO','CERRADA','DESCARTADA','ENTREGADA_A_COLA')
+                               'REGISTRADO','CERRADA','ENTREGADA_A_COLA')
                AND instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
            -- 🔴 Codex r6 (P2-11): por `created_at` las 20 más VIEJAS salían siempre, así que 20 que nunca se
            -- resuelven —un 404 permanente, por ejemplo— dejaban a la 21 sin consultar nunca (reproducido en SQLite:
@@ -164,8 +170,10 @@ interface RemotePaymentRequestDao {
              -- `KERNEL_ACTIVO` ya puede aprobar en local: D cerraba la bandeja de un cobro VIVO con un negativo del servidor.
              -- Reproducido por Codex con el SQL real (cerraba y el intento pasaba a AUTORIZANDO). Un intento que sí existe
              -- lo resuelve la libreta, que es la que sabe de dinero.
+             -- 🔴 D8: salvo uno DESCARTADA, con el que la libreta ya terminó: si trae dinero, su obligación sigue contando aparte en Caja.
              AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""",
+                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0
+                 AND p.state != 'DESCARTADA')""",
     )
     suspend fun conciliarHuerfanaConElServidorConResultado(requestId: String, venueId: String, resultadoReproducible: String, now: Long): Int
 
@@ -254,6 +262,14 @@ interface RemotePaymentRequestDao {
     )
     suspend fun markResolved(requestId: String, finalResultJson: String, now: Long): Int
 
+    /**
+     * B1 (21-oct): cuándo quedó la solicitud CERRADA PARA EJECUCIÓN, o null si no lo está (o la bandeja no la tiene). La
+     * escribe sólo `PaymentAttemptDao.cerrarSolicitudSiCeso`; la leen la sonda y la reentrega (B2) para contestar lo mismo
+     * sin volver a escribir y sin navegar.
+     */
+    @Query("SELECT execution_closed_at FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun cerradaParaEjecucionEn(requestId: String): Long?
+
     /** N0: sólo SUBE la versión de capacidad, y sólo mientras la solicitud siga viva (RECEIVED/PROCESSING). */
     @Query(
         """UPDATE remote_payment_requests
@@ -316,7 +332,10 @@ interface RemotePaymentRequestDao {
      *  - la solicitud sigue PROCESSING, sin efectivo/cripto arrancado, sin cancel ni final previos;
      *  - ningún intento correlacionado bloquea ([contarIntentosBloqueadores]);
      *  - si NO hay intentos, sólo con PRUEBA DE PROPIEDAD en este proceso (el `requestId` lo reclamó este
-     *    proceso): sin ella, tras un reinicio nadie sabe si algo quedó a medias ⇒ ACTIVE;
+     *    proceso): sin ella este CAS devuelve false, y `RemotePaymentInbox.cancel` sigue por `resolverDesenlaceNegativo`
+     *    (B2/T3, 22-oct: con la libreta write-ahead, cero intentos = nadie tocó el SDK ⇒ ACCEPTED con la cerca puesta);
+     *  - D6 (2-nov): sin esa prueba, una fila HEREDADA ([RemotePaymentRequestEntity.durableBarrierVersion]) tampoco se acepta,
+     *    con los intentos que tenga: un PREPARANDO, una DESCARTADA o un rechazo no prueban que no hubo otro intento invisible;
      *  - «entre intentos» (sólo DESCARTADA, p. ej. tras un rechazo reintentable): se acepta, porque en la
      *    MISMA transacción se escribe `cancel_accepted_at` y la cerca de [PaymentAttemptDao.reserveTerminal]
      *    impide ese reintento.
@@ -334,6 +353,7 @@ interface RemotePaymentRequestDao {
         if (fila.status != RemotePaymentRequestEntity.STATUS_PROCESSING || fila.executionStartedAt != null ||
             fila.cancelAcceptedAt != null || fila.finalEmittedAt != null
         ) return false
+        if (!propiedadEnEsteProceso && fila.durableBarrierVersion < RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE) return false
         if (contarIntentosBloqueadores(requestId) > 0) return false
         if (contarIntentosDeSolicitud(requestId) == 0 && !propiedadEnEsteProceso) return false
         descartarPreparandoDeSolicitud(requestId, now, "remote_cancel")
@@ -348,6 +368,9 @@ interface RemotePaymentRequestDao {
      * 🛑 H.3 + evidencia POR INTENTO — el ÚNICO punto que escribe un desenlace NEGATIVO (failed/cancelled)
      * de una solicitud remota. La evidencia no la decide la pantalla sino la libreta, en la misma
      * transacción que el commit del final:
+     *  - D6 (2-nov): una solicitud reclamada que no nació bajo la barrera durable
+     *    ([RemotePaymentRequestEntity.durableBarrierVersion]) ⇒ NO se escribe nada (null), con los intentos que tenga: su
+     *    libreta no cuenta la historia completa, una versión vieja pudo cobrar sin anotarlo. Ese «no se cobró» lo dice una persona;
      *  - un intento correlacionado incierto, en curso o ya cobrado, una fila heredada, o efectivo/cripto
      *    arrancado ⇒ NO se escribe nada (null): la solicitud se conserva como incierta y nunca viaja con
      *    la evidencia de un intento anterior;
@@ -364,6 +387,9 @@ interface RemotePaymentRequestDao {
         val fila = getById(requestId) ?: return null
         if (fila.status != RemotePaymentRequestEntity.STATUS_RECEIVED &&
             fila.status != RemotePaymentRequestEntity.STATUS_PROCESSING
+        ) return null
+        if (fila.status == RemotePaymentRequestEntity.STATUS_PROCESSING &&
+            fila.durableBarrierVersion < RemotePaymentRequestEntity.VERSION_DE_LA_BARRERA_DURABLE
         ) return null
         if (fila.executionStartedAt != null) return null
         if (contarIntentosBloqueadores(requestId) > 0) return null

@@ -161,16 +161,26 @@ class AngelPayAuthRepository @Inject constructor(
     // ── T26: recuperación sola tras arrancar sin red ──────────────────────────
 
     /**
+     * D9 (N86, 3-nov): la red se cayó DENTRO de elegir el comercio. El SDK ya guardó su token y falló en su post-auth, así
+     * que dice «autenticado» con una sesión a medias, y el token de selección ya se perdió. No es una sesión viva que
+     * proteger: ningún cobro pudo arrancar sobre ella. Sin esto, «Reintentar» contestaba NO_ATORADA y la Nexgo seguía sin
+     * tarjeta hasta matar la app. Dura hasta el siguiente login ([authenticateWithCreds]).
+     */
+    @Volatile
+    private var seleccionInconclusa = false
+
+    /**
      * ¿La auth quedó atorada de una forma que la recuperación de fondo puede arreglar?
      * Sólo un error recuperable ([AuthErrorKind.recuperableEnFondo]) o sin autenticar, Y
-     * sin sesión del SDK: una sesión viva nunca se toca desde el fondo. Si ni siquiera se
-     * puede preguntar al SDK, se asume que SÍ hay sesión (lado seguro).
+     * sin sesión del SDK (o con una a medias, [seleccionInconclusa]): una sesión viva nunca se
+     * toca desde el fondo. Si ni siquiera se puede preguntar al SDK, se asume que SÍ hay sesión
+     * (lado seguro).
      */
     fun estaAtorada(): Boolean {
         val estado = _state.value
         val recuperable = estado is AngelPayAuthState.Unauthenticated ||
             (estado is AngelPayAuthState.AuthError && estado.kind.recuperableEnFondo)
-        return recuperable && !runCatching { sdkGateway.isAuthenticated() }.getOrDefault(true)
+        return recuperable && (seleccionInconclusa || !runCatching { sdkGateway.isAuthenticated() }.getOrDefault(true))
     }
 
     /**
@@ -178,11 +188,12 @@ class AngelPayAuthRepository @Inject constructor(
      * [nucleo] tomado, sigue atorada y no hay cobro en curso.
      *
      * Nunca la primaria en un venue con varias cuentas (incidente de Amaena): vuelve a la
-     * última cuenta pedida o autenticada, o a la del último comercio activo cacheado; si no
+     * última cuenta pedida o autenticada; si no
      * hay ninguna y el venue tiene (o podría tener) más de una cuenta, NO autentica —queda
      * «requiere auth» y el cobro autenticará la cuenta que el cajero elija—. Sólo con una
      * cuenta usa el genérico, igual que el arranque. Nunca `switchAccount` ni el logout de
-     * una sesión viva (la condición de arriba garantiza que no la hay).
+     * una sesión viva (la condición de arriba garantiza que no la hay; la de una selección a
+     * medias sí se cierra, ver [seleccionInconclusa]).
      */
     suspend fun recuperarSiSigueAtorada(
         pantallaDeCobroQuieta: Boolean = false,
@@ -227,9 +238,6 @@ class AngelPayAuthRepository @Inject constructor(
         }
         // No se sabe cuántas cuentas hay (sigue sin config): no se adivina.
         if (cuentas == null) return ObjetivoDeRecuperacion.Ninguno
-        val comercio = merchantRepository.ultimoComercioActivoConocido()
-        val cuentaDelComercio = comercio?.let { resolveAccountIdFromSdkMerchantIds(setOf(it)) }
-        if (cuentaDelComercio != null) return ObjetivoDeRecuperacion.Cuenta(cuentaDelComercio)
         return if (cuentas <= 1) ObjetivoDeRecuperacion.UnicaCuenta else ObjetivoDeRecuperacion.Ninguno
     }
 
@@ -361,6 +369,8 @@ class AngelPayAuthRepository @Inject constructor(
     /** Cuerpo de [ensureAuthenticated]. Exige [nucleo] tomado (T26). */
     private suspend fun ensureAuthenticatedLocked(reportMerchants: Boolean = false): Result<Unit> {
         Timber.tag(LOG_TAG).i("ensureAuthenticated() called")
+        // D9: una selección a medias se rehace con SU cuenta; por aquí abajo caería al genérico (la primaria).
+        if (seleccionInconclusa) currentAngelPayAccountId?.let { return ensureAuthenticatedAsLocked(it) }
         if (sdkGateway.isAuthenticated()) {
             // Probe SDK session health BEFORE trusting the cached auth flag.
             // An "authenticated" session with 0 merchants is a stale/broken
@@ -370,8 +380,10 @@ class AngelPayAuthRepository @Inject constructor(
             // merchants to the backend, leaving FETCH_ANGELPAY_MERCHANTS
             // "succeed-but-empty" and the dashboard spinner stuck at 90s.
             val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
-            if (cachedMerchants.isNullOrEmpty()) {
-                Timber.tag(LOG_TAG).w("SDK reports authenticated but getUserMerchants() returned ${cachedMerchants?.size ?: "null"} merchants — session is stale, forcing logout + full re-auth")
+            if (cachedMerchants.isNullOrEmpty() || currentAngelPayAccountId == null) {
+                // Un comercio compartido no acredita el login de una sesión que sobrevivió al proceso.
+                Timber.tag(LOG_TAG).w("SDK cached session without accredited identity or merchants — forcing explicit auth")
+                currentAngelPayAccountId = null
                 runCatching { sdkGateway.logout() }
                 merchantRepository.clearActive()
                 // Fall through to the credential-resolve + authenticate path.
@@ -379,38 +391,6 @@ class AngelPayAuthRepository @Inject constructor(
                 Timber.tag(LOG_TAG).i("SDK already authenticated with ${cachedMerchants.size} merchants — short-circuit to Authenticated state")
                 _state.value = AngelPayAuthState.Authenticated
                 salirDeAtorada()
-
-                // Multi-AngelPay accounts per venue — only populate if NOT already
-                // set. Trust the in-memory value, because after a `switchAccount`
-                // call the SDK is authed as a NON-primary account but the resolver
-                // still returns the venue's primary account creds (the cached
-                // `terminalConfig.angelpayAuth` field is "the primary account",
-                // not "which account is currently in the SDK session").
-                //
-                // Overwriting here on every ensureAuthenticated() call would
-                // corrupt `currentAngelPayAccountId` back to the primary right
-                // after a switchAccount — making `reportDiscoveredMerchantsIfPossible`
-                // attribute the switched-account's merchants to the WRONG accountId
-                // server-side, so placeholders for non-primary accounts never
-                // upgrade. (Reproduced 2026-05-19 with contacto@avoqado.io.)
-                if (currentAngelPayAccountId == null) {
-                    // The SDK can hold a cached session for a NON-primary account
-                    // (e.g. after a prior switchAccount to "ventas"). The config's
-                    // primary (`angelpayAuth`) might be a DIFFERENT account
-                    // ("contacto"), so blindly resolving to the primary scopes the
-                    // validator to the WRONG account's merchants → empty intersection
-                    // → false "Sin merchants válidos" HardBlock until the cashier
-                    // switches manually. (Repro: venue with 2 AngelPay accounts where
-                    // primary != SDK-session account. Amaena prod is unaffected because
-                    // there primary == the SDK-session account.)
-                    //
-                    // Derive the active account from the SDK session's actual merchants
-                    // first; fall back to the resolver's primary only when no config
-                    // merchant matches the session (e.g. cold cache).
-                    currentAngelPayAccountId =
-                        resolveAccountIdFromSdkMerchantIds(cachedMerchants.map { it.id }.toSet())
-                            ?: credentialResolver.resolve().getOrNull()?.accountId
-                }
 
                 Timber.tag(LOG_TAG).i("SDK session merchants (cached auth): ${cachedMerchants.size} total — " +
                     cachedMerchants.joinToString { "${it.id}=${it.name}(afil=${it.affiliationNumber}, active=${it.isActive})" })
@@ -506,8 +486,10 @@ class AngelPayAuthRepository @Inject constructor(
         creds: AngelPayCreds,
         reportMerchants: Boolean = false,
     ): Result<Unit> {
+        seleccionInconclusa = false
         Timber.tag(LOG_TAG).i("authenticateWithCreds(source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
 
+        currentAngelPayAccountId = null
         // T26: la recuperación de fondo tiene su propio estado (no apaga el Efectivo).
         _state.value = if (enRecuperacion) AngelPayAuthState.Recuperando else AngelPayAuthState.Authenticating
 
@@ -650,7 +632,7 @@ class AngelPayAuthRepository @Inject constructor(
             Timber.tag(LOG_TAG).w("switchAccount($accountId) rejected: ${err.message}")
             return Result.failure(err)
         }
-        if (currentAngelPayAccountId == accountId) {
+        if (currentAngelPayAccountId == accountId && sdkGateway.isAuthenticated() && !seleccionInconclusa) {
             // Probe SDK session health before trusting the no-op. Same reasoning
             // as `ensureAuthenticated`'s short-circuit: an "authenticated" session
             // with 0 merchants is stale (observed 2026-05-20 after reinstall +
@@ -793,6 +775,7 @@ class AngelPayAuthRepository @Inject constructor(
         } else {
             val err = result.exceptionOrNull()
             val kind = if (esFallaDeRed(err)) AuthErrorKind.SIN_RED else AuthErrorKind.OTHER
+            seleccionInconclusa = kind == AuthErrorKind.SIN_RED
             fallar(kind, err?.message ?: "Merchant selection failed", err)
         }
         result
@@ -813,6 +796,7 @@ class AngelPayAuthRepository @Inject constructor(
         sdkGateway.logout()
         merchantRepository.clearActive()
         currentAngelPayAccountId = null
+        seleccionInconclusa = false
         _state.value = AngelPayAuthState.Unauthenticated
         if (previousAccountId != null) {
             ensureAuthenticatedAsLocked(previousAccountId)
@@ -835,9 +819,8 @@ class AngelPayAuthRepository @Inject constructor(
      *    [accountId].
      *  - Sesión muerta → auth directa como [accountId] (resolviendo por cuenta, con el
      *    mismo self-heal de config que [switchAccount]).
-     *  - Cuenta ya no resoluble (borrada/desactivada en el backend) → fallback RUIDOSO a
-     *    la primaria; el guard de alineación del flujo de pago impide cobrar si eso deja
-     *    la sesión en un merchant distinto al seleccionado.
+     *  - Cuenta ya no resoluble (borrada/desactivada en el backend) → falla sin autenticar
+     *    otra cuenta: una primaria distinta no satisface el login elegido.
      *
      * Sin gate de `isCharging` a propósito: sus únicos call sites son el propio flujo de
      * pago (pre-lanzamiento y recuperación D308), donde "charging" describe ESTE intento
@@ -849,13 +832,9 @@ class AngelPayAuthRepository @Inject constructor(
     /** Cuerpo de [ensureAuthenticatedAs]. Exige [nucleo] tomado (T26). */
     private suspend fun ensureAuthenticatedAsLocked(accountId: String): Result<Unit> {
         ultimaCuentaConocida = accountId
-        if (sdkGateway.isAuthenticated()) {
+        if (sdkGateway.isAuthenticated() && !seleccionInconclusa) {
             val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
             if (!cachedMerchants.isNullOrEmpty()) {
-                if (currentAngelPayAccountId == null) {
-                    currentAngelPayAccountId =
-                        resolveAccountIdFromSdkMerchantIds(cachedMerchants.map { it.id }.toSet())
-                }
                 if (currentAngelPayAccountId == accountId) {
                     return ensureAuthenticatedLocked()
                 }
@@ -886,12 +865,11 @@ class AngelPayAuthRepository @Inject constructor(
             )
         }
         if (credsResult.isFailure) {
-            Timber.tag(LOG_TAG).e(
-                credsResult.exceptionOrNull(),
-                "ensureAuthenticatedAs($accountId): target account no longer resolves — falling back to the venue PRIMARY. " +
-                    "A session↔merchant mismatch is possible; the payment flow's alignment guard must block the charge.",
+            val error = credsResult.exceptionOrNull()
+            val kind = if (fallaRefresco != null) AuthErrorKind.OTHER else AuthErrorKind.CUENTA_NO_EN_CONFIG
+            return Result.failure(
+                fallar(kind, "La cuenta AngelPay del comercio no está disponible en el panel", error),
             )
-            return ensureAuthenticatedLocked()
         }
 
         runCatching { sdkGateway.logout() }
@@ -900,18 +878,9 @@ class AngelPayAuthRepository @Inject constructor(
         return authenticateWithCreds(credsResult.getOrThrow())
     }
 
-    /**
-     * Mapea la sesión VIVA del SDK a su `AngelPayUserAccount.id` vía el config cacheado.
-     * Null si no hay sesión, la lista de merchants no responde, o ningún merchant del
-     * config la mapea. Actualiza [currentAngelPayAccountId] al derivarla — así un proceso
-     * recién revivido deja de reportar "cuenta desconocida" con una sesión válida.
-     */
-    suspend fun deriveSessionAccountId(): String? {
-        if (!sdkGateway.isAuthenticated()) return null
-        val merchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
-        if (merchants.isNullOrEmpty()) return null
-        return resolveAccountIdFromSdkMerchantIds(merchants.map { it.id }.toSet())
-            ?.also { currentAngelPayAccountId = it }
+    /** Sólo devuelve una identidad acreditada por auth en este proceso; nunca la deduce por comercio. */
+    suspend fun deriveSessionAccountId(): String? = nucleo.withLock {
+        if (sdkGateway.isAuthenticated()) currentAngelPayAccountId else null
     }
 
     /** Manual logout — clears SDK + active merchant + state flow. Idempotent. */
@@ -934,29 +903,6 @@ class AngelPayAuthRepository @Inject constructor(
      * If no config is cached yet (cold start race), this is a no-op — the next
      * `fetchConfig()` heartbeat will surface drift later.
      */
-    /**
-     * Map the SDK session's merchant ids back to the owning AngelPayUserAccount
-     * id via the cached terminal config. The SDK reports merchant ids (e.g. 63);
-     * the config maps each `externalMerchantId` → `angelpayUserAccountId`. Returns
-     * the first ANGELPAY merchant whose external id is in the SDK session, or null
-     * when the cache is cold / no match (caller falls back to the config primary).
-     *
-     * This keeps `currentAngelPayAccountId` aligned with the account the SDK is
-     * ACTUALLY authenticated as, so the D5 intersection validator scopes to the
-     * right merchants on first (cached) auth instead of false-blocking.
-     */
-    private fun resolveAccountIdFromSdkMerchantIds(sdkMerchantIds: Set<Int>): String? {
-        if (sdkMerchantIds.isEmpty()) return null
-        val config = terminalConfigRepository.getCachedConfig() ?: return null
-        return config.merchantAccounts
-            .firstOrNull { ma ->
-                ma.providerCode == "ANGELPAY" &&
-                    ma.angelpayUserAccountId != null &&
-                    ma.externalMerchantId?.toIntOrNull() in sdkMerchantIds
-            }
-            ?.angelpayUserAccountId
-    }
-
     private suspend fun runConfigValidation() {
         val config = terminalConfigRepository.getCachedConfig() ?: return
         // Multi-AngelPay accounts per venue (2026-05-19): pass the current
@@ -1046,18 +992,7 @@ class AngelPayAuthRepository @Inject constructor(
 
     private suspend fun reportDiscoveredMerchantsIfPossible() {
         runCatching {
-            // Use the in-memory SDK-session accountId FIRST. After a
-            // `switchAccount(contacto@)` call, the SDK is authed as contacto@
-            // but `terminalConfig.angelpayAuth.accountId` is still the venue's
-            // PRIMARY (e.g. ventas@) — pairing primary's accountId with
-            // contacto@'s merchants tells the backend to upgrade ventas@'s
-            // placeholders instead of contacto@'s, so contacto@'s placeholder
-            // never gets upgraded. Fall back to the cached primary only on
-            // cold start (before any auth has happened). Reproduced on
-            // contacto@avoqado.io 2026-05-19.
-            val accountId = currentAngelPayAccountId
-                ?: terminalConfigRepository.getCachedConfig()?.angelpayAuth?.accountId
-                ?: return@runCatching
+            val accountId = currentAngelPayAccountId ?: return@runCatching
             val api = reportApi ?: return@runCatching
             val merchantsResult = merchantRepository.fetchAndCacheMerchants()
             val merchants = merchantsResult.getOrNull() ?: return@runCatching

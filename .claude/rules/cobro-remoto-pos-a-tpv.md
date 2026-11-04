@@ -119,7 +119,7 @@ Dos pendientes declarados:
    del mismo `requestId`; no basta observar el último intento, ausencia de handshake o cero bytes
    de cuerpo. Sin esa evidencia se conserva la misma llave y se concilia; timeout y GET 404 no
    acreditan ausencia de cargo. Mantener la persistencia antes del POST. Diseñar y probar esta
-   distinción con TDD en Android e iOS, incluyendo conexiones reutilizadas, HTTP/2, intermediarios,
+   distinción con TDD en Android (lo de iOS va a su ficha: iOS va después), incluyendo conexiones reutilizadas, HTTP/2, intermediarios,
    reintentos y muerte del proceso.
 2. Si la misma venta se cobra y registra mediante Pago rápido en la TPV y además se registra
    manualmente en la tablet como tarjeta de otra terminal, pueden quedar dos registros de ingreso
@@ -213,6 +213,24 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
 - POS: llave durable en disco antes del POST; 409 correlacionado por `requestId` (T15) — acredita que
   ESA solicitud nueva no se creó, no resuelve el cobro del bloqueador; «cancelar ≠ no se cobró» (consulta
   el estado hasta que conste); un GET 404 no acredita ausencia de cargo.
+- 🔒 **Un proceso nuevo nunca restaura una pantalla** (D1/D2, 3-nov; `core/util/EstadoDelProceso.kt`): si la app muere con la
+  pantalla del SDK arriba, Android la revive, pero `MainActivity` descarta el estado que firmó otro proceso y arranca como en frío.
+  El Inicio conecta el socket, certifica el cese y suelta la terminal, y no queda una «Método de Pago» desde donde abrir otro lector
+  de la misma solicitud. Una recreación con el proceso vivo conserva su estado. Si Android restaura `PaymentActivity` encima (estaba
+  detenida al morir el proceso), `PantallaDelSdkNoSeRestaura` le quita `angelpay_req` antes de que el AAR lo lea: termina con «Missing
+  request» sin tocar el lector, y el intento queda en duda. Depende del `onCreate` del AAR 1.0.22: subirlo obliga a revisarlo.
+  Si la app muere mientras esa pantalla todavía abre (D5, medido a 0.9 s), Android la revive SIN estado y quita `MainActivity`. Un cobro
+  sólo lo pide una pantalla nuestra y ninguna ha arrancado en ese proceso: se quita el extra igual y se abre la app con `CLEAR_TASK`.
+- 🔒 **Una solicitud heredada de una versión vieja nunca recibe un «no se cobró» automático** (D6, 3-nov): una libreta sin intentos
+  correlacionables no prueba que no se cobró, y un cobro de la tablet sólo entra al procesador con su identidad original.
+- 🔒 **El «no se cobró» que el cajero declara en el POS también apaga la duda de la terminal** (D12, 3-nov): vale para una PAX que nunca
+  ligó su intento, y ya no bloquea el cierre del turno.
+- 🔒 **Al cerrar Caja, primero se pregunta** (D3, 3-nov; `ConsultaDelCierreDeCaja`): con un tope de 5 s se consulta al servidor antes de
+  rechazar, y el cajero lee qué falta, sin «Validation error:». La TPV publicada (`8f0f5128`) se queda bloqueada tras declarar, aunque el
+  intento ya esté DESCARTADA (deuda, QA R8): por eso esta versión importa aunque la terminal cobre bien.
+- 🔒 **El banner verde trae «No se cobró»** (founder, 3-nov: «A»; `DeclaracionDesdeElAviso`): con solicitud es la MISMA declaración del POS, por
+  una ruta de la terminal (el PIN de gerente lo pide el servidor; un 404 manda al POS, nunca se vuelve local); sin solicitud, `declareChecked`,
+  abierta a la Nexgo. Sólo dudas sin dinero conocido (`observarCobrosDeclarables`), 10 min, y mientras se ve el banner consulta una por vuelta.
 
 ## Defectos conocidos (no reinventar el diagnóstico)
 

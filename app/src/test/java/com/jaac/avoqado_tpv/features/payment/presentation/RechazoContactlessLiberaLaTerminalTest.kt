@@ -111,6 +111,27 @@ class RechazoContactlessLiberaLaTerminalTest {
     }
 
     /**
+     * D6 (2-nov): la identidad original del cobro remoto y la barrera del kernel, en las DOS variantes. La prueba de
+     * comportamiento (`PaymentViewModelKernelDurabilityTest`) sólo alcanza la sandbox; esto es lo que cubre producción.
+     */
+    @Test
+    fun `D6 las dos variantes rechazan entrar al kernel o reservar sin identidad`() {
+        val bloques = variantes.map { (nombre, archivo) ->
+            val fuente = archivo.readText()
+            val kernel = fuente.substringAfter("private suspend fun processContactlessPayment(").substringBefore("startCtlssTransUseCase.run(ctlssParams)")
+            assertTrue("[$nombre] sin id de intento se entra al kernel", kernel.contains("intentoDelKernel == null || !paymentAttemptLedger.markKernelEntered(intentoDelKernel)"))
+            assertTrue("[$nombre] la barrera del kernel volvió a ser opcional", !kernel.contains("?.let { durableId ->"))
+            val reserva = fuente.substringBefore("paymentAttemptLedger.openAttemptForShift(shiftRepository, \n                    attemptId, currentVenueId,")
+                .substringAfterLast("Freeze complete business context")
+            assertTrue("[$nombre] la reserva no comprueba el origen del cobro", reserva.contains("if (!laIdentidadRemotaSigueIntacta())"))
+            val fijar = fuente.substringAfter("fun setSocketPaymentSource(source: String?, requestId: String?) {").substringBefore("fun setSocketProcessedByStaffId(")
+            val guarda = fuente.substringAfter("private fun laIdentidadRemotaSigueIntacta()").substringBefore("\n\n")
+            listOf(kernel, reserva, fijar, guarda)
+        }
+        assertTrue("sandbox y production difieren en las fronteras de D6", bloques[0] == bloques[1])
+    }
+
+    /**
      * El defecto CONTRARIO: soltar la fila en el reembolso, donde «denegado offline» sólo
      * significa «hay que ir online» y la operación sigue viva.
      */

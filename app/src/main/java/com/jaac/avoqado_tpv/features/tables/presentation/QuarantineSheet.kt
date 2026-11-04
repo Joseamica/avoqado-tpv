@@ -141,6 +141,7 @@ fun QuarantineSheet(
                                 item = item,
                                 canResolve = state.canResolve,
                                 onDismiss = { viewModel.dismiss(item.id) },
+                                zonaDelNegocio = viewModel.zonaDelNegocio,
                             )
                         }
                     }
@@ -151,7 +152,12 @@ fun QuarantineSheet(
 }
 
 @Composable
-private fun QuarantineItemCard(item: QuarantineItem, canResolve: Boolean, onDismiss: () -> Unit) {
+private fun QuarantineItemCard(
+    item: QuarantineItem,
+    canResolve: Boolean,
+    onDismiss: () -> Unit,
+    zonaDelNegocio: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -178,7 +184,7 @@ private fun QuarantineItemCard(item: QuarantineItem, canResolve: Boolean, onDism
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            text = formatQuarantineTime(item.createdAt),
+            text = formatQuarantineTime(item.createdAt, zonaDelNegocio),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -203,8 +209,10 @@ private fun QuarantineItemCard(item: QuarantineItem, canResolve: Boolean, onDism
     }
 }
 
-private fun formatQuarantineTime(epochMs: Long): String =
-    SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX")).format(Date(epochMs))
+internal fun formatQuarantineTime(epochMs: Long, zona: java.time.ZoneId): String =
+    SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX"))
+        .apply { timeZone = java.util.TimeZone.getTimeZone(zona) }
+        .format(Date(epochMs))
 
 /**
  * Botón con badge del topbar de `TablesScreen` — solo visible con `count >

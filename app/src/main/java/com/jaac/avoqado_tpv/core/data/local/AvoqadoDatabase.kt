@@ -194,9 +194,15 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v42 (p. ej. la 2.13.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`, con las
     // ventas guardadas sin red), reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v43.
-    // ⭐ Version 45 (3-nov-2026, número de vinculación): tablas nuevas `proof_of_sale_queue` y `actionable_sale_cache`; se borra
-    // `verification_queue` (código muerto, sin lectores ni escritores). Aditiva salvo ese DROP (MIGRATION_44_45).
-    // 🔴 Cruza versión de esquema: instalar encima un APK con base v44 es un downgrade DESTRUCTIVO que BORRA la base local.
+    // ⭐ Version 44: sesiones y operaciones durables de Caja (ver MIGRATION_43_44).
+    // ⭐ Version 45 (21-oct-2026, «ninguna duda de cobro sin salida», B1; renumerada el 2-nov al integrar): `remote_payment_requests.execution_closed_at` (la
+    // solicitud quedó CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo ni empezar) y
+    // `payment_attempts.sdk_returned_at` (el SDK regresó: terminó toda su interacción con ese intento). Aditiva y nullable
+    // (MIGRATION_44_45). D6 (2-nov), en la misma v45 porque aún no se publica: `remote_payment_requests.durable_barrier_version`
+    // (la solicitud nació bajo la barrera durable de este APK), con default 0 para todo lo que ya existe.
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v44 (p. ej. la 2.14.0) es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
+    // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v45.
     version = 45,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
@@ -2128,21 +2134,6 @@ abstract class AvoqadoDatabase : RoomDatabase() {
             }
         }
 
-        /** v45: cola de fotos/números y lista guardada; `verification_queue` (muerta) se borra. DDL copiado de `45.json`. */
-        val MIGRATION_44_45 = object : Migration(44, 45) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("CREATE TABLE IF NOT EXISTS `proof_of_sale_queue` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, `venue_slug` TEXT, `photo_url` TEXT, PRIMARY KEY(`idempotency_key`))")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_venue_id` ON `proof_of_sale_queue` (`venue_id`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_payment_id` ON `proof_of_sale_queue` (`payment_id`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_sync_status` ON `proof_of_sale_queue` (`sync_status`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_claim_token` ON `proof_of_sale_queue` (`claim_token`)")
-                db.execSQL("CREATE TABLE IF NOT EXISTS `actionable_sale_cache` (`payment_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `verification_id` TEXT, `json` TEXT NOT NULL, `delivered_slots` TEXT NOT NULL DEFAULT '', `local_only` INTEGER NOT NULL DEFAULT 0, `cached_at` INTEGER NOT NULL, PRIMARY KEY(`payment_id`))")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_venue_id` ON `actionable_sale_cache` (`venue_id`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_staff_id` ON `actionable_sale_cache` (`staff_id`)")
-                db.execSQL("DROP TABLE IF EXISTS `verification_queue`")
-            }
-        }
-
         /** v44: sesiones y operaciones cripto durables; pertenencia legacy UNKNOWN. Sólo aditiva. */
         val MIGRATION_43_44 = object : Migration(43, 44) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -2205,6 +2196,41 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                         "`entry_id` TEXT NOT NULL, `status` TEXT NOT NULL, `clock_in_time` TEXT, `cached_at` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`venue_id`, `staff_id`))",
                 )
+            }
+        }
+
+        /**
+         * 45 (B1, «ninguna duda de cobro sin salida», 21-oct; renumerada el 2-nov): `remote_payment_requests.execution_closed_at`
+         * (cerrada para ejecución) y `payment_attempts.sdk_returned_at` (el SDK regresó). Dos columnas INTEGER nullable: las filas
+         * que ya había nacen NULL — ninguna solicitud se da por cerrada y ningún SDK por regresado al actualizar (la app nueva es
+         * otro proceso, así que esos intentos ya cuentan como cesados por su token). Toca dinero sólo por ADICIÓN: no reescribe
+         * ninguna fila. Idempotente por `PRAGMA table_info`.
+         *
+         * D6 (2-nov), en la misma versión porque la v45 aún no se publica: `remote_payment_requests.durable_barrier_version`,
+         * `INTEGER NOT NULL DEFAULT 0`. Toda solicitud que ya existe queda en 0, aunque sea reciente y tenga intentos rastreados:
+         * su historia completa no está acreditada y una versión vieja pudo cobrar sin anotarlo.
+         */
+        val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+                if (!columnaExiste("remote_payment_requests", "execution_closed_at")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN execution_closed_at INTEGER")
+                }
+                if (!columnaExiste("payment_attempts", "sdk_returned_at")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN sdk_returned_at INTEGER")
+                }
+                // D6: sin backfill a propósito. Toda fila que ya existe queda en 0, también las recientes con intentos rastreados.
+                if (!columnaExiste("remote_payment_requests", "durable_barrier_version")) {
+                    db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN durable_barrier_version INTEGER NOT NULL DEFAULT 0")
+                }
             }
         }
 

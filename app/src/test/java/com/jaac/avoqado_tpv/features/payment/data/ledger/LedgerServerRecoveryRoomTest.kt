@@ -5,10 +5,21 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -1242,5 +1253,126 @@ class LedgerServerRecoveryRoomTest {
         assertThat(lectura.bandejaResueltaJson).isNull()
         coVerify(exactly = 0) { api.getAttemptStatus(any(), any()) }
         assertThat(dao.getById("dev")!!.state).isEqualTo("INDETERMINADO")
+    }
+
+    // ═══ B3 (22-oct, «ninguna duda de cobro sin salida»): lo que S6 publica DESPUÉS de que el servidor soltó SÓLO la ranura ═══
+    //
+    // Amaena (20-oct): una Nexgo con el SDK embebido muere a media venta de la tablet. Al volver, la sonda certifica que nada de
+    // esa solicitud sigue vivo (B2) y el SERVIDOR suelta SÓLO la ranura (`TIMED_OUT / AUTO_RELEASED`): la VENTA sigue en duda.
+    // «No se cobró» lo dice una persona (E2: `FAILED / OPERATOR_RECONCILED_NO_CHARGE` ⇒ evidencia `OPERATOR_RECONCILED`) o el
+    // banco, y S6 —la consulta por intento al reconectar— lo publica. Las respuestas tienen la forma REAL del servidor
+    // (`{success, ...consultarIntentoDeTerminal}` con `request = proyectarEstado(...) + closedVia + winnerAttemptId`) y se leen con
+    // el mismo `Gson()` de `GsonConverterFactory.create()`. El intento va LIGADO (`linkedAt`): sin vínculo y sin Payment, S6 no
+    // publica la solicitud (`request: null`).
+    // La marca se FIJA a la Nexgo con SDK embebido (la de Amaena): es la que cierra para ejecución con la sonda, en los dos carriles.
+
+    private val nexgoEmbebida = MarcaDelBuild(procesador = "ANGELPAY", sdkAngelPayCompilado = true, respaldoAppAAppCompilado = false)
+
+    /** Una libreta = un proceso (su propio `process_token`), con la marca de la Nexgo fija y su SDK embebido encendido. */
+    private fun libretaDeNexgo() = PaymentAttemptLedger(
+        dao,
+        mockk<TpvSettingsRepository>(relaxed = true).also {
+            every { it.getCurrentSettings() } returns TpvSettings(angelPaySdkEnabled = true, angelPaySdkFallbackEnabled = false)
+        },
+        PilaDePantallas { listOf(TareaDeLaApp(pantallas = 1, arribaLaPrincipal = true)) }, // Codex TPV r1 #1: una pantalla, la nuestra
+    ).apply { marcaDelBuild = nexgoEmbebida }
+
+    /**
+     * La venta de la tablet que la Nexgo dejó a medias, hasta que la sonda la CIERRA para ejecución: el proceso 1 reclama la
+     * solicitud y entra al SDK; muere; el proceso 2 contesta la sonda con la evidencia completa (ACTIVE, sin ejecución viva y
+     * cerrada), la que el servidor exige para soltar la ranura. Devuelve la libreta y la recuperación del proceso 2.
+     */
+    private suspend fun ventaDeLaTabletCerradaParaEjecucion(requestId: String, attemptId: String): Pair<PaymentAttemptLedger, LedgerServerRecovery> {
+        val solicitud = SocketEvent.TerminalPaymentRequest(
+            requestId = requestId, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true, orderId = null,
+            processedByStaffId = "staff-1", senderDeviceName = "POS", venueId = venue, timestamp = "2026-10-20T19:00:00Z",
+        )
+        val libreta1 = libretaDeNexgo()
+        val bandeja1 = RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta1, PaymentStateHolder())
+        assertThat(bandeja1.receive(solicitud)).isInstanceOf(RemotePaymentReceiveDecision.Deliver::class.java)
+        assertThat(RemotePaymentCoordinator(bandeja1).prepareSocketPaymentRequest(requestId, { true }, { venue }))
+            .isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(libreta1.openAttempt(attemptId, venue, "ANGELPAY", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"$requestId"}""")).isTrue()
+        assertThat(libreta1.markAuthorizing(attemptId)).isTrue() // la app muere con el SDK dentro (Amaena, 20-oct)
+
+        val libreta2 = libretaDeNexgo()
+        val sonda = RemotePaymentCoordinator(RemotePaymentInbox(db.remotePaymentRequestDao(), com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), libreta2, PaymentStateHolder()))
+            .probeSocketPaymentRequest(requestId, venue)
+        assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
+        assertThat(sonda.executionAlive).isFalse()
+        assertThat(sonda.closedForExecution).isTrue()
+        return libreta2 to LedgerServerRecovery(dao, libreta2, api)
+    }
+
+    /** S6 de un intento LIGADO sin Payment, tal como lo arma el SERVIDOR; [desenlace] son los campos que cambian de la solicitud. */
+    private fun s6DelServidor(attemptId: String, requestId: String, desenlace: String): Response<TerminalAttemptStatusResponse> =
+        Response.success(
+            Gson().fromJson(
+                """{"success":true,"attemptId":"$attemptId","requestId":"$requestId",""" +
+                    """"attempt":{"attemptId":"$attemptId","outcome":"NOT_RECORDED","paymentId":null,"paymentStatus":null,""" +
+                    """"recordedVia":null,"amountCents":null,"tipCents":null,"isWinner":false,"winnerPaymentId":null,""" +
+                    """"processorEvidence":"NONE","processorEvidenceAt":null,"paymentContradiction":false,""" +
+                    """"evidenceContradiction":false,"unattributedEvidence":false,"linkedAt":"2026-10-20T19:00:01.000Z",""" +
+                    """"resolution":null},""" +
+                    """"request":{"requestId":"$requestId","venueId":"$venue","terminalId":"n860w173570",$desenlace,""" +
+                    """"amount":100,"tip":0,"orderId":null,"paymentId":null,"senderDevice":"POS","lateResult":false,""" +
+                    """"cancelDisposition":null,"createdAt":"2026-10-20T19:00:00.000Z","updatedAt":"2026-10-20T19:36:00.000Z",""" +
+                    """"closedVia":null,"winnerAttemptId":null}}""",
+                TerminalAttemptStatusResponse::class.java,
+            ),
+        )
+
+    /** El servidor soltó SÓLO la ranura (tras el cese certificado, o la ventana sin aviso comprobado): `desenlaceCanonico` ⇒ UNRESOLVED. */
+    private val ranuraSoltada =
+        """"status":"TIMED_OUT","failureCode":"AUTO_RELEASED","outcome":"UNRESOLVED","outcomeEvidence":null,"evidenceClass":null"""
+
+    /** E2, la declaración del cajero en el POS (`uncharged-reconciliation.service.ts`): `CODIGOS_SIN_COBRO` ⇒ OPERATOR_RECONCILED. */
+    private val declaradaPorElCajero =
+        """"status":"FAILED","failureCode":"OPERATOR_RECONCILED_NO_CHARGE","outcome":"NOT_CHARGED",""" +
+            """"outcomeEvidence":"OPERATOR_RECONCILED","evidenceClass":"OPERATOR""""
+
+    @Test fun `P1 una S6 NOT_CHARGED con OPERATOR_RECONCILED tras soltar solo la ranura cierra la fila INDETERMINADO de un cobro del POS`() = runTest {
+        val (libreta, recuperacion) = ventaDeLaTabletCerradaParaEjecucion("req-amaena", "a-amaena")
+        val t0 = System.currentTimeMillis()
+        // 1. Al reconectar, la ranura ya está suelta pero nadie dijo «no se cobró»: la fila sigue en duda.
+        coEvery { api.getAttemptStatus(venue, "a-amaena") } returns s6DelServidor("a-amaena", "req-amaena", ranuraSoltada)
+        assertThat(recuperacion.recover(venue, t0).liberadas).isEqualTo(0)
+        assertThat(dao.getById("a-amaena")!!.state).isEqualTo("INDETERMINADO")
+
+        // 2. El cajero declaró en el POS y S6 lo publica en la pasada siguiente: la fila se cierra con la evidencia de la persona.
+        coEvery { api.getAttemptStatus(venue, "a-amaena") } returns s6DelServidor("a-amaena", "req-amaena", declaradaPorElCajero)
+        val r = recuperacion.recover(venue, t0 + LedgerServerRecovery.ESPACIADO_TOPE_MS + 1)
+
+        assertThat(r.liberadas).isEqualTo(1)
+        val fila = dao.getById("a-amaena")!!
+        assertThat(fila.state).isEqualTo("DESCARTADA")
+        assertThat(fila.lastError).isEqualTo("liberada_por_el_servidor:OPERATOR_RECONCILED")
+        assertThat(fila.serverOutcome).isEqualTo(PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT)
+        // Liberar la VENTA no reabre la SOLICITUD: sigue cerrada para ejecución; el POS cobra con una solicitud nueva.
+        assertThat(libreta.cercaDeSolicitud("req-amaena")).isEqualTo(CercaDeSolicitud.CERRADA)
+        assertThat(libreta.openAttempt("a-otra-vez", venue, "ANGELPAY", 10_000, 0, "FAST", """{"terminalPaymentRequestId":"req-amaena"}""")).isFalse()
+        coVerify(exactly = 2) { api.getAttemptStatus(venue, "a-amaena") }
+    }
+
+    @Test fun `P1 una S6 sin desenlace (fila TIMED_OUT AUTO_RELEASED, venta en duda) no cierra el INDETERMINADO`() = runTest {
+        val (_, recuperacion) = ventaDeLaTabletCerradaParaEjecucion("req-ranura", "a-ranura")
+        coEvery { api.getAttemptStatus(venue, "a-ranura") } returns s6DelServidor("a-ranura", "req-ranura", ranuraSoltada)
+        val t0 = System.currentTimeMillis()
+
+        // La pasada al reconectar y el sondeo de la pantalla (cada 5 s, sin estampar): el servidor contesta, y no hay desenlace.
+        val r = recuperacion.recover(venue, t0)
+        val lectura = recuperacion.recoverOne(venue, "a-ranura", t0 + 1, estampar = false)
+
+        // Soltar la ranura no es «no se cobró»: la fila sigue INDETERMINADO, sin desenlace guardado ni liberación.
+        assertThat(r.consultados).isEqualTo(1)
+        assertThat(r.liberadas).isEqualTo(0)
+        assertThat(lectura.servidorContesto).isTrue()
+        assertThat(lectura.evidenciaPositivaSinRegistro).isFalse()
+        assertThat(lectura.vetoDelServidor).isNull()
+        val fila = dao.getById("a-ranura")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.lastError).isEqualTo(PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        assertThat(fila.serverOutcome).isNull()
+        assertThat(fila.serverCheckedAt).isEqualTo(t0) // contestó: sólo se estampó la consulta
     }
 }

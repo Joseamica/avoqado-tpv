@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
+
 /**
  * Lo que la terminal DICE y OFRECE cuando el cobro lo pidió el POS (C.5 / H.3, 11-sep-2026).
  *
@@ -42,6 +44,24 @@ internal object CobroRemotoDelPos {
         enPantallaDeCobro && cobroActivo -> NO_INICIADO_POR_COBRO_EN_CURSO
         else -> null
     }
+
+    /**
+     * La MISMA regla, leída de las banderas que publican las pantallas ([PaymentStateProvider]). La usan la navegación (con la
+     * ruta real, al admitir una venta del POS) y la bandeja ([laTerminalRechazariaUnaVentaNueva], antes de certificar el cese):
+     * así no pueden divergir.
+     */
+    fun motivoParaNoIniciar(enPantallaDeCobro: Boolean, estado: PaymentStateProvider): String? =
+        motivoParaNoIniciar(enPantallaDeCobro, cobroActivo = estado.isChargeAttemptActive(), devolucionEnCurso = estado.isRefundInFlight())
+
+    /**
+     * 🔒 Codex TPV r1, ronda 2 (N1, 22-oct): ¿la terminal rechazaría AHORA una venta NUEVA del POS? Es [motivoParaNoIniciar] con
+     * la peor ruta posible (la pantalla de cobro abierta): la bandeja no ve la navegación, y la bandera de cobro activo sólo
+     * vive mientras esa pantalla existe. Mientras sea true la sonda y el cancel NO certifican el cese: «libre» en el SERVIDOR
+     * tiene que significar que la terminal SÍ aceptaría otra venta. Caso real: la PAX con `CompleteEmvTrans` fallido tras la
+     * aprobación se queda en «Cobrado. Sincronización pendiente» con la bandera arriba hasta que el cajero toca «Cancelar».
+     */
+    fun laTerminalRechazariaUnaVentaNueva(estado: PaymentStateProvider): Boolean =
+        motivoParaNoIniciar(enPantallaDeCobro = true, estado = estado) != null
 
     /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
     const val NO_INICIADO_SIN_DETALLE =
@@ -95,6 +115,10 @@ internal object CobroRemotoDelPos {
      * Revertir es cambiar esta constante a `false`: la barrera durable
      * ([com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.iniciarEjecucionNoTarjeta])
      * sigue protegiendo la carrera contra el cancel en los dos casos.
+     *
+     * ⚠️ Pero ya NO basta con revertir (D6, 2-nov; M3 de su revisión): con el enlace remoto perdido (`_socketRequestId` nulo)
+     * `puedeArrancarEfectivoOCripto` devuelve true, y un ViewModel nacido remoto registraría el efectivo como venta LOCAL con el
+     * POS ya avisado de «cancelado». Antes de revertir hay que cerrar ese hueco (la guarda de identidad de D6 sólo cubre tarjeta).
      */
     const val OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO = true
 

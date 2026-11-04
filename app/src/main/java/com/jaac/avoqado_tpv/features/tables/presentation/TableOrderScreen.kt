@@ -244,6 +244,7 @@ fun TableOrderScreen(
     }
 
     TableOrderScreenContent(
+        zonaDelNegocio = viewModel.zonaDelNegocio,
         modifier = modifier,
         session = activeSession,
         check = check,
@@ -397,6 +398,7 @@ fun TableOrderScreen(
 private fun TableOrderScreenContent(
     modifier: Modifier = Modifier,
     session: TableSession.Active,
+    zonaDelNegocio: java.time.ZoneId = com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO,
     check: OrderDetail?,
     isLoadingCheck: Boolean,
     checkLoadFailed: Boolean,
@@ -556,7 +558,7 @@ private fun TableOrderScreenContent(
                     if (rounds.isNotEmpty()) {
                         rounds.forEachIndexed { index, round ->
                             item(key = "round-header-${round.sentAt}-$index") {
-                                SectionHeader(roundLabel(round.sentAt, rounds.size - index))
+                                SectionHeader(roundLabel(round.sentAt, rounds.size - index, zonaDelNegocio))
                             }
                             items(round.items, key = { "sent-${it.id}" }) { orderItem ->
                                 SentItemRow(item = orderItem)
@@ -945,9 +947,9 @@ private fun TableOrderBottomBar(
 private fun moneyDisplay(amount: BigDecimal): String = "$${amount.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
 
 /** "Ronda 3" (más reciente) → "Ronda 1" (primera) — o la hora si se puede parsear. */
-private fun roundLabel(sentAt: String?, roundNumber: Int): String {
+internal fun roundLabel(sentAt: String?, roundNumber: Int, zona: java.time.ZoneId): String {
     val time = sentAt?.let { raw ->
-        runCatching { OffsetDateTime.parse(raw).format(DateTimeFormatter.ofPattern("HH:mm")) }.getOrNull()
+        runCatching { OffsetDateTime.parse(raw).atZoneSameInstant(zona).format(DateTimeFormatter.ofPattern("HH:mm")) }.getOrNull()
     }
     return if (time != null) "Ronda $roundNumber · $time" else "Ronda $roundNumber"
 }

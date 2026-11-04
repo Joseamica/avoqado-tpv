@@ -26,6 +26,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -291,6 +293,112 @@ class AngelPayAuthRecoveryTest {
         coVerify(exactly = 5) { sdkGateway.authenticateSimple(any(), any()) }
     }
 
+    // ── D9 (N86, 3-nov 04:20): un tropiezo de red DENTRO de elegir el comercio ─────────────────
+    // El SDK ya guardó su token y se cae en su post-auth (`runPostAuthSetup failed`, REFUSED_STREAM): se queda diciendo
+    // «autenticado» con una sesión a medias y el token de selección ya no sirve. «Reintentar» contestaba NO_ATORADA y la
+    // Nexgo seguía sin tarjeta hasta matar la app (11 min).
+
+    /** Login con dos comercios que pide elegir, y la elección falla por la red con el SDK diciendo «autenticado». */
+    private suspend fun eleccionDeComercioTropieza(cuenta: AngelPayCreds = primaria) {
+        hayRed = true
+        coEvery { credentialResolver.resolveByAccountId(cuenta.accountId!!) } returns Result.success(cuenta)
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+            sesionViva = true
+            Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(merchants = emptyList(), temporaryToken = "token-1"))
+        }
+        repo.ensureAuthenticatedAs(cuenta.accountId!!)
+        assertTrue(repo.state.value is AngelPayAuthState.SelectingMerchant)
+        coEvery { merchantRepository.completeInitialSelection(106, "token-1") } returns
+            Result.failure(java.io.IOException("stream was reset: REFUSED_STREAM"))
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(listOf(mockk(relaxed = true)))
+        assertTrue(repo.completeMerchantSelection(106, "token-1").isFailure)
+        assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+        io.mockk.clearMocks(sdkGateway, answers = false) // lo que sigue se cuenta desde el tropiezo
+    }
+
+    @Test
+    fun `D9 Reintentar saca a la terminal de una eleccion de comercio a medias`() = runTest(dispatcher) {
+        eleccionDeComercioTropieza()
+        assertTrue(repo.estaAtorada())
+
+        val resultado = recovery.recoverIfStuck(DisparadorRecuperacion.MANUAL, pantallaDeCobroQuieta = true)
+
+        assertNotEquals(ResultadoRecuperacion.OMITIDA_NO_ATORADA, resultado)
+        verify(exactly = 1) { sdkGateway.logout() }
+        coVerify(exactly = 1) { sdkGateway.authenticateSimple(any(), any()) }
+        assertTrue(repo.state.value is AngelPayAuthState.SelectingMerchant)
+        assertFalse(repo.estaAtorada())
+    }
+
+    @Test
+    fun `D9 la vuelta de la red tambien la recupera sola`() = runTest(dispatcher) {
+        eleccionDeComercioTropieza()
+        recovery.recoverIfStuck(DisparadorRecuperacion.RED_RECUPERADA)
+        assertTrue(repo.state.value is AngelPayAuthState.SelectingMerchant)
+    }
+
+    // 🔴 Regla de Amaena: la sesión a medias era de la cuenta del comercio, y nunca se cae a la primaria.
+    @Test
+    fun `D9 en multicuenta vuelve a la misma cuenta y nunca a la primaria`() = runTest(dispatcher) {
+        cuentasDelVenue = listOf(dtoPrimaria, dtoSecundaria)
+        eleccionDeComercioTropieza(secundaria)
+        every { credentialResolver.resolve() } answers { error("nunca la primaria") }
+
+        recovery.recoverIfStuck(DisparadorRecuperacion.MANUAL, pantallaDeCobroQuieta = true)
+
+        assertEquals("acc-2", repo.getCurrentAngelPayAccountId())
+        verify(exactly = 0) { credentialResolver.resolve() }
+    }
+
+    @Test
+    fun `D9 tampoco el cobro confia en la sesion a medias`() = runTest(dispatcher) {
+        eleccionDeComercioTropieza()
+        repo.ensureAuthenticated()
+        verify(exactly = 1) { sdkGateway.logout() }
+        assertTrue(repo.state.value is AngelPayAuthState.SelectingMerchant)
+    }
+
+    @Test
+    fun `D9 sin red la sesion a medias sigue esperando y no se cierra en falso`() = runTest(dispatcher) {
+        eleccionDeComercioTropieza()
+        hayRed = false
+        coEvery { credentialResolver.resolveByAccountId("acc-1") } returns Result.failure(MissingAngelPayCredsError)
+
+        recovery.recoverIfStuck(DisparadorRecuperacion.MANUAL, pantallaDeCobroQuieta = true)
+
+        verify(exactly = 0) { sdkGateway.logout() }
+        assertTrue(repo.estaAtorada())
+    }
+
+    @Test
+    fun `D9 con un cobro en curso no se toca la sesion`() = runTest(dispatcher) {
+        eleccionDeComercioTropieza()
+        every { paymentStateProvider.isCharging() } returns true
+
+        assertEquals(
+            ResultadoRecuperacion.OMITIDA_COBRO_EN_CURSO,
+            recovery.recoverIfStuck(DisparadorRecuperacion.MANUAL, pantallaDeCobroQuieta = true),
+        )
+        verify(exactly = 0) { sdkGateway.logout() }
+    }
+
+    @Test
+    fun `D9 otro error sigue sin reintentarse en el fondo`() = runTest(dispatcher) {
+        hayRed = true
+        coEvery { credentialResolver.resolveByAccountId("acc-1") } returns Result.success(primaria)
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+            sesionViva = true
+            Result.success(AuthenticateSimpleResult.MerchantSelectionRequired(merchants = emptyList(), temporaryToken = "token-1"))
+        }
+        repo.ensureAuthenticatedAs("acc-1")
+        coEvery { merchantRepository.completeInitialSelection(106, "token-1") } returns
+            Result.failure(IllegalArgumentException("comercio rechazado"))
+        coEvery { credentialResolver.resolveByAccountId("acc-1") } returns Result.failure(MissingAngelPayCredsError)
+        repo.completeMerchantSelection(106, "token-1")
+
+        assertFalse(repo.estaAtorada())
+    }
+
     @Test
     fun `hasServer que sube de false a true despierta la recuperacion y el valor inicial no`() = runTest(dispatcher) {
         arrancarSinRed()
@@ -400,7 +508,7 @@ class AngelPayAuthRecoveryTest {
     }
 
     @Test
-    fun `P1 en un venue con varias cuentas vuelve a la cuenta del ultimo comercio activo`() = runTest(dispatcher) {
+    fun `D4 en multicuenta el ultimo comercio cacheado no acredita la cuenta de recuperacion`() = runTest(dispatcher) {
         arrancarSinRed()
         hayRed = true
         cuentasDelVenue = listOf(dtoPrimaria, dtoSecundaria)
@@ -419,9 +527,9 @@ class AngelPayAuthRecoveryTest {
 
         val resultado = recovery.recoverIfStuck(DisparadorRecuperacion.RED_RECUPERADA)
 
-        assertEquals(ResultadoRecuperacion.RECUPERADA, resultado)
-        coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
-        coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+        assertEquals(ResultadoRecuperacion.OMITIDA_SIN_CUENTA, resultado)
+        assertEquals(AngelPayAuthState.Unauthenticated, repo.state.value)
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
     }
 
     @Test

@@ -8,6 +8,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -33,6 +34,7 @@ class BlumonAttemptResolverTest {
         coEvery { ledger.leerIntento("pax") } answers { row }
         every { ledger.tieneEvidenciaSinGuardar(any()) } returns false
         every { ledger.puedeConciliarBlumon(any(), any()) } returns true
+        every { ledger.puedeDeclararseEnDuda(any(), any()) } returns true
         coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns
             LedgerServerRecovery.LecturaDelIntento(null, servidorContesto = true)
         resolver = BlumonAttemptResolver(ledger, recovery, api, storage)
@@ -258,6 +260,93 @@ class BlumonAttemptResolverTest {
         com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository(permissionsApi, storage)
             .getPermissions(forceRefresh = true)
         assertThat(resolver.hasPermission()).isTrue()
+    }
+
+    // ── El banner «No se cobró» (founder, 3-nov): la declaración revisada se abre a la Nexgo, y nada más cambia ─────────────
+
+    private fun declaraEnLaNexgo() {
+        every { storage.getString("permissions_cache", null) } returns "venue|manager\npayments:reconcile-uncharged"
+        row = row.copy(processor = "ANGELPAY", serverAnsweredAt = 3)
+    }
+
+    @Test fun `the checked declaration passes on Nexgo under the same conditions as on PAX`() = runTest {
+        declaraEnLaNexgo()
+        coEvery { ledger.declararSinCobroLocal("pax", "venue", "manager") } coAnswers {
+            row = row.copy(state = "DESCARTADA", lastError = "declarado_sin_cobro:manager")
+            true
+        }
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.RELEASED)
+        coVerify { recovery.recoverOne("venue", "pax", any(), false) }
+    }
+
+    @Test fun `on Nexgo a declaration without a previous answer, or with a POS request, closes nothing`() = runTest {
+        declaraEnLaNexgo()
+        row = row.copy(serverAnsweredAt = null)
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns LedgerServerRecovery.LecturaDelIntento(null)
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+        row = row.copy(serverAnsweredAt = 3, terminalPaymentRequestId = "pos-request")
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any()) }
+    }
+
+    @Test fun `on Nexgo money evidence and a veto that could not be saved both refuse`() = runTest {
+        declaraEnLaNexgo()
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns
+            LedgerServerRecovery.LecturaDelIntento(null, evidenciaPositivaSinRegistro = true, servidorContesto = true)
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns
+            LedgerServerRecovery.LecturaDelIntento(null, servidorContesto = true, vetoDelServidor = "PAYMENT_CONTRADICTION")
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        // El veto no quedó en la fila: se recuerda aunque la consulta siguiente ya no lo traiga.
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns LedgerServerRecovery.LecturaDelIntento(null)
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any()) }
+    }
+
+    @Test fun `on Nexgo the live call guard of this process also refuses, and so does a missing permission`() = runTest {
+        declaraEnLaNexgo()
+        every { ledger.puedeDeclararseEnDuda(any(), any()) } returns false
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+        every { storage.getString("permissions_cache", null) } returns "venue|manager\npayments:read"
+        assertThat(resolver.declareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any()) }
+    }
+
+    @Test fun `preparing asks first and tells what the row can do, on both processors`() = runTest {
+        every { storage.getString("permissions_cache", null) } returns "venue|manager\npayments:reconcile-uncharged"
+        for (procesador in listOf("BLUMON", "ANGELPAY")) {
+            row = row.copy(processor = procesador, serverAnsweredAt = 3)
+            every { ledger.puedeDeclararseEnDuda(any(), any()) } returns true
+            assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+            every { ledger.puedeDeclararseEnDuda(any(), any()) } returns false
+            assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any()) }
+    }
+
+    @Test fun `preparing without the permission does not even ask`() = runTest {
+        every { storage.getString("permissions_cache", null) } returns "venue|manager\npayments:read"
+        assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
+        coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
+    }
+
+    @Test fun `a Nexgo row released by the server reads as released in the declaration`() = runTest {
+        declaraEnLaNexgo()
+        row = row.copy(state = "DESCARTADA", serverOutcome = "RELEASED_NO_EVIDENCE")
+        assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.RELEASED)
+    }
+
+    @Test fun `the PAX screen does not change - it still only sees PAX attempts`() = runTest {
+        every { storage.getString("permissions_cache", null) } returns
+            "venue|manager\npayments:resolve-no-instrument,payments:reconcile-uncharged"
+        row = row.copy(processor = "ANGELPAY", serverAnsweredAt = 3)
+        assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        assertThat(resolver.current("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        every { ledger.observarIntento("pax", "venue") } returns kotlinx.coroutines.flow.flowOf(row)
+        assertThat(resolver.observe("venue", "pax").first().state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
     }
 
     @Test fun `a permission response started before denial cannot restore the stale grant`() = runTest {

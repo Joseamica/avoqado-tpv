@@ -37,6 +37,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.systemui.applyTpvImmersiveMode
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.EstadoDelProceso
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
@@ -171,7 +172,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        super.onCreate(savedInstanceState)
+        // 🔒 D1/D2: un proceso nuevo nunca restaura una pantalla de cobro; arranca como en frío (ver [EstadoDelProceso]).
+        val estado = EstadoDelProceso.paraCrear(savedInstanceState)
+        if (savedInstanceState != null && estado == null) Timber.w("🧭 [MainActivity] Proceso nuevo: se descarta la pantalla que guardó el anterior")
+        super.onCreate(estado)
 
         // El launcher de AngelPay (Nexgo) abre la app con FLAG_ACTIVITY_NEW_TASK sin RESET_TASK_IF_NEEDED: si la app
         // ya estaba abierta, Android apila una SEGUNDA MainActivity encima — y esconde el cobro del SDK que seguía
@@ -267,6 +271,11 @@ class MainActivity : ComponentActivity() {
         // Initialization (heartbeat, config fetch) is triggered by startPostPermissionInitialization()
         // which runs AFTER all permission dialogs are resolved (camera, location, phone state).
         // This prevents permission dialogs from being dismissed by UI recomposition during init.
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        EstadoDelProceso.firmar(outState)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

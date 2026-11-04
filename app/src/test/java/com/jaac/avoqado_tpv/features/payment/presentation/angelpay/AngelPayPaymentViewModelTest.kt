@@ -777,6 +777,18 @@ class AngelPayPaymentViewModelTest {
         launchSdkRequest(mockk<PaymentRequest>(relaxed = true), usedQaTipFallback = false)
     }
 
+    /** Sólo para escenarios de cobro válido: la selección real del VM y la sesión viva coinciden. */
+    private fun AngelPayPaymentViewModel.prepararSesionSdkValida(merchant: MerchantAccount = angelPayMerchantA) {
+        val targetId = merchant.requireAngelpayMerchantId()
+        every { sdkGateway.isAuthenticated() } returns true
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(targetId) } answers {
+            activeMerchantIdFlow.value = targetId
+            Result.success(Unit)
+        }
+        selectMerchant(merchant)
+        assertThat(currentMerchant.value).isEqualTo(merchant)
+    }
+
     /** Builds a declined SDK PaymentResult carrying the given AppErrorCatalog code. */
     private fun sdkFailureResult(
         sdkCode: String,
@@ -799,6 +811,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
@@ -823,11 +836,13 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
             vm.onAngelPaySdkResult(sdkFailureResult("D308"))
             runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
             vm.onAngelPaySdkResult(sdkFailureResult("D308"))
             runCurrent()
 
@@ -905,6 +920,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -931,6 +947,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -956,6 +973,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -982,12 +1000,14 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
             val d312 = "No fue posible registrar la terminal antes del cobro. Intente de nuevo; si persiste, contacte a soporte."
 
             vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
             runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
             vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "D312", message = d312))
             runCurrent()
 
@@ -1048,6 +1068,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test
     fun `D308 recovery does NOT relaunch when the re-authenticated session lands on a different merchant`() = runTest(testDispatcher) {
+        every { sdkGateway.isAuthenticated() } returns true
         coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
         val vm = createViewModel()
         try {
@@ -1079,6 +1100,7 @@ class AngelPayPaymentViewModelTest {
 
     @Test
     fun `D308 recovery relaunches when the re-authenticated session matches the selected merchant`() = runTest(testDispatcher) {
+        every { sdkGateway.isAuthenticated() } returns true
         coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
         val vm = createViewModel()
         try {
@@ -1585,6 +1607,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel()
         try {
             coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
             vm.primeSdkLaunch()
             runCurrent()
 
@@ -4083,6 +4106,7 @@ class AngelPayPaymentViewModelTest {
         coEvery { paymentAttemptLedger.motivoDeLaBarrera(any(), any(), any()) } returns "LO QUE DICE LA LIBRETA"
         val vm = createViewModel()
         vm.initPayment(amount = "80.00"); runCurrent()
+        vm.prepararSesionSdkValida()
         vm.flujoSdkForzadoParaPruebas = true
         vm.startCardPayment(); runCurrent()
         return vm
@@ -5134,6 +5158,7 @@ class AngelPayPaymentViewModelTest {
         coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
         val vm = vmConCobroDelPos("req-registro")
         try {
+            vm.prepararSesionSdkValida()
             val fallo = sdkInciertoResult(
                 sdkCode = "N400",
                 status = PaymentResult.Status.TIMEOUT,
@@ -5286,6 +5311,7 @@ class AngelPayPaymentViewModelTest {
         sdkListo()
         val vm = vmConCobroDelPos("req-cercado")
         try {
+            vm.prepararSesionSdkValida()
             vm.flujoSdkForzadoParaPruebas = true
             vm.startCardPayment()
             runCurrent()
@@ -6045,6 +6071,365 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.numberCapture).isNull()
         } finally {
             vm.viewModelScope.cancel()
+        }
+    }
+
+    // ═══ D6 (2-nov, «ninguna duda de cobro sin salida»): un cobro remoto sólo entra al procesador con SU identidad original ═══
+    //
+    // La libreta acepta contextos locales, así que sólo este VM sabe que el cobro nació remoto. Si el enlace mutable se perdió o
+    // cambió, ni el atajo de «ya está abierto», ni el relanzamiento, ni el respaldo app-a-app pueden entrar al SDK. Las llamadas al
+    // helper fijan el invariante de frontera; no se describen como un recorrido reproducido en aparato.
+
+    private val claveDelEnlace = "angelpay_socket_request_id"
+
+    private fun verificarNingunDesenlace() = verify(exactly = 0) {
+        socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+    }
+
+    private fun verificarSinReserva() = coVerify(exactly = 0) {
+        paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+    }
+
+    /** Lo que hace la pantalla: primero la etiqueta del cobro y después `initPayment`. */
+    private fun kotlinx.coroutines.test.TestScope.vmConEntrada(
+        source: String?,
+        requestId: String?,
+        handle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        ajustes: TpvSettings = TpvSettings(enableShifts = false),
+    ): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns ajustes
+        val vm = createViewModel(handle)
+        vm.setSocketPaymentSource(source, requestId)
+        vm.initPayment(amount = "100.00")
+        runCurrent()
+        return vm
+    }
+
+    private fun contextoGuardado(json: String) = com.google.gson.Gson().fromJson(json, PaymentContext.AngelPayPayment::class.java)
+
+    @Test fun `D6 P1 una entrada remota sin id valido no reserva ni autoriza y no se degrada a local`() = runTest(testDispatcher) {
+        for (idInvalido in listOf(null, "", "   ")) {
+            val vm = vmConEntrada("SOCKET", idInvalido)
+            try {
+                assertWithMessage("id = «$idInvalido»").that(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isFalse()
+                verificarSinReserva()
+                coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+                assertThat(vm.socketRequestIdForTest()).isNull()
+                verificarNingunDesenlace()
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test fun `D6 P1 el origen remoto sobrevive a la muerte del proceso y un tag nulo no lo vuelve local`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = vmConEntrada("SOCKET", null, handle)
+        original.viewModelScope.cancel()
+
+        val restaurado = createViewModel(androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) }))
+        try {
+            // La pantalla recreada ya no trae los argumentos, y los de otro cobro tampoco se adoptan.
+            restaurado.setSocketPaymentSource(null, null)
+            restaurado.setSocketPaymentSource("SOCKET", "REQ-B")
+            restaurado.initPayment(amount = "100.00")
+            runCurrent()
+
+            assertThat(restaurado.openLedgerAttemptAndMarkAuthorizing("a-1")).isFalse()
+            verificarSinReserva()
+        } finally { restaurado.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 control - A intacta se guarda tal cual, tambien en el VM restaurado que recibe otro id`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val original = vmConEntrada("SOCKET", "REQ-A", handle)
+        original.viewModelScope.cancel()
+
+        val restaurado = createViewModel(androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) }))
+        try {
+            restaurado.setSocketPaymentSource("SOCKET", "REQ-A")
+            restaurado.setSocketPaymentSource("SOCKET", "REQ-B")
+            restaurado.initPayment(amount = "100.00")
+            runCurrent()
+
+            assertThat(restaurado.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+            assertThat(contextoGuardado(json.captured).terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { restaurado.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 control - un VM local sigue reservando sin solicitud y no adopta los argumentos de B`() = runTest(testDispatcher) {
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = vmConEntrada(null, null)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-B")
+
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+            assertThat(contextoGuardado(json.captured).terminalPaymentRequestId).isNull()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 tras resetPayment el VM de A no reserva como local aunque le llegue otro id`() = runTest(testDispatcher) {
+        val vm = vmConEntrada("SOCKET", "REQ-A")
+        try {
+            vm.resetPayment() // avisa cancelled de A: es la salida de hoy
+            clearMocks(socketManager, answers = false)
+            vm.setSocketPaymentSource("SOCKET", "REQ-B")
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isFalse()
+            verificarSinReserva()
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorizing(any()) }
+            verificarNingunDesenlace()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 la guarda va ANTES del atajo de ya abierto - misma llave y mismo dinero no bastan`() = runTest(testDispatcher) {
+        for (enlace in listOf(null, "REQ-B")) {
+            clearMocks(paymentAttemptLedger, answers = false)
+            val handle = androidx.lifecycle.SavedStateHandle()
+            val vm = vmConEntrada("SOCKET", "REQ-A", handle)
+            try {
+                assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+                handle.set<String?>(claveDelEnlace, enlace)
+
+                assertWithMessage("enlace = $enlace").that(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isFalse()
+
+                coVerify(exactly = 1) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+                coVerify(exactly = 1) { paymentAttemptLedger.markAuthorizing("a-1") }
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    /** Cobro por el SDK embebido, listo hasta el toque de «Tarjeta». */
+    private fun kotlinx.coroutines.test.TestScope.vmListoParaElSdk(
+        requestId: String?,
+        handle: androidx.lifecycle.SavedStateHandle,
+        ajustes: TpvSettings = TpvSettings(enableShifts = false, angelPaySdkFallbackEnabled = false),
+    ): AngelPayPaymentViewModel {
+        sdkListo()
+        every { sdkGateway.validatePaymentIntent(any(), any()) } returns Result.success(Unit)
+        val vm = vmConEntrada("SOCKET", requestId, handle, ajustes)
+        vm.prepararSesionSdkValida()
+        vm.flujoSdkForzadoParaPruebas = true
+        return vm
+    }
+
+    private fun AngelPayPaymentViewModel.verRechazoSinIdentidad(contexto: String) {
+        val estado = state.value
+        assertWithMessage("$contexto: estado = $estado").that(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+        assertWithMessage(contexto).that((estado as AngelPayPaymentState.Error).message).isEqualTo(CobroRemotoDelPos.SOLICITUD_CERRADA)
+        assertWithMessage(contexto).that(estado.canRetry).isFalse()
+        verificarNingunDesenlace()
+    }
+
+    @Test fun `D6 P1 control - por el SDK A queda comprometida en la libreta antes de que salga la senal de lanzar`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = vmListoParaElSdk("REQ-A", handle)
+        var estadoAlComprometer: AngelPayPaymentState? = null
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } answers { estadoAlComprometer = vm.state.value; true }
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            assertThat(estadoAlComprometer).isNotNull()
+            assertThat(estadoAlComprometer).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            assertThat(contextoGuardado(json.captured).terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 por el SDK un enlace perdido antes de la barrera no reserva ni lanza`() = runTest(testDispatcher) {
+        for (enlace in listOf(null, "REQ-B")) {
+            clearMocks(paymentAttemptLedger, socketManager, paymentStateHolder, answers = false)
+            val handle = androidx.lifecycle.SavedStateHandle()
+            val vm = vmListoParaElSdk("REQ-A", handle)
+            try {
+                handle.set<String?>(claveDelEnlace, enlace)
+
+                vm.startCardPayment()
+                runCurrent()
+                advanceUntilIdle()
+
+                vm.verRechazoSinIdentidad("enlace = $enlace")
+                verificarSinReserva()
+                verify(exactly = 0) { sdkGateway.validatePaymentIntent(any(), any()) }
+                // Ya no es un cobro en curso: la siguiente venta del POS no choca con esta pantalla.
+                verify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+                // Y al salir, este VM tampoco habla en nombre de nadie.
+                vm.emitCancelledIfAbandoned()
+                verificarNingunDesenlace()
+            } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    @Test fun `D6 P1 por el SDK un enlace perdido DESPUES de la barrera no lanza y cierra la fila que no se lanzo`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val vm = vmListoParaElSdk("REQ-A", handle)
+        coEvery { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) } returns true
+        every { sdkGateway.validatePaymentIntent(any(), any()) } answers {
+            handle.set<String?>(claveDelEnlace, null)
+            Result.success(Unit)
+        }
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            vm.verRechazoSinIdentidad("tras la barrera")
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", "no_lanzado:identidad_remota") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** Cobro app-a-app directo: el SDK embebido apagado en los ajustes, igual en los dos carriles. */
+    private fun kotlinx.coroutines.test.TestScope.vmListoParaAppAApp(requestId: String?, handle: androidx.lifecycle.SavedStateHandle): AngelPayPaymentViewModel {
+        activeMerchantIdFlow.value = 11
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(11) } returns Result.success(Unit)
+        val vm = vmConEntrada("SOCKET", requestId, handle, TpvSettings(enableShifts = false, angelPaySdkEnabled = false))
+        vm.selectMerchant(angelPayMerchantA)
+        runCurrent()
+        return vm
+    }
+
+    @Test fun `D6 P1 control - app-a-app compromete A antes de que salga la senal de lanzar`() = runTest(testDispatcher) {
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = vmListoParaAppAApp("REQ-A", androidx.lifecycle.SavedStateHandle())
+        var estadoAlComprometer: AngelPayPaymentState? = null
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } answers { estadoAlComprometer = vm.state.value; true }
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            assertWithMessage("estado = ${vm.state.value}").that(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+            assertThat(estadoAlComprometer).isNotNull()
+            assertThat(estadoAlComprometer).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+            assertThat(contextoGuardado(json.captured).terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 app-a-app con el enlace perdido no reserva, no arma el Intent ni lanza`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val vm = vmListoParaAppAApp("REQ-A", handle)
+        try {
+            handle.set<String?>(claveDelEnlace, null)
+
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            vm.verRechazoSinIdentidad("app-a-app")
+            verificarSinReserva()
+            verify(exactly = 0) { intentBuilder.buildSaleIntent(any(), any(), any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 app-a-app con el enlace perdido durante la barrera no lanza y cierra la fila que no se lanzo`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val vm = vmListoParaAppAApp("REQ-A", handle)
+        coEvery { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) } returns true
+        coEvery { paymentAttemptLedger.markAuthorizing(any()) } answers {
+            handle.set<String?>(claveDelEnlace, null)
+            true
+        }
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            vm.verRechazoSinIdentidad("durante la barrera")
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", "no_lanzado:identidad_remota") }
+            verify(exactly = 0) { intentBuilder.buildSaleIntent(any(), any(), any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** El respaldo SDK → app-a-app sólo se compila donde el SDK embebido no: el carril nexgo no lo tiene, y no se le inventa. */
+    private fun soloConRespaldoCompilado() = org.junit.Assume.assumeTrue(
+        "el respaldo app-a-app no está compilado en este carril", com.jaac.avoqado_tpv.BuildConfig.ANGELPAY_SDK_FALLBACK_ENABLED,
+    )
+
+    @Test fun `D6 P1 control - el respaldo app-a-app conserva la misma llave y A sin reabrir la fila`() = runTest(testDispatcher) {
+        soloConRespaldoCompilado()
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = vmListoParaElSdk("REQ-A", androidx.lifecycle.SavedStateHandle(), TpvSettings(enableShifts = false, angelPaySdkFallbackEnabled = true))
+        every { sdkGateway.validatePaymentIntent(any(), any()) } returns Result.failure(IllegalStateException("Monto inválido"))
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            assertWithMessage("estado = ${vm.state.value}").that(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+            coVerify(exactly = 1) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            assertThat(contextoGuardado(json.captured).terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 el respaldo app-a-app con el enlace perdido no lanza y cierra la fila que no se lanzo`() = runTest(testDispatcher) {
+        soloConRespaldoCompilado()
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val vm = vmListoParaElSdk("REQ-A", handle, TpvSettings(enableShifts = false, angelPaySdkFallbackEnabled = true))
+        coEvery { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) } returns true
+        every { sdkGateway.validatePaymentIntent(any(), any()) } answers {
+            handle.set<String?>(claveDelEnlace, null)
+            Result.failure(IllegalStateException("Monto inválido"))
+        }
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            vm.verRechazoSinIdentidad("respaldo")
+            verify(exactly = 0) { intentBuilder.buildSaleIntent(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), "v1", "no_lanzado:identidad_remota") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 control - la sesion expirada de un remoto relanza con A intacta`() = runTest(testDispatcher) {
+        val vm = vmConEntrada("SOCKET", "REQ-A")
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.prepararSesionSdkValida()
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 P1 la sesion expirada con el enlace perdido durante el re-login no relanza ni habla por otra solicitud`() = runTest(testDispatcher) {
+        for (enlace in listOf(null, "REQ-B")) {
+            clearMocks(socketManager, answers = false)
+            val handle = androidx.lifecycle.SavedStateHandle()
+            val vm = vmConEntrada("SOCKET", "REQ-A", handle)
+            try {
+                coEvery { angelPayAuthRepository.handleAuthExpiry() } answers {
+                    handle.set<String?>(claveDelEnlace, enlace)
+                    Result.success(Unit)
+                }
+                vm.prepararSesionSdkValida()
+                vm.primeSdkLaunch()
+                runCurrent()
+
+                vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+                runCurrent()
+                advanceUntilIdle()
+
+                assertWithMessage("enlace = $enlace, estado = ${vm.state.value}").that(vm.state.value)
+                    .isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+                verificarNingunDesenlacePara("REQ-B")
+            } finally { vm.viewModelScope.cancel() }
         }
     }
 }

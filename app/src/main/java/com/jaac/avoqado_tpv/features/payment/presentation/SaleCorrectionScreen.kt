@@ -141,7 +141,7 @@ fun SaleCorrectionScreen(
             photoPath = photoPath,
             title = displayLabel(selectedLabel),
             numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = numberDrafts.initial(slot.name, current?.number),
+            initialNumber = numberDrafts.initial(slot.name, current?.number, locked = current?.locked == true),
             numberLocked = current?.locked == true,
             numberKind = slot.numberKind,
             verificationId = uiState.detail?.id,

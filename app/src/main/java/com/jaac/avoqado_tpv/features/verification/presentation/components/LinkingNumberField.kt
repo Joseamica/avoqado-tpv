@@ -66,8 +66,8 @@ fun linkingNumberInput(current: String, typed: String, locked: Boolean = false):
 class LinkingNumberDrafts {
     private val drafts = HashMap<String, String>()
 
-    /** Lo escrito si hay; si no, lo ya confirmado. */
-    fun initial(key: String, confirmed: String?): String? = drafts[key] ?: confirmed
+    /** Lo escrito si hay; si no, lo ya confirmado. Bloqueado (lo corrigió el back-office) manda siempre lo guardado, nunca un borrador. */
+    fun initial(key: String, confirmed: String?, locked: Boolean = false): String? = if (locked) confirmed else drafts[key] ?: confirmed
 
     fun update(key: String, value: String) {
         drafts[key] = value

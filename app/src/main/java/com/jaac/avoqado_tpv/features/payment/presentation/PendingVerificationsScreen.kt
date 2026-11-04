@@ -187,7 +187,7 @@ fun PendingVerificationsScreen(
                 else -> selectedLabel
             },
             numberLabel = slot.numberKind.label.takeIf { linkingNumberEnabled },
-            initialNumber = numberDrafts.initial("$selectedPaymentId/${slot.name}", current?.number),
+            initialNumber = numberDrafts.initial("$selectedPaymentId/${slot.name}", current?.number, locked = current?.locked == true),
             numberLocked = current?.locked == true,
             numberKind = slot.numberKind,
             verificationId = selected?.verificationId,

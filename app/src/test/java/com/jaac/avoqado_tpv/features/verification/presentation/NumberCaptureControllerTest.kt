@@ -188,6 +188,14 @@ class NumberCaptureControllerTest {
         assertThat(borradores.initial("VINCULACION", confirmed = "5512345678")).isEqualTo("5512345678")
     }
 
+    @Test fun `C7 bloqueado por el back-office el campo siempre trae el numero guardado, nunca un borrador`() {
+        val borradores = LinkingNumberDrafts()
+        borradores.update("VINCULACION", "5500000000") // escrito antes de que el back-office corrigiera
+
+        assertThat(borradores.initial("VINCULACION", confirmed = "5512345678", locked = true)).isEqualTo("5512345678")
+        assertThat(borradores.initial("VINCULACION", confirmed = "5512345678", locked = false)).isEqualTo("5500000000")
+    }
+
     @Test fun `C7r1 las cuatro vistas previas con campo guardan lo escrito para Retomar`() {
         val pantallas = listOf(
             "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt",

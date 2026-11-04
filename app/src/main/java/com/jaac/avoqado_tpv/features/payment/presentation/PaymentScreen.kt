@@ -306,7 +306,9 @@ fun PaymentScreen(
 
     // Hide topBar on Success screen (full-screen receipt)
     val showTopBar = state !is PaymentState.Success
-    val navigateBack = resolveBackNavigation(
+    // Un cobro del POS regresa a donde estaba la terminal, nunca al pedido: el pedido es del POS y abrirlo aquí invita a
+    // cobrarlo otra vez.
+    val navigateBack = if (CobroRemotoDelPos.esCobroDelPos(paymentSource)) onNavigateBack else resolveBackNavigation(
         flowOrigin = effectiveOrigin,
         orderId = orderId,
         tableId = tableId,
@@ -964,8 +966,9 @@ fun PaymentScreen(
                             onNavigateToShifts()
                         },
                         onCancel = {
+                            // En un cobro del POS no hay otro método que elegir, y esa pantalla lo dejaba esperando sin reloj.
                             if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton &&
-                                CobroRemotoDelPos.cancelarRegresaAElegirMetodo(paymentSource)
+                                !CobroRemotoDelPos.esCobroDelPos(paymentSource)
                             ) {
                                 viewModel.returnToSelectingMerchantFromError(currentState.context)
                             } else {

@@ -88,4 +88,23 @@ class SdkFailureClassifierTest {
         assertThat(SdkFailureClassifier.isSdkStateFailure("")).isFalse()
         assertThat(SdkFailureClassifier.isSdkStateFailure("   ")).isFalse()
     }
+    // D15 (3-nov): el clasificador existía y nadie lo llamaba. Las dos variantes de la PAX marcan el lector al ver el fallo.
+    @Test
+    fun `P1 las dos variantes de la PAX marcan el lector cuando el SDK queda en mal estado`() {
+        for (variante in listOf("sandbox", "production")) {
+            val vm = java.io.File("src/$variante/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentViewModel.kt").readText()
+            val autorizacion = vm.substring(vm.indexOf("internal suspend fun performOnlineAuthorization("))
+            val marca = autorizacion.indexOf("initializationManager.marcarLectorParaReparar(")
+            com.google.common.truth.Truth.assertWithMessage(variante).that(marca).isAtLeast(0)
+            com.google.common.truth.Truth.assertWithMessage(variante)
+                .that(autorizacion.substring(0, marca)).contains("SdkFailureClassifier.isSdkStateFailure(")
+            // Codex r1 #2: con código del emisor es una declinación normal («NO AUTORIZADO» con code=57), no se marca el lector.
+            com.google.common.truth.Truth.assertWithMessage(variante)
+                .that(autorizacion.substring(maxOf(0, marca - 400), marca)).contains("issuerCode == null &&")
+            com.google.common.truth.Truth.assertWithMessage(variante)
+                .that(vm.split("awaitInitialization(antesDeUsarElLector = true)").size - 1).isEqualTo(2)
+            val manager = java.io.File("src/$variante/java/com/jaac/avoqado_tpv/features/payment/data/InitializationManager.kt").readText()
+            com.google.common.truth.Truth.assertWithMessage(variante).that(manager).contains("fun marcarLectorParaReparar(motivo: String)")
+        }
+    }
 }

@@ -597,4 +597,93 @@ class InitializationManagerTest {
         assertThat(initializationManager.isInitialized.value).isTrue()
         assertNoBlumonSideEffects()
     }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D15 (3-nov): con token vencido cada intento salía «Pago rechazado» hasta reiniciar la app
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private suspend fun inicializadoConComercio(): InitializationManager {
+        every { mockSecureStorage.getLastBlumonInitPosId() } returns "376"
+        every { mockCriticalNetworkOperationManager.state } returns
+            kotlinx.coroutines.flow.MutableStateFlow(com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationState())
+        configureAllUseCasesSuccess()
+        val manager = createManager()
+        assertThat(manager.ensureInitialized(defaultMerchantPosId = "376").isSuccess).isTrue()
+        clearMocks(mockInitializerUseCase, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+        return manager
+    }
+
+    @Test
+    fun `P1 tras un fallo de estado del SDK el siguiente cobro reinicializa el lector una vez`() = runTest {
+        val manager = inicializadoConComercio()
+
+        manager.marcarLectorParaReparar("invalid_token")
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+        // La marca se gasta: el cobro siguiente ya no vuelve a reinicializar.
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `P1 sin marca el lector no se reinicializa - una declinacion normal no toca el SDK`() = runTest {
+        val manager = inicializadoConComercio()
+
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `P1 una segunda reparacion dentro de 5 minutos no se hace - Blumon limita`() = runTest {
+        val manager = inicializadoConComercio()
+        manager.marcarLectorParaReparar("invalid_token")
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        clearMocks(mockInitializerUseCase, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+
+        manager.marcarLectorParaReparar("invalid_token")
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `P1 con un cambio de comercio en curso no se toca el lector y la marca espera`() = runTest {
+        val manager = inicializadoConComercio()
+        val estado = kotlinx.coroutines.flow.MutableStateFlow(
+            com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationState(merchantSwitchInProgress = true),
+        )
+        every { mockCriticalNetworkOperationManager.state } returns estado
+        manager.marcarLectorParaReparar("NO AUTORIZADO")
+
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+
+        estado.value = com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationState()
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+    @Test
+    fun `P1 quien no va a usar el lector no gasta la marca`() = runTest {
+        val manager = inicializadoConComercio()
+        manager.marcarLectorParaReparar("invalid_token")
+
+        manager.awaitInitialization()
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `P1 si el lector ya se reinicializo despues de la marca no se repite`() = runTest {
+        val manager = inicializadoConComercio()
+        manager.marcarLectorParaReparar("NO AUTORIZADO")
+        // p. ej. un cambio de comercio con forceReinitialize: deja su sello DESPUÉS de la marca.
+        every { mockSecureStorage.getLastBlumonInitTimestamp() } returns System.currentTimeMillis() + 1_000
+
+        manager.awaitInitialization(antesDeUsarElLector = true)
+
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+    }
 }

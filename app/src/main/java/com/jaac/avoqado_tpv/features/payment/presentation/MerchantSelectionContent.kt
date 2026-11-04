@@ -84,6 +84,10 @@ fun MerchantSelectionContent(
     // texto debajo; el efectivo sigue encendido y la lista de cuentas no se muestra (el efectivo no la usa).
     motivoSinTarjeta: String? = null,
 ) {
+    // D20 (N86, 4-nov): tras «Reintentar», el segundo toque de un doble toque caía en esta lista y elegía OTRA cuenta de cobro. Los toques
+    // del primer medio segundo después de abrirla no cuentan: ni eligen cuenta ni arrancan un cobro.
+    val abiertaEn = remember { android.os.SystemClock.uptimeMillis() }
+    val aceptaToque = { SeleccionDeCuenta.aceptaToque(abiertaEn, android.os.SystemClock.uptimeMillis()) }
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
     var showPromotionDialog by remember { mutableStateOf(false) }
@@ -304,7 +308,7 @@ fun MerchantSelectionContent(
                                         merchant = merchant,
                                         isSelected = isSelected,
                                         enabled = !merchantSwitchingLoading,
-                                        onClick = { onSelectMerchant(merchant) }
+                                        onClick = { if (aceptaToque()) onSelectMerchant(merchant) }
                                     )
                                 }
                             }
@@ -337,7 +341,7 @@ fun MerchantSelectionContent(
                                             isSelected = isSelected,
                                             enabled = !merchantSwitchingLoading,
                                             onClick = {
-                                                onSelectMerchant(merchant)
+                                                if (aceptaToque()) onSelectMerchant(merchant)
                                                 showMerchantSheet = false
                                             },
                                         )
@@ -398,7 +402,7 @@ fun MerchantSelectionContent(
                                 )
                                 .clickable(enabled = cardEnabled) {
                                     if (availableMsiMonths.isEmpty()) {
-                                        onStartPaymentWithMsi(null)
+                                        if (aceptaToque()) onStartPaymentWithMsi(null)
                                     } else {
                                         showPromotionDialog = true
                                     }
@@ -490,7 +494,7 @@ fun MerchantSelectionContent(
                                     )
                                     .clickable(enabled = motivoSinTarjeta == null && !merchantSwitchingLoading) {
                                         if (cryptoMeetsMinAmount) {
-                                            onStartCryptoPayment()
+                                            if (aceptaToque()) onStartCryptoPayment()
                                         } else {
                                             showCryptoMinAmountDialog = true
                                         }
@@ -575,7 +579,7 @@ fun MerchantSelectionContent(
                     Button(
                         onClick = {
                             showCashConfirmationDialog = false
-                            onStartCashPayment()
+                            if (aceptaToque()) onStartCashPayment()
                         }
                     ) {
                         Text("Confirmar")
@@ -607,7 +611,7 @@ fun MerchantSelectionContent(
                             label = "Pago directo",
                             onClick = {
                                 showPromotionDialog = false
-                                onStartPaymentWithMsi(null)
+                                if (aceptaToque()) onStartPaymentWithMsi(null)
                             }
                         )
                         PromotionOptionRow(
@@ -645,7 +649,7 @@ fun MerchantSelectionContent(
                                 label = "$months MSI",
                                 onClick = {
                                     showMsiDialog = false
-                                    onStartPaymentWithMsi(months)
+                                    if (aceptaToque()) onStartPaymentWithMsi(months)
                                 }
                             )
                         }
@@ -963,4 +967,12 @@ private fun MerchantSelectionThreeMerchantsPreview() {
             onStartCashPayment = {}
         )
     }
+}
+
+/** D20: la regla de los toques de la lista de cuentas, aparte para probarla sin pantalla. */
+internal object SeleccionDeCuenta {
+    /** El doble toque más rápido que se midió en la N86 cayó a ~200 ms del primero; medio segundo deja margen sin estorbar. */
+    const val IGNORAR_TOQUES_AL_ABRIR_MS = 500L
+
+    fun aceptaToque(abiertaEnMs: Long, ahoraMs: Long): Boolean = ahoraMs - abiertaEnMs >= IGNORAR_TOQUES_AL_ABRIR_MS
 }

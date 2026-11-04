@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 
 /**
@@ -124,5 +125,21 @@ class CobroRemotoDelPosTest {
         assertThat(llamada).contains("estado = paymentStateProvider")
         assertThat(llamada).doesNotContain("isChargeAttemptActive")
         assertThat(llamada).doesNotContain("isRefundInFlight")
+    }
+
+    // D18 (PAX sin WiFi, 3-nov): el cobro del POS no trae botón de efectivo, y el texto lo ofrecía. Ese mismo texto le llega al POS.
+    @Test fun `P2 sin red antes de cobrar - el cobro del POS no ofrece efectivo en el texto y dice que no se cobró`() {
+        val delPos = CobroRemotoDelPos.textoSinRedAntesDeCobrar("SOCKET")
+        assertThat(delPos).doesNotContain("efectivo")
+        assertThat(delPos).contains("no se cobró")
+        assertThat(CobroRemotoDelPos.textoSinRedAntesDeCobrar(null)).isEqualTo("Sin conexión a internet.\n\n¿Cobrar en efectivo?")
+    }
+
+    @Test fun `P2 las dos variantes de la PAX usan el texto del cobro del POS al bloquear sin red`() {
+        for (variante in listOf("sandbox", "production")) {
+            val vm = java.io.File("src/$variante/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentViewModel.kt").readText()
+            assertWithMessage(variante).that(vm).contains("message = CobroRemotoDelPos.textoSinRedAntesDeCobrar(_paymentSource)")
+            assertWithMessage(variante).that(vm).doesNotContain("message = \"Sin conexión a internet.\\n\\n¿Cobrar en efectivo?\"")
+        }
     }
 }

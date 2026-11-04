@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[PlayTelecom] [Nexgo] Regalar una SIM de $0 ya no da «Monto invalido»**: la venta de $0 hecha en la terminal va a «sólo efectivo» con «Una venta de $0 se registra en efectivo.» y se cierra como en la PAX. Un cobro de $0 que manda el POS sigue rechazado.
+
 ---
 
 ## [2.16.0] - 2026-11-04

@@ -66,6 +66,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsReposito
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.authWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.decidirMotivoSinTarjeta
+import com.jaac.avoqado_tpv.features.payment.domain.MOTIVO_MONTO_CERO
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -466,6 +467,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var turnoSinConfirmar: Boolean = false
     /** 💵 D2 «Cobrar sin red»: argumento de la pantalla — este cobro sólo puede ir en efectivo. */
     private var soloEfectivo: Boolean = false
+    /** D6: venta de $0 hecha en la terminal (el regalo de una SIM): no va al banco, se cierra en efectivo, como en la PAX. */
+    private var ventaEnCero: Boolean = false
 
     @Volatile
     private var ventaLocal: VentaLocal? = null
@@ -493,7 +496,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * confirmar (la tarjeta y la cripto ya se bloqueaban al tocarlas: [bloquearPorTurnoSinConfirmar]). Nunca en
      * un cobro que mandó el POS: no ofrece efectivo y conserva sus caminos de antes.
      */
-    private fun motivoSinTarjeta(): String? = decidirMotivoSinTarjeta(
+    private fun motivoSinTarjeta(): String? = if (ventaEnCero) MOTIVO_MONTO_CERO else decidirMotivoSinTarjeta(
         soloEfectivo = soloEfectivo,
         ofreceEfectivo = CobroRemotoDelPos.permiteEfectivoYCripto(_paymentSource),
         tarjetaSinRed = turnoSinConfirmar || !connectionStateManager.hasInternet(),
@@ -1319,7 +1322,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         soloEfectivo: Boolean = false,
         ventaLocalJson: String? = null,
     ) {
-        this.soloEfectivo = soloEfectivo || ventaLocalJson != null
+        // D6: un $0 que manda el POS sigue rechazado (abajo); uno de la terminal va en sólo efectivo.
+        ventaEnCero = ventaLocalJson == null && _paymentSource != CobroRemotoDelPos.FUENTE_SOCKET &&
+            amount.toBigDecimalOrNull()?.signum() == 0
+        this.soloEfectivo = soloEfectivo || ventaLocalJson != null || ventaEnCero
         val ventaAlEntrar = try {
             ventaLocalJson?.let { json ->
                 checkNotNull(Gson().fromJson(json, VentaLocal::class.java)).also { venta ->
@@ -1344,7 +1350,7 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             val amountDecimal = amount.toBigDecimalOrNull()
             if (amountDecimal == null || amountDecimal < BigDecimal.ZERO ||
-                (amountDecimal.signum() == 0 && ventaAlEntrar == null) ||
+                (amountDecimal.signum() == 0 && ventaAlEntrar == null && !ventaEnCero) ||
                 (ventaAlEntrar != null && amountDecimal.compareTo(BigDecimal.valueOf(ventaAlEntrar.totalCents.toLong(), 2)) != 0)
             ) {
                 _state.value = AngelPayPaymentState.Error("Monto invalido")

@@ -192,6 +192,7 @@ fun PendingVerificationsScreen(
             numberKind = slot.numberKind,
             verificationId = selected?.verificationId,
             numberCapture = viewModel.numberCapture,
+            saving = uploadingId != null,
             onNumberChange = { numberDrafts.update("$selectedPaymentId/${slot.name}", it) },
             onConfirm = { number ->
                 val pId = selectedPaymentId

@@ -217,12 +217,14 @@ fun ProofOfSalePhotoPreviewDialog(
     numberCapture: NumberCaptureController? = null,
     /** Cada cambio del campo, para guardar el borrador de la ranura: «Retomar» no obliga a escribirlo otra vez. */
     onNumberChange: (String) -> Unit = {},
+    /** Pendientes y Corrección dejan la ventana abierta mientras la terminal guarda: campo, «Confirmar» y «Retomar» se apagan. */
+    saving: Boolean = false,
 ) {
     val withNumberField = numberLabel != null
     var number by remember(photoPath) { mutableStateOf(linkingNumberInput("", initialNumber.orEmpty())) }
     val scope = rememberCoroutineScope()
     val checking by (numberCapture?.checking ?: NOT_CHECKING).collectAsStateWithLifecycle()
-    val confirmEnabled = (numberLabel == null || canConfirmLinkingNumber(number, numberLocked)) && !checking
+    val confirmEnabled = (numberLabel == null || canConfirmLinkingNumber(number, numberLocked, saving)) && !checking && !saving
     Dialog(
         onDismissRequest = onDismiss,
         properties = proofPreviewDialogProperties(withNumberField),
@@ -293,6 +295,7 @@ fun ProofOfSalePhotoPreviewDialog(
                                 onNumberChange(it)
                             },
                             locked = numberLocked,
+                            saving = saving,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                     }
@@ -306,6 +309,7 @@ fun ProofOfSalePhotoPreviewDialog(
                 ) {
                     OutlinedButton(
                         onClick = onRetake,
+                        enabled = !saving,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         border = BorderStroke(1.dp, Color.White),

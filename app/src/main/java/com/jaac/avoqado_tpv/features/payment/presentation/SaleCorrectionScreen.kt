@@ -146,6 +146,7 @@ fun SaleCorrectionScreen(
             numberKind = slot.numberKind,
             verificationId = uiState.detail?.id,
             numberCapture = viewModel.numberCapture,
+            saving = uiState.isUploading,
             onNumberChange = { numberDrafts.update(slot.name, it) },
             onConfirm = { number ->
                 if (photoPath.isNotEmpty()) {

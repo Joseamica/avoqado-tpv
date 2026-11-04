@@ -52,8 +52,8 @@ fun isValidLinkingNumber(digits: String): Boolean = digits.length in 9..LINKING_
  * Lo que queda en el campo después de escribir o pegar [typed]: sólo dígitos y nunca más de 10. Si lo pegado tiene más
  * («+52 55 1234 5678» son 12), no entra y se queda lo que había (Review Focus 1). Bloqueado, no cambia.
  */
-fun linkingNumberInput(current: String, typed: String, locked: Boolean = false): String {
-    if (locked) return current
+fun linkingNumberInput(current: String, typed: String, locked: Boolean = false, saving: Boolean = false): String {
+    if (locked || saving) return current // guardando, el campo no cambia: el guardado en vuelo ya lleva el número confirmado
     val digits = typed.filter(::isAsciiDigit)
     return if (digits.length <= LINKING_NUMBER_MAX_DIGITS) digits else current
 }
@@ -89,7 +89,8 @@ fun linkingNumberDisplay(value: String?): String = value?.takeIf { it.isNotEmpty
 private fun isAsciiDigit(c: Char): Boolean = c in '0'..'9'
 
 /** «Confirmar» con el campo: 9 o 10 dígitos. Sin salida «no se lee» (la quitó el cliente). Bloqueado manda el back-office. */
-fun canConfirmLinkingNumber(value: String, locked: Boolean): Boolean = locked || isValidLinkingNumber(value)
+fun canConfirmLinkingNumber(value: String, locked: Boolean, saving: Boolean = false): Boolean =
+    !saving && (locked || isValidLinkingNumber(value))
 
 /**
  * «Confirmar» de un número escrito por el promotor: pregunta por repetido si hay a quién ([capture]) y sólo llama
@@ -116,6 +117,8 @@ fun LinkingNumberField(
     onValueChange: (String) -> Unit,
     locked: Boolean,
     modifier: Modifier = Modifier,
+    /** La terminal está guardando esta captura: el campo se queda como está. */
+    saving: Boolean = false,
 ) {
     if (locked) {
         Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -128,7 +131,8 @@ fun LinkingNumberField(
     val focusManager = LocalFocusManager.current
     OutlinedTextField(
         value = value,
-        onValueChange = { onValueChange(linkingNumberInput(value, it)) },
+        onValueChange = { onValueChange(linkingNumberInput(value, it, saving = saving)) },
+        enabled = !saving,
         label = { Text(label) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),

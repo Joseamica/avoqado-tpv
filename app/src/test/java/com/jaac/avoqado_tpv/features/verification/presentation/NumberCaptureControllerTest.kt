@@ -196,6 +196,15 @@ class NumberCaptureControllerTest {
         assertThat(borradores.initial("VINCULACION", confirmed = "5512345678", locked = false)).isEqualTo("5500000000")
     }
 
+    @Test fun `mientras la terminal guarda, el campo no cambia y Confirmar no se puede tocar`() {
+        // El promotor no puede cambiar el número a B a media captura: el guardado en vuelo cerraría la ventana y se perdería.
+        assertThat(canConfirmLinkingNumber("5512345678", locked = false, saving = true)).isFalse()
+        assertThat(canConfirmLinkingNumber("5512345678", locked = true, saving = true)).isFalse()
+        assertThat(canConfirmLinkingNumber("5512345678", locked = false, saving = false)).isTrue()
+        assertThat(linkingNumberInput("5512345678", "5598765432", saving = true)).isEqualTo("5512345678")
+        assertThat(linkingNumberInput("5512345678", "5598765432", saving = false)).isEqualTo("5598765432")
+    }
+
     @Test fun `C7r1 las cuatro vistas previas con campo guardan lo escrito para Retomar`() {
         val pantallas = listOf(
             "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt",

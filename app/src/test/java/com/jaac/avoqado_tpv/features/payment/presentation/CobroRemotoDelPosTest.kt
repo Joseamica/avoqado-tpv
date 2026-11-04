@@ -33,6 +33,17 @@ class CobroRemotoDelPosTest {
         assertThat(CobroRemotoDelPos.permiteEfectivoYCripto("SOCKET")).isFalse()
     }
 
+    // PAX, 3-nov: tras un rechazo, «Cancelar» regresaba a elegir método con el POS esperando y sin reloj; al salir de ahí
+    // con el botón físico de atrás nadie le contestaba al POS y el SERVIDOR dejaba la terminal ocupada.
+    @Test fun `Cancelar en un cobro del POS termina el cobro`() {
+        assertThat(CobroRemotoDelPos.cancelarRegresaAElegirMetodo("SOCKET")).isFalse()
+    }
+
+    @Test fun `Cancelar en un cobro de la terminal regresa a elegir metodo`() {
+        assertThat(CobroRemotoDelPos.cancelarRegresaAElegirMetodo(null)).isTrue()
+        assertThat(CobroRemotoDelPos.cancelarRegresaAElegirMetodo("KIOSK")).isTrue()
+    }
+
     @Test fun `un cobro iniciado en la terminal los sigue ofreciendo`() {
         assertThat(CobroRemotoDelPos.permiteEfectivoYCripto(null)).isTrue()
         assertThat(CobroRemotoDelPos.permiteEfectivoYCripto("KIOSK")).isTrue()

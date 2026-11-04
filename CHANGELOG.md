@@ -9,6 +9,7 @@
 
 ### **Fixed**
 - **[PAX] Si Blumon contesta que no, es un rechazo normal** (founder, 3-nov: «ningún rechazo de Blumon directo debería de trabar la terminal»): una tarjeta que el banco no reconoce (`code=56, TARJETA INVALIDA`) dejaba la venta en «Estamos confirmando el cobro», porque sólo contaba una lista de 12 códigos. Ahora cualquier «no» de Momentum muestra su motivo y se puede reintentar luego luego. La espera queda para cuando no contestó (red, tiempo agotado, 5xx, 408) o dijo que no pudo saberlo (91, 96…).
+- **[PAX] Salir de un cobro del POS siempre le contesta al POS**: tras un rechazo, «Cancelar» regresaba a elegir método con el POS esperando; y con el botón físico de atrás nadie le contestaba, así que a los 5 minutos el servidor dejaba la terminal «ocupada» sin nada en su pantalla. Ahora «Cancelar» termina el cobro y el POS recibe el motivo al instante, y el botón físico hace lo mismo que la flecha.
 
 ---
 

@@ -141,6 +141,22 @@ class BlumonIssuerCodeTest {
         assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "2001", "FALLA")), isContactless = false)).isFalse()
     }
 
+    // Codex r3: la negación puede venir separada de la palabra. La familia completa: lo que niega ANTES de «APROB» es rechazo.
+    @Test fun `la negacion puede venir separada de la palabra`() {
+        listOf("TRANSACCION NO FUE APROBADA", "NO  APROBADA", "NO SE PUDO APROBAR", "SIN APROBACION", "no aprobada").forEach { motivo ->
+            assertThat(blumonRespuestaEsRechazo(null, motivo)).isTrue()
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, motivo)), isContactless = false)).isTrue()
+        }
+    }
+
+    // Lo que no se puede romper: un posible cobro nunca se marca rechazado. Un «NO» DESPUÉS de aprobar no niega nada.
+    @Test fun `una aprobacion sigue en duda aunque el texto traiga un NO despues`() {
+        listOf("APROBADA", "APROBADO", "APROBADA, NO REQUIERE FIRMA", "APROBADA. NO DEVOLVER", "NO HUBO ERROR, APROBADA", "aprobada").forEach { motivo ->
+            assertThat(blumonRespuestaEsRechazo(null, motivo)).isFalse()
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, motivo)), isContactless = false)).isFalse()
+        }
+    }
+
     @Test fun `NO APROBADA es un rechazo, no una aprobacion`() {
         assertThat(blumonRespuestaEsRechazo("05", "TRANSACCION NO APROBADA")).isTrue()
         assertThat(blumonRespuestaEsRechazo("3035", "TRANSACCION NO APROBADA")).isTrue()

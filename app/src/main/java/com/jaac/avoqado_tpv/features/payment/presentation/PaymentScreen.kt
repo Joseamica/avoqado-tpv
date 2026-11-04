@@ -4,6 +4,7 @@ import com.jaac.avoqado_tpv.core.printer.QrDelRecibo
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -314,22 +315,27 @@ fun PaymentScreen(
         onNavigateToOrder = onNavigateToOrder
     )
 
+    val flechaAtras: () -> Unit = {
+        // Try to go back one step in payment flow first
+        // If at first step (returns false), navigate back to home
+        if (!viewModel.goBackOneStep()) {
+            // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
+            // Without this, the LaunchedEffect in Idle block won't re-run
+            viewModel.resetPayment()
+            navigateBack()
+        }
+    }
+    // El botón físico de atrás hace lo mismo que la flecha: salir sin `resetPayment()` dejaba al POS sin desenlace y, a los
+    // 5 min, la terminal «ocupada» sin nada en su pantalla (PAX, 3-nov).
+    BackHandler(enabled = showTopBar, onBack = flechaAtras)
+
     Scaffold(
         topBar = {
             if (showTopBar) {
                 AvoqadoTopBar(
                     title = topBarTitle,
                     subtitle = topBarSubtitle,
-                    onNavigationClick = {
-                        // Try to go back one step in payment flow first
-                        // If at first step (returns false), navigate back to home
-                        if (!viewModel.goBackOneStep()) {
-                            // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
-                            // Without this, the LaunchedEffect in Idle block won't re-run
-                            viewModel.resetPayment()
-                            navigateBack()
-                        }
-                    }
+                    onNavigationClick = flechaAtras
                 )
             }
         }
@@ -958,7 +964,9 @@ fun PaymentScreen(
                             onNavigateToShifts()
                         },
                         onCancel = {
-                            if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton) {
+                            if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton &&
+                                CobroRemotoDelPos.cancelarRegresaAElegirMetodo(paymentSource)
+                            ) {
                                 viewModel.returnToSelectingMerchantFromError(currentState.context)
                             } else {
                                 viewModel.resetPayment()

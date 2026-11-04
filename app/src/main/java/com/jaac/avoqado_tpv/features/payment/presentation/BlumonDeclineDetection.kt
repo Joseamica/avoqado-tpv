@@ -111,7 +111,8 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
     if (code in BLUMON_CODIGOS_RECHAZO_EMISOR) return true
     if (failure.javaClass.simpleName != "MomentumFailure") return false
     val textos = textosDelFallo(failure)
-    fun campo(nombre: String) = textos.firstNotNullOfOrNull { Regex("""\b$nombre=([^,)]*)""").find(it)?.groupValues?.get(1)?.trim() }
+    // Hasta el siguiente campo: un motivo puede traer comas («NO HUBO ERROR, APROBADA»).
+    fun campo(nombre: String) = textos.firstNotNullOfOrNull { Regex("""\b$nombre=(.*?)(?:, \w+=|\))""").find(it)?.groupValues?.get(1)?.trim() }
         ?.takeIf { it.isNotEmpty() && it != "null" }
     val crudo = campo("code")
     val motivo = campo("description")
@@ -124,8 +125,14 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
 /** Cuatro dígitos no son un código del emisor: `2000` es falla de conexión, y el catálogo del host no está en el SDK. */
 private fun String?.esCodigoTecnico() = this?.matches(Regex("""\d{4}""")) == true
 
-/** «APROBADA» sí; «NO APROBADA» o «DESAPROBADA» no. */
-private fun String?.suenaAprobado() = this != null && Regex("""(?<!NO )\bAPROB""", RegexOption.IGNORE_CASE).containsMatchIn(this)
+/**
+ * «APROBADA» sí. Lo que niega ANTES de la palabra no («NO FUE APROBADA», «SIN APROBACION», «DESAPROBADA»); un «NO» después no
+ * niega nada. Cualquier otro texto con esa palabra se queda en duda: un posible cobro nunca se marca rechazado.
+ */
+private fun String?.suenaAprobado(): Boolean {
+    val texto = this?.uppercase() ?: return false
+    return "APROB" in texto && !Regex("""\b(NO|SIN)\b[^,.;:]*APROB|DESAPROB""").containsMatchIn(texto)
+}
 
 /**
  * ¿Esta respuesta con la autorización vacía es un «no»? Blumon también entrega rechazos como respuesta normal (ver

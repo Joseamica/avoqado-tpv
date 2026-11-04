@@ -122,6 +122,12 @@ internal object CobroRemotoDelPos {
      */
     const val OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO = true
 
+    /**
+     * ¿«Cancelar» en el error regresa a elegir método? En un cobro del POS no hay otro método que elegir: termina el cobro,
+     * la terminal regresa y el POS recibe el desenlace al instante. La pantalla de métodos lo dejaba esperando sin reloj.
+     */
+    fun cancelarRegresaAElegirMetodo(paymentSource: String?): Boolean = paymentSource != FUENTE_SOCKET
+
     /** ¿Se ofrecen Efectivo y Cripto en esta pantalla? `paymentSource` == "SOCKET" ⇒ cobro del POS. */
     fun permiteEfectivoYCripto(paymentSource: String?): Boolean =
         !(OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO && paymentSource == FUENTE_SOCKET)

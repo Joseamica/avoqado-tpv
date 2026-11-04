@@ -432,7 +432,6 @@ class SoloEfectivoSinRedTest {
         paymentApiService = mockk(relaxed = true),
         apiService = mockk(relaxed = true),
         socketManager = mockk(relaxed = true) { every { events } returns MutableSharedFlow() },
-        verificationUploadManager = mockk(relaxed = true),
         observability = mockk(relaxed = true),
         paymentQueueRepository = mockk(relaxed = true),
         paymentAttemptLedger = mockk(relaxed = true) {

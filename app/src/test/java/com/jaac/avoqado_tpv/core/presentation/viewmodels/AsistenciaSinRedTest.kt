@@ -69,7 +69,7 @@ class AsistenciaSinRedTest {
     private lateinit var socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     private lateinit var connectionEventManager: com.jaac.avoqado_tpv.core.util.ConnectionEventManager
     private lateinit var updateCheckManager: com.jaac.avoqado_tpv.core.util.UpdateCheckManager
-    private lateinit var saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
+    private lateinit var actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
     private val dao = DaoEnMemoria()
 
     /** Un DAO en memoria con la misma llave (negocio + persona) que el real: así «otra persona» se prueba de verdad. */
@@ -91,8 +91,10 @@ class AsistenciaSinRedTest {
         socketManager = mockk(relaxed = true)
         connectionEventManager = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
-        saleVerificationRepository = mockk(relaxed = true)
-        coEvery { saleVerificationRepository.getPendingVerifications() } returns kotlin.Result.success(emptyList())
+        actionableSales = mockk(relaxed = true)
+        every { actionableSales.observe(any()) } returns kotlinx.coroutines.flow.flowOf(
+            com.jaac.avoqado_tpv.features.verification.data.ActionableState(emptyList(), isOffline = false, nextCursor = null),
+        )
 
         every { connectionStateManager.connectionState } returns
             MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
@@ -324,7 +326,8 @@ class AsistenciaSinRedTest {
         timeEntryRepository = timeEntryRepository,
         cachedTimeEntryDao = dao,
         tpvSettingsRepository = tpvSettingsRepository,
-        saleVerificationRepository = saleVerificationRepository
+        actionableSales = actionableSales,
+        modulesRepository = mockk(relaxed = true),
     ).also { creados.add(it) }
 
     /** `_isAttendanceLoading` nace en true y baja a false en el `finally` del fetch (que corre en Dispatchers.IO). */

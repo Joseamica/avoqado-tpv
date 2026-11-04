@@ -3,19 +3,37 @@ package com.jaac.avoqado_tpv.features.payment.presentation
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 import com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
-import com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.RejectionReason
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.modules.domain.repository.linkingNumberEnabled
+import com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository
+import com.jaac.avoqado_tpv.features.verification.data.NumberCapture
+import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
+import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_NUMBER_FAILED_MESSAGE
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.io.IOException
 import javax.inject.Inject
 
 /**
@@ -33,27 +51,41 @@ data class SaleCorrectionUiState(
     // back to PENDING and the backend clears the verdict server-side.
     val rejectionReasons: List<RejectionReason> = emptyList(),
     val reviewNotes: String? = null,
+    /** Guardando la foto en la terminal (copiar el archivo e insertar la fila): milisegundos. */
     val isUploading: Boolean = false,
     val resubmitted: Boolean = false, // true once the verification left FAILED state
     val error: String? = null,
+    /** Sin señal y la venta no está guardada en la terminal: texto neutro, nunca un error. */
+    val offlineNotice: String? = null,
+    /** Las capturas de esta venta en la cola, la más nueva primero. */
+    val queued: List<ProofOfSaleQueueEntity> = emptyList(),
+    val deliveredSlots: Set<ProofSlot> = emptySet(),
 )
 
+const val CORRECTION_NOT_SAVED_OFFLINE = "Sin conexión: esta venta no está guardada en la terminal; ábrela cuando vuelva la señal"
+
 /**
- * ViewModel for [SaleCorrectionScreen].
+ * ViewModel for [SaleCorrectionScreen], también sin señal.
  *
- * Flow:
- * 1. Load the rejected verification by id (nav arg `verificationId`).
- * 2. Show the back-office rejection reasons + notes.
- * 3. Promoter re-takes a photo → upload to Firebase → notify backend.
- * 4. Backend resets the verification to PENDING (re-enters review queue).
+ * 1. El detalle sale del servidor o, sin señal, de la lista guardada ([ActionableSalesRepository.detail]).
+ * 2. Muestra los motivos y las notas del back-office.
+ * 3. La foto se ENCOLA ([ProofOfSaleQueueRepository]); la sube `PaymentSyncWorker` y el servidor regresa la venta a
+ *    revisión. Al entregarse, se vuelve a pedir el detalle.
  */
 @HiltViewModel
 class SaleCorrectionViewModel @Inject constructor(
-    private val repository: SaleVerificationRepository,
-    private val uploadManager: VerificationUploadManager,
+    private val sales: ActionableSalesRepository,
+    private val queue: ProofOfSaleQueueRepository,
     private val authRepository: AuthRepository,
     savedStateHandle: SavedStateHandle,
+    // C7: el interruptor del número (features.linkingNumber) y su pregunta de repetido. Hilt siempre los da.
+    modulesRepository: ModulesRepository? = null,
+    proofOfSaleRemote: ProofOfSaleRemote? = null,
 ) : ViewModel() {
+
+    val linkingNumberEnabled: StateFlow<Boolean> = (modulesRepository?.modules?.map { it.linkingNumberEnabled() } ?: flowOf(false))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val numberCapture: NumberCaptureController? = proofOfSaleRemote?.let { NumberCaptureController(it) }
 
     private val verificationId: String = savedStateHandle.get<String>("verificationId").orEmpty()
 
@@ -64,112 +96,92 @@ class SaleCorrectionViewModel @Inject constructor(
 
     init {
         load()
+        // Las capturas de ESTA venta en la cola, al día: cada una con su estado y, si ya no se sube sola, «Descartar».
+        authRepository.getStaffId()?.let { staffId ->
+            viewModelScope.launch {
+                combine(sales.observe(staffId), _uiState.map { it.detail?.paymentId }.distinctUntilChanged()) { state, paymentId ->
+                    state.items.firstOrNull { it.paymentId == paymentId }
+                }.collect { item ->
+                    _uiState.update { it.copy(queued = item?.queued.orEmpty(), deliveredSlots = item?.deliveredSlots.orEmpty()) }
+                }
+            }
+        }
     }
 
     fun load() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isLoading = true, error = null) }
-            repository.getVerificationDetail(verificationId)
-                .onSuccess { detail ->
-                    if (!verdictCaptured) {
-                        // Capture the rejection verdict once — it stays visible
-                        // as a checklist for the rest of the correction session.
-                        _uiState.update {
-                            it.copy(
-                                rejectionReasons = RejectionReason.parseList(detail.rejectionReasons),
-                                reviewNotes = detail.reviewNotes,
-                            )
-                        }
-                        verdictCaptured = true
-                    }
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            detail = detail,
-                            resubmitted = detail.status != "FAILED",
-                        )
-                    }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null, offlineNotice = null) }
+            val result = sales.detail(verificationId)
+            val detail = result.getOrNull()
+            if (detail == null) {
+                Timber.e(result.exceptionOrNull(), "📸 [SaleCorrection] Sin detalle del servidor ni guardado | id=$verificationId")
+                // Sin señal no es un error: la venta no está en la terminal y se abre cuando vuelva la señal (neutro).
+                _uiState.update {
+                    if (result.exceptionOrNull() is IOException) it.copy(isLoading = false, offlineNotice = CORRECTION_NOT_SAVED_OFFLINE)
+                    else it.copy(isLoading = false, error = "Error al cargar la venta")
                 }
-                .onFailure { e ->
-                    Timber.e(e, "📸 [SaleCorrection] Failed to load verification")
-                    _uiState.update {
-                        it.copy(isLoading = false, error = e.message ?: "Error al cargar la venta")
-                    }
+                return@launch
+            }
+            if (!verdictCaptured) {
+                // Capture the rejection verdict once — it stays visible
+                // as a checklist for the rest of the correction session.
+                _uiState.update {
+                    it.copy(rejectionReasons = RejectionReason.parseList(detail.rejectionReasons), reviewNotes = detail.reviewNotes)
                 }
+                verdictCaptured = true
+            }
+            _uiState.update { it.copy(isLoading = false, detail = detail, resubmitted = detail.status != "FAILED") }
         }
     }
 
-    /**
-     * Upload a re-taken photo: Firebase Storage → backend proof-of-sale endpoint.
-     *
-     * @param label "Vinculacion" or "Portabilidad" (fixed-slot label).
-     * @param photoPath Local file path of the captured photo.
-     * @param replaceIndex Index to replace (0=Vinculacion, 1=Portabilidad), or null to append.
-     */
-    fun uploadPhoto(label: String, photoPath: String, replaceIndex: Int?) {
+    /** Encola la foto retomada de [slot], con el número de su ranura si el interruptor está encendido. */
+    fun enqueuePhoto(slot: ProofSlot, photoPath: String, number: String? = null, onSaved: () -> Unit = {}) {
+        save(PROOF_SAVE_FAILED_MESSAGE, onSaved) { detail, venueId, staffId ->
+            queue.enqueuePhoto(
+                PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, detail.paymentId, detail.id, slot, photoPath, number),
+            )
+        }
+    }
+
+    /** «Corregir número»: sólo el número de [slot], sin volver a tomar la foto (fila `NUMBER_ONLY`). */
+    fun correctNumber(slot: ProofSlot, number: String) {
+        save(PROOF_SAVE_NUMBER_FAILED_MESSAGE) { detail, venueId, staffId ->
+            queue.enqueueNumberOnly(NumberCapture(venueId, staffId, detail.paymentId, detail.id, slot, number))
+        }
+    }
+
+    /** Archivo y fila antes de la red; al entregarse, vuelve a pedir el detalle. */
+    private fun save(
+        failureMessage: String, onSaved: () -> Unit = {},
+        enqueue: suspend (detail: VerificationDetailDto, venueId: String, staffId: String) -> String,
+    ) {
         val detail = _uiState.value.detail ?: return
-        viewModelScope.launch(Dispatchers.IO) {
+        val venueId = authRepository.getVenueId()
+        val staffId = authRepository.getStaffId()
+        if (venueId == null || staffId == null) {
+            _uiState.update { it.copy(error = PROOF_FAILED_MESSAGE) }
+            return
+        }
+        if (_uiState.value.isUploading) return // un segundo toque a «Confirmar» mientras guarda no duplica la captura
+        viewModelScope.launch {
             _uiState.update { it.copy(isUploading = true, error = null) }
             try {
-                val venueSlug = authRepository.getVenueSlug()
-                    ?: throw IllegalStateException("Venue slug not available")
-
-                val uploadResult = uploadManager.uploadProofOfSale(
-                    localPath = photoPath,
-                    venueSlug = venueSlug,
-                    orderNumber = detail.orderNumber ?: "unknown",
-                    amount = detail.amount.toString(),
-                    photoLabel = label,
-                )
-
-                uploadResult.fold(
-                    onSuccess = { downloadUrl ->
-                        repository.uploadPhoto(
-                            verificationId = detail.id,
-                            paymentId = detail.paymentId,
-                            photoUrls = listOf(downloadUrl),
-                            replaceIndex = replaceIndex,
-                            photoLabel = label,
-                        ).onSuccess {
-                            Timber.d("📸 [SaleCorrection] Photo re-uploaded for ${detail.id}")
-                            reload()
-                        }.onFailure { e ->
-                            Timber.e(e, "📸 [SaleCorrection] Backend rejected photo")
-                            _uiState.update {
-                                it.copy(isUploading = false, error = e.message ?: "Error al registrar foto")
-                            }
-                        }
-                    },
-                    onFailure = { e ->
-                        Timber.e(e, "📸 [SaleCorrection] Firebase upload failed")
-                        _uiState.update {
-                            it.copy(isUploading = false, error = e.message ?: "Error al subir foto")
-                        }
-                    },
-                )
+                val key = enqueue(detail, venueId, staffId)
+                _uiState.update { it.copy(isUploading = false) }
+                onSaved()
+                val result = queue.awaitResult(key, Long.MAX_VALUE)
+                if (result?.outcome == "APPLIED" || result?.outcome == "SUPERSEDED_BY_NEWER") load()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Timber.e(e, "📸 [SaleCorrection] uploadPhoto error")
-                _uiState.update { it.copy(isUploading = false, error = e.message ?: "Error al subir foto") }
+                Timber.e(e, "📸 [SaleCorrection] No se pudo guardar la foto | id=${detail.id}")
+                _uiState.update { it.copy(isUploading = false, error = failureMessage) }
             }
         }
     }
 
-    /** Reload after an upload — keeps the captured verdict, refreshes photos + status. */
-    private suspend fun reload() {
-        repository.getVerificationDetail(verificationId)
-            .onSuccess { detail ->
-                _uiState.update {
-                    it.copy(
-                        isUploading = false,
-                        detail = detail,
-                        resubmitted = detail.status != "FAILED",
-                    )
-                }
-            }
-            .onFailure { e ->
-                Timber.e(e, "📸 [SaleCorrection] reload failed")
-                _uiState.update { it.copy(isUploading = false) }
-            }
+    fun discard(key: String) {
+        viewModelScope.launch { queue.discard(key) }
     }
 
     fun dismissError() {

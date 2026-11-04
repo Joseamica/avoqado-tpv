@@ -341,6 +341,9 @@ class PaymentViewModelTest {
             mockk(relaxed = true),
         startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
             mockk(relaxed = true),
+        verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager = mockk(relaxed = true),
+        proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+        proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -376,7 +379,7 @@ class PaymentViewModelTest {
             orderRepository = mockk(relaxed = true),
             orderSyncCoordinator = mockk(relaxed = true),
             tpvSettingsRepository = mockTpvSettingsRepository,
-            verificationUploadManager = mockk(relaxed = true),
+            verificationUploadManager = verificationUploadManager,
             paymentApiService = mockk(relaxed = true),
             apiService = mockk(relaxed = true),
             customerRepository = mockk(relaxed = true),
@@ -397,6 +400,8 @@ class PaymentViewModelTest {
             ventaLocalRepository = mockk(relaxed = true),
             pendingPaymentDao = mockk(relaxed = true),
             subirVentaGuardadaUseCase = mockk(relaxed = true),
+            proofOfSaleQueue = proofOfSaleQueue,
+            proofOfSaleRemote = proofOfSaleRemote,
         )
     }
 
@@ -3500,5 +3505,97 @@ class PaymentViewModelTest {
             .filterNot { it.trimStart().startsWith("//") }
             .joinToString("\n")
         assertThat(bloque).doesNotContain("LaunchedEffect(currentState)")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // C5. BLOQUE 0: la foto de comprobante se encola, no se sube desde el cobro
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `C5 la foto de comprobante se encola con la tienda de la sesion y ni Retomar ni Nuevo Pago borran nada`() = runTest {
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult(any(), any()) } returns null
+        every { mockAuthRepository.getVenueSlug() } returns "tienda-a"
+        val uploader = mockk<com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager>(relaxed = true)
+        val viewModel = createViewModel(verificationUploadManager = uploader, proofOfSaleQueue = queue)
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+
+        viewModel.confirmProofOfSalePhoto("/cache/cam.jpg", "pay-1", vinculacion, null)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            queue.enqueuePhoto(
+                com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                    testVenueId, "tienda-a", testStaffId, "pay-1", null, vinculacion, "/cache/cam.jpg", null,
+                ),
+            )
+        }
+        assertThat(viewModel.proofSlotStates.value[vinculacion])
+            .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Queued("Se subirá sola"))
+        assertThat(viewModel.proofOfSaleComplete.value).isTrue()
+
+        viewModel.retakeProofOfSalePhoto(vinculacion)
+        assertThat(viewModel.proofOfSaleComplete.value).isFalse()
+        viewModel.resetPayment()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(viewModel.proofSlotStates.value).isEmpty()
+        coVerify(exactly = 0) { queue.discard(any()) }
+        coVerify(exactly = 0) { uploader.deletePhoto(any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // C7. El número de vinculación con la foto, detrás del interruptor del módulo
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `C7 el interruptor sale de features linkingNumber y la foto se encola con su numero`() = runTest {
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", true, false, verificationId = "ver-1")
+        every { mockAuthRepository.getVenueSlug() } returns "tienda-a"
+        val viewModel = createViewModel(
+            proofOfSaleQueue = queue,
+            proofOfSaleRemote = com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote(mockk(relaxed = true)),
+        )
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.linkingNumberEnabled.value).isFalse()
+
+        modulesFlow.value = listOf(
+            com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule(
+                "m1", ModulesRepository.MODULE_SERIALIZED_INVENTORY, "Inventario",
+                com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig(
+                    features = com.jaac.avoqado_tpv.features.modules.domain.model.ModuleFeatures(linkingNumber = true),
+                ),
+            ),
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.linkingNumberEnabled.value).isTrue()
+        assertThat(viewModel.numberCapture).isNotNull()
+
+        viewModel.confirmProofOfSalePhoto("/cache/cam.jpg", "pay-1", vinculacion, "5512345678")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            queue.enqueuePhoto(
+                com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                    testVenueId, "tienda-a", testStaffId, "pay-1", null, vinculacion, "/cache/cam.jpg", "5512345678",
+                ),
+            )
+        }
+        // Al subir llegó linkingDuplicate: se avisa en pantalla, y la venta sigue completa (avisa y deja guardar).
+        assertThat(viewModel.proofSlotStates.value[vinculacion]).isEqualTo(
+            com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.UploadedWithWarning(
+                "Este número de vinculación ya fue registrado en otra venta",
+            ),
+        )
+        assertThat(viewModel.proofOfSaleComplete.value).isTrue()
+        assertThat(viewModel.proofNumber(vinculacion)).isEqualTo("5512345678")
+        assertThat(viewModel.proofVerificationId()).isEqualTo("ver-1")
+        viewModel.viewModelScope.cancel()
     }
 }

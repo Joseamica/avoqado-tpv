@@ -65,6 +65,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -133,8 +137,9 @@ class HomeViewModel @Inject constructor(
     // ⏱ Sin red la terminal se acuerda de la última entrada de reloj de ESTA persona (igual que el turno guardado)
     private val cachedTimeEntryDao: CachedTimeEntryDao,
     private val tpvSettingsRepository: TpvSettingsRepository,
-    // 📸 Pending verifications count for WelcomeScreen card
-    private val saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
+    // 📸 La tarjeta «Pendientes» de Inicio: la lista guardada en la terminal (también sin señal) y su refresco
+    private val actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository,
+    private val modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository,
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -222,8 +227,13 @@ class HomeViewModel @Inject constructor(
     // PENDING VERIFICATIONS (non-blocking proof-of-sale)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private val _pendingVerificationsCount = MutableStateFlow(0)
-    val pendingVerificationsCount: StateFlow<Int> = _pendingVerificationsCount.asStateFlow()
+    // La única puerta a «Pendientes» es la tarjeta de Inicio: su cuenta sale de la lista GUARDADA (servidor + ventas locales +
+    // capturas en la cola, PENDING y FAILED), no de una consulta, para que sin señal y tras reiniciar la puerta siga ahí.
+    private val pendingStaff = MutableStateFlow<String?>(null)
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val pendingVerificationsCount: StateFlow<Int> = pendingStaff
+        .flatMapLatest { staff -> staff?.let { actionableSales.observe(it).map { s -> s.items.size } } ?: flowOf(0) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     // Pull-to-refresh state
     private val _isRefreshing = MutableStateFlow(false)
@@ -582,30 +592,29 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * 📸 Fetch pending verifications count (deferred, non-critical)
+     * 📸 La cuenta de «Pendientes» se ve en cuanto abre Inicio (la lista guardada); el refresco del servidor va diferido.
      */
     private fun fetchPendingVerificationsCount() {
-        viewModelScope.launch(Dispatchers.IO) {
+        pendingStaff.value = secureStorage.getStaffId()
+        viewModelScope.launch {
             delay(3_000) // Deferred startup
-            saleVerificationRepository.getPendingVerifications()
-                .onSuccess { verifications ->
-                    _pendingVerificationsCount.value = verifications.size
-                    Timber.d("📸 Pending verifications count: ${verifications.size}")
-                }
-                .onFailure { e ->
-                    Timber.e(e, "📸 Failed to fetch pending verifications count")
-                }
+            refreshActionableSales()
         }
     }
 
     /**
-     * 📸 Refresh pending verifications count (called after returning from upload screen)
+     * 📸 Cada vez que Inicio vuelve: la cuenta sigue a la sesión y la lista guardada se refresca con el servidor. Un fallo (sin
+     * señal o del servidor) no la pone en cero: se queda lo guardado.
      */
     fun refreshPendingVerifications() {
-        viewModelScope.launch(Dispatchers.IO) {
-            saleVerificationRepository.getPendingVerifications()
-                .onSuccess { _pendingVerificationsCount.value = it.size }
-        }
+        pendingStaff.value = secureStorage.getStaffId()
+        viewModelScope.launch { refreshActionableSales() }
+    }
+
+    /** Sólo con SERIALIZED_INVENTORY: sin el módulo, el servidor contestaría 403 en cada regreso a Inicio. */
+    private suspend fun refreshActionableSales() {
+        if (!modulesRepository.isModuleEnabled(com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository.MODULE_SERIALIZED_INVENTORY)) return
+        actionableSales.refresh().onFailure { Timber.w(it, "📸 No se pudo refrescar «Pendientes»: se queda la lista guardada") }
     }
 
     /**

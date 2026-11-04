@@ -76,7 +76,11 @@ data class ModuleFeaturesDto(
     val showStockCounts: Boolean? = null,
 
     @SerializedName("enablePortabilidad")
-    val enablePortabilidad: Boolean? = null
+    val enablePortabilidad: Boolean? = null,
+
+    // Número de vinculación (PlayTelecom), a nivel organización. Ausente = apagado: el servidor manda.
+    @SerializedName("linkingNumber")
+    val linkingNumber: Boolean? = null
 )
 
 data class ModuleUiDto(
@@ -188,7 +192,8 @@ fun ModuleFeaturesDto.toDomain(): ModuleFeatures = ModuleFeatures(
     allowUnregisteredSale = allowUnregisteredSale ?: true,
     requireCategorySelection = requireCategorySelection ?: true,
     showStockCounts = showStockCounts ?: true,
-    enablePortabilidad = enablePortabilidad ?: false
+    enablePortabilidad = enablePortabilidad ?: false,
+    linkingNumber = linkingNumber ?: false
 )
 
 fun ModuleUiDto.toDomain(): ModuleUi = ModuleUi(
@@ -252,7 +257,8 @@ fun ModuleFeatures.toDto(): ModuleFeaturesDto = ModuleFeaturesDto(
     allowUnregisteredSale = allowUnregisteredSale,
     requireCategorySelection = requireCategorySelection,
     showStockCounts = showStockCounts,
-    enablePortabilidad = enablePortabilidad
+    enablePortabilidad = enablePortabilidad,
+    linkingNumber = linkingNumber
 )
 
 fun ModuleUi.toDto(): ModuleUiDto = ModuleUiDto(

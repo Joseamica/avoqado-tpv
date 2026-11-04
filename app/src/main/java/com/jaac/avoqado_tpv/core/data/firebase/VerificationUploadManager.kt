@@ -24,6 +24,9 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** La foto local no existe, está vacía o no se puede decodificar: reintentar no la arregla (no es la red ni Firebase). */
+class UnreadablePhotoException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 /**
  * Manages verification photo uploads to Firebase Storage.
  *
@@ -207,69 +210,26 @@ class VerificationUploadManager @Inject constructor(
     }
 
     /**
-     * Upload a proof-of-sale photo to Firebase Storage.
-     *
-     * **Path Structure:**
-     * venues/{venueSlug}/proof-of-sale/{YYYY-MM-DD}/{orderNumber}_{amount}.jpg
-     *
-     * **Flow:**
-     * 1. Compress image (max 1920px, 80% JPEG quality)
-     * 2. Upload to Firebase Storage
-     * 3. Get download URL
-     * 4. Return URL for backend storage
-     *
-     * @param localPath Local file path of captured photo
-     * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
-     * @param orderNumber Order number for filename (e.g., "ORD-00123")
-     * @param amount Payment amount for filename (e.g., "150.50")
-     * @param onProgress Optional callback for upload progress (0.0 to 1.0)
-     * @return Result with download URL on success, or error on failure
+     * Sube una foto (comprimida) a una ruta dada, sin el prefijo de ambiente: la cola de comprobantes arma la suya,
+     * única por fila. Se comprime ANTES de tocar Firebase, y un archivo que no se puede leer vuelve como
+     * [UnreadablePhotoException] (definitivo); un fallo de Firebase, como cualquier otra excepción (se reintenta).
+     * La cancelación pasa tal cual.
      */
-    suspend fun uploadProofOfSale(
-        localPath: String,
-        venueSlug: String,
-        orderNumber: String,
-        amount: String,
-        photoLabel: String = "linea",
-        onProgress: ((Float) -> Unit)? = null
-    ): Result<String> {
-        return try {
-            Timber.d("📸 [$TAG] Starting proof-of-sale upload | path=$localPath | venue=$venueSlug | order=$orderNumber | amount=$amount | label=$photoLabel")
-
-            // Step 1: Compress image
-            val compressedBytes = compressImage(localPath)
-            Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
-
-            // Step 2: Generate storage path
-            // Format: {env}/venues/{venueSlug}/proof-of-sale/{date}/{orderNumber}_{amount}_{label}.jpg
-            val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
-            val fileName = "${orderNumber}_${amount}_${photoLabel}.jpg"
-            val storagePath = buildStoragePath("venues/$venueSlug/proof-of-sale/$dateStr/$fileName")
-
-            Timber.d("📸 [$TAG] Uploading proof-of-sale to: $storagePath")
-
-            // Step 3: Upload to Firebase Storage
-            val photoRef = storageRef.child(storagePath)
-            val uploadTask = photoRef.putBytes(compressedBytes)
-
-            // Track progress
-            uploadTask.addOnProgressListener { snapshot ->
-                val progress = snapshot.bytesTransferred.toFloat() / snapshot.totalByteCount.toFloat()
-                onProgress?.invoke(progress)
-                Timber.d("📸 [$TAG] Upload progress: ${(progress * 100).toInt()}%")
-            }
-
-            // Wait for upload to complete
-            uploadTask.await()
-
-            // Step 4: Get download URL
-            val downloadUrl = photoRef.downloadUrl.await().toString()
-
-            Timber.i("📸 [$TAG] Proof-of-sale upload complete | url=$downloadUrl")
-            Result.success(downloadUrl)
-
+    suspend fun uploadToPath(localPath: String, path: String): Result<String> {
+        val bytes = try {
+            compressImage(localPath)
         } catch (e: Exception) {
-            Timber.e(e, "📸 [$TAG] Proof-of-sale upload failed")
+            Timber.e(e, "📸 [$TAG] La foto local no se puede leer: $localPath")
+            return Result.failure(UnreadablePhotoException("La foto de la terminal no se puede leer", e))
+        }
+        return try {
+            val photoRef = storageRef.child(buildStoragePath(path))
+            photoRef.putBytes(bytes).await()
+            Result.success(photoRef.downloadUrl.await().toString())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Upload to $path failed")
             Result.failure(e)
         }
     }

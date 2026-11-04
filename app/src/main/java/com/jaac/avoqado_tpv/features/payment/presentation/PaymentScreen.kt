@@ -18,7 +18,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -75,7 +74,15 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPayme
 import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashConfirmationContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
+import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
+import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
+import com.jaac.avoqado_tpv.features.verification.presentation.numberKind
+import com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts
+import com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog
+import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSalePaymentId
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import java.io.File
@@ -175,6 +182,8 @@ fun PaymentScreen(
     val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
     val isPortabilidadState by viewModel.isPortabilidad.collectAsStateWithLifecycle()
     val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
+    val proofSlotStates by viewModel.proofSlotStates.collectAsStateWithLifecycle()
+    val linkingNumberEnabled by viewModel.linkingNumberEnabled.collectAsStateWithLifecycle()
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val isPreparingMerchantSelection by viewModel.isPreparingMerchantSelection.collectAsStateWithLifecycle()
@@ -893,26 +902,27 @@ fun PaymentScreen(
                                 onLoadRecentCustomers = viewModel::loadRecentCustomersForReceipt,
                                 onResetCustomerSearch = viewModel::resetCustomerSearch,
                                 // 📸 PROOF-OF-SALE: Show camera FAB when SERIALIZED_INVENTORY is active and we have paymentId
-                                showProofOfSaleButton = showProofOfSale && currentState.receipt?.paymentId != null,
+                                showProofOfSaleButton = showProofOfSale && proofOfSalePaymentId(currentState.receipt) != null,
                                 isPortabilidad = isPortabilidadState,
                                 proofOfSaleComplete = proofOfSaleComplete,
-                                onProofOfSalePhotoTaken = { photoPath, photoLabel ->
-                                    // Handle proof-of-sale photo upload
-                                    val paymentId = currentState.receipt?.paymentId
-                                    val totalAmount = currentState.receipt?.totalAmount
-                                    // Use orderNumber if available, otherwise use paymentId as identifier
-                                    val orderRef = OrderNumberFormatter.reference(currentState.orderNumber ?: orderNumber)
-                                        ?: OrderNumberFormatter.reference(paymentId)
-                                        ?: System.currentTimeMillis().toString().takeLast(8)
-
-                                    if (paymentId != null && totalAmount != null) {
-                                        Timber.d("📸 [PROOF-OF-SALE] Uploading $photoLabel photo for payment $paymentId (ref: $orderRef)")
-                                        viewModel.uploadProofOfSale(photoPath, paymentId, orderRef, totalAmount.toString(), photoLabel)
-                                    } else {
-                                        Timber.e("📸 [PROOF-OF-SALE] Missing required data for upload")
-                                        Timber.e("📸 [PROOF-OF-SALE] Missing: paymentId=${paymentId==null}, totalAmount=${totalAmount==null}")
+                                // 📸 Bloque 0: el estado de cada ranura, o a «Pendientes» si la venta quedó en cola sin paymentId.
+                                proofOfSaleMessage = when {
+                                    !showProofOfSale -> null
+                                    proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
+                                    currentState.pendingSyncMessage != null -> PROOF_SALE_QUEUED_MESSAGE
+                                    else -> null
+                                },
+                                onProofOfSalePhotoTaken = { photoPath, slot, number ->
+                                    // Se encola con el número de su ranura (archivo y fila antes de la red); la sube PaymentSyncWorker.
+                                    proofOfSalePaymentId(currentState.receipt)?.let { paymentId ->
+                                        viewModel.confirmProofOfSalePhoto(photoPath, paymentId, slot, number)
                                     }
                                 },
+                                // 📸 C7: el campo del número (interruptor features.linkingNumber) y la pregunta de repetido.
+                                linkingNumberEnabled = linkingNumberEnabled,
+                                numberCapture = viewModel.numberCapture,
+                                proofNumber = viewModel::proofNumber,
+                                proofVerificationId = viewModel.proofVerificationId(),
                                 isUploadingProofOfSale = isUploadingProofOfSale,
                                 onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
                                 isPrinting = isPrinting  // 🖨️ Show "Imprimiendo..." on button
@@ -1618,9 +1628,14 @@ private fun PaymentSuccessContent(
     showProofOfSaleButton: Boolean = false,  // Show camera FAB for SERIALIZED_INVENTORY
     isPortabilidad: Boolean = false,  // 📱 Controls 1 vs 2 proof-of-sale photos
     proofOfSaleComplete: Boolean = false,  // All required photos uploaded
-    onProofOfSalePhotoTaken: (String, String) -> Unit = { _, _ -> },  // Callback (path, photoLabel)
-    isUploadingProofOfSale: Boolean = false,  // Show loading during upload
-    onRetakeProofOfSalePhoto: (String) -> Unit = {},  // Retake callback (photoLabel)
+    onProofOfSalePhotoTaken: (String, ProofSlot, String?) -> Unit = { _, _, _ -> },  // Callback (path, slot, número o null)
+    isUploadingProofOfSale: Boolean = false,  // Show loading while the photo is saved and its row answers
+    onRetakeProofOfSalePhoto: (ProofSlot) -> Unit = {},  // Retake callback (slot)
+    proofOfSaleMessage: String? = null,  // 📸 Lo que pasa con las fotos (en cola, sin conexión, a la vista)
+    linkingNumberEnabled: Boolean = false,  // 📸 C7: pedir el número con la foto (features.linkingNumber)
+    numberCapture: NumberCaptureController? = null,  // 📸 C7: la pregunta de repetido al confirmar
+    proofNumber: (ProofSlot) -> String? = { null },  // 📸 C7: el número ya confirmado de la ranura (al retomar)
+    proofVerificationId: String? = null,  // 📸 C7: para que number-check no choque con esta misma venta
     // 🖨️ RECEIPT PRINTING
     isPrinting: Boolean = false  // Show "Imprimiendo..." on print button
 ) {
@@ -1649,8 +1664,9 @@ private fun PaymentSuccessContent(
     var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
     var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
     var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
-    var currentPhotoLabel by remember { mutableStateOf("linea") }  // which photo camera is capturing
-    var viewingPhotoLabel by remember { mutableStateOf<String?>(null) }  // photo being previewed for retake
+    var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }  // which photo camera is capturing
+    var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }  // photo being previewed for retake
+    val numberDrafts = remember { LinkingNumberDrafts() }  // 📸 C7: lo escrito sobrevive «Retomar»
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -2012,17 +2028,17 @@ private fun PaymentSuccessContent(
                         isComplete = proofOfSaleComplete,
                         onTapLinea = {
                             if (lineaPhotoPath != null) {
-                                viewingPhotoLabel = "linea"
+                                viewingPhotoLabel = ProofSlot.VINCULACION
                             } else {
-                                currentPhotoLabel = "linea"
+                                currentPhotoLabel = ProofSlot.VINCULACION
                                 showProofOfSaleCamera = true
                             }
                         },
                         onTapPortabilidad = {
                             if (portabilidadPhotoPath != null) {
-                                viewingPhotoLabel = "portabilidad"
+                                viewingPhotoLabel = ProofSlot.PORTABILIDAD
                             } else {
-                                currentPhotoLabel = "portabilidad"
+                                currentPhotoLabel = ProofSlot.PORTABILIDAD
                                 showProofOfSaleCamera = true
                             }
                         },
@@ -2047,7 +2063,15 @@ private fun PaymentSuccessContent(
                     // when — the amber banner above already carries the full explanation, this is
                     // just the short version that belongs where the QR instructions normally sit.
                     when {
-                        isSerializedFlow -> Unit
+                        isSerializedFlow -> proofOfSaleMessage?.let {
+                            Text(
+                                text = it,
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                         recordingLostMessage != null -> Unit
                         pendingSyncMessage != null -> {
                             Text(
@@ -2350,11 +2374,9 @@ private fun PaymentSuccessContent(
             dir
         }
 
-        // Map label to display text: "linea" → "1. Vinculación", "portabilidad" → "2. Portabilidad"
         val cameraLabel = when (currentPhotoLabel) {
-            "linea" -> "1. Vinculación"
-            "portabilidad" -> "2. Portabilidad"
-            else -> null
+            ProofSlot.VINCULACION -> "1. Vinculación"
+            ProofSlot.PORTABILIDAD -> "2. Portabilidad"
         }
 
         com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen(
@@ -2375,26 +2397,33 @@ private fun PaymentSuccessContent(
     capturedPhotoPath?.let { photoPath ->
         ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
-            onConfirm = {
+            numberLabel = currentPhotoLabel.numberKind.label.takeIf { linkingNumberEnabled },
+            initialNumber = numberDrafts.initial(currentPhotoLabel.name, proofNumber(currentPhotoLabel)),
+            numberKind = currentPhotoLabel.numberKind,
+            verificationId = proofVerificationId,
+            numberCapture = numberCapture,
+            onNumberChange = { numberDrafts.update(currentPhotoLabel.name, it) },
+            onConfirm = { number ->
+                numberDrafts.clear(currentPhotoLabel.name)
                 Timber.d("📸 [PROOF-OF-SALE] Photo confirmed ($currentPhotoLabel), starting upload")
                 // Store path in the correct slot
-                if (currentPhotoLabel == "linea") {
+                if (currentPhotoLabel == ProofSlot.VINCULACION) {
                     lineaPhotoPath = photoPath
                 } else {
                     portabilidadPhotoPath = photoPath
                 }
-                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel)
+                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel, number)
                 capturedPhotoPath = null
 
                 // Wizard auto-advance: if portabilidad and other photo still needed, open camera for next
                 if (isPortabilidad) {
                     when {
-                        currentPhotoLabel == "linea" && portabilidadPhotoPath == null -> {
-                            currentPhotoLabel = "portabilidad"
+                        currentPhotoLabel == ProofSlot.VINCULACION && portabilidadPhotoPath == null -> {
+                            currentPhotoLabel = ProofSlot.PORTABILIDAD
                             showProofOfSaleCamera = true
                         }
-                        currentPhotoLabel == "portabilidad" && lineaPhotoPath == null -> {
-                            currentPhotoLabel = "linea"
+                        currentPhotoLabel == ProofSlot.PORTABILIDAD && lineaPhotoPath == null -> {
+                            currentPhotoLabel = ProofSlot.VINCULACION
                             showProofOfSaleCamera = true
                         }
                     }
@@ -2414,7 +2443,7 @@ private fun PaymentSuccessContent(
 
     // 📸 View existing photo with retake option
     viewingPhotoLabel?.let { label ->
-        val viewingPath = if (label == "linea") lineaPhotoPath else portabilidadPhotoPath
+        val viewingPath = if (label == ProofSlot.VINCULACION) lineaPhotoPath else portabilidadPhotoPath
         viewingPath?.let { path ->
             ProofOfSalePhotoPreviewDialog(
                 photoPath = path,
@@ -2427,7 +2456,7 @@ private fun PaymentSuccessContent(
                     viewingPhotoLabel = null
                     onRetakeProofOfSalePhoto(label)
                     // Reset local path
-                    if (label == "linea") lineaPhotoPath = null else portabilidadPhotoPath = null
+                    if (label == ProofSlot.VINCULACION) lineaPhotoPath = null else portabilidadPhotoPath = null
                     currentPhotoLabel = label
                     showProofOfSaleCamera = true
                 },
@@ -2443,7 +2472,7 @@ private fun PaymentSuccessContent(
     // 📸 Show loading overlay during proof-of-sale upload
     if (isUploadingProofOfSale) {
         com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay(
-            message = "Subiendo foto de comprobante..."
+            message = "Guardando foto…"
         )
     }
 
@@ -3435,126 +3464,6 @@ private fun ProofOfSalePlaceholder(
                         color = errorColor.copy(alpha = 0.7f),
                         textAlign = TextAlign.Center
                     )
-                }
-            }
-        }
-    }
-}
-
-/**
- * Photo preview dialog for proof-of-sale confirmation.
- *
- * Shows captured photo with Confirm/Retake buttons before uploading.
- *
- * @param photoPath Local file path of captured photo
- * @param onConfirm Callback when user confirms photo (triggers upload)
- * @param onRetake Callback when user wants to retake photo (opens camera again)
- * @param onDismiss Callback when user dismisses dialog (cancels)
- */
-@Composable
-private fun ProofOfSalePhotoPreviewDialog(
-    photoPath: String,
-    onConfirm: () -> Unit,
-    onRetake: () -> Unit,
-    onDismiss: () -> Unit,
-    confirmText: String = "Confirmar",
-    retakeText: String = "Retomar"
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
-            color = Color.Black
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Top bar with close button
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Vista Previa",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Cerrar",
-                            tint = Color.White
-                        )
-                    }
-                }
-
-                // Photo preview (centered)
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    coil.compose.AsyncImage(
-                        model = java.io.File(photoPath),
-                        contentDescription = "Preview de foto",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                    )
-                }
-
-                // Action buttons
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Retake button
-                    OutlinedButton(
-                        onClick = onRetake,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color.White
-                        ),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CameraAlt,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(retakeText)
-                    }
-
-                    // Confirm button
-                    Button(
-                        onClick = onConfirm,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(confirmText)
-                    }
                 }
             }
         }

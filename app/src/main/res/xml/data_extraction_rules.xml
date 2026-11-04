@@ -9,11 +9,10 @@
         <include .../>
         <exclude .../>
         -->
+        <!-- C2: id de instalación y contador de capturas son de ESTA terminal (ver backup_rules.xml). -->
+        <exclude domain="sharedpref" path="proof_capture.xml"/>
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="proof_capture.xml"/>
     </device-transfer>
-    -->
 </data-extraction-rules>

@@ -175,7 +175,6 @@ class AngelPayAuthPreviaCobroTest {
         paymentApiService = mockk(relaxed = true),
         apiService = mockk(relaxed = true),
         socketManager = socketManager,
-        verificationUploadManager = mockk(relaxed = true),
         observability = mockk(relaxed = true),
         paymentQueueRepository = mockk(relaxed = true),
         paymentAttemptLedger = paymentAttemptLedger,

@@ -268,7 +268,7 @@ fun SerializedSaleScreen(
                             if (uiState.error != null && uiState.scanResult == null) {
                                 Text(
                                     text = uiState.error!!,
-                                    color = MaterialTheme.colorScheme.error,
+                                    color = if (uiState.error == SerializedSaleViewModel.SIN_SENAL_AL_ESCANEAR) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(start = 4.dp, top = 4.dp)
                                 )

@@ -10,4 +10,6 @@
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>
 -->
+    <!-- C2: el id de instalación y el contador de capturas son de ESTA terminal; restaurados en otra harían que el servidor descarte capturas buenas como viejas. -->
+    <exclude domain="sharedpref" path="proof_capture.xml"/>
 </full-backup-content>

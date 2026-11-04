@@ -34,6 +34,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueReposit
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
+import com.jaac.avoqado_tpv.features.payment.domain.MOTIVO_MONTO_CERO
 import com.jaac.avoqado_tpv.features.payment.domain.referenciaDeEfectivo
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase
@@ -542,6 +543,27 @@ class CobroDeVentaLocalNexgoTest {
         esperar("No terminó la lectura vieja") { inicializacion.isCompleted }
         conexion.setInternetConnected(false); conexion.setInternetConnected(true)
         assertThat((vm.state.value as AngelPayPaymentState.SelectingMerchant).motivoSinTarjeta).isNull()
+    }
+
+    // D6 (4-nov): el regalo de una SIM ($0) desde «Vender SIM» en la Nexgo daba «Monto invalido»; en la PAX se cierra en
+    // efectivo. Un $0 hecho en la terminal va a «sólo efectivo» con su propio motivo; uno que manda el POS sigue rechazado.
+    @Test fun `regalo de SIM en 0 pesos elige metodo en solo efectivo con su motivo`() = runTest {
+        conexion.setInternetConnected(true); conexion.setServerConnected(true)
+        vm.initPayment("0.00", orderId = "orden-regalo", orderNumber = "SN00099", skipReview = true)
+        esperar("No terminó initPayment") { vm.state.value !is AngelPayPaymentState.Idle }
+        val estado = vm.state.value
+        assertThat(estado).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+        assertThat((estado as AngelPayPaymentState.SelectingMerchant).motivoSinTarjeta).isEqualTo(MOTIVO_MONTO_CERO)
+    }
+
+    @Test fun `regalo de SIM en 0 pesos se registra en efectivo`() = runTest {
+        conexion.setInternetConnected(true); conexion.setServerConnected(true)
+        vm.initPayment("0.00", orderId = "orden-regalo", orderNumber = "SN00099", skipReview = true)
+        esperar("No llegó a elegir método") { vm.state.value is AngelPayPaymentState.SelectingMerchant }
+        vm.startCashPayment()
+        fin()
+        assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
+        coVerify(exactly = 1) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
     }
 
     private fun iniciarOtroCobroConRed() {

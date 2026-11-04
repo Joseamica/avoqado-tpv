@@ -10,6 +10,9 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
  */
 const val MOTIVO_SIN_TARJETA = "Necesita internet. Cobra en efectivo; la venta se guarda en la terminal."
 
+/** Una venta de $0 hecha en la terminal (el regalo de una SIM) no va al banco: se cierra en efectivo, como en la PAX. */
+const val MOTIVO_MONTO_CERO = "Una venta de \$0 se registra en efectivo."
+
 /**
  * Immutable retry context - preserves all transaction data for smart retry.
  *

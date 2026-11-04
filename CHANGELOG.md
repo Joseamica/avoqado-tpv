@@ -12,6 +12,7 @@
 - **El aviso «Sin conexión» ya no mueve los botones del error del cobro (D22)**: en la PAX los empujaba 120 px y en la N86 60 px, y un toque pensado para «Cancelar» cayó en «Reintentar». Ahora el mensaje se centra arriba y los botones quedan pegados al fondo: el aviso sólo encoge el espacio de arriba
 - **Un doble toque en «Reintentar» ya no cambia la cuenta de cobro (D20)**: en la N86, el segundo toque caía en la lista de cuentas que se abre debajo y elegía otra. Durante el primer segundo la lista ya no acepta toques: ni elige cuenta ni arranca un cobro (PAX y Nexgo, misma pantalla)
 - **Sin red, el cobro del POS ya no ofrece un efectivo que no tiene (D18)**: la PAX decía «Sin conexión a internet. ¿Cobrar en efectivo?» en un cobro mandado desde el POS, que no trae botón de efectivo; ahora dice «Sin conexión a internet: no se cobró. Reintenta cuando vuelva la red», que también le llega al POS. El cobro local sigue ofreciendo efectivo
+- **[PlayTelecom] [Nexgo] Regalar una SIM de $0 ya no da «Monto invalido»**: la venta de $0 hecha en la terminal va a «sólo efectivo» con «Una venta de $0 se registra en efectivo.» y se cierra como en la PAX. Un cobro de $0 que manda el POS sigue rechazado.
 
 ---
 

@@ -112,7 +112,6 @@ class AngelPayPaymentReviewRoomTest {
     private lateinit var paymentApiService: PaymentApiService
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
-    private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
     private lateinit var observabilityManager: ObservabilityManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
     // 📒 La Libreta (Task 5) — relaxed: every mark is observational and must never affect the flow.
@@ -174,7 +173,6 @@ class AngelPayPaymentReviewRoomTest {
         paymentApiService = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
-        verificationUploadManager = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
@@ -235,7 +233,6 @@ class AngelPayPaymentReviewRoomTest {
         paymentApiService = paymentApiService,
         apiService = apiService,
         socketManager = socketManager,
-        verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,

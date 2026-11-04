@@ -190,7 +190,6 @@ class AngelPaySdk119ViewModelTest {
         paymentApiService = mockk(relaxed = true),
         apiService = mockk(relaxed = true),
         socketManager = socketManager,
-        verificationUploadManager = mockk(relaxed = true),
         observability = observabilityManager,
         paymentQueueRepository = mockk(relaxed = true),
         paymentAttemptLedger = paymentAttemptLedger,

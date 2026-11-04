@@ -153,7 +153,6 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val paymentApiService: PaymentApiService,
     private val apiService: ApiService,
     private val socketManager: SocketManager,
-    private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
     private val observability: ObservabilityManager,
     private val paymentQueueRepository: PaymentQueueRepository,
     // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never

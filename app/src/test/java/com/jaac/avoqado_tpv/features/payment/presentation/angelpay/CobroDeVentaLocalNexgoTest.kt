@@ -142,7 +142,7 @@ class CobroDeVentaLocalNexgoTest {
         printerManager = mockk(relaxed = true), angelPayTicketBuilder = AngelPayTicketBuilder(),
         paymentApiService = mockk(relaxed = true), apiService = mockk(relaxed = true),
         socketManager = mockk(relaxed = true) { every { events } returns MutableSharedFlow() },
-        verificationUploadManager = mockk(relaxed = true), observability = mockk(relaxed = true),
+        observability = mockk(relaxed = true),
         paymentQueueRepository = PaymentQueueRepositoryImpl(dao),
         paymentAttemptLedger = mockk(relaxed = true) {
             coEvery { cobroSinResolver() } returns null

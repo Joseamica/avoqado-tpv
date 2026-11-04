@@ -77,6 +77,16 @@ interface ProofOfSaleQueueDao {
     )
     suspend fun markNeedsAttention(key: String, token: String, outcome: String): Int
 
+    /** La foto ya está completa en su ruta final: la fila reservada al encolar pasa a PENDING y un worker ya la puede reclamar. */
+    @Query(
+        """
+        UPDATE proof_of_sale_queue
+        SET sync_status = 'PENDING', claim_token = NULL, claimed_at = NULL
+        WHERE idempotency_key = :key AND claim_token = :token AND sync_status = 'SYNCING'
+    """
+    )
+    suspend fun releaseReservation(key: String, token: String): Int
+
     @Query("DELETE FROM proof_of_sale_queue WHERE idempotency_key = :key")
     suspend fun delete(key: String): Int
 

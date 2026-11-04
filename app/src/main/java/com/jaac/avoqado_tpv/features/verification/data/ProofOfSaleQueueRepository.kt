@@ -31,6 +31,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.io.File
+import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -97,12 +98,35 @@ class ProofOfSaleQueueRepository @Inject constructor(
     private val _results = MutableSharedFlow<ProofSyncResult>(replay = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val results: SharedFlow<ProofSyncResult> = _results.asSharedFlow()
 
-    /** Copia la foto a `filesDir/proof_of_sale/{key}.jpg`, y sólo entonces inserta la fila. No toca la red. */
+    /**
+     * La fila primero, ya reservada (SYNCING con un token de captura, que `markClaimed` no toca hasta que venza el lease), y
+     * luego el archivo: se copia a `{key}.jpg.part` y se renombra (atómico). Así una foto confirmada nunca queda sin fila: si el
+     * proceso muere en medio, a los 10 min la fila se reclama, el archivo falta y `uploadPhoto` la deja FAILED a la vista en
+     * «Pendientes». Si la copia truena, se borran fila y `.part` y se relanza para que la pantalla lo diga. No toca la red.
+     */
     suspend fun enqueuePhoto(c: PhotoCapture): String = withContext(NonCancellable + Dispatchers.IO) {
         val key = UUID.randomUUID().toString()
-        val file = File(File(context.filesDir, DIR), "$key.jpg")
-        File(c.sourcePath).copyTo(file, overwrite = true)
-        insert(key, PROOF_ROW_PHOTO, c.venueId, c.venueSlug, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number)
+        val dir = File(context.filesDir, DIR).apply { mkdirs() }
+        val file = File(dir, "$key.jpg")
+        val part = File(dir, "$key.jpg.part")
+        val reservation = "capture-" + UUID.randomUUID()
+        // sequence.next() va dentro de insert, antes de la fila y del archivo: si no se pudo guardar el contador, no queda nada.
+        insert(
+            key, PROOF_ROW_PHOTO, c.venueId, c.venueSlug, c.staffId, c.paymentId, c.verificationId, c.slot, file.absolutePath, c.number,
+            reservation = reservation,
+        )
+        try {
+            File(c.sourcePath).copyTo(part, overwrite = true)
+            if (!part.renameTo(file)) throw IOException("No se pudo guardar la foto en la terminal")
+        } catch (e: Exception) {
+            runCatching { queueDao.delete(key) }
+            part.delete()
+            file.delete()
+            throw e
+        }
+        queueDao.releaseReservation(key, reservation)
+        runCatching { PaymentSyncScheduler.continuarDespuesDeEstaPasada(context) }
+        key
     }
 
     suspend fun enqueueNumberOnly(c: NumberCapture): String = withContext(NonCancellable + Dispatchers.IO) {
@@ -155,19 +179,24 @@ class ProofOfSaleQueueRepository @Inject constructor(
 
     private suspend fun insert(
         key: String, kind: String, venueId: String, venueSlug: String?, staffId: String, paymentId: String, verificationId: String?,
-        slot: ProofSlot, localPath: String?, number: String?,
+        slot: ProofSlot, localPath: String?, number: String?, reservation: String? = null,
     ): String {
         val now = System.currentTimeMillis()
+        val seq = sequence.next()
+        val deviceId = sequence.deviceId()
         queueDao.insertRow(
             ProofOfSaleQueueEntity(
                 idempotencyKey = key, kind = kind, venueId = venueId, staffId = staffId, paymentId = paymentId,
                 verificationId = verificationId, slot = slot.name, localPath = localPath,
                 linkingNumber = number.takeIf { slot == ProofSlot.VINCULACION },
                 portedNumber = number.takeIf { slot == ProofSlot.PORTABILIDAD },
-                capturedAt = now, captureSeq = sequence.next(), captureDeviceId = sequence.deviceId(), createdAt = now,
+                capturedAt = now, captureSeq = seq, captureDeviceId = deviceId, createdAt = now,
                 venueSlug = venueSlug,
+                syncStatus = if (reservation != null) "SYNCING" else "PENDING", claimToken = reservation,
+                claimedAt = now.takeIf { reservation != null },
             ),
         )
+        if (reservation != null) return key // la foto todavía se está copiando: quien reservó libera y pide la pasada
         // La fila ya está guardada. APPEND y no runNow/KEEP: con un worker a media pasada (ya después de las fotos), KEEP
         // descartaba el pedido y la foto esperaba al periódico de 15 min. Si WorkManager no responde, la sube el siguiente disparo.
         runCatching { PaymentSyncScheduler.continuarDespuesDeEstaPasada(context) }

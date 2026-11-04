@@ -65,11 +65,12 @@ class ProofOfSaleQueueRepositoryTest {
 
     /** La DAO real con dos costuras: ver el disco al insertar y "matar el proceso" al borrar. */
     private class ColaEspia(private val real: ProofOfSaleQueueDao) : ProofOfSaleQueueDao by real {
-        var antesDeInsertar: () -> Unit = {}
+        var antesDeInsertar: suspend () -> Unit = {}
+        var despuesDeInsertar: suspend () -> Unit = {}
         var mueroAlBorrar = false
         override suspend fun insertRow(row: ProofOfSaleQueueEntity): Long {
             antesDeInsertar()
-            return real.insertRow(row)
+            return real.insertRow(row).also { despuesDeInsertar() }
         }
         override suspend fun delete(key: String): Int {
             if (mueroAlBorrar) error("el proceso murió entre marcar la ranura y borrar la fila")
@@ -139,31 +140,106 @@ class ProofOfSaleQueueRepositoryTest {
 
     // ─── encolar ────────────────────────────────────────────────────────────────
 
-    @Test fun `enqueuePhoto deja el archivo en filesDir antes de insertar y devuelve la llave sin red`() = runBlocking {
+    @Test fun `enqueuePhoto inserta la fila reservada ANTES de copiar el archivo y la libera al final, sin red`() = runBlocking {
         var enDiscoAlInsertar: List<String>? = null
-        cola.antesDeInsertar = { enDiscoAlInsertar = File(context.filesDir, "proof_of_sale").listFiles()?.map { it.absolutePath } }
+        var filaAlInsertar: ProofOfSaleQueueEntity? = null
+        var reclamablesAlInsertar: List<ProofOfSaleQueueEntity>? = null
+        cola.despuesDeInsertar = {
+            val dir = File(context.filesDir, "proof_of_sale")
+            enDiscoAlInsertar = dir.listFiles()?.map { it.absolutePath }.orEmpty()
+            filaAlInsertar = db.proofOfSaleQueueDao().observeStaff("s1").first().single()
+            // Ningún worker puede subir un archivo a medio copiar: la fila ya está tomada.
+            reclamablesAlInsertar = db.proofOfSaleQueueDao().claimBatch(10, "otro-worker", System.currentTimeMillis(), 0L)
+        }
 
         val key = repo.enqueuePhoto(foto(slug = "tienda-x"))
 
-        val f = fila(key)!!
         val esperado = File(context.filesDir, "proof_of_sale/$key.jpg").absolutePath
+        assertThat(enDiscoAlInsertar).isEmpty() // la fila va primero: el archivo todavía no existe
+        assertThat(filaAlInsertar!!.localPath).isEqualTo(esperado)
+        assertThat(filaAlInsertar!!.syncStatus).isEqualTo("SYNCING")
+        assertThat(filaAlInsertar!!.claimToken).isNotNull()
+        assertThat(filaAlInsertar!!.claimedAt).isNotNull()
+        assertThat(reclamablesAlInsertar).isEmpty()
+
+        val f = fila(key)!!
         assertThat(f.localPath).isEqualTo(esperado)
         assertThat(f.venueSlug).isEqualTo("tienda-x")
         assertThat(f.photoUrl).isNull()
         // Pasada encadenada (APPEND): una foto que llega con el worker a media corrida no espera 15 minutos.
         verify(exactly = 1) { PaymentSyncScheduler.continuarDespuesDeEstaPasada(any()) }
         verify(exactly = 0) { PaymentSyncScheduler.runNow(any()) }
-        assertThat(enDiscoAlInsertar).containsExactly(esperado)
         assertThat(File(esperado).readBytes()).isEqualTo(byteArrayOf(1, 2, 3))
+        assertThat(File(context.filesDir, "proof_of_sale").listFiles()!!.map { it.name }).containsExactly("$key.jpg")
         assertThat(f.kind).isEqualTo("PHOTO")
         assertThat(f.slot).isEqualTo("VINCULACION")
         assertThat(f.linkingNumber).isEqualTo("5512345678")
         assertThat(f.portedNumber).isNull()
+        // Liberada: PENDING y sin reclamo, y ya la puede reclamar un worker.
         assertThat(f.syncStatus).isEqualTo("PENDING")
+        assertThat(f.claimToken).isNull()
+        assertThat(f.claimedAt).isNull()
         assertThat(f.captureSeq).isEqualTo(1L)
         assertThat(f.captureDeviceId).isNotEmpty()
+        assertThat(db.proofOfSaleQueueDao().claimBatch(10, "worker", System.currentTimeMillis(), 0L).map { it.idempotencyKey })
+            .containsExactly(key)
         assertThat(servidor.requestCount).isEqualTo(0)
         coVerify(exactly = 0) { uploader.uploadToPath(any(), any()) }
+    }
+
+    @Test fun `si la copia falla no queda fila ni archivo a medias, se avisa con la excepcion y la foto de la camara sigue`() = runBlocking {
+        val camara = File(context.cacheDir, "cam-borrada.jpg") // no existe: copyTo lanza
+        val c = PhotoCapture("v1", null, "s1", "pay-1", "ver-1", ProofSlot.VINCULACION, camara.absolutePath, "5512345678")
+
+        val e = runCatching { repo.enqueuePhoto(c) }.exceptionOrNull()
+
+        assertThat(e).isInstanceOf(java.io.IOException::class.java)
+        assertThat(db.proofOfSaleQueueDao().observeStaff("s1").first()).isEmpty()
+        assertThat(File(context.filesDir, "proof_of_sale").listFiles().orEmpty().toList()).isEmpty()
+        verify(exactly = 0) { PaymentSyncScheduler.continuarDespuesDeEstaPasada(any()) }
+    }
+
+    @Test fun `si el contador de capturas no se puede guardar no se toca el archivo ni la cola`() = runBlocking {
+        val secuencia = mockk<ProofCaptureSequence>()
+        every { secuencia.next() } throws java.io.IOException("No se pudo guardar el contador de capturas")
+        every { secuencia.deviceId() } returns "d1"
+        val repo2 = ProofOfSaleQueueRepository(
+            context, db, cola, db.actionableSaleCacheDao(), ProofOfSaleRemote(
+                Retrofit.Builder().baseUrl(servidor.url("/")).addConverterFactory(GsonConverterFactory.create()).build().create(ApiService::class.java),
+            ), uploader, secuencia, storage,
+        )
+
+        val e = runCatching { repo2.enqueuePhoto(foto()) }.exceptionOrNull()
+
+        assertThat(e).isInstanceOf(java.io.IOException::class.java)
+        assertThat(db.proofOfSaleQueueDao().observeStaff("s1").first()).isEmpty()
+        assertThat(File(context.filesDir, "proof_of_sale").listFiles().orEmpty().toList()).isEmpty()
+    }
+
+    @Test fun `una fila reservada cuyo archivo nunca llego (murio el proceso) vence a los 10 min y falla definitiva y visible`() = runBlocking {
+        val dir = File(context.filesDir, "proof_of_sale").apply { mkdirs() }
+        val ahora = System.currentTimeMillis()
+        fun reservada(key: String, claimedAt: Long) = ProofOfSaleQueueEntity(
+            idempotencyKey = key, kind = "PHOTO", venueId = "v1", staffId = "s1", paymentId = "pay-1", verificationId = "ver-1",
+            slot = "VINCULACION", localPath = File(dir, "$key.jpg").absolutePath, linkingNumber = "5512345678", portedNumber = null,
+            capturedAt = ahora, captureSeq = 1, captureDeviceId = "d1", syncStatus = "SYNCING", claimToken = "muerto",
+            claimedAt = claimedAt, createdAt = ahora,
+        )
+        db.proofOfSaleQueueDao().insertRow(reservada("fresca", ahora))
+        db.proofOfSaleQueueDao().insertRow(reservada("vencida", ahora - 11 * 60 * 1000L))
+
+        repo.drain()
+
+        assertThat(fila("fresca")!!.syncStatus).isEqualTo("SYNCING") // todavía dentro de su lease: nadie la toca
+        val v = fila("vencida")!!
+        assertThat(v.syncStatus).isEqualTo("FAILED")
+        assertThat(v.permanent).isTrue()
+        assertThat(v.outcome).isEqualTo("PERMANENT")
+        assertThat(servidor.requestCount).isEqualTo(0)
+        coVerify(exactly = 0) { uploader.uploadToPath(any(), any()) }
+        // «Descartar» la quita (sigue visible en Pendientes hasta que alguien la descarte).
+        repo.discard("vencida")
+        assertThat(fila("vencida")).isNull()
     }
 
     @Test fun `enqueuePhoto termina de guardar aunque cancelen a quien la llamo`() = runBlocking {

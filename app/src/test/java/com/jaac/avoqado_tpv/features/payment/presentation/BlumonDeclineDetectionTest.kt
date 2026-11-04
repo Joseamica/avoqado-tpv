@@ -131,9 +131,22 @@ class BlumonIssuerCodeTest {
         assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(403, "2000", "FALLA DE CONEXION")), isContactless = false)).isFalse()
     }
 
-    @Test fun `con 200 sin codigo del emisor sigue en duda`() {
-        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, "ALGO")), isContactless = false)).isFalse()
-        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "123456", "ALGO")), isContactless = false)).isFalse()
+    // Codex r2: el «no» también puede venir con 200 y sin código del emisor.
+    @Test fun `NO AUTORIZADO con 200 tambien es un rechazo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "000000", "NO AUTORIZADO")), isContactless = false)).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, "NO AUTORIZADO")), isContactless = false)).isTrue()
+    }
+
+    @Test fun `cuatro digitos son tecnicos y siguen en duda`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "2001", "FALLA")), isContactless = false)).isFalse()
+    }
+
+    @Test fun `NO APROBADA es un rechazo, no una aprobacion`() {
+        assertThat(blumonRespuestaEsRechazo("05", "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo("3035", "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "DESAPROBADA")).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, "NO APROBADA")), isContactless = false)).isTrue()
     }
 
     @Test fun `un motivo de aprobado nunca se lee como rechazo`() {

@@ -41,7 +41,7 @@ internal val BLUMON_CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51",
  * Códigos con los que Momentum contesta, pero sin decir que el banco rechazó, así que el cobro sigue en duda (ISO 8583):
  * aprobados que no deberían venir en un fallo (00, 08, 10, 11, 16) y «no pude saberlo»: error (06), en proceso (09),
  * reintenta (19), falla (22), respuesta tardía (68), corte (90), emisor o ruta no disponibles (91, 92), falla del sistema (96).
- * También `2000`, que no es ISO: el SDK de pruebas lo convierte en `ConnectionProcessorFailure` y el de producción no.
+ * El `2000` no es ISO: el SDK de pruebas lo convierte en `ConnectionProcessorFailure`, y el de producción no.
  */
 private val BLUMON_CODIGOS_SIN_RECHAZO = setOf("00", "08", "10", "11", "16", "06", "09", "19", "22", "68", "90", "91", "92", "96", "2000")
 
@@ -115,18 +115,17 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
         ?.takeIf { it.isNotEmpty() && it != "null" }
     val crudo = campo("code")
     val motivo = campo("description")
-    if (crudo?.uppercase() in BLUMON_CODIGOS_SIN_RECHAZO || motivo.suenaAprobado()) return false
+    if (crudo?.uppercase() in BLUMON_CODIGOS_SIN_RECHAZO || crudo.esCodigoTecnico() || motivo.suenaAprobado()) return false
     val http = campo("httpCode")?.toIntOrNull() ?: return false
-    return when (http) {
-        // Con 200 sólo el código de dos caracteres del emisor dice que no; un código largo puede ser técnico.
-        in 200..299 -> code != null
-        408 -> false
-        in 400..499 -> crudo != null || motivo != null
-        else -> false
-    }
+    val contesto = http in 200..299 || (http in 400..499 && http != 408)
+    return contesto && (crudo != null || motivo != null)
 }
 
-private fun String?.suenaAprobado() = this?.contains("APROB", ignoreCase = true) == true
+/** Cuatro dígitos no son un código del emisor: `2000` es falla de conexión, y el catálogo del host no está en el SDK. */
+private fun String?.esCodigoTecnico() = this?.matches(Regex("""\d{4}""")) == true
+
+/** «APROBADA» sí; «NO APROBADA» o «DESAPROBADA» no. */
+private fun String?.suenaAprobado() = this != null && Regex("""(?<!NO )\bAPROB""", RegexOption.IGNORE_CASE).containsMatchIn(this)
 
 /**
  * ¿Esta respuesta con la autorización vacía es un «no»? Blumon también entrega rechazos como respuesta normal (ver
@@ -140,6 +139,7 @@ internal fun blumonRespuestaEsRechazo(emvResponseCode: String?, description: Str
     } else {
         crudo
     }
+    if (code in BLUMON_CODIGOS_RECHAZO_EMISOR) return true
     if (code in BLUMON_CODIGOS_SIN_RECHAZO || description.suenaAprobado()) return false
     return code.isNotEmpty() || !description.isNullOrBlank()
 }

@@ -379,10 +379,13 @@ class BlumonSaleReferenceTest {
             coEvery { mockSaleIccUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Left(
                 com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccFailure.MomentumFailure(datos)
             )
-            vm.performOnlineAuthorization("100.00", "", "", "", false)
-            val state = vm.state.value as PaymentState.Error
-            assertEquals(null, state.unresolvedAttemptId)
-            assertEquals(true, state.canRetry)
+            val resultado = vm.performOnlineAuthorization("100.00", "", "", "", false)
+            // Quien llama publica el error con este motivo; «Reintentar» sólo se niega si la autorización quedó sin resolver.
+            assertEquals(null, resultado.response)
+            assertEquals(true, resultado.userFriendlyError?.contains("NO AUTORIZADO"))
+            val sinResolver = PaymentViewModel::class.java.getDeclaredField("authorizationUnresolved")
+            sinResolver.isAccessible = true
+            assertEquals(false, sinResolver.get(vm))
             io.mockk.coVerify(exactly = 0) { mockPaymentAttemptLedger.markIndeterminate(any(), any()) }
         } finally { vm.viewModelScope.cancel() }
     }

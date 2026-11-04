@@ -148,11 +148,16 @@ fun SaleCorrectionScreen(
             numberCapture = viewModel.numberCapture,
             onNumberChange = { numberDrafts.update(slot.name, it) },
             onConfirm = { number ->
-                numberDrafts.clear(slot.name)
-                capturedPhotoPath = null
                 if (photoPath.isNotEmpty()) {
                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
-                    viewModel.enqueuePhoto(slot, photoPath, number)
+                    // La ventana y el borrador se van sólo si quedó guardada; si falla siguen para volver a confirmar.
+                    viewModel.enqueuePhoto(slot, photoPath, number) {
+                        numberDrafts.clear(slot.name)
+                        capturedPhotoPath = null
+                    }
+                } else {
+                    numberDrafts.clear(slot.name)
+                    capturedPhotoPath = null
                 }
             },
             onRetake = {

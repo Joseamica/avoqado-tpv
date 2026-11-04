@@ -155,16 +155,31 @@ class PendingVerificationsViewModelTest {
         assertThat(vm.error.value).isEqualTo("No se pudo subir: tómala de nuevo")
     }
 
-    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y se puede intentar otra vez`() = runTest {
+    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y reintentar funciona, solo en el exito avisa onSaved`() = runTest {
         val vm = vm()
         coEvery { queue.enqueuePhoto(any()) } throws IOException("disco lleno") andThen "k1"
+        var guardadas = 0
 
-        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg")
+        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg", onSaved = { guardadas++ })
 
         assertThat(vm.error.value).isEqualTo("No se pudo guardar la foto en la terminal. Intenta de nuevo.")
         assertThat(vm.savingPaymentId.value).isNull()
-        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg")
+        assertThat(guardadas).isEqualTo(0) // la ventana y el borrador siguen: nada se cerró
+
+        vm.enqueuePhoto("pay-1", ProofSlot.VINCULACION, "/cache/cam.jpg", onSaved = { guardadas++ })
+
         coVerify(exactly = 2) { queue.enqueuePhoto(any()) }
+        assertThat(guardadas).isEqualTo(1)
+    }
+
+    @Test fun `si no se pudo guardar el numero solo, el aviso dice numero y no foto`() = runTest {
+        val vm = vm()
+        lista.value = ActionableState(listOf(ActionableItem(detalle("pay-1"), "pay-1", emptyList(), localOnly = false)), false, null)
+        coEvery { queue.enqueueNumberOnly(any()) } throws IOException("disco lleno")
+
+        vm.correctNumber("pay-1", ProofSlot.VINCULACION, "5512345678")
+
+        assertThat(vm.error.value).isEqualTo("No se pudo guardar el número en la terminal. Intenta de nuevo.")
     }
 
     @Test fun `una tarjeta de una venta con solo capturas en la cola arma sus ranuras de esas`() {

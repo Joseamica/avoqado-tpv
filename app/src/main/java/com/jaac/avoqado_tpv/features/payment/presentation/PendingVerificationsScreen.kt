@@ -194,12 +194,17 @@ fun PendingVerificationsScreen(
             numberCapture = viewModel.numberCapture,
             onNumberChange = { numberDrafts.update("$selectedPaymentId/${slot.name}", it) },
             onConfirm = { number ->
-                numberDrafts.clear("$selectedPaymentId/${slot.name}")
-                capturedPhotoPath = null
                 val pId = selectedPaymentId
                 if (pId != null && photoPath.isNotEmpty()) {
                     // Se encola (archivo y fila antes de la red); la sube PaymentSyncWorker. Sin señal, igual.
-                    viewModel.enqueuePhoto(pId, slot, photoPath, number)
+                    // La ventana y el borrador se van sólo si quedó guardada; si falla siguen para volver a confirmar.
+                    viewModel.enqueuePhoto(pId, slot, photoPath, number) {
+                        numberDrafts.clear("$selectedPaymentId/${slot.name}")
+                        capturedPhotoPath = null
+                    }
+                } else {
+                    numberDrafts.clear("$selectedPaymentId/${slot.name}")
+                    capturedPhotoPath = null
                 }
             },
             onRetake = {

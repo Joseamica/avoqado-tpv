@@ -18,6 +18,7 @@ import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_NUMBER_FAILED_MESSAGE
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -134,8 +135,8 @@ class SaleCorrectionViewModel @Inject constructor(
     }
 
     /** Encola la foto retomada de [slot], con el número de su ranura si el interruptor está encendido. */
-    fun enqueuePhoto(slot: ProofSlot, photoPath: String, number: String? = null) {
-        save { detail, venueId, staffId ->
+    fun enqueuePhoto(slot: ProofSlot, photoPath: String, number: String? = null, onSaved: () -> Unit = {}) {
+        save(PROOF_SAVE_FAILED_MESSAGE, onSaved) { detail, venueId, staffId ->
             queue.enqueuePhoto(
                 PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, detail.paymentId, detail.id, slot, photoPath, number),
             )
@@ -144,13 +145,16 @@ class SaleCorrectionViewModel @Inject constructor(
 
     /** «Corregir número»: sólo el número de [slot], sin volver a tomar la foto (fila `NUMBER_ONLY`). */
     fun correctNumber(slot: ProofSlot, number: String) {
-        save { detail, venueId, staffId ->
+        save(PROOF_SAVE_NUMBER_FAILED_MESSAGE) { detail, venueId, staffId ->
             queue.enqueueNumberOnly(NumberCapture(venueId, staffId, detail.paymentId, detail.id, slot, number))
         }
     }
 
     /** Archivo y fila antes de la red; al entregarse, vuelve a pedir el detalle. */
-    private fun save(enqueue: suspend (detail: VerificationDetailDto, venueId: String, staffId: String) -> String) {
+    private fun save(
+        failureMessage: String, onSaved: () -> Unit = {},
+        enqueue: suspend (detail: VerificationDetailDto, venueId: String, staffId: String) -> String,
+    ) {
         val detail = _uiState.value.detail ?: return
         val venueId = authRepository.getVenueId()
         val staffId = authRepository.getStaffId()
@@ -158,18 +162,20 @@ class SaleCorrectionViewModel @Inject constructor(
             _uiState.update { it.copy(error = PROOF_FAILED_MESSAGE) }
             return
         }
+        if (_uiState.value.isUploading) return // un segundo toque a «Confirmar» mientras guarda no duplica la captura
         viewModelScope.launch {
             _uiState.update { it.copy(isUploading = true, error = null) }
             try {
                 val key = enqueue(detail, venueId, staffId)
                 _uiState.update { it.copy(isUploading = false) }
+                onSaved()
                 val result = queue.awaitResult(key, Long.MAX_VALUE)
                 if (result?.outcome == "APPLIED" || result?.outcome == "SUPERSEDED_BY_NEWER") load()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📸 [SaleCorrection] No se pudo guardar la foto | id=${detail.id}")
-                _uiState.update { it.copy(isUploading = false, error = PROOF_SAVE_FAILED_MESSAGE) }
+                _uiState.update { it.copy(isUploading = false, error = failureMessage) }
             }
         }
     }

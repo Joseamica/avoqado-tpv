@@ -72,19 +72,39 @@ class SaleCorrectionViewModelTest {
         assertThat(vm.uiState.value.error).isNull()
     }
 
-    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y se puede intentar otra vez`() {
+    private fun detalleFailed() = com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto(
+        id = "ver-1", paymentId = "pay-1", amount = 149.0, orderNumber = null, date = "2026-11-01T10:00:00.000Z",
+        serialNumbers = listOf("8952"), isPortabilidad = false, photos = emptyList(), requiredPhotos = 1, status = "FAILED",
+    )
+
+    @Test fun `si la terminal no pudo guardar la foto lo dice en neutro, sin tronar, y reintentar funciona, solo en el exito avisa onSaved`() {
         every { auth.getVenueId() } returns "v1"
         every { auth.getVenueSlug() } returns "tienda-a"
-        coEvery { queue.enqueuePhoto(any()) } throws IOException("disco lleno")
-        val detalle = com.jaac.avoqado_tpv.core.data.network.VerificationDetailDto(
-            id = "ver-1", paymentId = "pay-1", amount = 149.0, orderNumber = null, date = "2026-11-01T10:00:00.000Z",
-            serialNumbers = listOf("8952"), isPortabilidad = false, photos = emptyList(), requiredPhotos = 1, status = "FAILED",
-        )
-        val vm = vm(Result.success(detalle))
+        coEvery { queue.enqueuePhoto(any()) } throws IOException("disco lleno") andThen "k1"
+        coEvery { queue.awaitResult(any(), any()) } returns null
+        val vm = vm(Result.success(detalleFailed()))
+        var guardadas = 0
 
-        vm.enqueuePhoto(ProofSlot.VINCULACION, "/cache/cam.jpg")
+        vm.enqueuePhoto(ProofSlot.VINCULACION, "/cache/cam.jpg", onSaved = { guardadas++ })
 
         assertThat(vm.uiState.value.error).isEqualTo("No se pudo guardar la foto en la terminal. Intenta de nuevo.")
         assertThat(vm.uiState.value.isUploading).isFalse()
+        assertThat(guardadas).isEqualTo(0)
+
+        vm.enqueuePhoto(ProofSlot.VINCULACION, "/cache/cam.jpg", onSaved = { guardadas++ })
+
+        assertThat(vm.uiState.value.error).isNull()
+        assertThat(guardadas).isEqualTo(1)
+        coVerify(exactly = 2) { queue.enqueuePhoto(any()) }
+    }
+
+    @Test fun `si no se pudo guardar el numero solo, el aviso dice numero y no foto`() {
+        every { auth.getVenueId() } returns "v1"
+        coEvery { queue.enqueueNumberOnly(any()) } throws IOException("disco lleno")
+        val vm = vm(Result.success(detalleFailed()))
+
+        vm.correctNumber(ProofSlot.VINCULACION, "5512345678")
+
+        assertThat(vm.uiState.value.error).isEqualTo("No se pudo guardar el número en la terminal. Intenta de nuevo.")
     }
 }

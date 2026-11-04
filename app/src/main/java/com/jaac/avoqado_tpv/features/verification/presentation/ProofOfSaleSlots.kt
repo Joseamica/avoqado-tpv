@@ -35,6 +35,8 @@ const val PROOF_OFFLINE_MESSAGE = "Sin conexión: la foto y el número se guarda
 const val PROOF_FAILED_MESSAGE = "No se pudo subir: tómala de nuevo"
 
 /** La terminal no pudo guardar la foto (disco lleno, copia fallida): neutro, y se puede confirmar otra vez. */
+/** Igual, cuando lo que no se pudo guardar fue sólo el número («Corregir número»). */
+const val PROOF_SAVE_NUMBER_FAILED_MESSAGE = "No se pudo guardar el número en la terminal. Intenta de nuevo."
 const val PROOF_SAVE_FAILED_MESSAGE = "No se pudo guardar la foto en la terminal. Intenta de nuevo."
 const val PROOF_SALE_QUEUED_MESSAGE = "La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre"
 

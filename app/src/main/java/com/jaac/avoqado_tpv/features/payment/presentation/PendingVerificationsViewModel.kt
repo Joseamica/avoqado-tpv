@@ -19,6 +19,7 @@ import com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_FAILED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_FAILED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SAVE_NUMBER_FAILED_MESSAGE
 import com.jaac.avoqado_tpv.features.verification.presentation.canDiscardCapture
 import com.jaac.avoqado_tpv.features.verification.presentation.isPhotoCapture
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -94,11 +95,12 @@ class PendingVerificationsViewModel @Inject constructor(
 
     /**
      * Encola la foto de [slot] de esa venta, con el número de su ranura si el interruptor está encendido (archivo y fila
-     * antes de la red). Sin señal se queda «Se subirá sola».
+     * antes de la red). Sin señal se queda «Se subirá sola». [onSaved] sólo si quedó guardada: la pantalla cierra su ventana
+     * y borra el borrador ahí; si falló, siguen para volver a confirmar.
      */
-    fun enqueuePhoto(paymentId: String, slot: ProofSlot, photoPath: String, number: String? = null) {
+    fun enqueuePhoto(paymentId: String, slot: ProofSlot, photoPath: String, number: String? = null, onSaved: () -> Unit = {}) {
         val item = state.value.items.firstOrNull { it.paymentId == paymentId }
-        save(paymentId, slot) { venueId, staffId ->
+        save(paymentId, slot, PROOF_SAVE_FAILED_MESSAGE, onSaved) { venueId, staffId ->
             queue.enqueuePhoto(
                 PhotoCapture(venueId, authRepository.getVenueSlug(), staffId, paymentId, item?.verificationId, slot, photoPath, number),
             )
@@ -111,27 +113,33 @@ class PendingVerificationsViewModel @Inject constructor(
      */
     fun correctNumber(paymentId: String, slot: ProofSlot, number: String) {
         val verificationId = state.value.items.firstOrNull { it.paymentId == paymentId }?.verificationId ?: return
-        save(paymentId, slot) { venueId, staffId ->
+        save(paymentId, slot, PROOF_SAVE_NUMBER_FAILED_MESSAGE) { venueId, staffId ->
             queue.enqueueNumberOnly(NumberCapture(venueId, staffId, paymentId, verificationId, slot, number))
         }
     }
 
-    private fun save(paymentId: String, slot: ProofSlot, enqueue: suspend (venueId: String, staffId: String) -> String) {
+    private fun save(
+        paymentId: String, slot: ProofSlot, failureMessage: String, onSaved: () -> Unit = {},
+        enqueue: suspend (venueId: String, staffId: String) -> String,
+    ) {
         val venueId = authRepository.getVenueId()
         val staffId = authRepository.getStaffId()
         if (venueId == null || staffId == null) {
             _error.value = PROOF_FAILED_MESSAGE
             return
         }
+        if (_savingPaymentId.value != null) return // un segundo toque a «Confirmar» mientras guarda no duplica la captura
         viewModelScope.launch {
             _savingPaymentId.value = paymentId
             try {
-                refreshWhenDelivered(enqueue(venueId, staffId))
+                val key = enqueue(venueId, staffId)
+                onSaved()
+                refreshWhenDelivered(key)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "📋 [Pendientes] No se pudo guardar en la terminal | paymentId=$paymentId | slot=$slot")
-                _error.value = PROOF_SAVE_FAILED_MESSAGE
+                _error.value = failureMessage
             } finally {
                 _savingPaymentId.value = null
             }

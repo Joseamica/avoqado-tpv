@@ -2694,8 +2694,12 @@ private fun PaymentErrorContent(
                 .heightIn(min = minContentHeight)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            // D22 (PAX, 3-nov): con todo centrado, el aviso «Sin conexión» empujaba los botones 120 px y un toque para «Cancelar» cayó
+            // en «Reintentar». Ahora el mensaje se centra en el espacio de arriba y los botones van pegados al fondo, fuera de la
+            // tarjeta: el aviso sólo encoge el espacio de arriba. `SpaceBetween` con un primer hijo vacío (`weight` no sirve en un scroll).
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
+            Spacer(modifier = Modifier.height(0.dp))
             AvoqadoCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -2726,47 +2730,45 @@ private fun PaymentErrorContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(32.dp))
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // ⭐ SHIFT VALIDATION: Show "Abrir caja" button when no shift is open
-                        if (showOpenShiftButton) {
-                            AvoqadoButton(
-                                text = "Abrir caja",
-                                onClick = onOpenShift,
-                                fullWidth = true
-                            )
-                        } else {
-                            if (showCashFallback) {
-                                AvoqadoButton(
-                                    text = "Cobrar en Efectivo",
-                                    onClick = onCashFallback,
-                                    fullWidth = true
-                                )
-                            }
-
-                            if (canRetry) {
-                                AvoqadoButton(
-                                    text = "Reintentar",
-                                    onClick = onRetry,
-                                    fullWidth = true
-                                )
-                            }
-                        }
-
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // ⭐ SHIFT VALIDATION: Show "Abrir caja" button when no shift is open
+                if (showOpenShiftButton) {
+                    AvoqadoButton(
+                        text = "Abrir caja",
+                        onClick = onOpenShift,
+                        fullWidth = true
+                    )
+                } else {
+                    if (showCashFallback) {
                         AvoqadoButton(
-                            text = cancelText,
-                            onClick = onCancel,
+                            text = "Cobrar en Efectivo",
+                            onClick = onCashFallback,
+                            fullWidth = true
+                        )
+                    }
+
+                    if (canRetry) {
+                        AvoqadoButton(
+                            text = "Reintentar",
+                            onClick = onRetry,
                             fullWidth = true
                         )
                     }
                 }
+
+                AvoqadoButton(
+                    text = cancelText,
+                    onClick = onCancel,
+                    fullWidth = true
+                )
             }
         }
     }

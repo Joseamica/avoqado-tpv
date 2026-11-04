@@ -1048,46 +1048,52 @@ private fun ErrorContent(
     // AngelPay SDK error message + up to 3 stacked buttons don't fit the viewport.
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val minContentHeight = maxHeight
+        // D22 (N86, 4-nov): con el texto y los botones centrados, el aviso «Sin conexión» que aparece arriba empujaba los botones 60 px
+        // y un toque caía en otro. Ahora el texto se centra en el espacio de arriba y los botones van pegados al fondo: el aviso sólo
+        // encoge el espacio de arriba. `SpaceBetween` con un primer hijo vacío, porque `weight` no funciona dentro de un scroll.
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .heightIn(min = minContentHeight)
                 .padding(32.dp),
         ) {
-            // SDK 1.0.19 ([AngelPayPaymentState.Error.noSeCobro]): el SDK acreditó que el cobro NO salió al banco. No es
-            // «Error en el pago» ni un rechazo del banco — el título dice el hecho y el ícono no alarma.
-            Icon(
-                imageVector = Icons.Default.Warning,
-                contentDescription = null,
-                tint = if (state.noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.avoqadoColors.statusError,
-                modifier = Modifier.size(64.dp),
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = if (state.noSeCobro) TextosNoSeCobro.TITULO else "Error en el pago",
-                style = MaterialTheme.typography.titleLarge,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = state.message,
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (state.showOpenShiftButton) {
-                Button(
-                    onClick = onOpenShift,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Abrir caja")
-                }
+            Spacer(modifier = Modifier.height(0.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // SDK 1.0.19 ([AngelPayPaymentState.Error.noSeCobro]): el SDK acreditó que el cobro NO salió al banco. No es
+                // «Error en el pago» ni un rechazo del banco — el título dice el hecho y el ícono no alarma.
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = if (state.noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.avoqadoColors.statusError,
+                    modifier = Modifier.size(64.dp),
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = if (state.noSeCobro) TextosNoSeCobro.TITULO else "Error en el pago",
+                    style = MaterialTheme.typography.titleLarge,
+                )
                 Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
+
+                if (state.showOpenShiftButton) {
+                    Button(
+                        onClick = onOpenShift,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Abrir caja")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
             }
 
             if (state.canRetry) {
@@ -1106,6 +1112,7 @@ private fun ErrorContent(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Regresar")
+            }
             }
         }
     }

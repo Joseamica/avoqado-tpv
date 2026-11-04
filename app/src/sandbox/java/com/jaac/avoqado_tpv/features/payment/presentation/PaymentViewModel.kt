@@ -3405,7 +3405,7 @@ class PaymentViewModel @Inject constructor(
             Timber.w("⚠️ [Payment] No connectivity - blocking card payment and offering cash fallback")
             _isPaymentInProgress.value = false  // 🚦 Release guard
             _state.value = PaymentState.Error(
-                message = "Sin conexión a internet.\n\n¿Cobrar en efectivo?",
+                message = CobroRemotoDelPos.textoSinRedAntesDeCobrar(_paymentSource),
                 context = createPaymentContext(),
                 canRetry = true,
                 showCashFallback = true
@@ -3436,7 +3436,7 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("⏳ [Payment] SDK not ready - updating loading indicator")
             }
 
-            initializationManager.awaitInitialization().onFailure { error ->
+            initializationManager.awaitInitialization(antesDeUsarElLector = true).onFailure { error ->
                 Timber.e(error, "❌ [Payment] SDK initialization failed")
                 _isPaymentInProgress.value = false  // 🚦 Release guard
                 _state.value = PaymentState.Error(
@@ -4503,7 +4503,7 @@ class PaymentViewModel @Inject constructor(
                     _state.value = PaymentState.Processing("Configurando sistema de pago...")
                 }
 
-                initializationManager.awaitInitialization().onFailure { error ->
+                initializationManager.awaitInitialization(antesDeUsarElLector = true).onFailure { error ->
                     Timber.e(error, "❌ [REFUND] SDK initialization failed")
                     _state.value = PaymentState.Error(
                         message = "Error inicializando sistema de pago.\n\nPor favor, cierre sesión e intente nuevamente.",
@@ -5350,6 +5350,8 @@ class PaymentViewModel @Inject constructor(
 
                     // ⭐ NEW: Try to extract error description from Blumon response
                     var specificErrorDescription: String? = null
+                    // D15: el cuerpo completo, no sólo `description`: el token vencido llega como `invalid_token` en otro campo.
+                    val cuerpoDelFallo = StringBuilder()
                     try {
                         // Use reflection to access failure object's fields
                         val failureClass = failure.javaClass
@@ -5365,6 +5367,7 @@ class PaymentViewModel @Inject constructor(
 
                                     // Check if this field contains MomentumDataFailure object
                                     val valueStr = value.toString()
+                                    cuerpoDelFallo.append(valueStr).append(' ')
 
                                     // Strategy 1: Extract from Kotlin object toString() format
                                     // Pattern: "description=TARJETA INVALIDA"
@@ -5476,6 +5479,14 @@ class PaymentViewModel @Inject constructor(
                     // El código del banco se lee del OBJETO del SDK (`momentumFailure`), no de `errorString`:
                     // ahí nunca viene y todo rechazo del emisor quedaba "desconocido" (ver blumonIssuerCode).
                     val issuerCode = blumonIssuerCode(failure)
+                    // D15 (3-nov): con el SDK en mal estado (token vencido) cada intento salía rechazado hasta reiniciar la app. Se deja
+                    // marcado el lector y el SIGUIENTE intento —que pide el cajero— lo reinicializa. 🔴 Nunca se reintenta el cobro solo.
+                    // Con código del emisor es una declinación normal del banco (un «NO AUTORIZADO» con code=57), no el SDK (Codex r1 #2).
+                    if (issuerCode == null &&
+                        com.jaac.avoqado_tpv.features.payment.data.SdkFailureClassifier.isSdkStateFailure("$specificErrorDescription $cuerpoDelFallo")
+                    ) {
+                        initializationManager.marcarLectorParaReparar(specificErrorDescription ?: failure.javaClass.simpleName)
+                    }
                     val requiresChipInsertion = isContactless && (
                         (specificErrorDescription?.contains("INSERTE TARJETA", ignoreCase = true) == true) ||
                             issuerCode == "1A"

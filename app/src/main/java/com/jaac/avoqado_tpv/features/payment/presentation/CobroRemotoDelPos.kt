@@ -129,5 +129,14 @@ internal object CobroRemotoDelPos {
     fun permiteEfectivoYCripto(paymentSource: String?): Boolean =
         !(OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO && paymentSource == FUENTE_SOCKET)
 
+    /**
+     * D18 (PAX sin WiFi, 3-nov): lo que dice la pantalla cuando la terminal no tiene red ANTES de tocar el lector. Es certeza, no
+     * duda: no se llegó al SDK. El cobro del POS no trae botón de efectivo, así que no se le ofrece; y este texto también le llega
+     * al POS como `errorMessage` si nadie toca nada.
+     */
+    fun textoSinRedAntesDeCobrar(paymentSource: String?): String =
+        if (permiteEfectivoYCripto(paymentSource)) "Sin conexión a internet.\n\n¿Cobrar en efectivo?"
+        else "Sin conexión a internet: no se cobró.\n\nReintenta cuando vuelva la red."
+
     const val FUENTE_SOCKET = "SOCKET"
 }

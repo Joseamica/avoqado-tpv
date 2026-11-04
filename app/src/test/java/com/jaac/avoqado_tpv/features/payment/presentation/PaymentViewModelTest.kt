@@ -187,7 +187,7 @@ class PaymentViewModelTest {
         mockInitializationManager = mockk(relaxed = true) {
             every { isInitialized } returns MutableStateFlow(true)
             coEvery { ensureInitialized(any()) } returns Result.success(Unit)
-            coEvery { awaitInitialization() } returns Result.success(Unit)
+            coEvery { awaitInitialization(any()) } returns Result.success(Unit)
         }
 
         // Configure MultiMerchantSDKManager
@@ -591,7 +591,7 @@ class PaymentViewModelTest {
     @Test
     fun `payment guard prevents duplicate startPayment`() = runTest {
         // Make init slow so payment stays in progress
-        coEvery { mockInitializationManager.awaitInitialization() } coAnswers {
+        coEvery { mockInitializationManager.awaitInitialization(any()) } coAnswers {
             kotlinx.coroutines.delay(5000)
             Result.success(Unit)
         }
@@ -615,7 +615,7 @@ class PaymentViewModelTest {
         // antes de observar el guard, que entonces ya se liberó legítimamente.
         val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
         val release = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { mockInitializationManager.awaitInitialization() } coAnswers {
+        coEvery { mockInitializationManager.awaitInitialization(any()) } coAnswers {
             entered.complete(Unit)
             release.await()
             Result.success(Unit)
@@ -939,14 +939,14 @@ class PaymentViewModelTest {
         viewModel.startPayment("100.00")
         testDispatcher.scheduler.advanceUntilIdle()
 
-        coVerify { mockInitializationManager.awaitInitialization() }
+        coVerify { mockInitializationManager.awaitInitialization(any()) }
 
         viewModel.viewModelScope.cancel()
     }
 
     @Test
     fun `startPayment with init failure transitions to Error`() = runTest {
-        coEvery { mockInitializationManager.awaitInitialization() } returns
+        coEvery { mockInitializationManager.awaitInitialization(any()) } returns
             Result.failure(Exception("SDK init failed"))
 
         val viewModel = createViewModel()
@@ -991,7 +991,7 @@ class PaymentViewModelTest {
         assertThat(errorState.message).contains("Sin conexión")
         assertThat(viewModel.isPaymentInProgress.value).isFalse()
 
-        coVerify(exactly = 0) { mockInitializationManager.awaitInitialization() }
+        coVerify(exactly = 0) { mockInitializationManager.awaitInitialization(any()) }
         viewModel.viewModelScope.cancel()
     }
 

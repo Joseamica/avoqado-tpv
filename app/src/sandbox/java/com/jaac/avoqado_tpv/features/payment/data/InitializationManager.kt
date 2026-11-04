@@ -58,6 +58,12 @@ class InitializationManager @Inject constructor(
     private val criticalNetworkOperationManager: CriticalNetworkOperationManager
 ) {
 
+    // D15: el lector se repara en el siguiente intento, con enfriamiento. En memoria a propósito: reiniciar la app ya reinicializa.
+    private val politicaDeReparacion = SdkRecoveryPolicy()
+    @Volatile private var lectorPorReparar = false
+    @Volatile private var marcadoEn = 0L
+    @Volatile private var ultimaReparacionDelLector: Long? = null
+
     companion object {
         private const val TWENTY_FOUR_HOURS_MS = 86_400_000L  // 24 hours in milliseconds
         private const val SDK_DATABASE_NAME = "pax-database"  // Blumon SDK Room database
@@ -197,7 +203,9 @@ class InitializationManager @Inject constructor(
      * @return Result.success(Unit) when SDK is ready
      * @return Result.failure if initialization fails
      */
-    suspend fun awaitInitialization(): Result<Unit> {
+    suspend fun awaitInitialization(antesDeUsarElLector: Boolean = false): Result<Unit> {
+        // D15 (Codex r1 #1): sólo quien está por usar el lector para SU operación gasta la marca; nadie más la toca.
+        if (antesDeUsarElLector) repararElLectorSiToca()
         if (_isInitialized.value) {
             return Result.success(Unit)
         }
@@ -472,6 +480,57 @@ class InitializationManager @Inject constructor(
      * de pago…"` already shown on first cobro post-app-launch). This keeps the refresh
      * lazy and avoids running the SDK init in the background when nobody is waiting.
      */
+    /**
+     * D15 (3-nov): `SdkFailureClassifier` reconocía el token vencido (`invalid_token`, `NA_002`, `NO AUTORIZADO`) pero nadie lo
+     * llamaba, y «Reintentar» caía en el fast path de [awaitInitialization]: cada intento salía rechazado hasta reiniciar la app.
+     * Quien vio el fallo deja esta marca; el SIGUIENTE intento reinicializa el lector antes de pedir la tarjeta.
+     * 🔴 Nunca reintenta el cobro solo (Blumon lo vetó: doble cobro). Sólo prepara el lector para cuando el cajero lo pida.
+     */
+    fun marcarLectorParaReparar(motivo: String) {
+        lectorPorReparar = true
+        marcadoEn = System.currentTimeMillis()
+        Timber.w("🩺 [InitializationManager] Lector por reparar antes del siguiente intento: %s", motivo)
+    }
+
+    /**
+     * Se llama desde [awaitInitialization] SÓLO con `antesDeUsarElLector` (el cobro y la devolución de `PaymentViewModel`, justo antes
+     * de su propia llamada al SDK): el cobro propio ya encendió su marca de «cobro en curso», pero todavía no llega al lector, así que
+     * esa marca no cuenta. Sí cuentan un cambio de comercio o una inicialización en curso. Si algo ya reinicializó bien DESPUÉS de la
+     * marca (un cambio de comercio con `forceReinitialize`, el refresco de 24 h), la marca está cumplida y no se repite (Codex r1 #3).
+     * Si la reparación falla, el lector queda sin inicializar y el siguiente intento lo vuelve a inicializar, como cualquier init fallido
+     * de antes: sin lector no se puede cobrar, así que esperar 5 min sería peor. Con el enfriamiento de [SdkRecoveryPolicy] (5 min) Blumon no nos limita: una segunda marca
+     * dentro de esa ventana se descarta y la siguiente falla vuelve a marcar.
+     */
+    private fun repararElLectorSiToca() {
+        if (!lectorPorReparar) return
+        val ultimoInit = secureStorage.getLastBlumonInitTimestamp()
+        if (ultimoInit != null && ultimoInit > marcadoEn) {
+            lectorPorReparar = false
+            Timber.i("🩺 [InitializationManager] El lector ya se reinicializó después de la marca: no se repite")
+            return
+        }
+        val operacion = criticalNetworkOperationManager.state.value
+        val ahora = System.currentTimeMillis()
+        when (val decision = politicaDeReparacion.evaluate(
+            now = ahora,
+            lastRecoveryAt = ultimaReparacionDelLector,
+            consecutiveFailures = 1,
+            criticalOperationInProgress = operacion.merchantSwitchInProgress || operacion.sdkInitializationInProgress,
+        )) {
+            SdkRecoveryPolicy.Decision.Recover -> {
+                lectorPorReparar = false
+                ultimaReparacionDelLector = ahora
+                Timber.w("🩺 [InitializationManager] Reinicializando el lector antes del intento (D15)")
+                _isInitialized.value = false
+            }
+            is SdkRecoveryPolicy.Decision.Cooldown -> {
+                lectorPorReparar = false
+                Timber.w("🩺 [InitializationManager] Lector reparado hace poco: se espera %d s para no arriesgar el límite de Blumon", decision.remainingMs / 1000)
+            }
+            else -> Timber.w("🩺 [InitializationManager] Lector por reparar, pero hay otra operación del SDK en curso: espera al siguiente intento")
+        }
+    }
+
     fun invalidateForRefresh() {
         if (_isInitialized.value) {
             Timber.w("⚠️ [InitializationManager] In-memory flag invalidated by refresh scheduler (24h OAuth TTL)")

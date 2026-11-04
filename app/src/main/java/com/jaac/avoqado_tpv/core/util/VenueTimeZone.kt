@@ -71,7 +71,11 @@ object VenueTimeZone {
      *
      * @param secureStorage Storage to read venue timezone from
      * @return Venue ZoneId (México por ley: desfase fijo), or MEXICO fallback
+     *
+     * Con candado junto con [invalidateCache]: sin él, una lectura de la zona vieja ya en camino la volvía a guardar DESPUÉS
+     * de que la config nueva invalidó, y la hora seguía corrida hasta reiniciar (Codex, 3-nov).
      */
+    @Synchronized
     fun get(secureStorage: SecureStorage): ZoneId {
         cachedZoneId?.let { return it }
 
@@ -83,6 +87,7 @@ object VenueTimeZone {
     /**
      * Clear cached timezone. Call when venue changes (REMOTE_ACTIVATE).
      */
+    @Synchronized
     fun invalidateCache() {
         cachedZoneId = null
     }

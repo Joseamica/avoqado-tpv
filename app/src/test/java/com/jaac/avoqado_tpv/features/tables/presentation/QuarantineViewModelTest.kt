@@ -66,6 +66,7 @@ class QuarantineViewModelTest {
         outbox = outbox,
         deviceInfoManager = deviceInfoManager,
         permissionsRepository = permissionsRepository,
+        secureStorage = io.mockk.mockk(relaxed = true),
     )
 
     private fun rejected(

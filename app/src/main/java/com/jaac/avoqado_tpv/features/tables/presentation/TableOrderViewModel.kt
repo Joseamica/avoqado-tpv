@@ -60,6 +60,9 @@ class TableOrderViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val networkMonitor: NetworkMonitor,
 ) : ViewModel() {
+    /** La hora que se le enseña al mesero es la del negocio, no el desfase que trae el servidor. */
+    val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
+
 
     /**
      * Fase 1 — solo consumido hoy por [compItems] (UI): cortesía de artículo

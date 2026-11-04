@@ -146,13 +146,29 @@ class RemotePaymentInbox(
     fun observePendingObligationCount(venueId: String) =
         dao.observePendingObligations(venueId).map { it.size }
 
-    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean = try {
-        shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
+    suspend fun markProcessingForVenue(requestId: String, venueId: String): Boolean =
+        reclamarParaVenue(requestId, venueId) == RemotePaymentAdmission.READY
+
+    /**
+     * El reclamo, con su razón si la Caja no lo deja pasar. D8 (3-nov, N86): con la caja cerrada (o sin sesión, o sin permiso) la
+     * terminal daba acuse, no abría nada y no contestaba, y el POS esperaba hasta 5 min. Nació en la 2.14.0: antes no se le
+     * preguntaba a la Caja. 🔴 Sólo lo que sigue sin reclamar admite este «no»: una reclamada puede tener el lector abierto.
+     */
+    suspend fun reclamarParaVenue(requestId: String, venueId: String): RemotePaymentAdmission = try {
+        val reclamada = shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
             dao.claimWithBelonging(requestId, venueId, belonging.kind, belonging.localSessionId,
                 belonging.cashDrawerSessionId, System.currentTimeMillis()) == 1
         }
+        if (reclamada) RemotePaymentAdmission.READY else RemotePaymentAdmission.NOT_CLAIMABLE
     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-      catch (error: Exception) { Timber.w(error, "No se admitió el cobro remoto en Caja"); false }
+      catch (error: Exception) {
+        Timber.w(error, "No se admitió el cobro remoto en Caja")
+        if (runCatching { dao.getById(requestId)?.status }.getOrNull() == RemotePaymentRequestEntity.STATUS_RECEIVED) {
+            RemotePaymentAdmission.NotAdmitted((error as? IllegalStateException)?.message ?: "No se pudo preparar el cobro.")
+        } else {
+            RemotePaymentAdmission.NOT_CLAIMABLE
+        }
+    }
 
     suspend fun markProcessing(requestId: String): Boolean {
         val row = dao.getById(requestId) ?: return false

@@ -161,16 +161,26 @@ class AngelPayAuthRepository @Inject constructor(
     // ── T26: recuperación sola tras arrancar sin red ──────────────────────────
 
     /**
+     * D9 (N86, 3-nov): la red se cayó DENTRO de elegir el comercio. El SDK ya guardó su token y falló en su post-auth, así
+     * que dice «autenticado» con una sesión a medias, y el token de selección ya se perdió. No es una sesión viva que
+     * proteger: ningún cobro pudo arrancar sobre ella. Sin esto, «Reintentar» contestaba NO_ATORADA y la Nexgo seguía sin
+     * tarjeta hasta matar la app. Dura hasta el siguiente login ([authenticateWithCreds]).
+     */
+    @Volatile
+    private var seleccionInconclusa = false
+
+    /**
      * ¿La auth quedó atorada de una forma que la recuperación de fondo puede arreglar?
      * Sólo un error recuperable ([AuthErrorKind.recuperableEnFondo]) o sin autenticar, Y
-     * sin sesión del SDK: una sesión viva nunca se toca desde el fondo. Si ni siquiera se
-     * puede preguntar al SDK, se asume que SÍ hay sesión (lado seguro).
+     * sin sesión del SDK (o con una a medias, [seleccionInconclusa]): una sesión viva nunca se
+     * toca desde el fondo. Si ni siquiera se puede preguntar al SDK, se asume que SÍ hay sesión
+     * (lado seguro).
      */
     fun estaAtorada(): Boolean {
         val estado = _state.value
         val recuperable = estado is AngelPayAuthState.Unauthenticated ||
             (estado is AngelPayAuthState.AuthError && estado.kind.recuperableEnFondo)
-        return recuperable && !runCatching { sdkGateway.isAuthenticated() }.getOrDefault(true)
+        return recuperable && (seleccionInconclusa || !runCatching { sdkGateway.isAuthenticated() }.getOrDefault(true))
     }
 
     /**
@@ -182,7 +192,8 @@ class AngelPayAuthRepository @Inject constructor(
      * hay ninguna y el venue tiene (o podría tener) más de una cuenta, NO autentica —queda
      * «requiere auth» y el cobro autenticará la cuenta que el cajero elija—. Sólo con una
      * cuenta usa el genérico, igual que el arranque. Nunca `switchAccount` ni el logout de
-     * una sesión viva (la condición de arriba garantiza que no la hay).
+     * una sesión viva (la condición de arriba garantiza que no la hay; la de una selección a
+     * medias sí se cierra, ver [seleccionInconclusa]).
      */
     suspend fun recuperarSiSigueAtorada(
         pantallaDeCobroQuieta: Boolean = false,
@@ -358,6 +369,8 @@ class AngelPayAuthRepository @Inject constructor(
     /** Cuerpo de [ensureAuthenticated]. Exige [nucleo] tomado (T26). */
     private suspend fun ensureAuthenticatedLocked(reportMerchants: Boolean = false): Result<Unit> {
         Timber.tag(LOG_TAG).i("ensureAuthenticated() called")
+        // D9: una selección a medias se rehace con SU cuenta; por aquí abajo caería al genérico (la primaria).
+        if (seleccionInconclusa) currentAngelPayAccountId?.let { return ensureAuthenticatedAsLocked(it) }
         if (sdkGateway.isAuthenticated()) {
             // Probe SDK session health BEFORE trusting the cached auth flag.
             // An "authenticated" session with 0 merchants is a stale/broken
@@ -473,6 +486,7 @@ class AngelPayAuthRepository @Inject constructor(
         creds: AngelPayCreds,
         reportMerchants: Boolean = false,
     ): Result<Unit> {
+        seleccionInconclusa = false
         Timber.tag(LOG_TAG).i("authenticateWithCreds(source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
 
         currentAngelPayAccountId = null
@@ -618,7 +632,7 @@ class AngelPayAuthRepository @Inject constructor(
             Timber.tag(LOG_TAG).w("switchAccount($accountId) rejected: ${err.message}")
             return Result.failure(err)
         }
-        if (currentAngelPayAccountId == accountId && sdkGateway.isAuthenticated()) {
+        if (currentAngelPayAccountId == accountId && sdkGateway.isAuthenticated() && !seleccionInconclusa) {
             // Probe SDK session health before trusting the no-op. Same reasoning
             // as `ensureAuthenticated`'s short-circuit: an "authenticated" session
             // with 0 merchants is stale (observed 2026-05-20 after reinstall +
@@ -761,6 +775,7 @@ class AngelPayAuthRepository @Inject constructor(
         } else {
             val err = result.exceptionOrNull()
             val kind = if (esFallaDeRed(err)) AuthErrorKind.SIN_RED else AuthErrorKind.OTHER
+            seleccionInconclusa = kind == AuthErrorKind.SIN_RED
             fallar(kind, err?.message ?: "Merchant selection failed", err)
         }
         result
@@ -781,6 +796,7 @@ class AngelPayAuthRepository @Inject constructor(
         sdkGateway.logout()
         merchantRepository.clearActive()
         currentAngelPayAccountId = null
+        seleccionInconclusa = false
         _state.value = AngelPayAuthState.Unauthenticated
         if (previousAccountId != null) {
             ensureAuthenticatedAsLocked(previousAccountId)
@@ -816,7 +832,7 @@ class AngelPayAuthRepository @Inject constructor(
     /** Cuerpo de [ensureAuthenticatedAs]. Exige [nucleo] tomado (T26). */
     private suspend fun ensureAuthenticatedAsLocked(accountId: String): Result<Unit> {
         ultimaCuentaConocida = accountId
-        if (sdkGateway.isAuthenticated()) {
+        if (sdkGateway.isAuthenticated() && !seleccionInconclusa) {
             val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
             if (!cachedMerchants.isNullOrEmpty()) {
                 if (currentAngelPayAccountId == accountId) {

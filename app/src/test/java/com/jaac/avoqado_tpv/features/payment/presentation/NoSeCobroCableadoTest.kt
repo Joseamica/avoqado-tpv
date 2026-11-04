@@ -77,4 +77,11 @@ class NoSeCobroCableadoTest {
         com.google.common.truth.Truth.assertThat(fuente).contains("imeAction = ImeAction.Done")
         com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin) && !enviando) onConfirmar(pin) }")
     }
+    // D8: la solicitud no admitida se contesta en el acto, con el motivo, en vez de callar.
+    @Test fun `el cobro que la terminal no admite se le contesta al POS`() {
+        val rama = navegacion.substringAfter("is com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted ->")
+            .substringBefore("return@collect")
+        assertThat(rama).contains("rejectRemotePaymentBeforeAuthorization(")
+        assertThat(rama).contains("admission.motivo")
+    }
 }

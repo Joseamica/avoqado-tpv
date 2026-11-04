@@ -38,10 +38,10 @@ class RemotePaymentCoordinatorTest {
         var venue = "venue-1"
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
-        coEvery { inbox.markProcessingForVenue("req-1", "venue-1") } coAnswers {
+        coEvery { inbox.reclamarParaVenue("req-1", "venue-1") } coAnswers {
             entered.complete(Unit)
             release.await()
-            true
+            RemotePaymentAdmission.READY
         }
         val coordinator = RemotePaymentCoordinator(inbox)
         val result = async { coordinator.prepareSocketPaymentRequest("req-1", { true }, { venue }) }

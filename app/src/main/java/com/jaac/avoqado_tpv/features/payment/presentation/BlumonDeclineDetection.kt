@@ -35,7 +35,14 @@ internal fun blumonDeclineMessage(
  * Códigos del emisor que resuelven un cobro por sí solos: el banco contestó y dijo que no, así que no
  * hay dinero en duda y la terminal debe seguir cobrando.
  */
-internal val BLUMON_CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51", "54", "55", "57", "58", "61", "62", "65")
+internal val BLUMON_CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51", "54", "55", "56", "57", "58", "61", "62", "65")
+
+/**
+ * Códigos con los que Momentum contesta, pero sin decir que el banco rechazó, así que el cobro sigue en duda (ISO 8583):
+ * aprobados que no deberían venir en un fallo (00, 08, 10, 11, 16) y «no pude saberlo»: error (06), en proceso (09),
+ * reintenta (19), falla (22), respuesta tardía (68), corte (90), emisor o ruta no disponibles (91, 92), falla del sistema (96).
+ */
+private val BLUMON_CODIGOS_SIN_RECHAZO = setOf("00", "08", "10", "11", "16", "06", "09", "19", "22", "68", "90", "91", "92", "96")
 
 /**
  * Código del emisor de un fallo del SDK de Blumon, o null si el fallo no trae uno.
@@ -49,15 +56,7 @@ internal val BLUMON_CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51",
  * campo ni de un getter.
  */
 internal fun blumonIssuerCode(failure: Any): String? {
-    val textos = buildList {
-        runCatching {
-            failure.javaClass.declaredFields.forEach { campo ->
-                campo.isAccessible = true
-                campo.get(failure)?.let { add(it.toString()) }
-            }
-        }
-        add(failure.toString())
-    }
+    val textos = textosDelFallo(failure)
     val patrones = listOf(
         Regex("""\bcode=([0-9A-Z]{2})\b"""),                   // data class del SDK: code=57
         Regex(""""code"\s*:\s*"([0-9A-Z]{2})""""),             // cuerpo JSON de Momentum
@@ -67,6 +66,17 @@ internal fun blumonIssuerCode(failure: Any): String? {
         patron.find(texto)?.groupValues?.get(1)?.let { return it }
     }
     return null
+}
+
+/** El texto de cada campo del fallo: el SDK de producción y el de pruebas no tienen la misma forma. */
+private fun textosDelFallo(failure: Any): List<String> = buildList {
+    runCatching {
+        failure.javaClass.declaredFields.forEach { campo ->
+            campo.isAccessible = true
+            campo.get(failure)?.let { add(it.toString()) }
+        }
+    }
+    add(failure.toString())
 }
 
 internal const val BLUMON_SIN_VEREDICTO = "Blumon sin veredicto: "
@@ -85,11 +95,25 @@ internal fun blumonMotivoSinVeredicto(failure: Any, descripcion: String?): Strin
 internal fun blumonRespuestaGuardada(lastError: String?): String? =
     lastError?.takeIf { it.startsWith(BLUMON_SIN_VEREDICTO) }?.substringAfter(" · ", "")?.takeIf { it.isNotBlank() }
 
-/** ¿El banco contestó con un rechazo explícito? Sólo entonces el cobro queda resuelto sin dinero en duda. */
+/**
+ * ¿Blumon contestó que no? Entonces es un rechazo normal: se ve el motivo y se puede reintentar luego luego.
+ *
+ * Founder, 3-nov: «ningún rechazo de Blumon directo debería de trabar la terminal». Antes sólo contaba una lista de códigos,
+ * y una tarjeta que el banco no reconoce (`httpCode=200, code=56, TARJETA INVALIDA`, PAX 2841548417) apartaba la venta en
+ * «Estamos confirmando el cobro». La duda queda para lo que de verdad no dice: sin respuesta de Momentum (red, tiempo
+ * agotado, `GenericFailure`), 5xx, 408, una respuesta sin código ni motivo, y [BLUMON_CODIGOS_SIN_RECHAZO].
+ */
 internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Boolean {
     if (failure.javaClass.simpleName == "GenericFailure") return false
-    val code = blumonIssuerCode(failure) ?: return false
-    return (isContactless && code == "1A") || code in BLUMON_CODIGOS_RECHAZO_EMISOR
+    val code = blumonIssuerCode(failure)
+    if (code == "1A") return isContactless
+    if (code in BLUMON_CODIGOS_RECHAZO_EMISOR) return true
+    if (failure.javaClass.simpleName != "MomentumFailure" || code in BLUMON_CODIGOS_SIN_RECHAZO) return false
+    val textos = textosDelFallo(failure)
+    val http = textos.firstNotNullOfOrNull { Regex("""\bhttpCode=(\d{3})\b""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+    val contesto = http != null && (http in 200..299 || (http in 400..499 && http != 408))
+    val motivo = textos.firstNotNullOfOrNull { Regex("""\bdescription=([^,)]*)""").find(it)?.groupValues?.get(1) }
+    return contesto && (code != null || (!motivo.isNullOrBlank() && motivo.trim() != "null"))
 }
 
 /**
@@ -102,15 +126,7 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
  */
 internal fun blumonReembolsoRechazado(failure: Any): Boolean {
     if (failure.javaClass.simpleName != "MomentumFailure") return false
-    val textos = buildList {
-        runCatching {
-            failure.javaClass.declaredFields.forEach { campo ->
-                campo.isAccessible = true
-                campo.get(failure)?.let { add(it.toString()) }
-            }
-        }
-        add(failure.toString())
-    }
+    val textos = textosDelFallo(failure)
     val http = textos.firstNotNullOfOrNull { Regex("""\bhttpCode=(\d{3})\b""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
     return http != null && http in 400..499 && http != 408
 }

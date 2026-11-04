@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **[PAX] Si Blumon contesta que no, es un rechazo normal** (founder, 3-nov: «ningún rechazo de Blumon directo debería de trabar la terminal»): una tarjeta que el banco no reconoce (`code=56, TARJETA INVALIDA`) dejaba la venta en «Estamos confirmando el cobro», porque sólo contaba una lista de 12 códigos. Ahora cualquier «no» de Momentum muestra su motivo y se puede reintentar luego luego. La espera queda para cuando no contestó (red, tiempo agotado, 5xx, 408) o dijo que no pudo saberlo (91, 96…).
+
 ---
 
 ## [2.15.0] - 2026-11-03

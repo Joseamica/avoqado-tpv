@@ -347,12 +347,30 @@ class BlumonSaleReferenceTest {
     }
 
     /**
-     * 24-sep, PAX de pruebas: Blumon contestó `NO AUTORIZADO` con `code=000000` (no es un código del emisor, así que
-     * el cobro sigue sin veredicto) y la libreta guardó sólo «MomentumFailure»: la pantalla nunca pudo decir qué
-     * había contestado Blumon. Lo que contestó se guarda junto al intento, corto y sin el cuerpo del banco.
+     * 24-sep, PAX de pruebas: la libreta guardaba sólo «MomentumFailure» y la pantalla nunca pudo decir qué había contestado
+     * Blumon. Lo que contestó se guarda junto al intento sin veredicto, corto y sin el cuerpo del banco.
      */
     @Test
-    fun `P1 un NO AUTORIZADO sin codigo del banco queda guardado junto al intento sin veredicto`() = runTest(testDispatcher) {
+    fun `P1 lo que contesto Blumon queda guardado junto al intento sin veredicto`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            val datos = mockk<com.example.clean_lib_services.shared.core.domain.entity.sale_data.MomentumDataFailure>(relaxed = true)
+            every { datos.toString() } returns
+                "MomentumDataFailure(httpCode=500, code=000000, description=ERROR INTERNO, membership=null)"
+            coEvery { mockSaleIccUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Left(
+                com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccFailure.MomentumFailure(datos)
+            )
+            vm.performOnlineAuthorization("100.00", "", "", "", false)
+            io.mockk.coVerify {
+                mockPaymentAttemptLedger.markIndeterminate("test-attempt", "Blumon sin veredicto: MomentumFailure · ERROR INTERNO")
+            }
+            assertEquals("test-attempt", (vm.state.value as PaymentState.Error).unresolvedAttemptId)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** Founder, 3-nov: si Blumon contesta que no, es un rechazo normal. Antes este caso se quedaba en «Estamos confirmando». */
+    @Test
+    fun `un NO AUTORIZADO sin codigo del banco es un rechazo normal y se puede reintentar`() = runTest(testDispatcher) {
         val vm = viewModelReadyToAuthorize()
         try {
             val datos = mockk<com.example.clean_lib_services.shared.core.domain.entity.sale_data.MomentumDataFailure>(relaxed = true)
@@ -362,10 +380,10 @@ class BlumonSaleReferenceTest {
                 com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccFailure.MomentumFailure(datos)
             )
             vm.performOnlineAuthorization("100.00", "", "", "", false)
-            io.mockk.coVerify {
-                mockPaymentAttemptLedger.markIndeterminate("test-attempt", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
-            }
-            assertEquals("test-attempt", (vm.state.value as PaymentState.Error).unresolvedAttemptId)
+            val state = vm.state.value as PaymentState.Error
+            assertEquals(null, state.unresolvedAttemptId)
+            assertEquals(true, state.canRetry)
+            io.mockk.coVerify(exactly = 0) { mockPaymentAttemptLedger.markIndeterminate(any(), any()) }
         } finally { vm.viewModelScope.cancel() }
     }
 

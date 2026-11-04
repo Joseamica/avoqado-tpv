@@ -54,7 +54,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * - v10 → v11: Added paidAmount/remainingBalance for split payments (2025-11-26)
  * - v11 → v12: Added lastSplitType for split payment type restriction (2025-11-28)
  * - v12 → v13: Added color fields to ProductCategoryEntity and ProductEntity (2025-12-01)
- * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11) [eliminada en v45, MIGRATION_44_45]
+ * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11) [eliminada en v46, MIGRATION_45_46]
  * - v14 → v15: Added isActive to ProductCategoryEntity (filter inactive categories - 2025-01-13)
  * - v15 → v16: Added categoryIsActive to ProductEntity (category status in product cache - 2025-01-13)
  * - v16 → v17: **🔴 CRITICAL FIX** - Added missing columns to PendingPaymentEntity (venue_id, blumon_serial_number, is_international, authorization_number, device_serial_number) - Fixes production crash on update from v1.1.x (2026-01-19)
@@ -85,7 +85,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * - TableEntity: Cache tables for floor plan + table service (offline-friendly)
  * - FloorElementEntity: Cache floor elements for floor plan (offline-friendly)
  * - CachedShiftEntity: Offline cache for shift status (prevention pattern - shows last known state)
- * - (VerificationQueueEntity: eliminada en v45, MIGRATION_44_45; la reemplaza ProofOfSaleQueueEntity)
+ * - (VerificationQueueEntity: eliminada en v46, MIGRATION_45_46; la reemplaza ProofOfSaleQueueEntity)
  *
  * **Future Entities:**
  * - PaymentHistoryEntity: Local cache of successful payments for offline access
@@ -109,7 +109,7 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
  * val productDao = database.productDao()
  * val productCategoryDao = database.productCategoryDao()
  * val cachedShiftDao = database.cachedShiftDao()
- * val proofOfSaleQueueDao = database.proofOfSaleQueueDao() // reemplazó a verificationQueueDao (eliminado en v45)
+ * val proofOfSaleQueueDao = database.proofOfSaleQueueDao() // reemplazó a verificationQueueDao (eliminado en v46)
  * ```
  *
  * **World-Class Examples:**
@@ -128,8 +128,8 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
         TableEntity::class,
         FloorElementEntity::class,
         CachedShiftEntity::class,
-        ProofOfSaleQueueEntity::class, // ⭐ v45: cola de fotos/números de vinculación (reemplaza verification_queue, código muerto)
-        ActionableSaleCacheEntity::class, // ⭐ v45: lista guardada de ventas con acción pendiente
+        ProofOfSaleQueueEntity::class, // ⭐ v46: cola de fotos/números de vinculación (reemplaza verification_queue, código muerto)
+        ActionableSaleCacheEntity::class, // ⭐ v46: lista guardada de ventas con acción pendiente
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
@@ -203,7 +203,12 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v44 (p. ej. la 2.14.0) es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local: libreta, cola de pagos (`pending_payments`),
     // reembolsos pendientes y bandeja de cobros remotos. El retroceso exige un APK de retroceso con v45.
-    version = 45,
+    // ⭐ Version 46 (3-nov-2026, número de vinculación): tablas nuevas `proof_of_sale_queue` y `actionable_sale_cache`; se borra
+    // `verification_queue` (código muerto, sin lectores ni escritores). Aditiva salvo ese DROP (MIGRATION_45_46). Nació como v45 en
+    // su rama y se renumeró a 46 el 3-nov al integrar la 2.15.0, que ya está en la calle con OTRA v45 (la de arriba).
+    // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v45 (la 2.15.0) o anterior es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local, también la cola de fotos. El retroceso exige un APK con v46.
+    version = 46,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -308,10 +313,10 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      */
     abstract fun cachedShiftDao(): CachedShiftDao
 
-    /** Cola durable de fotos y números de vinculación (v45). Su `@Provides` vive en DatabaseModule. */
+    /** Cola durable de fotos y números de vinculación (v46). Su `@Provides` vive en DatabaseModule. */
     abstract fun proofOfSaleQueueDao(): ProofOfSaleQueueDao
 
-    /** Lista guardada de ventas con acción pendiente (v45). */
+    /** Lista guardada de ventas con acción pendiente (v46). */
     abstract fun actionableSaleCacheDao(): ActionableSaleCacheDao
 
     /**
@@ -2231,6 +2236,25 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 if (!columnaExiste("remote_payment_requests", "durable_barrier_version")) {
                     db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN durable_barrier_version INTEGER NOT NULL DEFAULT 0")
                 }
+            }
+        }
+
+        /**
+         * v46 (número de vinculación): cola de fotos/números y lista guardada; `verification_queue` (muerta) se borra. DDL copiado
+         * de `46.json`. Nació como v45 en la rama y se renumeró el 3-nov al integrar la 2.15.0, que ya publicó SU v45 («ninguna
+         * duda»): dos esquemas con el mismo número dejarían en crash-loop a las terminales. Idempotente por `IF NOT EXISTS`.
+         */
+        val MIGRATION_45_46 = object : Migration(45, 46) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `proof_of_sale_queue` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, `venue_slug` TEXT, `photo_url` TEXT, PRIMARY KEY(`idempotency_key`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_venue_id` ON `proof_of_sale_queue` (`venue_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_payment_id` ON `proof_of_sale_queue` (`payment_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_sync_status` ON `proof_of_sale_queue` (`sync_status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proof_of_sale_queue_claim_token` ON `proof_of_sale_queue` (`claim_token`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `actionable_sale_cache` (`payment_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `verification_id` TEXT, `json` TEXT NOT NULL, `delivered_slots` TEXT NOT NULL DEFAULT '', `local_only` INTEGER NOT NULL DEFAULT 0, `cached_at` INTEGER NOT NULL, PRIMARY KEY(`payment_id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_venue_id` ON `actionable_sale_cache` (`venue_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_actionable_sale_cache_staff_id` ON `actionable_sale_cache` (`staff_id`)")
+                db.execSQL("DROP TABLE IF EXISTS `verification_queue`")
             }
         }
 

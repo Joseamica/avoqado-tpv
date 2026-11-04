@@ -10,7 +10,7 @@ const val PROOF_ROW_PHOTO = "PHOTO"
 const val PROOF_ROW_NUMBER_ONLY = "NUMBER_ONLY"
 
 /**
- * Cola durable de la foto de comprobante y del número de vinculación (PlayTelecom, v45).
+ * Cola durable de la foto de comprobante y del número de vinculación (PlayTelecom, v46).
  * Cada foto o corrección es una fila NUEVA; la PK es la `idempotency_key`.
  */
 @Entity(

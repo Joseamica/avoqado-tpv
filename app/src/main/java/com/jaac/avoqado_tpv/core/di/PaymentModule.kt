@@ -182,12 +182,14 @@ object PaymentModule {
         orderPaymentRecorder: OrderPaymentRecorder,
         paymentQueueRepository: PaymentQueueRepository,
         shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+        actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository,
     ): RecordPaymentUseCase {
         return RecordPaymentUseCase(
             fastPaymentRecorder = fastPaymentRecorder,
             orderPaymentRecorder = orderPaymentRecorder,
             paymentQueueRepository = paymentQueueRepository,
             shiftRepository = shiftRepository,
+            actionableSales = actionableSales,
         )
     }
 

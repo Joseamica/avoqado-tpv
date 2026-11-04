@@ -50,7 +50,9 @@ data class ModuleFeatures(
     val allowUnregisteredSale: Boolean = true,
     val requireCategorySelection: Boolean = true,
     val showStockCounts: Boolean = true,
-    val enablePortabilidad: Boolean = false
+    val enablePortabilidad: Boolean = false,
+    /** Pedir el número de vinculación (y el portado) con la foto de comprobante. `features.linkingNumber`. */
+    val linkingNumber: Boolean = false
 )
 
 /**

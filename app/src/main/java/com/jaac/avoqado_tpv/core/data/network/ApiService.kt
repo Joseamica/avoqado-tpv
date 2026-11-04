@@ -638,6 +638,33 @@ interface ApiService {
         @Path("verificationId") verificationId: String
     ): Response<VerificationDetailResponse>
 
+    /** POST tpv/verification/{verificationId}/number: corrige o agrega el número de una ranura (sin foto). */
+    @POST("tpv/verification/{verificationId}/number")
+    suspend fun setVerificationNumber(
+        @Path("verificationId") verificationId: String,
+        @Body request: SetVerificationNumberRequest
+    ): Response<ProofOfSaleResponse>
+
+    /** GET tpv/verification/number-check: ¿el número ya está en otra venta de la organización? */
+    @GET("tpv/verification/number-check")
+    suspend fun checkLinkingNumber(
+        @Query("number") number: String,
+        @Query("kind") kind: String, // linking | ported
+        @Query("verificationId") verificationId: String? = null
+    ): Response<NumberCheckResponse>
+
+    /** GET tpv/verification/actionable: PENDING y FAILED del promotor, con total y cursor. */
+    @GET("tpv/verification/actionable")
+    suspend fun getActionableVerifications(
+        @Query("cursor") cursor: String? = null
+    ): Response<ActionableVerificationsResponse>
+
+    /** GET tpv/verification/status?paymentIds=a,b,c (hasta 100): estado de cada venta; NONE si no existe. */
+    @GET("tpv/verification/status")
+    suspend fun getVerificationStatuses(
+        @Query("paymentIds") paymentIds: String
+    ): Response<VerificationStatusesResponse>
+
     // ========== TPV Messages (Dashboard → Terminal) ==========
 
     /**
@@ -1857,21 +1884,69 @@ data class ProofOfSaleRequest(
     val photoUrls: List<String>,
     val verificationId: String? = null, // Non-blocking flow: update existing PENDING verification
     val replaceIndex: Int? = null, // Replace photo at this index instead of appending (0=Vinculacion, 1=Portabilidad)
-    val photoLabel: String? = null // Fixed slot: "Vinculacion"=index 0, "Portabilidad"=index 1
+    val photoLabel: String? = null, // Fixed slot: "Vinculacion"=index 0, "Portabilidad"=index 1
+    // Terminal nueva (cola durable): todo opcional; una terminal publicada no lo manda y el servidor la trata como hoy.
+    val linkingNumber: String? = null,
+    val portedNumber: String? = null,
+    val idempotencyKey: String? = null,
+    val captureSeq: Long? = null,
+    val captureDeviceId: String? = null,
+    val capturedAt: String? = null, // ISO-8601 con zona
 )
 
 data class ProofOfSaleResponse(
     val success: Boolean,
     val verificationId: String,
     val status: String? = null, // "PENDING" or "COMPLETED"
-    val message: String?
+    val message: String?,
+    // Resultados de la captura (servidor nuevo); ausentes en respuestas viejas.
+    val outcome: String? = null, // APPLIED | SUPERSEDED_BY_NEWER | SALE_ALREADY_APPROVED
+    val photoOutcome: String? = null, // APPLIED | SUPERSEDED_BY_NEWER
+    val linkingNumberOutcome: String? = null, // APPLIED | UNCHANGED | SUPERSEDED_BY_NEWER | LOCKED_BY_BACKOFFICE | DISABLED | NOT_PORTABILIDAD
+    val portedNumberOutcome: String? = null,
+    val linkingDuplicate: Boolean? = null,
+    val portedDuplicate: Boolean? = null,
+)
+
+/** POST tpv/verification/{verificationId}/number: sólo el número de una ranura, sin foto. */
+data class SetVerificationNumberRequest(
+    val slot: String, // VINCULACION | PORTABILIDAD
+    val number: String,
+    val idempotencyKey: String,
+    val captureSeq: Long,
+    val captureDeviceId: String,
+    val capturedAt: String,
+)
+
+/** GET tpv/verification/number-check */
+data class NumberCheckResponse(
+    val success: Boolean = true,
+    val duplicate: Boolean? = null,
+)
+
+data class VerificationStatusItem(val paymentId: String, val status: String)
+
+/** GET tpv/verification/status (NONE si el servidor no conoce el pago). */
+data class VerificationStatusesResponse(
+    val success: Boolean = true,
+    val data: List<VerificationStatusItem>? = null,
+)
+
+/** GET tpv/verification/actionable: las PENDING y FAILED del promotor, en el formato del detalle. */
+data class ActionableVerificationsResponse(
+    val success: Boolean,
+    val data: List<VerificationDetailDto>? = null, // Gson ignora el default de Kotlin: quien la lea, .orEmpty()
+    val total: Int? = null,
+    val nextCursor: String? = null,
 )
 
 // ========== Pending Verifications DTOs ==========
 
 data class PendingVerificationsResponse(
     val success: Boolean,
-    val data: List<PendingVerificationDto>
+    val data: List<PendingVerificationDto>,
+    val total: Int? = null,
+    val nextCursor: String? = null,
 )
 
 data class PendingVerificationDto(
@@ -1883,7 +1958,12 @@ data class PendingVerificationDto(
     val serialNumbers: List<String>,
     val isPortabilidad: Boolean,
     val photos: List<String>,
-    val requiredPhotos: Int
+    val requiredPhotos: Int,
+    val linkingNumber: String? = null,
+    val portedNumber: String? = null,
+    val linkingNumberLocked: Boolean? = null,
+    val portedNumberLocked: Boolean? = null,
+    val alerts: List<String>? = null, // LINKING_DUPLICATE | PORTED_DUPLICATE
 )
 
 // ========== Verification Detail DTOs (sale-correction flow) ==========
@@ -1905,7 +1985,12 @@ data class VerificationDetailDto(
     val requiredPhotos: Int,
     val status: String,                          // PENDING | PROCESSING | COMPLETED | FAILED
     val rejectionReasons: List<String>? = null,  // ["REVIEW_PORTABILIDAD", ...] when FAILED
-    val reviewNotes: String? = null              // Free-text feedback from back-office
+    val reviewNotes: String? = null,             // Free-text feedback from back-office
+    val linkingNumber: String? = null,
+    val portedNumber: String? = null,
+    val linkingNumberLocked: Boolean? = null,
+    val portedNumberLocked: Boolean? = null,
+    val alerts: List<String>? = null,
 )
 
 // ========== Sales Goal DTOs ==========

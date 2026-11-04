@@ -117,7 +117,6 @@ class AngelPayPaymentViewModelTest {
     private lateinit var paymentApiService: PaymentApiService
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
-    private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
     private lateinit var observabilityManager: ObservabilityManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
     // 📒 La Libreta (Task 5) — relaxed: every mark is observational and must never affect the flow.
@@ -184,7 +183,6 @@ class AngelPayPaymentViewModelTest {
         paymentApiService = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
-        verificationUploadManager = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
@@ -245,6 +243,10 @@ class AngelPayPaymentViewModelTest {
 
     private fun createViewModel(
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
+        actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
+        proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
+        modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -268,7 +270,6 @@ class AngelPayPaymentViewModelTest {
         paymentApiService = paymentApiService,
         apiService = apiService,
         socketManager = socketManager,
-        verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,
@@ -287,6 +288,10 @@ class AngelPayPaymentViewModelTest {
         pendingPaymentDao = mockk(relaxed = true),
         subirVentaGuardadaUseCase = mockk(relaxed = true),
         impresoraDeVentaGuardada = mockk(relaxed = true),
+        proofOfSaleQueue = proofOfSaleQueue,
+        actionableSales = actionableSales,
+        proofOfSaleRemote = proofOfSaleRemote,
+        modulesRepository = modulesRepository,
     )
     }
 
@@ -2970,11 +2975,14 @@ class AngelPayPaymentViewModelTest {
         return result
     }
 
-    private fun kotlinx.coroutines.test.TestScope.vmConCobroDelPos(requestId: String = "req-incierto"): AngelPayPaymentViewModel {
+    private fun kotlinx.coroutines.test.TestScope.vmConCobroDelPos(
+        requestId: String = "req-incierto",
+        actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
+    ): AngelPayPaymentViewModel {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        val vm = createViewModel()
+        val vm = createViewModel(actionableSales = actionableSales)
         vm.initPayment(amount = "100.00")
         runCurrent()
         vm.setSocketPaymentSource("SOCKET", requestId)
@@ -3284,6 +3292,53 @@ class AngelPayPaymentViewModelTest {
             // Fix 1 · Minor #5: el JSON durable que resolvió `recoverOne` se EMITE al servidor, como hacen el trigger y el worker.
             verify(exactly = 1) { socketManager.emitDurableTerminalPaymentResult(bandeja) }
         } finally { vm.viewModelScope.cancel() }
+    }
+
+    // C6: el webhook no crea la verificación; la venta con SIM que confirma el SERVIDOR se guarda en «Pendientes» aquí.
+    @Test fun `C6 S6 RECORDED de una venta con SIM la guarda en Pendientes con lo que el cobro ya sabe`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        val bandeja = """{"requestId":"REQ-C6S6","status":"success","paymentId":"pay-s6"}"""
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null) andThen LecturaDelIntento(bandeja)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaRegistrada("att")
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val vm = vmConCobroDelPos("REQ-C6S6", actionableSales = sales)
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000006", isPortabilidad = true)
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Success).receipt?.serverRecordedVia).isEqualTo("s6")
+            coVerify(exactly = 1) {
+                sales.addLocalSale("pay-s6", match { it.compareTo(BigDecimal("100")) == 0 }, null, true, listOf("8952000000000000006"), any(), any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `C6 S5 registrado de una venta con SIM la guarda en Pendientes y un cobro sin SIM no`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        val ids = mutableListOf<String>()
+        coEvery { paymentAttemptLedger.markIndeterminate(capture(ids), any()) } returns Unit
+        val sales = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val vm = vmConCobroDelPos("REQ-C6S5", actionableSales = sales)
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000005", isPortabilidad = false)
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-C6S5", ids.last(), "pay-s5", 10000, 0, registrado = true)); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Success).receipt?.paymentId).isEqualTo("pay-s5")
+            coVerify(exactly = 1) {
+                sales.addLocalSale("pay-s5", match { it.compareTo(BigDecimal("100")) == 0 }, null, false, listOf("8952000000000000005"), any(), any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+
+        val sinSim = mockk<com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository>(relaxed = true)
+        val normal = vmConCobroDelPos("REQ-C6S5B", actionableSales = sinSim)
+        try {
+            normal.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            normal.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-C6S5B", ids.last(), "pay-n", 10000, 0, registrado = true)); runCurrent()
+            assertThat(normal.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            coVerify(exactly = 0) { sinSim.addLocalSale(any(), any(), any(), any(), any(), any(), any()) }
+        } finally { normal.viewModelScope.cancel() }
     }
 
     @Test fun `una fila DESCARTADA con RECORDED encima es contradiccion — la pantalla dice que Avoqado registro dinero y NUNCA que se puede volver a cobrar`() = runTest(testDispatcher) {
@@ -5901,6 +5956,120 @@ class AngelPayPaymentViewModelTest {
             committed.complete(Unit)
             action.cancel()
             action.join()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // C5 — bloque 0: la foto de comprobante se encola, no se sube desde el cobro
+    // ----------------------------------------------------------------------
+    @Test
+    fun `C5 la foto de una portabilidad se encola por ranura con la tienda de la sesion y Nuevo Pago no borra nada`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { authRepository.getVenueSlug() } returns "tienda-a"
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returnsMany listOf("k1", "k2")
+        coEvery { queue.awaitResult("k1", any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", false, false)
+        coEvery { queue.awaitResult("k2", any()) } returns null
+        val vm = createViewModel(proofOfSaleQueue = queue)
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        val portabilidad = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.PORTABILIDAD
+        try {
+            vm.setSerializedSaleInfo(serialNumber = "8952000000000000001", isPortabilidad = true)
+
+            vm.confirmProofOfSalePhoto("/cache/v.jpg", "pay-1", vinculacion, null)
+            runCurrent()
+            assertThat(vm.proofSlotStates.value[vinculacion])
+                .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Uploaded)
+            assertThat(vm.proofOfSaleComplete.value).isFalse() // falta la segunda foto
+
+            vm.confirmProofOfSalePhoto("/cache/p.jpg", "pay-1", portabilidad, null)
+            runCurrent()
+            coVerify(exactly = 1) {
+                queue.enqueuePhoto(
+                    com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                        "v1", "tienda-a", "s1", "pay-1", null, portabilidad, "/cache/p.jpg", null,
+                    ),
+                )
+            }
+            assertThat(vm.proofSlotStates.value[portabilidad])
+                .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.ProofSlotState.Queued("Se subirá sola"))
+            assertThat(vm.proofOfSaleComplete.value).isTrue()
+
+            vm.retakeProofOfSalePhoto(portabilidad)
+            vm.resetPayment()
+            runCurrent()
+
+            assertThat(vm.proofSlotStates.value).isEmpty()
+            assertThat(vm.proofOfSaleComplete.value).isFalse()
+            coVerify(exactly = 0) { queue.discard(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // C7 — el número de vinculación con la foto, detrás del interruptor
+    // ----------------------------------------------------------------------
+    @Test
+    fun `C7 con el interruptor encendido la foto se encola con su numero y el campo se rellena al retomar`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { authRepository.getVenueSlug() } returns "tienda-a"
+        val queue = mockk<com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository>(relaxed = true)
+        coEvery { queue.enqueuePhoto(any()) } returns "k1"
+        coEvery { queue.awaitResult("k1", any()) } returns
+            com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult("k1", "APPLIED", false, false, verificationId = "ver-1")
+        val modulos = kotlinx.coroutines.flow.MutableStateFlow<List<com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule>>(emptyList())
+        val repo = mockk<com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository> { every { modules } returns modulos }
+        val vm = createViewModel(
+            proofOfSaleQueue = queue,
+            proofOfSaleRemote = com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote(apiService),
+            modulesRepository = repo,
+        )
+        val vinculacion = com.jaac.avoqado_tpv.features.verification.data.ProofSlot.VINCULACION
+        try {
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isFalse()
+            modulos.value = listOf(
+                com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule(
+                    "m1", "SERIALIZED_INVENTORY", "Inventario",
+                    com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig(
+                        features = com.jaac.avoqado_tpv.features.modules.domain.model.ModuleFeatures(linkingNumber = true),
+                    ),
+                ),
+            )
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isTrue()
+            assertThat(vm.numberCapture).isNotNull()
+
+            vm.confirmProofOfSalePhoto("/cache/v.jpg", "pay-1", vinculacion, "5512345678")
+            runCurrent()
+
+            coVerify(exactly = 1) {
+                queue.enqueuePhoto(
+                    com.jaac.avoqado_tpv.features.verification.data.PhotoCapture(
+                        "v1", "tienda-a", "s1", "pay-1", null, vinculacion, "/cache/v.jpg", "5512345678",
+                    ),
+                )
+            }
+            assertThat(vm.proofNumber(vinculacion)).isEqualTo("5512345678")
+            assertThat(vm.proofVerificationId()).isEqualTo("ver-1")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `C7 sin modulos el interruptor queda apagado y no hay campo`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            runCurrent()
+            assertThat(vm.linkingNumberEnabled.value).isFalse()
+            assertThat(vm.numberCapture).isNull()
+        } finally {
             vm.viewModelScope.cancel()
         }
     }

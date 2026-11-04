@@ -1,6 +1,8 @@
 package com.jaac.avoqado_tpv.features.payment.data.repository
 
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
+import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -403,42 +405,5 @@ class OrderPaymentRecorder @Inject constructor(
                     "merchant=${merchantAccountId.take(8)}..."
         )
         return copy(merchantAccountId = null)
-    }
-
-    /**
-     * Devuelve el `code` del cuerpo de error del servidor, o null si no hay uno CONFIABLE.
-     *
-     * Null cuando el cuerpo está vacío, no es JSON, no es un objeto, o no trae `code`: quien
-     * decide dinero con esto (el `PaymentSyncWorker`) tiene que poder distinguir «el servidor
-     * dijo ORDER_NOT_FOUND» de «no sé por qué fue el 404». Nunca se adivina leyendo el mensaje.
-     */
-    private fun parseBackendErrorCode(rawBody: String?): String? {
-        val trimmedBody = rawBody?.trim().orEmpty()
-        if (trimmedBody.isBlank()) return null
-
-        return runCatching {
-            val json = com.google.gson.JsonParser.parseString(trimmedBody)
-            if (!json.isJsonObject) return@runCatching null
-            json.asJsonObject.get("code")?.takeUnless { it.isJsonNull }?.asString
-        }.getOrNull()?.takeIf { it.isNotBlank() }
-    }
-
-    private fun parseBackendErrorMessage(rawBody: String?, fallback: String): String {
-        val trimmedBody = rawBody?.trim().orEmpty()
-        if (trimmedBody.isBlank()) {
-            return fallback.ifBlank { "Sin detalle del servidor" }
-        }
-
-        val parsedMessage = runCatching {
-            val json = com.google.gson.JsonParser.parseString(trimmedBody)
-            if (!json.isJsonObject) return@runCatching null
-
-            val obj = json.asJsonObject
-            obj.get("message")?.takeUnless { it.isJsonNull }?.asString
-                ?: obj.get("error")?.takeUnless { it.isJsonNull }?.asString
-                ?: obj.get("code")?.takeUnless { it.isJsonNull }?.asString
-        }.getOrNull()
-
-        return parsedMessage?.takeIf { it.isNotBlank() } ?: trimmedBody.take(300)
     }
 }

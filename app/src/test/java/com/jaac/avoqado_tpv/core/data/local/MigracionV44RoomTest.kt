@@ -69,7 +69,7 @@ class MigracionV44RoomTest {
         val migrated = DatabaseModule.provideDatabase(context)
         try {
             val sql = migrated.openHelper.readableDatabase
-            assertThat(sql.version).isEqualTo(45) // la cadena sigue hasta la v45 (B1, «ninguna duda»)
+            assertThat(sql.version).isEqualTo(46) // la cadena sigue hasta la v46 (v45 «ninguna duda», v46 número de vinculación)
             for (table in OWNERS) {
                 val names = columns.getValue(table)
                 sql.query("SELECT ${names.joinToString { "`$it`" }} FROM `$table` ORDER BY rowid").use { c ->
@@ -101,7 +101,7 @@ class MigracionV44RoomTest {
             sql.query("SELECT COUNT(*) FROM local_crypto_operations").use { c -> c.moveToFirst(); assertThat(c.getInt(0)).isEqualTo(0) }
         } finally { migrated.close() }
         val reopened = DatabaseModule.provideDatabase(context)
-        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(45) } finally { reopened.close() }
+        try { assertThat(reopened.openHelper.readableDatabase.version).isEqualTo(46) } finally { reopened.close() }
     }
 
     private companion object {

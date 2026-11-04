@@ -1,0 +1,231 @@
+package com.jaac.avoqado_tpv.features.verification.presentation
+
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.verification.data.PhotoCapture
+import com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository
+import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
+import com.jaac.avoqado_tpv.features.verification.data.ProofSyncResult
+import com.jaac.avoqado_tpv.features.verification.data.local.PROOF_ROW_NUMBER_ONLY
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import timber.log.Timber
+
+/** Lo que ve el promotor en cada ranura de la foto de comprobante, en la pantalla del cobro. */
+sealed interface ProofSlotState {
+    data object Idle : ProofSlotState
+    /** Guardándose en la terminal y esperando la respuesta de su fila (hasta 10 s). */
+    data object Saving : ProofSlotState
+    data object Uploaded : ProofSlotState
+    /** Subida, pero el servidor dice que su número ya está en otra venta (texto de Isaac). Cuenta como lista: avisa y deja guardar. */
+    data class UploadedWithWarning(val message: String) : ProofSlotState
+    /** Guardada en la cola: se sube sola. Cuenta como lista. */
+    data class Queued(val message: String) : ProofSlotState
+    /** Una persona tiene que verla (en «Pendientes» queda con «Descartar»). No cuenta como lista. */
+    data class NeedsAttention(val message: String) : ProofSlotState
+}
+
+const val PROOF_QUEUED_MESSAGE = "Se subirá sola"
+const val PROOF_OFFLINE_MESSAGE = "Sin conexión: la foto y el número se guardaron en la terminal y se subirán solos"
+const val PROOF_FAILED_MESSAGE = "No se pudo subir: tómala de nuevo"
+
+/** La terminal no pudo guardar la foto (disco lleno, copia fallida): neutro, y se puede confirmar otra vez. */
+/** Igual, cuando lo que no se pudo guardar fue sólo el número («Corregir número»). */
+const val PROOF_SAVE_NUMBER_FAILED_MESSAGE = "No se pudo guardar el número en la terminal. Intenta de nuevo."
+const val PROOF_SAVE_FAILED_MESSAGE = "No se pudo guardar la foto en la terminal. Intenta de nuevo."
+const val PROOF_SALE_QUEUED_MESSAGE = "La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre"
+
+/**
+ * El `paymentId` con el que se puede encolar la foto, o null si la venta todavía no está registrada. Un id vacío cuenta
+ * como ausente: el S6 de la Nexgo arma el recibo con `serverPaymentId ?: ""`, y esa fila el servidor la rechazaría.
+ */
+fun proofOfSalePaymentId(receipt: PaymentReceipt?): String? = receipt?.paymentId?.takeIf { it.isNotBlank() }
+
+/** El estado de la ranura según el desenlace final de su fila en la cola (C4). */
+fun proofSlotStateFor(outcome: String): ProofSlotState = when (outcome) {
+    "APPLIED", "SUPERSEDED_BY_NEWER" -> ProofSlotState.Uploaded
+    "SALE_ALREADY_APPROVED" -> ProofSlotState.NeedsAttention("La venta ya estaba aprobada; esta foto no se agregó")
+    "SALE_REJECTED" -> ProofSlotState.NeedsAttention("La venta fue rechazada; esta foto no se subió")
+    "NUMBER_DISABLED" -> ProofSlotState.NeedsAttention("La foto se subió, pero el número no se guardó")
+    else -> ProofSlotState.NeedsAttention(PROOF_FAILED_MESSAGE) // PERMANENT
+}
+
+/** Como [proofSlotStateFor], y si se subió con su número repetido (`linkingDuplicate` / `portedDuplicate`), lo avisa. */
+fun proofSlotStateFor(result: ProofSyncResult, slot: ProofSlot): ProofSlotState {
+    val state = proofSlotStateFor(result.outcome)
+    val duplicate = if (slot == ProofSlot.PORTABILIDAD) result.portedDuplicate else result.linkingDuplicate
+    return if (state == ProofSlotState.Uploaded && duplicate) ProofSlotState.UploadedWithWarning(slot.numberKind.duplicateText) else state
+}
+
+/** Lo que dice una captura de la cola en «Pendientes» y en la corrección, mientras siga ahí. */
+fun queuedCaptureMessage(row: ProofOfSaleQueueEntity): String = when {
+    row.kind == PROOF_ROW_NUMBER_ONLY -> numberOnlyMessage(row) // «Corregir número»: no hay foto de por medio
+    canDiscardCapture(row) ->
+        (proofSlotStateFor(row.outcome.orEmpty()) as? ProofSlotState.NeedsAttention)?.message ?: PROOF_FAILED_MESSAGE
+    else -> PROOF_QUEUED_MESSAGE // PENDING o SYNCING: el worker la sube
+}
+
+/** El número corregido sin foto (fila `NUMBER_ONLY`): los mismos desenlaces que la foto, dichos del número. */
+private fun numberOnlyMessage(row: ProofOfSaleQueueEntity): String = when {
+    !canDiscardCapture(row) -> "Se subirá solo"
+    row.outcome == "SALE_ALREADY_APPROVED" -> "La venta ya estaba aprobada; este número no se guardó"
+    row.outcome == "SALE_REJECTED" -> "La venta fue rechazada; este número no se guardó"
+    row.outcome == "NUMBER_DISABLED" -> "El número no se guardó: esta función está apagada para tu organización"
+    else -> "No se pudo guardar el número: corrígelo de nuevo" // PERMANENT
+}
+
+/** Una captura de la cola que lleva foto (las de «Corregir número» sólo llevan el número). */
+fun isPhotoCapture(row: ProofOfSaleQueueEntity): Boolean = row.kind != PROOF_ROW_NUMBER_ONLY
+
+/** «Descartar» sólo en lo que ya no se va a subir solo: lo mismo que acepta [ProofOfSaleQueueRepository.discard]. */
+fun canDiscardCapture(row: ProofOfSaleQueueEntity): Boolean = row.syncStatus == "FAILED" || row.syncStatus == "NEEDS_ATTENTION"
+
+/**
+ * El texto bajo las fotos: el de cada ranura en cola o a la vista. Con dos ranuras y textos distintos, cada uno con el
+ * nombre de su ranura. null si no hay nada que decir (vacías, guardándose o subidas).
+ */
+fun proofOfSaleMessage(states: Map<ProofSlot, ProofSlotState>, isPortabilidad: Boolean): String? {
+    val slots = requiredSlots(isPortabilidad)
+    val lines = slots.mapNotNull { slot ->
+        when (val s = states[slot]) {
+            is ProofSlotState.Queued -> slot to s.message
+            is ProofSlotState.NeedsAttention -> slot to s.message
+            is ProofSlotState.UploadedWithWarning -> slot to s.message
+            else -> null
+        }
+    }
+    if (lines.isEmpty()) return null
+    val texts = lines.map { it.second }.distinct()
+    if (lines.size == slots.size && texts.size == 1) return texts.single()
+    return lines.joinToString("\n") { (slot, text) ->
+        val name = if (slot == ProofSlot.VINCULACION) "Vinculación" else "Portabilidad"
+        "$name: $text"
+    }
+}
+
+private fun requiredSlots(isPortabilidad: Boolean) =
+    if (isPortabilidad) listOf(ProofSlot.VINCULACION, ProofSlot.PORTABILIDAD) else listOf(ProofSlot.VINCULACION)
+
+/**
+ * La foto de comprobante en los tres cobros (PAX production y sandbox, y la Nexgo): bloque 0. Ninguna pantalla sube:
+ * «Confirmar» encola en [ProofOfSaleQueueRepository] (archivo y fila antes de la red) y espera la respuesta de SU fila
+ * hasta 10 s; sin red no espera. Si la fila llega después, la ranura se pone al día mientras la pantalla siga ahí.
+ * Retomar y «Nuevo Pago» no borran nada, ni en Firebase ni en la cola: la nueva captura es otra fila con su propio
+ * `captureSeq` y el servidor decide cuál gana.
+ *
+ * Todo corre en [scope] (el `viewModelScope`, hilo principal): los mapas no necesitan candado.
+ *
+ * @param queue null sólo en pruebas viejas que no la proveen; Hilt siempre la da.
+ */
+class ProofOfSaleSlots(
+    private val scope: CoroutineScope,
+    private val queue: ProofOfSaleQueueRepository?,
+    private val isOnline: () -> Boolean,
+    private val isPortabilidad: () -> Boolean,
+) {
+    private val _states = MutableStateFlow<Map<ProofSlot, ProofSlotState>>(emptyMap())
+    val states: StateFlow<Map<ProofSlot, ProofSlotState>> = _states.asStateFlow()
+
+    private val _saving = MutableStateFlow(false)
+    val saving: StateFlow<Boolean> = _saving.asStateFlow()
+
+    private val _complete = MutableStateFlow(false)
+    /** true sólo si cada ranura requerida está subida o guardada en la cola. */
+    val complete: StateFlow<Boolean> = _complete.asStateFlow()
+
+    private val jobs = mutableMapOf<ProofSlot, Job>()
+
+    /** El último número confirmado por ranura en ESTA venta: rellena el campo al retomar la foto. */
+    private val numbers = mutableMapOf<ProofSlot, String>()
+
+    /**
+     * La verificación de ESTA venta, en cuanto el servidor contesta una de sus fotos. Con ella `number-check` no cuenta
+     * como repetido el número que la misma venta ya tiene (retomar la foto, o el portado igual al de vinculación).
+     */
+    var verificationId: String? = null
+        private set
+
+    fun number(slot: ProofSlot): String? = numbers[slot]
+
+    fun confirm(
+        photoPath: String, paymentId: String, slot: ProofSlot, number: String?,
+        venueId: String?, venueSlug: String?, staffId: String?,
+    ) {
+        jobs.remove(slot)?.cancel()
+        number?.let { numbers[slot] = it }
+        val q = queue
+        if (q == null || venueId == null || staffId == null) {
+            Timber.e("📸 [PROOF-OF-SALE] Sin sesión para guardar la foto | slot=$slot | paymentId=$paymentId")
+            set(slot, ProofSlotState.NeedsAttention(PROOF_FAILED_MESSAGE))
+            return
+        }
+        set(slot, ProofSlotState.Saving)
+        jobs[slot] = scope.launch {
+            val key = try {
+                q.enqueuePhoto(PhotoCapture(venueId, venueSlug, staffId, paymentId, null, slot, photoPath, number))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "📸 [PROOF-OF-SALE] No se pudo guardar la foto en la terminal | slot=$slot | paymentId=$paymentId")
+                set(slot, ProofSlotState.NeedsAttention(PROOF_SAVE_FAILED_MESSAGE))
+                return@launch
+            }
+            Timber.i("📸 [PROOF-OF-SALE] En la cola | slot=$slot | key=$key")
+            val first = if (isOnline()) {
+                q.awaitResult(key, FIRST_WAIT_MS)?.let { stateOf(it, slot) }
+                    ?: ProofSlotState.Queued(PROOF_QUEUED_MESSAGE)
+            } else {
+                ProofSlotState.Queued(PROOF_OFFLINE_MESSAGE)
+            }
+            set(slot, first)
+            if (first is ProofSlotState.Queued) {
+                // Sigue escuchando: si la fila se resuelve con la pantalla abierta, la ranura dice la verdad.
+                q.awaitResult(key, Long.MAX_VALUE)?.let { set(slot, stateOf(it, slot)) }
+            }
+        }
+    }
+
+    /** La ranura vuelve a pedir foto. No borra nada: lo ya encolado sigue su camino. */
+    fun retake(slot: ProofSlot) {
+        jobs.remove(slot)?.cancel()
+        set(slot, ProofSlotState.Idle)
+    }
+
+    /** «Nuevo Pago»: la pantalla olvida sus ranuras. No borra nada de la cola. */
+    fun reset() {
+        jobs.values.forEach { it.cancel() }
+        jobs.clear()
+        numbers.clear()
+        verificationId = null
+        _states.value = emptyMap()
+        refresh()
+    }
+
+    private fun stateOf(result: ProofSyncResult, slot: ProofSlot): ProofSlotState {
+        result.verificationId?.let { verificationId = it }
+        return proofSlotStateFor(result, slot)
+    }
+
+    private fun set(slot: ProofSlot, state: ProofSlotState) {
+        _states.value = _states.value + (slot to state)
+        refresh()
+    }
+
+    private fun refresh() {
+        val s = _states.value
+        _saving.value = s.values.any { it == ProofSlotState.Saving }
+        _complete.value = requiredSlots(isPortabilidad()).all {
+            s[it] is ProofSlotState.Uploaded || s[it] is ProofSlotState.UploadedWithWarning || s[it] is ProofSlotState.Queued
+        }
+    }
+
+    private companion object {
+        /** El tope de la espera en pantalla (spec §5.5): después, «Se subirá sola». */
+        const val FIRST_WAIT_MS = 10_000L
+    }
+}

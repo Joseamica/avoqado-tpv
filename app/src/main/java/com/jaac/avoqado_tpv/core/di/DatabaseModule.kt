@@ -20,7 +20,8 @@ import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptDatabase
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 import com.jaac.avoqado_tpv.core.data.local.LegacyTablesImport
-import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
+import com.jaac.avoqado_tpv.features.verification.data.local.ActionableSaleCacheDao
+import com.jaac.avoqado_tpv.features.verification.data.local.ProofOfSaleQueueDao
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
 import dagger.Module
 import dagger.Provides
@@ -137,7 +138,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_41_42,  // 👕 variantes: la familia de cada producto en el catálogo guardado (aditiva)
                 AvoqadoDatabase.migration43To44(context),  // B2-T1: gesto durable de Caja y pertenencia
                 AvoqadoDatabase.MIGRATION_42_43,  // 💵 «Cobrar» sin red: gtin/catalog_at, la venta guardada y el checador guardado
-                AvoqadoDatabase.MIGRATION_44_45   // 🔒 B1: solicitud «cerrada para ejecución» + «el SDK regresó» (aditiva)
+                AvoqadoDatabase.MIGRATION_44_45,  // 🔒 B1: solicitud «cerrada para ejecución» + «el SDK regresó» (aditiva)
+                AvoqadoDatabase.MIGRATION_45_46   // 📸 número de vinculación: cola de fotos + lista guardada; borra verification_queue
             )
 
             .addCallback(object : RoomDatabase.Callback() {
@@ -171,7 +173,7 @@ object DatabaseModule {
             // ⚠️ WARNING: This will DELETE all local data including:
             // - pending_payments (queued payments not yet synced)
             // - draft_orders (local orders)
-            // - verification_queue (pending verifications)
+            // - proof_of_sale_queue (fotos/números pendientes; reemplazó a verification_queue, eliminada en v46 por MIGRATION_45_46)
             // - All cache tables (can be recovered from server)
             //
             // RECOMMENDATION: Before downgrading via INSTALL_VERSION:
@@ -375,28 +377,13 @@ object DatabaseModule {
     @Provides
     fun provideCachedTimeEntryDao(database: AvoqadoDatabase): CachedTimeEntryDao = database.cachedTimeEntryDao()
 
-    /**
-     * Provides VerificationQueueDao from database.
-     *
-     * **Injected Into:**
-     * - VerificationRepository (Step 4 sale verification queue)
-     * - VerificationSyncWorker (background photo upload + sync)
-     *
-     * **Pattern (Offline-First):**
-     * - Capture photos + barcodes locally
-     * - Upload to Firebase Storage (UPLOADING_PHOTOS)
-     * - Sync metadata to backend API (SYNCING)
-     * - Cleanup after success (SYNCED)
-     *
-     * @param database AvoqadoDatabase instance
-     * @return VerificationQueueDao for verification queue operations
-     */
+    /** Cola de fotos/números de vinculación (v46). Un DAO nuevo sin su `@Provides` compila, pero Hilt truena al inyectarlo. */
     @Provides
-    fun provideVerificationQueueDao(
-        database: AvoqadoDatabase
-    ): VerificationQueueDao {
-        return database.verificationQueueDao()
-    }
+    fun provideProofOfSaleQueueDao(database: AvoqadoDatabase): ProofOfSaleQueueDao = database.proofOfSaleQueueDao()
+
+    /** Lista guardada de ventas con acción pendiente (v46). */
+    @Provides
+    fun provideActionableSaleCacheDao(database: AvoqadoDatabase): ActionableSaleCacheDao = database.actionableSaleCacheDao()
 
     /**
      * Provides AngelPayMerchantCacheDao from database.

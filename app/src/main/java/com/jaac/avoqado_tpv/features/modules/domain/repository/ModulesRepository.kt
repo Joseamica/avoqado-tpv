@@ -79,3 +79,11 @@ interface ModulesRepository {
         const val MODULE_ATTENDANCE_TRACKING = "ATTENDANCE_TRACKING"
     }
 }
+
+/**
+ * El interruptor del número de vinculación (PlayTelecom): `features.linkingNumber` del módulo SERIALIZED_INVENTORY activo.
+ * Sin módulos en la caché, apagado: la TPV hace lo de hoy y el servidor, que es quien manda, rechaza lo que no cuadre.
+ */
+fun List<VenueModule>.linkingNumberEnabled(): Boolean = any {
+    it.moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY && it.active && it.config.features.linkingNumber
+}

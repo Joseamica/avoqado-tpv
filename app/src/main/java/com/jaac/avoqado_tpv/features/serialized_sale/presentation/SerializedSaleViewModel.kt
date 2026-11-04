@@ -49,6 +49,10 @@ class SerializedSaleViewModel @Inject constructor(
     private val _canCreateCategory = MutableStateFlow(false)
     val canCreateCategory: StateFlow<Boolean> = _canCreateCategory.asStateFlow()
 
+    companion object {
+        const val SIN_SENAL_AL_ESCANEAR = "Sin conexión: para vender una SIM se necesita señal"
+    }
+
     // Job for scan operation - allows cancellation when user scans rapidly
     private var scanJob: Job? = null
 
@@ -169,7 +173,12 @@ class SerializedSaleViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             simNotAcceptedError = notAccepted,
-                            error = if (notAccepted) null else raw.ifEmpty { "Error al escanear" }
+                            error = when {
+                                notAccepted -> null
+                                // Sin señal es un estado normal, no un fallo: texto honesto, no el error crudo
+                                error is java.io.IOException -> SIN_SENAL_AL_ESCANEAR
+                                else -> raw.ifEmpty { "Error al escanear" }
+                            }
                         )
                     }
                 }
@@ -318,7 +327,12 @@ class SerializedSaleViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             simNotAcceptedError = notAccepted,
-                            error = if (notAccepted) null else raw.ifEmpty { "Error al procesar venta" }
+                            error = when {
+                                notAccepted -> null
+                                // Igual que al escanear: sin señal es un estado normal, no el error crudo
+                                error is java.io.IOException -> SIN_SENAL_AL_ESCANEAR
+                                else -> raw.ifEmpty { "Error al procesar venta" }
+                            }
                         )
                     }
                 }

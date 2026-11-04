@@ -91,7 +91,6 @@ class AngelPayWatchdogTest {
     private lateinit var paymentApiService: PaymentApiService
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
-    private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
     private lateinit var observabilityManager: ObservabilityManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
     private lateinit var paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
@@ -127,7 +126,6 @@ class AngelPayWatchdogTest {
         paymentApiService = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
-        verificationUploadManager = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         paymentAttemptLedger = mockk(relaxed = true) {
@@ -173,7 +171,6 @@ class AngelPayWatchdogTest {
         paymentApiService = paymentApiService,
         apiService = apiService,
         socketManager = socketManager,
-        verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,

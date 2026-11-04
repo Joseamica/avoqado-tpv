@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.ProofOfSaleResponse
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.verification.data.local.ActionableSaleCacheDao
@@ -33,7 +34,6 @@ import timber.log.Timber
 import java.io.File
 import java.io.IOException
 import java.time.Instant
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import javax.inject.Inject
@@ -348,7 +348,7 @@ class ProofOfSaleQueueRepository @Inject constructor(
         /** Un claim abandonado más viejo que esto lo puede rescatar otro worker (como los reembolsos). */
         const val LEASE_MS = 10 * 60 * 1000L
 
-        /** Ruta de Firebase (no la ve nadie): zona fija para que la carpeta no dependa del aparato. */
-        val STORAGE_DATE: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE.withZone(ZoneId.of("America/Mexico_City"))
+        /** Ruta de Firebase (no la ve nadie): hora de México por ley (VenueTimeZone), no la tzdata del aparato. */
+        val STORAGE_DATE: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE.withZone(VenueTimeZone.MEXICO)
     }
 }

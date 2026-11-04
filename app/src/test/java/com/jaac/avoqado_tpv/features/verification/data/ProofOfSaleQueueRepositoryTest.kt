@@ -149,7 +149,7 @@ class ProofOfSaleQueueRepositoryTest {
             enDiscoAlInsertar = dir.listFiles()?.map { it.absolutePath }.orEmpty()
             filaAlInsertar = db.proofOfSaleQueueDao().observeStaff("s1").first().single()
             // Ningún worker puede subir un archivo a medio copiar: la fila ya está tomada.
-            reclamablesAlInsertar = db.proofOfSaleQueueDao().claimBatch(10, "otro-worker", System.currentTimeMillis(), 0L)
+            reclamablesAlInsertar = System.currentTimeMillis().let { db.proofOfSaleQueueDao().claimBatch(10, "otro-worker", it, it - 10 * 60 * 1000L) }
         }
 
         val key = repo.enqueuePhoto(foto(slug = "tienda-x"))

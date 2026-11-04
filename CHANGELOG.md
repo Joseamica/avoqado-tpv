@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.16.0] - 2026-11-04
+
 ### **Added**
 - **[PlayTelecom] «Vender SIM» sin señal dice la verdad**: si falla la red al escanear una SIM o al confirmar la venta, la pantalla muestra «Sin conexión: para vender una SIM se necesita señal» (en gris, no en rojo) en lugar del error crudo; los errores del servidor siguen igual
 - **[PlayTelecom] Las fotos de comprobante ya no se pierden (cola durable)**: cada foto y cada corrección del número de vinculación se guarda primero en la terminal y se sube sola en la misma pasada que los pagos, los reembolsos y los cierres de caja, siempre al final. La fila se reserva antes de copiar el archivo (copia a `.part` y renombra), así una foto confirmada nunca queda sin fila; si el proceso muere a medias, a los 10 min queda a la vista en «Pendientes» como «no se pudo subir». Una foto ya subida a Firebase no se vuelve a subir al reintentar, y cada subida tiene tope de 90 s (después se reintenta). Lo que el servidor no acepta se queda a la vista con su motivo («venta ya aprobada», «venta rechazada», «número apagado», «no se pudo subir») en vez de borrarse; lo que falla por la red se reintenta solo. Si la terminal no puede guardar la foto o el número, la pantalla lo dice («No se pudo guardar la foto en la terminal. Intenta de nuevo.») y conserva la ventana y lo escrito. Room v46 (cola de fotos y lista guardada de ventas; se borra `verification_queue`, que nunca tuvo datos; era la v45 de la rama y se renumeró al integrar la 2.15.0, que ya publicó otra v45); contador de capturas con id de instalación para que una captura vieja no pise a una nueva, fuera del respaldo de Android (si no se puede guardar el contador, no se entrega el número)

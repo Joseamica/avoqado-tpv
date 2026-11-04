@@ -122,6 +122,9 @@ internal object CobroRemotoDelPos {
      */
     const val OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO = true
 
+    /** ¿Este cobro lo pidió el POS? Al salir de él, la terminal le contesta y regresa a donde estaba (PAX, 3-nov). */
+    fun esCobroDelPos(paymentSource: String?): Boolean = paymentSource == FUENTE_SOCKET
+
     /** ¿Se ofrecen Efectivo y Cripto en esta pantalla? `paymentSource` == "SOCKET" ⇒ cobro del POS. */
     fun permiteEfectivoYCripto(paymentSource: String?): Boolean =
         !(OCULTAR_EFECTIVO_Y_CRIPTO_EN_COBRO_REMOTO && paymentSource == FUENTE_SOCKET)

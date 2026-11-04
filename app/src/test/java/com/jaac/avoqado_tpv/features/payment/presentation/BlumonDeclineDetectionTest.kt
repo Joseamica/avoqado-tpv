@@ -79,15 +79,120 @@ class BlumonIssuerCodeTest {
         assertThat(blumonRechazoDefinitivo(momentum("51"), isContactless = false)).isTrue()
     }
 
+    // PAX 2841548417, 3-nov: tarjeta que Blumon no reconoce. `MomentumDataFailure(httpCode=200, code=56, TARJETA INVALIDA)`.
+    // ISO 8583: «no card record», el emisor la rechaza. Sin esto, la venta quedaba en «Estamos confirmando el cobro».
+    @Test fun `tarjeta sin registro 56 es un rechazo definitivo, con chip y sin contacto`() {
+        val f = momentum("56")
+        assertThat(blumonIssuerCode(f)).isEqualTo("56")
+        assertThat(blumonRechazoDefinitivo(f, isContactless = true)).isTrue()
+        assertThat(blumonRechazoDefinitivo(f, isContactless = false)).isTrue()
+    }
+
     @Test fun `un codigo que no es rechazo explicito del emisor sigue en duda`() {
         assertThat(blumonIssuerCode(momentum("91"))).isEqualTo("91")
         assertThat(blumonRechazoDefinitivo(momentum("91"), isContactless = false)).isFalse()
     }
 
-    @Test fun `sin codigo del banco no hay veredicto`() {
+    // Founder, 3-nov: «ningún rechazo de Blumon directo debería de trabar la terminal». Si Momentum contestó que no, es un
+    // rechazo normal; la duda queda para cuando no contestó o dijo que no pudo saberlo.
+    @Test fun `Blumon contesto que no, sin codigo ni en la lista, es un rechazo`() {
+        val noAutorizado = MomentumFailure(MomentumDataFailure(409, null, "NO AUTORIZADO"))
+        assertThat(blumonIssuerCode(noAutorizado)).isNull()
+        assertThat(blumonRechazoDefinitivo(noAutorizado, isContactless = false)).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "12", "TRANSACCION INVALIDA")), isContactless = true)).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(400, "TX_010", "TARJETA INVALIDA")), isContactless = false)).isTrue()
+    }
+
+    @Test fun `si Blumon no pudo saberlo sigue en duda`() {
+        for (codigo in listOf("06", "09", "19", "22", "68", "90", "91", "92", "96")) {
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, codigo, "SISTEMA")), isContactless = false)).isFalse()
+        }
+    }
+
+    // 🔴 Un código de aprobado nunca se lee como rechazo, aunque venga dentro de un fallo.
+    @Test fun `un codigo de aprobado dentro de un fallo sigue en duda`() {
+        for (codigo in listOf("00", "08", "10", "11", "16")) {
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, codigo, "APROBADA")), isContactless = false)).isFalse()
+        }
+    }
+
+    @Test fun `sin respuesta clara de Blumon sigue en duda`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(500, "XX", "ERROR")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(503, null, "ERROR")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(408, "XX", "TIEMPO")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, null)), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, "  ")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(null), isContactless = false)).isFalse()
+    }
+
+    // Codex, 3-nov: en producción, `2000` (falla de conexión con el procesador) llega como MomentumFailure.
+    @Test fun `2000 es una falla de conexion y sigue en duda aunque traiga motivo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "2000", "FALLA DE CONEXION")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(403, "2000", "FALLA DE CONEXION")), isContactless = false)).isFalse()
+    }
+
+    // Codex r2: el «no» también puede venir con 200 y sin código del emisor.
+    @Test fun `NO AUTORIZADO con 200 tambien es un rechazo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "000000", "NO AUTORIZADO")), isContactless = false)).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, "NO AUTORIZADO")), isContactless = false)).isTrue()
+    }
+
+    @Test fun `cuatro digitos son tecnicos y siguen en duda`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "2001", "FALLA")), isContactless = false)).isFalse()
+    }
+
+    // Codex r3: la negación puede venir separada de la palabra. La familia completa: lo que niega ANTES de «APROB» es rechazo.
+    @Test fun `la negacion puede venir separada de la palabra`() {
+        listOf("TRANSACCION NO FUE APROBADA", "NO  APROBADA", "NO SE PUDO APROBAR", "SIN APROBACION", "no aprobada").forEach { motivo ->
+            assertThat(blumonRespuestaEsRechazo(null, motivo)).isTrue()
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, motivo)), isContactless = false)).isTrue()
+        }
+    }
+
+    // Lo que no se puede romper: un posible cobro nunca se marca rechazado. Un «NO» DESPUÉS de aprobar no niega nada.
+    @Test fun `una aprobacion sigue en duda aunque el texto traiga un NO despues`() {
+        listOf("APROBADA", "APROBADO", "APROBADA, NO REQUIERE FIRMA", "APROBADA. NO DEVOLVER", "NO HUBO ERROR, APROBADA", "aprobada").forEach { motivo ->
+            assertThat(blumonRespuestaEsRechazo(null, motivo)).isFalse()
+            assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, motivo)), isContactless = false)).isFalse()
+        }
+    }
+
+    @Test fun `NO APROBADA es un rechazo, no una aprobacion`() {
+        assertThat(blumonRespuestaEsRechazo("05", "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo("3035", "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "TRANSACCION NO APROBADA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "DESAPROBADA")).isTrue()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, "NO APROBADA")), isContactless = false)).isTrue()
+    }
+
+    @Test fun `un motivo de aprobado nunca se lee como rechazo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, "APROBADA")), isContactless = false)).isFalse()
+        assertThat(blumonRespuestaEsRechazo(null, "Aprobada")).isFalse()
+    }
+
+    // Codex, 3-nov: los rechazos que llegan como respuesta con la autorización vacía tenían su propia lista.
+    @Test fun `una respuesta sin autorizacion que dice que no es un rechazo`() {
+        assertThat(blumonRespuestaEsRechazo("56", "TARJETA INVALIDA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo("3536", null)).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "PAGO NO PERMITIDO EMISOR")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(" ", "TARJETA INVALIDA")).isTrue()
+    }
+
+    @Test fun `una respuesta sin autorizacion que no dice nada o no pudo saberlo sigue en duda`() {
+        assertThat(blumonRespuestaEsRechazo(null, null)).isFalse()
+        assertThat(blumonRespuestaEsRechazo("", "  ")).isFalse()
+        assertThat(blumonRespuestaEsRechazo("91", "EMISOR NO DISPONIBLE")).isFalse()
+        assertThat(blumonRespuestaEsRechazo("3030", null)).isFalse()
+    }
+
+    @Test fun `un fallo que no es respuesta de Momentum sigue en duda`() {
+        class TimeoutFailure { override fun toString() = "MomentumDataFailure(httpCode=409, code=XX, description=NO)" }
+        assertThat(blumonRechazoDefinitivo(TimeoutFailure(), isContactless = false)).isFalse()
+    }
+
+    @Test fun `sin codigo el emisor no se inventa`() {
         assertThat(blumonIssuerCode(momentum(null))).isNull()
         assertThat(blumonIssuerCode(MomentumFailure(null))).isNull()
-        assertThat(blumonRechazoDefinitivo(momentum(""), isContactless = false)).isFalse()
     }
 
     @Test fun `1A sin contacto es definitivo, con chip no`() {
@@ -104,10 +209,11 @@ class BlumonIssuerCodeTest {
         assertThat(blumonRechazoDefinitivo(LegacyStringFailure("{\"codeResponse\":\"05\"}"), isContactless = false)).isTrue()
     }
 
-    @Test fun `NO AUTORIZADO con code 000000 no es codigo del emisor`() {
+    // Hasta el 3-nov esto quedaba en duda. Blumon lo rechazó de frente: es la regla «si contestó que no, es un rechazo».
+    @Test fun `NO AUTORIZADO con code 000000 no es codigo del emisor, pero Blumon si lo rechazo`() {
         val f = MomentumFailure(MomentumDataFailure(403, "000000", "NO AUTORIZADO"))
         assertThat(blumonIssuerCode(f)).isNull()
-        assertThat(blumonRechazoDefinitivo(f, isContactless = true)).isFalse()
+        assertThat(blumonRechazoDefinitivo(f, isContactless = true)).isTrue()
     }
 
     @Test fun `lo que contesto Blumon se guarda corto y sin el cuerpo del banco`() {

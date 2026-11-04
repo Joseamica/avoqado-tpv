@@ -4756,12 +4756,8 @@ class PaymentViewModel @Inject constructor(
                         description = response.saleData.description,
                         isRefund = sessionSnapshot.mode == PaymentMode.REFUND,
                     )
-                    // A partial response is not an issuer decline. EMV 8A may be ASCII-hex.
-                    val rawIssuerCode = response.saleData.emvResponseCode?.trim()?.uppercase().orEmpty()
-                    val issuerVerdict = if (rawIssuerCode.length == 4) runCatching {
-                        rawIssuerCode.chunked(2).map { it.toInt(16).toChar() }.joinToString("")
-                    }.getOrDefault(rawIssuerCode) else rawIssuerCode
-                    if (declineMessage != null && issuerVerdict !in setOf("05", "14", "41", "43", "51", "54", "55", "57", "58", "61", "62", "65", "1A")) {
+                    // Una respuesta sin código ni motivo no es un rechazo: está incompleta.
+                    if (declineMessage != null && !blumonRespuestaEsRechazo(response.saleData.emvResponseCode, response.saleData.description)) {
                         sessionSnapshot.paymentAttemptId?.let {
                             paymentAttemptLedger.markIndeterminate(it, "IncompleteHostResponse")
                         }

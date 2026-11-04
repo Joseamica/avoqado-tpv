@@ -41,8 +41,9 @@ internal val BLUMON_CODIGOS_RECHAZO_EMISOR = setOf("05", "14", "41", "43", "51",
  * Códigos con los que Momentum contesta, pero sin decir que el banco rechazó, así que el cobro sigue en duda (ISO 8583):
  * aprobados que no deberían venir en un fallo (00, 08, 10, 11, 16) y «no pude saberlo»: error (06), en proceso (09),
  * reintenta (19), falla (22), respuesta tardía (68), corte (90), emisor o ruta no disponibles (91, 92), falla del sistema (96).
+ * También `2000`, que no es ISO: el SDK de pruebas lo convierte en `ConnectionProcessorFailure` y el de producción no.
  */
-private val BLUMON_CODIGOS_SIN_RECHAZO = setOf("00", "08", "10", "11", "16", "06", "09", "19", "22", "68", "90", "91", "92", "96")
+private val BLUMON_CODIGOS_SIN_RECHAZO = setOf("00", "08", "10", "11", "16", "06", "09", "19", "22", "68", "90", "91", "92", "96", "2000")
 
 /**
  * Código del emisor de un fallo del SDK de Blumon, o null si el fallo no trae uno.
@@ -108,12 +109,39 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
     val code = blumonIssuerCode(failure)
     if (code == "1A") return isContactless
     if (code in BLUMON_CODIGOS_RECHAZO_EMISOR) return true
-    if (failure.javaClass.simpleName != "MomentumFailure" || code in BLUMON_CODIGOS_SIN_RECHAZO) return false
+    if (failure.javaClass.simpleName != "MomentumFailure") return false
     val textos = textosDelFallo(failure)
-    val http = textos.firstNotNullOfOrNull { Regex("""\bhttpCode=(\d{3})\b""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
-    val contesto = http != null && (http in 200..299 || (http in 400..499 && http != 408))
-    val motivo = textos.firstNotNullOfOrNull { Regex("""\bdescription=([^,)]*)""").find(it)?.groupValues?.get(1) }
-    return contesto && (code != null || (!motivo.isNullOrBlank() && motivo.trim() != "null"))
+    fun campo(nombre: String) = textos.firstNotNullOfOrNull { Regex("""\b$nombre=([^,)]*)""").find(it)?.groupValues?.get(1)?.trim() }
+        ?.takeIf { it.isNotEmpty() && it != "null" }
+    val crudo = campo("code")
+    val motivo = campo("description")
+    if (crudo?.uppercase() in BLUMON_CODIGOS_SIN_RECHAZO || motivo.suenaAprobado()) return false
+    val http = campo("httpCode")?.toIntOrNull() ?: return false
+    return when (http) {
+        // Con 200 sólo el código de dos caracteres del emisor dice que no; un código largo puede ser técnico.
+        in 200..299 -> code != null
+        408 -> false
+        in 400..499 -> crudo != null || motivo != null
+        else -> false
+    }
+}
+
+private fun String?.suenaAprobado() = this?.contains("APROB", ignoreCase = true) == true
+
+/**
+ * ¿Esta respuesta con la autorización vacía es un «no»? Blumon también entrega rechazos como respuesta normal (ver
+ * [blumonDeclineMessage]), con el motivo en `description` y el código en EMV 8A, que puede venir en hexadecimal («3536» = 56).
+ * Una respuesta sin código ni motivo sigue en duda: está incompleta y no dice nada.
+ */
+internal fun blumonRespuestaEsRechazo(emvResponseCode: String?, description: String?): Boolean {
+    val crudo = emvResponseCode?.trim()?.uppercase().orEmpty()
+    val code = if (crudo.length == 4) {
+        runCatching { crudo.chunked(2).map { it.toInt(16).toChar() }.joinToString("") }.getOrDefault(crudo)
+    } else {
+        crudo
+    }
+    if (code in BLUMON_CODIGOS_SIN_RECHAZO || description.suenaAprobado()) return false
+    return code.isNotEmpty() || !description.isNullOrBlank()
 }
 
 /**

@@ -125,6 +125,37 @@ class BlumonIssuerCodeTest {
         assertThat(blumonRechazoDefinitivo(MomentumFailure(null), isContactless = false)).isFalse()
     }
 
+    // Codex, 3-nov: en producción, `2000` (falla de conexión con el procesador) llega como MomentumFailure.
+    @Test fun `2000 es una falla de conexion y sigue en duda aunque traiga motivo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "2000", "FALLA DE CONEXION")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(403, "2000", "FALLA DE CONEXION")), isContactless = false)).isFalse()
+    }
+
+    @Test fun `con 200 sin codigo del emisor sigue en duda`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, null, "ALGO")), isContactless = false)).isFalse()
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(200, "123456", "ALGO")), isContactless = false)).isFalse()
+    }
+
+    @Test fun `un motivo de aprobado nunca se lee como rechazo`() {
+        assertThat(blumonRechazoDefinitivo(MomentumFailure(MomentumDataFailure(409, null, "APROBADA")), isContactless = false)).isFalse()
+        assertThat(blumonRespuestaEsRechazo(null, "Aprobada")).isFalse()
+    }
+
+    // Codex, 3-nov: los rechazos que llegan como respuesta con la autorización vacía tenían su propia lista.
+    @Test fun `una respuesta sin autorizacion que dice que no es un rechazo`() {
+        assertThat(blumonRespuestaEsRechazo("56", "TARJETA INVALIDA")).isTrue()
+        assertThat(blumonRespuestaEsRechazo("3536", null)).isTrue()
+        assertThat(blumonRespuestaEsRechazo(null, "PAGO NO PERMITIDO EMISOR")).isTrue()
+        assertThat(blumonRespuestaEsRechazo(" ", "TARJETA INVALIDA")).isTrue()
+    }
+
+    @Test fun `una respuesta sin autorizacion que no dice nada o no pudo saberlo sigue en duda`() {
+        assertThat(blumonRespuestaEsRechazo(null, null)).isFalse()
+        assertThat(blumonRespuestaEsRechazo("", "  ")).isFalse()
+        assertThat(blumonRespuestaEsRechazo("91", "EMISOR NO DISPONIBLE")).isFalse()
+        assertThat(blumonRespuestaEsRechazo("3030", null)).isFalse()
+    }
+
     @Test fun `un fallo que no es respuesta de Momentum sigue en duda`() {
         class TimeoutFailure { override fun toString() = "MomentumDataFailure(httpCode=409, code=XX, description=NO)" }
         assertThat(blumonRechazoDefinitivo(TimeoutFailure(), isContactless = false)).isFalse()

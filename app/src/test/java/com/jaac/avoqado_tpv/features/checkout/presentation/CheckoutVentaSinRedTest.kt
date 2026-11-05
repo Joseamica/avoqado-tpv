@@ -1060,7 +1060,7 @@ class CheckoutVentaSinRedTest {
 
     @Test fun `P1 un cupon valido baja el total y viaja con su codigo, sin id de catalogo`() = runTest {
         val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
-        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden())
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden().copy(total = java.math.BigDecimal("45.00")))
         val vm = viewModel()
         vm.addProduct(producto())
         conCupon(vm)
@@ -1070,6 +1070,7 @@ class CheckoutVentaSinRedTest {
         val payload = vm.prepareForPayment().getOrThrow()
 
         assertTrue("$payload", payload is PaymentNavigationPayload.Order)
+        assertEquals("se cobra el total del servidor", "45.00", (payload as PaymentNavigationPayload.Order).amountPesosString)
         val pedido = enviados.single()
         assertEquals("DESC10", pedido.couponCode)
         assertNull(pedido.orderDiscountId)
@@ -1101,7 +1102,7 @@ class CheckoutVentaSinRedTest {
 
     @Test fun `P1 puros importes con cupon no salen como cobro rapido, porque ahi nunca contaria`() = runTest {
         val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
-        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden())
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden().copy(total = java.math.BigDecimal("45.00")))
         val vm = viewModel()
         vm.addCustomAmount("Otro importe", 5000)
         conCupon(vm)
@@ -1185,6 +1186,21 @@ class CheckoutVentaSinRedTest {
         assertEquals(5000, vm.cartState.value.totalCents)
         vm.prepareForPayment().getOrThrow()
         assertNull(enviados.single().couponCode)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex r1 7 con cupon la cortesia la decide el total del servidor, no el de la pantalla`() = runTest {
+        coEvery { orderRepository.createOrderWithItems("venue-1", any()) } returns
+            Result.success(orden().copy(total = java.math.BigDecimal("0.01")))
+        val vm = viewModel()
+        vm.addProduct(producto(centavos = 100))
+        conCupon(vm, cuponDiez(valor = 100))
+        assertEquals(0, vm.cartState.value.totalCents)
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("una cuenta de \$0.01 se cobra, no se anuncia como cortesía: $payload", payload is PaymentNavigationPayload.Order)
+        assertEquals("0.01", (payload as PaymentNavigationPayload.Order).amountPesosString)
         vm.viewModelScope.cancel()
     }
 }

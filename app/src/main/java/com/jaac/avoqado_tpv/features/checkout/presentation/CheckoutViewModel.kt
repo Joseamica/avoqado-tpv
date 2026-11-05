@@ -1113,16 +1113,21 @@ class CheckoutViewModel @Inject constructor(
         // Persist the referral right before we hand off to PaymentScreen. Failures are swallowed: the cart already has the discount
         // applied, so blocking the charge over a transient backend failure would punish the customer for a backend hiccup.
         capturarReferido(orderId = order.id)
+        // D5 (Codex r1 #7): con cupón manda el total del SERVIDOR, que acepta un centavo de redondeo: ése se cobra, y sólo es cortesía si
+        // allá quedó en $0 (si no, la cuenta se quedaba debiendo $0.01 con la pantalla diciendo «completada»).
+        val totalDelServidor = order.total.takeIf { current.couponCode != null }
+        val gratis = totalDelServidor?.let { it.signum() == 0 } ?: (current.totalCents == 0)
+        val importe = totalDelServidor?.toPlainString() ?: amountPesos
         return Result.success(
-            if (current.totalCents == 0) {
+            if (gratis) {
                 PaymentNavigationPayload.CompletedFreeCart(
-                    amountPesosString = amountPesos,
+                    amountPesosString = importe,
                     orderId = order.id,
                     orderNumber = order.orderNumber,
                 )
             } else {
                 PaymentNavigationPayload.Order(
-                    amountPesosString = amountPesos,
+                    amountPesosString = importe,
                     orderId = order.id,
                     orderNumber = order.orderNumber,
                     wasPayLaterOrder = false,

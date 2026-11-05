@@ -46,6 +46,10 @@ data class CartState(
     val itemCount: Int
         get() = items.sumOf { it.quantity }
 
+    /** El cupón de la venta (D5). Es online a propósito, como el premio en el POS: una venta con cupón no se guarda como venta local. */
+    val couponCode: String?
+        get() = orderDiscount?.couponCode?.takeIf { it.isNotBlank() }
+
     val subtotalCents: Int
         get() = items.sumOf { it.totalPriceCents }
 
@@ -104,15 +108,14 @@ private fun formatCents(cents: Int): String =
  * Bridges TPV's BigDecimal-based [Discount.calculateAmount] (which works in
  * currency units, e.g. 50.00) with the cart's integer-cents math (5000).
  *
- * Rounding mode matches what `Int(BigDecimal * 100)` would produce in
- * avoqado-android — truncation toward zero — so totals stay byte-identical
- * across both apps.
+ * Se redondea al centavo como avoqado-android y el SERVIDOR (`calculateDiscountCents`): truncar le daba al cliente un centavo menos de
+ * rebaja y el SERVIDOR rechazaba la venta por no coincidir (D5).
  */
 private fun Discount.calculateDiscountCents(subtotalCents: Int): Int {
     if (subtotalCents <= 0) return 0
     val subtotal = BigDecimal(subtotalCents).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
     val amountUnits = calculateAmount(subtotal)
-    val amountCents = amountUnits.multiply(BigDecimal(100)).setScale(0, RoundingMode.DOWN).toInt()
+    val amountCents = amountUnits.multiply(BigDecimal(100)).setScale(0, RoundingMode.HALF_UP).toInt()
     return amountCents.coerceIn(0, subtotalCents)
 }
 

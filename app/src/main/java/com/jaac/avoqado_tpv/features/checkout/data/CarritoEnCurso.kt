@@ -218,6 +218,9 @@ internal data class DescuentoDto(
     val validHoursStart: String?,
     val validHoursEnd: String?,
     val tieneCondiciones: Boolean,
+    /** D5. Nulos en lo guardado antes de estos campos. */
+    val maxDiscountAmount: String? = null,
+    val couponCode: String? = null,
 ) {
     fun aDescuento() = Discount(
         id = id, name = name, type = DiscountType.fromString(type), value = BigDecimal(value),
@@ -230,6 +233,8 @@ internal data class DescuentoDto(
             validHoursEnd = validHoursEnd,
         ),
         active = active, requiresAuthorization = requiresAuthorization,
+        maxDiscountAmount = maxDiscountAmount?.let(::BigDecimal),
+        couponCode = couponCode,
     )
 
     companion object {
@@ -242,6 +247,8 @@ internal data class DescuentoDto(
             validHoursStart = d.conditions?.validHoursStart,
             validHoursEnd = d.conditions?.validHoursEnd,
             tieneCondiciones = d.conditions != null,
+            maxDiscountAmount = d.maxDiscountAmount?.toPlainString(),
+            couponCode = d.couponCode,
         )
     }
 }

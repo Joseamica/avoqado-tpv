@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Cupones al cobrar**: un cupón válido bajaba el total en pantalla y al cobrar el servidor rechazaba la venta (`orderDiscountId` vacío); con puros importes se cobraba sin dejar rastro. Ahora viaja `couponCode`, el cupón cuenta su uso al quedar pagada la venta, y sin red se dice «Sin conexión…» y no se guarda como venta local. Requiere el SERVIDOR con `couponCode`.
+
 ---
 
 ## [2.16.1] - 2026-11-04

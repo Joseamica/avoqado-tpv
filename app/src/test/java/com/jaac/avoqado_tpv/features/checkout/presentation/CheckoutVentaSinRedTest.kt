@@ -849,7 +849,7 @@ class CheckoutVentaSinRedTest {
         assertTrue(vm.validateAndApplyCoupon("DESC10").isFailure)
         coVerify(exactly = 0) { customerRepository.searchCustomers(any(), any(), any()) }
         coVerify(exactly = 0) { customerRepository.getRecentCustomers(any(), any()) }
-        coVerify(exactly = 0) { discountRepository.validateCoupon(any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.validateCoupon(any(), any(), any(), any()) }
         assertEquals(5000, vm.cartState.value.totalCents)
         vm.viewModelScope.cancel()
     }
@@ -1036,4 +1036,155 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
+    // ── D5 (5-nov): el cupón baja el total, llega hasta el cable y, sin red, se dice ────────────────────────────────────────────
+
+    private fun cuponDiez(valor: Int = 10, tope: java.math.BigDecimal? = null) = com.jaac.avoqado_tpv.features.ordering.domain.CouponCode(
+        id = "cup-1",
+        code = "DESC10",
+        name = "Diez",
+        type = com.jaac.avoqado_tpv.features.ordering.domain.DiscountType.PERCENTAGE,
+        value = java.math.BigDecimal(valor),
+        usesRemaining = null,
+        validFrom = null,
+        validUntil = null,
+        isValid = true,
+        invalidReason = null,
+        scope = "ORDER",
+        maxDiscountAmount = tope,
+    )
+
+    private suspend fun conCupon(vm: CheckoutViewModel, cupon: com.jaac.avoqado_tpv.features.ordering.domain.CouponCode = cuponDiez()) {
+        coEvery { discountRepository.validateCoupon("venue-1", "DESC10", any(), any()) } returns Result.success(cupon)
+        assertTrue(vm.validateAndApplyCoupon("desc10").isSuccess)
+    }
+
+    @Test fun `P1 un cupon valido baja el total y viaja con su codigo, sin id de catalogo`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden())
+        val vm = viewModel()
+        vm.addProduct(producto())
+        conCupon(vm)
+        assertEquals(4500, vm.cartState.value.totalCents)
+        assertEquals("Diez (DESC10)", vm.cartState.value.orderDiscount?.name)
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("$payload", payload is PaymentNavigationPayload.Order)
+        val pedido = enviados.single()
+        assertEquals("DESC10", pedido.couponCode)
+        assertNull(pedido.orderDiscountId)
+        assertEquals(0, java.math.BigDecimal(5).compareTo(pedido.discount))
+        assertEquals(0, java.math.BigDecimal(45).compareTo(pedido.total))
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 validar manda lo que vale la venta y su cliente`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cliente())
+        conCupon(vm)
+        coVerify { discountRepository.validateCoupon("venue-1", "DESC10", 50.0, cliente().id) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `el tope y el redondeo son los del servidor`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto(centavos = 2135))
+        conCupon(vm)
+        assertEquals("10 % de \$21.35 son \$2.14", 214, vm.cartState.value.discountCents)
+        vm.clearCart()
+        vm.addProduct(producto(centavos = 100000))
+        conCupon(vm, cuponDiez(valor = 50, tope = java.math.BigDecimal(20)))
+        assertEquals(2000, vm.cartState.value.discountCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 puros importes con cupon no salen como cobro rapido, porque ahi nunca contaria`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden())
+        val vm = viewModel()
+        vm.addCustomAmount("Otro importe", 5000)
+        conCupon(vm)
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("$payload", payload is PaymentNavigationPayload.Order)
+        assertEquals("DESC10", enviados.single().couponCode)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 sin red con cupon en el carrito se dice y no se guarda como venta local`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto())
+        conCupon(vm)
+        connectionStateManager.setInternetConnected(false)
+
+        val fallo = vm.prepareForPayment().exceptionOrNull()
+
+        assertEquals(TEXTO_CUPON_SIN_RED, fallo?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any()) }
+        assertEquals("el carrito se queda con su cupón", "DESC10", vm.cartState.value.couponCode)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 el servidor no contesto con cupon se dice, sin venta local, y el reintento usa la misma llave`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.failure(error503)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        conCupon(vm)
+
+        assertEquals(TEXTO_CUPON_SIN_RED, vm.prepareForPayment().exceptionOrNull()?.message)
+        assertEquals(TEXTO_CUPON_SIN_RED, vm.prepareForPayment().exceptionOrNull()?.message)
+
+        assertEquals(2, enviados.size)
+        assertEquals(enviados[0].externalId, enviados[1].externalId)
+        assertEquals("DESC10", vm.cartState.value.couponCode)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red al validar dice Sin conexion, no cupon invalido`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto())
+        connectionStateManager.setInternetConnected(false)
+        assertEquals(
+            com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_CUPON_SIN_RED_AL_VALIDAR,
+            vm.validateAndApplyCoupon("DESC10").exceptionOrNull()?.message,
+        )
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `un cupon por producto se rechaza con su razon`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto())
+        coEvery { discountRepository.validateCoupon("venue-1", "CAFE10", any(), any()) } returns Result.success(cuponDiez().copy(scope = "ITEM"))
+        assertTrue(vm.validateAndApplyCoupon("CAFE10").exceptionOrNull()!!.message!!.contains("ciertos productos"))
+        assertEquals(5000, vm.cartState.value.totalCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin el permiso se dice antes de preguntar`() = runTest {
+        coEvery { permissions.hasPermission("coupons:redeem") } returns false
+        val vm = viewModel()
+        vm.addProduct(producto())
+        assertTrue(vm.validateAndApplyCoupon("DESC10").exceptionOrNull()!!.message!!.contains("permiso"))
+        coVerify(exactly = 0) { discountRepository.validateCoupon(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `quitar el cupon regresa el total y ya no viaja`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(enviados)) } returns Result.success(orden())
+        val vm = viewModel()
+        vm.addProduct(producto())
+        conCupon(vm)
+
+        vm.clearManualOrderDiscount()
+        vm.applyOrderDiscount(null)
+
+        assertEquals(5000, vm.cartState.value.totalCents)
+        vm.prepareForPayment().getOrThrow()
+        assertNull(enviados.single().couponCode)
+        vm.viewModelScope.cancel()
+    }
 }

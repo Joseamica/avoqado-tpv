@@ -538,6 +538,8 @@ data class TpvCreateOrderWithItemsRequest(
     val customerId: String? = null,
     val discount: BigDecimal = BigDecimal.ZERO,
     val orderDiscountId: String? = null,
+    /** D5: el cupón validado. El SERVIDOR lo revalida; `discount` y `total` deben coincidir con lo que él calcula. */
+    val couponCode: String? = null,
     val taxAmount: BigDecimal = BigDecimal.ZERO,
     val tip: BigDecimal = BigDecimal.ZERO,
     val subtotal: BigDecimal,

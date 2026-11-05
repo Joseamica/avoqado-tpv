@@ -1203,4 +1203,17 @@ class CheckoutVentaSinRedTest {
         assertEquals("0.01", (payload as PaymentNavigationPayload.Order).amountPesosString)
         vm.viewModelScope.cancel()
     }
+
+    @Test fun `Codex r2 4 pagar despues con cupon y sin red dice lo del cupon`() = runTest {
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cliente())
+        conCupon(vm)
+        coEvery { orderRepository.createOrderWithItems("venue-1", any()) } returns Result.failure(error503)
+        assertEquals(TEXTO_CUPON_SIN_RED, vm.createPayLaterOrder().exceptionOrNull()?.message)
+        connectionStateManager.setInternetConnected(false)
+        assertEquals(TEXTO_CUPON_SIN_RED, vm.createPayLaterOrder().exceptionOrNull()?.message)
+        assertEquals("DESC10", vm.cartState.value.couponCode)
+        vm.viewModelScope.cancel()
+    }
 }

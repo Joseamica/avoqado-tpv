@@ -1211,7 +1211,11 @@ class CheckoutViewModel @Inject constructor(
      */
     suspend fun createPayLaterOrder(): Result<Order> = candado.mientras {
         val current = _cartState.value
-        val error = if (!connectionStateManager.hasInternet()) "Necesita internet" else errorParaCobrar(current)
+        val error = if (!connectionStateManager.hasInternet()) {
+            if (current.couponCode != null) TEXTO_CUPON_SIN_RED else "Necesita internet"
+        } else {
+            errorParaCobrar(current)
+        }
         when {
             error != null -> Result.failure(IllegalStateException(error))
             current.isEmpty -> Result.failure(IllegalStateException("El carrito está vacío"))
@@ -1222,7 +1226,10 @@ class CheckoutViewModel @Inject constructor(
             // The backend createOrderWithItems endpoint already accepts customerId
             // and leaves the order in PENDING + PENDING when total > 0. That's
             // exactly the pay-later shape. No separate "leave open" flag needed.
-            else -> createOrderWithCurrentItems()
+            // D5 (Codex r2 #4): si el servidor no contestó con un cupón, se dice lo del cupón, como en Cobrar.
+            else -> createOrderWithCurrentItems().recoverCatching { fallo ->
+                throw if (current.couponCode != null && pasaALaVentaLocal(fallo)) IllegalStateException(TEXTO_CUPON_SIN_RED, fallo) else fallo
+            }
         }
     }
 

@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.16.1] - 2026-11-04
+
 ### **Fixed**
 - **La PAX repara sola el lector con el token vencido (D15)**: si Blumon contesta con el SDK en mal estado (`invalid_token`, `NA_002`, `NO AUTORIZADO` sin código del emisor), el siguiente cobro o devolución que pida el cajero reinicializa el lector antes de pedir la tarjeta, como máximo una vez cada 5 min y nunca encima de un cambio de comercio o de otra inicialización. Antes cada intento salía «Pago rechazado» hasta reiniciar la app. Nunca se reintenta el cobro solo
 - **El aviso «Sin conexión» ya no mueve los botones del error del cobro (D22)**: en la PAX los empujaba 120 px y en la N86 60 px, y un toque pensado para «Cancelar» cayó en «Reintentar». Ahora el mensaje se centra arriba y los botones quedan pegados al fondo: el aviso sólo encoge el espacio de arriba

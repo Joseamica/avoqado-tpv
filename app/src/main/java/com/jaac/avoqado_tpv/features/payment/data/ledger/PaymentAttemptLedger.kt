@@ -991,6 +991,16 @@ class PaymentAttemptLedger(
     }
 
     /**
+     * 🧾 Tienda híbrida (R89): ¿la libreta tiene DINERO EN JUEGO de esta venta que el SERVIDOR todavía no confirma? Es la MISMA
+     * cerca 2 de `reserveTerminal` ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]) con el mismo fragmento que [retencionDeLaVenta]:
+     * un cobro con tarjeta corriendo, aprobado y sin registrar (AUTORIZADO, REGISTRO_FALLIDO…) o con evidencia del servidor.
+     * La PAX y la Nexgo escriben en la misma libreta. Lo que ya está en la cola (ENTREGADA_A_COLA) o registrado no cuenta.
+     * A diferencia de [retencionDeLaVenta], un fallo de lectura SE LANZA: quien pregunta para no cobrar dos veces falla cerrado.
+     */
+    suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean =
+        dao.retencionDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
+
+    /**
      * 🔴 Decisión del founder (23-sep, «corrige y avisa»): los cobros que la terminal dio por NO cobrados y el servidor SÍ
      * registró, en su caso limpio ([PaymentAttemptEntity.SQL_COBRO_POR_RECONOCER]). Los pinta el aviso con «Entendido». Un
      * fallo al leer no tumba la pantalla: se lee como «nada que confirmar» (la fila sigue en la libreta; no se libera nada).

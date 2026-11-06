@@ -3904,8 +3904,39 @@ class PaymentViewModelTest {
             coEvery { hayCobroSubiendose(any(), any()) } returns false
             coEvery { hayCobroSinRegistrar(any(), any()) } returns false
         }
+        val libreta = mockk<PaymentAttemptLedger> { coEvery { hayDineroEnJuegoDeLaVenta(any()) } returns false }
         return com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel(
-            vigia, folios, permisos, storage, cola, paymentStateHolder,
+            vigia, folios, permisos, storage, cola, paymentStateHolder, libreta,
         )
+    }
+
+    @Test
+    fun `R89 si la pantalla se va antes de que arranque el registro, la bandera de cobro igual baja al terminar`() {
+        // La corrutina del registro se lanza de IO a Main: hay un instante en que ya reclamó recordingInFlight y todavía no
+        // arranca. Si la pantalla se va justo ahí, sin ATOMIC el cuerpo nunca corre, su `finally` tampoco, y la bandera se
+        // quedaba prendida (R86 ya no la baja en onCleared mientras hay registro) hasta reiniciar la app.
+        val programador = kotlinx.coroutines.test.TestCoroutineScheduler()
+        Dispatchers.setMain(kotlinx.coroutines.test.StandardTestDispatcher(programador))
+        registroDelCobro(Result.success(reciboDelFolio()))
+        val viewModel = createViewModel()
+        seedAuthenticatedSession(viewModel)
+        sembrarLlaveDelIntento(viewModel)
+        forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+        paymentStateHolder.setCharging(true) // la ventana del dinero de la autorización
+
+        invokeHandlePaymentSuccess(viewModel) // reclama recordingInFlight y PROGRAMA la corrutina (todavía no corre)
+        viewModel.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(viewModel)
+        assertThat(paymentStateHolder.isCharging()).isTrue() // R86: hay registro pendiente
+
+        programador.advanceUntilIdle()
+        var vueltas = 0
+        while (paymentStateHolder.isCharging() && vueltas++ < 100) { programador.advanceUntilIdle(); Thread.sleep(20) }
+
+        assertThat(paymentStateHolder.isCharging()).isFalse()
+        // Y el registro del dinero ya aprobado sí se intentó, aunque la pantalla se fuera antes de empezar.
+        coVerify(exactly = 1) {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        }
     }
 }

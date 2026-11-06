@@ -114,6 +114,11 @@ object TextosPorPagar {
     )
     /** R83: esta terminal está cobrando o registrando una tarjeta (la tarjeta no tiene fila en la cola hasta que su registro falla). */
     val COBRO_EN_CURSO = AvisoDeFolio("Hay un cobro en curso en esta terminal", "Espera a que termine.")
+    /** R89: la libreta tiene un cobro con tarjeta de esta cuenta aprobado y sin registrar (p. ej. el registro falló tras salir del éxito). */
+    val COBRO_CON_TARJETA_SIN_REGISTRAR = AvisoDeFolio(
+        "Este folio tiene un cobro con tarjeta que todavía no se registra",
+        "Espera a que se registre o pídele a un gerente que lo revise.",
+    )
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
     val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")
 }
@@ -174,6 +179,8 @@ class PorPagarViewModel @Inject constructor(
     private val cola: PendingPaymentDao,
     // R83: la tarjeta que esta terminal está cobrando o registrando ahora (todavía sin fila en la cola).
     private val cobroEnCurso: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
+    // R89: la libreta de cobros con tarjeta (PAX y Nexgo): lo aprobado que el SERVIDOR todavía no registra.
+    private val libreta: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
 ) : ViewModel() {
 
     private data class Local(
@@ -240,8 +247,8 @@ class PorPagarViewModel @Inject constructor(
         val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return null
         if (!ocupar(folio.orderId)) return null
         try {
-            // R78/R83: el SERVIDOR sólo sabe del cobro cuando sube; hasta entonces la relectura lo daría «por pagar» otra vez.
-            cobroDeEstaTerminal(venueId, folio.orderId)?.let { return avisar(it) }
+            // R78/R83/R89: el SERVIDOR sólo sabe del cobro cuando sube; hasta entonces la relectura lo daría «por pagar» otra vez.
+            dineroSinConfirmar(venueId, folio.orderId)?.let { return avisar(it) }
             return releer(venueId, folio)?.also { abrir(it) }
         } finally {
             local.update { it.copy(ocupados = it.ocupados - folio.orderId) }
@@ -249,14 +256,19 @@ class PorPagarViewModel @Inject constructor(
     }
 
     /**
-     * Lo que esta terminal sabe de un cobro de la cuenta que el SERVIDOR todavía no ve; null = nada. Falla CERRADO: si no se
-     * puede leer la cola, tampoco se arriesga un segundo cobro.
+     * R89: el ÚNICO lugar que responde «¿esta terminal tiene dinero de esta cuenta que el SERVIDOR todavía no confirma?» — si
+     * sí, cobrar el folio otra vez sería cobrarle dos veces a la clienta. null = nada; si no, el aviso de la fuente que lo tiene:
+     *  (b) un cobro con tarjeta en curso o registrándose en esta terminal ([PaymentStateHolder.isCharging]);
+     *  (a) la cola de la terminal: rechazado sin revisar, o todavía subiendo (el mismo predicado que frena el cierre de caja);
+     *  (c) la libreta (PAX y Nexgo): un cobro con tarjeta aprobado y sin registrar, aunque ya no tenga fila en la cola.
+     * Falla CERRADO: si una fuente no se puede leer, tampoco se arriesga un segundo cobro.
      */
-    private suspend fun cobroDeEstaTerminal(venueId: String, orderId: String): AvisoDeFolio? = try {
+    private suspend fun dineroSinConfirmar(venueId: String, orderId: String): AvisoDeFolio? = try {
         when {
             cobroEnCurso.isCharging() -> TextosPorPagar.COBRO_EN_CURSO
             cola.hayCobroSinRegistrar(venueId, orderId) -> TextosPorPagar.COBRO_SIN_REGISTRAR
             cola.hayCobroSubiendose(venueId, orderId) -> TextosPorPagar.COBRO_SUBIENDOSE
+            libreta.hayDineroEnJuegoDeLaVenta(orderId) -> TextosPorPagar.COBRO_CON_TARJETA_SIN_REGISTRAR
             else -> null
         }
     } catch (e: kotlinx.coroutines.CancellationException) {

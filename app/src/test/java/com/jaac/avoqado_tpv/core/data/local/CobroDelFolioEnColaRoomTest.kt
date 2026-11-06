@@ -82,4 +82,37 @@ class CobroDelFolioEnColaRoomTest {
         assertThat(db.pendingPaymentDao().hayCobroSubiendose("venue-1", "ord-folio")).isFalse()
         assertThat(db.pendingPaymentDao().hayCobroSinRegistrar("venue-1", "ord-folio")).isFalse()
     }
+
+    // R89 (c): la libreta, con la base real. Es la MISMA cerca 2 de `reserveTerminal` (dinero en juego de la venta), por el
+    // `"orderId":"…"` del contexto que guardan la PAX y la Nexgo.
+    private suspend fun intento(id: String, estado: String, orderId: String = "ord-folio", processor: String = "BLUMON") {
+        db.paymentAttemptDao().insert(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+                attemptId = id, venueId = "venue-1", processor = processor, state = estado, amountCents = 8_500, tipCents = 0,
+                recordingRoute = "ORDER", paymentContextJson = """{"venueId":"venue-1","orderId":"$orderId","amount":85.00}""",
+                hostApproved = true, createdAt = 1_000L, updatedAt = 1_000L,
+            ),
+        )
+    }
+
+    private fun libreta() = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), io.mockk.mockk(relaxed = true))
+
+    @Test
+    fun `R89 un cobro con tarjeta aprobado y sin registrar de la venta esta en la libreta, en PAX y en Nexgo`() = runTest {
+        intento("a1", "REGISTRO_FALLIDO")
+        intento("a2", "AUTORIZADO", orderId = "ord-nexgo", processor = "ANGELPAY")
+
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-folio")).isTrue()
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-nexgo")).isTrue()
+    }
+
+    @Test
+    fun `R89 registrado, entregado a la cola u otra venta no cuentan en la libreta`() = runTest {
+        intento("a1", "REGISTRADO")
+        intento("a2", "ENTREGADA_A_COLA", orderId = "ord-cola") // lo cuenta la cola, no la libreta
+        intento("a3", "REGISTRO_FALLIDO", orderId = "ord-otra")
+
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-folio")).isFalse()
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-cola")).isFalse()
+    }
 }

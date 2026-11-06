@@ -7438,7 +7438,10 @@ class PaymentViewModel @Inject constructor(
         // that when the collector does wake up on Success it sees `recordingInFlight == true` and
         // leaves the flags to our `finally`, instead of declaring the terminal free mid-record.
         recordingInFlight = true
-        viewModelScope.launch {
+        // 🔒 R89: ATOMIC = arranca aunque la pantalla se vaya antes de que la corrutina empiece (se lanza de IO a Main). Sin esto
+        // el cuerpo no corría, su `finally` tampoco, y la ventana del dinero —que onCleared ya no cierra con un registro
+        // pendiente (R86)— se quedaba abierta; además el dinero aprobado ni siquiera intentaba registrarse.
+        viewModelScope.launch(start = CoroutineStart.ATOMIC) {
             try {
                 // Extract authorization and reference using reflection (SDK type not directly accessible)
                 // Null-safe: offline-approved contactless has no saleData (same pattern as handleRefundSuccess)
@@ -10028,7 +10031,9 @@ class PaymentViewModel @Inject constructor(
         saleData: Any?, // Blumon SDK SaleData object (null for offline refunds)
         entryMode: CardEntryMode,
     ) {
-        viewModelScope.launch {
+        // 🔒 R89: ATOMIC, igual que handlePaymentSuccess: quien publica Success reclamó recordingInFlight y sólo este `finally`
+        // cierra la ventana del dinero; la devolución ya salió y su registro tiene que intentarse aunque la pantalla se vaya.
+        viewModelScope.launch(start = CoroutineStart.ATOMIC) {
             var referenciaParaAviso = "sin referencia"
             try {
                 val rawRefundContext = buildRefundPaymentContext() ?: refundContextEnVuelo

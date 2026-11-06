@@ -14,6 +14,7 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
@@ -58,6 +59,8 @@ class PorPagarViewModelTest {
     }
     // R83 (I3): el cobro con tarjeta que esta terminal todavía está cobrando o registrando. Real: dos banderas atómicas.
     private val cobroEnCurso = PaymentStateHolder()
+    // R89 (c): la libreta de cobros con tarjeta. Por defecto no tiene dinero en juego de ninguna venta.
+    private val libreta = mockk<PaymentAttemptLedger> { coEvery { hayDineroEnJuegoDeLaVenta(any()) } returns false }
 
     // 10:30 en la Ciudad de México (UTC-6).
     private val ahora = Instant.parse("2026-11-06T16:30:00Z")
@@ -79,7 +82,7 @@ class PorPagarViewModelTest {
         VenueTimeZone.invalidateCache()
     }
 
-    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso)
+    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso, libreta)
 
     private fun folio(
         id: String,
@@ -330,6 +333,52 @@ class PorPagarViewModelTest {
         assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Hay un cobro en curso en esta terminal")
         assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que termine.")
         coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R89 con un cobro con tarjeta de ese folio sin registrar en la libreta no deja cobrarlo otra vez`() = runTest {
+        // La cajera salió del éxito y el registro falló: no hay fila en la cola y la bandera ya bajó, pero la libreta (PAX y Nexgo)
+        // sigue teniendo el cobro aprobado sin registrar hasta que la recuperación lo suba.
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { libreta.hayDineroEnJuegoDeLaVenta("b") } returns true
+        val vm = vm()
+        var abrio = false
+
+        assertThat(vm.cobrar(sofia) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_CON_TARJETA_SIN_REGISTRAR)
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Este folio tiene un cobro con tarjeta que todavía no se registra")
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que se registre o pídele a un gerente que lo revise.")
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R89 si no se puede leer la libreta tampoco abre el cobro`() = runTest {
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { libreta.hayDineroEnJuegoDeLaVenta("b") } throws IllegalStateException("database is locked")
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNull()
+
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("No se pudo revisar el folio")
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R89 sin dinero sin confirmar en ninguna de las tres fuentes el folio abre`() = runTest {
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(sofia)))
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNotNull()
+
+        coVerify(exactly = 1) { cola.hayCobroSinRegistrar("v1", "b") }
+        coVerify(exactly = 1) { cola.hayCobroSubiendose("v1", "b") }
+        coVerify(exactly = 1) { libreta.hayDineroEnJuegoDeLaVenta("b") }
     }
 
     @Test

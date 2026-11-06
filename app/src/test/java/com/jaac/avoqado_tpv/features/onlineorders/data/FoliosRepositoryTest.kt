@@ -58,7 +58,7 @@ class FoliosRepositoryTest {
           ],
           "toDeliver":[
             {"orderId":"cord3","onlineOrderId":"coo3","orderNumber":"W8M2C","status":"ACCEPTED","customerName":"Leo",
-             "createdAt":"2026-11-06T18:01:00.000Z","acceptDeadlineAt":"2026-11-06T18:31:00.000Z","total":69,"remaining":0,
+             "createdAt":"2026-11-06T18:01:00.000Z","acceptDeadlineAt":"2026-11-06T18:31:00.000Z","total":69,"remaining":0,"paidAt":"2026-11-06T18:05:00.000Z",
              "paymentStatus":"PAID","needsPrint":true,"items":[]}
           ],
           "nextCursors":{"toPay":null,"toDeliver":"2026-11-06T18:00:05.000Z_coo100"},
@@ -93,6 +93,9 @@ class FoliosRepositoryTest {
         val leo = pagina.porEntregar.single()
         assertThat(leo.faltaCentavos).isEqualTo(0L)
         assertThat(leo.necesitaImprimir).isTrue()
+        // paidAt opcional: presente en Leo, ausente (null) en los que no lo traen
+        assertThat(leo.pagadoEn?.toString()).isEqualTo("2026-11-06T18:05:00Z")
+        assertThat(maria.pagadoEn).isNull()
         assertThat(pagina.siguientes).containsExactly(SeccionDeFolios.POR_ENTREGAR, "2026-11-06T18:00:05.000Z_coo100")
         assertThat(pagina.horaDelServidor?.toString()).isEqualTo("2026-11-06T18:30:00Z")
     }

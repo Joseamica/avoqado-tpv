@@ -62,9 +62,9 @@ class VigiaDeFoliosTest {
         checkInPhotoUrl = null, breaks = emptyList(),
     )
 
-    private fun folio(id: String) = Folio(
+    private fun folio(id: String, falta: String = "10.00") = Folio(
         orderId = id, onlineOrderId = null, folio = "W$id", estado = "PENDING_ACCEPTANCE", nombre = "Ana", telefono = null, nota = null,
-        creadoEn = null, venceEn = null, total = BigDecimal("10.00"), falta = BigDecimal("10.00"), estadoDePago = "PENDING",
+        creadoEn = null, venceEn = null, total = BigDecimal("10.00"), falta = BigDecimal(falta), estadoDePago = "PENDING",
         necesitaImprimir = false, productos = emptyList(),
     )
 
@@ -261,6 +261,90 @@ class VigiaDeFoliosTest {
             vigia.sondearYa()
             assertThat(vigia.estado.value.porPagar).isEmpty()
             assertThat(vigia.estado.value.showTile).isFalse()
+        }
+    }
+
+    @Test
+    fun `lo cargado con cargarMas sobrevive a la vuelta si la pagina 1 no cambio y se descarta si cambio`() = runTest {
+        respuesta = { Result.success(pagina(porEntregar = listOf(folio("x")), siguientes = mapOf(SeccionDeFolios.POR_ENTREGAR to "c1"))) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_ENTREGAR, "c1") } returns Result.success(
+                pagina(porPagar = emptyList(), porEntregar = listOf(folio("y")), siguientes = mapOf(SeccionDeFolios.POR_ENTREGAR to "c2")),
+            )
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_ENTREGAR)).isTrue()
+            assertThat(vigia.estado.value.porEntregar.map { it.orderId }).containsExactly("x", "y").inOrder()
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_ENTREGAR]).isEqualTo("c2")
+
+            // otra vuelta con la MISMA página 1: las extras y su cursor siguen
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.porEntregar.map { it.orderId }).containsExactly("x", "y").inOrder()
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_ENTREGAR]).isEqualTo("c2")
+
+            // la página 1 cambia (sale x, entra z): se descartan y vuelve el cursor de la página 1
+            respuesta = { Result.success(pagina(porEntregar = listOf(folio("z")), siguientes = mapOf(SeccionDeFolios.POR_ENTREGAR to "c9"))) }
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.porEntregar.map { it.orderId }).containsExactly("z")
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_ENTREGAR]).isEqualTo("c9")
+        }
+    }
+
+    @Test
+    fun `un cambio de falta en la pagina 1 tambien descarta las extras`() = runTest {
+        respuesta = { Result.success(pagina(porPagar = listOf(folio("a")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(pagina(porPagar = listOf(folio("b"))))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+            assertThat(vigia.estado.value.porPagar).hasSize(2)
+
+            respuesta = { Result.success(pagina(porPagar = listOf(folio("a", falta = "4.00")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))) }
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a")
+        }
+    }
+
+    @Test
+    fun `un folio que pasa de una seccion a otra nunca aparece en las dos`() = runTest {
+        respuesta = { Result.success(pagina(porPagar = listOf(folio("a")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(pagina(porPagar = listOf(folio("b"))))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            // b se cobró: ahora está en la página 1 de «por entregar»; la página 1 de «por pagar» no cambió
+            respuesta = { Result.success(pagina(porPagar = listOf(folio("a")), porEntregar = listOf(folio("b")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))) }
+            vigia.sondearYa()
+
+            val e = vigia.estado.value
+            assertThat((e.porPagar + e.porEntregar).map { it.orderId }).containsExactly("a", "b")
+        }
+    }
+
+    @Test
+    fun `un 4xx deja la lista pero la marca desactualizada y la siguiente buena lo quita`() = runTest {
+        conVigia { vigia ->
+            respuesta = { Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(403, "sin permiso")) }
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.desactualizado).isTrue()
+            assertThat(vigia.estado.value.sinConexion).isFalse()
+            assertThat(vigia.estado.value.porPagar).isNotEmpty()
+
+            respuesta = { Result.success(pagina()) }
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.desactualizado).isFalse()
+        }
+    }
+
+    @Test
+    fun `si cargarMas falla lo dice y el siguiente intento lo limpia`() = runTest {
+        respuesta = { Result.success(pagina(porEntregar = listOf(folio("x")), siguientes = mapOf(SeccionDeFolios.POR_ENTREGAR to "c1"))) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_ENTREGAR, "c1") } returns Result.failure(IOException("sin red"))
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_ENTREGAR)).isFalse()
+            assertThat(vigia.estado.value.errorAlCargarMas).isTrue()
+            assertThat(vigia.estado.value.porEntregar.map { it.orderId }).containsExactly("x")
+
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_ENTREGAR, "c1") } returns Result.success(pagina(porPagar = emptyList(), porEntregar = listOf(folio("y"))))
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_ENTREGAR)).isTrue()
+            assertThat(vigia.estado.value.errorAlCargarMas).isFalse()
         }
     }
 }

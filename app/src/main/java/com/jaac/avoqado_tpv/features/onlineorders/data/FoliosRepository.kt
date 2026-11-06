@@ -112,6 +112,7 @@ private fun FolioDto.aFolio(): Folio? {
         nota = note?.takeIf { it.isNotBlank() },
         creadoEn = createdAt.aInstante(),
         venceEn = acceptDeadlineAt.aInstante(),
+        pagadoEn = paidAt.aInstante(),
         total = (total ?: BigDecimal.ZERO).enPesos(),
         falta = (remaining ?: BigDecimal.ZERO).enPesos(),
         estadoDePago = paymentStatus,

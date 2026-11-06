@@ -98,23 +98,69 @@ class VigiaDeFolios internal constructor(
         despertar.trySend(Unit)
     }
 
-    /** Agrega la página siguiente de [seccion]; no hace nada si ya no hay más. */
-    suspend fun cargarMas(seccion: SeccionDeFolios) {
-        candado.withLock {
-            val venueId = negocioConSesion() ?: return
-            val cursor = _estado.value.nextCursors[seccion] ?: return
-            val pagina = folios.cargarMas(venueId, seccion, cursor).getOrElse {
-                Timber.w(it, "[Folios] no se pudo cargar más de $seccion")
-                return
+    /**
+     * Agrega la página siguiente de [seccion]. Regresa true si la cargó (o si ya no había más) y false si falló: además
+     * [EstadoDeFolios.errorAlCargarMas] queda en true hasta el siguiente intento, para el «No se pudieron cargar más».
+     */
+    suspend fun cargarMas(seccion: SeccionDeFolios): Boolean = candado.withLock {
+        val venueId = negocioConSesion() ?: return@withLock false
+        val cursor = _estado.value.nextCursors[seccion] ?: return@withLock true
+        val pagina = folios.cargarMas(venueId, seccion, cursor).getOrElse {
+            Timber.w(it, "[Folios] no se pudo cargar más de $seccion")
+            _estado.value = _estado.value.copy(errorAlCargarMas = true)
+            return@withLock false
+        }
+        val nuevos = if (seccion == SeccionDeFolios.POR_PAGAR) pagina.porPagar else pagina.porEntregar
+        // Un folio sólo vive en UNA sección: si ahora llegó a ésta, se quita de las extras de la otra.
+        val ids = nuevos.mapTo(HashSet()) { it.orderId }
+        when (seccion) {
+            SeccionDeFolios.POR_PAGAR -> {
+                extrasPagar = extrasPagar.sumarSinRepetir(nuevos)
+                extrasEntregar = extrasEntregar.filter { it.orderId !in ids }
             }
-            _estado.value = _estado.value.let { e ->
-                val cursores = e.nextCursors - seccion + pagina.siguientes.filterKey(seccion)
-                when (seccion) {
-                    SeccionDeFolios.POR_PAGAR -> e.copy(porPagar = e.porPagar.sumarSinRepetir(pagina.porPagar), nextCursors = cursores)
-                    SeccionDeFolios.POR_ENTREGAR -> e.copy(porEntregar = e.porEntregar.sumarSinRepetir(pagina.porEntregar), nextCursors = cursores)
-                }
+            SeccionDeFolios.POR_ENTREGAR -> {
+                extrasEntregar = extrasEntregar.sumarSinRepetir(nuevos)
+                extrasPagar = extrasPagar.filter { it.orderId !in ids }
             }
         }
+        cursorExtra = cursorExtra - seccion + pagina.siguientes.filterKey(seccion)
+        _estado.value = componer(_estado.value.copy(errorAlCargarMas = false), pagina1Pagar, pagina1Entregar, cursoresPagina1)
+        true
+    }
+
+    /** Lo que trajo la página 1 de la última vuelta buena (las extras viven aparte, en [extrasPagar] y [extrasEntregar]). */
+    private var pagina1Pagar: List<Folio> = emptyList()
+    private var pagina1Entregar: List<Folio> = emptyList()
+    private var cursoresPagina1: Map<SeccionDeFolios, String> = emptyMap()
+    private var extrasPagar: List<Folio> = emptyList()
+    private var extrasEntregar: List<Folio> = emptyList()
+    private var cursorExtra: Map<SeccionDeFolios, String> = emptyMap()
+    private var huellaPagar: List<String>? = null
+    private var huellaEntregar: List<String>? = null
+
+    private fun olvidarListas() {
+        pagina1Pagar = emptyList(); pagina1Entregar = emptyList(); cursoresPagina1 = emptyMap()
+        extrasPagar = emptyList(); extrasEntregar = emptyList(); cursorExtra = emptyMap()
+        huellaPagar = null; huellaEntregar = null
+    }
+
+    private fun huella(l: List<Folio>) = l.map { "${it.orderId}|${it.falta}|${it.estado}|${it.estadoDePago}" }
+
+    /** Página 1 + extras, sin repetir un `orderId` ni dentro de una sección ni entre las dos (manda la página 1). */
+    private fun componer(base: EstadoDeFolios, p1Pagar: List<Folio>, p1Entregar: List<Folio>, cursores: Map<SeccionDeFolios, String>): EstadoDeFolios {
+        val enPagina1 = (p1Pagar + p1Entregar).mapTo(HashSet()) { it.orderId }
+        val xPagar = extrasPagar.filter { it.orderId !in enPagina1 }
+        val idsPagar = xPagar.mapTo(HashSet()) { it.orderId }
+        val xEntregar = extrasEntregar.filter { it.orderId !in enPagina1 && it.orderId !in idsPagar }
+        // El cursor de una sección con extras es el de la última página cargada; sin extras, el de la página 1.
+        val cur = buildMap {
+            for (sec in SeccionDeFolios.values()) {
+                val tieneExtras = if (sec == SeccionDeFolios.POR_PAGAR) extrasPagar.isNotEmpty() else extrasEntregar.isNotEmpty()
+                val c = if (tieneExtras) cursorExtra[sec] else cursores[sec]
+                if (c != null) put(sec, c)
+            }
+        }
+        return base.copy(porPagar = p1Pagar + xPagar, porEntregar = p1Entregar + xEntregar, nextCursors = cur)
     }
 
     /** Una vuelta; regresa cuánto esperar antes de la siguiente. */
@@ -124,20 +170,30 @@ class VigiaDeFolios internal constructor(
             // Sin sesión: no consulta, y no se queda lo del negocio anterior en pantalla.
             negocioActual = null
             ultimaEntrada = null
+            olvidarListas()
             if (_estado.value != EstadoDeFolios()) _estado.value = EstadoDeFolios()
             return@withLock ESPERA_SIN_SESION_MS
         }
         if (negocioActual != venueId) {
             _estado.value = EstadoDeFolios()
+            olvidarListas()
             negocioActual = venueId
         }
         val pagina = folios.listar(venueId, puedeCobrar(venueId)).getOrElse { error ->
-            if (!esRespuesta(error)) _estado.value = _estado.value.copy(sinConexion = true)
+            // Red caída o 5xx = «sin conexión»; un 4xx (401/403/404) sí es respuesta: la lista ya no es fiable y se dice «desactualizado».
+            _estado.value = if (esRespuesta(error)) _estado.value.copy(desactualizado = true) else _estado.value.copy(sinConexion = true)
             Timber.w(error, "[Folios] sin respuesta del servidor")
             return@withLock ESPERA_TRAS_FALLO_MS
         }
         val ahora = reloj()
-        _estado.value = pagina.aEstado(ahora)
+        // Las extras (lo cargado más allá de la página 1) se conservan mientras la página 1 de SU sección no cambie
+        // (ids, falta, estado o pago); si cambió, esa sección vuelve a la página 1 y se descartan.
+        val hp = huella(pagina.porPagar); val he = huella(pagina.porEntregar)
+        if (hp != huellaPagar) { extrasPagar = emptyList(); cursorExtra = cursorExtra - SeccionDeFolios.POR_PAGAR }
+        if (he != huellaEntregar) { extrasEntregar = emptyList(); cursorExtra = cursorExtra - SeccionDeFolios.POR_ENTREGAR }
+        huellaPagar = hp; huellaEntregar = he
+        pagina1Pagar = pagina.porPagar; pagina1Entregar = pagina.porEntregar; cursoresPagina1 = pagina.siguientes
+        _estado.value = componer(pagina.aEstado(ahora).copy(errorAlCargarMas = _estado.value.errorAlCargarMas), pagina.porPagar, pagina.porEntregar, pagina.siguientes)
         segundosDeEspera(pagina) * 1000L
     }
 
@@ -197,8 +253,6 @@ class VigiaDeFolios internal constructor(
 
     private fun Map<SeccionDeFolios, String>.filterKey(k: SeccionDeFolios) = filterKeys { it == k }
 
-    // ponytail: la vuelta periódica trae sólo la primera página de cada sección; lo cargado con «Cargar más» se pierde en ella.
-    // Si hacen falta cientos de folios vivos, conservar el cursor que ya se había paginado.
     private fun List<Folio>.sumarSinRepetir(mas: List<Folio>): List<Folio> {
         val vistos = mapTo(HashSet()) { it.orderId }
         return this + mas.filter { vistos.add(it.orderId) }

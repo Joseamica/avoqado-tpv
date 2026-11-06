@@ -37,6 +37,8 @@ data class Folio(
     val creadoEn: Instant?,
     /** Cuándo vence si nadie lo paga; la pantalla lo compara con la hora del SERVIDOR ([EstadoDeFolios.desfaseDelServidorMs]). */
     val venceEn: Instant?,
+    /** Cuándo se pagó (para «Pagado a las HH:MM»); null si el SERVIDOR no lo manda. */
+    val pagadoEn: Instant? = null,
     val total: BigDecimal,
     val falta: BigDecimal,
     val estadoDePago: String?,
@@ -84,4 +86,8 @@ data class EstadoDeFolios(
     val actualizadoEnMs: Long? = null,
     /** Hora del servidor menos la de este aparato al contestar: `ahora + desfase` = «ahora» del servidor. */
     val desfaseDelServidorMs: Long = 0L,
+    /** El servidor contestó con un 4xx: la lista de arriba es la última buena, pero ya no es fiable. */
+    val desactualizado: Boolean = false,
+    /** El último «Cargar más» falló (se limpia en el siguiente intento). */
+    val errorAlCargarMas: Boolean = false,
 )

@@ -90,6 +90,7 @@ data class FolioDto(
     @SerializedName("note") val note: String?,
     @SerializedName("createdAt") val createdAt: String?,
     @SerializedName("acceptDeadlineAt") val acceptDeadlineAt: String?,
+    @SerializedName("paidAt") val paidAt: String?,
     @SerializedName("total") val total: BigDecimal?,
     @SerializedName("remaining") val remaining: BigDecimal?,
     @SerializedName("paymentStatus") val paymentStatus: String?,

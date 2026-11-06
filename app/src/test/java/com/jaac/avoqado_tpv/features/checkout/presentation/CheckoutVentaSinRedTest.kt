@@ -828,6 +828,19 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
+    @Test fun `sin red, descuento manual del 100 por ciento sin permiso de cortesia no se encola`() = runTest {
+        coEvery { permissions.hasPermission(any()) } returns true
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyManualOrderDiscount(5000, "regalo")
+        val r = vm.prepareForPayment()
+        assertTrue(r.exceptionOrNull()?.message?.startsWith("Sin conexión: el PIN") == true)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
     @Test fun `sin red, con permiso la cortesia sigue como venta local`() = runTest {
         coEvery { permissions.hasPermission(any()) } returns true
         connectionStateManager.setInternetConnected(false)

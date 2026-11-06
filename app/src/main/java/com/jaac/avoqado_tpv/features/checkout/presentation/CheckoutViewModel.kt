@@ -1077,7 +1077,7 @@ class CheckoutViewModel @Inject constructor(
             CaminoDelCobro.EN_LINEA -> cobrarEnLinea(current, amountPesos)
             CaminoDelCobro.LOCAL -> {
                 // Una venta local se reproduce por /mobile SIN token: una cortesía sin permiso la rechazaría el servidor. El PIN necesita red.
-                if (current.items.any { it.isCortesia } && !permissionsRepository.hasPermission("tpv-orders:comp")) {
+                if (llevaCortesia(current) && !permissionsRepository.hasPermission("tpv-orders:comp")) {
                     return Result.failure(IllegalStateException(
                         (if (hayRed) "" else "Sin conexión: ") + "el PIN del gerente necesita internet. Quita la cortesía o cobra cuando vuelva la red",
                     ))

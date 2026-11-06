@@ -2433,7 +2433,7 @@ class MenuViewModel @Inject constructor(
                     if (auth is Autorizacion.Cancelada) return@launch
                     token = (auth as? Autorizacion.ConPin)?.token
                 }
-                // Un 403 con token no es un permiso que falta: OkHttp pudo reenviar el POST tras gastarse el token y el
+                // Un fallo con token no es un permiso que falta: el POST pudo llegar (o OkHttp reenviarlo tras gastarse el token) y el
                 // descuento pudo aplicarse. Se trata como "no confirmada".
                 var noConfirmada = false
                 suspend fun enviar(t: String?): Result<OrderDiscount> {
@@ -2445,7 +2445,8 @@ class MenuViewModel @Inject constructor(
                         reason = reason,
                         overrideToken = t
                     )
-                    if (t != null && r.exceptionOrNull() is PermisoRequeridoException) noConfirmada = true
+                    // Con token, cualquier fallo (403, IOException, timeout, 5xx) es dudoso: /discounts/manual no tiene llave de idempotencia.
+                    if (t != null && r.isFailure) noConfirmada = true
                     return r
                 }
                 var resultado = enviar(token)

@@ -175,6 +175,19 @@ class MenuViewModelManualDiscountTest {
         verificaNoConfirmada(vm)
     }
 
+    @Test fun `ConPin_y_IOException_es_no_confirmada_sin_segunda_llamada`() {
+        coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1") } returns
+            Result.failure(java.io.IOException("timeout"))
+        val vm = crear()
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
+        coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, true) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        verificaNoConfirmada(vm)
+    }
+
     @Test fun `403_sin_token_luego_pin_forzado_y_otro_403_termina_en_no_confirmada_sin_tercera_llamada`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.NoHaceFalta
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-f")

@@ -1242,8 +1242,11 @@ fun AppNavigation(
 
             // 🔧 Loading overlay for SDK initialization
             Box(modifier = Modifier.fillMaxSize()) {
+            val estadoDeFolios by vigiaDeFolios.estado.collectAsStateWithLifecycle()
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
+                estadoDeFolios = estadoDeFolios,
+                // ponytail: la pantalla de la lista llega con P3; hasta entonces el recuadro no navega a ningún lado.
                 onStartPaymentWithAmount = { amount ->
                     launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {

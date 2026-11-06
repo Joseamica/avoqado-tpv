@@ -18,6 +18,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Reusable action button grid component
@@ -68,6 +69,8 @@ fun ActionButtonGrid(
                 label = button.label,
                 enabled = button.enabled,
                 badge = button.badge,
+                subtitle = button.subtitle,
+                subtitleIsWarning = button.subtitleIsWarning,
                 onClick = button.onClick,
                 iconSize = 32.dp, // ⭐ Crisp, standard size
                 spacing = sizes.spacingSmall
@@ -118,6 +121,8 @@ fun StaticActionButtonGrid(
                             label = button.label,
                             enabled = button.enabled,
                             badge = button.badge,
+                            subtitle = button.subtitle,
+                            subtitleIsWarning = button.subtitleIsWarning,
                             onClick = button.onClick,
                             iconSize = 32.dp,
                             spacing = sizes.spacingSmall
@@ -147,6 +152,8 @@ private fun ActionButtonItem(
     label: String,
     enabled: Boolean,
     badge: String?,
+    subtitle: String? = null,
+    subtitleIsWarning: Boolean = false,
     onClick: () -> Unit,
     iconSize: androidx.compose.ui.unit.Dp,
     spacing: androidx.compose.ui.unit.Dp
@@ -171,7 +178,8 @@ private fun ActionButtonItem(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp) // Generous padding
+                // Con renglón de abajo (recuadro «Pedidos por pagar») el relleno es 12/14 para que quepa en el 1.5:1.
+                .then(if (subtitle != null) Modifier.padding(horizontal = 14.dp, vertical = 12.dp) else Modifier.padding(16.dp))
         ) {
             // Icon (Top-Left)
             Icon(
@@ -188,22 +196,39 @@ private fun ActionButtonItem(
             )
 
             // Text (Bottom-Left)
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                    fontSize = 15.sp
-                ),
-                color = if (enabled) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                },
-                textAlign = TextAlign.Start,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.BottomStart)
-            )
+            val textColor = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            }
+            Column(modifier = Modifier.align(Alignment.BottomStart)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = if (subtitle != null) 17.25.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                    ),
+                    color = textColor,
+                    textAlign = TextAlign.Start,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                            fontSize = 12.5.sp,
+                            lineHeight = 14.4.sp
+                        ),
+                        color = if (subtitleIsWarning) MaterialTheme.avoqadoColors.offlineOrange else textColor.copy(alpha = if (enabled) 0.7f else 0.38f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
 
             // Badge overlay (Top-Right)
             if (badge != null) {

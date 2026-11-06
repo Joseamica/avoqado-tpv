@@ -369,7 +369,10 @@ fun CheckoutScreen(
             if (!isChargeInFlight) {
                 scope.launch {
                     isChargeInFlight = true
-                    viewModel.prepareForPayment().fold(
+                    val resultado = viewModel.prepareForPayment()
+                    // D5 (QA N86): libre ANTES de avisar. `showSnackbar` (Long) suspende ~10 s y dejaba el botón en «Preparando…».
+                    isChargeInFlight = false
+                    resultado.fold(
                         onSuccess = { payload ->
                             if (payload is PaymentNavigationPayload.CompletedFreeCart) {
                                 viewModel.clearCart()
@@ -389,13 +392,15 @@ fun CheckoutScreen(
                         },
                         onFailure = { error ->
                             Timber.e(error, "🛒 prepareForPayment failed")
+                            // D5 (QA N86): el snackbar del Scaffold queda DEBAJO de la hoja; se cierra antes, como en la cortesía. El
+                            // carrito no se toca: «Cobrar» la vuelve a abrir.
+                            showCartDetailsSheet = false
                             snackbarHostState.showSnackbar(
                                 message = textoDelErrorParaElCajero(error, "No se pudo iniciar el cobro"),
                                 duration = SnackbarDuration.Long,
                             )
                         },
                     )
-                    isChargeInFlight = false
                 }
             }
         }
@@ -433,7 +438,10 @@ fun CheckoutScreen(
                         if (!isPayLaterInFlight) {
                             scope.launch {
                                 isPayLaterInFlight = true
-                                viewModel.createPayLaterOrder().fold(
+                                val resultado = viewModel.createPayLaterOrder()
+                                // D5 (QA N86): libre antes de avisar, como «Cobrar».
+                                isPayLaterInFlight = false
+                                resultado.fold(
                                     onSuccess = { order ->
                                         viewModel.clearCart()
                                         viewModel.selectCustomer(null)
@@ -445,13 +453,14 @@ fun CheckoutScreen(
                                     },
                                     onFailure = { error ->
                                         Timber.e(error, "🛒 createPayLaterOrder failed")
+                                        // D5 (QA N86): debajo de la hoja no se ve; se cierra antes del aviso. El carrito se queda.
+                                        showCartDetailsSheet = false
                                         snackbarHostState.showSnackbar(
                                             message = textoDelErrorParaElCajero(error, "No se pudo guardar la orden"),
                                             duration = SnackbarDuration.Long,
                                         )
                                     },
                                 )
-                                isPayLaterInFlight = false
                             }
                         }
                     }

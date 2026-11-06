@@ -216,10 +216,12 @@ fun PaymentScreen(
     }
 
     // 🔀 Set initial flow origin from navigation args (prevents back stack leaks)
-    val initialFlowOrigin = remember(skipLocalOrderValidation, orderId, isRefundMode, isKioskPayment) {
+    val initialFlowOrigin = remember(skipLocalOrderValidation, orderId, isRefundMode, isKioskPayment, folio) {
         when {
             isRefundMode -> PaymentFlowOrigin.REFUND
             isKioskPayment -> PaymentFlowOrigin.KIOSK
+            // 🧾 R78: un folio salta Room (su cuenta vive en el servidor) pero nunca es venta de SIM.
+            folio != null -> PaymentFlowOrigin.ORDER
             skipLocalOrderValidation -> PaymentFlowOrigin.SERIALIZED
             orderId != null -> PaymentFlowOrigin.ORDER
             else -> PaymentFlowOrigin.FAST
@@ -593,6 +595,8 @@ fun PaymentScreen(
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
                     LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, ventaLocalJson) {
+                        // 🧾 P4: antes de CADA arranque (también tras un resetPayment() que vuelve aquí), el ViewModel sabe si cobra un folio.
+                        viewModel.setFolio(folio)
                         if (!viewModel.setVentaLocalJson(ventaLocalJson)) return@LaunchedEffect
                         // 💸 REFUND MODE: Process refund instead of payment
                         if (isRefundMode && refundAmount != null && originalPaymentId != null) {
@@ -854,6 +858,8 @@ fun PaymentScreen(
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
                                 flowOrigin = effectiveOrigin,
                                 newOrderLabel = newOrderLabel,
+                                // 🧾 R78: la comanda de un folio la imprime el apoyo automático (P4); aquí saldría una segunda.
+                                mostrarComanda = folio == null,
                                 // 🥝 KIOSK MODE PARAMS
                                 isKioskPayment = showKioskMode,
                                 kioskCountdownSeconds = 12,
@@ -1617,6 +1623,7 @@ private fun PaymentSuccessContent(
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     flowOrigin: PaymentFlowOrigin = PaymentFlowOrigin.FAST,  // 🔀 Origin flow for success actions
     newOrderLabel: String? = null,  // 🧾 null = «Nueva Orden»
+    mostrarComanda: Boolean = true,  // 🧾 false en el cobro de un folio: su comanda ya la imprime el apoyo (P4)
     // 🥝 KIOSK MODE PARAMS
     isKioskPayment: Boolean = false,  // 🥝 True = kiosk mode with auto-dismiss
     kioskCountdownSeconds: Int = 12,  // 🥝 Seconds before auto-dismiss
@@ -2594,28 +2601,30 @@ private fun PaymentSuccessContent(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Print kitchen ticket button (comanda para cocina)
-                Button(
-                    onClick = {
-                        showOrderDetailsModal = false
-                        onPrintKitchenTicket()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_contact_payment),
-                        contentDescription = "Imprimir",
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Imprimir Comanda")
-                }
+                if (mostrarComanda) {
+                    Button(
+                        onClick = {
+                            showOrderDetailsModal = false
+                            onPrintKitchenTicket()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_contact_payment),
+                            contentDescription = "Imprimir",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Imprimir Comanda")
+                    }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // Close button
                 AvoqadoButton(

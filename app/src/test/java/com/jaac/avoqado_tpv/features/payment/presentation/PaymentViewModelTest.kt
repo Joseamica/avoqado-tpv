@@ -344,6 +344,7 @@ class PaymentViewModelTest {
         verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager = mockk(relaxed = true),
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
         proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
+        despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -402,6 +403,7 @@ class PaymentViewModelTest {
             subirVentaGuardadaUseCase = mockk(relaxed = true),
             proofOfSaleQueue = proofOfSaleQueue,
             proofOfSaleRemote = proofOfSaleRemote,
+            despuesDeCobrarFolio = despuesDeCobrarFolio,
         )
     }
 
@@ -3597,5 +3599,171 @@ class PaymentViewModelTest {
         assertThat(viewModel.proofNumber(vinculacion)).isEqualTo("5512345678")
         assertThat(viewModel.proofVerificationId()).isEqualTo("ver-1")
         viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // P4 (tienda híbrida): con el cobro de un folio YA registrado, la terminal lo acepta y
+    // intenta la comanda de apoyo — una sola vez y antes del recibo de siempre. R78: con folio
+    // el éxito es ORDER aunque SERIALIZED_INVENTORY esté prendido (un folio nunca es venta de SIM).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val folioP4 = com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio(
+        orderId = "ord-folio", orderNumber = "W7K3P", nombre = "Ana", nota = null,
+        renglones = listOf(com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto("Latte", 1, null, emptyList())),
+    )
+
+    private fun reciboDelFolio() = PaymentReceipt(
+        paymentId = "pay-folio", receiptUrl = "https://receipt.avoqado.io/pay-folio", accessKey = "k",
+        amount = BigDecimal("85.00"), tipAmount = BigDecimal.ZERO,
+    )
+
+    private fun registroDelCobro(resultado: Result<PaymentReceipt>) {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns resultado
+    }
+
+    private fun esperarEstado(viewModel: PaymentViewModel, timeoutMs: Long = 5000, cumple: (PaymentState) -> Boolean) {
+        val limite = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < limite) {
+            if (cumple(viewModel.state.value)) return
+            Thread.sleep(20)
+        }
+        throw AssertionError("El estado no llegó. Estado=${viewModel.state.value}")
+    }
+
+    /** El cobro de un folio abre como la pantalla lo abre: el folio primero, luego la cuenta del servidor (sin Room). */
+    private fun abrirCobroDelFolio(viewModel: PaymentViewModel, folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = folioP4) {
+        viewModel.setFolio(folio)
+        viewModel.submitAmountDirectToMerchant("85.00", orderId = "ord-folio", orderNumber = "W7K3P", skipLocalOrderValidation = true)
+        esperarSelectingMerchant(viewModel)
+    }
+
+    @Test
+    fun `P4 cobro de un folio con tarjeta registrado llama alConfirmarse una vez y antes del recibo`() = runTest(testDispatcher) {
+        registroDelCobro(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>()
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues)
+        var estadoAlLlamar: PaymentState? = null
+        every { despues.alConfirmarse(any()) } answers { estadoAlLlamar = viewModel.state.value }
+        try {
+            seedAuthenticatedSession(viewModel)
+            abrirCobroDelFolio(viewModel)
+            // La tarjeta ya aprobó: la pantalla publica Success ANTES de registrar (sin recibo todavía).
+            forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle()
+            esperarEstado(viewModel) { (it as? PaymentState.Success)?.receipt != null }
+
+            verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+            assertThat((estadoAlLlamar as PaymentState.Success).receipt).isNull()
+            assertThat((viewModel.state.value as PaymentState.Success).receipt?.paymentId).isEqualTo("pay-folio")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 cobro de un folio en efectivo registrado llama alConfirmarse una vez y antes del recibo`() = runTest {
+        registroDelCobro(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>()
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues)
+        var estadoAlLlamar: PaymentState? = null
+        every { despues.alConfirmarse(any()) } answers { estadoAlLlamar = viewModel.state.value }
+        try {
+            abrirCobroDelFolio(viewModel)
+
+            viewModel.processCashPayment("85.00")
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+            assertThat(estadoAlLlamar).isNotInstanceOf(PaymentState.Success::class.java)
+            assertThat((viewModel.state.value as PaymentState.Success).receipt?.paymentId).isEqualTo("pay-folio")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un cobro normal sin folio no llama alConfirmarse`() = runTest {
+        registroDelCobro(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            abrirCobroDelFolio(viewModel, folio = null)
+
+            viewModel.processCashPayment("85.00")
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un cobro de folio que no se registro (queda en la cola) no llama alConfirmarse`() = runTest(testDispatcher) {
+        registroDelCobro(Result.failure(RuntimeException("HTTP 500")))
+        coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            seedAuthenticatedSession(viewModel)
+            abrirCobroDelFolio(viewModel)
+            forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(timeout = 2000, exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 resetPayment olvida el folio - el siguiente cobro ya no lo acepta`() = runTest {
+        registroDelCobro(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            viewModel.setFolio(folioP4)
+            viewModel.resetPayment()
+            viewModel.submitAmountDirectToMerchant("85.00", orderId = "ord-x", orderNumber = "0007")
+            esperarSelectingMerchant(viewModel)
+
+            viewModel.processCashPayment("85.00")
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `R78 con folio el exito es ORDER aunque SERIALIZED_INVENTORY este prendido`() = runTest {
+        modulesFlow.value = listOf(
+            com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule(
+                "m1", ModulesRepository.MODULE_SERIALIZED_INVENTORY, "Inventario",
+                com.jaac.avoqado_tpv.features.modules.domain.model.ModuleConfig(),
+            ),
+        )
+        val sinFolio = createViewModel()
+        val conFolio = createViewModel()
+        try {
+            // Sin folio, la cuenta que sólo vive en el servidor con el módulo prendido es una venta de SIM (como hoy).
+            sinFolio.submitAmountDirectToMerchant("85.00", orderId = "ord-sim", orderNumber = "0001", skipLocalOrderValidation = true)
+            assertThat(sinFolio.flowOrigin.value).isEqualTo(PaymentFlowOrigin.SERIALIZED)
+
+            conFolio.setFolio(folioP4)
+            conFolio.submitAmountDirectToMerchant("85.00", orderId = "ord-folio", orderNumber = "W7K3P", skipLocalOrderValidation = true)
+            assertThat(conFolio.flowOrigin.value).isEqualTo(PaymentFlowOrigin.ORDER)
+        } finally {
+            sinFolio.viewModelScope.cancel()
+            conFolio.viewModelScope.cancel()
+        }
     }
 }

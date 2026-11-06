@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.onlineorders.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
@@ -103,6 +104,8 @@ object TextosPorPagar {
         "No se puede cancelar",
         "Este folio ya tiene un cobro, o uno en curso en la terminal. Si ya se cobró, primero se reembolsa.",
     )
+    /** R78: este aparato ya lo cobró y el registro sigue en su cola; el SERVIDOR aún lo ve «por pagar». */
+    val COBRO_SUBIENDOSE = AvisoDeFolio("Hay un cobro de este folio subiéndose", "Espera a que suba.")
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
     val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")
 }
@@ -159,6 +162,8 @@ class PorPagarViewModel @Inject constructor(
     private val folios: FoliosRepository,
     private val permisos: PermissionsRepository,
     private val storage: SecureStorage,
+    // R78: los cobros de ESTE aparato que todavía no suben (efectivo o tarjeta en cola).
+    private val cola: PendingPaymentDao,
 ) : ViewModel() {
 
     private data class Local(
@@ -225,6 +230,8 @@ class PorPagarViewModel @Inject constructor(
         val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return null
         if (!ocupar(folio.orderId)) return null
         try {
+            // R78: el SERVIDOR sólo sabe del cobro cuando sube; hasta entonces la relectura lo daría «por pagar» otra vez.
+            if (cola.hayCobroSubiendose(venueId, folio.orderId)) return avisar(TextosPorPagar.COBRO_SUBIENDOSE)
             return releer(venueId, folio)?.also { abrir(it) }
         } finally {
             local.update { it.copy(ocupados = it.ocupados - folio.orderId) }

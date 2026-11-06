@@ -247,6 +247,7 @@ class AngelPayPaymentViewModelTest {
         actionableSales: com.jaac.avoqado_tpv.features.verification.data.ActionableSalesRepository? = null,
         proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
         modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
+        despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -292,6 +293,7 @@ class AngelPayPaymentViewModelTest {
         actionableSales = actionableSales,
         proofOfSaleRemote = proofOfSaleRemote,
         modulesRepository = modulesRepository,
+        despuesDeCobrarFolio = despuesDeCobrarFolio,
     )
     }
 
@@ -6430,6 +6432,160 @@ class AngelPayPaymentViewModelTest {
                     .isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
                 verificarNingunDesenlacePara("REQ-B")
             } finally { vm.viewModelScope.cancel() }
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // P4 (tienda híbrida): con el cobro de un folio YA registrado, la Nexgo lo acepta y intenta la comanda de apoyo — una sola
+    // vez y antes del recibo de siempre. Un folio nunca es venta de SIM (R78): su cobro no trae serie.
+    // ----------------------------------------------------------------------
+
+    private val folioP4 = com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio(
+        orderId = "ord-folio", orderNumber = "W7K3P", nombre = "Ana", nota = null,
+        renglones = listOf(com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto("Latte", 1, null, emptyList())),
+    )
+
+    private fun reciboDelFolio() = PaymentReceipt(
+        paymentId = "pay-folio", receiptUrl = "https://receipt/pay-folio", accessKey = "k",
+        amount = java.math.BigDecimal("85.00"), tipAmount = java.math.BigDecimal.ZERO,
+    )
+
+    private suspend fun esperarFinal(vm: AngelPayPaymentViewModel): AngelPayPaymentState = withContext(Dispatchers.Default) {
+        kotlinx.coroutines.withTimeout(2_000) {
+            vm.state.first {
+                it is AngelPayPaymentState.Success && it.receipt != null || it is AngelPayPaymentState.Queued || it is AngelPayPaymentState.Error
+            }
+        }
+    }
+
+    private fun cobroDeFolio(registro: Result<PaymentReceipt>) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns registro
+    }
+
+    @Test
+    fun `P4 cobro de un folio con tarjeta en Nexgo registrado llama alConfirmarse una vez y antes del recibo`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>()
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        var estadoAlLlamar: AngelPayPaymentState? = null
+        every { despues.alConfirmarse(any()) } answers { estadoAlLlamar = vm.state.value }
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+            runCurrent()
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            val final = esperarFinal(vm)
+            assertThat((final as AngelPayPaymentState.Success).receipt?.paymentId).isEqualTo("pay-folio")
+            verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+            assertThat((estadoAlLlamar as? AngelPayPaymentState.Success)?.receipt).isNull()
+            assertThat(vm.isSerializedSale).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 cobro de un folio en efectivo en Nexgo registrado llama alConfirmarse una vez y antes del recibo`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>()
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        var estadoAlLlamar: AngelPayPaymentState? = null
+        every { despues.alConfirmarse(any()) } answers { estadoAlLlamar = vm.state.value }
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+            runCurrent()
+            vm.startCashPayment()
+            runCurrent()
+
+            val final = esperarFinal(vm)
+            assertThat((final as AngelPayPaymentState.Success).receipt?.paymentId).isEqualTo("pay-folio")
+            verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+            assertThat((estadoAlLlamar as? AngelPayPaymentState.Success)?.receipt).isNull()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un cobro normal sin folio en Nexgo no llama alConfirmarse`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P")
+            runCurrent()
+            vm.startCashPayment()
+            runCurrent()
+
+            assertThat(esperarFinal(vm)).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un cobro de folio en Nexgo que no se registro (queda en la cola) no llama alConfirmarse`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.failure(RuntimeException("HTTP 503")))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+            runCurrent()
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            assertThat(esperarFinal(vm)).isNotInstanceOf(AngelPayPaymentState.Success::class.java)
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 resetPayment olvida el folio en Nexgo`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+            runCurrent()
+            vm.resetPayment()
+            vm.initPayment(amount = "85.00", orderId = "ord-x", orderNumber = "0007")
+            runCurrent()
+            vm.startCashPayment()
+            runCurrent()
+
+            assertThat(esperarFinal(vm)).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un ViewModel recreado mientras el SDK cobra conserva el folio`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val antes = createViewModel(savedStateHandle = handle, despuesDeCobrarFolio = despues)
+        antes.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+        runCurrent()
+        antes.viewModelScope.cancel()
+        // Android destruyó la actividad con el SDK enfrente: el ViewModel nuevo nace del mismo SavedStateHandle.
+        val recreado = createViewModel(savedStateHandle = handle, despuesDeCobrarFolio = despues)
+        try {
+            recreado.startCashPayment()
+            runCurrent()
+
+            assertThat(esperarFinal(recreado)).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+        } finally {
+            recreado.viewModelScope.cancel()
         }
     }
 }

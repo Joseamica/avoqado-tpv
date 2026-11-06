@@ -310,6 +310,8 @@ class PaymentViewModel @Inject constructor(
     private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
     // 📸 C7: la pregunta de repetido del número de vinculación (number-check). Hilt siempre la da; null en pruebas viejas.
     proofOfSaleRemote: ProofOfSaleRemote? = null,
+    // 🧾 Tienda híbrida (P4): con el cobro de un folio registrado, lo acepta y prueba la comanda de apoyo. Hilt siempre la da.
+    private val despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
 ) : ViewModel() {
 
     // 🔒 True while handlePaymentSuccess's recording coroutine is running. PaymentState.Success is
@@ -1860,6 +1862,17 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * 🧾 Tienda híbrida (P4): el folio de «Pedidos por pagar» que este cobro paga (null = cobro normal). La pantalla lo da antes de
+     * cada arranque, también tras un [resetPayment] que la regresa a Idle. Con folio el cobro es ORDER (nunca venta de SIM, R78) y,
+     * registrado, [DespuesDeCobrarFolio.alConfirmarse] lo acepta y prueba la comanda.
+     */
+    private var folioDelCobro: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null
+
+    fun setFolio(folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio?) {
+        folioDelCobro = folio
+    }
+
+    /**
      * 📱 PORTABILIDAD: Set portabilidad mode (1 photo vs 2 photos for proof-of-sale)
      */
     fun setIsPortabilidad(isPortabilidad: Boolean) {
@@ -3233,6 +3246,8 @@ class PaymentViewModel @Inject constructor(
         )
         _flowOrigin.value = when {
             sessionSnapshot.isKioskPayment -> PaymentFlowOrigin.KIOSK
+            // 🧾 R78: la cuenta de un folio sólo vive en el servidor (por eso salta Room), pero NUNCA es venta de SIM.
+            folioDelCobro != null -> PaymentFlowOrigin.ORDER
             // 🔴 `skipLocalOrderValidation` NO implica venta serializada: el cobro remoto por
             // socket TAMBIÉN la manda en true ("la orden ya la validó el POS emisor",
             // AppNavigation). Clasificar solo por la bandera disfrazaba TODO cobro remoto de
@@ -6518,6 +6533,7 @@ class PaymentViewModel @Inject constructor(
         // sesión DESPUÉS de la espera es lo que mandó llave vacía en producción: cancelar o
         // reiniciar la pantalla mientras el toque estaba estacionado la borra.
         val ventaLocalCongelada = ventaLocal
+        val folioDelIntento = folioDelCobro  // 🧾 P4: congelado con el toque, como la llave
         val attemptId = ventaLocalCongelada?.llave ?: ensurePaymentAttemptId()
 
         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
@@ -6734,6 +6750,8 @@ class PaymentViewModel @Inject constructor(
 
                 result.onSuccess { receipt ->
                     Timber.d("✅ [Cash Payment] Successfully recorded to backend")
+                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                     Timber.d("   🧾 Payment ID: ${receipt.paymentId} | Receipt URL: ${receipt.receiptUrl}")
 
                     // 📦 Load order data if this is an order payment (Pedido Rápido or Servicio de Mesa)
@@ -7482,6 +7500,7 @@ class PaymentViewModel @Inject constructor(
         }
 
         ventaLocal = null
+        folioDelCobro = null  // 🧾 P4: la pantalla lo vuelve a dar al arrancar el siguiente cobro
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
@@ -8280,6 +8299,8 @@ class PaymentViewModel @Inject constructor(
                 // es el único dato de la fila de la cola que no vive dentro de él, y leerlo después
                 // del POST lo expone al mismo `resetPayment()` que vaciaba todo lo demás.
                 val numeroDeOrdenDelIntento = getOrderNumberForFlow()
+                // 🧾 P4: el folio también se captura aquí, antes del POST, por la misma razón.
+                val folioDelIntento = folioDelCobro
                 val context = if (orderIdForFlow != null) {
                     buildOrderPaymentContext(
                         staffId = effectiveStaffId,  // 🥝 Use effective staff ID (kiosk or auth)
@@ -8354,6 +8375,9 @@ class PaymentViewModel @Inject constructor(
                             merchantAccountName = _currentMerchant.value?.displayName
                         )
                     }
+
+                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
 
                     // 🎫 Update Success state with receipt + card details (QR, WhatsApp, Email, printing)
                     applyRecordedReceiptToSuccessState(

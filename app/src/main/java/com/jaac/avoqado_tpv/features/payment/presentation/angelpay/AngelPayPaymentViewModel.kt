@@ -190,6 +190,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     // da; null en pruebas viejas = sin campo, como hoy.
     proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
     private val modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
+    // 🧾 Tienda híbrida (P4): con el cobro de un folio registrado, lo acepta y prueba la comanda de apoyo. Hilt siempre la da.
+    private val despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -444,6 +446,11 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var pendingRating: Int? = null
     private var pendingOrderId: String? = null
     private var pendingOrderNumber: String? = null
+    // 🧾 Tienda híbrida (P4): el folio que este cobro paga (null = cobro normal), de [initPayment]. Vive en el SavedStateHandle,
+    // como el enlace del POS: si Android destruye la actividad con el SDK enfrente, el ViewModel nuevo lo sigue sabiendo.
+    private var pendingFolio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio?
+        get() = savedStateHandle[KEY_FOLIO]
+        set(value) { savedStateHandle[KEY_FOLIO] = value }
     // 📸 Serialized inventory (SIM) proof-of-sale — set via [setSerializedSaleInfo] before
     // charging. Empty/false for a normal AngelPay payment so the recorded context is
     // byte-identical to before. Cleared in resetPayment().
@@ -784,6 +791,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         cardDetails: CardDetails,
         receipt: PaymentReceipt,
         successState: AngelPayPaymentState.Success,
+        folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
     ) {
         val attemptId = paymentContext.idempotencyKey
         var decision: ResultadoDelVeredicto? = null
@@ -827,6 +835,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _state.value = AngelPayPaymentState.Error(CobroRemotoDelPos.REGISTRADO_CON_DISCREPANCIA, canRetry = false)
             }
             veredicto == VeredictoDelServidor.RECORDED -> {
+                // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                folio?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                 _state.value = successState.copy(receipt = receipt)
                 // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
                 emitSocketResultIfSocketSourced(
@@ -1321,7 +1331,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         externalRating: Int? = null,
         soloEfectivo: Boolean = false,
         ventaLocalJson: String? = null,
+        folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
     ) {
+        pendingFolio = folio
         // D6: un $0 que manda el POS sigue rechazado (abajo); uno de la terminal va en sólo efectivo.
         ventaEnCero = ventaLocalJson == null && _paymentSource != CobroRemotoDelPos.FUENTE_SOCKET &&
             amount.toBigDecimalOrNull()?.signum() == 0
@@ -2634,6 +2646,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // La cola se guarda ANTES del primer POST en RecordPaymentUseCase.
                 // NonCancellable protege de abandonar la pantalla; si Android mata el
                 // proceso, el worker recupera la fila durable al vencer su claim.
+                val folioDelIntento = pendingFolio  // 🧾 P4: congelado antes del POST
                 val recordResult = withContext(NonCancellable + Dispatchers.IO) {
                     recordPaymentUseCase(
                         context = paymentContext,
@@ -2656,6 +2669,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 recordResult.fold(
                     onSuccess = { receipt ->
                         Timber.i("🔶 [AngelPay] Cash payment recorded | receipt=${receipt.receiptUrl}")
+                        // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                        folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                         _state.value = successState.copy(receipt = receipt)
                         // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
                         emitSocketResultIfSocketSourced(
@@ -4613,6 +4628,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s peor caso),
         // la llamada NO debe abortarse a medio camino — sin esto el cobro puede
         // saltarse la cola offline por completo.
+        val folioDelIntento = pendingFolio  // 🧾 P4: congelado antes del POST
         val recordResult = withContext(NonCancellable + Dispatchers.IO) {
             recordPaymentUseCase(
                 context = paymentContext,
@@ -4635,7 +4651,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay] Card payment recorded | receipt=${receipt.receiptUrl}")
-                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState)
+                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState, folioDelIntento)
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend — enqueueing for sync")
@@ -4723,6 +4739,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s peor caso),
         // la llamada NO debe abortarse a medio camino — sin esto el cobro puede
         // saltarse la cola offline por completo.
+        val folioDelIntento = pendingFolio  // 🧾 P4: congelado antes del POST
         val recordResult = withContext(NonCancellable + Dispatchers.IO) {
             recordPaymentUseCase(
                 context = paymentContext,
@@ -4745,7 +4762,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay SDK] Card payment recorded | receipt=${receipt.receiptUrl}")
-                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState)
+                aplicarVeredictoDelRest(paymentContext, cardDetails, receipt, successState, folioDelIntento)
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend — enqueueing for sync")
@@ -5587,6 +5604,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         pendingRating = null
         pendingOrderId = null
         pendingOrderNumber = null
+        pendingFolio = null
         pendingSerialNumbers = emptyList()
         pendingIsPortabilidad = false
         // ⬅️ Sin esto, un cobro empujado por el POS dejaría el flag encendido y el SIGUIENTE
@@ -5747,6 +5765,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         private const val KEY_VINCULO_FIJADO = "angelpay_socket_binding_fixed"
         private const val KEY_SOLICITUD_VINCULADA = "angelpay_socket_bound_request_id"
         private const val KEY_ENTRADA_REMOTA = "angelpay_socket_remote_entry"
+        private const val KEY_FOLIO = "angelpay_folio_del_cobro"
 
         /**
          * Nexgo terminal models that ship with a built-in thermal

@@ -1654,13 +1654,17 @@ class PrinterManager @Inject constructor(
      * @param tableName Optional table name (e.g., "Mesa 5")
      * @param orderItems List of order items with modifiers and notes
      * @param staffName Optional staff name who sent the ticket
+     * @param cliente 🧾 Tienda híbrida: a quién se le entrega («Para: Ana»); null = no se imprime
+     * @param notaDelPedido 🧾 Tienda híbrida: la nota del pedido entero («Nota: sin azúcar»); null = no se imprime
      * @return Result.success if printed, Result.failure if error
      */
     fun printKitchenTicket(
         orderNumber: String?,
         tableName: String? = null,
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>,
-        staffName: String? = null
+        staffName: String? = null,
+        cliente: String? = null,
+        notaDelPedido: String? = null,
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -1691,6 +1695,10 @@ class PrinterManager @Inject constructor(
             // Table name (if available)
             if (!tableName.isNullOrBlank()) {
                 printerInstance.printStr("Mesa: $tableName\n", null)
+            }
+
+            if (!cliente.isNullOrBlank()) {
+                printerInstance.printStr("Para: $cliente\n", null)
             }
 
             printerInstance.printStr("\n", null)
@@ -1728,6 +1736,10 @@ class PrinterManager @Inject constructor(
             // FOOTER
             // ========================================
             printerInstance.printStr("--------------------------------\n", null)
+
+            if (!notaDelPedido.isNullOrBlank()) {
+                printerInstance.printStr("Nota: $notaDelPedido\n", null)
+            }
 
             if (!staffName.isNullOrBlank()) {
                 printerInstance.printStr("Enviada por: $staffName\n", null)

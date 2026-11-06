@@ -279,6 +279,14 @@ interface PendingPaymentDao {
         AND (idempotency_key = :key OR reference_number = :reference) LIMIT 1)""")
     suspend fun tieneDueno(venueId: String, key: String?, reference: String): Boolean
 
+    /**
+     * 🧾 Tienda híbrida (R78): ¿este aparato cobró esa cuenta y el cobro todavía no sube? Mientras tanto el SERVIDOR la ve «por
+     * pagar», y releerla dejaría cobrar el mismo folio OTRA VEZ.
+     */
+    @Query("""SELECT EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId AND order_id = :orderId
+        AND sync_status IN ('PENDING', 'SYNCING') LIMIT 1)""")
+    suspend fun hayCobroSubiendose(venueId: String, orderId: String): Boolean
+
     @Query("SELECT * FROM pending_payments WHERE id = :id AND venue_id = :venueId LIMIT 1")
     suspend fun leerParaReconocer(id: Long, venueId: String): PendingPaymentEntity?
 

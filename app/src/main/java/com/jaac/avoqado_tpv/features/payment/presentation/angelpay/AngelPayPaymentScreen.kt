@@ -259,6 +259,7 @@ fun AngelPayPaymentScreen(
                 externalRating = externalRating,
                 soloEfectivo = soloEfectivo,
                 ventaLocalJson = ventaLocalJson,
+                folio = folio,  // 🧾 P4: registrado, el ViewModel acepta el folio y prueba la comanda
             )
         }
     }

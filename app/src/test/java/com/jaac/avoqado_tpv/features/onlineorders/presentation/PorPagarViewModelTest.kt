@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.onlineorders.presentation
 
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
@@ -49,6 +50,8 @@ class PorPagarViewModelTest {
     private val folios = mockk<FoliosRepository>()
     private val permisos = mockk<PermissionsRepository>()
     private val storage = mockk<SecureStorage>(relaxed = true)
+    // R78: la cola de cobros del aparato. Por defecto no hay ningún cobro subiéndose.
+    private val cola = mockk<PendingPaymentDao> { coEvery { hayCobroSubiendose(any(), any()) } returns false }
 
     // 10:30 en la Ciudad de México (UTC-6).
     private val ahora = Instant.parse("2026-11-06T16:30:00Z")
@@ -70,7 +73,7 @@ class PorPagarViewModelTest {
         VenueTimeZone.invalidateCache()
     }
 
-    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage)
+    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola)
 
     private fun folio(
         id: String,
@@ -249,6 +252,38 @@ class PorPagarViewModelTest {
         assertThat(apertura.folio.nombre).isEqualTo("Sofía")
         assertThat(apertura.folio.renglones.single().extras.single().nombre).isEqualTo("Leche de almendra")
         assertThat(vm.ui.value.aviso).isNull()
+    }
+
+    @Test
+    fun `R78 con un cobro de ese folio en la cola del aparato no deja cobrar otra vez`() = runTest {
+        // La TPV cobró el folio y su registro no ha subido: el SERVIDOR lo sigue viendo «por pagar» y la relectura dejaría
+        // cobrarlo OTRA VEZ. Mientras la cola traiga ese cobro, no se abre ninguno.
+        val sofia = folio("b", folio = "W4R9T", nombre = "Sofía", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { cola.hayCobroSubiendose("v1", "b") } returns true
+        val vm = vm()
+        var abrio = false
+
+        val apertura = vm.cobrar(sofia) { abrio = true }
+
+        assertThat(apertura).isNull()
+        assertThat(abrio).isFalse()
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_SUBIENDOSE)
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Hay un cobro de este folio subiéndose")
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que suba.")
+        assertThat(vm.ui.value.ocupados).isEmpty()
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R78 en cuanto el cobro sube, el folio ya se puede releer`() = runTest {
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(sofia)))
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNotNull()
+        coVerify(exactly = 1) { cola.hayCobroSubiendose("v1", "b") }
     }
 
     @Test

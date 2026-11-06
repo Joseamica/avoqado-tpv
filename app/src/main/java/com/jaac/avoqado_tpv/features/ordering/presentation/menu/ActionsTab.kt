@@ -314,8 +314,7 @@ fun ActionsTab(
                 title = "Cortesia",
                 icon = Icons.Default.Favorite,
                 backgroundColor = MaterialTheme.avoqadoColors.statusSuccess,
-                enabled = hasItems && canCompItems,
-                disabledReason = if (!canCompItems) "Sin permisos para cortesía" else null,
+                enabled = hasItems,
                 onClick = { dialogState = ActionsDialogState.Cortesia }
             )
         )

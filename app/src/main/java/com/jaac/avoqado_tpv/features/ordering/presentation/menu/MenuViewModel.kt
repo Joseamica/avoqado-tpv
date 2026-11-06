@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -92,7 +94,8 @@ class MenuViewModel @Inject constructor(
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
     private val printerManager: PrinterManager,  // 🖨️ Kitchen ticket printing
     private val paymentApiService: PaymentApiService,  // 🎁 Cortesía: bypass gateway for $0 orders
-    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository  // 🔐 Action gating
+    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository,  // 🔐 Action gating
+    private val autorizacionDeGerente: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente  // 🔐 PIN de gerente
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
@@ -2416,13 +2419,47 @@ class MenuViewModel @Inject constructor(
 
                 Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
 
-                discountRepository.applyManualDiscount(
-                    venueId = venueId,
-                    orderId = order.id,
-                    type = type,
-                    value = value,
-                    reason = reason
-                ).fold(
+                // PIN de gerente: sólo si este descuento regala la cuenta (sobre subtotal − descuentos, no `total`).
+                val centavos = { d: Double -> java.math.BigDecimal.valueOf(d).setScale(2, java.math.RoundingMode.HALF_UP) }
+                val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
+                val regalaLaCuenta = (type == DiscountType.PERCENTAGE && value >= 100) ||
+                    (type == DiscountType.FIXED && centavos(value) >= queda)
+                val motivoPin = "Para dar esta cortesía"
+                var token: String? = null
+                if (regalaLaCuenta) {
+                    val auth = autorizacionDeGerente.paraCortesia(venueId, motivoPin)
+                    if (auth is Autorizacion.Cancelada) return@launch
+                    token = (auth as? Autorizacion.ConPin)?.token
+                }
+                // Un 403 con token no es un permiso que falta: OkHttp pudo reenviar el POST tras gastarse el token y el
+                // descuento pudo aplicarse. Se trata como "no confirmada".
+                var noConfirmada = false
+                suspend fun enviar(t: String?): Result<OrderDiscount> {
+                    val r = discountRepository.applyManualDiscount(
+                        venueId = venueId,
+                        orderId = order.id,
+                        type = type,
+                        value = value,
+                        reason = reason,
+                        overrideToken = t
+                    )
+                    if (t != null && r.exceptionOrNull() is PermisoRequeridoException) noConfirmada = true
+                    return r
+                }
+                var resultado = enviar(token)
+                val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
+                if (token == null && e403?.required == "orders:comp") {
+                    val forzada = autorizacionDeGerente.paraCortesia(venueId, motivoPin, forzar = true)
+                    if (forzada is Autorizacion.Cancelada) return@launch
+                    token = (forzada as? Autorizacion.ConPin)?.token
+                    resultado = enviar(token)
+                }
+                if (noConfirmada) {
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar("No pudimos confirmar la cortesía. Revisa la cuenta", isError = true))
+                    refreshOrderFromBackend(order.id)
+                    return@launch
+                }
+                resultado.fold(
                     onSuccess = { appliedDiscount ->
                         val updatedDiscounts = _appliedDiscounts.value + appliedDiscount
                         _appliedDiscounts.value = updatedDiscounts
@@ -2443,6 +2480,9 @@ class MenuViewModel @Inject constructor(
                         ))
                     }
                 )
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar("No se pudo aplicar la cortesía", isError = true))
             } finally {
                 _isLoadingDiscounts.value = false
             }

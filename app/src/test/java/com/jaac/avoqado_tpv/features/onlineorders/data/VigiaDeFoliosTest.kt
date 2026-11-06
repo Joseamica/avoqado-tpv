@@ -347,4 +347,45 @@ class VigiaDeFoliosTest {
             assertThat(vigia.estado.value.errorAlCargarMas).isFalse()
         }
     }
+
+    @Test
+    fun `un folio de las extras que se cobra cambia el conteo y descarta las extras aunque la pagina 1 sea igual`() = runTest {
+        // hay 2 por pagar en el servidor; la página 1 sólo trae a «a»
+        respuesta = {
+            Result.success(
+                pagina(porPagar = listOf(folio("a")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))
+                    .copy(conteo = ConteoDeFolios(porPagar = 2, porEntregar = 0)),
+            )
+        }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(pagina(porPagar = listOf(folio("b"))))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b")
+
+            // b se cobró: la página 1 es idéntica, pero ya sólo hay 1 por pagar (y 1 por entregar, fuera de la página)
+            respuesta = {
+                Result.success(
+                    pagina(porPagar = listOf(folio("a")), siguientes = mapOf(SeccionDeFolios.POR_PAGAR to "c1"))
+                        .copy(conteo = ConteoDeFolios(porPagar = 1, porEntregar = 1)),
+                )
+            }
+            vigia.sondearYa()
+
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a")
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c1")
+        }
+    }
+
+    @Test
+    fun `cargarMas con pagina vacia y sin cursor no vuelve a pedir la pagina 2`() = runTest {
+        respuesta = { Result.success(pagina(porEntregar = listOf(folio("x")), siguientes = mapOf(SeccionDeFolios.POR_ENTREGAR to "c1"))) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_ENTREGAR, "c1") } returns Result.success(pagina(porPagar = emptyList(), porEntregar = emptyList()))
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_ENTREGAR)).isTrue()
+            assertThat(vigia.estado.value.nextCursors).isEmpty()
+
+            vigia.sondearYa() // misma página 1: sigue sin cursor
+            assertThat(vigia.estado.value.nextCursors).isEmpty()
+        }
+    }
 }

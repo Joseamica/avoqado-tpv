@@ -116,10 +116,12 @@ class VigiaDeFolios internal constructor(
         when (seccion) {
             SeccionDeFolios.POR_PAGAR -> {
                 extrasPagar = extrasPagar.sumarSinRepetir(nuevos)
+                avanzadaPagar = true
                 extrasEntregar = extrasEntregar.filter { it.orderId !in ids }
             }
             SeccionDeFolios.POR_ENTREGAR -> {
                 extrasEntregar = extrasEntregar.sumarSinRepetir(nuevos)
+                avanzadaEntregar = true
                 extrasPagar = extrasPagar.filter { it.orderId !in ids }
             }
         }
@@ -137,11 +139,15 @@ class VigiaDeFolios internal constructor(
     private var cursorExtra: Map<SeccionDeFolios, String> = emptyMap()
     private var huellaPagar: List<String>? = null
     private var huellaEntregar: List<String>? = null
+    /** La sección ya pidió páginas más allá de la 1 (aunque no haya traído nada): su cursor es [cursorExtra], no el de la página 1. */
+    private var avanzadaPagar = false
+    private var avanzadaEntregar = false
 
     private fun olvidarListas() {
         pagina1Pagar = emptyList(); pagina1Entregar = emptyList(); cursoresPagina1 = emptyMap()
         extrasPagar = emptyList(); extrasEntregar = emptyList(); cursorExtra = emptyMap()
         huellaPagar = null; huellaEntregar = null
+        avanzadaPagar = false; avanzadaEntregar = false
     }
 
     private fun huella(l: List<Folio>) = l.map { "${it.orderId}|${it.falta}|${it.estado}|${it.estadoDePago}" }
@@ -155,7 +161,7 @@ class VigiaDeFolios internal constructor(
         // El cursor de una sección con extras es el de la última página cargada; sin extras, el de la página 1.
         val cur = buildMap {
             for (sec in SeccionDeFolios.values()) {
-                val tieneExtras = if (sec == SeccionDeFolios.POR_PAGAR) extrasPagar.isNotEmpty() else extrasEntregar.isNotEmpty()
+                val tieneExtras = if (sec == SeccionDeFolios.POR_PAGAR) avanzadaPagar else avanzadaEntregar
                 val c = if (tieneExtras) cursorExtra[sec] else cursores[sec]
                 if (c != null) put(sec, c)
             }
@@ -188,9 +194,10 @@ class VigiaDeFolios internal constructor(
         val ahora = reloj()
         // Las extras (lo cargado más allá de la página 1) se conservan mientras la página 1 de SU sección no cambie
         // (ids, falta, estado o pago); si cambió, esa sección vuelve a la página 1 y se descartan.
-        val hp = huella(pagina.porPagar); val he = huella(pagina.porEntregar)
-        if (hp != huellaPagar) { extrasPagar = emptyList(); cursorExtra = cursorExtra - SeccionDeFolios.POR_PAGAR }
-        if (he != huellaEntregar) { extrasEntregar = emptyList(); cursorExtra = cursorExtra - SeccionDeFolios.POR_ENTREGAR }
+        // El conteo de la sección entra a la huella: un folio de las extras que se cobra o se va no mueve la página 1 pero sí el conteo.
+        val hp = huella(pagina.porPagar) + "n=${pagina.conteo.porPagar}"; val he = huella(pagina.porEntregar) + "n=${pagina.conteo.porEntregar}"
+        if (hp != huellaPagar) { extrasPagar = emptyList(); avanzadaPagar = false; cursorExtra = cursorExtra - SeccionDeFolios.POR_PAGAR }
+        if (he != huellaEntregar) { extrasEntregar = emptyList(); avanzadaEntregar = false; cursorExtra = cursorExtra - SeccionDeFolios.POR_ENTREGAR }
         huellaPagar = hp; huellaEntregar = he
         pagina1Pagar = pagina.porPagar; pagina1Entregar = pagina.porEntregar; cursoresPagina1 = pagina.siguientes
         _estado.value = componer(pagina.aEstado(ahora).copy(errorAlCargarMas = _estado.value.errorAlCargarMas), pagina.porPagar, pagina.porEntregar, pagina.siguientes)

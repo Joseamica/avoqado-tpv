@@ -155,6 +155,7 @@ fun PaymentScreen(
     socketProcessedByStaffId: String? = null,
     soloEfectivo: Boolean = false,  // 💵 D2: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar)
     ventaLocalJson: String? = null,
+    newOrderLabel: String? = null,  // 🧾 Tienda híbrida: el botón tras cobrar un folio dice a dónde lleva («Pedidos por pagar»)
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -850,6 +851,7 @@ fun PaymentScreen(
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
                                 flowOrigin = effectiveOrigin,
+                                newOrderLabel = newOrderLabel,
                                 // 🥝 KIOSK MODE PARAMS
                                 isKioskPayment = showKioskMode,
                                 kioskCountdownSeconds = 12,
@@ -1274,7 +1276,8 @@ private fun resolveSuccessRouting(
     onClearTableAndReturnToFloorPlan: (String) -> Unit,
     onNavigateToSerializedSale: () -> Unit,
     onNewOrder: () -> Unit,
-    onNewFastPayment: () -> Unit
+    onNewFastPayment: () -> Unit,
+    newOrderLabel: String? = null
 ): SuccessRouting {
     if (wasPayLaterOrder) {
         val text = if (payLaterOrdersCount > 0) "Pagar cuenta ($payLaterOrdersCount)" else "Pagar cuenta"
@@ -1287,7 +1290,7 @@ private fun resolveSuccessRouting(
 
     return when (flowOrigin) {
         PaymentFlowOrigin.SERIALIZED -> SuccessRouting(text = "Nueva Venta", onClick = onNavigateToSerializedSale)
-        PaymentFlowOrigin.ORDER -> SuccessRouting(text = "Nueva Orden", onClick = onNewOrder)
+        PaymentFlowOrigin.ORDER -> SuccessRouting(text = newOrderLabel ?: "Nueva Orden", onClick = onNewOrder)
         PaymentFlowOrigin.FAST -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
         PaymentFlowOrigin.REFUND -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
         PaymentFlowOrigin.KIOSK -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
@@ -1611,6 +1614,7 @@ private fun PaymentSuccessContent(
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     flowOrigin: PaymentFlowOrigin = PaymentFlowOrigin.FAST,  // 🔀 Origin flow for success actions
+    newOrderLabel: String? = null,  // 🧾 null = «Nueva Orden»
     // 🥝 KIOSK MODE PARAMS
     isKioskPayment: Boolean = false,  // 🥝 True = kiosk mode with auto-dismiss
     kioskCountdownSeconds: Int = 12,  // 🥝 Seconds before auto-dismiss
@@ -1805,7 +1809,8 @@ private fun PaymentSuccessContent(
                                     onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
                                     onNavigateToSerializedSale = onNavigateToSerializedSale,
                                     onNewOrder = onNewOrder,
-                                    onNewFastPayment = onNewFastPayment
+                                    onNewFastPayment = onNewFastPayment,
+                                    newOrderLabel = newOrderLabel
                                 )
                                 val buttonText = successRouting.text
 

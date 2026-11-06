@@ -1,0 +1,410 @@
+package com.jaac.avoqado_tpv.features.onlineorders.presentation
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
+import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
+import com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
+import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
+import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.io.IOException
+import java.math.RoundingMode
+import java.text.Normalizer
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import javax.inject.Inject
+
+/** Textos de «Pedidos por pagar» en la TPV: mockups v2 §2 y reglas de UX (`ux-critica-v2.md`), que ganan sobre el plan. */
+object TextosPorPagar {
+    const val TITULO = "Pedidos por pagar"
+    fun tituloFolio(folio: String) = "Folio $folio"
+    const val BUSCAR = "Folio o nombre"
+    const val POR_PAGAR = "Por pagar"
+    const val POR_ENTREGAR = "Por entregar"
+    const val VACIO = "No hay pedidos por pagar"
+    const val VACIO_AYUDA = "Cuando alguien pida por el QR, aparece aquí con su folio y su nombre."
+    const val NADA_POR_ENTREGAR = "Nada por entregar."
+    fun resultados(n: Int) = if (n == 1) "1 resultado" else "$n resultados"
+    fun sinResultados(texto: String) = "No encontramos «$texto»"
+    const val SIN_RESULTADOS_AYUDA = "Si ya venció o ya se pagó, revisa «Por entregar». Si venció, cóbralo en «Cobrar» como venta normal."
+    const val PUEDE_HABER_MAS = "Puede haber más: toca «Cargar más» para seguir buscando."
+    const val SIN_CONEXION_TITULO = "Pedidos por pagar · Sin conexión:"
+    const val SIN_CONEXION_CUERPO = "los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal"
+    const val ENTREGA_SIN_RED = "«Listo» y «Entregado» vuelven con la conexión"
+    const val FOLIO_SIN_RED = "Sin conexión: cóbralo como venta normal en «Cobrar»."
+    const val SIN_ACTUALIZAR = "Sin actualizar: la lista puede no estar al día."
+    const val LEYENDO = "Leyendo folios…"
+    const val NO_SE_PUDO_CARGAR = "No se pudo cargar."
+    const val NO_SE_PUDIERON_CARGAR_MAS = "No se pudieron cargar más."
+    const val REINTENTAR = "Reintentar"
+    const val CARGAR_MAS = "Cargar más"
+    const val LISTO = "Listo"
+    const val ENTREGADO = "Entregado"
+    fun productos(n: Int) = if (n == 1) "1 producto" else "$n productos"
+    fun venceEn(minutos: Long) = "Vence en $minutos min"
+    fun venceALas(hora: String) = "Vence a las $hora"
+    fun vencioALas(hora: String) = "Venció a las $hora"
+    fun pagadoALas(hora: String) = "Pagado a las $hora"
+    fun pidioALas(hora: String) = "Pidió a las $hora"
+    fun faltaDe(falta: String, total: String) = "Falta $falta de $total"
+    fun yaPago(monto: String) = "Ya pagó $monto"
+    const val NOTA = "Nota:"
+    const val TOTAL = "Total"
+    fun cobrar(monto: String) = "Cobrar $monto"
+    const val CANCELAR_FOLIO = "Cancelar folio"
+    fun cancelarTitulo(folio: String) = "¿Cancelar el folio $folio?"
+    fun cancelarCuerpo(nombre: String?) =
+        (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { "$it lo verá" } ?: "Lo verá") +
+            " cancelado en su celular. Úsalo para un pedido falso o si ya no lo quiere."
+    const val NO = "No"
+    const val SI_CANCELAR = "Sí, cancelar"
+    const val ENTENDIDO = "Entendido"
+    fun entregadoA(folio: String, nombre: String?) = conNombre(folio, "entregado a", "entregado", nombre)
+    fun listoPara(folio: String, nombre: String?) = conNombre(folio, "listo para", "listo", nombre)
+    fun cancelado(folio: String) = "Folio $folio cancelado"
+    private fun conNombre(folio: String, con: String, sin: String, nombre: String?) =
+        nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { "$folio $con $it" } ?: "$folio $sin"
+
+    // Diálogos (2c·4, 2c·5 y los fallos de las acciones).
+    val VENCIDO = AvisoDeFolio("Este pedido ya venció", "Cóbralo como venta normal en «Cobrar».")
+    fun yaPagado(hora: String?) = AvisoDeFolio(
+        "Este folio ya se pagó",
+        "Lo cobró otra caja${hora?.let { " a las $it" }.orEmpty()}. Ya está en «Por entregar».",
+        boton = "Ver en «Por entregar»",
+        irAPorEntregar = true,
+    )
+    val YA_NO_ESTA = AvisoDeFolio(
+        "Este folio ya no está por pagar",
+        "Se canceló o ya se entregó. Si la clienta no ha pagado, cóbralo como venta normal en «Cobrar».",
+    )
+    fun noSePudoRevisar(sinRed: Boolean) =
+        AvisoDeFolio("No se pudo revisar el folio", if (sinRed) FOLIO_SIN_RED else "Inténtalo de nuevo.")
+    val CON_COBRO = AvisoDeFolio(
+        "No se puede cancelar",
+        "Este folio ya tiene un cobro, o uno en curso en la terminal. Si ya se cobró, primero se reembolsa.",
+    )
+    val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
+    val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")
+}
+
+/** Un diálogo con un solo botón. [irAPorEntregar]: al cerrarlo se vuelve a la lista, sin búsqueda, para ver «Por entregar». */
+data class AvisoDeFolio(
+    val titulo: String,
+    val cuerpo: String,
+    val boton: String = TextosPorPagar.ENTENDIDO,
+    val irAPorEntregar: Boolean = false,
+)
+
+/**
+ * Lo que necesita la pantalla de cobro de siempre para cobrar un folio (llaves de `AppNavigation`): lo que falta (nunca el total),
+ * la cuenta, el folio y [folio], que el cobro usa al confirmarse (P4). Siempre pago completo: Nexgo no cobra en partes.
+ */
+data class AperturaDeCobro(
+    val initialAmount: String,
+    val orderId: String,
+    val orderNumber: String,
+    val splitType: String = SplitType.FULLPAYMENT.value,
+    val folio: ComandaDeFolio,
+)
+
+data class PorPagarUi(
+    val folios: EstadoDeFolios = EstadoDeFolios(),
+    val busqueda: String = "",
+    /** La búsqueda tiene 3 caracteres o más: la lista es de resultados. */
+    val buscando: Boolean = false,
+    /** Lo que se pinta: filtrado por la búsqueda y sin lo que esta caja acaba de sacar. */
+    val porPagar: List<Folio> = emptyList(),
+    val porEntregar: List<Folio> = emptyList(),
+    val numeroPorPagar: Int = 0,
+    val numeroPorEntregar: Int = 0,
+    /** `orders:update`: «Listo» y «Entregado». */
+    val puedeEntregar: Boolean = false,
+    /** `orders:cancel-unpaid`: «Cancelar folio». */
+    val puedeCancelar: Boolean = false,
+    /** El folio abierto (su versión más nueva de la lista, o la que se abrió si ya no está). */
+    val seleccionado: Folio? = null,
+    /** Folios con una acción en curso (releer, cancelar, Listo, Entregado): un segundo toque no hace nada. */
+    val ocupados: Set<String> = emptySet(),
+    val aviso: AvisoDeFolio? = null,
+    val toast: String? = null,
+)
+
+/**
+ * «Pedidos por pagar» (P3): la lista viene del vigía (P1); aquí se busca, se abre un folio, se relee antes de cobrar y se
+ * cancela, se marca «Listo» o «Entregado». Sin red no se cobra ni se toca un folio: la lista sólo se lee.
+ */
+@HiltViewModel
+class PorPagarViewModel @Inject constructor(
+    private val vigia: VigiaDeFolios,
+    private val folios: FoliosRepository,
+    private val permisos: PermissionsRepository,
+    private val storage: SecureStorage,
+) : ViewModel() {
+
+    private data class Local(
+        val busqueda: String = "",
+        val puedeEntregar: Boolean = false,
+        val puedeCancelar: Boolean = false,
+        val seleccionado: Folio? = null,
+        val ocupados: Set<String> = emptySet(),
+        /** orderId → `actualizadoEnMs` de la lista en que se sacó: deja de esconderlo en cuanto el vigía trae otra lista. */
+        val quitados: Map<String, Long?> = emptyMap(),
+        val aviso: AvisoDeFolio? = null,
+        val toast: String? = null,
+    )
+
+    private val local = MutableStateFlow(Local())
+
+    val ui: StateFlow<PorPagarUi> = combine(vigia.estado, local, ::componer)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, componer(vigia.estado.value, local.value))
+
+    /** La hora que ve la cajera es la del negocio. */
+    val zona: ZoneId get() = VenueTimeZone.get(storage)
+
+    init {
+        viewModelScope.launch {
+            val entregar = permisos.hasPermission("orders:update")
+            val cancelar = permisos.hasPermission("orders:cancel-unpaid")
+            local.update { it.copy(puedeEntregar = entregar, puedeCancelar = cancelar) }
+        }
+        vigia.sondearYa()
+    }
+
+    fun buscar(texto: String) = local.update { it.copy(busqueda = texto) }
+    fun abrir(folio: Folio) = local.update { it.copy(seleccionado = folio) }
+    fun cerrarFolio() = local.update { it.copy(seleccionado = null) }
+    fun toastMostrado() = local.update { it.copy(toast = null) }
+    fun reintentar() = vigia.sondearYa()
+
+    /** Volvió de un cobro que terminó: a la lista, y que el vigía pregunte ya (el folio pasa a «Por entregar»). */
+    fun cobroTerminado() {
+        cerrarFolio()
+        vigia.sondearYa()
+    }
+
+    fun cerrarAviso() = local.update {
+        if (it.aviso?.irAPorEntregar == true) it.copy(aviso = null, seleccionado = null, busqueda = "") else it.copy(aviso = null)
+    }
+
+    fun cargarMas(seccion: SeccionDeFolios) {
+        viewModelScope.launch { vigia.cargarMas(seccion) }
+    }
+
+    /**
+     * Relee el folio en el SERVIDOR antes de abrir el cobro (diseño §5): sólo si sigue por pagar devuelve la apertura, con lo
+     * que falta AHORA. Vencido, ya pagado, cancelado o sin respuesta: deja su aviso y devuelve null (no empieza ningún cobro).
+     */
+    suspend fun cobrar(folio: Folio): AperturaDeCobro? {
+        if (vigia.estado.value.sinConexion) return null
+        val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return null
+        if (!ocupar(folio.orderId)) return null
+        try {
+            return releer(venueId, folio)
+        } finally {
+            local.update { it.copy(ocupados = it.ocupados - folio.orderId) }
+        }
+    }
+
+    fun cancelar(folio: Folio) = accion(folio, Accion.CANCELAR)
+    fun listo(folio: Folio) = accion(folio, Accion.LISTO)
+    fun entregado(folio: Folio) = accion(folio, Accion.ENTREGADO)
+
+    private suspend fun releer(venueId: String, folio: Folio): AperturaDeCobro? {
+        val primera = folios.listar(venueId, puedeCobrar = false).getOrElse { return avisar(TextosPorPagar.noSePudoRevisar(sinRed(it))) }
+        val ahora = primera.horaDelServidor ?: Instant.now()
+        val vivo = buscarEn(venueId, primera, SeccionDeFolios.POR_PAGAR, folio.orderId)
+            .getOrElse { return avisar(TextosPorPagar.noSePudoRevisar(sinRed(it))) }
+        if (vivo != null && vivo.falta.signum() > 0) {
+            // Vencer es del trabajo del SERVIDOR (cada 30 s); la caja no empieza uno cuya hora ya pasó. Con abono nunca vence.
+            if (!vivo.tieneAbono && vivo.venceEn?.isAfter(ahora) == false) return avisar(TextosPorPagar.VENCIDO)
+            return AperturaDeCobro(
+                initialAmount = vivo.falta.setScale(2, RoundingMode.HALF_UP).toPlainString(),
+                orderId = vivo.orderId,
+                orderNumber = vivo.folio,
+                folio = ComandaDeFolio(vivo.orderId, vivo.folio, vivo.nombre, vivo.nota, vivo.productos),
+            )
+        }
+        val pagado = vivo ?: buscarEn(venueId, primera, SeccionDeFolios.POR_ENTREGAR, folio.orderId)
+            .getOrElse { return avisar(TextosPorPagar.noSePudoRevisar(sinRed(it))) }
+        if (pagado != null) {
+            vigia.sondearYa()
+            return avisar(TextosPorPagar.yaPagado(pagado.pagadoEn?.let { hora(it, zona) }))
+        }
+        vigia.sondearYa()
+        val vencio = !folio.tieneAbono && folio.venceEn?.isAfter(ahora) == false
+        return avisar(if (vencio) TextosPorPagar.VENCIDO else TextosPorPagar.YA_NO_ESTA)
+    }
+
+    /** [orderId] en [seccion], desde la página ya leída y siguiendo sus cursores. */
+    private suspend fun buscarEn(venueId: String, primera: PaginaDeFolios, seccion: SeccionDeFolios, orderId: String): Result<Folio?> {
+        var pagina = primera
+        // ponytail: tope de 20 páginas (2,000 folios); más allá se da por no encontrado y no se cobra.
+        repeat(MAX_PAGINAS) {
+            val lista = if (seccion == SeccionDeFolios.POR_PAGAR) pagina.porPagar else pagina.porEntregar
+            lista.firstOrNull { it.orderId == orderId }?.let { return Result.success(it) }
+            val cursor = pagina.siguientes[seccion] ?: return Result.success(null)
+            pagina = folios.cargarMas(venueId, seccion, cursor).getOrElse { return Result.failure(it) }
+        }
+        return Result.success(null)
+    }
+
+    private enum class Accion(val sinRed: String, val fallo: String) {
+        CANCELAR("No se canceló el folio. Inténtalo con conexión.", "No se pudo cancelar el folio"),
+        LISTO("No se marcó «Listo». Inténtalo con conexión.", "No se pudo marcar «Listo»"),
+        ENTREGADO("No se marcó «Entregado». Inténtalo con conexión.", "No se pudo marcar «Entregado»"),
+    }
+
+    private fun accion(folio: Folio, accion: Accion) {
+        val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return
+        if (vigia.estado.value.sinConexion || !ocupar(folio.orderId)) return
+        viewModelScope.launch {
+            val r = when (accion) {
+                Accion.CANCELAR -> folios.cancelar(venueId, folio.orderId)
+                Accion.LISTO -> folios.listo(venueId, folio.orderId)
+                Accion.ENTREGADO -> folios.entregado(venueId, folio.orderId)
+            }
+            val marca = vigia.estado.value.actualizadoEnMs
+            local.update { l ->
+                val base = l.copy(ocupados = l.ocupados - folio.orderId)
+                r.fold(
+                    onSuccess = {
+                        base.copy(
+                            quitados = l.quitados.filterValues { it == marca } + (folio.orderId to marca),
+                            seleccionado = l.seleccionado?.takeIf { it.orderId != folio.orderId },
+                            toast = when (accion) {
+                                Accion.CANCELAR -> TextosPorPagar.cancelado(folio.folio)
+                                Accion.LISTO -> TextosPorPagar.listoPara(folio.folio, folio.nombre)
+                                Accion.ENTREGADO -> TextosPorPagar.entregadoA(folio.folio, folio.nombre)
+                            },
+                        )
+                    },
+                    onFailure = { e -> base.copy(aviso = avisoDeFallo(e, accion)) },
+                )
+            }
+            vigia.sondearYa()
+        }
+    }
+
+    private fun avisoDeFallo(e: Throwable, accion: Accion): AvisoDeFolio = when ((e as? BackendHttpException)?.errorCode) {
+        "ORDER_HAS_PAYMENTS" -> TextosPorPagar.CON_COBRO
+        "ORDER_STATE_CHANGED" -> TextosPorPagar.YA_CAMBIO
+        "PAYMENT_REQUIRED" -> TextosPorPagar.SIN_PAGAR
+        else -> if (sinRed(e)) AvisoDeFolio("Sin conexión", accion.sinRed) else AvisoDeFolio(accion.fallo, "Inténtalo de nuevo.")
+    }
+
+    private fun sinRed(e: Throwable) = e is IOException
+
+    /** false si el folio ya tiene una acción en curso. */
+    private fun ocupar(orderId: String): Boolean {
+        var libre = false
+        local.update {
+            libre = orderId !in it.ocupados
+            if (libre) it.copy(ocupados = it.ocupados + orderId) else it
+        }
+        return libre
+    }
+
+    private fun avisar(aviso: AvisoDeFolio): AperturaDeCobro? {
+        local.update { it.copy(aviso = aviso) }
+        return null
+    }
+
+    private fun componer(e: EstadoDeFolios, l: Local): PorPagarUi {
+        val fuera = l.quitados.filterValues { it == e.actualizadoEnMs }.keys
+        val pagar = e.porPagar.filterNot { it.orderId in fuera }
+        val entregar = e.porEntregar.filterNot { it.orderId in fuera }
+        return PorPagarUi(
+            folios = e,
+            busqueda = l.busqueda,
+            buscando = textoDeBusqueda(l.busqueda).length >= MIN_BUSQUEDA,
+            porPagar = filtrarFolios(pagar, l.busqueda),
+            porEntregar = filtrarFolios(entregar, l.busqueda),
+            numeroPorPagar = numeroDeSeccion(e.counts.porPagar - (e.porPagar.size - pagar.size), pagar.size, SeccionDeFolios.POR_PAGAR in e.nextCursors),
+            numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar - (e.porEntregar.size - entregar.size), entregar.size, SeccionDeFolios.POR_ENTREGAR in e.nextCursors),
+            puedeEntregar = l.puedeEntregar,
+            puedeCancelar = l.puedeCancelar,
+            seleccionado = l.seleccionado?.let { s -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == s.orderId } ?: s },
+            ocupados = l.ocupados,
+            aviso = l.aviso,
+            toast = l.toast,
+        )
+    }
+
+    private companion object {
+        const val MAX_PAGINAS = 20
+    }
+}
+
+private const val MIN_BUSQUEDA = 3
+
+private fun normalizar(texto: String): String =
+    Normalizer.normalize(texto, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()
+
+private fun textoDeBusqueda(texto: String) = normalizar(texto).replace("-", "").replace(" ", "")
+
+/**
+ * R61: con 3 o más caracteres (sin contar espacios ni guiones) busca por folio, sin importar mayúsculas ni la W, y por nombre
+ * sin importar acentos. Con menos, no filtra. Igual que ANDROID (`FoliosPorPagar.filtrarFolios`).
+ */
+fun filtrarFolios(lista: List<Folio>, texto: String): List<Folio> {
+    val folio = textoDeBusqueda(texto)
+    if (folio.length < MIN_BUSQUEDA) return lista
+    val nombre = normalizar(texto).trim()
+    return lista.filter { normalizar(it.folio).contains(folio) || normalizar(it.nombre.orEmpty()).contains(nombre) }
+}
+
+/** El número de una sección nunca contradice su lista: con más páginas por traer vale el del servidor; si no, lo que se ve. */
+fun numeroDeSeccion(conteo: Int, mostrados: Int, hayMas: Boolean): Int = if (hayMas) maxOf(conteo, mostrados) else mostrados
+
+/** «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
+fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Boolean): Boolean =
+    puedeCancelar && !sinConexion && folio.abono.signum() == 0
+
+/** «Listo» y «Entregado» sólo con `orders:update` y con red. */
+fun muestraListoYEntregado(puedeEntregar: Boolean, sinConexion: Boolean): Boolean = puedeEntregar && !sinConexion
+
+/** «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda la hora. */
+fun textoDePago(folio: Folio, zona: ZoneId): String? = folio.pagadoEn?.let { TextosPorPagar.pagadoALas(hora(it, zona)) }
+
+/** [pronto] = 5 min o menos: se pinta en ámbar (nunca en rojo). */
+data class Vencimiento(val texto: String, val pronto: Boolean)
+
+/**
+ * Con red «Vence en N min» (N hacia arriba: nunca promete de más); sin red la hora fija «Vence a las HH:MM», porque sin red no se
+ * sabe si ya venció; ya vencido «Venció a las HH:MM», sin color. null sin hora o con abono (un abono no vence solo).
+ */
+fun vencimiento(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId): Vencimiento? {
+    if (folio.tieneAbono) return null
+    val vence = folio.venceEn ?: return null
+    if (sinConexion) return Vencimiento(TextosPorPagar.venceALas(hora(vence, zona)), pronto = false)
+    if (!vence.isAfter(ahora)) return Vencimiento(TextosPorPagar.vencioALas(hora(vence, zona)), pronto = false)
+    val minutos = (Duration.between(ahora, vence).toMillis() + 59_999) / 60_000
+    return Vencimiento(TextosPorPagar.venceEn(minutos), pronto = minutos <= 5)
+}
+
+/** Sin red: «(de hace N min)» desde la última lista buena. */
+fun deHace(actualizadoEnMs: Long, ahoraMs: Long): String {
+    val minutos = (ahoraMs - actualizadoEnMs) / 60_000
+    return if (minutos <= 0) "(de hace un momento)" else "(de hace $minutos min)"
+}
+
+private val HORA = DateTimeFormatter.ofPattern("HH:mm")
+
+fun hora(instante: Instant, zona: ZoneId): String = HORA.format(instante.atZone(zona))

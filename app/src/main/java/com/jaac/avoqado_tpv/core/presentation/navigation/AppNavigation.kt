@@ -64,6 +64,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.core.session.SessionEvent
 import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
@@ -1246,7 +1247,7 @@ fun AppNavigation(
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
                 estadoDeFolios = estadoDeFolios,
-                // ponytail: la pantalla de la lista llega con P3; hasta entonces el recuadro no navega a ningún lado.
+                onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) },
                 onStartPaymentWithAmount = { amount ->
                     launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
@@ -1415,6 +1416,42 @@ fun AppNavigation(
                     AvoqadoLoadingOverlay(message = "Inicializando Blumon...")
                 }
             } // End Box
+        }
+
+        // 🧾 «Pedidos por pagar» (tienda híbrida): folios por pagar y por entregar. «Cobrar» abre el cobro de siempre de una
+        // cuenta existente, con lo que falta (nunca el total) y la llave `folio`; nunca pasa por «Órdenes», que deja imprimir la
+        // comanda antes de pagar.
+        composable(NavRoute.PorPagar.route) { porPagarEntry ->
+            val porPagarViewModel: com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel = hiltViewModel()
+            // Volvió de un cobro que terminó: se ve la lista (el folio ya pasó a «Por entregar»), no el folio cobrado.
+            if (porPagarEntry.savedStateHandle.get<Boolean>(FOLIO_COBRADO) == true) {
+                porPagarEntry.savedStateHandle.remove<Boolean>(FOLIO_COBRADO)
+                LaunchedEffect(Unit) { porPagarViewModel.cobroTerminado() }
+            }
+            val porPagarScope = rememberCoroutineScope()
+            com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarScreen(
+                onBack = { navController.safePopBackStack() },
+                onCobrar = { apertura ->
+                    porPagarScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Folio payment")) return@launch
+                        // Un segundo toque mientras se preparaba el lector no abre otro cobro.
+                        if (navController.currentDestination?.route != NavRoute.PorPagar.route) return@launch
+                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
+                            clearPaymentArgs(handle)
+                            handle["initialAmount"] = apertura.initialAmount
+                            handle["orderId"] = apertura.orderId
+                            handle["orderNumber"] = apertura.orderNumber
+                            handle["splitType"] = apertura.splitType
+                            // La cuenta del folio vive sólo en el servidor (no en la base del aparato), como la del cobro remoto.
+                            handle["skipLocalOrderValidation"] = true
+                            handle["folio"] = apertura.folio
+                        }
+                        Timber.d("🧾 [Folios] Cobro del folio ${apertura.orderNumber}: falta ${apertura.initialAmount} | nexgo=${isAppToAppPayment()}")
+                        navController.navigate(getPaymentRoute())
+                    }
+                },
+                viewModel = porPagarViewModel,
+            )
         }
 
         // Fast Payment Entry Screen - Dedicated screen for amount input
@@ -1913,6 +1950,8 @@ fun AppNavigation(
             val paymentSourceStr = argumentosDelCobro.get<String>("paymentSource")
             val socketRequestId = argumentosDelCobro.get<String>("socketRequestId")
             val socketProcessedByStaffId = argumentosDelCobro.get<String>("socketProcessedByStaffId")
+            // 🧾 Tienda híbrida: el cobro de un folio de «Pedidos por pagar». Al terminar o al volver, regresa a la lista.
+            val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
             Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount, isKiosk=$isKioskPayment, source=$paymentSourceStr")
 
@@ -1981,6 +2020,7 @@ fun AppNavigation(
                 socketProcessedByStaffId = socketProcessedByStaffId,
                 soloEfectivo = soloEfectivo,  // 💵 D2 «Cobrar sin red»
                 ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
+                newOrderLabel = if (folio != null) "Pedidos por pagar" else null,
                 // 🥝 KIOSK MODE PARAMS
                 isKioskPayment = isKioskPayment,
                 onKioskPaymentSuccess = if (isKioskPayment) { displayOrderNumber, receipt, orderItems ->
@@ -2027,7 +2067,9 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToNewOrder = {
-                    if (cameFromTables) {
+                    if (folio != null) {
+                        volverALosFolios(navController, vigiaDeFolios, cobrado = true)
+                    } else if (cameFromTables) {
                         // 🪑 Mesas, Task 8 — the "Nueva Orden" button only shows
                         // here when the card charge paid the FULL remaining
                         // balance (a partial split routes through
@@ -2138,7 +2180,11 @@ fun AppNavigation(
                     // ⭐ Split Payment: Navigate back to order to continue paying remaining balance.
                     // ALSO fires on the plain back button before any charge (resolveBackNavigation,
                     // PaymentScreen.kt) — same destination either way, the order isn't done.
-                    if (cameFromTables) {
+                    if (folio != null) {
+                        // 🧾 Un folio nunca abre «Órdenes» (dejaría imprimir su comanda sin pagar): vuelve a su pantalla, que relee
+                        // lo que falta al tocar «Cobrar».
+                        volverALosFolios(navController, vigiaDeFolios, cobrado = false)
+                    } else if (cameFromTables) {
                         // 🪑 Mesas, Task 8 — TableSession already holds the order/table
                         // context (never cleared mid-checkout), so no args needed. A
                         // partial card payment leaves the check open — TableOrderScreen's
@@ -2990,6 +3036,8 @@ fun AppNavigation(
             val socketRequestId = argumentosDelCobro.get<String>("socketRequestId")
             // 💵 D2 «Cobrar sin red»: el cobro llegó sin red desde Cobrar ⇒ sólo efectivo.
             val soloEfectivo = argumentosDelCobro.get<Boolean>("soloEfectivo") ?: false
+            // 🧾 Tienda híbrida: el cobro de un folio (siempre por TODO lo que falta: Nexgo no cobra en partes).
+            val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
@@ -3007,9 +3055,13 @@ fun AppNavigation(
                 ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
                 onNavigateBack = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
-                    val popped = navController.safePopBackStack()
-                    if (!popped) {
-                        navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    if (folio != null) {
+                        volverALosFolios(navController, vigiaDeFolios, cobrado = false)
+                    } else {
+                        val popped = navController.safePopBackStack()
+                        if (!popped) {
+                            navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                        }
                     }
                 },
                 onNavigateHome = {
@@ -3037,7 +3089,12 @@ fun AppNavigation(
                 onNavigateToShifts = {
                     navController.navigate(NavRoute.Shifts.route)
                 },
-                onStartNewPaymentOverride = if (cameFromTables) {
+                onStartNewPaymentOverride = if (folio != null) {
+                    {
+                        paymentArgsHandle?.let(::clearPaymentArgs)
+                        volverALosFolios(navController, vigiaDeFolios, cobrado = true)
+                    }
+                } else if (cameFromTables) {
                     {
                         paymentArgsHandle?.let(::clearPaymentArgs)
                         // 🪑 Mesas, Task 8 — always the full-remaining case on this
@@ -3096,7 +3153,7 @@ fun AppNavigation(
                 // mesa decia eso y te mandaba al PLANO DE MESAS. ("Nueva Venta" del caso
                 // serializado la resuelve la pantalla, que es quien conoce isSerializedFlow;
                 // el carrito se queda en "Nuevo Pago", igual que Blumon.)
-                newPaymentLabel = if (cameFromTables) "Nueva Orden" else "Nuevo Pago",
+                newPaymentLabel = if (folio != null) "Pedidos por pagar" else if (cameFromTables) "Nueva Orden" else "Nuevo Pago",
             )
         }
 
@@ -3389,6 +3446,7 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
     handle.remove<String>("socketProcessedByStaffId")
     handle.remove<Boolean>("soloEfectivo")
     handle.remove<String>("ventaLocalJson")
+    handle.remove<ComandaDeFolio>("folio")
 
     // 🧹 Critical: also clear inputs read by Payment screen on next manual nav.
     // Without these, a cancelled socket request leaves $50 amount + skipReview=true
@@ -3425,10 +3483,26 @@ internal val CLAVES_DE_COBRO: List<String> = listOf(
     "blumonOperationNumber", "paymentVenueId", "tipRefundCents",
     "wasPayLaterOrder", "payLaterOrdersCount", "isKioskPayment",
     "paymentSource", "socketRequestId", "socketProcessedByStaffId",
-    "soloEfectivo", "ventaLocalJson",
+    "soloEfectivo", "ventaLocalJson", "folio",
 )
 
 private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
+
+/** Marca en la entrada de «Pedidos por pagar»: el cobro del folio terminó (se vuelve a la lista, no al folio). */
+private const val FOLIO_COBRADO = "folioCobrado"
+
+/**
+ * El cobro de un folio regresa SIEMPRE a «Pedidos por pagar» (nunca a «Órdenes»/`Menu`) y el vigía pregunta ya, para que el folio
+ * cobrado pase a «Por entregar». [cobrado] = terminó: la lista, no el folio.
+ */
+private fun volverALosFolios(navController: NavHostController, vigia: com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios, cobrado: Boolean) {
+    vigia.sondearYa()
+    if (cobrado) {
+        runCatching { navController.getBackStackEntry(NavRoute.PorPagar.route) }
+            .onSuccess { it.savedStateHandle[FOLIO_COBRADO] = true }
+    }
+    if (!navController.popBackStack(NavRoute.PorPagar.route, inclusive = false)) navController.safePopBackStack()
+}
 
 /**
  * 🔴 D.7 (2026-09-11) — los argumentos de un cobro son de UN solo uso y los lee UNA sola vez la

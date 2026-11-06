@@ -25,7 +25,8 @@ fun recuadroPorPagar(
     if (!canOperate) return RecuadroPorPagar(false, motivoSinTurno ?: "Abre la caja primero", null, false)
 
     // Tras un 4xx la lista es la última buena pero ya no es fiable: no se enseña su número como si fuera de hoy.
-    val badge = if (estado.desactualizado) null else estado.counts.porPagar.toString()
+    // Con 0 por pagar no hay insignia (un «0» parece un aviso); «N por entregar» se queda abajo.
+    val badge = if (estado.desactualizado || estado.counts.porPagar == 0) null else estado.counts.porPagar.toString()
     return when {
         estado.sinConexion -> RecuadroPorPagar(true, badge, "Sin conexión", true)
         estado.desactualizado -> RecuadroPorPagar(true, null, "Sin actualizar", true)

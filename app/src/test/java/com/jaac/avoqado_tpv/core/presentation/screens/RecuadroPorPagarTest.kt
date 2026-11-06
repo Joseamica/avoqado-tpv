@@ -36,6 +36,13 @@ class RecuadroPorPagarTest {
         assertFalse(r.subtituloEsAviso)
     }
 
+    @Test fun `con 0 por pagar no hay insignia y se queda lo de por entregar`() {
+        val r = recuadro(estado(porPagar = 0, porEntregar = 2))!!
+        assertTrue(r.habilitado)
+        assertNull(r.badge)
+        assertEquals("2 por entregar", r.subtitulo)
+    }
+
     @Test fun `sin nada por entregar no hay renglon de abajo`() {
         assertNull(recuadro(estado(porEntregar = 0))!!.subtitulo)
     }

@@ -10,14 +10,27 @@ enum class SeccionDeFolios(val clave: String) {
     POR_ENTREGAR("toDeliver"),
 }
 
-data class FolioModificador(val nombre: String, val cantidad: Int)
+// Serializable: viajan en la comanda del cobro ([ComandaDeFolio]) por el `SavedStateHandle` de la navegación.
+data class FolioModificador(val nombre: String, val cantidad: Int) : java.io.Serializable
 
 data class FolioProducto(
     val nombre: String,
     val cantidad: Int,
     val nota: String?,
     val extras: List<FolioModificador>,
-)
+) : java.io.Serializable
+
+/**
+ * Lo que el cobro de un folio lleva consigo (llave `folio` de las pantallas de cobro): basta para aceptarlo e imprimir su
+ * comanda de apoyo después de cobrar (P4). Serializable porque viaja por el `SavedStateHandle`.
+ */
+data class ComandaDeFolio(
+    val orderId: String,
+    val orderNumber: String,
+    val nombre: String?,
+    val nota: String?,
+    val renglones: List<FolioProducto>,
+) : java.io.Serializable
 
 /**
  * Un folio de la tienda en línea («W7KQ2»). El SERVIDOR manda el dinero en PESOS (número JSON); aquí queda en [BigDecimal]

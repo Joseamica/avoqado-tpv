@@ -673,7 +673,7 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
-    @Test fun `sin permiso propio la cortesia no cambia el carrito aunque se invoque directo y sin red`() = runTest {
+    @Test fun `sin permiso propio la cortesia se marca igual y el PIN se pide al cobrar`() = runTest {
         coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
         connectionStateManager.setInternetConnected(false)
         val vm = viewModel()
@@ -682,8 +682,7 @@ class CheckoutVentaSinRedTest {
 
         vm.applyCortesiaToItem(antes.items.single().id, "Cliente frecuente")
 
-        assertEquals(antes, vm.cartState.value)
-        assertFalse(vm.cartState.value.items.single().isCortesia)
+        assertTrue(vm.cartState.value.items.single().isCortesia)
     }
 
     @Test fun `sin discounts apply no hay descuento manual aunque se invoque directo`() = runTest {
@@ -829,7 +828,6 @@ class CheckoutVentaSinRedTest {
         vm.addProduct(producto())
         assertFalse(vm.canCompItems.value)
         assertFalse(vm.canApplyDiscount.value)
-        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
         vm.applyManualOrderDiscount(1000, "Rebaja")
         assertEquals(5000, vm.cartState.value.totalCents)
         permiso.complete(true)
@@ -862,7 +860,6 @@ class CheckoutVentaSinRedTest {
         vm.addProduct(producto())
         coEvery { secureStorage.getStaffId() } returns "staff-nuevo"
         coEvery { permissions.hasPermission(any()) } returns false
-        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
         vm.applyManualOrderDiscount(1000, "Rebaja")
         assertEquals(5000, vm.cartState.value.totalCents)
         vm.viewModelScope.cancel()

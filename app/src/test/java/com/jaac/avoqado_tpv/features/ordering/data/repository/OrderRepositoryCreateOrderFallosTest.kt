@@ -94,6 +94,12 @@ class OrderRepositoryCreateOrderFallosTest {
         assertThat(falla()!!.message).isEqualTo("No tienes permiso para crear órdenes.")
     }
 
+    @Test fun `un 400 con cupon conserva la razon del servidor`() {
+        servidor.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":"Este cupón ya venció."}"""))
+        val e = runBlocking { repo.createOrderWithItems("venue-1", pedido.copy(couponCode = "VERANO")) }.exceptionOrNull() as ApiException.HttpError
+        assertThat(e.userMessage).isEqualTo("Este cupón ya venció.")
+    }
+
     @Test fun `una respuesta 200 sin cuerpo valido sigue siendo el error de hoy`() {
         servidor.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":false,"data":null}"""))
 

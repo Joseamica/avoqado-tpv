@@ -374,10 +374,6 @@ class CheckoutViewModel @Inject constructor(
      */
     fun applyCortesiaToItem(itemId: String, reason: String) {
         if (candado.rechaza("dar una cortesía")) return
-        if (!_canCompItems.value || permisosDe != sesionActual()) {
-            _aviso.value = "No tienes permiso para dar cortesías. Pide apoyo al gerente."
-            return
-        }
         val trimmed = reason.trim()
         require(trimmed.isNotEmpty()) { "Cortesía reason cannot be blank" }
         _cartState.update { current ->
@@ -398,10 +394,6 @@ class CheckoutViewModel @Inject constructor(
     /** Reverts a cortesía back to a billable item. Keeps everything else intact. */
     fun removeCortesiaFromItem(itemId: String) {
         if (candado.rechaza("quitar una cortesía")) return
-        if (!_canCompItems.value || permisosDe != sesionActual()) {
-            _aviso.value = "No tienes permiso para cambiar cortesías. Pide apoyo al gerente."
-            return
-        }
         _cartState.update { current ->
             current.copy(
                 items = current.items.map { item ->
@@ -1351,6 +1343,11 @@ class CheckoutViewModel @Inject constructor(
         (resultado.exceptionOrNull() as? PermisoRequeridoException)?.let {
             return Result.failure(Exception(textoDePermiso(it.required, it.message.orEmpty())))
         }
+        // Con token, nada se encola: la reproducción local va por /mobile sin token y daría 403 con el efectivo ya cobrado.
+        // Volver a tocar Cobrar es seguro (misma llave: el servidor devuelve la orden si sí se creó).
+        if (token != null && resultado.exceptionOrNull()?.let { pasaALaVentaLocal(it) } == true) {
+            return Result.failure(Exception("No pudimos confirmar la venta. Toca Cobrar otra vez"))
+        }
         return resultado.onSuccess { olvidarLlave() }
     }
 
@@ -1367,7 +1364,7 @@ class CheckoutViewModel @Inject constructor(
     /** Una línea de cortesía, o un descuento manual que deja los productos en $0 (en centavos, del carrito). */
     private fun llevaCortesia(c: CartState): Boolean =
         c.items.any { it.isCortesia } ||
-            (c.manualDiscountCents > 0 && c.taxableSubtotalCents - c.manualDiscountCents <= 0)
+            (c.manualDiscountCents > 0 && c.subtotalCents - c.manualDiscountCents <= 0)
 
     // ─────────────────────────────────────────────────────────────────────
     // 💵 «Cobrar» sin red: el carrito a medias y la venta en $0
@@ -1464,7 +1461,8 @@ class CheckoutViewModel @Inject constructor(
         }
         if (_ventaSinMostrar.value != null) return "Revisa primero la venta que ya quedó cobrada y guardada."
         val sesion = sesionActual()
-        if (cart.items.any { it.isCortesia } &&
+        // Con red, la cortesía sin permiso se autoriza con el PIN del gerente al crear la orden; sin red no hay token que pedir.
+        if (cart.items.any { it.isCortesia } && !connectionStateManager.hasInternet() &&
             !permissionsRepository.hasPermission("tpv-orders:comp")) {
             return "La venta tiene una cortesía y tu sesión no tiene permiso. Pide apoyo al gerente."
         }

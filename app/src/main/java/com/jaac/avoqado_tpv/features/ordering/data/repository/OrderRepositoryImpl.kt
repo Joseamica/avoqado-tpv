@@ -335,12 +335,13 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 // 403 de permiso: el VM decide si pide el PIN de un gerente y reintenta (una vez).
+                val cuerpo = response.errorBody()?.string() // se lee UNA vez: el cupón (400) usa el mismo cuerpo
                 com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe(
-                    response.code(), response.errorBody()?.string(), "No tienes permiso para crear órdenes.",
+                    response.code(), cuerpo, "No tienes permiso para crear órdenes.",
                 )?.let { return Result.failure(it) }
                 val errorMessage = when (response.code()) {
                     // D5: con cupón, la razón del SERVIDOR ya viene para la cajera (venció, se agotó, este cliente ya lo usó, cambió de valor).
-                    400 -> request.couponCode?.let { mensajeDelCuponRechazado(response.errorBody()?.string()) }
+                    400 -> request.couponCode?.let { mensajeDelCuponRechazado(cuerpo) }
                         ?: "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     403 -> "No tienes permiso para crear órdenes."

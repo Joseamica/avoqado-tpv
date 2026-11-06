@@ -89,6 +89,7 @@ class CheckoutViewModelTest {
     private lateinit var productCategoryDao: ProductCategoryDao
     private lateinit var catalogoGuardado: CatalogoGuardado
     private lateinit var connectionStateManager: ConnectionStateManager
+    private lateinit var permisos: PermissionsRepository
     private lateinit var autorizacion: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 
     private val savedCartsFlow = MutableStateFlow<List<SavedCart>>(emptyList())
@@ -113,6 +114,7 @@ class CheckoutViewModelTest {
         productCategoryDao = mockk(relaxed = true)
         catalogoGuardado = mockk()
         connectionStateManager = ConnectionStateManager() // real: arranca con red
+        permisos = mockk(relaxed = true) { coEvery { hasPermission(any()) } returns true }
         autorizacion = mockk()
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
 
@@ -160,9 +162,7 @@ class CheckoutViewModelTest {
             io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
         },
         autorizacionDeGerente = autorizacion,
-        permissionsRepository = mockk(relaxed = true) {
-            io.mockk.coEvery { hasPermission(any()) } returns true
-        },
+        permissionsRepository = permisos,
     )
 
     private fun fakeProduct(
@@ -732,11 +732,13 @@ class CheckoutViewModelTest {
 
     @Test
     fun `linea_de_cortesia_sin_permiso_pide_pin_y_manda_token`() = runTest {
+        coEvery { permisos.hasPermission(any()) } returns false // la cajera NO tiene tpv-orders:comp
         coEvery { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) } returns Autorizacion.ConPin("tok-1")
         coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
         val vm = createViewModel()
         carritoConCortesia(vm)
 
+        assertTrue(vm.cartState.value.items.first().isCortesia)
         assertTrue(vm.prepareForPayment().isSuccess)
 
         coVerify(exactly = 1) { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) }
@@ -817,6 +819,49 @@ class CheckoutViewModelTest {
 
         assertEquals("Esta cortesía la da un gerente con su sesión", r.exceptionOrNull()?.message)
         coVerify(exactly = 2) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con token y sin red no se encola y falla con el texto de volver a cobrar`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-5")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.io.IOException("sin red")))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", r.exceptionOrNull()?.message)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `si el coordinador truena no se puede autorizar la cortesia`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } throws IllegalStateException("boom")
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("No se pudo autorizar la cortesía", r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `pagar despues con cortesia pide el PIN y manda el token`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-6")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+        vm.addProduct(fakeProduct(id = "p-2", priceCents = 3000), quantity = 1)
+        vm.applyCortesiaToItem(vm.cartState.value.items.first().id, "Cliente frecuente")
+        vm.selectCustomer(fakeCustomer(id = "c-1"))
+
+        assertTrue(vm.createPayLaterOrder().isSuccess)
+
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any(), "tok-6") }
         vm.viewModelScope.cancel()
     }
 

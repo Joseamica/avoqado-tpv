@@ -16,7 +16,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -247,5 +249,46 @@ class AutorizacionDeGerenteTest {
             r.await()
         }
         coVerify(exactly = 1) { repo.pinPrendido("v2") }
+    }
+
+    @Test fun pinPrendido_colgado_abre_el_dialogo_a_los_3s_y_no_cachea() = runTest {
+        coEvery { repo.pinPrendido("v1") } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        val r = pide(); advanceTimeBy(3_001); runCurrent()
+        assertThat(auth.prompt.value).isNotNull()
+        auth.cancelarTodo(); advanceUntilIdle(); r.await()
+        coEvery { repo.pinPrendido("v1") } returns false
+        assertThat(auth.paraCortesia("v1", "m")).isInstanceOf(Autorizacion.Negada::class.java)
+        coVerify(exactly = 2) { repo.pinPrendido("v1") }
+    }
+
+    @Test fun cancelarTodo_durante_el_GET_termina_Cancelada() = runTest {
+        val gate = CompletableDeferred<Boolean?>()
+        coEvery { repo.pinPrendido("v1") } coAnswers { gate.await() }
+        val r = pide(); runCurrent()
+        auth.cancelarTodo()
+        gate.complete(false); advanceUntilIdle()
+        assertThat(r.await()).isEqualTo(Autorizacion.Cancelada)
+        assertThat(auth.prompt.value).isNull()
+    }
+
+    @Test fun cache_expira_a_los_5_min() = runTest {
+        var t = 0L
+        auth.reloj = { t }
+        coEvery { repo.pinPrendido("v1") } returns false
+        auth.paraCortesia("v1", "m")
+        t = 4 * 60_000_000_000L; auth.paraCortesia("v1", "m")
+        coVerify(exactly = 1) { repo.pinPrendido("v1") }
+        t = 5 * 60_000_000_000L + 1; auth.paraCortesia("v1", "m")
+        coVerify(exactly = 2) { repo.pinPrendido("v1") }
+    }
+
+    @Test fun PinApagado_del_servidor_guarda_false() = runTest {
+        coEvery { repo.pinPrendido("v1") } returns true
+        coEvery { repo.pedirToken("v1", "1234", "orders:comp") } returns Result.failure(ErrorDeAutorizacion.PinApagado)
+        pide(); advanceUntilIdle()
+        auth.enviarPin(auth.prompt.value!!.id, "1234"); advanceUntilIdle()
+        auth.cancelarTodo(); advanceUntilIdle()
+        assertThat(auth.paraCortesia("v1", "m")).isInstanceOf(Autorizacion.Negada::class.java)
+        coVerify(exactly = 1) { repo.pinPrendido("v1") }
     }
 }

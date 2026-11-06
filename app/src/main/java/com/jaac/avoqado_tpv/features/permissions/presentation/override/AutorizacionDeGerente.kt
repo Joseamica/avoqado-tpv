@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -62,7 +63,10 @@ class AutorizacionDeGerente @Inject constructor(
         } else if (permisos.hasPermission(PERMISO_LOCAL)) {
             return Autorizacion.NoHaceFalta
         }
-        if (pinPrendidoCacheado(venueId) == false) return Autorizacion.Negada(TEXTO_NEGADA)
+        if (pinPrendidoCacheado(venueId) == false) {
+            if (epoca.get() != epocaAlLlegar) return Autorizacion.Cancelada
+            return Autorizacion.Negada(TEXTO_NEGADA)
+        }
         return turno.withLock {
             val s = Solicitud(ids.incrementAndGet())
             // actual antes de mirar la época: un cancelarTodo() concurrente siempre ve esta solicitud o ya cambió la época.
@@ -84,6 +88,7 @@ class AutorizacionDeGerente @Inject constructor(
                             r.getOrNull()?.let { s.resultado.complete(Autorizacion.ConPin(it)) }
                             if (r.isFailure) {
                                 val e = r.exceptionOrNull()
+                                if (e is ErrorDeAutorizacion.PinApagado) guardar(venueId, false)
                                 val texto = (e as? ErrorDeAutorizacion)?.texto ?: GENERICO
                                 _prompt.update { p -> if (p?.id == s.id) p.copy(error = texto, enviando = false) else p }
                                 s.enviando.set(false)
@@ -100,15 +105,18 @@ class AutorizacionDeGerente @Inject constructor(
     }
 
     private val cachePin = ConcurrentHashMap<String, Pair<Boolean, Long>>()
+    internal var reloj: () -> Long = System::nanoTime
 
     /** true/false se guardan 5 min por negocio; null (no se sabe) nunca. */
     private suspend fun pinPrendidoCacheado(venueId: String): Boolean? {
-        val ahora = System.currentTimeMillis()
-        cachePin[venueId]?.let { (v, hasta) -> if (ahora < hasta) return v }
-        val v = repo.pinPrendido(venueId)
-        if (v != null) cachePin[venueId] = v to (System.currentTimeMillis() + CACHE_MS)
+        cachePin[venueId]?.let { (v, hasta) -> if (reloj() - hasta < 0) return v }
+        // Con WiFi malo el GET puede tardar 25 s: pasados 3 s es «no se sabe» y se abre el diálogo como antes.
+        val v = withTimeoutOrNull(ESPERA_MS) { repo.pinPrendido(venueId) }
+        if (v != null) guardar(venueId, v)
         return v
     }
+
+    private fun guardar(venueId: String, v: Boolean) { cachePin[venueId] = v to (reloj() + CACHE_NS) }
 
     fun enviarPin(id: Long, pin: String) {
         val s = actual.get() ?: return
@@ -131,7 +139,8 @@ class AutorizacionDeGerente @Inject constructor(
     private companion object {
         const val PERMISO_LOCAL = "tpv-orders:comp"
         const val PERMISO_SERVIDOR = "orders:comp"
-        const val CACHE_MS = 5 * 60_000L
+        const val CACHE_NS = 5 * 60_000_000_000L
+        const val ESPERA_MS = 3_000L
         const val TEXTO_NEGADA = "Esta cortesía la da un gerente con su sesión"
         const val GENERICO = "No se pudo autorizar. Intenta otra vez"
     }

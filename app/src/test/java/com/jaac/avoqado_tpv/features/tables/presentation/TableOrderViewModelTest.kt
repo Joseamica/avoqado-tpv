@@ -1246,6 +1246,18 @@ class TableOrderViewModelTest {
     }
 
     @Test
+    fun negada_muestra_el_texto_y_no_llama_al_repositorio() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada("Esta cortesía la da un gerente con su sesión")
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).isEqualTo("Esta cortesía la da un gerente con su sesión")
+        assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    @Test
     fun cancelada_no_llama_al_repositorio_ni_muestra_error_y_deja_isComping_en_false() = runTest {
         coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Cancelada
         val viewModel = conCuenta()

@@ -2431,6 +2431,10 @@ class MenuViewModel @Inject constructor(
                 if (regalaLaCuenta) {
                     val auth = autorizacionDeGerente.paraCortesia(venueId, motivoPin)
                     if (auth is Autorizacion.Cancelada) return@launch
+                    if (auth is Autorizacion.Negada) {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(auth.texto, isError = true))
+                        return@launch
+                    }
                     token = (auth as? Autorizacion.ConPin)?.token
                 }
                 // Un fallo con token no es un permiso que falta: el POST pudo llegar (o OkHttp reenviarlo tras gastarse el token) y el
@@ -2454,6 +2458,10 @@ class MenuViewModel @Inject constructor(
                 if (token == null && e403?.required == "orders:comp") {
                     val forzada = autorizacionDeGerente.paraCortesia(venueId, motivoPin, forzar = true)
                     if (forzada is Autorizacion.Cancelada) return@launch
+                    if (forzada is Autorizacion.Negada) {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(forzada.texto, isError = true))
+                        return@launch
+                    }
                     token = (forzada as? Autorizacion.ConPin)?.token
                     resultado = enviar(token)
                 }

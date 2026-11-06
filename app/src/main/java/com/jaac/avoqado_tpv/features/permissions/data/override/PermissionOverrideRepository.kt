@@ -44,5 +44,20 @@ class PermissionOverrideRepository @Inject constructor(private val api: Permissi
         return Result.failure(error)
     }
 
+    /** ¿Está prendido el PIN de gerente en este negocio? `null` si no se sabe (sin red, error, panel fallido, campo ausente). */
+    suspend fun pinPrendido(venueId: String): Boolean? {
+        val resp = try {
+            api.settings(venueId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        }
+        if (!resp.isSuccessful) return null
+        val d = resp.body()?.data ?: return null
+        if (d.componentsStatus?.promotionsPanel == "failed") return null
+        return d.managerPinOverrideEnabled
+    }
+
     private companion object { const val OTRO = "No se pudo autorizar. Intenta otra vez" }
 }

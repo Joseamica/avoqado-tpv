@@ -72,4 +72,29 @@ class PermissionOverrideRepositoryTest {
         runBlocking { repo.pedirToken("v9", "4321", "orders:comp") }
         coVerify { api.crear("v9", PedirTokenBody(pin = "4321", permission = "orders:comp")) }
     }
+
+    private fun settings(json: String) = Response.success(
+        com.google.gson.Gson().fromJson(json, VenueSettingsResponse::class.java),
+    )
+
+    @Test fun pinPrendido_true() {
+        coEvery { api.settings("v1") } returns settings("""{"data":{"managerPinOverrideEnabled":true,"componentsStatus":{"promotionsPanel":"ok"}}}""")
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isTrue()
+    }
+
+    @Test fun pinPrendido_false() {
+        coEvery { api.settings("v1") } returns settings("""{"data":{"managerPinOverrideEnabled":false,"componentsStatus":{"promotionsPanel":"ok"}}}""")
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isFalse()
+    }
+
+    @Test fun pinPrendido_null_si_panel_failed_campo_ausente_red_o_http() {
+        coEvery { api.settings("v1") } returns settings("""{"data":{"managerPinOverrideEnabled":false,"componentsStatus":{"promotionsPanel":"failed"}}}""")
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isNull()
+        coEvery { api.settings("v1") } returns settings("""{"data":{"componentsStatus":{"promotionsPanel":"ok"}}}""")
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isNull()
+        coEvery { api.settings("v1") } throws IOException("sin red")
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isNull()
+        coEvery { api.settings("v1") } returns Response.error(500, "".toResponseBody("application/json".toMediaType()))
+        assertThat(runBlocking { repo.pinPrendido("v1") }).isNull()
+    }
 }

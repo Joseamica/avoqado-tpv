@@ -506,6 +506,7 @@ class TableOrderViewModel @Inject constructor(
             try {
                 val auth = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA)
                 if (auth is Autorizacion.Cancelada) return@launch
+                if (auth is Autorizacion.Negada) { _error.value = auth.texto; return@launch }
                 var token = (auth as? Autorizacion.ConPin)?.token
                 // Un 403 con token no es un permiso que falta: el servidor ya gastó el token en un primer envío
                 // (OkHttp pudo reenviar el POST) y la cortesía pudo aplicarse. Se trata como "no confirmada".
@@ -521,6 +522,7 @@ class TableOrderViewModel @Inject constructor(
                 if (token == null && e403?.required == "orders:comp") {
                     val forzada = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA, forzar = true)
                     if (forzada is Autorizacion.Cancelada) return@launch
+                    if (forzada is Autorizacion.Negada) { _error.value = forzada.texto; return@launch }
                     token = (forzada as? Autorizacion.ConPin)?.token
                     resultado = revisar(repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token), token)
                 }

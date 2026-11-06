@@ -35,6 +35,7 @@ class AutorizacionDeGerenteTest {
         every { storage.getStaffId() } returns "s1"
         coEvery { permisos.hasPermission("tpv-orders:comp") } returns false
         coEvery { repo.pedirToken("v1", "1234", "orders:comp") } returns Result.success("tok-1")
+        coEvery { repo.pinPrendido(any()) } returns null
     }
 
     @After fun tearDown() { unmockkObject(PermissionsRepository.Companion) }
@@ -205,5 +206,46 @@ class AutorizacionDeGerenteTest {
         assertThat(auth.prompt.value!!.enviando).isFalse()
         auth.cancelar(id); advanceUntilIdle()
         r.await()
+    }
+
+    @Test fun pin_apagado_devuelve_Negada_sin_abrir_dialogo() = runTest {
+        coEvery { repo.pinPrendido("v1") } returns false
+        val r = auth.paraCortesia("v1", "m")
+        assertThat(r).isEqualTo(Autorizacion.Negada("Esta cortesía la da un gerente con su sesión"))
+        assertThat(auth.prompt.value).isNull()
+    }
+
+    @Test fun con_permiso_no_consulta_el_interruptor() = runTest {
+        coEvery { permisos.hasPermission("tpv-orders:comp") } returns true
+        auth.paraCortesia("v1", "m")
+        coVerify(exactly = 0) { repo.pinPrendido(any()) }
+    }
+
+    @Test fun forzar_tambien_consulta_y_respeta_apagado() = runTest {
+        coEvery { repo.pinPrendido("v1") } returns false
+        assertThat(auth.paraCortesia("v1", "m", forzar = true)).isInstanceOf(Autorizacion.Negada::class.java)
+    }
+
+    @Test fun null_abre_el_dialogo_y_no_se_guarda() = runTest {
+        pide(); advanceUntilIdle()
+        assertThat(auth.prompt.value).isNotNull()
+        auth.cancelarTodo(); advanceUntilIdle()
+        pide(); advanceUntilIdle()
+        auth.cancelarTodo(); advanceUntilIdle()
+        coVerify(exactly = 2) { repo.pinPrendido("v1") }
+    }
+
+    @Test fun false_y_true_se_guardan_en_cache() = runTest {
+        coEvery { repo.pinPrendido("v1") } returns false
+        auth.paraCortesia("v1", "m"); auth.paraCortesia("v1", "m")
+        coVerify(exactly = 1) { repo.pinPrendido("v1") }
+        coEvery { repo.pinPrendido("v2") } returns true
+        coEvery { repo.pedirToken("v2", "1234", "orders:comp") } returns Result.success("t2")
+        repeat(2) {
+            val r = async { auth.paraCortesia("v2", "m") }; advanceUntilIdle()
+            auth.enviarPin(auth.prompt.value!!.id, "1234"); advanceUntilIdle()
+            r.await()
+        }
+        coVerify(exactly = 1) { repo.pinPrendido("v2") }
     }
 }

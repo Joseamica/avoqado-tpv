@@ -789,6 +789,19 @@ class CheckoutViewModelTest {
     }
 
     @Test
+    fun `negada_devuelve_failure_con_su_texto_y_no_crea_la_orden`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Negada("Esta cortesía la da un gerente con su sesión")
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("Esta cortesía la da un gerente con su sesión", r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun `403_orders_comp_reintenta_una_vez_con_pin_forzado`() = runTest {
         coEvery { autorizacion.paraCortesia("venue-1", any(), false) } returns Autorizacion.NoHaceFalta
         coEvery { autorizacion.paraCortesia("venue-1", any(), true) } returns Autorizacion.ConPin("tok-3")

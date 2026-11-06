@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -25,6 +26,8 @@ sealed interface Autorizacion {
     data object NoHaceFalta : Autorizacion
     data class ConPin(val token: String) : Autorizacion
     data object Cancelada : Autorizacion
+    /** El negocio tiene el PIN de gerente apagado: no se abre el diálogo ni se llama al servidor. */
+    data class Negada(val texto: String) : Autorizacion
 }
 
 data class PromptDePin(val id: Long, val motivo: String, val error: String?, val enviando: Boolean)
@@ -59,6 +62,7 @@ class AutorizacionDeGerente @Inject constructor(
         } else if (permisos.hasPermission(PERMISO_LOCAL)) {
             return Autorizacion.NoHaceFalta
         }
+        if (pinPrendidoCacheado(venueId) == false) return Autorizacion.Negada(TEXTO_NEGADA)
         return turno.withLock {
             val s = Solicitud(ids.incrementAndGet())
             // actual antes de mirar la época: un cancelarTodo() concurrente siempre ve esta solicitud o ya cambió la época.
@@ -95,6 +99,17 @@ class AutorizacionDeGerente @Inject constructor(
         }
     }
 
+    private val cachePin = ConcurrentHashMap<String, Pair<Boolean, Long>>()
+
+    /** true/false se guardan 5 min por negocio; null (no se sabe) nunca. */
+    private suspend fun pinPrendidoCacheado(venueId: String): Boolean? {
+        val ahora = System.currentTimeMillis()
+        cachePin[venueId]?.let { (v, hasta) -> if (ahora < hasta) return v }
+        val v = repo.pinPrendido(venueId)
+        if (v != null) cachePin[venueId] = v to (System.currentTimeMillis() + CACHE_MS)
+        return v
+    }
+
     fun enviarPin(id: Long, pin: String) {
         val s = actual.get() ?: return
         if (s.id != id || s.resultado.isCompleted || pin.length < 4) return
@@ -116,6 +131,8 @@ class AutorizacionDeGerente @Inject constructor(
     private companion object {
         const val PERMISO_LOCAL = "tpv-orders:comp"
         const val PERMISO_SERVIDOR = "orders:comp"
+        const val CACHE_MS = 5 * 60_000L
+        const val TEXTO_NEGADA = "Esta cortesía la da un gerente con su sesión"
         const val GENERICO = "No se pudo autorizar. Intenta otra vez"
     }
 }

@@ -1335,6 +1335,7 @@ class CheckoutViewModel @Inject constructor(
                 is Autorizacion.ConPin -> auth.token
                 Autorizacion.NoHaceFalta -> null
                 Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
+                is Autorizacion.Negada -> return Result.failure(Exception(auth.texto))
                 null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
             }
         }
@@ -1345,6 +1346,7 @@ class CheckoutViewModel @Inject constructor(
                 is Autorizacion.ConPin -> auth.token
                 Autorizacion.NoHaceFalta -> return Result.failure(Exception(textoDePermiso(rechazo.required, rechazo.message.orEmpty())))
                 Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
+                is Autorizacion.Negada -> return Result.failure(Exception(auth.texto))
                 null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
             }
             resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)

@@ -119,6 +119,15 @@ class MenuViewModelManualDiscountTest {
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 149.99, "x", null, null) }
     }
 
+    @Test fun `negada_avisa_con_su_texto_y_no_llama_al_repositorio`() {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Negada("Esta cortesía la da un gerente con su sesión")
+        val vm = crear()
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
+        assertThat(avisos).contains("Esta cortesía la da un gerente con su sesión")
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
     @Test fun `cancelado_no_llama_al_repositorio`() {
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Cancelada
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")

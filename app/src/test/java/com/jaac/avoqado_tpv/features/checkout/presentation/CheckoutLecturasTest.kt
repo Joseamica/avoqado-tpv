@@ -122,7 +122,7 @@ class CheckoutLecturasTest {
             mosaico, ActiveCartState(), storage, mockk(relaxed = true), mockk(relaxed = true), productos, db.productCategoryDao(),
             CatalogoGuardado(red, productos), conexion, ventas, mockk(relaxed = true), db.pendingPaymentDao(), mockk {
                 coEvery { hasPermission(any()) } returns true
-            })
+            }, mockk(relaxed = true))
         modelos += modelo
         withContext(Dispatchers.Default) { withTimeout(10000) { modelo.ventaEnPreparacion.first { !it } } }
         withContext(Dispatchers.Default) { withTimeout(10000) { modelo.isLoading.first { !it } } }

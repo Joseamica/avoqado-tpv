@@ -149,6 +149,9 @@ class CheckoutVentaSinRedTest {
             ventaSinRed = aparato,
             impresoraDeVentaGuardada = impresora,
             pendingPaymentDao = paymentDao,
+            autorizacionDeGerente = mockk {
+                coEvery { paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.NoHaceFalta
+            },
             permissionsRepository = permissions,
         )
     }

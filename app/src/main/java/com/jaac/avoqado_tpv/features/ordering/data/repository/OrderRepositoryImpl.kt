@@ -263,7 +263,8 @@ class OrderRepositoryImpl @Inject constructor(
 
     override suspend fun createOrderWithItems(
         venueId: String,
-        request: TpvCreateOrderWithItemsRequest
+        request: TpvCreateOrderWithItemsRequest,
+        overrideToken: String?,
     ): Result<Order> {
         return try {
             val dto = TpvCreateOrderWithItemsRequestDto(
@@ -301,7 +302,7 @@ class OrderRepositoryImpl @Inject constructor(
                 externalId = request.externalId,
             )
 
-            val response = apiService.createOrderWithItems(venueId, dto)
+            val response = apiService.createOrderWithItems(venueId, dto, overrideToken)
             if (response.isSuccessful) {
                 val body = response.body()
                 if (body != null && body.success) {
@@ -333,6 +334,10 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(Exception("Invalid response from server"))
                 }
             } else {
+                // 403 de permiso: el VM decide si pide el PIN de un gerente y reintenta (una vez).
+                com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe(
+                    response.code(), response.errorBody()?.string(), "No tienes permiso para crear órdenes.",
+                )?.let { return Result.failure(it) }
                 val errorMessage = when (response.code()) {
                     // D5: con cupón, la razón del SERVIDOR ya viene para la cajera (venció, se agotó, este cliente ya lo usó, cambió de valor).
                     400 -> request.couponCode?.let { mensajeDelCuponRechazado(response.errorBody()?.string()) }

@@ -103,7 +103,8 @@ interface OrderRepository {
      */
     suspend fun createOrderWithItems(
         venueId: String,
-        request: TpvCreateOrderWithItemsRequest
+        request: TpvCreateOrderWithItemsRequest,
+        overrideToken: String? = null,
     ): Result<Order>
 
     /**

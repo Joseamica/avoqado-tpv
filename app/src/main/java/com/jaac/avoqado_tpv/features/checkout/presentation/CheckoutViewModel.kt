@@ -7,7 +7,11 @@ import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaGuardadaVista
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.core.data.network.textoDePermiso
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
@@ -121,6 +125,7 @@ class CheckoutViewModel @Inject constructor(
     private val impresoraDeVentaGuardada: ImpresoraDeVentaGuardada,
     private val pendingPaymentDao: PendingPaymentDao,
     private val permissionsRepository: PermissionsRepository,
+    private val autorizacionDeGerente: AutorizacionDeGerente,
 ) : ViewModel() {
 
     /**
@@ -1316,9 +1321,53 @@ class CheckoutViewModel @Inject constructor(
             }
     }
 
-    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> =
-        orderRepository.createOrderWithItems(venueId = venueId, request = pedido.copy(externalId = llave))
-            .onSuccess { olvidarLlave() }
+    /**
+     * Crea la orden. Si la venta lleva cortesía (una línea, o un descuento manual que deja los productos en $0) y la cajera no tiene
+     * el permiso, pide el PIN de un gerente y manda su token de un solo uso en `X-Permission-Override`. Un 403 `orders:comp` pide el
+     * PIN forzado y reintenta UNA vez con la MISMA petición (mismo `externalId`: si la primera sí creó la orden, el servidor la devuelve).
+     */
+    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
+        val peticion = pedido.copy(externalId = llave)
+        var token: String? = null
+        if (llevaCortesia(_cartState.value)) {
+            token = when (val auth = pedirPinDeCortesia(venueId, forzar = false)) {
+                is Autorizacion.ConPin -> auth.token
+                Autorizacion.NoHaceFalta -> null
+                Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
+                null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
+            }
+        }
+        var resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+        val rechazo = resultado.exceptionOrNull() as? PermisoRequeridoException
+        if (rechazo?.required == "orders:comp") {
+            token = when (val auth = pedirPinDeCortesia(venueId, forzar = true)) {
+                is Autorizacion.ConPin -> auth.token
+                Autorizacion.NoHaceFalta -> return Result.failure(Exception(textoDePermiso(rechazo.required, rechazo.message.orEmpty())))
+                Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
+                null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
+            }
+            resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+        }
+        (resultado.exceptionOrNull() as? PermisoRequeridoException)?.let {
+            return Result.failure(Exception(textoDePermiso(it.required, it.message.orEmpty())))
+        }
+        return resultado.onSuccess { olvidarLlave() }
+    }
+
+    /** `null` = el coordinador falló (no se pudo autorizar). */
+    private suspend fun pedirPinDeCortesia(venueId: String, forzar: Boolean): Autorizacion? = try {
+        autorizacionDeGerente.paraCortesia(venueId, "Para cobrar con cortesía", forzar)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "No se pudo autorizar la cortesía")
+        null
+    }
+
+    /** Una línea de cortesía, o un descuento manual que deja los productos en $0 (en centavos, del carrito). */
+    private fun llevaCortesia(c: CartState): Boolean =
+        c.items.any { it.isCortesia } ||
+            (c.manualDiscountCents > 0 && c.taxableSubtotalCents - c.manualDiscountCents <= 0)
 
     // ─────────────────────────────────────────────────────────────────────
     // 💵 «Cobrar» sin red: el carrito a medias y la venta en $0

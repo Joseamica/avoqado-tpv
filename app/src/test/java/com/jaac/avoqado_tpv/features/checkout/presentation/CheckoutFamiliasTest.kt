@@ -278,6 +278,7 @@ class CheckoutFamiliasTest {
                 io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
                 io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
             },
+            autorizacionDeGerente = mockk(relaxed = true),
             permissionsRepository = mockk(relaxed = true) {
                 io.mockk.coEvery { hasPermission(any()) } returns true
             },

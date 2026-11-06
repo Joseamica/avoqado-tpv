@@ -1076,6 +1076,12 @@ class CheckoutViewModel @Inject constructor(
             }
             CaminoDelCobro.EN_LINEA -> cobrarEnLinea(current, amountPesos)
             CaminoDelCobro.LOCAL -> {
+                // Una venta local se reproduce por /mobile SIN token: una cortesía sin permiso la rechazaría el servidor. El PIN necesita red.
+                if (current.items.any { it.isCortesia } && !permissionsRepository.hasPermission("tpv-orders:comp")) {
+                    return Result.failure(IllegalStateException(
+                        (if (hayRed) "" else "Sin conexión: ") + "el PIN del gerente necesita internet. Quita la cortesía o cobra cuando vuelva la red",
+                    ))
+                }
                 // Sólo importes en $0 con red: hasta hoy salía como Fast y capturaba el referido sin orden; eso se conserva.
                 if (hayRed && !current.hasProductItems) capturarReferido(orderId = null)
                 ventaLocal(current, amountPesos, llaveYaUsada = null)
@@ -1225,6 +1231,7 @@ class CheckoutViewModel @Inject constructor(
             // exactly the pay-later shape. No separate "leave open" flag needed.
             // D5 (Codex r2 #4): si el servidor no contestó con un cupón, se dice lo del cupón, como en Cobrar.
             else -> createOrderWithCurrentItems().recoverCatching { fallo ->
+                if (fallo.message == TEXTO_NO_CONFIRMADA_COBRAR) throw Exception("No pudimos confirmar la venta. Inténtalo otra vez")
                 throw if (current.couponCode != null && pasaALaVentaLocal(fallo)) IllegalStateException(TEXTO_CUPON_SIN_RED, fallo) else fallo
             }
         }
@@ -1318,6 +1325,8 @@ class CheckoutViewModel @Inject constructor(
      * el permiso, pide el PIN de un gerente y manda su token de un solo uso en `X-Permission-Override`. Un 403 `orders:comp` pide el
      * PIN forzado y reintenta UNA vez con la MISMA petición (mismo `externalId`: si la primera sí creó la orden, el servidor la devuelve).
      */
+    private val TEXTO_NO_CONFIRMADA_COBRAR = "No pudimos confirmar la venta. Toca Cobrar otra vez"
+
     private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
         val peticion = pedido.copy(externalId = llave)
         var token: String? = null
@@ -1346,7 +1355,7 @@ class CheckoutViewModel @Inject constructor(
         // Con token, nada se encola: la reproducción local va por /mobile sin token y daría 403 con el efectivo ya cobrado.
         // Volver a tocar Cobrar es seguro (misma llave: el servidor devuelve la orden si sí se creó).
         if (token != null && resultado.exceptionOrNull()?.let { pasaALaVentaLocal(it) } == true) {
-            return Result.failure(Exception("No pudimos confirmar la venta. Toca Cobrar otra vez"))
+            return Result.failure(Exception(TEXTO_NO_CONFIRMADA_COBRAR))
         }
         return resultado.onSuccess { olvidarLlave() }
     }
@@ -1461,11 +1470,6 @@ class CheckoutViewModel @Inject constructor(
         }
         if (_ventaSinMostrar.value != null) return "Revisa primero la venta que ya quedó cobrada y guardada."
         val sesion = sesionActual()
-        // Con red, la cortesía sin permiso se autoriza con el PIN del gerente al crear la orden; sin red no hay token que pedir.
-        if (cart.items.any { it.isCortesia } && !connectionStateManager.hasInternet() &&
-            !permissionsRepository.hasPermission("tpv-orders:comp")) {
-            return "La venta tiene una cortesía y tu sesión no tiene permiso. Pide apoyo al gerente."
-        }
         if (cart.orderDiscount == null && cart.manualDiscountCents > 0 && !permissionsRepository.hasPermission("discounts:apply")) {
             return "La venta tiene un descuento y tu sesión no tiene permiso. Pide apoyo al gerente."
         }

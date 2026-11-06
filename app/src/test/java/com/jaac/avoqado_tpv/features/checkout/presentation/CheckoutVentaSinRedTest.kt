@@ -673,7 +673,7 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
-    @Test fun `sin permiso propio la cortesia se marca igual y el PIN se pide al cobrar`() = runTest {
+    @Test fun `sin permiso propio la cortesia se marca igual, el PIN se pide al cobrar`() = runTest {
         coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
         connectionStateManager.setInternetConnected(false)
         val vm = viewModel()
@@ -803,6 +803,39 @@ class CheckoutVentaSinRedTest {
         assertEquals(antes, vm.cartState.value)
         assertEquals(venta.llave, aparato.carritos["venue-1"]?.llave)
         assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `con red, cortesia de puros importes sin permiso no guarda venta en cero`() = runTest {
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        val vm = viewModel()
+        vm.addCustomAmount("Servicio", 5000)
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        assertTrue(vm.prepareForPayment().isFailure)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red, producto con cortesia sin permiso no se encola`() = runTest {
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        val r = vm.prepareForPayment()
+        assertTrue(r.exceptionOrNull()?.message?.startsWith("Sin conexión: el PIN") == true)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red, con permiso la cortesia sigue como venta local`() = runTest {
+        coEvery { permissions.hasPermission(any()) } returns true
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        assertTrue(vm.prepareForPayment().isSuccess)
+        assertEquals(1, aparato.filas.size)
         vm.viewModelScope.cancel()
     }
 

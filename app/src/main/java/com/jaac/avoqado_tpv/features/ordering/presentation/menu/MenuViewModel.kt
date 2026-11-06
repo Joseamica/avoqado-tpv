@@ -2422,10 +2422,15 @@ class MenuViewModel @Inject constructor(
                 Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
 
                 // PIN de gerente: sólo si este descuento regala la cuenta (sobre subtotal − descuentos, no `total`).
-                val centavos = { d: Double -> java.math.BigDecimal.valueOf(d).setScale(2, java.math.RoundingMode.HALF_UP) }
+                // Igual que el servidor: el importe se redondea a centavos (99.999 % de $100 = $100 = regalar la cuenta) y se topa en lo que queda.
                 val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
-                regalaLaCuenta = (type == DiscountType.PERCENTAGE && value >= 100) ||
-                    (type == DiscountType.FIXED && centavos(value) >= queda)
+                val quedaCent = queda.movePointRight(2).toLong()
+                val importeCent = when (type) {
+                    DiscountType.PERCENTAGE -> queda.multiply(java.math.BigDecimal.valueOf(value))
+                        .divide(java.math.BigDecimal(100), 2, java.math.RoundingMode.HALF_UP).movePointRight(2).toLong()
+                    DiscountType.FIXED -> java.math.BigDecimal.valueOf(value).setScale(2, java.math.RoundingMode.HALF_UP).movePointRight(2).toLong()
+                }.coerceAtMost(quedaCent)
+                regalaLaCuenta = quedaCent > 0 && importeCent >= quedaCent
                 val motivoPin = "Para dar esta cortesía"
                 var token: String? = null
                 if (regalaLaCuenta) {

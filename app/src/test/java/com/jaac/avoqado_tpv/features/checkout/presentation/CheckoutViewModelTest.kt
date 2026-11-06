@@ -850,6 +850,31 @@ class CheckoutViewModelTest {
     }
 
     @Test
+    fun `tras un intento con token en duda, cancelar el PIN en el reintento dice no confirmada`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returnsMany
+            listOf(Autorizacion.ConPin("tok-7"), Autorizacion.Cancelada)
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.io.IOException("sin red")))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", vm.prepareForPayment().exceptionOrNull()?.message)
+        // Mismo carrito = misma llave: la orden pudo crearse, así que "sin autorizar" mentiría.
+        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", vm.prepareForPayment().exceptionOrNull()?.message)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `un carrito nuevo cancelado sigue diciendo Cortesia sin autorizar`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Cancelada
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals("Cortesía sin autorizar", vm.prepareForPayment().exceptionOrNull()?.message)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun `si el coordinador truena no se puede autorizar la cortesia`() = runTest {
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } throws IllegalStateException("boom")
         val vm = createViewModel()

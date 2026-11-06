@@ -105,6 +105,17 @@ class MenuViewModelManualDiscountTest {
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.0, "x", null, null) }
     }
 
+    @Test fun `99_999_por_ciento_de_100_pesos_redondea_a_100_y_pide_pin`() {
+        coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-9")
+        crear(subtotal = "100.00", total = "100.00").applyManualDiscount(DiscountType.PERCENTAGE, 99.999, "x")
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, false) }
+    }
+
+    @Test fun `99_99_por_ciento_de_100_pesos_deja_un_centavo_y_no_pide_pin`() {
+        crear(subtotal = "100.00", total = "100.00").applyManualDiscount(DiscountType.PERCENTAGE, 99.99, "x")
+        coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
+    }
+
     @Test fun `fijo_igual_a_lo_que_queda_pide_pin`() {
         // subtotal 200 − descuentos 50 = 150 (el total lleva propina e impuestos y no cuenta)
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-2")
@@ -144,14 +155,14 @@ class MenuViewModelManualDiscountTest {
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "x", null, "tok-f") }
     }
 
-    @Test fun `porcentaje_menor_a_100_que_el_servidor_rechaza_por_redondeo_pide_pin_y_reintenta`() {
+    @Test fun `porcentaje_que_la_app_no_ve_como_regalo_pero_el_servidor_rechaza_pide_pin_y_reintenta`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-r")
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
-        crear(subtotal = "0.02", total = "0.02").applyManualDiscount(DiscountType.PERCENTAGE, 99.9, "x")
+        crear(subtotal = "100.00", total = "100.00").applyManualDiscount(DiscountType.PERCENTAGE, 99.0, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, false) }
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.9, "x", null, "tok-r") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.0, "x", null, "tok-r") }
     }
 
     private val avisos = mutableListOf<String>()

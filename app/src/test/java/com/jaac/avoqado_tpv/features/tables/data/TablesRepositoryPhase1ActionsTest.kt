@@ -340,14 +340,22 @@ class TablesRepositoryPhase1ActionsTest {
     }
 
     @Test
-    fun con_token_y_400_propaga_el_error_original_y_no_encola() = runTest {
+    fun con_token_y_400_es_no_confirmada_y_no_encola() = runTest {
         coEvery { api.compOrder(venueId, orderId, any(), "tok") } returns errorResponse<CompOrderResponse>(400, "{\"message\":\"ya es cortesia\"}")
 
         val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1", "tok")
 
-        val e = result.exceptionOrNull() as BackendHttpException
-        assertThat(e.statusCode).isEqualTo(400)
-        assertThat(e.message).contains("ya es cortesia")
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.NoConfirmadaException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun con_token_y_500_es_no_confirmada_y_no_encola() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), "tok") } returns errorResponse<CompOrderResponse>(500, "{\"message\":\"boom\"}")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1", "tok")
+
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.NoConfirmadaException::class.java)
         coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
     }
 

@@ -565,7 +565,11 @@ class CheckoutViewModel @Inject constructor(
         }
     }
 
+    /** Llave cuyo último intento CON token quedó en duda (la orden pudo crearse). Sólo en memoria. */
+    private var llaveDudosa: String? = null
+
     private fun olvidarLlave() {
+        llaveDudosa = null
         orderAttemptExternalId = null
         orderAttemptFingerprint = null
     }
@@ -1330,13 +1334,17 @@ class CheckoutViewModel @Inject constructor(
     private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
         val peticion = pedido.copy(externalId = llave)
         var token: String? = null
+        // Si un intento anterior de ESTA llave mandó token y quedó en duda, cancelar/negar el PIN ahora no vuelve la venta "sin autorizar":
+        // la orden pudo crearse. Se dice que no se pudo confirmar.
+        val dudosa = llaveDudosa == llave
+        fun sinAutorizar(texto: String) = Result.failure<Order>(Exception(if (dudosa) TEXTO_NO_CONFIRMADA_COBRAR else texto))
         if (llevaCortesia(_cartState.value)) {
             token = when (val auth = pedirPinDeCortesia(venueId, forzar = false)) {
                 is Autorizacion.ConPin -> auth.token
                 Autorizacion.NoHaceFalta -> null
-                Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
-                is Autorizacion.Negada -> return Result.failure(Exception(auth.texto))
-                null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
+                Autorizacion.Cancelada -> return sinAutorizar("Cortesía sin autorizar")
+                is Autorizacion.Negada -> return sinAutorizar(auth.texto)
+                null -> return sinAutorizar("No se pudo autorizar la cortesía")
             }
         }
         var resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
@@ -1345,18 +1353,20 @@ class CheckoutViewModel @Inject constructor(
             token = when (val auth = pedirPinDeCortesia(venueId, forzar = true)) {
                 is Autorizacion.ConPin -> auth.token
                 Autorizacion.NoHaceFalta -> return Result.failure(Exception(textoDePermiso(rechazo.required, rechazo.message.orEmpty())))
-                Autorizacion.Cancelada -> return Result.failure(Exception("Cortesía sin autorizar"))
-                is Autorizacion.Negada -> return Result.failure(Exception(auth.texto))
-                null -> return Result.failure(Exception("No se pudo autorizar la cortesía"))
+                Autorizacion.Cancelada -> return sinAutorizar("Cortesía sin autorizar")
+                is Autorizacion.Negada -> return sinAutorizar(auth.texto)
+                null -> return sinAutorizar("No se pudo autorizar la cortesía")
             }
             resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
         }
+        if (token != null && resultado.exceptionOrNull() is PermisoRequeridoException) llaveDudosa = llave
         (resultado.exceptionOrNull() as? PermisoRequeridoException)?.let {
             return Result.failure(Exception(textoDePermiso(it.required, it.message.orEmpty())))
         }
         // Con token, nada se encola: la reproducción local va por /mobile sin token y daría 403 con el efectivo ya cobrado.
         // Volver a tocar Cobrar es seguro (misma llave: el servidor devuelve la orden si sí se creó).
         if (token != null && resultado.exceptionOrNull()?.let { pasaALaVentaLocal(it) } == true) {
+            llaveDudosa = llave
             return Result.failure(Exception(TEXTO_NO_CONFIRMADA_COBRAR))
         }
         return resultado.onSuccess { olvidarLlave() }

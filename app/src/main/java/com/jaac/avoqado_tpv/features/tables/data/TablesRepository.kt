@@ -923,7 +923,8 @@ class TablesRepository @Inject constructor(
         }
 
         // Con token ya se mandó la cortesía y no sabemos si pasó: nunca se encola (se duplicaría); el mesero revisa la cuenta.
-        if (overrideToken != null && classifyTablesSyncFailure(onlineResult.exceptionOrNull()) is TablesSyncOutcome.Retryable) {
+        // Cualquier fallo (red, 500, 400...) salvo el 403 de permiso, que el ViewModel ya trata: el token pudo gastarse y la cortesía aplicarse.
+        if (overrideToken != null && onlineResult.exceptionOrNull() !is com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException) {
             return Result.failure(NoConfirmadaException())
         }
 

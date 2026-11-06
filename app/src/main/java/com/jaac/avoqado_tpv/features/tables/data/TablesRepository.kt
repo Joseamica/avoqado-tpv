@@ -802,7 +802,7 @@ class TablesRepository @Inject constructor(
      */
     suspend fun applyDiscount(venueId: String, orderId: String, discountId: String): Result<DiscountOutcome> {
         val onlineResult = try {
-            api.applyDiscount(venueId, orderId, ApplyDiscountRequest(discountId = discountId)).toApplyDiscountResult()
+            api.applyDiscount(venueId, orderId, ApplyDiscountRequest(discountId = discountId)).toApplyDiscountResult(conTextoDePermiso = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
@@ -876,7 +876,7 @@ class TablesRepository @Inject constructor(
         }
     }
 
-    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult():
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult(conTextoDePermiso: Boolean = false):
         Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.DiscountApplyResult> {
         val body = body()
         val data = body?.data
@@ -888,7 +888,7 @@ class TablesRepository @Inject constructor(
             Result.failure(
                 BackendHttpException(
                     statusCode = code(),
-                    message = if (code() == 403) permisoRequeridoDe(code(), raw, texto)?.message ?: texto else texto,
+                    message = if (conTextoDePermiso) permisoRequeridoDe(code(), raw, texto)?.message ?: texto else texto,
                 ),
             )
         }

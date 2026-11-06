@@ -507,14 +507,22 @@ class TableOrderViewModel @Inject constructor(
                 val auth = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA)
                 if (auth is Autorizacion.Cancelada) return@launch
                 var token = (auth as? Autorizacion.ConPin)?.token
-                var resultado = repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token)
+                // Un 403 con token no es un permiso que falta: el servidor ya gastó el token en un primer envío
+                // (OkHttp pudo reenviar el POST) y la cortesía pudo aplicarse. Se trata como "no confirmada".
+                fun revisar(r: Result<TablesRepository.CompOutcome>, tokenEnviado: String?) =
+                    if (tokenEnviado != null && r.exceptionOrNull() is PermisoRequeridoException) {
+                        Result.failure(TablesRepository.NoConfirmadaException())
+                    } else {
+                        r
+                    }
+                var resultado = revisar(repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token), token)
                 // La lista de permisos local pudo estar vieja: un 403 por cortesía sin PIN pide el PIN y reintenta UNA vez.
                 val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
                 if (token == null && e403?.required == "orders:comp") {
                     val forzada = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA, forzar = true)
                     if (forzada is Autorizacion.Cancelada) return@launch
                     token = (forzada as? Autorizacion.ConPin)?.token
-                    resultado = repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token)
+                    resultado = revisar(repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token), token)
                 }
                 resultado.fold(
                     onSuccess = { outcome ->
@@ -537,6 +545,9 @@ class TableOrderViewModel @Inject constructor(
                         if (e is TablesRepository.NoConfirmadaException) loadCheck()
                     },
                 )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _error.value = "No se pudo aplicar la cortesía"
             } finally {
                 _isComping.value = false
             }

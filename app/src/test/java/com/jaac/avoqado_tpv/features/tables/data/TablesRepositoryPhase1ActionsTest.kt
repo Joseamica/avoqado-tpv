@@ -330,6 +330,38 @@ class TablesRepositoryPhase1ActionsTest {
     }
 
     @Test
+    fun con_token_articulo_y_falla_de_red_da_NoConfirmada_no_ItemCompRequiresConnection() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), "tok") } throws IOException("sin red")
+
+        val result = repo.compOrder(venueId, orderId, listOf("i1"), "Reclamo", "staff-1", "tok")
+
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.NoConfirmadaException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun con_token_y_400_propaga_el_error_original_y_no_encola() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), "tok") } returns errorResponse<CompOrderResponse>(400, "{\"message\":\"ya es cortesia\"}")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1", "tok")
+
+        val e = result.exceptionOrNull() as BackendHttpException
+        assertThat(e.statusCode).isEqualTo(400)
+        assertThat(e.message).contains("ya es cortesia")
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun applyDiscount_403_usa_el_texto_de_permiso() = runTest {
+        coEvery { api.applyDiscount(venueId, orderId, any()) } returns
+            errorResponse<ApplyDiscountResponse>(403, "{\"message\":\"no\",\"required\":\"discounts:apply\"}")
+
+        val result = repo.applyDiscount(venueId, orderId, "d1")
+
+        assertThat(result.exceptionOrNull()?.message).isEqualTo("Este descuento lo da alguien con permiso de descuentos")
+    }
+
+    @Test
     fun un_403_sale_como_PermisoRequerido_con_su_required() = runTest {
         coEvery { api.compOrder(venueId, orderId, any(), null) } returns
             errorResponse<CompOrderResponse>(403, "{\"message\":\"no\",\"required\":\"orders:comp\",\"overridable\":true}")

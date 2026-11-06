@@ -59,7 +59,7 @@ object UnimplementedTablesApiService : TablesApiService {
     override suspend fun splitOrderBySeat(venueId: String, orderId: String): Response<SplitOrderBySeatResponse> = boom()
     override suspend fun mergeOrders(venueId: String, orderId: String, body: MergeOrdersRequest): Response<MergeOrdersResponse> = boom()
     override suspend fun cancelOrder(venueId: String, orderId: String, body: CancelOrderRequest): Response<CancelOrderResponse> = boom()
-    override suspend fun compOrder(venueId: String, orderId: String, body: CompOrderRequest): Response<CompOrderResponse> = boom()
+    override suspend fun compOrder(venueId: String, orderId: String, body: CompOrderRequest, overrideToken: String?): Response<CompOrderResponse> = boom()
     override suspend fun getActiveStaff(venueId: String): Response<ActiveStaffResponse> = boom()
     override suspend fun getAvailableDiscounts(venueId: String, orderId: String): Response<AvailableDiscountsResponse> = boom()
     override suspend fun getCategories(venueId: String): Response<List<CategoryCatalogDto>> = boom()

@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
@@ -59,6 +62,7 @@ class TableOrderViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     private val secureStorage: SecureStorage,
     private val networkMonitor: NetworkMonitor,
+    private val autorizacionDeGerente: AutorizacionDeGerente,
 ) : ViewModel() {
     /** La hora que se le enseña al mesero es la del negocio, no el desfase que trae el servidor. */
     val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
@@ -351,6 +355,7 @@ class TableOrderViewModel @Inject constructor(
     }
 
     companion object {
+        private const val MOTIVO_PIN_CORTESIA = "Para dar esta cortesía"
         /**
          * Ver KDoc de [_sendTakingLong]. No-privado a propósito — el test
          * (`TableOrderViewModelTest`) lo referencia para no hardcodear el
@@ -498,26 +503,43 @@ class TableOrderViewModel @Inject constructor(
 
         _isComping.value = true
         viewModelScope.launch {
-            repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId).fold(
-                onSuccess = { outcome ->
-                    _isComping.value = false
-                    _notice.value = if (outcome.queued) {
-                        "Sin conexión — cortesía guardada; se sincronizará sola"
-                    } else {
-                        "Cortesía aplicada"
-                    }
-                    if (!outcome.queued) loadCheck()
-                },
-                onFailure = { e ->
-                    _isComping.value = false
-                    if (e is CancellationException) throw e
-                    _error.value = when (e) {
-                        is TablesRepository.ItemCompRequiresConnectionException -> e.message
-                        is BackendHttpException -> e.message
-                        else -> "No se pudo aplicar la cortesía"
-                    }
-                },
-            )
+            try {
+                val auth = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA)
+                if (auth is Autorizacion.Cancelada) return@launch
+                var token = (auth as? Autorizacion.ConPin)?.token
+                var resultado = repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token)
+                // La lista de permisos local pudo estar vieja: un 403 por cortesía sin PIN pide el PIN y reintenta UNA vez.
+                val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
+                if (token == null && e403?.required == "orders:comp") {
+                    val forzada = autorizacionDeGerente.paraCortesia(vId, MOTIVO_PIN_CORTESIA, forzar = true)
+                    if (forzada is Autorizacion.Cancelada) return@launch
+                    token = (forzada as? Autorizacion.ConPin)?.token
+                    resultado = repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token)
+                }
+                resultado.fold(
+                    onSuccess = { outcome ->
+                        _notice.value = if (outcome.queued) {
+                            "Sin conexión — cortesía guardada; se sincronizará sola"
+                        } else {
+                            "Cortesía aplicada"
+                        }
+                        if (!outcome.queued) loadCheck()
+                    },
+                    onFailure = { e ->
+                        if (e is CancellationException) throw e
+                        _error.value = when (e) {
+                            is TablesRepository.ItemCompRequiresConnectionException -> e.message
+                            is TablesRepository.NoConfirmadaException -> e.message
+                            is PermisoRequeridoException -> e.message
+                            is BackendHttpException -> e.message
+                            else -> "No se pudo aplicar la cortesía"
+                        }
+                        if (e is TablesRepository.NoConfirmadaException) loadCheck()
+                    },
+                )
+            } finally {
+                _isComping.value = false
+            }
         }
     }
 

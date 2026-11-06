@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe
 import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
@@ -882,10 +883,12 @@ class TablesRepository @Inject constructor(
         return if (isSuccessful && body?.success == true && data != null) {
             Result.success(data)
         } else {
+            val raw = errorBody()?.string()
+            val texto = body?.error ?: parseBackendErrorMessage(raw, message())
             Result.failure(
                 BackendHttpException(
                     statusCode = code(),
-                    message = body?.error ?: parseBackendErrorMessage(errorBody()?.string(), message()),
+                    message = if (code() == 403) permisoRequeridoDe(code(), raw, texto)?.message ?: texto else texto,
                 ),
             )
         }
@@ -906,10 +909,22 @@ class TablesRepository @Inject constructor(
      * pase — un fallo transitorio se propaga con un mensaje claro en vez de
      * disfrazarse de "guardado offline".
      */
-    suspend fun compOrder(venueId: String, orderId: String, itemIds: List<String>, reason: String, staffId: String): Result<CompOutcome> {
-        val onlineResult = callCompOrder(venueId, orderId, itemIds, reason, staffId)
+    suspend fun compOrder(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        overrideToken: String? = null,
+    ): Result<CompOutcome> {
+        val onlineResult = callCompOrder(venueId, orderId, itemIds, reason, staffId, overrideToken)
         onlineResult.onSuccess { result ->
             return Result.success(CompOutcome(queued = false, total = result.total, version = result.version))
+        }
+
+        // Con token ya se mandó la cortesía y no sabemos si pasó: nunca se encola (se duplicaría); el mesero revisa la cuenta.
+        if (overrideToken != null && classifyTablesSyncFailure(onlineResult.exceptionOrNull()) is TablesSyncOutcome.Retryable) {
+            return Result.failure(NoConfirmadaException())
         }
 
         if (itemIds.isNotEmpty()) {
@@ -944,14 +959,18 @@ class TablesRepository @Inject constructor(
         itemIds: List<String>,
         reason: String,
         staffId: String,
+        overrideToken: String?,
     ): Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResult> = try {
-        val response = api.compOrder(venueId, orderId, CompOrderRequest(itemIds = itemIds, reason = reason, staffId = staffId))
+        val response = api.compOrder(venueId, orderId, CompOrderRequest(itemIds = itemIds, reason = reason, staffId = staffId), overrideToken)
         val data = response.body()?.data
         if (response.isSuccessful && data != null) {
             Result.success(data)
         } else {
+            val raw = response.errorBody()?.string()
+            val texto = parseBackendErrorMessage(raw, response.message())
             Result.failure(
-                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+                permisoRequeridoDe(response.code(), raw, texto)
+                    ?: BackendHttpException(statusCode = response.code(), message = texto),
             )
         }
     } catch (e: CancellationException) {
@@ -1603,6 +1622,10 @@ class TablesRepository @Inject constructor(
     /** Cortesía de un artículo puntual falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [compOrder]. */
     class ItemCompRequiresConnectionException :
         Exception("La cortesía de artículos ya enviados necesita conexión — inténtalo cuando el equipo esté en línea.")
+
+    /** Se mandó la cortesía con el PIN del gerente y no supimos si pasó: no se encola, se revisa la cuenta. */
+    class NoConfirmadaException :
+        Exception("No pudimos confirmar la cortesía. Revisa la cuenta")
 
     /** Quitar un descuento aplicado falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [removeDiscount]. */
     class RemoveDiscountRequiresConnectionException :

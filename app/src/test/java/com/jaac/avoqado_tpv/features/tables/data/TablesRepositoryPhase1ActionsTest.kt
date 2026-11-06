@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
@@ -295,6 +296,48 @@ class TablesRepositoryPhase1ActionsTest {
         assertThat(result.isFailure).isTrue()
         assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.ItemCompRequiresConnectionException::class.java)
         assertThat(result.exceptionOrNull()?.message).contains("conexión")
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun con_token_y_falla_de_red_no_encola_y_da_NoConfirmada() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), "tok") } throws IOException("sin red")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1", "tok")
+
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.NoConfirmadaException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun con_token_y_429_no_encola_y_da_NoConfirmada() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), "tok") } returns errorResponse<CompOrderResponse>(429, "{\"message\":\"muchas\"}")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1", "tok")
+
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.NoConfirmadaException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun sin_token_y_sin_red_encola_como_hoy() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), null) } throws IOException("sin red")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1")
+
+        assertThat(result.getOrThrow().queued).isTrue()
+        coVerify(exactly = 1) { outbox.enqueue(any(), SyncIntentTypes.COMP_ORDER, any(), any()) }
+    }
+
+    @Test
+    fun un_403_sale_como_PermisoRequerido_con_su_required() = runTest {
+        coEvery { api.compOrder(venueId, orderId, any(), null) } returns
+            errorResponse<CompOrderResponse>(403, "{\"message\":\"no\",\"required\":\"orders:comp\",\"overridable\":true}")
+
+        val result = repo.compOrder(venueId, orderId, emptyList(), "Reclamo", "staff-1")
+
+        val e = result.exceptionOrNull() as PermisoRequeridoException
+        assertThat(e.required).isEqualTo("orders:comp")
         coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
     }
 

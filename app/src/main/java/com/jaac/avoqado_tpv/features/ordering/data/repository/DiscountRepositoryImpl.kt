@@ -234,14 +234,16 @@ class DiscountRepositoryImpl @Inject constructor(
     override suspend fun validateCoupon(
         venueId: String,
         code: String,
-        orderTotal: Double?
+        orderTotal: Double?,
+        customerId: String?,
     ): Result<CouponCode> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🎟️ [Coupon] Validating code: $code (venueId=$venueId)")
 
             val request = ValidateCouponRequest(
                 code = code,
-                orderTotal = orderTotal
+                orderTotal = orderTotal,
+                customerId = customerId,
             )
 
             val response = apiService.validateCoupon(venueId, request)
@@ -255,16 +257,19 @@ class DiscountRepositoryImpl @Inject constructor(
                 }
                 Result.success(coupon)
             } else {
-                val error = when (response.code()) {
-                    404 -> "Coupon code not found"
-                    else -> "Failed to validate coupon: HTTP ${response.code()}"
-                }
+                val error = mensajeDelRechazoDelCupon(response.code(), response.errorBody()?.string())
                 Timber.e("❌ $error")
                 Result.failure(Exception(error))
             }
+        } catch (e: java.io.IOException) {
+            // Nadie contestó ESTA petición: se dice que falta la conexión, nunca que el cupón no sirve (ni «Unable to resolve host»).
+            Timber.w(e, "🎟️ Sin respuesta al validar el cupón")
+            Result.failure(Exception(TEXTO_CUPON_SIN_RED_AL_VALIDAR, e))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "❌ Error validating coupon")
-            Result.failure(e)
+            Result.failure(Exception(TEXTO_NO_SE_PUDO_VALIDAR_EL_CUPON, e))
         }
     }
 
@@ -330,4 +335,14 @@ class DiscountRepositoryImpl @Inject constructor(
             Result.failure(e)
         }
     }
+}
+
+const val TEXTO_CUPON_SIN_RED_AL_VALIDAR = "Sin conexión: el cupón necesita internet para validarse. Reintenta cuando vuelva la conexión."
+const val TEXTO_NO_SE_PUDO_VALIDAR_EL_CUPON = "No se pudo validar el cupón. Intenta de nuevo."
+
+/** Un 4xx trae su razón en `message` (código muy corto, sin permiso…); un 5xx o un intermediario, sólo que no se pudo. */
+internal fun mensajeDelRechazoDelCupon(codigoHttp: Int, cuerpo: String?): String {
+    if (codigoHttp !in 400..499) return TEXTO_NO_SE_PUDO_VALIDAR_EL_CUPON
+    return runCatching { Gson().fromJson(cuerpo, JsonObject::class.java)?.get("message")?.asString }.getOrNull()
+        ?.takeIf { it.isNotBlank() } ?: TEXTO_NO_SE_PUDO_VALIDAR_EL_CUPON
 }

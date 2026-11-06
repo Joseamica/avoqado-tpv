@@ -65,17 +65,20 @@ fun DiscountConditionsDto.toDiscountConditions(): DiscountConditions {
  */
 fun CouponCodeDto.toCouponCode(): CouponCode {
     return CouponCode(
-        id = "",  // Not provided in validation response
-        code = "",  // Not provided in validation response
+        id = couponId.orEmpty(),
+        code = code.orEmpty(),
         name = discountName ?: "",
         type = discountType?.let { parseDiscountTypeNullable(it) } ?: DiscountType.PERCENTAGE,
-        value = BigDecimal.valueOf(discountValue ?: 0.0),
+        // Una cortesía regala la base entera: para el carrito es un 100 %. El SERVIDOR pide su permiso al crear la venta.
+        value = if (discountType.equals("COMP", ignoreCase = true)) BigDecimal(100) else BigDecimal.valueOf(discountValue ?: 0.0),
         usesRemaining = null,
         validFrom = null,
         validUntil = null,
         isValid = valid,
         invalidReason = if (!valid) message else null,
-        estimatedSavings = estimatedSavings?.let { BigDecimal.valueOf(it) }
+        estimatedSavings = estimatedSavings?.let { BigDecimal.valueOf(it) },
+        scope = scope,
+        maxDiscountAmount = maxDiscountAmount?.let { BigDecimal.valueOf(it) },
     )
 }
 

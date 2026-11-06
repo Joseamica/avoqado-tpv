@@ -172,6 +172,7 @@ data class TpvCreateOrderWithItemsRequest(
     @SerializedName("customerId") val customerId: String? = null,
     @SerializedName("discount") val discount: Double = 0.0,
     @SerializedName("orderDiscountId") val orderDiscountId: String? = null,
+    @SerializedName("couponCode") val couponCode: String? = null,
     @SerializedName("taxAmount") val taxAmount: Double = 0.0,
     @SerializedName("tip") val tip: Double = 0.0,
     @SerializedName("subtotal") val subtotal: Double,

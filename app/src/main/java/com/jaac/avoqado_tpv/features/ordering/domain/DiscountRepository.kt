@@ -117,7 +117,8 @@ interface DiscountRepository {
     suspend fun validateCoupon(
         venueId: String,
         code: String,
-        orderTotal: Double?
+        orderTotal: Double?,
+        customerId: String? = null,
     ): Result<CouponCode>
 
     /**

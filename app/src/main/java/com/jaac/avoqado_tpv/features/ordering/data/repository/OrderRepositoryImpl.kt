@@ -292,6 +292,7 @@ class OrderRepositoryImpl @Inject constructor(
                 customerId = request.customerId,
                 discount = request.discount.toDouble(),
                 orderDiscountId = request.orderDiscountId,
+                couponCode = request.couponCode,
                 taxAmount = request.taxAmount.toDouble(),
                 tip = request.tip.toDouble(),
                 subtotal = request.subtotal.toDouble(),
@@ -333,7 +334,9 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 val errorMessage = when (response.code()) {
-                    400 -> "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
+                    // D5: con cupón, la razón del SERVIDOR ya viene para la cajera (venció, se agotó, este cliente ya lo usó, cambió de valor).
+                    400 -> request.couponCode?.let { mensajeDelCuponRechazado(response.errorBody()?.string()) }
+                        ?: "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     403 -> "No tienes permiso para crear órdenes."
                     404 -> "Producto, descuento o staff no encontrado."
@@ -1010,3 +1013,8 @@ class OrderRepositoryImpl @Inject constructor(
         }
     }
 }
+
+/** La razón del rechazo de un cupón, tal como la escribió el SERVIDOR. Null si el cuerpo no es suyo (un intermediario). */
+internal fun mensajeDelCuponRechazado(cuerpo: String?): String? = runCatching {
+    com.google.gson.Gson().fromJson(cuerpo, com.google.gson.JsonObject::class.java)?.get("message")?.asString
+}.getOrNull()?.takeIf { it.isNotBlank() }

@@ -21,7 +21,14 @@ data class Discount(
     val scope: DiscountScope,
     val conditions: DiscountConditions?,
     val active: Boolean,
-    val requiresAuthorization: Boolean
+    val requiresAuthorization: Boolean,
+    /** Descuento máximo del catálogo, en pesos. Sin él, la pantalla rebajaba de más y el SERVIDOR rechazaba la venta. */
+    val maxDiscountAmount: BigDecimal? = null,
+    /**
+     * El código si este descuento salió de un cupón (D5, 5-nov). Viaja al crear la venta: el SERVIDOR lo revalida, calcula el monto y
+     * liga la fila, y el uso cuenta al quedar pagada.
+     */
+    val couponCode: String? = null,
 ) {
     /**
      * Formatted value display
@@ -66,7 +73,7 @@ data class Discount(
         return when (type) {
             DiscountType.PERCENTAGE -> subtotal.multiply(value).divide(BigDecimal(100))
             DiscountType.FIXED -> value.min(subtotal)  // Can't exceed subtotal
-        }
+        }.let { monto -> maxDiscountAmount?.let(monto::min) ?: monto }
     }
 
     /**
@@ -227,7 +234,10 @@ data class CouponCode(
     val validUntil: Instant?,
     val isValid: Boolean,
     val invalidReason: String?,
-    val estimatedSavings: BigDecimal? = null
+    val estimatedSavings: BigDecimal? = null,
+    /** D5: lo que el carrito necesita para calcular igual que el SERVIDOR. Null = servidor anterior a D5. */
+    val scope: String? = null,
+    val maxDiscountAmount: BigDecimal? = null,
 ) {
     /**
      * Formatted value display

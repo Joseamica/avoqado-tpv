@@ -50,6 +50,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsItem
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_CUPON_SIN_RED_AL_VALIDAR
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
 import com.jaac.avoqado_tpv.features.referrals.domain.model.ValidationResult as ReferralValidationResult
 import com.jaac.avoqado_tpv.features.referrals.domain.repository.ReferralValidationException
@@ -471,33 +472,44 @@ class CheckoutViewModel @Inject constructor(
      */
     suspend fun validateAndApplyCoupon(code: String): Result<Unit> {
         if (candado.rechaza("validar un cupón")) return Result.failure(VentaEnPreparacionException())
-        if (necesitaInternet()) return Result.failure(IllegalStateException("Necesita internet"))
+        if (necesitaInternet()) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED_AL_VALIDAR))
         val trimmed = code.trim().uppercase()
         if (trimmed.isEmpty()) {
             return Result.failure(IllegalArgumentException("Código requerido"))
         }
         val venueId = secureStorage.getVenueId()
             ?: return Result.failure(IllegalStateException("No venueId in secure storage"))
-        val cartTotal = _cartState.value.totalCents / 100.0
-        return discountRepository.validateCoupon(venueId, trimmed, cartTotal).fold(
+        if (!permissionsRepository.hasPermission("coupons:redeem")) {
+            return Result.failure(IllegalStateException("Tu sesión no tiene permiso para canjear cupones. Pide apoyo al gerente."))
+        }
+        // Contra lo que vale la venta sin el descuento de cuenta: la misma base que el monto. Y con su cliente: sin él no se mira su límite.
+        val cartTotal = _cartState.value.subtotalCents / 100.0
+        return discountRepository.validateCoupon(venueId, trimmed, cartTotal, _selectedCustomer.value?.id).fold(
             onSuccess = { coupon ->
                 if (necesitaInternet()) {
-                    Result.failure(IllegalStateException("Necesita internet"))
+                    Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED_AL_VALIDAR))
                 } else if (!coupon.isValid) {
-                    Result.failure(IllegalStateException(coupon.invalidReason ?: "Cupón inválido"))
+                    Result.failure(IllegalStateException(coupon.invalidReason ?: "Este cupón no es válido."))
+                } else if (coupon.scope != null && coupon.scope != "ORDER") {
+                    Result.failure(IllegalStateException("Este cupón sólo aplica a ciertos productos y todavía no se puede usar en caja."))
                 } else if (candado.rechaza("aplicar el cupón")) {
                     // La respuesta llegó con la venta ya preparándose: aplicarlo ahora cambiaría un carrito que ya viajó.
                     Result.failure(VentaEnPreparacionException())
                 } else {
+                    // El código de la respuesta; un servidor anterior a D5 no lo manda y sirve el que se escribió.
+                    val codigo = coupon.code.ifBlank { trimmed }
                     val asDiscount = Discount(
                         id = coupon.id,
-                        name = "Cupón ${coupon.code}",
+                        // El mismo nombre que le pone el SERVIDOR a la fila de la orden: lo que ve la cajera es lo que sale en el reporte.
+                        name = "${coupon.name} ($codigo)",
                         type = coupon.type,
                         value = coupon.value,
                         scope = com.jaac.avoqado_tpv.features.ordering.domain.DiscountScope.ORDER,
                         conditions = null,
                         active = true,
                         requiresAuthorization = false,
+                        maxDiscountAmount = coupon.maxDiscountAmount,
+                        couponCode = codigo,
                     )
                     _cartState.update {
                         it.copy(
@@ -1053,7 +1065,10 @@ class CheckoutViewModel @Inject constructor(
 
         val amountPesos = (current.totalCents / 100.0).toString()
         val hayRed = connectionStateManager.hasInternet()
-        return when (caminoDelCobro(current.hasProductItems, current.totalCents, hayRed)) {
+        // 🔴 D5: el cupón necesita al SERVIDOR: sin red no se guarda como venta local (se subiría como un descuento libre), se dice. Y un
+        // cobro rápido no tiene orden donde ligarlo: con cupón siempre hay orden, aunque sean puros importes.
+        if (current.couponCode != null && !hayRed) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED))
+        return when (caminoDelCobro(current.hasProductItems || current.couponCode != null, current.totalCents, hayRed)) {
             CaminoDelCobro.RAPIDO -> {
                 // Sin orden y sin carrito durable (como hoy). Un carrito a medias de un intento anterior ya no es esta venta.
                 secureStorage.getVenueId()?.let { ventaSinRed.borrarCarrito(it) }
@@ -1087,6 +1102,8 @@ class CheckoutViewModel @Inject constructor(
         val fallo = creada.exceptionOrNull()
         if (fallo != null) {
             if (!pasaALaVentaLocal(fallo)) return Result.failure(fallo) // 4xx, 500…: como hoy (el carrito y su llave se quedan)
+            // D5: el carrito y su llave se quedan: si la creación sí llegó, el reintento encuentra la misma orden.
+            if (current.couponCode != null) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED))
             Timber.w(fallo, "🛒 El servidor no contestó al crear la orden: sigue como venta local con la misma llave")
             return ventaLocal(current, amountPesos, llaveYaUsada = llave)
         }
@@ -1096,16 +1113,21 @@ class CheckoutViewModel @Inject constructor(
         // Persist the referral right before we hand off to PaymentScreen. Failures are swallowed: the cart already has the discount
         // applied, so blocking the charge over a transient backend failure would punish the customer for a backend hiccup.
         capturarReferido(orderId = order.id)
+        // D5 (Codex r1 #7): con cupón manda el total del SERVIDOR, que acepta un centavo de redondeo: ése se cobra, y sólo es cortesía si
+        // allá quedó en $0 (si no, la cuenta se quedaba debiendo $0.01 con la pantalla diciendo «completada»).
+        val totalDelServidor = order.total.takeIf { current.couponCode != null }
+        val gratis = totalDelServidor?.let { it.signum() == 0 } ?: (current.totalCents == 0)
+        val importe = totalDelServidor?.toPlainString() ?: amountPesos
         return Result.success(
-            if (current.totalCents == 0) {
+            if (gratis) {
                 PaymentNavigationPayload.CompletedFreeCart(
-                    amountPesosString = amountPesos,
+                    amountPesosString = importe,
                     orderId = order.id,
                     orderNumber = order.orderNumber,
                 )
             } else {
                 PaymentNavigationPayload.Order(
-                    amountPesosString = amountPesos,
+                    amountPesosString = importe,
                     orderId = order.id,
                     orderNumber = order.orderNumber,
                     wasPayLaterOrder = false,
@@ -1189,7 +1211,11 @@ class CheckoutViewModel @Inject constructor(
      */
     suspend fun createPayLaterOrder(): Result<Order> = candado.mientras {
         val current = _cartState.value
-        val error = if (!connectionStateManager.hasInternet()) "Necesita internet" else errorParaCobrar(current)
+        val error = if (!connectionStateManager.hasInternet()) {
+            if (current.couponCode != null) TEXTO_CUPON_SIN_RED else "Necesita internet"
+        } else {
+            errorParaCobrar(current)
+        }
         when {
             error != null -> Result.failure(IllegalStateException(error))
             current.isEmpty -> Result.failure(IllegalStateException("El carrito está vacío"))
@@ -1200,7 +1226,10 @@ class CheckoutViewModel @Inject constructor(
             // The backend createOrderWithItems endpoint already accepts customerId
             // and leaves the order in PENDING + PENDING when total > 0. That's
             // exactly the pay-later shape. No separate "leave open" flag needed.
-            else -> createOrderWithCurrentItems()
+            // D5 (Codex r2 #4): si el servidor no contestó con un cupón, se dice lo del cupón, como en Cobrar.
+            else -> createOrderWithCurrentItems().recoverCatching { fallo ->
+                throw if (current.couponCode != null && pasaALaVentaLocal(fallo)) IllegalStateException(TEXTO_CUPON_SIN_RED, fallo) else fallo
+            }
         }
     }
 
@@ -1246,7 +1275,9 @@ class CheckoutViewModel @Inject constructor(
         // as an unbacked reduction with no Discount entity. When predefined
         // is set, `discount` may stay 0 — the service recomputes from the
         // discount's value/type against the gross subtotal.
+        val cupon = current.couponCode
         val discountForWire = when {
+            cupon != null -> current.discountCents // el SERVIDOR lo recalcula y lo compara: si el cupón cambió, lo dice
             current.orderDiscount != null -> 0 // backend recomputes from id
             else -> current.manualDiscountCents
         }
@@ -1258,7 +1289,9 @@ class CheckoutViewModel @Inject constructor(
             source = "TPV",
             customerId = customerId,
             discount = discountForWire.centsToPesos(),
-            orderDiscountId = current.orderDiscount?.id,
+            // El id de un cupón no es de un descuento del catálogo: un id de cupón aquí era el 400 que no dejaba cobrar (D5).
+            orderDiscountId = current.orderDiscount?.id?.takeIf { cupon == null && it.isNotBlank() },
+            couponCode = cupon,
             taxAmount = BigDecimal.ZERO,
             tip = BigDecimal.ZERO,
             subtotal = grossSubtotalCents.centsToPesos(),
@@ -1526,3 +1559,6 @@ private fun Discount.toSaved(): SavedDiscount = SavedDiscount(
     typeName = type.name,
     value = value.toPlainString(),
 )
+
+/** 🔴 El cupón es online a propósito: necesita validarse. Sin red se dice, y se reintenta o se quita. El mismo texto que **ANDROID**. */
+const val TEXTO_CUPON_SIN_RED = "Sin conexión: el cupón necesita internet. Reintenta cuando vuelva la conexión, o quita el cupón para cobrar sin él."

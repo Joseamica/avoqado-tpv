@@ -89,6 +89,12 @@ data class DiscountConditionsDto(
  *   discountType?: string
  *   discountValue?: number
  *   estimatedSavings?: number
+ *   // D5, aditivos:
+ *   couponId?: string
+ *   code?: string
+ *   scope?: string
+ *   maxDiscountAmount?: number | null
+ *   errorCode?: string
  * }
  * ```
  */
@@ -109,7 +115,22 @@ data class CouponCodeDto(
     val discountValue: Double?,
 
     @SerializedName("estimatedSavings")
-    val estimatedSavings: Double?
+    val estimatedSavings: Double?,
+
+    @SerializedName("couponId")
+    val couponId: String? = null,
+
+    @SerializedName("code")
+    val code: String? = null,
+
+    @SerializedName("scope")
+    val scope: String? = null,
+
+    @SerializedName("maxDiscountAmount")
+    val maxDiscountAmount: Double? = null,
+
+    @SerializedName("errorCode")
+    val errorCode: String? = null,
 )
 
 /**
@@ -214,7 +235,11 @@ data class ValidateCouponRequest(
     val code: String,
 
     @SerializedName("orderTotal")
-    val orderTotal: Double?
+    val orderTotal: Double?,
+
+    /** Sin él, el SERVIDOR no puede mirar el límite por cliente. */
+    @SerializedName("customerId")
+    val customerId: String? = null,
 )
 
 // ==========================================

@@ -121,13 +121,20 @@ class AutorizacionDeGerenteTest {
     }
 
     @Test fun respuesta_de_id_viejo_no_completa_el_nuevo() = runTest {
-        val r = pide(); advanceUntilIdle()
-        val id = auth.prompt.value!!.id
-        auth.enviarPin(id + 99, "1234"); auth.cancelar(id + 99); advanceUntilIdle()
-        assertThat(r.isCompleted).isFalse()
-        assertThat(auth.prompt.value!!.id).isEqualTo(id)
-        coVerify(exactly = 0) { repo.pedirToken(any(), any(), any()) }
-        auth.cancelar(id); advanceUntilIdle()
+        val gate = CompletableDeferred<Result<String>>()
+        coEvery { repo.pedirToken("v1", "1234", "orders:comp") } coAnswers { gate.await() }
+        val a = pide("A"); advanceUntilIdle()
+        val idA = auth.prompt.value!!.id
+        auth.enviarPin(idA, "1234"); advanceUntilIdle()
+        auth.cancelar(idA); advanceUntilIdle()
+        assertThat(a.await()).isEqualTo(Autorizacion.Cancelada)
+        val b = pide("B"); advanceUntilIdle()
+        val idB = auth.prompt.value!!.id
+        gate.complete(Result.success("tok-A")); auth.enviarPin(idA, "1234"); auth.cancelar(idA); advanceUntilIdle()
+        assertThat(b.isCompleted).isFalse()
+        assertThat(auth.prompt.value!!.id).isEqualTo(idB)
+        coVerify(exactly = 1) { repo.pedirToken(any(), any(), any()) }
+        auth.cancelar(idB); advanceUntilIdle()
     }
 
     @Test fun cancelar_la_coroutine_que_espera_cierra_el_dialogo_y_libera() = runTest {
@@ -151,10 +158,34 @@ class AutorizacionDeGerenteTest {
     @Test fun pin_que_llega_despues_de_cancelarTodo_no_pide_token_ni_completa() = runTest {
         val r = pide(); advanceUntilIdle()
         val id = auth.prompt.value!!.id
-        auth.cancelarTodo(); advanceUntilIdle()
-        auth.enviarPin(id, "1234"); advanceUntilIdle()
+        auth.cancelarTodo()
+        auth.enviarPin(id, "1234")
+        advanceUntilIdle()
         assertThat(r.await()).isEqualTo(Autorizacion.Cancelada)
         coVerify(exactly = 0) { repo.pedirToken(any(), any(), any()) }
+    }
+
+    @Test fun cancelarTodo_cancela_la_activa_y_la_encolada_y_una_nueva_abre_normal() = runTest {
+        val a = pide("A"); advanceUntilIdle()
+        val b = pide("B"); advanceUntilIdle()
+        auth.cancelarTodo(); advanceUntilIdle()
+        assertThat(a.await()).isEqualTo(Autorizacion.Cancelada)
+        assertThat(b.await()).isEqualTo(Autorizacion.Cancelada)
+        assertThat(auth.prompt.value).isNull()
+        val c = pide("C"); advanceUntilIdle()
+        assertThat(auth.prompt.value!!.motivo).isEqualTo("C")
+        auth.enviarPin(auth.prompt.value!!.id, "1234"); advanceUntilIdle()
+        assertThat(c.await()).isEqualTo(Autorizacion.ConPin("tok-1"))
+    }
+
+    @Test fun excepcion_de_pedirToken_muestra_texto_generico_y_deja_abierto() = runTest {
+        coEvery { repo.pedirToken(any(), any(), any()) } coAnswers { throw RuntimeException("boom") }
+        val r = pide(); advanceUntilIdle()
+        auth.enviarPin(auth.prompt.value!!.id, "1234"); advanceUntilIdle()
+        assertThat(auth.prompt.value!!.error).isEqualTo("No se pudo autorizar. Intenta otra vez")
+        assertThat(auth.prompt.value!!.enviando).isFalse()
+        assertThat(r.isCompleted).isFalse()
+        auth.cancelarTodo(); advanceUntilIdle()
     }
 
     @Test fun forzar_pide_pin_aunque_tenga_permiso_e_invalida_la_cache() = runTest {

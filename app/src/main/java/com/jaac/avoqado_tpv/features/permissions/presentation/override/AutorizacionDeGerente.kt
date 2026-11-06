@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -47,7 +48,7 @@ class AutorizacionDeGerente @Inject constructor(
     private val turno = Mutex()
     private val ids = AtomicLong(0)
     private val epoca = AtomicLong(0)
-    private val actual = java.util.concurrent.atomic.AtomicReference<Solicitud?>(null)
+    private val actual = AtomicReference<Solicitud?>(null)
     private val _prompt = MutableStateFlow<PromptDePin?>(null)
     val prompt: StateFlow<PromptDePin?> = _prompt.asStateFlow()
 
@@ -59,21 +60,29 @@ class AutorizacionDeGerente @Inject constructor(
             return Autorizacion.NoHaceFalta
         }
         return turno.withLock {
-            if (epoca.get() != epocaAlLlegar) return@withLock Autorizacion.Cancelada
             val s = Solicitud(ids.incrementAndGet())
+            // actual antes de mirar la época: un cancelarTodo() concurrente siempre ve esta solicitud o ya cambió la época.
             actual.set(s)
-            _prompt.value = PromptDePin(s.id, motivo, null, false)
             try {
+                if (epoca.get() != epocaAlLlegar) return@withLock Autorizacion.Cancelada
+                _prompt.value = PromptDePin(s.id, motivo, null, false)
                 coroutineScope {
                     val worker = launch {
                         for (pin in s.pins) {
-                            val r = repo.pedirToken(venueId, pin, PERMISO_SERVIDOR)
+                            if (s.resultado.isCompleted) break
+                            val r = try {
+                                repo.pedirToken(venueId, pin, PERMISO_SERVIDOR)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Result.failure(e)
+                            }
                             r.getOrNull()?.let { s.resultado.complete(Autorizacion.ConPin(it)) }
                             if (r.isFailure) {
                                 val e = r.exceptionOrNull()
                                 val texto = (e as? ErrorDeAutorizacion)?.texto ?: GENERICO
-                                s.enviando.set(false)
                                 _prompt.update { p -> if (p?.id == s.id) p.copy(error = texto, enviando = false) else p }
+                                s.enviando.set(false)
                             }
                         }
                     }

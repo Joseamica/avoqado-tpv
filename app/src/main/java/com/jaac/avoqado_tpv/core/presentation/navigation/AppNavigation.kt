@@ -157,6 +157,7 @@ interface AppNavigationEntryPoint {
     // TableCheckoutViewModel, ver su KDoc).
     fun tablesRepository(): com.jaac.avoqado_tpv.features.tables.data.TablesRepository
     fun tableSession(): com.jaac.avoqado_tpv.features.tables.data.TableSession
+    fun autorizacionDeGerente(): com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 }
 
 /**
@@ -342,6 +343,7 @@ fun AppNavigation(
     val socketManager = remember { kioskEntryPoint.socketManager() }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
+    val autorizacionDeGerente = remember { kioskEntryPoint.autorizacionDeGerente() }
 
     // Durable approved-but-unregistered attempts catch up after reconnect. Unique
     // WorkManager KEEP scheduling prevents repeated connection callbacks piling up.
@@ -580,6 +582,8 @@ fun AppNavigation(
                     }
                     // Reset the expiring state after navigation completes
                     sessionManager.resetSessionExpiringState()
+                    // Nadie debe quedarse esperando el PIN de un gerente de la sesión que murió.
+                    autorizacionDeGerente.cancelarTodo()
                 }
                 is SessionEvent.TerminalDeactivated -> {
                     // 🥝 If in kiosk mode, exit it first before navigating
@@ -635,6 +639,29 @@ fun AppNavigation(
         }
         navController.addOnDestinationChangedListener(listener)
         onDispose { navController.removeOnDestinationChangedListener(listener); window.setRoute(null) }
+    }
+    // Cualquier cambio REAL de destino (cobro remoto, sesión vencida) cierra la espera del PIN.
+    // Se registra una sola vez: Android emite el destino actual al registrar, y esa primera emisión no cancela.
+    DisposableEffect(navController) {
+        var visto: String? = null
+        var yaVio = false
+        val listener = androidx.navigation.NavController.OnDestinationChangedListener { _, destination, _ ->
+            val ruta = destination.route
+            if (yaVio && ruta != visto) autorizacionDeGerente.cancelarTodo()
+            visto = ruta
+            yaVio = true
+        }
+        navController.addOnDestinationChangedListener(listener)
+        onDispose { navController.removeOnDestinationChangedListener(listener) }
+    }
+    // Diálogo del PIN de gerente: una sola vez, en la raíz y antes de los `return` del kiosco.
+    val promptDePin by autorizacionDeGerente.prompt.collectAsStateWithLifecycle()
+    promptDePin?.let { p ->
+        com.jaac.avoqado_tpv.features.permissions.presentation.override.PinDeGerenteDialog(
+            prompt = p,
+            onEnviar = { autorizacionDeGerente.enviarPin(p.id, it) },
+            onCancelar = { autorizacionDeGerente.cancelar(p.id) },
+        )
     }
     val applyingCommand by com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.executing.collectAsStateWithLifecycle()
     if (applyingCommand) {

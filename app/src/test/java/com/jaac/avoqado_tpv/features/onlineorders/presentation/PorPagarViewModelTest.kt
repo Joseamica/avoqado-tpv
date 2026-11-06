@@ -349,8 +349,9 @@ class PorPagarViewModelTest {
 
         assertThat(abrio).isFalse()
         assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_CON_TARJETA_SIN_REGISTRAR)
-        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Este folio tiene un cobro con tarjeta que todavía no se registra")
-        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que se registre o pídele a un gerente que lo revise.")
+        // R91: honesto; en el aparato no hay camino para que un gerente lo «revise».
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("La tarjeta de este folio ya se aprobó")
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("La terminal lo está registrando. No lo cobres otra vez.")
         coVerify(exactly = 0) { folios.listar(any(), any()) }
     }
 

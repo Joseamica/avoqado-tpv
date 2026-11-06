@@ -115,4 +115,20 @@ class CobroDelFolioEnColaRoomTest {
         assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-folio")).isFalse()
         assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-cola")).isFalse()
     }
+
+    @Test
+    fun `R91 un cobro de ord-folio no frena la venta ord (id prefijo)`() = runTest {
+        intento("a1", "REGISTRO_FALLIDO", orderId = "ord-folio")
+
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord")).isFalse()
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-folio")).isTrue()
+    }
+
+    @Test
+    fun `R91 un cobro de ord no frena la venta ord-folio (id prefijo, al reves)`() = runTest {
+        intento("a1", "REGISTRO_FALLIDO", orderId = "ord")
+
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord-folio")).isFalse()
+        assertThat(libreta().hayDineroEnJuegoDeLaVenta("ord")).isTrue()
+    }
 }

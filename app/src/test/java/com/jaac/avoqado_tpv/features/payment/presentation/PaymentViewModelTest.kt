@@ -346,6 +346,7 @@ class PaymentViewModelTest {
         proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
         despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
         orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator = mockk(relaxed = true),
+        printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager = mockk(relaxed = true),
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -375,7 +376,7 @@ class PaymentViewModelTest {
             authRepository = mockAuthRepository,
             paymentQueueRepository = mockPaymentQueueRepository,
             refundQueueRepository = mockRefundQueueRepository,
-            printerManager = mockk(relaxed = true),
+            printerManager = printerManager,
             socketManager = mockSocketManager,
             shiftRepository = mockShiftRepository,
             orderRepository = mockk(relaxed = true),
@@ -3938,5 +3939,119 @@ class PaymentViewModelTest {
         coVerify(exactly = 1) {
             mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // R91 (re-revisión de P4)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `R91 salir del exito a media espera del registro igual acepta el folio y prueba la comanda`() = runTest(testDispatcher) {
+        // El POST es NonCancellable y la libreta marca REGISTRADO, pero el candado de la cuenta (`updateOrderMerchant`) es un
+        // withContext(IO) cancelable: con la pantalla ya ida truena al entrar. Si `alConfirmarse` iba después, el folio no se
+        // aceptaba y la cocina no se enteraba.
+        val compuerta = CompletableDeferred<Unit>()
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } coAnswers { compuerta.await(); Result.success(reciboDelFolio()) }
+        // La libreta de verdad: runCatching { withContext(NonCancellable + IO) { … } } (se escribe y se traga la cancelación).
+        coEvery { mockPaymentAttemptLedger.markRecorded(any()) } coAnswers {
+            runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { } }
+            Unit
+        }
+        val coordinador = mockk<com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator>(relaxed = true)
+        coEvery { coordinador.updateOrderMerchant(any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.withContext(Dispatchers.IO) { kotlinx.coroutines.delay(50) }
+        }
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val viewModel = createViewModel(despuesDeCobrarFolio = despues, orderSyncCoordinator = coordinador)
+        seedAuthenticatedSession(viewModel)
+        abrirCobroDelFolio(viewModel)
+        sembrarLlaveDelIntento(viewModel)
+        forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+        invokeHandlePaymentSuccess(viewModel) // el POST se queda esperando
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // La cajera sale del éxito con el registro en vuelo.
+        viewModel.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(viewModel)
+        compuerta.complete(Unit) // el POST termina
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(timeout = 2000, exactly = 1) { coordinador.updateOrderMerchant(any(), any(), any()) } // sí llegó al candado
+        verify(exactly = 1) { despues.alConfirmarse(folioP4) }
+    }
+
+    @Test
+    fun `R91 dos toques en Imprimir mientras la comanda tiene la impresora imprimen UN recibo`() = runTest {
+        // La comanda de apoyo del folio tiene el candado de la impresora: revisar la impresora espera. Mientras tanto el botón
+        // debe decir «...» (y no aceptar otro toque), o salen dos recibos.
+        val candado = java.util.concurrent.CountDownLatch(1)
+        val recibos = java.util.concurrent.atomic.AtomicInteger()
+        val impresora = mockk<com.jaac.avoqado_tpv.core.printer.PrinterManager>(relaxed = true)
+        every { impresora.checkPrinterStatus() } answers {
+            candado.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            com.jaac.avoqado_tpv.core.printer.PrinterStatusResult(0, true, true, message = "Lista")
+        }
+        every { impresora.printReceipt(
+            receiptUrl = any(), amount = any(), authCode = any(), tipAmount = any(), cardDetails = any(), referenceNumber = any(),
+            venueName = any(), venueLogoUrl = any(), venueLegalName = any(), venueRfc = any(), venueAddress = any(), venueCity = any(),
+            venueState = any(), venueZipCode = any(), staffName = any(), orderNumber = any(), orderItems = any(), discountAmount = any(),
+            isRefund = any(), isPortabilidad = any(), serialNumber = any(), categoryName = any(), autofacturaAvailable = any(),
+            serviceChargeAmount = any(), ventaGuardadaSinConexion = any(),
+        ) } answers { recibos.incrementAndGet(); Result.success(Unit) }
+        val viewModel = createViewModel(printerManager = impresora)
+        try {
+            forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+
+            viewModel.printReceipt()
+            val ocupadoMientrasEspera = viewModel.isPrinting.value
+            viewModel.printReceipt() // segundo toque, con la comanda todavía imprimiendo
+            candado.countDown()
+
+            val limite = System.currentTimeMillis() + 5000
+            while ((recibos.get() == 0 || viewModel.isPrinting.value) && System.currentTimeMillis() < limite) Thread.sleep(20)
+            Thread.sleep(300) // deja terminar un posible segundo recibo
+
+            assertThat(recibos.get()).isEqualTo(1)
+            assertThat(ocupadoMientrasEspera).isTrue()
+            assertThat(viewModel.isPrinting.value).isFalse()
+        } finally {
+            candado.countDown()
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `R91 si la pantalla se va antes de que arranque el registro de una devolucion no grita un fallo falso y suelta las banderas`() {
+        // ATOMIC arranca el cuerpo con el alcance ya cancelado, y su primera suspensión cancelable (restaurarContextoDelIntento,
+        // un getById de Room) truena con CancellationException. Eso no es un fallo del registro: no debe salir la alerta crítica
+        // «RefundRecordingCrashed». El registro no se intenta aquí; el `finally` igual baja las banderas.
+        val vm = refundReady()
+        coEvery { mockShiftRepository.restaurarContextoDelIntento(any()) } coAnswers {
+            val contexto = firstArg<PaymentContext>()
+            kotlinx.coroutines.withContext(Dispatchers.IO) { contexto }
+        }
+        val programador = kotlinx.coroutines.test.TestCoroutineScheduler()
+        Dispatchers.setMain(kotlinx.coroutines.test.StandardTestDispatcher(programador))
+        val enVuelo = PaymentViewModel::class.java.getDeclaredField("recordingInFlight").apply { isAccessible = true }
+        enVuelo.setBoolean(vm, true) // quien publica el éxito de la devolución reclama el registro
+        paymentStateHolder.setCharging(true)
+
+        vm.handleRefundSuccessForTest(
+            saleData = null, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, seedState = exitoSembrado(),
+        ) // PROGRAMA la corrutina (todavía no corre)
+        vm.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+        assertThat(paymentStateHolder.isCharging()).isTrue()
+
+        programador.advanceUntilIdle()
+        var vueltas = 0
+        while (paymentStateHolder.isCharging() && vueltas++ < 100) { programador.advanceUntilIdle(); Thread.sleep(20) }
+
+        assertThat(paymentStateHolder.isCharging()).isFalse()
+        assertThat(enVuelo.getBoolean(vm)).isFalse()
+        verify(exactly = 0) { observabilityManager.logCritical("RefundRecordingCrashed", any(), any(), any()) }
+        coVerify(exactly = 0) { mockRecordRefundUseCase(any(), any(), any(), any(), any()) }
     }
 }

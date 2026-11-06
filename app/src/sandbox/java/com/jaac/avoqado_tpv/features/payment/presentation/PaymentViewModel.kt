@@ -8366,6 +8366,10 @@ class PaymentViewModel @Inject constructor(
                     // 📒 [Libreta] REGISTRADO — the backend owns the money record from here on.
                     context.idempotencyKey?.let { authorizationUnresolved = false
                         paymentAttemptLedger.markRecorded(it) }
+                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                    // R91: justo después de la libreta, como el efectivo. El candado de la cuenta de abajo (`updateOrderMerchant`)
+                    // es un withContext(IO) cancelable: si la pantalla ya se fue, truena al entrar y lo que sigue no corre.
+                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
 
@@ -8380,9 +8384,6 @@ class PaymentViewModel @Inject constructor(
                             merchantAccountName = _currentMerchant.value?.displayName
                         )
                     }
-
-                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
-                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
 
                     // 🎫 Update Success state with receipt + card details (QR, WhatsApp, Email, printing)
                     applyRecordedReceiptToSuccessState(
@@ -8503,7 +8504,9 @@ class PaymentViewModel @Inject constructor(
         entryMode: CardEntryMode,
     ) {
         // 🔒 R89: ATOMIC, igual que handlePaymentSuccess: quien publica Success reclamó recordingInFlight y sólo este `finally`
-        // cierra la ventana del dinero; la devolución ya salió y su registro tiene que intentarse aunque la pantalla se vaya.
+        // cierra la ventana del dinero, así que tiene que correr aunque la pantalla se vaya antes de que esto arranque.
+        // R91: en esa ventana el registro de la devolución NO se intenta: la primera suspensión cancelable
+        // (restaurarContextoDelIntento, un getById de Room) truena con la cancelación. ATOMIC sólo garantiza que las banderas bajen.
         viewModelScope.launch(start = CoroutineStart.ATOMIC) {
             var referenciaParaAviso = "sin referencia"
             try {
@@ -8724,6 +8727,10 @@ class PaymentViewModel @Inject constructor(
                     refundAttemptIdClear = true
                 )
 
+            } catch (e: CancellationException) {
+                // R91: la pantalla se fue (p. ej. antes de que esto arrancara); no es un fallo del registro, así que no va
+                // como «RefundRecordingCrashed». El `finally` de abajo SIGUE corriendo y baja las banderas.
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Refund Recording] Unexpected error")
                 // 🔴 Auditoría de Codex F2: el `catch` sólo limpiaba el contexto — el reembolso aprobado
@@ -9256,6 +9263,12 @@ class PaymentViewModel @Inject constructor(
             Timber.i("📄 [Print] No receipt from backend - will print generic receipt with payment data")
         }
 
+        // R91: «Imprimiendo» desde el toque, ANTES de revisar la impresora: esa revisión espera el candado si la comanda de
+        // apoyo de un folio está imprimiendo, y sin la bandera el botón seguía activo (dos toques = dos recibos).
+        if (!_isPrinting.compareAndSet(false, true)) {
+            Timber.d("🖨️ [Print] Ya hay una impresión en curso - se ignora el toque")
+            return
+        }
         val ventaGuardada = ventaLocal
         viewModelScope.launch {
             try {
@@ -9303,9 +9316,6 @@ class PaymentViewModel @Inject constructor(
                     )
                     return@launch
                 }
-
-                // 🖨️ Set printing state (button shows "Imprimiendo..." instead of separate screen)
-                _isPrinting.value = true
 
                 val result = if (ventaGuardada != null) {
                     com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada.imprimirEnPax(
@@ -9361,6 +9371,8 @@ class PaymentViewModel @Inject constructor(
                     message = "Error inesperado al imprimir: ${e.message}",
                     previousState = currentState
                 )
+            } finally {
+                _isPrinting.value = false // también en las salidas tempranas (sin papel, no lista, sin productos)
             }
         }
     }

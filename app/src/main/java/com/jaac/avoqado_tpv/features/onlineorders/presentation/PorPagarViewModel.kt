@@ -114,10 +114,11 @@ object TextosPorPagar {
     )
     /** R83: esta terminal está cobrando o registrando una tarjeta (la tarjeta no tiene fila en la cola hasta que su registro falla). */
     val COBRO_EN_CURSO = AvisoDeFolio("Hay un cobro en curso en esta terminal", "Espera a que termine.")
-    /** R89: la libreta tiene un cobro con tarjeta de esta cuenta aprobado y sin registrar (p. ej. el registro falló tras salir del éxito). */
+    /** R89: la libreta tiene un cobro con tarjeta de esta cuenta aprobado y sin registrar (p. ej. el registro falló tras salir del éxito).
+     *  R91: en el aparato no hay un camino para que un gerente lo «revise», así que el aviso no manda a nadie. */
     val COBRO_CON_TARJETA_SIN_REGISTRAR = AvisoDeFolio(
-        "Este folio tiene un cobro con tarjeta que todavía no se registra",
-        "Espera a que se registre o pídele a un gerente que lo revise.",
+        "La tarjeta de este folio ya se aprobó",
+        "La terminal lo está registrando. No lo cobres otra vez.",
     )
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
     val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")

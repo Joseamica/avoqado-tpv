@@ -25,6 +25,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.features.onlineorders.presentation.FolioDelCobro
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +84,8 @@ fun MerchantSelectionContent(
     // 💵 D2 «Cobrar sin red» (21-oct-2026): no nulo ⇒ sólo efectivo. Tarjeta, MSI y cripto en gris con este
     // texto debajo; el efectivo sigue encendido y la lista de cuentas no se muestra (el efectivo no la usa).
     motivoSinTarjeta: String? = null,
+    // 🧾 Tienda híbrida (mockup 2d): «Folio W7K3P · Ana» bajo el monto cuando se cobra un folio.
+    folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
 ) {
     // D20 (N86, 4-nov): tras «Reintentar», el segundo toque de un doble toque caía en esta lista y elegía OTRA cuenta de cobro. Los toques
     // del primer segundo después de abrirla no cuentan: ni eligen cuenta ni arrancan un cobro.
@@ -177,6 +180,7 @@ fun MerchantSelectionContent(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                folio?.let { FolioDelCobro(it, Modifier.padding(top = 8.dp)) }
 
                                 if (hasTip) {
                                     Spacer(modifier = Modifier.height(8.dp))
@@ -221,6 +225,7 @@ fun MerchantSelectionContent(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            folio?.let { FolioDelCobro(it, Modifier.padding(top = 6.dp)) }
 
                             if (hasTip) {
                                 Spacer(modifier = Modifier.height(6.dp))

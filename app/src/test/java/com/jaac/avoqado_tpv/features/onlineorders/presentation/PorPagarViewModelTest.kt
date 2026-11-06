@@ -252,6 +252,35 @@ class PorPagarViewModelTest {
     }
 
     @Test
+    fun `Cobrar sigue ocupado hasta que se abre el cobro (lector listo)`() = runTest {
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(sofia)))
+        val vm = vm()
+        var ocupadoAlAbrir = false
+
+        val apertura = vm.cobrar(sofia) { ocupadoAlAbrir = "b" in vm.ui.value.ocupados }
+
+        assertThat(apertura!!.initialAmount).isEqualTo("85.00")
+        assertThat(ocupadoAlAbrir).isTrue()
+        assertThat(vm.ui.value.ocupados).isEmpty()
+    }
+
+    @Test
+    fun `cada vez que la pantalla vuelve a verse pide la lista otra vez`() = runTest {
+        val vm = vm()
+        vm.pantallaVisible()
+        vm.pantallaVisible()
+        verify(exactly = 2) { vigia.sondearYa() }
+    }
+
+    @Test
+    fun `el cobro de un folio dice de que folio es bajo el monto`() {
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana")).isEqualTo("Folio W7K3P · Ana")
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", null)).isEqualTo("Folio W7K3P")
+    }
+
+    @Test
     fun `si otra caja abono mientras estaba abierto, cobra lo que falta ahora`() = runTest {
         val ana = folio("a", total = "134.00")
         cargado(porPagar = listOf(ana))

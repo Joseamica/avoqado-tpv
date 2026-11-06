@@ -1247,7 +1247,7 @@ fun AppNavigation(
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
                 estadoDeFolios = estadoDeFolios,
-                onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) },
+                onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
                 onStartPaymentWithAmount = { amount ->
                     launchHomeAction action@ {
                         if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
@@ -1424,31 +1424,28 @@ fun AppNavigation(
         composable(NavRoute.PorPagar.route) { porPagarEntry ->
             val porPagarViewModel: com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel = hiltViewModel()
             // Volvió de un cobro que terminó: se ve la lista (el folio ya pasó a «Por entregar»), no el folio cobrado.
-            if (porPagarEntry.savedStateHandle.get<Boolean>(FOLIO_COBRADO) == true) {
-                porPagarEntry.savedStateHandle.remove<Boolean>(FOLIO_COBRADO)
-                LaunchedEffect(Unit) { porPagarViewModel.cobroTerminado() }
+            LaunchedEffect(Unit) {
+                if (porPagarEntry.savedStateHandle.remove<Boolean>(FOLIO_COBRADO) == true) porPagarViewModel.cobroTerminado()
             }
-            val porPagarScope = rememberCoroutineScope()
             com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarScreen(
                 onBack = { navController.safePopBackStack() },
-                onCobrar = { apertura ->
-                    porPagarScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Folio payment")) return@launch
-                        // Un segundo toque mientras se preparaba el lector no abre otro cobro.
-                        if (navController.currentDestination?.route != NavRoute.PorPagar.route) return@launch
-                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            clearPaymentArgs(handle)
-                            handle["initialAmount"] = apertura.initialAmount
-                            handle["orderId"] = apertura.orderId
-                            handle["orderNumber"] = apertura.orderNumber
-                            handle["splitType"] = apertura.splitType
-                            // La cuenta del folio vive sólo en el servidor (no en la base del aparato), como la del cobro remoto.
-                            handle["skipLocalOrderValidation"] = true
-                            handle["folio"] = apertura.folio
-                        }
-                        Timber.d("🧾 [Folios] Cobro del folio ${apertura.orderNumber}: falta ${apertura.initialAmount} | nexgo=${isAppToAppPayment()}")
-                        navController.navigate(getPaymentRoute())
+                // Suspende hasta abrir el cobro: «Cobrar» sigue ocupado mientras se prepara el lector.
+                onCobrar = abrir@{ apertura ->
+                    if (!awaitPaxPaymentReady(context, initializationManager, "Folio payment")) return@abrir
+                    // Un segundo toque mientras se preparaba el lector no abre otro cobro.
+                    if (navController.currentDestination?.route != NavRoute.PorPagar.route) return@abrir
+                    navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
+                        clearPaymentArgs(handle)
+                        handle["initialAmount"] = apertura.initialAmount
+                        handle["orderId"] = apertura.orderId
+                        handle["orderNumber"] = apertura.orderNumber
+                        handle["splitType"] = apertura.splitType
+                        // La cuenta del folio vive sólo en el servidor (no en la base del aparato), como la del cobro remoto.
+                        handle["skipLocalOrderValidation"] = true
+                        handle["folio"] = apertura.folio
                     }
+                    Timber.d("🧾 [Folios] Cobro del folio ${apertura.orderNumber}: falta ${apertura.initialAmount} | nexgo=${isAppToAppPayment()}")
+                    navController.navigate(getPaymentRoute())
                 },
                 viewModel = porPagarViewModel,
             )
@@ -2021,6 +2018,7 @@ fun AppNavigation(
                 soloEfectivo = soloEfectivo,  // 💵 D2 «Cobrar sin red»
                 ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
                 newOrderLabel = if (folio != null) "Pedidos por pagar" else null,
+                folio = folio,
                 // 🥝 KIOSK MODE PARAMS
                 isKioskPayment = isKioskPayment,
                 onKioskPaymentSuccess = if (isKioskPayment) { displayOrderNumber, receipt, orderItems ->
@@ -3053,6 +3051,7 @@ fun AppNavigation(
                 socketRequestId = socketRequestId,
                 soloEfectivo = soloEfectivo,
                 ventaLocalJson = argumentosDelCobro.get<String>("ventaLocalJson"),
+                folio = folio,
                 onNavigateBack = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
                     if (folio != null) {

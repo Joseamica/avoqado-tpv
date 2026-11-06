@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.onlineorders.data
 
+import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.Body
@@ -103,6 +104,9 @@ data class ItemDto(
     @SerializedName("quantity") val quantity: Int?,
     @SerializedName("note") val note: String?,
     @SerializedName("modifiers") val modifiers: List<ModifierDto?>?,
+    // R76: precio por renglón en PESOS, opcional (un SERVIDOR viejo no lo manda). Llega crudo: un valor raro no tumba la lista.
+    @SerializedName("unitPrice") val unitPrice: JsonElement? = null,
+    @SerializedName("total") val total: JsonElement? = null,
 )
 
 data class ModifierDto(@SerializedName("name") val name: String?, @SerializedName("quantity") val quantity: Int?)

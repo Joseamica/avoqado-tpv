@@ -162,6 +162,40 @@ class FoliosRepositoryTest {
         assertThat(server.takeRequest().path).isEqualTo("/api/v1/tpv/venues/v1/online-orders/cord3/delivered")
     }
 
+    /** R76: precio por renglón opcional, en pesos. Si falta queda null; un valor raro no tumba la lista. */
+    @Test
+    fun `precio por renglon opcional y leido sin tumbar la lista`() = runTest {
+        server.enqueue(
+            json(
+                """
+                {"success":true,"data":{"showTile":true,"counts":{"toPay":1,"toDeliver":0},"toDeliver":[],
+                  "toPay":[{"orderId":"cord1","orderNumber":"W7K3P","customerName":"Ana","total":134,"remaining":134,"items":[
+                    {"name":"Latte","quantity":1,"unitPrice":65,"total":65.00,"modifiers":[{"name":"Leche de almendra","quantity":1}]},
+                    {"name":"Shake de proteína","quantity":2,"unitPrice":"34.50"},
+                    {"name":"Galleta","quantity":1},
+                    {"name":"Raro","quantity":1,"unitPrice":"abc","total":{"x":1}},
+                    {"name":"Nulo","quantity":1,"unitPrice":null,"total":null}
+                  ]}]}}
+                """.trimIndent(),
+            ),
+        )
+
+        val renglones = repo.listar("v1", puedeCobrar = false).getOrThrow().porPagar.single().productos
+
+        assertThat(renglones[0].precioUnitario).isEqualTo(BigDecimal("65.00"))
+        assertThat(renglones[0].total).isEqualTo(BigDecimal("65.00"))
+        assertThat(renglones[0].precioDelRenglon).isEqualTo(BigDecimal("65.00"))
+        // Sin total: la pieza por la cantidad.
+        assertThat(renglones[1].total).isNull()
+        assertThat(renglones[1].precioDelRenglon).isEqualTo(BigDecimal("69.00"))
+        // Un SERVIDOR sin R76, un valor raro o null: sin precio, y la lista sigue.
+        listOf(renglones[2], renglones[3], renglones[4]).forEach {
+            assertThat(it.precioUnitario).isNull()
+            assertThat(it.total).isNull()
+            assertThat(it.precioDelRenglon).isNull()
+        }
+    }
+
     @Test
     fun `aceptar manda un cuerpo vacio y cancelar usa la cuenta`() = runTest {
         server.enqueue(json("""{"success":true,"data":{}}"""))

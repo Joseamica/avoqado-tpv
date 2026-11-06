@@ -18,7 +18,14 @@ data class FolioProducto(
     val cantidad: Int,
     val nota: String?,
     val extras: List<FolioModificador>,
-) : java.io.Serializable
+    /** R76: precio por pieza y total del renglón en pesos; null si el SERVIDOR no los manda. */
+    val precioUnitario: BigDecimal? = null,
+    val total: BigDecimal? = null,
+) : java.io.Serializable {
+    /** Lo que se pinta a la derecha del renglón: su total, o la pieza por la cantidad; null si no hay precio. */
+    val precioDelRenglon: BigDecimal?
+        get() = total ?: precioUnitario?.multiply(BigDecimal(cantidad))?.setScale(2, RoundingMode.HALF_UP)
+}
 
 /**
  * Lo que el cobro de un folio lleva consigo (llave `folio` de las pantallas de cobro): basta para aceptarlo e imprimir su

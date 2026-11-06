@@ -156,6 +156,7 @@ fun PaymentScreen(
     soloEfectivo: Boolean = false,  // 💵 D2: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar)
     ventaLocalJson: String? = null,
     newOrderLabel: String? = null,  // 🧾 Tienda híbrida: el botón tras cobrar un folio dice a dónde lleva («Pedidos por pagar»)
+    folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,  // 🧾 el cobro es de este folio (mockup 2d)
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -567,6 +568,7 @@ fun PaymentScreen(
                         routingBannerMessage = routingBanner,
                         // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta, MSI y cripto en gris con el motivo)
                         motivoSinTarjeta = currentState.motivoSinTarjeta,
+                        folio = folio,
                     )
                 }
 

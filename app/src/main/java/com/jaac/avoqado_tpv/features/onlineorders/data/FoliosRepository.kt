@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.onlineorders.data
 
+import com.google.gson.JsonElement
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
@@ -123,11 +124,17 @@ private fun FolioDto.aFolio(): Folio? {
                 cantidad = i.quantity ?: 1,
                 nota = i.note?.takeIf { it.isNotBlank() },
                 extras = i.modifiers.orEmpty().filterNotNull().map { FolioModificador(it.name.orEmpty(), it.quantity ?: 1) },
+                precioUnitario = i.unitPrice.aPesos(),
+                total = i.total.aPesos(),
             )
         },
     )
 }
 
 private fun BigDecimal.enPesos(): BigDecimal = setScale(2, RoundingMode.HALF_UP)
+
+/** Un número (o texto numérico) en pesos con 2 decimales; null si falta, es null o no es un número. Sin pasar por Double. */
+private fun JsonElement?.aPesos(): BigDecimal? =
+    this?.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asBigDecimal.enPesos() }.getOrNull() }
 
 private fun String?.aInstante(): Instant? = this?.let { runCatching { Instant.parse(it) }.getOrNull() }

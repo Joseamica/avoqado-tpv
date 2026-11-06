@@ -35,6 +35,9 @@ import javax.inject.Inject
 object TextosPorPagar {
     const val TITULO = "Pedidos por pagar"
     fun tituloFolio(folio: String) = "Folio $folio"
+    /** Mockup 2d: bajo el monto de «Método de pago» al cobrar un folio. */
+    fun folioDelCobro(folio: String, nombre: String?) =
+        "Folio $folio" + (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")
     const val BUSCAR = "Folio o nombre"
     const val POR_PAGAR = "Por pagar"
     const val POR_ENTREGAR = "Por entregar"
@@ -184,8 +187,13 @@ class PorPagarViewModel @Inject constructor(
             val cancelar = permisos.hasPermission("orders:cancel-unpaid")
             local.update { it.copy(puedeEntregar = entregar, puedeCancelar = cancelar) }
         }
-        vigia.sondearYa()
     }
+
+    /**
+     * Cada vez que la pantalla vuelve a verse (también al regresar de un cobro): el vigía pregunta ya. Así un folio recién
+     * cobrado aquí no sigue enseñando «Cobrar» hasta la siguiente vuelta.
+     */
+    fun pantallaVisible() = vigia.sondearYa()
 
     fun buscar(texto: String) = local.update { it.copy(busqueda = texto) }
     fun abrir(folio: Folio) = local.update { it.copy(seleccionado = folio) }
@@ -209,14 +217,15 @@ class PorPagarViewModel @Inject constructor(
 
     /**
      * Relee el folio en el SERVIDOR antes de abrir el cobro (diseño §5): sólo si sigue por pagar devuelve la apertura, con lo
-     * que falta AHORA. Vencido, ya pagado, cancelado o sin respuesta: deja su aviso y devuelve null (no empieza ningún cobro).
+     * que falta AHORA, y llama [abrir] con ella. Vencido, ya pagado, cancelado o sin respuesta: deja su aviso y devuelve null
+     * (no empieza ningún cobro). El folio sigue ocupado («Cobrar» en espera) hasta que [abrir] termina (el lector listo).
      */
-    suspend fun cobrar(folio: Folio): AperturaDeCobro? {
+    suspend fun cobrar(folio: Folio, abrir: suspend (AperturaDeCobro) -> Unit = {}): AperturaDeCobro? {
         if (vigia.estado.value.sinConexion) return null
         val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return null
         if (!ocupar(folio.orderId)) return null
         try {
-            return releer(venueId, folio)
+            return releer(venueId, folio)?.also { abrir(it) }
         } finally {
             local.update { it.copy(ocupados = it.ocupados - folio.orderId) }
         }

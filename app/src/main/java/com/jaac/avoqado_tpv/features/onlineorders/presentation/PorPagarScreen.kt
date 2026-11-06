@@ -70,11 +70,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Warning
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
@@ -96,7 +98,8 @@ import java.time.ZoneOffset
 @Composable
 fun PorPagarScreen(
     onBack: () -> Unit,
-    onCobrar: (AperturaDeCobro) -> Unit,
+    /** Abre el cobro de siempre; suspende hasta que el lector está listo («Cobrar» sigue ocupado mientras). */
+    onCobrar: suspend (AperturaDeCobro) -> Unit,
     viewModel: PorPagarViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
@@ -110,6 +113,11 @@ fun PorPagarScreen(
         }
     }
     BackHandler(enabled = ui.seleccionado != null) { viewModel.cerrarFolio() }
+    // Cada vez que vuelve a verse (también al regresar de un cobro), la lista se pide ya.
+    LifecycleResumeEffect(Unit) {
+        viewModel.pantallaVisible()
+        onPauseOrDispose { }
+    }
     PorPagarContenido(
         ui = ui,
         ahoraMs = ahoraMs,
@@ -117,7 +125,7 @@ fun PorPagarScreen(
         onBack = { if (ui.seleccionado != null) viewModel.cerrarFolio() else onBack() },
         onBuscar = viewModel::buscar,
         onAbrir = viewModel::abrir,
-        onCobrar = { folio -> scope.launch { viewModel.cobrar(folio)?.let(onCobrar) } },
+        onCobrar = { folio -> scope.launch { viewModel.cobrar(folio, onCobrar) } },
         onCancelar = viewModel::cancelar,
         onListo = viewModel::listo,
         onEntregado = viewModel::entregado,
@@ -467,10 +475,14 @@ private fun FolioDetalle(
 @Composable
 private fun Renglon(p: FolioProducto) {
     val apagado = MaterialTheme.colorScheme.onSurfaceVariant
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
-        Text("${p.cantidad} × ${p.nombre}", fontSize = 16.sp)
-        p.extras.forEach { x -> Text(if (x.cantidad > 1) "${x.cantidad} × ${x.nombre}" else x.nombre, fontSize = 13.sp, color = apagado) }
-        p.nota?.let { Text("${TextosPorPagar.NOTA} $it", fontSize = 13.sp, color = apagado) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text("${p.cantidad} × ${p.nombre}", fontSize = 16.sp)
+            p.extras.forEach { x -> Text(if (x.cantidad > 1) "${x.cantidad} × ${x.nombre}" else x.nombre, fontSize = 13.sp, color = apagado) }
+            p.nota?.let { Text("${TextosPorPagar.NOTA} $it", fontSize = 13.sp, color = apagado) }
+        }
+        // R76: el precio del renglón sólo si el SERVIDOR lo manda.
+        p.precioDelRenglon?.let { Text(dinero(it), fontSize = 16.sp) }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 }
@@ -478,6 +490,23 @@ private fun Renglon(p: FolioProducto) {
 // endregion
 
 // region — piezas
+
+/** Mockup 2d: «Folio W7K3P · Ana» bajo el monto de «Método de pago» (PAX y Nexgo), con el folio espaciado (R61). */
+@Composable
+fun FolioDelCobro(folio: ComandaDeFolio, modifier: Modifier = Modifier) {
+    val texto = TextosPorPagar.folioDelCobro(folio.orderNumber, folio.nombre)
+    val inicio = "Folio ".length
+    Text(
+        buildAnnotatedString {
+            append(texto)
+            addStyle(SpanStyle(letterSpacing = 0.08.em, fontWeight = FontWeight.SemiBold), inicio, inicio + folio.orderNumber.length)
+        },
+        modifier = modifier,
+        fontSize = 15.sp,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
 
 /** El folio primero, grande y espaciado (es lo que dice la clienta); luego su nombre. */
 @Composable
@@ -645,7 +674,10 @@ private fun folioDePrueba(id: String, nombre: String, total: String, falta: Stri
     telefono = null, nota = "sin azúcar, por favor", creadoEn = AHORA_PREVIA.minusSeconds(600), venceEn = AHORA_PREVIA.plusSeconds(minutos * 60),
     pagadoEn = if (pagado) AHORA_PREVIA.minusSeconds(1500) else null, total = BigDecimal(total), falta = BigDecimal(falta),
     estadoDePago = null, necesitaImprimir = false,
-    productos = listOf(FolioProducto("Latte", 1, null, listOf(FolioModificador("Leche de almendra", 1))), FolioProducto("Shake de proteína", 1, null, emptyList())),
+    productos = listOf(
+        FolioProducto("Latte", 1, null, listOf(FolioModificador("Leche de almendra", 1)), total = BigDecimal("65.00")),
+        FolioProducto("Shake de proteína", 1, null, emptyList(), total = BigDecimal("69.00")),
+    ),
 )
 
 private fun uiDePrueba(sinConexion: Boolean = false, seleccionado: Folio? = null): PorPagarUi {

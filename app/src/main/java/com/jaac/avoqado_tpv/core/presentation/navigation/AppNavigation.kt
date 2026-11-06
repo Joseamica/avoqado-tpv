@@ -21,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -137,6 +138,7 @@ interface AppNavigationEntryPoint {
     fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+    fun vigiaDeFolios(): com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
@@ -340,6 +342,15 @@ fun AppNavigation(
     val tpvSettingsRepository = remember { kioskEntryPoint.tpvSettingsRepository() }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
+
+    // 🧾 PEDIDOS POR PAGAR (tienda híbrida): el vigía vive con la actividad y, con sesión guardada, sondea solo
+    // (también cuando SplashScreen restaura la sesión sin pasar por el login). Idempotente.
+    val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }
+    LaunchedEffect(vigiaDeFolios) {
+        vigiaDeFolios.iniciar(
+            kotlinx.coroutines.CoroutineScope(activityOwner.lifecycleScope.coroutineContext + kotlinx.coroutines.Dispatchers.IO)
+        )
+    }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
 

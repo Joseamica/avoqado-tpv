@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **Pedidos por pagar (datos, tienda híbrida)**: la terminal ya consulta los folios de la tienda en línea (`tpv/venues/{venueId}/online-orders/to-pay`) con un vigía que vive con la actividad, respeta «Puede cobrar» (turno y entrada, igual que «Cobrar») para el latido y conserva la última lista sin red. Sin pantalla todavía.
+
 ---
 
 ## [2.16.2] - 2026-11-06

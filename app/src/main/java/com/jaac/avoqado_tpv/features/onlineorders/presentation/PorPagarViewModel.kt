@@ -109,7 +109,8 @@ object TextosPorPagar {
     /** R83: este aparato lo cobró, el SERVIDOR rechazó el registro para siempre y nadie lo ha revisado (dinero en la caja). */
     val COBRO_SIN_REGISTRAR = AvisoDeFolio(
         "Este folio tiene un cobro sin registrar en esta terminal",
-        "Pídele a un gerente que lo revise en «Cerrar caja» (ventas guardadas) antes de volver a cobrarlo.",
+        // Inicio › «Turnos de caja» › «Cerrar caja»: con ventas sin revisar no cierra; enseña «La caja espera a las ventas guardadas».
+        "Pídele a un gerente que lo revise en «Turnos de caja» › «Cerrar caja» antes de volver a cobrarlo.",
     )
     /** R83: esta terminal está cobrando o registrando una tarjeta (la tarjeta no tiene fila en la cola hasta que su registro falla). */
     val COBRO_EN_CURSO = AvisoDeFolio("Hay un cobro en curso en esta terminal", "Espera a que termine.")

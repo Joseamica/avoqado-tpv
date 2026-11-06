@@ -297,7 +297,7 @@ class PorPagarViewModelTest {
         assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_SIN_REGISTRAR)
         assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Este folio tiene un cobro sin registrar en esta terminal")
         assertThat(vm.ui.value.aviso!!.cuerpo)
-            .isEqualTo("Pídele a un gerente que lo revise en «Cerrar caja» (ventas guardadas) antes de volver a cobrarlo.")
+            .isEqualTo("Pídele a un gerente que lo revise en «Turnos de caja» › «Cerrar caja» antes de volver a cobrarlo.")
         coVerify(exactly = 0) { folios.listar(any(), any()) }
     }
 

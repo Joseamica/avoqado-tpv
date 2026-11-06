@@ -2070,10 +2070,12 @@ class PrinterManager @Inject constructor(
      *
      * @return PrinterStatusResult with status code and human-readable message
      */
-    fun checkPrinterStatus(): PrinterStatusResult {
+    fun checkPrinterStatus(): PrinterStatusResult = synchronized(candado) {
+        // R86: con el candado, una revisión durante otra impresión ESPERA a que termine (y dice «lista») en vez de «Impresora
+        // ocupada». Bloquea el hilo: se llama fuera de Main.
         val printerInstance = printer
         if (printerInstance == null) {
-            return PrinterStatusResult(
+            return@synchronized PrinterStatusResult(
                 code = -1,
                 isReady = false,
                 hasPaper = false,
@@ -2081,7 +2083,7 @@ class PrinterManager @Inject constructor(
             )
         }
 
-        return try {
+        try {
             val statusCode = printerInstance.getStatus()
             Timber.d("🖨️ [Printer] Status code: $statusCode")
 

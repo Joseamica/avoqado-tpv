@@ -3828,4 +3828,84 @@ class PaymentViewModelTest {
             conFolio.viewModelScope.cancel()
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // R86 (I3 en la PAX): el éxito se ve ANTES de que termine el registro y su botón sale de la pantalla. El POST sigue
+    // (NonCancellable); la ventana del dinero también, hasta que el `finally` de handlePaymentSuccess la suelta. Mientras
+    // tanto «Pedidos por pagar» no deja cobrar ese folio otra vez.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `R86 salir del exito a media espera del registro deja la terminal cobrando hasta que el registro termina`() = runTest(testDispatcher) {
+        val compuerta = CompletableDeferred<Unit>()
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } coAnswers { compuerta.await(); Result.success(reciboDelFolio()) }
+        val viewModel = createViewModel(despuesDeCobrarFolio = mockk(relaxed = true))
+        val porPagar = listaDeFoliosCon(folioP4.orderId)
+        try {
+            seedAuthenticatedSession(viewModel)
+            abrirCobroDelFolio(viewModel)
+            sembrarLlaveDelIntento(viewModel)
+            forzarEstado(viewModel, PaymentState.Success(authCode = "A1", amount = "85.00"))
+            invokeHandlePaymentSuccess(viewModel) // reclama recordingInFlight y deja el POST esperando
+            testDispatcher.scheduler.advanceUntilIdle()
+            // La ventana del dinero que abrió la autorización (performOnlineAuthorization). En la app se reclama
+            // recordingInFlight ANTES de publicar Success; aquí Success se fuerza antes, así que la ventana se abre después.
+            paymentStateHolder.setCharging(true)
+
+            // La cajera toca «Pedidos por pagar» con el registro en vuelo: la pantalla se va (clear = cancelar + onCleared).
+            viewModel.viewModelScope.cancel()
+            PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(viewModel)
+
+            assertThat(paymentStateHolder.isCharging()).isTrue()
+            assertThat(porPagar.cobrar(folioPorPagar(folioP4.orderId))).isNull()
+            assertThat(porPagar.ui.value.aviso)
+                .isEqualTo(com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar.COBRO_EN_CURSO)
+
+            compuerta.complete(Unit) // el registro termina
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 1) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+            assertThat(paymentStateHolder.isCharging()).isFalse()
+            assertThat(porPagar.cobrar(folioPorPagar(folioP4.orderId))).isNotNull()
+        } finally {
+            porPagar.viewModelScope.cancel()
+        }
+    }
+
+    private fun folioPorPagar(orderId: String) = com.jaac.avoqado_tpv.features.onlineorders.domain.Folio(
+        orderId = orderId, onlineOrderId = "oo-1", folio = "W7K3P", estado = "PENDING_ACCEPTANCE", nombre = "Ana", telefono = null,
+        nota = null, creadoEn = java.time.Instant.now(), venceEn = java.time.Instant.now().plusSeconds(1_200), pagadoEn = null,
+        total = BigDecimal("85.00"), falta = BigDecimal("85.00"), estadoDePago = "PENDING", necesitaImprimir = false,
+        productos = emptyList(),
+    )
+
+    /** «Pedidos por pagar» con ese folio por pagar en el servidor, nada en la cola y la MISMA bandera de cobro que la PAX. */
+    private fun listaDeFoliosCon(orderId: String): com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel {
+        val pagina = com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios(
+            horaDelServidor = java.time.Instant.now(), showTile = true, pollSeconds = 30,
+            conteo = com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios(1, 0),
+            porPagar = listOf(folioPorPagar(orderId)), porEntregar = emptyList(), siguientes = emptyMap(),
+        )
+        val vigia = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios>(relaxed = true) {
+            every { estado } returns MutableStateFlow(com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios())
+        }
+        val folios = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository> {
+            coEvery { listar("v1", false) } returns Result.success(pagina)
+        }
+        val permisos = mockk<com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository> {
+            coEvery { hasPermission(any()) } returns true
+        }
+        val storage = mockk<SecureStorage>(relaxed = true) { every { getVenueId() } returns "v1" }
+        val cola = mockk<com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao> {
+            coEvery { hayCobroSubiendose(any(), any()) } returns false
+            coEvery { hayCobroSinRegistrar(any(), any()) } returns false
+        }
+        return com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel(
+            vigia, folios, permisos, storage, cola, paymentStateHolder,
+        )
+    }
 }

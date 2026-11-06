@@ -6663,7 +6663,7 @@ class PaymentViewModel @Inject constructor(
                         Timber.d("🖨️ [KIOSK CASH] Auto-printing cash confirmation receipt...")
 
                         // 🖨️ Check printer status before printing
-                        val printerStatus = printerManager.checkPrinterStatus()
+                        val printerStatus = withContext(Dispatchers.IO) { printerManager.checkPrinterStatus() }  // R86: espera el candado fuera de Main
                         if (!printerStatus.hasPaper) {
                             Timber.w("⚠️ [KIOSK CASH] No paper in printer - skipping receipt print")
                             printerWarning = "Sin papel en impresora"
@@ -9257,7 +9257,7 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("🖨️ [Print] Starting receipt print")
 
                 // 🖨️ Check printer status before printing
-                val printerStatus = printerManager.checkPrinterStatus()
+                val printerStatus = withContext(Dispatchers.IO) { printerManager.checkPrinterStatus() }  // R86: espera el candado fuera de Main
                 Timber.d("🖨️ [Print] Printer status: code=${printerStatus.code}, ready=${printerStatus.isReady}, paper=${printerStatus.hasPaper}")
 
                 if (!printerStatus.hasPaper) {
@@ -10304,8 +10304,10 @@ class PaymentViewModel @Inject constructor(
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)
         // until an app restart — the exact bug this signal exists to fix.
-        recordingInFlight = false
-        paymentStateHolder.setCharging(false)
+        // 🧾 R86: con un registro de tarjeta en vuelo la ventana del dinero NO se cierra aquí. El POST es NonCancellable y sigue
+        // tras salir del éxito (que se ve ANTES de que termine el registro); el `finally` de handlePaymentSuccess suelta las dos
+        // banderas al terminar. Cerrarla aquí dejaba a «Pedidos por pagar» cobrar el mismo folio otra vez a media espera.
+        if (!recordingInFlight) paymentStateHolder.setCharging(false)
         paymentStateHolder.setChargeAttemptActive(false)
     }
 }

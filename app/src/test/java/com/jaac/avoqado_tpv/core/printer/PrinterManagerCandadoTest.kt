@@ -67,4 +67,38 @@ class PrinterManagerCandadoTest {
         }
         assertThat(impresora.ordenes.count { it.second == "start" }).isEqualTo(6)
     }
+
+    /** Una impresión que se queda en `start()` hasta que la prueba la suelta; mientras imprime, `getStatus()` dice 1 (ocupada). */
+    private class ImpresoraLenta : ImpresoraTermica {
+        val imprimiendo = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        @Volatile var ocupada = false
+        override fun init() { ocupada = true }
+        override fun printStr(str: String, charset: String?) = Unit
+        override fun printBitmap(bitmap: Bitmap) = Unit
+        override fun start(): Int { imprimiendo.countDown(); soltar.await(); ocupada = false; return 0 }
+        override fun getStatus(): Int = if (ocupada) 1 else 0
+    }
+
+    @Test
+    fun `R86 revisar la impresora mientras otra impresion la tiene espera y luego dice lista`() {
+        val impresora = ImpresoraLenta()
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }
+            .set(manager, lazyOf(impresora))
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)
+
+        val comanda = thread(name = "comanda") { manager.printKitchenTicket("W7K3P", null, renglones) }
+        impresora.imprimiendo.await()
+        var estado: PrinterStatusResult? = null
+        val revision = thread(name = "recibo") { estado = manager.checkPrinterStatus() }
+        revision.join(300)
+        assertWithMessage("la revisión no espera a la comanda: ${estado?.message}").that(revision.isAlive).isTrue()
+
+        impresora.soltar.countDown()
+        comanda.join()
+        revision.join()
+        assertThat(estado!!.isReady).isTrue()
+        assertThat(estado!!.message).isEqualTo("Impresora lista")
+    }
 }

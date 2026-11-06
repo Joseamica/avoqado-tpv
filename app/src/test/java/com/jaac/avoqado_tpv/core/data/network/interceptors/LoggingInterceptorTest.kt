@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
 import com.google.common.truth.Truth.assertThat
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
 
 /**
@@ -35,4 +36,23 @@ class LoggingInterceptorTest {
         assertThat(LoggingInterceptor.censurarCuerpoSensible(body)).isEqualTo("""{"commandToken":"***","venueId":"v1"}""")
     }
 
+    @Test fun `X-Permission-Override sale censurado en el log`() {
+        val lineas = mutableListOf<String>()
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) { lineas.add(message) }
+        }
+        timber.log.Timber.plant(arbol)
+        try {
+            val cliente = okhttp3.OkHttpClient.Builder()
+                .addInterceptor(LoggingInterceptor.create())
+                .addInterceptor { chain ->
+                    okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                        .body("{}".toResponseBody(null)).build()
+                }.build()
+            cliente.newCall(okhttp3.Request.Builder().url("https://api.avoqado.io/x").header("X-Permission-Override", "tok-secreto").build()).execute().close()
+        } finally { timber.log.Timber.uproot(arbol) }
+        val todo = lineas.joinToString("\n")
+        assertThat(todo).doesNotContain("tok-secreto")
+        assertThat(todo).contains("X-Permission-Override: ██")
+    }
 }

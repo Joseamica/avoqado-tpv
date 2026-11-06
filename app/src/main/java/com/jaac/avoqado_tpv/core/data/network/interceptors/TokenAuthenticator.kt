@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 import com.jaac.avoqado_tpv.core.session.SessionManager
@@ -118,6 +119,14 @@ class TokenAuthenticator @Inject constructor(
             listOf("/tpv/commands/ready", "/tpv/commands/permit", "/tpv/command-ack").any { request.url.encodedPath.endsWith(it) }
 
     /**
+     * 401 de `/permission-overrides` con `code: OVERRIDE_INVALID_PIN`: el PIN del gerente está mal, la sesión del cajero está bien.
+     * Un 401 de esa ruta SIN ese code sí es sesión vencida y renueva normal. `peekBody` deja el cuerpo legible para el repositorio.
+     */
+    private fun esPinDeGerenteIncorrecto(response: Response): Boolean =
+        response.request.url.encodedPath.endsWith("/permission-overrides") &&
+            parseBackendErrorCode(runCatching { response.peekBody(8_192).string() }.getOrNull()) == "OVERRIDE_INVALID_PIN"
+
+    /**
      * Called by OkHttp when a request receives 401 Unauthorized.
      *
      * **Return values:**
@@ -142,6 +151,11 @@ class TokenAuthenticator @Inject constructor(
         if (isAuthEndpoint(response.request)) {
             Timber.d("🔐 [Auth] 401 on auth endpoint (${response.request.url.encodedPath}) - skipping token refresh")
             return null  // Let the error propagate to LoginViewModel
+        }
+
+        if (esPinDeGerenteIncorrecto(response)) {
+            Timber.w("🔑 [Auth] 401 OVERRIDE_INVALID_PIN: PIN de gerente incorrecto, no se renueva la sesión")
+            return null
         }
 
         if (esRechazoDeLaLlaveDeOrdenes(response.request)) {

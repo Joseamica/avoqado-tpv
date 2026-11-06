@@ -485,7 +485,7 @@ class MenuViewModel @Inject constructor(
      * - remainingBalance (for payment calculations)
      * - paymentStatus (may change to PAID if fully paid)
      */
-    private fun refreshOrderFromBackend(orderId: String) {
+    private fun refreshOrderFromBackend(orderId: String, refreshDiscounts: Boolean = false) {
         viewModelScope.launch {
             try {
                 val venueId = deviceInfoManager.getVenueId() ?: return@launch
@@ -508,6 +508,7 @@ class MenuViewModel @Inject constructor(
                 val currentState = _state.value
                 if (currentState is MenuState.Success) {
                     _state.value = currentState.copy(order = mergedOrder)
+                    if (refreshDiscounts) _appliedDiscounts.value = mergedOrder.discounts
 
                     // 🔍 DEBUG: Detailed order state after payment
                     Timber.i("✅ [MenuViewModel] Order refreshed after payment")
@@ -2406,6 +2407,7 @@ class MenuViewModel @Inject constructor(
             }
 
             _isLoadingDiscounts.value = true
+            var regalaLaCuenta = false
             try {
                 // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
                 // Discount needs accurate totals from backend to calculate correctly
@@ -2422,7 +2424,7 @@ class MenuViewModel @Inject constructor(
                 // PIN de gerente: sólo si este descuento regala la cuenta (sobre subtotal − descuentos, no `total`).
                 val centavos = { d: Double -> java.math.BigDecimal.valueOf(d).setScale(2, java.math.RoundingMode.HALF_UP) }
                 val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
-                val regalaLaCuenta = (type == DiscountType.PERCENTAGE && value >= 100) ||
+                regalaLaCuenta = (type == DiscountType.PERCENTAGE && value >= 100) ||
                     (type == DiscountType.FIXED && centavos(value) >= queda)
                 val motivoPin = "Para dar esta cortesía"
                 var token: String? = null
@@ -2456,7 +2458,7 @@ class MenuViewModel @Inject constructor(
                 }
                 if (noConfirmada) {
                     _uiEvents.emit(MenuUiEvent.ShowSnackbar("No pudimos confirmar la cortesía. Revisa la cuenta", isError = true))
-                    refreshOrderFromBackend(order.id)
+                    refreshOrderFromBackend(order.id, refreshDiscounts = true)
                     return@launch
                 }
                 resultado.fold(
@@ -2475,14 +2477,16 @@ class MenuViewModel @Inject constructor(
                         // hid 403/permission/validation failures and made the bug invisible.
                         Timber.e(error, "❌ Error applying manual discount")
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar(
-                            "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
+                            if (error is PermisoRequeridoException) error.message ?: "Sin permiso"
+                            else "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
                             isError = true
                         ))
                     }
                 )
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                _uiEvents.emit(MenuUiEvent.ShowSnackbar("No se pudo aplicar la cortesía", isError = true))
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    if (regalaLaCuenta) "No se pudo aplicar la cortesía" else "No se pudo aplicar el descuento", isError = true))
             } finally {
                 _isLoadingDiscounts.value = false
             }

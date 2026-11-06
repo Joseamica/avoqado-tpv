@@ -35,6 +35,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -62,10 +63,13 @@ class MenuViewModelManualDiscountTest {
     @Before fun preparar() {
         Dispatchers.setMain(testDispatcher)
         discountRepository = mockk(relaxed = true)
+        orderRepository = mockk(relaxed = true)
+        avisos.clear()
         autorizacion = mockk(relaxed = true)
         orderSyncCoordinator = mockk(relaxed = true)
         every { orderSyncCoordinator.syncEvents } returns MutableSharedFlow<OrderSyncCoordinator.SyncEvent>()
         coEvery { orderSyncCoordinator.syncOrderImmediately(any()) } answers { firstArg() }
+        coEvery { orderSyncCoordinator.getLocalOrder(any()) } returns null
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(descuento())
     }
 
@@ -141,13 +145,57 @@ class MenuViewModelManualDiscountTest {
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.9, "x", null, "tok-r") }
     }
 
+    private val avisos = mutableListOf<String>()
+    private lateinit var orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
+
+    private fun escucha(vm: MenuViewModel) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined).launch {
+            vm.uiEvents.collect { if (it is MenuViewModel.MenuUiEvent.ShowSnackbar) avisos.add(it.message) }
+        }
+    }
+
+    private fun ordenConCortesia() = orden("100.00", "100.00", "0.00").copy(discounts = listOf(descuento()))
+
+    private fun verificaNoConfirmada(vm: MenuViewModel) {
+        assertThat(avisos).contains("No pudimos confirmar la cortesía. Revisa la cuenta")
+        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
+        assertThat(vm.appliedDiscounts.value.map { it.id }).containsExactly("d-1")
+    }
+
     @Test fun `403_con_token_no_pide_otro_pin_y_revisa_la_cuenta`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-1")
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1") } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
-        crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
+        val vm = crear()
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, true) }
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        verificaNoConfirmada(vm)
+    }
+
+    @Test fun `403_sin_token_luego_pin_forzado_y_otro_403_termina_en_no_confirmada_sin_tercera_llamada`() {
+        coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.NoHaceFalta
+        coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-f")
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        val vm = crear()
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
+        coVerify(exactly = 2) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
+        verificaNoConfirmada(vm)
+    }
+
+    @Test fun `si_paraCortesia_truena_avisa_y_no_llama_al_repositorio`() {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } throws IllegalStateException("boom")
+        val vm = crear()
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
+        assertThat(avisos).contains("No se pudo aplicar la cortesía")
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
     }
 
     private fun crear(subtotal: String = "100.00", descuentos: String = "0.00", total: String = "100.00"): MenuViewModel {
@@ -169,7 +217,7 @@ class MenuViewModelManualDiscountTest {
             secureStorage = secureStorage,
             deviceInfoManager = deviceInfoManager,
             productRepository = productRepository,
-            orderRepository = mockk(relaxed = true),
+            orderRepository = orderRepository,
             tableRepository = mockk(relaxed = true),
             discountRepository = discountRepository,
             customerRepository = mockk(relaxed = true),

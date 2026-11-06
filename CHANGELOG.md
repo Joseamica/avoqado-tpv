@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.16.2] - 2026-11-06
+
 ### **Fixed**
 - **Cupones al cobrar**: un cupón válido bajaba el total en pantalla y al cobrar el servidor rechazaba la venta (`orderDiscountId` vacío); con puros importes se cobraba sin dejar rastro. Ahora viaja `couponCode`, el cupón cuenta su uso al quedar pagada la venta, y sin red se dice «Sin conexión…» y no se guarda como venta local. Requiere el SERVIDOR con `couponCode`.
 - **Error al cobrar con la hoja del carrito abierta**: el aviso (sin red, servidor apagado, cupón que cambió, sin permiso) salía debajo de la hoja y el botón se quedaba ~10 s en «Preparando…». Ahora el botón se libera antes de avisar y la hoja se cierra para que el aviso se vea (Cobrar y Pagar después).

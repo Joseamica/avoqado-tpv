@@ -287,6 +287,15 @@ interface PendingPaymentDao {
         AND sync_status IN ('PENDING', 'SYNCING') LIMIT 1)""")
     suspend fun hayCobroSubiendose(venueId: String, orderId: String): Boolean
 
+    /**
+     * 🧾 Tienda híbrida (R83): ¿este aparato cobró esa cuenta y el SERVIDOR rechazó para siempre su registro (o pide revisión), y
+     * nadie lo ha revisado? El dinero está en la caja y el SERVIDOR ve el folio «por pagar»: cobrarlo otra vez sería cobrar dos
+     * veces. Junto con [hayCobroSubiendose] es el MISMO predicado de [bloqueanCierre], acotado a la cuenta.
+     */
+    @Query("""SELECT EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId AND order_id = :orderId
+        AND (sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0 LIMIT 1)""")
+    suspend fun hayCobroSinRegistrar(venueId: String, orderId: String): Boolean
+
     @Query("SELECT * FROM pending_payments WHERE id = :id AND venue_id = :venueId LIMIT 1")
     suspend fun leerParaReconocer(id: Long, venueId: String): PendingPaymentEntity?
 

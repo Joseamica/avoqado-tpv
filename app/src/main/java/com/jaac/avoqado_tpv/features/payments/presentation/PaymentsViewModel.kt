@@ -547,12 +547,12 @@ class PaymentsViewModel @Inject constructor(
                                 Timber.w("🧾 [PaymentsViewModel] Sin liga de recibo para ${payment.id} — ticket sin QR")
                             }
 
-                            val result = printerManager.printPaymentHistoryReceipt(
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printPaymentHistoryReceipt(
                                 payment = payment,
                                 venueName = venueName,
                                 receiptUrl = obtenida?.receiptUrl,
                                 autofacturaAvailable = obtenida?.autofacturaAvailable ?: false,
-                            )
+                            ) }
                             if (result.isFailure) {
                                 Timber.e("❌ [PaymentsViewModel] Failed to print payment: ${payment.id}")
                             }
@@ -562,11 +562,11 @@ class PaymentsViewModel @Inject constructor(
                     PaymentPrintMode.SUMMARY -> {
                         // Print all payments in one receipt
                         val dateRange = _filterDateRange.value.label
-                        val result = printerManager.printPaymentsSummary(
+                        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printPaymentsSummary(
                             payments = selectedPayments,
                             dateRangeLabel = dateRange,
                             venueName = venueName
-                        )
+                        ) }
                         if (result.isFailure) {
                             Timber.e("❌ [PaymentsViewModel] Failed to print payments summary")
                         }

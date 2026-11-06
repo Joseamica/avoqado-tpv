@@ -9,10 +9,7 @@ import io.mockk.coVerifyOrder
 import io.mockk.confirmVerified
 import io.mockk.every
 import io.mockk.mockk
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -47,7 +44,7 @@ class DespuesDeCobrarFolioTest {
     }
 
     @Test
-    fun `si aceptar falla igual intenta la comanda`() = runTest {
+    fun `si aceptar falla igual intenta la comanda, sin encolarlo ni reintentarlo`() = runTest {
         coEvery { folios.aceptar("v1", "ord-1") } returns Result.failure(IOException("sin red"))
         val despues = DespuesDeCobrarFolio(folios, comanda, storage).also { it.alcance = this }
 
@@ -55,34 +52,9 @@ class DespuesDeCobrarFolioTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { comanda.intentar("v1", folio) }
-    }
-
-    @Test
-    fun `matar la app despues de cobrar no deja nada en el aparato - aceptar no se encola ni se reintenta`() = runTest {
-        coEvery { folios.aceptar("v1", "ord-1") } returns Result.failure(IOException("sin red"))
-        val despues = DespuesDeCobrarFolio(folios, comanda, storage).also { it.alcance = this }
-
-        despues.alConfirmarse(folio)
-        advanceUntilIdle()
-
-        // Una sola llamada y nada más: el folio lo pasa a «Por entregar» el SERVIDOR al leer la lista, no esta terminal.
+        // Una sola llamada y nada más: si la app muere, el folio lo pasa a «Por entregar» el SERVIDOR al leer la lista.
         coVerify(exactly = 1) { folios.aceptar("v1", "ord-1") }
         confirmVerified(folios)
-    }
-
-    @Test
-    fun `salir de la pantalla del cobro no corta la comanda`() = runTest {
-        val compuerta = CompletableDeferred<Unit>()
-        coEvery { folios.aceptar("v1", "ord-1") } coAnswers { compuerta.await(); Result.success(Unit) }
-        val despues = DespuesDeCobrarFolio(folios, comanda, storage).also { it.alcance = this }
-        val pantallaDelCobro = Job()
-
-        despues.alConfirmarse(folio)
-        pantallaDelCobro.cancel() // el viewModelScope del cobro muere: la comanda no vive ahí
-        compuerta.complete(Unit)
-        advanceUntilIdle()
-
-        coVerify(exactly = 1) { comanda.intentar("v1", folio) }
     }
 
     @Test

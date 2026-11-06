@@ -14,6 +14,7 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import io.mockk.coEvery
@@ -51,7 +52,12 @@ class PorPagarViewModelTest {
     private val permisos = mockk<PermissionsRepository>()
     private val storage = mockk<SecureStorage>(relaxed = true)
     // R78: la cola de cobros del aparato. Por defecto no hay ningún cobro subiéndose.
-    private val cola = mockk<PendingPaymentDao> { coEvery { hayCobroSubiendose(any(), any()) } returns false }
+    private val cola = mockk<PendingPaymentDao> {
+        coEvery { hayCobroSubiendose(any(), any()) } returns false
+        coEvery { hayCobroSinRegistrar(any(), any()) } returns false
+    }
+    // R83 (I3): el cobro con tarjeta que esta terminal todavía está cobrando o registrando. Real: dos banderas atómicas.
+    private val cobroEnCurso = PaymentStateHolder()
 
     // 10:30 en la Ciudad de México (UTC-6).
     private val ahora = Instant.parse("2026-11-06T16:30:00Z")
@@ -73,7 +79,7 @@ class PorPagarViewModelTest {
         VenueTimeZone.invalidateCache()
     }
 
-    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola)
+    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso)
 
     private fun folio(
         id: String,
@@ -271,6 +277,72 @@ class PorPagarViewModelTest {
         assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_SUBIENDOSE)
         assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Hay un cobro de este folio subiéndose")
         assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que suba.")
+        assertThat(vm.ui.value.ocupados).isEmpty()
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R83 con un cobro de ese folio sin registrar y sin revisar en la terminal no deja cobrarlo otra vez`() = runTest {
+        // Un 4xx permanente o los reintentos agotados dejan la fila FAILED: el dinero está en la caja y el SERVIDOR sigue viendo
+        // el folio «por pagar». Hasta que una persona la revise, cobrarlo otra vez sería cobrarle dos veces a la clienta.
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { cola.hayCobroSinRegistrar("v1", "b") } returns true
+        val vm = vm()
+        var abrio = false
+
+        assertThat(vm.cobrar(sofia) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_SIN_REGISTRAR)
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Este folio tiene un cobro sin registrar en esta terminal")
+        assertThat(vm.ui.value.aviso!!.cuerpo)
+            .isEqualTo("Pídele a un gerente que lo revise en «Cerrar caja» (ventas guardadas) antes de volver a cobrarlo.")
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `R83 un cobro sin registrar que ya se reviso deja abrir el folio`() = runTest {
+        // La consulta sólo cuenta lo NO revisado (`acknowledged = 0`), igual que el cierre de caja: revisado ⇒ false.
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(sofia)))
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNotNull()
+        coVerify(exactly = 1) { cola.hayCobroSinRegistrar("v1", "b") }
+    }
+
+    @Test
+    fun `R83 con un cobro en curso en esta terminal no abre otro`() = runTest {
+        // La tarjeta no tiene fila en la cola mientras registra (sólo el efectivo se guarda antes del POST): la bandera del cobro
+        // en curso es lo que la terminal sabe en esos segundos.
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        cobroEnCurso.setCharging(true)
+        val vm = vm()
+        var abrio = false
+
+        assertThat(vm.cobrar(sofia) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.COBRO_EN_CURSO)
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Hay un cobro en curso en esta terminal")
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("Espera a que termine.")
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `si no se puede leer la cola de la terminal no abre el cobro`() = runTest {
+        // Falla cerrado: sin saber si ya hay un cobro de este folio en la terminal, no se arriesga uno segundo.
+        val sofia = folio("b", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { cola.hayCobroSinRegistrar("v1", "b") } throws IllegalStateException("database is locked")
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNull()
+
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("No se pudo revisar el folio")
         assertThat(vm.ui.value.ocupados).isEmpty()
         coVerify(exactly = 0) { folios.listar(any(), any()) }
     }

@@ -345,6 +345,7 @@ class PaymentViewModelTest {
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
         proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
         despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
+        orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator = mockk(relaxed = true),
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -378,7 +379,7 @@ class PaymentViewModelTest {
             socketManager = mockSocketManager,
             shiftRepository = mockShiftRepository,
             orderRepository = mockk(relaxed = true),
-            orderSyncCoordinator = mockk(relaxed = true),
+            orderSyncCoordinator = orderSyncCoordinator,
             tpvSettingsRepository = mockTpvSettingsRepository,
             verificationUploadManager = verificationUploadManager,
             paymentApiService = mockk(relaxed = true),
@@ -3738,6 +3739,67 @@ class PaymentViewModelTest {
             esperarEstado(viewModel) { it is PaymentState.Success }
 
             verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P4 un folio rechazado en la terminal o cancelado no llama alConfirmarse`() = runTest {
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+            despuesDeCobrarFolio = despues,
+        )
+        try {
+            abrirCobroDelFolio(viewModel)
+            viewModel.selectMerchant(testMerchantA)
+            Thread.sleep(1000)
+            viewModel.startPayment("85.00")
+            Thread.sleep(1500)
+            testDispatcher.scheduler.advanceUntilIdle()
+            // El kernel rechazó la tarjeta (el mismo camino real que las pruebas de contactless de arriba).
+            assertThat((viewModel.state.value as PaymentState.Error).message).contains("INSERTE")
+
+            viewModel.cancelPayment()
+            viewModel.resetPayment()
+
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+            coVerify(exactly = 0) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `R78 b Reintentar un folio rechazado no intenta subir su cuenta como si viviera en el aparato`() = runTest {
+        // La cuenta de un folio sólo vive en el SERVIDOR. «Reintentar» reconstruía el contexto con
+        // skipLocalOrderValidation = (origen == SERIALIZED), que con folio es ORDER ⇒ false ⇒ «Error sincronizando orden».
+        val coordinador = mockk<com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator>(relaxed = true)
+        coEvery { coordinador.syncOrderImmediately(any()) } throws java.io.IOException("la cuenta del folio no está en el aparato")
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+            orderSyncCoordinator = coordinador,
+        )
+        try {
+            abrirCobroDelFolio(viewModel)
+            viewModel.selectMerchant(testMerchantA)
+            Thread.sleep(1000)
+            viewModel.startPayment("85.00")
+            Thread.sleep(1500)
+            testDispatcher.scheduler.advanceUntilIdle()
+            val rechazo = viewModel.state.value as PaymentState.Error
+
+            viewModel.retryPayment(rechazo.context)
+            Thread.sleep(1500)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 0) { coordinador.syncOrderImmediately(any()) }
+            assertThat((viewModel.state.value as? PaymentState.Error)?.message.orEmpty()).doesNotContain("Error sincronizando orden")
         } finally {
             viewModel.viewModelScope.cancel()
         }

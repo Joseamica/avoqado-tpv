@@ -6547,6 +6547,28 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `P4 un folio rechazado en Nexgo (D308 sin poder reautenticar) no llama alConfirmarse`() = runTest(testDispatcher) {
+        cobroDeFolio(Result.success(reciboDelFolio()))
+        coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.failure(IllegalStateException("sin sesión")) }
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val vm = createViewModel(despuesDeCobrarFolio = despues)
+        try {
+            vm.initPayment(amount = "85.00", orderId = "ord-folio", orderNumber = "W7K3P", folio = folioP4)
+            runCurrent()
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            val rechazo = esperarFinal(vm) as AngelPayPaymentState.Error
+            assertThat(rechazo.message).contains("D308") // el rechazo del SDK, no un fallo del armado de la prueba
+            vm.resetPayment()
+            verify(exactly = 0) { despues.alConfirmarse(any()) }
+            coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `P4 resetPayment olvida el folio en Nexgo`() = runTest(testDispatcher) {
         cobroDeFolio(Result.success(reciboDelFolio()))
         val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)

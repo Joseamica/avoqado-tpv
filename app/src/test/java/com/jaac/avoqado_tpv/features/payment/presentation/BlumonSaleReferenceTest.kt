@@ -250,7 +250,9 @@ class BlumonSaleReferenceTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): PaymentViewModel {
+    private fun createViewModel(
+        despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
+    ): PaymentViewModel {
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true),
@@ -305,6 +307,7 @@ class BlumonSaleReferenceTest {
             ventaLocalRepository = mockk(relaxed = true),
             pendingPaymentDao = mockk(relaxed = true),
             subirVentaGuardadaUseCase = mockk(relaxed = true),
+            despuesDeCobrarFolio = despuesDeCobrarFolio,
         )
     }
 
@@ -313,8 +316,10 @@ class BlumonSaleReferenceTest {
      * PaymentViewModelWatchdogTest: sin `_currentMerchant` la funcion corta antes de
      * llegar al SDK y no se capturaria nada.
      */
-    private fun viewModelReadyToAuthorize(): PaymentViewModel {
-        val vm = createViewModel()
+    private fun viewModelReadyToAuthorize(
+        despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
+    ): PaymentViewModel {
+        val vm = createViewModel(despuesDeCobrarFolio)
         PaymentViewModel::class.java.getDeclaredField("currentVenueId").apply { isAccessible = true }.set(vm, "venue-test-001")
         PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
             vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
@@ -610,4 +615,39 @@ class BlumonSaleReferenceTest {
             )
             vm.viewModelScope.cancel()
         }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // P4 (tienda híbrida): un folio rechazado por el EMISOR no se registra, ni se acepta, ni imprime comanda. El llamador de la
+    // autorización (PreTrans/EMV) no se puede recorrer en la JVM (misma razón que PaymentViewModelWatchdogTest), así que se prueba
+    // en la autorización misma: el rechazo regresa con su motivo y nada registra el pago ni llama a DespuesDeCobrarFolio.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `P4 un folio rechazado por el emisor no se registra ni se acepta`() = runTest(testDispatcher) {
+        val despues = mockk<com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio>(relaxed = true)
+        val vm = viewModelReadyToAuthorize(despues)
+        vm.setFolio(
+            com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio(
+                orderId = "ord-folio", orderNumber = "W7K3P", nombre = "Ana", nota = null, renglones = emptyList(),
+            ),
+        )
+        try {
+            coEvery { mockSaleCtlsUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Right(
+                mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsResponse>(relaxed = true) {
+                    every { operation } returns "123"
+                    every { saleData.authorization } returns ""
+                    every { saleData.emvResponseCode } returns "51"
+                    every { saleData.description } returns "FONDOS INSUFICIENTES"
+                },
+            )
+
+            val resultado = vm.performOnlineAuthorization("85.00", "", "", "", true)
+            scheduler.runCurrent()
+
+            io.mockk.coVerify(exactly = 1) { mockSaleCtlsUseCase.run(any()) }
+            assertEquals(resultado.userFriendlyError, true, resultado.userFriendlyError?.contains("FONDOS INSUFICIENTES") == true)
+            io.mockk.coVerify(exactly = 0) { mockRecordPaymentUseCase(any(), any(), any(), any()) }
+            io.mockk.verify(exactly = 0) { despues.alConfirmarse(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
 }

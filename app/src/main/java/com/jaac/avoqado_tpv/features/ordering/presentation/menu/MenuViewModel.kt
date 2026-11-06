@@ -1714,12 +1714,12 @@ class MenuViewModel @Inject constructor(
                 if (pendingItems.isNotEmpty()) {
                     Timber.d("🖨️ [SendToKitchen] Printing ${pendingItems.size} pending items (incremental)")
                     try {
-                        printerManager.printKitchenTicket(
+                        withContext(Dispatchers.IO) { printerManager.printKitchenTicket(
                             orderNumber = order.orderNumber,
                             tableName = order.tableName,
                             orderItems = pendingItems,  // ← Only pending items!
                             staffName = secureStorage.getStaffName()
-                        )
+                        ) }
                         Timber.i("✅ [SendToKitchen] Kitchen ticket printed for pending items")
 
                         // ✅ STEP 1a: Persist sentToKitchenAt to Room DB
@@ -1803,12 +1803,12 @@ class MenuViewModel @Inject constructor(
 
             try {
                 // Print kitchen ticket with just this item
-                printerManager.printKitchenTicket(
+                withContext(Dispatchers.IO) { printerManager.printKitchenTicket(
                     orderNumber = order.orderNumber,
                     tableName = order.tableName,
                     orderItems = listOf(item),  // ← Only this item!
                     staffName = secureStorage.getStaffName()
-                )
+                ) }
                 Timber.i("✅ Single item printed successfully: ${item.productName}")
 
                 // Persist sentToKitchenAt to Room DB
@@ -1867,12 +1867,12 @@ class MenuViewModel @Inject constructor(
 
             try {
                 // 2. Print ONLY pending items
-                printerManager.printKitchenTicket(
+                withContext(Dispatchers.IO) { printerManager.printKitchenTicket(
                     orderNumber = order.orderNumber,
                     tableName = order.tableName,
                     orderItems = pendingItems,  // ← Only pending items!
                     staffName = secureStorage.getStaffName()
-                )
+                ) }
                 Timber.i("✅ [PrintComanda] Kitchen ticket printed for ${pendingItems.size} pending items")
 
                 // 3. Persist sentToKitchenAt to Room DB

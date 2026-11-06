@@ -797,7 +797,7 @@ class ReportsViewModel @Inject constructor(
                 val venueName = secureStorage.getVenueName()
 
                 // Print report
-                val result = printerManager.printReport(
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printReport(
                     periodLabel = currentState.period.getLabel(venueZoneId),
                     dateRange = dateRange,
                     totalOrders = currentState.summary.totalOrders,
@@ -811,7 +811,7 @@ class ReportsViewModel @Inject constructor(
                     ratingsCount = ratings,
                     staffSales = staffSalesPrint,
                     staffFilterLabel = staffFilterLabel
-                )
+                ) }
 
                 when {
                     result.isSuccess -> Timber.i("✅ Report printed successfully")
@@ -1012,12 +1012,12 @@ class ReportsViewModel @Inject constructor(
                     HistoricalPrintMode.INDIVIDUAL -> {
                         // Print each period as separate receipt
                         selectedPeriods.forEach { period ->
-                            val result = printerManager.printHistoricalPeriod(
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printHistoricalPeriod(
                                 period = period,
                                 includeComparison = includeComparisons,
                                 venueId = venueId,
                                 venueName = venueName
-                            )
+                            ) }
 
                             when {
                                 result.isSuccess -> Timber.i("✅ Printed period: ${period.label}")
@@ -1031,12 +1031,12 @@ class ReportsViewModel @Inject constructor(
 
                     HistoricalPrintMode.BATCH -> {
                         // Print all periods in one receipt
-                        val result = printerManager.printHistoricalReport(
+                        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printHistoricalReport(
                             periods = selectedPeriods,
                             includeComparisons = includeComparisons,
                             venueId = venueId,
                             venueName = venueName
-                        )
+                        ) }
 
                         when {
                             result.isSuccess -> Timber.i("✅ Printed ${selectedPeriods.size} periods in batch")

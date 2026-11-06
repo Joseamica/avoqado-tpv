@@ -6672,11 +6672,11 @@ class PaymentViewModel @Inject constructor(
                             printerWarning = "Impresora no disponible: ${printerStatus.message}"
                         } else {
                             // Printer is ready, attempt to print
-                            val printResult = printerManager.printCashConfirmationReceipt(
+                            val printResult = withContext(Dispatchers.IO) { printerManager.printCashConfirmationReceipt(
                                 totalAmount = currentState.totalAmount,
                                 tipAmount = currentState.tipAmount,
                                 orderNumber = getOrderNumberForFlow()
-                            )
+                            ) }
 
                             printResult.onSuccess {
                                 Timber.d("🖨️ [KIOSK CASH] Receipt printed successfully")
@@ -7751,7 +7751,8 @@ class PaymentViewModel @Inject constructor(
         // Tip/rating handled via snapshot overrides below
         _flowOrigin.value = context.flowOrigin
 
-        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        // 🧾 R78: la cuenta de un folio sólo vive en el servidor (ORDER, no SERIALIZED): reintentar tampoco la busca en el aparato.
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED || folioDelCobro != null
         val orderContextOverride = context.orderId?.let { orderId ->
             OrderContext(
                 orderId = orderId,
@@ -7829,7 +7830,8 @@ class PaymentViewModel @Inject constructor(
 
         _flowOrigin.value = context.flowOrigin
 
-        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        // 🧾 R78: la cuenta de un folio sólo vive en el servidor (ORDER, no SERIALIZED): reintentar tampoco la busca en el aparato.
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED || folioDelCobro != null
         val orderContextOverride = context.orderId?.let { orderId ->
             OrderContext(
                 orderId = orderId,
@@ -9623,12 +9625,12 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("🖨️ [Print] Starting kitchen ticket print")
                 _isPrinting.value = true
 
-                val result = printerManager.printKitchenTicket(
+                val result = withContext(Dispatchers.IO) { printerManager.printKitchenTicket(
                     orderNumber = orderNumber,
                     tableName = tableName,
                     orderItems = orderItems,
                     staffName = null  // TODO: Get from auth context if needed
-                )
+                ) }
 
                 result.onSuccess {
                     Timber.i("✅ [Print] Kitchen ticket printed successfully")

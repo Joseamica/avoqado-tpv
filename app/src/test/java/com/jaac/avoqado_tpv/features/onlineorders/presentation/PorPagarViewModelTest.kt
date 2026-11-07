@@ -667,4 +667,55 @@ class PorPagarViewModelTest {
     }
 
     // endregion
+
+    // region — R94: lo escondido aquí sale en cuanto el SERVIDOR lo trae distinto (sección o estado)
+
+    @Test
+    fun `R94 cancelado aqui que revive por dinero tardio aparece en Por entregar con sus botones y en el numero`() = runTest {
+        val ana = folio("a")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(1, 0), porPagar = listOf(ana), actualizadoEnMs = 1_000L)
+        coEvery { folios.cancelar("v1", "a") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.cancelar(ana)
+        assertThat(vm.ui.value.porPagar).isEmpty()
+
+        // Llegó dinero de la cola de otro aparato: el SERVIDOR lo revive y lo manda en «Por entregar» como ACCEPTED.
+        val revivido = ana.copy(estado = "ACCEPTED", falta = BigDecimal("0.00"), estadoDePago = "PAID")
+        estado.value = estado.value.copy(counts = ConteoDeFolios(0, 1), porPagar = emptyList(), porEntregar = listOf(revivido), actualizadoEnMs = 2_000L)
+
+        assertThat(vm.ui.value.porEntregar.map { it.orderId }).containsExactly("a")
+        assertThat(vm.ui.value.numeroPorEntregar).isEqualTo(1)
+        assertThat(muestraListoYEntregado(vm.ui.value.puedeEntregar, vm.ui.value.folios.sinConexion)).isTrue()
+    }
+
+    @Test
+    fun `R94 una relectura vieja que lo trae igual que cuando se escondio lo deja escondido`() = runTest {
+        val ana = folio("a")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(2, 0), porPagar = listOf(folio("b"), ana), actualizadoEnMs = 1_000L)
+        coEvery { folios.cancelar("v1", "a") } returns Result.success(Unit)
+        val vm = vm()
+        vm.cancelar(ana)
+
+        // Vuelta nueva cuya página extra todavía trae a «a» tal cual (misma sección, mismo estado).
+        estado.value = estado.value.copy(counts = ConteoDeFolios(1, 0), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.porPagar.map { it.orderId }).containsExactly("b")
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(1)
+    }
+
+    @Test
+    fun `R94 cuando el folio sale de todas las listas se olvida lo escondido`() = runTest {
+        val ana = folio("a")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(1, 0), porPagar = listOf(ana), actualizadoEnMs = 1_000L)
+        coEvery { folios.cancelar("v1", "a") } returns Result.success(Unit)
+        val vm = vm()
+        vm.cancelar(ana)
+
+        estado.value = estado.value.copy(counts = ConteoDeFolios(0, 0), porPagar = emptyList(), actualizadoEnMs = 2_000L) // el SERVIDOR lo confirmó
+        // Ya no queda nada escondido: si el SERVIDOR lo vuelve a mandar (igual), se ve.
+        estado.value = estado.value.copy(counts = ConteoDeFolios(1, 0), porPagar = listOf(ana), actualizadoEnMs = 3_000L)
+        assertThat(vm.ui.value.porPagar.map { it.orderId }).containsExactly("a")
+    }
+
+    // endregion
 }

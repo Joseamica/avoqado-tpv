@@ -190,17 +190,17 @@ class PorPagarViewModel @Inject constructor(
         val puedeCancelar: Boolean = false,
         val seleccionado: Folio? = null,
         val ocupados: Set<String> = emptySet(),
-        /** Lo que esta caja canceló, marcó «Listo» o «Entregado» (orderId →), escondido hasta que el SERVIDOR lo confirme. */
+        /** Lo que esta caja canceló, marcó «Listo» o «Entregado» (orderId →), escondido mientras el SERVIDOR lo traiga igual (R94). */
         val quitados: Map<String, Quitado> = emptyMap(),
         val aviso: AvisoDeFolio? = null,
         val toast: String? = null,
     )
 
     /**
-     * R92 M2: un folio que esta caja sacó. [marca] = `actualizadoEnMs` de la lista en que se sacó (su conteo todavía lo cuenta);
-     * [listo] = se marcó «Listo» (si el SERVIDOR lo devuelve como `READY`, eso también lo confirma).
+     * R92 M2 / R94: un folio que esta caja sacó, con la [seccion] y el [estado] que tenía al esconderlo. [marca] = `actualizadoEnMs`
+     * de la lista en que se sacó (su conteo todavía lo cuenta).
      */
-    private data class Quitado(val marca: Long?, val listo: Boolean)
+    private data class Quitado(val marca: Long?, val seccion: SeccionDeFolios, val estado: String)
 
     private val local = MutableStateFlow(Local())
 
@@ -211,6 +211,13 @@ class PorPagarViewModel @Inject constructor(
     val zona: ZoneId get() = VenueTimeZone.get(storage)
 
     init {
+        // R94: un folio que ya no viene en ninguna lista se olvida (el SERVIDOR ya confirmó lo que se hizo con él).
+        viewModelScope.launch {
+            vigia.estado.collect { e ->
+                val vivos = (e.porPagar + e.porEntregar).mapTo(HashSet()) { it.orderId }
+                local.update { l -> if (l.quitados.keys.all { it in vivos }) l else l.copy(quitados = l.quitados.filterKeys { it in vivos }) }
+            }
+        }
         viewModelScope.launch {
             val entregar = permisos.hasPermission("orders:update")
             val cancelar = permisos.hasPermission("orders:cancel-unpaid")
@@ -334,10 +341,10 @@ class PorPagarViewModel @Inject constructor(
         return Result.success(null)
     }
 
-    private enum class Accion(val sinRed: String, val fallo: String) {
-        CANCELAR("No se canceló el folio. Inténtalo con conexión.", "No se pudo cancelar el folio"),
-        LISTO("No se marcó «Listo». Inténtalo con conexión.", "No se pudo marcar «Listo»"),
-        ENTREGADO("No se marcó «Entregado». Inténtalo con conexión.", "No se pudo marcar «Entregado»"),
+    private enum class Accion(val sinRed: String, val fallo: String, val seccion: SeccionDeFolios) {
+        CANCELAR("No se canceló el folio. Inténtalo con conexión.", "No se pudo cancelar el folio", SeccionDeFolios.POR_PAGAR),
+        LISTO("No se marcó «Listo». Inténtalo con conexión.", "No se pudo marcar «Listo»", SeccionDeFolios.POR_ENTREGAR),
+        ENTREGADO("No se marcó «Entregado». Inténtalo con conexión.", "No se pudo marcar «Entregado»", SeccionDeFolios.POR_ENTREGAR),
     }
 
     private fun accion(folio: Folio, accion: Accion) {
@@ -355,7 +362,8 @@ class PorPagarViewModel @Inject constructor(
                 r.fold(
                     onSuccess = {
                         base.copy(
-                            quitados = l.quitados + (folio.orderId to Quitado(marca, listo = accion == Accion.LISTO)),
+                            // Cancelar sólo se ofrece por pagar; «Listo» y «Entregado», por entregar.
+                            quitados = l.quitados + (folio.orderId to Quitado(marca, accion.seccion, folio.estado)),
                             seleccionado = l.seleccionado?.takeIf { it.orderId != folio.orderId },
                             toast = when (accion) {
                                 Accion.CANCELAR -> TextosPorPagar.cancelado(folio.folio)
@@ -396,22 +404,22 @@ class PorPagarViewModel @Inject constructor(
     }
 
     private fun componer(e: EstadoDeFolios, l: Local): PorPagarUi {
-        // R92 M2: lo que esta caja sacó sigue escondido mientras el SERVIDOR siga trayendo ESE folio como estaba. Se confirma
-        // cuando ya no viene en ninguna lista (o viene «Listo»). Una vuelta nueva no basta: su página puede no haberse releído.
-        val porId = (e.porPagar + e.porEntregar).associateBy { it.orderId }
-        val fuera = l.quitados.filter { (id, q) -> porId[id]?.let { !(q.listo && it.estado == ESTADO_LISTO) } == true }
-        val pagar = e.porPagar.filterNot { it.orderId in fuera }
-        val entregar = e.porEntregar.filterNot { it.orderId in fuera }
+        // R92 M2 / R94: lo que esta caja sacó sigue escondido sólo mientras el SERVIDOR lo traiga EXACTAMENTE como estaba (misma
+        // sección y mismo estado): una relectura vieja no lo regresa con sus botones. Si lo trae distinto (p. ej. un cancelado que
+        // revive por dinero tardío y viene ACCEPTED en «Por entregar»), se ve. Si ya no viene, se olvida (ver `init`).
+        fun escondido(f: Folio, seccion: SeccionDeFolios) = l.quitados[f.orderId]?.let { it.seccion == seccion && it.estado == f.estado } == true
+        val pagar = e.porPagar.filterNot { escondido(it, SeccionDeFolios.POR_PAGAR) }
+        val entregar = e.porEntregar.filterNot { escondido(it, SeccionDeFolios.POR_ENTREGAR) }
         // R92 I1: a la lista en que se sacó, el SERVIDOR todavía lo contaba; desde la vuelta siguiente ya viene descontado.
-        val sinDescontar = fuera.filterValues { it.marca == e.actualizadoEnMs }.keys
+        fun sinDescontar(f: Folio, seccion: SeccionDeFolios) = escondido(f, seccion) && l.quitados[f.orderId]?.marca == e.actualizadoEnMs
         return PorPagarUi(
             folios = e,
             busqueda = l.busqueda,
             buscando = textoDeBusqueda(l.busqueda).length >= MIN_BUSQUEDA,
             porPagar = filtrarFolios(pagar, l.busqueda),
             porEntregar = filtrarFolios(entregar, l.busqueda),
-            numeroPorPagar = numeroDeSeccion(e.counts.porPagar, e.porPagar.count { it.orderId in sinDescontar }),
-            numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar, e.porEntregar.count { it.orderId in sinDescontar }),
+            numeroPorPagar = numeroDeSeccion(e.counts.porPagar, e.porPagar.count { sinDescontar(it, SeccionDeFolios.POR_PAGAR) }),
+            numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar, e.porEntregar.count { sinDescontar(it, SeccionDeFolios.POR_ENTREGAR) }),
             puedeEntregar = l.puedeEntregar,
             puedeCancelar = l.puedeCancelar,
             seleccionado = l.seleccionado?.let { s -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == s.orderId } ?: s },
@@ -423,7 +431,6 @@ class PorPagarViewModel @Inject constructor(
 
     private companion object {
         const val MAX_PAGINAS = 20
-        const val ESTADO_LISTO = "READY"
     }
 }
 

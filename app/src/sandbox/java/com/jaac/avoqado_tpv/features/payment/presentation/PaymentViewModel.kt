@@ -8369,6 +8369,11 @@ class PaymentViewModel @Inject constructor(
                     // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
                     // R91: justo después de la libreta, como el efectivo. El candado de la cuenta de abajo (`updateOrderMerchant`)
                     // es un withContext(IO) cancelable: si la pantalla ya se fue, truena al entrar y lo que sigue no corre.
+                    // ⚠️ OJO: esta línea sólo sobrevive a que la cajera salga del éxito porque `markRecorded` corre en
+                    // `withContext(NonCancellable + IO)` DENTRO de `runCatching`, que se traga la cancelación de su regreso.
+                    // Cualquier cosa que suspenda (cancelable) y se ponga ANTES de esta línea, o quitarle ese runCatching, regresa el error:
+                    // el folio no se acepta y la cocina no se entera. La prueba R91 de PaymentViewModelTest usa un doble de la
+                    // libreta, así que NO lo detectaría.
                     folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")

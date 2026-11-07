@@ -120,6 +120,31 @@ class MenuViewModelManualDiscountTest {
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 150.0, "x", null, "tok-2") }
     }
 
+    @Test fun `fijo_1_005_sobre_1_01_no_pide_pin_por_adelantado`() {
+        // El SERVIDOR lo redondea a $1.00 y deja $0.01: el valor se compara tal como se escribió, sin redondear.
+        crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.005, "x")
+        coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.005, "x", null, null) }
+    }
+
+    @Test fun `fijo_1_01_sobre_1_01_pide_pin`() {
+        coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-c")
+        crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.01, "x")
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, false) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.01, "x", null, "tok-c") }
+    }
+
+    @Test fun `fijo_1_009_sobre_1_01_no_pide_pin_por_adelantado_y_con_el_403_del_servidor_pide_pin_y_reintenta`() {
+        // El SERVIDOR lo redondea a $1.01 (regala la cuenta) y contesta 403 `orders:comp`: ahí se pide el PIN.
+        coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-d")
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.009, "x")
+        coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, false) }
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.009, "x", null, "tok-d") }
+    }
+
     @Test fun `fijo_un_centavo_menos_no_pide_pin`() {
         crear(subtotal = "200.00", descuentos = "50.00", total = "190.00").applyManualDiscount(DiscountType.FIXED, 149.99, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }

@@ -566,13 +566,16 @@ class CheckoutViewModel @Inject constructor(
     }
 
     /**
-     * Llaves que pudieron llegar al servidor: salieron a la red en esta corrida (con o sin token) o volvieron de disco con su carrito
-     * (pudieron salir antes de morir el proceso). Sólo en memoria. Con una de éstas, cancelar o negar el PIN no es «sin autorizar».
+     * La venta actual pudo llegar al servidor si su llave es la última que salió a la red en esta corrida (con o sin token) o la de un
+     * carrito que volvió de disco (pudo salir antes de morir el proceso). Una marca de cada una, sólo en memoria: con la llave actual
+     * en una de ellas, cancelar o negar el PIN no es «sin autorizar».
      */
-    private val llavesQuePudieronSalir = mutableSetOf<String>()
+    private var llaveMandada: String? = null
+    private var llaveRecuperada: String? = null
 
     private fun olvidarLlave() {
-        orderAttemptExternalId?.let(llavesQuePudieronSalir::remove)
+        llaveMandada = null
+        llaveRecuperada = null
         orderAttemptExternalId = null
         orderAttemptFingerprint = null
     }
@@ -1339,9 +1342,10 @@ class CheckoutViewModel @Inject constructor(
         val peticion = pedido.copy(externalId = llave)
         var token: String? = null
         // «Sin autorizar» sólo si sabemos que esta llave nunca salió. Si ya salió (o volvió de disco), la orden pudo crearse y se dice.
-        fun sinAutorizar(texto: String) = Result.failure<Order>(Exception(if (llave in llavesQuePudieronSalir) TEXTO_VENTA_EN_DUDA else texto))
+        fun sinAutorizar(texto: String) =
+            Result.failure<Order>(Exception(if (llave == llaveMandada || llave == llaveRecuperada) TEXTO_VENTA_EN_DUDA else texto))
         suspend fun enviar(): Result<Order> {
-            llavesQuePudieronSalir += llave // ANTES de la red
+            llaveMandada = llave // ANTES de la red
             return orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
         }
         if (llevaCortesia(_cartState.value)) {
@@ -1460,7 +1464,7 @@ class CheckoutViewModel @Inject constructor(
         _selectedCustomer.value = aMedias.cliente
         // Su llave para su carrito: el siguiente «Cobrar» sin cambios reusa la misma (ver [llaveDelIntento]).
         orderAttemptExternalId = aMedias.llave
-        llavesQuePudieronSalir += aMedias.llave // pudo salir antes de morir el proceso: no sabemos
+        llaveRecuperada = aMedias.llave // pudo salir antes de morir el proceso: no sabemos
         orderAttemptFingerprint = pedidoEnLinea(cart, staffId, aMedias.cliente?.id).toString()
         _aviso.value = AVISO_VENTA_RECUPERADA
         Timber.i("🛒 Venta a medias restaurada (${cart.itemCount} artículos)")

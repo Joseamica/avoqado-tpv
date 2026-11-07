@@ -881,6 +881,30 @@ class CheckoutViewModelTest {
         vm.viewModelScope.cancel()
     }
 
+    private fun marca(vm: CheckoutViewModel, campo: String): Any? =
+        CheckoutViewModel::class.java.getDeclaredField(campo).apply { isAccessible = true }.get(vm)
+
+    @Test
+    fun `100 envios fallidos editando el carrito no acumulan llaves - una sola marca de la venta actual`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems(any(), capture(enviados), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(422, "Producto archivado", "Producto archivado"))
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+
+        repeat(100) {
+            assertTrue(vm.prepareForPayment().isFailure)
+            vm.incrementQuantity(vm.cartState.value.items.first().id) // editar = llave nueva
+        }
+
+        assertEquals(100, enviados.map { it.externalId }.toSet().size)
+        assertEquals(enviados.last().externalId, marca(vm, "llaveMandada")) // sólo la última, nunca un acumulado
+        assertNull(marca(vm, "llaveRecuperada"))
+        vm.clearCart()
+        assertNull(marca(vm, "llaveMandada"))
+        vm.viewModelScope.cancel()
+    }
+
     @Test
     fun `con permiso la cortesia no cambia - tras un fallo el reintento crea la orden sin PIN`() = runTest {
         // autorizacion: NoHaceFalta (default)

@@ -2422,11 +2422,12 @@ class MenuViewModel @Inject constructor(
                 Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
 
                 // PIN de gerente por adelantado sólo con 100 % o un fijo que cubre lo que queda (subtotal − descuentos, no `total`).
-                // Sin predecir redondeos: si el servidor redondea un % menor a regalar la cuenta (99.999 % de $100), contesta 403
-                // `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca pide un PIN que el servidor no pediría.
+                // El valor se compara TAL COMO SE ESCRIBIÓ, sin redondear ni predecir redondeos: si el servidor redondea a regalar la
+                // cuenta (99.999 % de $100, $1.009 de $1.01), contesta 403 `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca
+                // pide un PIN que el servidor no pediría ($1.005 de $1.01: el servidor deja $0.01).
                 val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
                 regalaLaCuenta = queda.signum() > 0 && ((type == DiscountType.PERCENTAGE && value >= 100) ||
-                    (type == DiscountType.FIXED && java.math.BigDecimal.valueOf(value).setScale(2, java.math.RoundingMode.HALF_UP) >= queda))
+                    (type == DiscountType.FIXED && java.math.BigDecimal(value.toString()) >= queda))
                 val motivoPin = "Para dar esta cortesía"
                 var token: String? = null
                 if (regalaLaCuenta) {

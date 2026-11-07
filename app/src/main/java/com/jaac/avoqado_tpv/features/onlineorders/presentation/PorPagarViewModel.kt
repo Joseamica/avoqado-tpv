@@ -197,10 +197,10 @@ class PorPagarViewModel @Inject constructor(
     )
 
     /**
-     * R92 M2 / R94: un folio que esta caja sacó, con la [seccion] y el [estado] que tenía al esconderlo. [marca] = `actualizadoEnMs`
-     * de la lista en que se sacó (su conteo todavía lo cuenta).
+     * R92 M2 / R94 / R96: un folio que esta caja sacó, con la [seccion], el [estado] y lo que faltaba ([faltaCentavos]) cuando el
+     * SERVIDOR confirmó la acción. [marca] = `actualizadoEnMs` de la lista en que se sacó (su conteo todavía lo cuenta).
      */
-    private data class Quitado(val marca: Long?, val seccion: SeccionDeFolios, val estado: String)
+    private data class Quitado(val marca: Long?, val seccion: SeccionDeFolios, val estado: String, val faltaCentavos: Long)
 
     private val local = MutableStateFlow(Local())
 
@@ -356,14 +356,17 @@ class PorPagarViewModel @Inject constructor(
                 Accion.LISTO -> folios.listo(venueId, folio.orderId)
                 Accion.ENTREGADO -> folios.entregado(venueId, folio.orderId)
             }
-            val marca = vigia.estado.value.actualizadoEnMs
+            val lista = vigia.estado.value
+            val marca = lista.actualizadoEnMs
+            // R96: la huella es la del folio en la lista al confirmarse la acción (la más nueva que tiene esta caja).
+            val visto = (lista.porPagar + lista.porEntregar).firstOrNull { it.orderId == folio.orderId } ?: folio
             local.update { l ->
                 val base = l.copy(ocupados = l.ocupados - folio.orderId)
                 r.fold(
                     onSuccess = {
                         base.copy(
                             // Cancelar sólo se ofrece por pagar; «Listo» y «Entregado», por entregar.
-                            quitados = l.quitados + (folio.orderId to Quitado(marca, accion.seccion, folio.estado)),
+                            quitados = l.quitados + (folio.orderId to Quitado(marca, accion.seccion, visto.estado, visto.faltaCentavos)),
                             seleccionado = l.seleccionado?.takeIf { it.orderId != folio.orderId },
                             toast = when (accion) {
                                 Accion.CANCELAR -> TextosPorPagar.cancelado(folio.folio)
@@ -404,10 +407,12 @@ class PorPagarViewModel @Inject constructor(
     }
 
     private fun componer(e: EstadoDeFolios, l: Local): PorPagarUi {
-        // R92 M2 / R94: lo que esta caja sacó sigue escondido sólo mientras el SERVIDOR lo traiga EXACTAMENTE como estaba (misma
-        // sección y mismo estado): una relectura vieja no lo regresa con sus botones. Si lo trae distinto (p. ej. un cancelado que
-        // revive por dinero tardío y viene ACCEPTED en «Por entregar»), se ve. Si ya no viene, se olvida (ver `init`).
-        fun escondido(f: Folio, seccion: SeccionDeFolios) = l.quitados[f.orderId]?.let { it.seccion == seccion && it.estado == f.estado } == true
+        // R92 M2 / R94 / R96: lo que esta caja sacó sigue escondido sólo mientras el SERVIDOR lo traiga EXACTAMENTE como estaba
+        // (misma sección, mismo estado y mismo saldo): una relectura vieja no lo regresa con sus botones. Si lo trae distinto, se ve:
+        // un cancelado que revive por dinero tardío llega ACCEPTED en «Por entregar», o en «Por pagar» igual pero con un abono
+        // (falta menos) y hay que cobrarle el resto. Si ya no viene, se olvida (ver `init`).
+        fun escondido(f: Folio, seccion: SeccionDeFolios) =
+            l.quitados[f.orderId]?.let { it.seccion == seccion && it.estado == f.estado && it.faltaCentavos == f.faltaCentavos } == true
         val pagar = e.porPagar.filterNot { escondido(it, SeccionDeFolios.POR_PAGAR) }
         val entregar = e.porEntregar.filterNot { escondido(it, SeccionDeFolios.POR_ENTREGAR) }
         // R92 I1: a la lista en que se sacó, el SERVIDOR todavía lo contaba; desde la vuelta siguiente ya viene descontado.

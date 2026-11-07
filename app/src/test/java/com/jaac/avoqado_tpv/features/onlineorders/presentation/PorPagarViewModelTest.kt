@@ -718,4 +718,30 @@ class PorPagarViewModelTest {
     }
 
     // endregion
+
+    // region — R96: un abono tardío también lo regresa (misma sección y estado, otro saldo)
+
+    @Test
+    fun `R96 cancelado aqui que revive con un abono tardio regresa a Por pagar con Cobrar por lo que falta`() = runTest {
+        val ana = folio("a", total = "134.00")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(1, 0), porPagar = listOf(ana), actualizadoEnMs = 1_000L)
+        coEvery { folios.cancelar("v1", "a") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.cancelar(ana)
+        assertThat(vm.ui.value.porPagar).isEmpty()
+
+        // El efectivo encolado de otro aparato pagó una parte: el SERVIDOR lo revive en «Por pagar», PENDING_ACCEPTANCE, falta menos.
+        val conAbono = ana.copy(falta = BigDecimal("50.00"), estadoDePago = "PARTIAL")
+        estado.value = estado.value.copy(counts = ConteoDeFolios(1, 0), porPagar = listOf(conAbono), actualizadoEnMs = 2_000L)
+
+        assertThat(vm.ui.value.porPagar.map { it.orderId to it.falta }).containsExactly("a" to BigDecimal("50.00"))
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(1)
+        assertThat(vm.ui.value.folios.sinConexion).isFalse() // con red, la pantalla del folio ofrece «Cobrar»
+
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(conAbono)))
+        assertThat(vm.cobrar(conAbono)?.initialAmount).isEqualTo("50.00")
+    }
+
+    // endregion
 }

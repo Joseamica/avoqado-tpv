@@ -81,6 +81,7 @@ class CheckoutVentaSinRedTest {
     private lateinit var aparato: VentaSinRedEnMemoria
     private lateinit var permissions: PermissionsRepository
     private lateinit var paymentDao: PendingPaymentDao
+    private lateinit var autorizacion: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
     private val guardadas = MutableStateFlow(0)
     private val problemas = MutableStateFlow(0)
 
@@ -103,6 +104,7 @@ class CheckoutVentaSinRedTest {
         permissions = mockk()
         coEvery { permissions.hasPermission(any()) } returns true
         paymentDao = mockk(relaxed = true)
+        autorizacion = mockk { coEvery { paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.NoHaceFalta }
         io.mockk.every { paymentDao.contarVentasGuardadas("venue-1") } returns guardadas
         io.mockk.every { paymentDao.contarConProblema("venue-1") } returns problemas
         io.mockk.every { paymentDao.contarVentasGuardadas("venue-2") } returns MutableStateFlow(7)
@@ -149,6 +151,7 @@ class CheckoutVentaSinRedTest {
             ventaSinRed = aparato,
             impresoraDeVentaGuardada = impresora,
             pendingPaymentDao = paymentDao,
+            autorizacionDeGerente = autorizacion,
             permissionsRepository = permissions,
         )
     }
@@ -670,7 +673,7 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
-    @Test fun `sin permiso propio la cortesia no cambia el carrito aunque se invoque directo y sin red`() = runTest {
+    @Test fun `sin permiso propio la cortesia se marca igual, el PIN se pide al cobrar`() = runTest {
         coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
         connectionStateManager.setInternetConnected(false)
         val vm = viewModel()
@@ -679,8 +682,7 @@ class CheckoutVentaSinRedTest {
 
         vm.applyCortesiaToItem(antes.items.single().id, "Cliente frecuente")
 
-        assertEquals(antes, vm.cartState.value)
-        assertFalse(vm.cartState.value.items.single().isCortesia)
+        assertTrue(vm.cartState.value.items.single().isCortesia)
     }
 
     @Test fun `sin discounts apply no hay descuento manual aunque se invoque directo`() = runTest {
@@ -804,6 +806,52 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
+    @Test fun `con red, cortesia de puros importes sin permiso no guarda venta en cero`() = runTest {
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        val vm = viewModel()
+        vm.addCustomAmount("Servicio", 5000)
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        assertTrue(vm.prepareForPayment().isFailure)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red, producto con cortesia sin permiso no se encola`() = runTest {
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        val r = vm.prepareForPayment()
+        assertTrue(r.exceptionOrNull()?.message?.startsWith("Sin conexión: el PIN") == true)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red, descuento manual del 100 por ciento sin permiso de cortesia no se encola`() = runTest {
+        coEvery { permissions.hasPermission(any()) } returns true
+        coEvery { permissions.hasPermission("tpv-orders:comp") } returns false
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyManualOrderDiscount(5000, "regalo")
+        val r = vm.prepareForPayment()
+        assertTrue(r.exceptionOrNull()?.message?.startsWith("Sin conexión: el PIN") == true)
+        assertTrue(aparato.filas.isEmpty())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `sin red, con permiso la cortesia sigue como venta local`() = runTest {
+        coEvery { permissions.hasPermission(any()) } returns true
+        connectionStateManager.setInternetConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto())
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
+        assertTrue(vm.prepareForPayment().isSuccess)
+        assertEquals(1, aparato.filas.size)
+        vm.viewModelScope.cancel()
+    }
+
     @Test fun `carrito restaurado con cortesia no autorizada no guarda ni siquiera venta cero`() = runTest {
         val original = CartState(items = listOf(com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem(
             id = "i", type = com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType.CustomAmount,
@@ -819,6 +867,20 @@ class CheckoutVentaSinRedTest {
         vm.viewModelScope.cancel()
     }
 
+    @Test fun `carrito restaurado con cortesia y PIN cancelado dice no confirmada, no sin autorizar`() = runTest {
+        // Pudo salir a la red antes de que muriera el proceso: la orden pudo crearse.
+        aparato.guardarCarrito("venue-1", "llave-antes", CartState(items = listOf(com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem(
+            type = com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType.ProductItem("p-1"),
+            name = "Café", unitPriceCents = 5000, isCortesia = true, cortesiaReason = "VIP"))), null)
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.Cancelada
+        val vm = viewModel()
+        assertTrue(vm.cartState.value.items.single().isCortesia)
+
+        assertEquals("No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar", vm.prepareForPayment().exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
     @Test fun `permisos seguros mientras cargan no permiten mutaciones y el operador propio si al terminar`() = runTest {
         val permiso = CompletableDeferred<Boolean>()
         coEvery { permissions.hasPermission(any()) } coAnswers { permiso.await() }
@@ -826,7 +888,6 @@ class CheckoutVentaSinRedTest {
         vm.addProduct(producto())
         assertFalse(vm.canCompItems.value)
         assertFalse(vm.canApplyDiscount.value)
-        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
         vm.applyManualOrderDiscount(1000, "Rebaja")
         assertEquals(5000, vm.cartState.value.totalCents)
         permiso.complete(true)
@@ -859,7 +920,6 @@ class CheckoutVentaSinRedTest {
         vm.addProduct(producto())
         coEvery { secureStorage.getStaffId() } returns "staff-nuevo"
         coEvery { permissions.hasPermission(any()) } returns false
-        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "VIP")
         vm.applyManualOrderDiscount(1000, "Rebaja")
         assertEquals(5000, vm.cartState.value.totalCents)
         vm.viewModelScope.cancel()

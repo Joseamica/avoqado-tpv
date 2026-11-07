@@ -72,7 +72,6 @@ class OrderRepositoryCreateOrderFallosTest {
         val esperados = mapOf(
             400 to "No se pudo crear la orden. Verifica descuentos, cortesías o totales.",
             401 to "No autorizado. Por favor inicia sesión nuevamente.",
-            403 to "No tienes permiso para crear órdenes.",
             404 to "Producto, descuento o staff no encontrado.",
             422 to "Error al crear orden: 422",
             500 to "Error al crear orden: 500",
@@ -84,6 +83,21 @@ class OrderRepositoryCreateOrderFallosTest {
             assertThat(e.userMessage).isEqualTo(texto)
             assertThat(e.servidorNoContesto).isFalse()
         }
+    }
+
+    @Test fun `un 403 sale como PermisoRequeridoException con el texto de hoy y el permiso`() {
+        servidor.enqueue(MockResponse().setResponseCode(403).setBody("""{"required":"orders:comp","overridable":true}"""))
+        val e = falla() as com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+        assertThat(e.required).isEqualTo("orders:comp")
+        assertThat(e.overridable).isTrue()
+        servidor.enqueue(MockResponse().setResponseCode(403))
+        assertThat(falla()!!.message).isEqualTo("No tienes permiso para crear órdenes.")
+    }
+
+    @Test fun `un 400 con cupon conserva la razon del servidor`() {
+        servidor.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":"Este cupón ya venció."}"""))
+        val e = runBlocking { repo.createOrderWithItems("venue-1", pedido.copy(couponCode = "VERANO")) }.exceptionOrNull() as ApiException.HttpError
+        assertThat(e.userMessage).isEqualTo("Este cupón ya venció.")
     }
 
     @Test fun `una respuesta 200 sin cuerpo valido sigue siendo el error de hoy`() {

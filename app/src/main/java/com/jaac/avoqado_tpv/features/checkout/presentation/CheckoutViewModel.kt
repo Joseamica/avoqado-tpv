@@ -7,7 +7,11 @@ import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.checkout.domain.model.VentaGuardadaVista
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.core.data.network.textoDePermiso
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
@@ -121,6 +125,7 @@ class CheckoutViewModel @Inject constructor(
     private val impresoraDeVentaGuardada: ImpresoraDeVentaGuardada,
     private val pendingPaymentDao: PendingPaymentDao,
     private val permissionsRepository: PermissionsRepository,
+    private val autorizacionDeGerente: AutorizacionDeGerente,
 ) : ViewModel() {
 
     /**
@@ -369,10 +374,6 @@ class CheckoutViewModel @Inject constructor(
      */
     fun applyCortesiaToItem(itemId: String, reason: String) {
         if (candado.rechaza("dar una cortesía")) return
-        if (!_canCompItems.value || permisosDe != sesionActual()) {
-            _aviso.value = "No tienes permiso para dar cortesías. Pide apoyo al gerente."
-            return
-        }
         val trimmed = reason.trim()
         require(trimmed.isNotEmpty()) { "Cortesía reason cannot be blank" }
         _cartState.update { current ->
@@ -393,10 +394,6 @@ class CheckoutViewModel @Inject constructor(
     /** Reverts a cortesía back to a billable item. Keeps everything else intact. */
     fun removeCortesiaFromItem(itemId: String) {
         if (candado.rechaza("quitar una cortesía")) return
-        if (!_canCompItems.value || permisosDe != sesionActual()) {
-            _aviso.value = "No tienes permiso para cambiar cortesías. Pide apoyo al gerente."
-            return
-        }
         _cartState.update { current ->
             current.copy(
                 items = current.items.map { item ->
@@ -568,7 +565,17 @@ class CheckoutViewModel @Inject constructor(
         }
     }
 
+    /**
+     * La venta actual pudo llegar al servidor si su llave es la última que salió a la red en esta corrida (con o sin token) o la de un
+     * carrito que volvió de disco (pudo salir antes de morir el proceso). Una marca de cada una, sólo en memoria: con la llave actual
+     * en una de ellas, cancelar o negar el PIN no es «sin autorizar».
+     */
+    private var llaveMandada: String? = null
+    private var llaveRecuperada: String? = null
+
     private fun olvidarLlave() {
+        llaveMandada = null
+        llaveRecuperada = null
         orderAttemptExternalId = null
         orderAttemptFingerprint = null
     }
@@ -1079,6 +1086,12 @@ class CheckoutViewModel @Inject constructor(
             }
             CaminoDelCobro.EN_LINEA -> cobrarEnLinea(current, amountPesos)
             CaminoDelCobro.LOCAL -> {
+                // Una venta local se reproduce por /mobile SIN token: una cortesía sin permiso la rechazaría el servidor. El PIN necesita red.
+                if (llevaCortesia(current) && !permissionsRepository.hasPermission("tpv-orders:comp")) {
+                    return Result.failure(IllegalStateException(
+                        (if (hayRed) "" else "Sin conexión: ") + "el PIN del gerente necesita internet. Quita la cortesía o cobra cuando vuelva la red",
+                    ))
+                }
                 // Sólo importes en $0 con red: hasta hoy salía como Fast y capturaba el referido sin orden; eso se conserva.
                 if (hayRed && !current.hasProductItems) capturarReferido(orderId = null)
                 ventaLocal(current, amountPesos, llaveYaUsada = null)
@@ -1228,6 +1241,7 @@ class CheckoutViewModel @Inject constructor(
             // exactly the pay-later shape. No separate "leave open" flag needed.
             // D5 (Codex r2 #4): si el servidor no contestó con un cupón, se dice lo del cupón, como en Cobrar.
             else -> createOrderWithCurrentItems().recoverCatching { fallo ->
+                if (fallo.message == TEXTO_NO_CONFIRMADA_COBRAR) throw Exception("No pudimos confirmar la venta. Inténtalo otra vez")
                 throw if (current.couponCode != null && pasaALaVentaLocal(fallo)) IllegalStateException(TEXTO_CUPON_SIN_RED, fallo) else fallo
             }
         }
@@ -1316,9 +1330,70 @@ class CheckoutViewModel @Inject constructor(
             }
     }
 
-    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> =
-        orderRepository.createOrderWithItems(venueId = venueId, request = pedido.copy(externalId = llave))
-            .onSuccess { olvidarLlave() }
+    /**
+     * Crea la orden. Si la venta lleva cortesía (una línea, o un descuento manual que deja los productos en $0) y la cajera no tiene
+     * el permiso, pide el PIN de un gerente y manda su token de un solo uso en `X-Permission-Override`. Un 403 `orders:comp` pide el
+     * PIN forzado y reintenta UNA vez con la MISMA petición (mismo `externalId`: si la primera sí creó la orden, el servidor la devuelve).
+     */
+    private val TEXTO_NO_CONFIRMADA_COBRAR = "No pudimos confirmar la venta. Toca Cobrar otra vez"
+    private val TEXTO_VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
+
+    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
+        val peticion = pedido.copy(externalId = llave)
+        var token: String? = null
+        // «Sin autorizar» sólo si sabemos que esta llave nunca salió. Si ya salió (o volvió de disco), la orden pudo crearse y se dice.
+        fun sinAutorizar(texto: String) =
+            Result.failure<Order>(Exception(if (llave == llaveMandada || llave == llaveRecuperada) TEXTO_VENTA_EN_DUDA else texto))
+        suspend fun enviar(): Result<Order> {
+            llaveMandada = llave // ANTES de la red
+            return orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+        }
+        if (llevaCortesia(_cartState.value)) {
+            token = when (val auth = pedirPinDeCortesia(venueId, forzar = false)) {
+                is Autorizacion.ConPin -> auth.token
+                Autorizacion.NoHaceFalta -> null
+                Autorizacion.Cancelada -> return sinAutorizar("Cortesía sin autorizar")
+                is Autorizacion.Negada -> return sinAutorizar(auth.texto)
+                null -> return sinAutorizar("No se pudo autorizar la cortesía")
+            }
+        }
+        var resultado = enviar()
+        val rechazo = resultado.exceptionOrNull() as? PermisoRequeridoException
+        if (rechazo?.required == "orders:comp") {
+            token = when (val auth = pedirPinDeCortesia(venueId, forzar = true)) {
+                is Autorizacion.ConPin -> auth.token
+                Autorizacion.NoHaceFalta -> return Result.failure(Exception(textoDePermiso(rechazo.required, rechazo.message.orEmpty())))
+                Autorizacion.Cancelada -> return sinAutorizar("Cortesía sin autorizar")
+                is Autorizacion.Negada -> return sinAutorizar(auth.texto)
+                null -> return sinAutorizar("No se pudo autorizar la cortesía")
+            }
+            resultado = enviar()
+        }
+        (resultado.exceptionOrNull() as? PermisoRequeridoException)?.let {
+            return Result.failure(Exception(textoDePermiso(it.required, it.message.orEmpty())))
+        }
+        // Con token, nada se encola: la reproducción local va por /mobile sin token y daría 403 con el efectivo ya cobrado.
+        // Volver a tocar Cobrar es seguro (misma llave: el servidor devuelve la orden si sí se creó).
+        if (token != null && resultado.exceptionOrNull()?.let { pasaALaVentaLocal(it) } == true) {
+            return Result.failure(Exception(TEXTO_NO_CONFIRMADA_COBRAR))
+        }
+        return resultado.onSuccess { olvidarLlave() }
+    }
+
+    /** `null` = el coordinador falló (no se pudo autorizar). */
+    private suspend fun pedirPinDeCortesia(venueId: String, forzar: Boolean): Autorizacion? = try {
+        autorizacionDeGerente.paraCortesia(venueId, "Para cobrar con cortesía", forzar)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "No se pudo autorizar la cortesía")
+        null
+    }
+
+    /** Una línea de cortesía, o un descuento manual que deja los productos en $0 (en centavos, del carrito). */
+    private fun llevaCortesia(c: CartState): Boolean =
+        c.items.any { it.isCortesia } ||
+            (c.manualDiscountCents > 0 && c.subtotalCents - c.manualDiscountCents <= 0)
 
     // ─────────────────────────────────────────────────────────────────────
     // 💵 «Cobrar» sin red: el carrito a medias y la venta en $0
@@ -1389,6 +1464,7 @@ class CheckoutViewModel @Inject constructor(
         _selectedCustomer.value = aMedias.cliente
         // Su llave para su carrito: el siguiente «Cobrar» sin cambios reusa la misma (ver [llaveDelIntento]).
         orderAttemptExternalId = aMedias.llave
+        llaveRecuperada = aMedias.llave // pudo salir antes de morir el proceso: no sabemos
         orderAttemptFingerprint = pedidoEnLinea(cart, staffId, aMedias.cliente?.id).toString()
         _aviso.value = AVISO_VENTA_RECUPERADA
         Timber.i("🛒 Venta a medias restaurada (${cart.itemCount} artículos)")
@@ -1415,10 +1491,6 @@ class CheckoutViewModel @Inject constructor(
         }
         if (_ventaSinMostrar.value != null) return "Revisa primero la venta que ya quedó cobrada y guardada."
         val sesion = sesionActual()
-        if (cart.items.any { it.isCortesia } &&
-            !permissionsRepository.hasPermission("tpv-orders:comp")) {
-            return "La venta tiene una cortesía y tu sesión no tiene permiso. Pide apoyo al gerente."
-        }
         if (cart.orderDiscount == null && cart.manualDiscountCents > 0 && !permissionsRepository.hasPermission("discounts:apply")) {
             return "La venta tiene un descuento y tu sesión no tiene permiso. Pide apoyo al gerente."
         }

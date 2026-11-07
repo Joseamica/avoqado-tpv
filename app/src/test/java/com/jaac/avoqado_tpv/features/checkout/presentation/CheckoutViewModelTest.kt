@@ -37,6 +37,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -87,6 +89,8 @@ class CheckoutViewModelTest {
     private lateinit var productCategoryDao: ProductCategoryDao
     private lateinit var catalogoGuardado: CatalogoGuardado
     private lateinit var connectionStateManager: ConnectionStateManager
+    private lateinit var permisos: PermissionsRepository
+    private lateinit var autorizacion: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 
     private val savedCartsFlow = MutableStateFlow<List<SavedCart>>(emptyList())
     private val shortcutsFlow = MutableStateFlow<List<MosaicShortcut>>(emptyList())
@@ -110,6 +114,9 @@ class CheckoutViewModelTest {
         productCategoryDao = mockk(relaxed = true)
         catalogoGuardado = mockk()
         connectionStateManager = ConnectionStateManager() // real: arranca con red
+        permisos = mockk(relaxed = true) { coEvery { hasPermission(any()) } returns true }
+        autorizacion = mockk()
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
 
         coEvery { secureStorage.getVenueId() } returns "venue-1"
         coEvery { productDao.getAllProducts(any()) } returns emptyList()
@@ -154,9 +161,8 @@ class CheckoutViewModelTest {
             io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
             io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
         },
-        permissionsRepository = mockk(relaxed = true) {
-            io.mockk.coEvery { hasPermission(any()) } returns true
-        },
+        autorizacionDeGerente = autorizacion,
+        permissionsRepository = permisos,
     )
 
     private fun fakeProduct(
@@ -717,6 +723,230 @@ class CheckoutViewModelTest {
         coVerify(exactly = 0) { orderRepository.addItemsToOrder(any(), any(), any(), any(), any()) }
 
         viewModel.viewModelScope.cancel()
+    }
+
+    private val VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
+
+    private fun carritoConCortesia(vm: CheckoutViewModel) {
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+        vm.applyCortesiaToItem(vm.cartState.value.items.first().id, "Cliente frecuente")
+    }
+
+    @Test
+    fun `linea_de_cortesia_sin_permiso_pide_pin_y_manda_token`() = runTest {
+        coEvery { permisos.hasPermission(any()) } returns false // la cajera NO tiene tpv-orders:comp
+        coEvery { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertTrue(vm.cartState.value.items.first().isCortesia)
+        assertTrue(vm.prepareForPayment().isSuccess)
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) }
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any(), "tok-1") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `descuento_manual_que_deja_productos_en_cero_pide_pin`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-2")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+        vm.applyManualOrderDiscount(5000, "Todo")
+
+        assertTrue(vm.prepareForPayment().isSuccess)
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) }
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any(), "tok-2") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `venta_sin_cortesia_no_pide_pin`() = runTest {
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+        vm.applyManualOrderDiscount(1000, "Poquito")
+
+        assertTrue(vm.prepareForPayment().isSuccess)
+
+        coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any(), null) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cancelado_devuelve_failure_Cortesia_sin_autorizar_y_no_crea_la_orden`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Cancelada
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("Cortesía sin autorizar", r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `negada_devuelve_failure_con_su_texto_y_no_crea_la_orden`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Negada("Esta cortesía la da un gerente con su sesión")
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("Esta cortesía la da un gerente con su sesión", r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `403_orders_comp_reintenta_una_vez_con_pin_forzado`() = runTest {
+        coEvery { autorizacion.paraCortesia("venue-1", any(), false) } returns Autorizacion.NoHaceFalta
+        coEvery { autorizacion.paraCortesia("venue-1", any(), true) } returns Autorizacion.ConPin("tok-3")
+        val pedidos = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems(any(), capture(pedidos), null) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        coEvery { orderRepository.createOrderWithItems(any(), capture(pedidos), "tok-3") } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertTrue(vm.prepareForPayment().isSuccess)
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia("venue-1", any(), true) }
+        assertEquals(2, pedidos.size)
+        assertEquals(pedidos[0], pedidos[1]) // la MISMA venta: mismo externalId
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `segundo_403_no_hace_bucle`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-4")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("Esta cortesía la da un gerente con su sesión", r.exceptionOrNull()?.message)
+        coVerify(exactly = 2) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con token y sin red no se encola y falla con el texto de volver a cobrar`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-5")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.io.IOException("sin red")))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", r.exceptionOrNull()?.message)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras un intento con token en duda, cancelar el PIN en el reintento dice no confirmada`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returnsMany
+            listOf(Autorizacion.ConPin("tok-7"), Autorizacion.Cancelada)
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.io.IOException("sin red")))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", vm.prepareForPayment().exceptionOrNull()?.message)
+        // Mismo carrito = misma llave, que ya salió: la orden pudo crearse, así que "sin autorizar" mentiría.
+        assertEquals(VENTA_EN_DUDA, vm.prepareForPayment().exceptionOrNull()?.message)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `token gastado - 403 con token y PIN forzado cancelado dice no confirmada`() = runTest {
+        // La respuesta del primer envío se perdió y el reenvío llegó con el token ya gastado: la orden pudo crearse.
+        coEvery { autorizacion.paraCortesia(any(), any(), false) } returns Autorizacion.ConPin("tok-8")
+        coEvery { autorizacion.paraCortesia(any(), any(), true) } returns Autorizacion.Cancelada
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals(VENTA_EN_DUDA, vm.prepareForPayment().exceptionOrNull()?.message)
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    private fun marca(vm: CheckoutViewModel, campo: String): Any? =
+        CheckoutViewModel::class.java.getDeclaredField(campo).apply { isAccessible = true }.get(vm)
+
+    @Test
+    fun `100 envios fallidos editando el carrito no acumulan llaves - una sola marca de la venta actual`() = runTest {
+        val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems(any(), capture(enviados), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(422, "Producto archivado", "Producto archivado"))
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+
+        repeat(100) {
+            assertTrue(vm.prepareForPayment().isFailure)
+            vm.incrementQuantity(vm.cartState.value.items.first().id) // editar = llave nueva
+        }
+
+        assertEquals(100, enviados.map { it.externalId }.toSet().size)
+        assertEquals(enviados.last().externalId, marca(vm, "llaveMandada")) // sólo la última, nunca un acumulado
+        assertNull(marca(vm, "llaveRecuperada"))
+        vm.clearCart()
+        assertNull(marca(vm, "llaveMandada"))
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con permiso la cortesia no cambia - tras un fallo el reintento crea la orden sin PIN`() = runTest {
+        // autorizacion: NoHaceFalta (default)
+        val error422 = com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(422, "Producto archivado", "Producto archivado")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returnsMany listOf(Result.failure(error422), Result.success(fakeOrder()))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals(error422, vm.prepareForPayment().exceptionOrNull())
+        assertTrue(vm.prepareForPayment().isSuccess)
+        coVerify(exactly = 2) { orderRepository.createOrderWithItems("venue-1", any(), null) }
+        coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), true) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `si el coordinador truena no se puede autorizar la cortesia`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } throws IllegalStateException("boom")
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        val r = vm.prepareForPayment()
+
+        assertEquals("No se pudo autorizar la cortesía", r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `pagar despues con cortesia pide el PIN y manda el token`() = runTest {
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.ConPin("tok-6")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns Result.success(fakeOrder())
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+        vm.addProduct(fakeProduct(id = "p-2", priceCents = 3000), quantity = 1)
+        vm.applyCortesiaToItem(vm.cartState.value.items.first().id, "Cliente frecuente")
+        vm.selectCustomer(fakeCustomer(id = "c-1"))
+
+        assertTrue(vm.createPayLaterOrder().isSuccess)
+
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any(), "tok-6") }
+        vm.viewModelScope.cancel()
     }
 
     @Test

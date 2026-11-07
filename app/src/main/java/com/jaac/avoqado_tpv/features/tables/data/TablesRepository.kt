@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe
 import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
@@ -801,7 +802,7 @@ class TablesRepository @Inject constructor(
      */
     suspend fun applyDiscount(venueId: String, orderId: String, discountId: String): Result<DiscountOutcome> {
         val onlineResult = try {
-            api.applyDiscount(venueId, orderId, ApplyDiscountRequest(discountId = discountId)).toApplyDiscountResult()
+            api.applyDiscount(venueId, orderId, ApplyDiscountRequest(discountId = discountId)).toApplyDiscountResult(conTextoDePermiso = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
@@ -875,17 +876,19 @@ class TablesRepository @Inject constructor(
         }
     }
 
-    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult():
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult(conTextoDePermiso: Boolean = false):
         Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.DiscountApplyResult> {
         val body = body()
         val data = body?.data
         return if (isSuccessful && body?.success == true && data != null) {
             Result.success(data)
         } else {
+            val raw = errorBody()?.string()
+            val texto = body?.error ?: parseBackendErrorMessage(raw, message())
             Result.failure(
                 BackendHttpException(
                     statusCode = code(),
-                    message = body?.error ?: parseBackendErrorMessage(errorBody()?.string(), message()),
+                    message = if (conTextoDePermiso) permisoRequeridoDe(code(), raw, texto)?.message ?: texto else texto,
                 ),
             )
         }
@@ -906,10 +909,23 @@ class TablesRepository @Inject constructor(
      * pase — un fallo transitorio se propaga con un mensaje claro en vez de
      * disfrazarse de "guardado offline".
      */
-    suspend fun compOrder(venueId: String, orderId: String, itemIds: List<String>, reason: String, staffId: String): Result<CompOutcome> {
-        val onlineResult = callCompOrder(venueId, orderId, itemIds, reason, staffId)
+    suspend fun compOrder(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        overrideToken: String? = null,
+    ): Result<CompOutcome> {
+        val onlineResult = callCompOrder(venueId, orderId, itemIds, reason, staffId, overrideToken)
         onlineResult.onSuccess { result ->
             return Result.success(CompOutcome(queued = false, total = result.total, version = result.version))
+        }
+
+        // Con token ya se mandó la cortesía y no sabemos si pasó: nunca se encola (se duplicaría); el mesero revisa la cuenta.
+        // Cualquier fallo (red, 500, 400...) salvo el 403 de permiso, que el ViewModel ya trata: el token pudo gastarse y la cortesía aplicarse.
+        if (overrideToken != null && onlineResult.exceptionOrNull() !is com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException) {
+            return Result.failure(NoConfirmadaException())
         }
 
         if (itemIds.isNotEmpty()) {
@@ -944,14 +960,18 @@ class TablesRepository @Inject constructor(
         itemIds: List<String>,
         reason: String,
         staffId: String,
+        overrideToken: String?,
     ): Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResult> = try {
-        val response = api.compOrder(venueId, orderId, CompOrderRequest(itemIds = itemIds, reason = reason, staffId = staffId))
+        val response = api.compOrder(venueId, orderId, CompOrderRequest(itemIds = itemIds, reason = reason, staffId = staffId), overrideToken)
         val data = response.body()?.data
         if (response.isSuccessful && data != null) {
             Result.success(data)
         } else {
+            val raw = response.errorBody()?.string()
+            val texto = parseBackendErrorMessage(raw, response.message())
             Result.failure(
-                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+                permisoRequeridoDe(response.code(), raw, texto)
+                    ?: BackendHttpException(statusCode = response.code(), message = texto),
             )
         }
     } catch (e: CancellationException) {
@@ -1603,6 +1623,10 @@ class TablesRepository @Inject constructor(
     /** Cortesía de un artículo puntual falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [compOrder]. */
     class ItemCompRequiresConnectionException :
         Exception("La cortesía de artículos ya enviados necesita conexión — inténtalo cuando el equipo esté en línea.")
+
+    /** Se mandó la cortesía con el PIN del gerente y no supimos si pasó: no se encola, se revisa la cuenta. */
+    class NoConfirmadaException :
+        Exception("No pudimos confirmar la cortesía. Revisa la cuenta")
 
     /** Quitar un descuento aplicado falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [removeDiscount]. */
     class RemoveDiscountRequiresConnectionException :

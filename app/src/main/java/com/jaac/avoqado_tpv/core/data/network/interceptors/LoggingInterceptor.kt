@@ -47,6 +47,7 @@ object LoggingInterceptor {
         return HttpLoggingInterceptor(logger).apply {
             redactHeader("Authorization")
             redactHeader("X-TPV-Command-Token")
+            redactHeader("X-Permission-Override")
             level = if (BuildConfig.DEBUG) {
                 // Log full request/response in DEBUG
                 HttpLoggingInterceptor.Level.BODY

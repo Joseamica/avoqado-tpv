@@ -95,6 +95,9 @@ class CheckoutCatalogAtTest {
                 io.mockk.every { contarVentasGuardadas(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
                 io.mockk.every { contarConProblema(any()) } returns kotlinx.coroutines.flow.MutableStateFlow(0)
             },
+            autorizacionDeGerente = mockk {
+                coEvery { paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.NoHaceFalta
+            },
             permissionsRepository = mockk(relaxed = true) {
                 io.mockk.coEvery { hasPermission(any()) } returns true
             },

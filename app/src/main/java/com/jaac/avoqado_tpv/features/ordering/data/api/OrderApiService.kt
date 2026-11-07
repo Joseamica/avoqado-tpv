@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
+import retrofit2.http.Header
 import retrofit2.http.GET
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -180,7 +181,8 @@ interface OrderApiService {
     @POST("tpv/venues/{venueId}/orders/with-items")
     suspend fun createOrderWithItems(
         @Path("venueId") venueId: String,
-        @Body request: TpvCreateOrderWithItemsRequest
+        @Body request: TpvCreateOrderWithItemsRequest,
+        @Header("X-Permission-Override") overrideToken: String? = null,
     ): Response<ApiResponse<OrderDto>>
 
     /**

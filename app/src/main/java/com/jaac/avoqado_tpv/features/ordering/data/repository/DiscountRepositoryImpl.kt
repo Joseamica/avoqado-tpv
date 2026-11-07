@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.data.repository
 
+import com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe
 import com.jaac.avoqado_tpv.features.ordering.data.api.DiscountApiService
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyCouponRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyManualDiscountRequest
@@ -112,6 +113,10 @@ class DiscountRepositoryImpl @Inject constructor(
                     Result.failure(Exception(error))
                 }
             } else {
+                if (response.code() == 403) {
+                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
+                    if (permiso != null) return@withContext Result.failure(permiso)
+                }
                 val error = when (response.code()) {
                     400 -> response.body()?.error ?: "Invalid discount or conditions not met"
                     404 -> "Order or discount not found"
@@ -133,7 +138,8 @@ class DiscountRepositoryImpl @Inject constructor(
         type: DiscountType,
         value: Double,
         reason: String?,
-        authorizedById: String?
+        authorizedById: String?,
+        overrideToken: String?
     ): Result<OrderDiscount> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🏷️ [Discount] Applying manual discount: $type $value to order: $orderId")
@@ -151,7 +157,7 @@ class DiscountRepositoryImpl @Inject constructor(
                 authorizedById = authorizedById
             )
 
-            val response = apiService.applyManualDiscount(venueId, orderId, request)
+            val response = apiService.applyManualDiscount(venueId, orderId, request, overrideToken)
 
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
@@ -182,9 +188,12 @@ class DiscountRepositoryImpl @Inject constructor(
                     Result.failure(Exception(error))
                 }
             } else {
+                if (response.code() == 403) {
+                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
+                    if (permiso != null) return@withContext Result.failure(permiso)
+                }
                 val error = when (response.code()) {
                     400 -> response.body()?.error ?: "Invalid discount value"
-                    403 -> "Manager authorization required"
                     404 -> "Order not found"
                     409 -> "Order was modified. Please refresh and try again."
                     else -> "Failed to apply discount: HTTP ${response.code()}"

@@ -546,4 +546,87 @@ class VigiaDeFoliosTest {
             assertThat(vigia.estado.value.counts.porPagar).isEqualTo(9)
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // R92 (revisión de P5): M1, M3 y M4
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `R92 M1 una relectura vieja no suelta la pagina que la cajera agrego mientras tanto`() = runTest {
+        respuesta = { Result.success(conCursor(listOf(folio("a")), "c1", conteo = 3)) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), "c2"))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            // La relectura de la página 2 sale antes de que existiera un folio más nuevo: contestará «no hay más».
+            val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } coAnswers {
+                compuerta.await(); Result.success(conCursor(listOf(folio("b")), null))
+            }
+            vigia.sondearYa()
+            // Mientras tanto la cajera toca «Cargar más» y llega la página 3 (con más detrás).
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c2") } returns Result.success(conCursor(listOf(folio("d")), "c3"))
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_PAGAR)).isTrue()
+
+            compuerta.complete(Unit)
+
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b", "d").inOrder()
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c3")
+        }
+    }
+
+    @Test
+    fun `R92 M3 al salir de la pantalla se sueltan las paginas extra y ya no se releen`() = runTest {
+        respuesta = { Result.success(conCursor(listOf(folio("a")), "c1", conteo = 2)) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), null))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            vigia.soltarExtras()
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a")
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c1")
+            assertThat(vigia.estado.value.counts.porPagar).isEqualTo(2) // el recuadro sigue con el número del servidor
+
+            vigia.sondearYa() // la página 1 sigue para el recuadro, pero ya no se relee nada
+            coVerify(exactly = 1) { folios.cargarMas(any(), any(), any()) }
+            coVerify(exactly = 2) { folios.listar("v1", any()) }
+        }
+    }
+
+    @Test
+    fun `R92 M4 una relectura que falla sin red deja las paginas extra como estaban`() = runTest {
+        respuesta = { Result.success(conCursor(listOf(folio("a")), "c1", conteo = 3)) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), "c2"))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.failure(IOException("sin red"))
+            vigia.sondearYa()
+
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b").inOrder()
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c2")
+            assertThat(vigia.estado.value.errorAlCargarMas).isFalse() // la relectura no es un «Cargar más» de la cajera
+        }
+    }
+
+    @Test
+    fun `R92 M4 Cargar mas durante una relectura no pierde ni repite nada`() = runTest {
+        respuesta = { Result.success(conCursor(listOf(folio("a")), "c1", conteo = 4)) }
+        conVigia { vigia ->
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), "c2"))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } coAnswers {
+                compuerta.await(); Result.success(conCursor(listOf(folio("b"), folio("d")), "c2")) // «d» se recorrió a la página 2
+            }
+            vigia.sondearYa()
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c2") } returns Result.success(conCursor(listOf(folio("d"), folio("e")), "c3"))
+            assertThat(vigia.cargarMas(SeccionDeFolios.POR_PAGAR)).isTrue()
+            compuerta.complete(Unit)
+
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b", "d", "e").inOrder()
+            assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c3")
+        }
+    }
 }

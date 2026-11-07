@@ -190,11 +190,17 @@ class PorPagarViewModel @Inject constructor(
         val puedeCancelar: Boolean = false,
         val seleccionado: Folio? = null,
         val ocupados: Set<String> = emptySet(),
-        /** orderId → `actualizadoEnMs` de la lista en que se sacó: deja de esconderlo en cuanto el vigía trae otra lista. */
-        val quitados: Map<String, Long?> = emptyMap(),
+        /** Lo que esta caja canceló, marcó «Listo» o «Entregado» (orderId →), escondido hasta que el SERVIDOR lo confirme. */
+        val quitados: Map<String, Quitado> = emptyMap(),
         val aviso: AvisoDeFolio? = null,
         val toast: String? = null,
     )
+
+    /**
+     * R92 M2: un folio que esta caja sacó. [marca] = `actualizadoEnMs` de la lista en que se sacó (su conteo todavía lo cuenta);
+     * [listo] = se marcó «Listo» (si el SERVIDOR lo devuelve como `READY`, eso también lo confirma).
+     */
+    private data class Quitado(val marca: Long?, val listo: Boolean)
 
     private val local = MutableStateFlow(Local())
 
@@ -236,6 +242,12 @@ class PorPagarViewModel @Inject constructor(
 
     fun cargarMas(seccion: SeccionDeFolios) {
         viewModelScope.launch { vigia.cargarMas(seccion) }
+    }
+
+    /** R92 M3: la lista se cierra: el vigía deja de releer las páginas extra (la página 1 sigue para el recuadro). */
+    override fun onCleared() {
+        vigia.soltarExtras()
+        super.onCleared()
     }
 
     /**
@@ -343,7 +355,7 @@ class PorPagarViewModel @Inject constructor(
                 r.fold(
                     onSuccess = {
                         base.copy(
-                            quitados = l.quitados.filterValues { it == marca } + (folio.orderId to marca),
+                            quitados = l.quitados + (folio.orderId to Quitado(marca, listo = accion == Accion.LISTO)),
                             seleccionado = l.seleccionado?.takeIf { it.orderId != folio.orderId },
                             toast = when (accion) {
                                 Accion.CANCELAR -> TextosPorPagar.cancelado(folio.folio)
@@ -384,17 +396,22 @@ class PorPagarViewModel @Inject constructor(
     }
 
     private fun componer(e: EstadoDeFolios, l: Local): PorPagarUi {
-        val fuera = l.quitados.filterValues { it == e.actualizadoEnMs }.keys
+        // R92 M2: lo que esta caja sacó sigue escondido mientras el SERVIDOR siga trayendo ESE folio como estaba. Se confirma
+        // cuando ya no viene en ninguna lista (o viene «Listo»). Una vuelta nueva no basta: su página puede no haberse releído.
+        val porId = (e.porPagar + e.porEntregar).associateBy { it.orderId }
+        val fuera = l.quitados.filter { (id, q) -> porId[id]?.let { !(q.listo && it.estado == ESTADO_LISTO) } == true }
         val pagar = e.porPagar.filterNot { it.orderId in fuera }
         val entregar = e.porEntregar.filterNot { it.orderId in fuera }
+        // R92 I1: a la lista en que se sacó, el SERVIDOR todavía lo contaba; desde la vuelta siguiente ya viene descontado.
+        val sinDescontar = fuera.filterValues { it.marca == e.actualizadoEnMs }.keys
         return PorPagarUi(
             folios = e,
             busqueda = l.busqueda,
             buscando = textoDeBusqueda(l.busqueda).length >= MIN_BUSQUEDA,
             porPagar = filtrarFolios(pagar, l.busqueda),
             porEntregar = filtrarFolios(entregar, l.busqueda),
-            numeroPorPagar = numeroDeSeccion(e.counts.porPagar - (e.porPagar.size - pagar.size), pagar.size, SeccionDeFolios.POR_PAGAR in e.nextCursors),
-            numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar - (e.porEntregar.size - entregar.size), entregar.size, SeccionDeFolios.POR_ENTREGAR in e.nextCursors),
+            numeroPorPagar = numeroDeSeccion(e.counts.porPagar, e.porPagar.count { it.orderId in sinDescontar }),
+            numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar, e.porEntregar.count { it.orderId in sinDescontar }),
             puedeEntregar = l.puedeEntregar,
             puedeCancelar = l.puedeCancelar,
             seleccionado = l.seleccionado?.let { s -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == s.orderId } ?: s },
@@ -406,6 +423,7 @@ class PorPagarViewModel @Inject constructor(
 
     private companion object {
         const val MAX_PAGINAS = 20
+        const val ESTADO_LISTO = "READY"
     }
 }
 
@@ -427,8 +445,11 @@ fun filtrarFolios(lista: List<Folio>, texto: String): List<Folio> {
     return lista.filter { normalizar(it.folio).contains(folio) || normalizar(it.nombre.orEmpty()).contains(nombre) }
 }
 
-/** El número de una sección nunca contradice su lista: con más páginas por traer vale el del servidor; si no, lo que se ve. */
-fun numeroDeSeccion(conteo: Int, mostrados: Int, hayMas: Boolean): Int = if (hayMas) maxOf(conteo, mostrados) else mostrados
+/**
+ * R92 I1: el número de una sección es el del SERVIDOR (`counts`), nunca el largo de la lista ni el mayor de los dos (las páginas
+ * cargadas pueden traer folios viejos hasta releerse, R85 #3). Sólo se le resta lo que esta caja sacó y ese conteo todavía cuenta.
+ */
+fun numeroDeSeccion(conteoDelServidor: Int, sacadosAquiSinDescontar: Int): Int = (conteoDelServidor - sacadosAquiSinDescontar).coerceAtLeast(0)
 
 /** «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
 fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Boolean): Boolean =

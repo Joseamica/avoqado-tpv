@@ -603,4 +603,68 @@ class PorPagarViewModelTest {
     }
 
     // endregion
+
+    // region — R92 (revisión de P5): I1, M2 y M3
+
+    @Test
+    fun `R92 I1 el encabezado es el numero del servidor aunque la lista cargada traiga mas`() = runTest {
+        // 52 por pagar, la cajera cargó la página 2 (52 en pantalla) y otra caja cobró uno: el SERVIDOR ya dice 51.
+        val cargados = (1..52).map { folio("p$it") }
+        estado.value = EstadoDeFolios(
+            showTile = true, counts = ConteoDeFolios(51, 0), porPagar = cargados, actualizadoEnMs = 1_000L,
+        )
+        val vm = vm()
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(51)
+
+        // Con más páginas por traer tampoco se toma el mayor de los dos.
+        estado.value = estado.value.copy(nextCursors = mapOf(SeccionDeFolios.POR_PAGAR to "c2"), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(51)
+    }
+
+    @Test
+    fun `R92 I1 lo que esta caja saco se resta del numero solo hasta que el servidor lo cuenta`() = runTest {
+        val ana = folio("a")
+        val beto = folio("b", nombre = "Beto")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(2, 0), porPagar = listOf(ana, beto), actualizadoEnMs = 1_000L)
+        coEvery { folios.cancelar("v1", "b") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.cancelar(beto)
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(1) // misma lista: el servidor todavía lo cuenta
+
+        // La vuelta siguiente ya lo trae descontado (1), aunque su página todavía no se relea: no se resta dos veces.
+        estado.value = estado.value.copy(counts = ConteoDeFolios(1, 0), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.numeroPorPagar).isEqualTo(1)
+    }
+
+    @Test
+    fun `R92 M2 un folio entregado desde la pagina 2 no regresa con sus botones hasta que el servidor lo confirma`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        val sofi = folio("k9p", folio = "WK9P2", nombre = "Sofía", falta = "0.00", estado = "ACCEPTED")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(0, 2), porEntregar = listOf(leo, sofi), actualizadoEnMs = 1_000L)
+        coEvery { folios.entregado("v1", "k9p") } returns Result.success(Unit)
+        coEvery { folios.listo("v1", "m2c") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.entregado(sofi)
+        vm.listo(leo)
+        assertThat(vm.ui.value.porEntregar).isEmpty()
+
+        // Otra vuelta (hora nueva) con su página todavía sin releer: los dos siguen ahí, viejos. No regresan.
+        estado.value = estado.value.copy(counts = ConteoDeFolios(0, 0), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.porEntregar).isEmpty()
+
+        // La relectura confirma: Sofía ya no viene y Leo viene «Listo» ⇒ Leo se ve otra vez, con su estado nuevo.
+        estado.value = estado.value.copy(porEntregar = listOf(leo.copy(estado = "READY")), actualizadoEnMs = 3_000L)
+        assertThat(vm.ui.value.porEntregar.map { it.orderId to it.estado }).containsExactly("m2c" to "READY")
+    }
+
+    @Test
+    fun `R92 M3 al cerrarse la pantalla el vigia suelta las paginas extra`() = runTest {
+        val vm = vm()
+        PorPagarViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+        verify(exactly = 1) { vigia.soltarExtras() }
+    }
+
+    // endregion
 }

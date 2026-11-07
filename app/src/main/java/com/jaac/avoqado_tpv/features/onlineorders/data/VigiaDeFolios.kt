@@ -71,6 +71,8 @@ class VigiaDeFolios internal constructor(
     /** R79 #6: pide releer las páginas extra. Conflated: con una relectura en vuelo, varios sondeos dejan UNA pendiente. */
     private val releer = Channel<Unit>(Channel.CONFLATED)
     private var trabajo: Job? = null
+    /** El alcance de [iniciar]; [soltarExtras] corre ahí (no tiene uno propio). */
+    private var alcance: CoroutineScope? = null
     private var negocioActual: String? = null
 
     /** Última respuesta de la checada por persona, para el instante sin red (ahí el latido no se puede mandar de todos modos). */
@@ -79,6 +81,7 @@ class VigiaDeFolios internal constructor(
     /** Arranca el bucle en [scope] (el de la actividad). Idempotente: si ya corre, no hace nada. */
     fun iniciar(scope: CoroutineScope) {
         if (trabajo?.isActive == true) return
+        alcance = scope
         trabajo = scope.launch {
             // R79 #6: las páginas extra se releen en su propio bucle, así la vuelta de la página 1 (el latido) nunca espera a una
             // relectura lenta. Un solo consumidor ⇒ nunca corren dos; la que está en vuelo termina y se aplica, y la pendiente corre después.
@@ -110,6 +113,19 @@ class VigiaDeFolios internal constructor(
         }
     }
 
+    /**
+     * R92 M3: la pantalla de la lista se fue. Se sueltan las páginas extra (y dejan de releerse cada vuelta); la página 1 y su
+     * número siguen para el recuadro del inicio.
+     */
+    fun soltarExtras() {
+        alcance?.launch {
+            candado.withLock {
+                extras = emptyMap(); cursorExtra = emptyMap()
+                _estado.value = componer(_estado.value)
+            }
+        }
+    }
+
     /** Pregunta ahora mismo (p. ej. al volver al inicio o tras cobrar) y reinicia la espera. */
     fun sondearYa() {
         despertar.trySend(Unit)
@@ -127,7 +143,7 @@ class VigiaDeFolios internal constructor(
             _estado.value = _estado.value.copy(errorAlCargarMas = true)
             return@withLock false
         }
-        ponerPagina(seccion, extras[seccion].orEmpty().size, pagina.de(seccion), pagina.siguientes[seccion])
+        agregarPagina(seccion, pagina.de(seccion), pagina.siguientes[seccion])
         _estado.value = componer(_estado.value.copy(errorAlCargarMas = false))
         true
     }
@@ -136,8 +152,12 @@ class VigiaDeFolios internal constructor(
     private var pagina1Pagar: List<Folio> = emptyList()
     private var pagina1Entregar: List<Folio> = emptyList()
     private var cursoresPagina1: Map<SeccionDeFolios, String> = emptyMap()
+    /** Una página de «Cargar más». [id] no cambia al releerla: así una relectura sabe cuáles son SUYAS (R92 M1). */
+    private class PaginaExtra(val id: Long, val folios: List<Folio>)
+
     /** Las páginas que la cajera cargó con «Cargar más», en orden, por sección (una página vacía también cuenta). */
-    private var extras: Map<SeccionDeFolios, List<List<Folio>>> = emptyMap()
+    private var extras: Map<SeccionDeFolios, List<PaginaExtra>> = emptyMap()
+    private var ultimoIdDePagina = 0L
     /** Cursor tras la última página extra de cada sección; sin llave = no hay más. */
     private var cursorExtra: Map<SeccionDeFolios, String> = emptyMap()
 
@@ -146,20 +166,35 @@ class VigiaDeFolios internal constructor(
         extras = emptyMap(); cursorExtra = emptyMap()
     }
 
+    /** «Cargar más»: agrega la página al final con su cursor. */
+    private fun agregarPagina(seccion: SeccionDeFolios, items: List<Folio>, siguiente: String?) {
+        extras = extras + (seccion to extras[seccion].orEmpty() + PaginaExtra(++ultimoIdDePagina, items))
+        cursorExtra = if (siguiente == null) cursorExtra - seccion else cursorExtra + (seccion to siguiente)
+        quitarDeLaOtra(seccion, items)
+    }
+
     /**
-     * Pone [items] como la página extra [indice] de [seccion] (`indice == tamaño` = la agrega). Sin [siguiente] ya no hay más: las
-     * páginas de después se sueltan. Lo que llegó aquí sale de las extras de la otra sección (la lectura más nueva manda).
+     * Relectura: pone [items] en la página [id]. Sin [siguiente] ya no hay más: se sueltan [despues] (las que ESTA relectura iba a
+     * leer después), nunca una página que la cajera agregó mientras tanto (R92 M1). El cursor sólo cambia si la página es la última.
+     * false si la página ya no está (otra vuelta, la pantalla o la sesión la soltó): una relectura vieja no la revive.
      */
-    private fun ponerPagina(seccion: SeccionDeFolios, indice: Int, items: List<Folio>, siguiente: String?) {
-        val paginas = extras[seccion].orEmpty().toMutableList()
-        if (indice < paginas.size) paginas[indice] = items else paginas.add(items)
-        if (siguiente == null) while (paginas.size > indice + 1) paginas.removeAt(paginas.lastIndex)
-        extras = extras + (seccion to paginas)
-        if (siguiente == null) cursorExtra = cursorExtra - seccion
-        else if (indice == paginas.lastIndex) cursorExtra = cursorExtra + (seccion to siguiente)
+    private fun reemplazarPagina(seccion: SeccionDeFolios, id: Long, items: List<Folio>, siguiente: String?, despues: Set<Long>): Boolean {
+        val paginas = extras[seccion].orEmpty()
+        if (paginas.none { it.id == id }) return false
+        val nuevas = paginas
+            .map { if (it.id == id) PaginaExtra(id, items) else it }
+            .filterNot { siguiente == null && it.id in despues }
+        extras = extras + (seccion to nuevas)
+        if (nuevas.last().id == id) cursorExtra = if (siguiente == null) cursorExtra - seccion else cursorExtra + (seccion to siguiente)
+        quitarDeLaOtra(seccion, items)
+        return true
+    }
+
+    /** Un folio sólo vive en UNA sección: lo que llegó a [seccion] sale de las páginas extra de la otra (la lectura más nueva manda). */
+    private fun quitarDeLaOtra(seccion: SeccionDeFolios, items: List<Folio>) {
         val ids = items.mapTo(HashSet()) { it.orderId }
         val otra = SeccionDeFolios.values().first { it != seccion }
-        extras[otra]?.let { pgs -> extras = extras + (otra to pgs.map { p -> p.filter { it.orderId !in ids } }) }
+        extras[otra]?.let { pgs -> extras = extras + (otra to pgs.map { p -> PaginaExtra(p.id, p.folios.filter { it.orderId !in ids }) }) }
     }
 
     /**
@@ -168,8 +203,8 @@ class VigiaDeFolios internal constructor(
      */
     private fun componer(base: EstadoDeFolios): EstadoDeFolios {
         val vistos = (pagina1Pagar + pagina1Entregar).mapTo(HashSet()) { it.orderId }
-        val xPagar = extras[SeccionDeFolios.POR_PAGAR].orEmpty().flatten().filter { vistos.add(it.orderId) }
-        val xEntregar = extras[SeccionDeFolios.POR_ENTREGAR].orEmpty().flatten().filter { vistos.add(it.orderId) }
+        val xPagar = extras[SeccionDeFolios.POR_PAGAR].orEmpty().flatMap { it.folios }.filter { vistos.add(it.orderId) }
+        val xEntregar = extras[SeccionDeFolios.POR_ENTREGAR].orEmpty().flatMap { it.folios }.filter { vistos.add(it.orderId) }
         // El cursor de una sección con páginas extra es el de la última que se cargó; sin ellas, el de la página 1.
         val cur = buildMap {
             for (sec in SeccionDeFolios.values()) {
@@ -181,39 +216,30 @@ class VigiaDeFolios internal constructor(
     }
 
     /**
-     * R79 #6: relee, en orden, las páginas extra de [seccion] que la cajera cargó (nunca más) desde el cursor de la página 1 de la
-     * última vuelta. Cada página se aplica al llegar. Las que ya no se alcanzan se sueltan. Si una lectura falla se queda lo que se
-     * veía y el siguiente sondeo lo intenta otra vez.
+     * R79 #6: relee, en orden, las páginas extra de [seccion] que había al empezar (nunca más) desde el cursor de la página 1 de la
+     * última vuelta. Cada página se aplica al llegar. Si una ya no trae siguiente, las de después que iba a leer se sueltan (sin
+     * camino a ellas: nunca se quedan tarjetas viejas). Si una lectura falla se queda lo que se veía y el siguiente sondeo lo intenta
+     * otra vez.
      */
     private suspend fun releerSeccion(seccion: SeccionDeFolios) {
-        val (venueId, cuantas, inicio) = candado.withLock { Triple(negocioActual, extras[seccion].orEmpty().size, cursoresPagina1[seccion]) }
-        if (venueId == null || cuantas == 0) return
+        val (venueId, ids, inicio) = candado.withLock { Triple(negocioActual, extras[seccion].orEmpty().map { it.id }, cursoresPagina1[seccion]) }
+        if (venueId == null || ids.isEmpty()) return
         var cursor = inicio
-        var alcanzadas = 0
-        while (cursor != null && alcanzadas < cuantas) {
+        var i = 0
+        while (cursor != null && i < ids.size) {
             val pagina = folios.cargarMas(venueId, seccion, cursor).getOrElse {
                 Timber.w(it, "[Folios] no se pudo releer $seccion")
                 return
             }
             val siguiente = pagina.siguientes[seccion]
-            val indice = alcanzadas
+            val despues = ids.drop(i + 1).toSet()
             val sigue = candado.withLock {
-                // Otra vuelta o la sesión ya las soltó: una relectura vieja no las revive.
-                if (negocioActual != venueId || indice >= extras[seccion].orEmpty().size) return@withLock false
-                ponerPagina(seccion, indice, pagina.de(seccion), siguiente)
-                _estado.value = componer(_estado.value)
-                true
+                (negocioActual == venueId && reemplazarPagina(seccion, ids[i], pagina.de(seccion), siguiente, despues))
+                    .also { if (it) _estado.value = componer(_estado.value) }
             }
             if (!sigue) return
             cursor = siguiente
-            alcanzadas++
-        }
-        if (alcanzadas < cuantas) candado.withLock {
-            if (negocioActual != venueId) return@withLock
-            // Sin camino a lo de después (otra caja lo vació): nunca se quedan tarjetas viejas.
-            extras = extras + (seccion to extras[seccion].orEmpty().take(alcanzadas))
-            cursorExtra = cursorExtra - seccion
-            _estado.value = componer(_estado.value)
+            i++
         }
     }
 

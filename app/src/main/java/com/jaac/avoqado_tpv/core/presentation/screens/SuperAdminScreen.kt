@@ -1619,7 +1619,7 @@ class SuperAdminViewModel @Inject constructor(
 
             Timber.d("🖨️ [SuperAdmin] Testing printer...")
 
-            val result = printerManager.printTest()
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printTest() }
 
             result.onSuccess {
                 Timber.i("✅ [SuperAdmin] Printer test successful")

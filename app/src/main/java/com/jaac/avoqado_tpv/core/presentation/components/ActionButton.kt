@@ -26,5 +26,9 @@ data class ActionButton(
     val id: String? = null,
     val enabled: Boolean = true,
     val badge: String? = null,
+    /** Renglón bajo el texto (p. ej. «1 por entregar»); con él el botón usa el relleno compacto 12/14. */
+    val subtitle: String? = null,
+    /** true = el [subtitle] es un aviso y se pinta en naranja. */
+    val subtitleIsWarning: Boolean = false,
     val onClick: () -> Unit
 )

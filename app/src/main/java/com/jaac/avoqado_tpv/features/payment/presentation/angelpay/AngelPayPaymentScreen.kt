@@ -116,6 +116,8 @@ fun AngelPayPaymentScreen(
     // 💵 D2 «Cobrar sin red»: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar).
     soloEfectivo: Boolean = false,
     ventaLocalJson: String? = null,
+    // 🧾 Tienda híbrida: el cobro es de este folio («Folio W7K3P · Ana» bajo el monto, mockup 2d).
+    folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
     /**
@@ -257,6 +259,7 @@ fun AngelPayPaymentScreen(
                 externalRating = externalRating,
                 soloEfectivo = soloEfectivo,
                 ventaLocalJson = ventaLocalJson,
+                folio = folio,  // 🧾 P4: registrado, el ViewModel acepta el folio y prueba la comanda
             )
         }
     }
@@ -679,6 +682,7 @@ fun AngelPayPaymentScreen(
                         // nunca apaga el efectivo. Hueco PREVIO, sin tocar: con authState Authenticating el efectivo
                         // también queda apagado (T26, 2026-05-19), aunque sea sin red.
                         motivoSinTarjeta = currentState.motivoSinTarjeta,
+                        folio = folio,
                     )
                 }
 

@@ -155,6 +155,8 @@ fun PaymentScreen(
     socketProcessedByStaffId: String? = null,
     soloEfectivo: Boolean = false,  // 💵 D2: el cobro sólo puede ir en efectivo (llegó sin red desde Cobrar)
     ventaLocalJson: String? = null,
+    newOrderLabel: String? = null,  // 🧾 Tienda híbrida: el botón tras cobrar un folio dice a dónde lleva («Pedidos por pagar»)
+    folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,  // 🧾 el cobro es de este folio (mockup 2d)
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -214,10 +216,12 @@ fun PaymentScreen(
     }
 
     // 🔀 Set initial flow origin from navigation args (prevents back stack leaks)
-    val initialFlowOrigin = remember(skipLocalOrderValidation, orderId, isRefundMode, isKioskPayment) {
+    val initialFlowOrigin = remember(skipLocalOrderValidation, orderId, isRefundMode, isKioskPayment, folio) {
         when {
             isRefundMode -> PaymentFlowOrigin.REFUND
             isKioskPayment -> PaymentFlowOrigin.KIOSK
+            // 🧾 R78: un folio salta Room (su cuenta vive en el servidor) pero nunca es venta de SIM.
+            folio != null -> PaymentFlowOrigin.ORDER
             skipLocalOrderValidation -> PaymentFlowOrigin.SERIALIZED
             orderId != null -> PaymentFlowOrigin.ORDER
             else -> PaymentFlowOrigin.FAST
@@ -566,6 +570,7 @@ fun PaymentScreen(
                         routingBannerMessage = routingBanner,
                         // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta, MSI y cripto en gris con el motivo)
                         motivoSinTarjeta = currentState.motivoSinTarjeta,
+                        folio = folio,
                     )
                 }
 
@@ -590,6 +595,8 @@ fun PaymentScreen(
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
                     LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, ventaLocalJson) {
+                        // 🧾 P4: antes de CADA arranque (también tras un resetPayment() que vuelve aquí), el ViewModel sabe si cobra un folio.
+                        viewModel.setFolio(folio)
                         if (!viewModel.setVentaLocalJson(ventaLocalJson)) return@LaunchedEffect
                         // 💸 REFUND MODE: Process refund instead of payment
                         if (isRefundMode && refundAmount != null && originalPaymentId != null) {
@@ -850,6 +857,9 @@ fun PaymentScreen(
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
                                 flowOrigin = effectiveOrigin,
+                                newOrderLabel = newOrderLabel,
+                                // 🧾 R78: la comanda de un folio la imprime el apoyo automático (P4); aquí saldría una segunda.
+                                mostrarComanda = folio == null,
                                 // 🥝 KIOSK MODE PARAMS
                                 isKioskPayment = showKioskMode,
                                 kioskCountdownSeconds = 12,
@@ -1274,7 +1284,8 @@ private fun resolveSuccessRouting(
     onClearTableAndReturnToFloorPlan: (String) -> Unit,
     onNavigateToSerializedSale: () -> Unit,
     onNewOrder: () -> Unit,
-    onNewFastPayment: () -> Unit
+    onNewFastPayment: () -> Unit,
+    newOrderLabel: String? = null
 ): SuccessRouting {
     if (wasPayLaterOrder) {
         val text = if (payLaterOrdersCount > 0) "Pagar cuenta ($payLaterOrdersCount)" else "Pagar cuenta"
@@ -1287,7 +1298,7 @@ private fun resolveSuccessRouting(
 
     return when (flowOrigin) {
         PaymentFlowOrigin.SERIALIZED -> SuccessRouting(text = "Nueva Venta", onClick = onNavigateToSerializedSale)
-        PaymentFlowOrigin.ORDER -> SuccessRouting(text = "Nueva Orden", onClick = onNewOrder)
+        PaymentFlowOrigin.ORDER -> SuccessRouting(text = newOrderLabel ?: "Nueva Orden", onClick = onNewOrder)
         PaymentFlowOrigin.FAST -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
         PaymentFlowOrigin.REFUND -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
         PaymentFlowOrigin.KIOSK -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
@@ -1611,6 +1622,8 @@ private fun PaymentSuccessContent(
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     flowOrigin: PaymentFlowOrigin = PaymentFlowOrigin.FAST,  // 🔀 Origin flow for success actions
+    newOrderLabel: String? = null,  // 🧾 null = «Nueva Orden»
+    mostrarComanda: Boolean = true,  // 🧾 false en el cobro de un folio: su comanda ya la imprime el apoyo (P4)
     // 🥝 KIOSK MODE PARAMS
     isKioskPayment: Boolean = false,  // 🥝 True = kiosk mode with auto-dismiss
     kioskCountdownSeconds: Int = 12,  // 🥝 Seconds before auto-dismiss
@@ -1805,7 +1818,8 @@ private fun PaymentSuccessContent(
                                     onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
                                     onNavigateToSerializedSale = onNavigateToSerializedSale,
                                     onNewOrder = onNewOrder,
-                                    onNewFastPayment = onNewFastPayment
+                                    onNewFastPayment = onNewFastPayment,
+                                    newOrderLabel = newOrderLabel
                                 )
                                 val buttonText = successRouting.text
 
@@ -2587,28 +2601,30 @@ private fun PaymentSuccessContent(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Print kitchen ticket button (comanda para cocina)
-                Button(
-                    onClick = {
-                        showOrderDetailsModal = false
-                        onPrintKitchenTicket()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_contact_payment),
-                        contentDescription = "Imprimir",
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Imprimir Comanda")
-                }
+                if (mostrarComanda) {
+                    Button(
+                        onClick = {
+                            showOrderDetailsModal = false
+                            onPrintKitchenTicket()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_contact_payment),
+                            contentDescription = "Imprimir",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Imprimir Comanda")
+                    }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // Close button
                 AvoqadoButton(

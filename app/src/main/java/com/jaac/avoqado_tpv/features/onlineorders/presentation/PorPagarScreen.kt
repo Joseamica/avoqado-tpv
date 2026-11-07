@@ -307,6 +307,7 @@ private fun FilaPorEntregar(
             FolioYNombre(folio, Modifier.weight(1f))
             Text(dinero(folio.total), fontSize = 17.sp, fontWeight = FontWeight.Bold)
         }
+        if (estaListo(folio)) MarcaListo(Modifier.padding(top = 6.dp))
         Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(textoDePago(folio, zona).orEmpty(), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(TextosPorPagar.productos(cuantos(folio)), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -315,7 +316,25 @@ private fun FilaPorEntregar(
     }
 }
 
-/** «Listo» con borde y «Entregado» relleno, en ese orden; sin red, el aviso de que vuelven con la conexión. */
+/** P6: la marca de un folio que ya está «Listo» (READY). Con los colores del tema, nunca en rojo: no es un error. */
+@Composable
+private fun MarcaListo(modifier: Modifier = Modifier) {
+    Text(
+        TextosPorPagar.LISTO,
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = 10.dp, vertical = 3.dp),
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+/**
+ * «Listo» con borde y «Entregado» relleno, en ese orden; un folio que ya está «Listo» (READY, P6) sólo trae «Entregado». Sin red,
+ * el aviso de que vuelven con la conexión.
+ */
 @Composable
 private fun AccionesDeEntrega(folio: Folio, ui: PorPagarUi, onListo: (Folio) -> Unit, onEntregado: (Folio) -> Unit, modifier: Modifier) {
     val sinConexion = ui.folios.sinConexion
@@ -323,7 +342,7 @@ private fun AccionesDeEntrega(folio: Folio, ui: PorPagarUi, onListo: (Folio) -> 
         muestraListoYEntregado(ui.puedeEntregar, sinConexion) -> {
             val ocupado = folio.orderId in ui.ocupados
             Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
+                if (muestraBotonListo(folio, ui.puedeEntregar, sinConexion)) OutlinedButton(
                     onClick = { onListo(folio) },
                     enabled = !ocupado,
                     shape = RoundedCornerShape(8.dp),
@@ -368,6 +387,7 @@ private fun FolioDetalle(
             item {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)) {
                     Text(folio.nombre.orEmpty(), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    if (estaListo(folio)) MarcaListo(Modifier.padding(top = 6.dp))
                     val cuando = if (pagado) textoDePago(folio, zona)?.let { Vencimiento(it, pronto = false) } else vencimiento(folio, ahora, sinConexion, zona)
                     Row(Modifier.padding(top = 4.dp)) {
                         folio.creadoEn?.let { Text(TextosPorPagar.pidioALas(hora(it, zona)), fontSize = 14.sp, color = apagado) }

@@ -474,6 +474,15 @@ fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Bool
 /** «Listo» y «Entregado» sólo con `orders:update` y con red. */
 fun muestraListoYEntregado(puedeEntregar: Boolean, sinConexion: Boolean): Boolean = puedeEntregar && !sinConexion
 
+/** P6 (R98): «Por entregar» = pagado y sin entregar = ACCEPTED + READY. Un folio READY ya está «Listo». */
+fun estaListo(folio: Folio): Boolean = folio.estado == ESTADO_LISTO
+
+/** «Listo» sólo en lo que todavía no lo está; un folio READY ofrece únicamente «Entregado». */
+fun muestraBotonListo(folio: Folio, puedeEntregar: Boolean, sinConexion: Boolean): Boolean =
+    muestraListoYEntregado(puedeEntregar, sinConexion) && !estaListo(folio)
+
+private const val ESTADO_LISTO = "READY"
+
 /** «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda la hora. */
 fun textoDePago(folio: Folio, zona: ZoneId): String? = folio.pagadoEn?.let { TextosPorPagar.pagadoALas(hora(it, zona)) }
 

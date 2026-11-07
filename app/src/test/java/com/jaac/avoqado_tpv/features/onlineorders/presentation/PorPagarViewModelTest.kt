@@ -766,4 +766,65 @@ class PorPagarViewModelTest {
     }
 
     // endregion
+
+    // region — P6 (R98): «Por entregar» = pagado y sin entregar = ACCEPTED + READY
+
+    @Test
+    fun `P6 un folio READY del servidor lleva la marca Listo y solo ofrece Entregado`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "READY")
+        val sofi = folio("k9p", folio = "WK9P2", nombre = "Sofía", falta = "0.00", estado = "ACCEPTED")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(0, 2), porEntregar = listOf(sofi, leo), actualizadoEnMs = 1_000L)
+        val vm = vm()
+
+        assertThat(vm.ui.value.porEntregar.map { it.orderId }).containsExactly("k9p", "m2c").inOrder()
+        assertThat(vm.ui.value.numeroPorEntregar).isEqualTo(2) // el número del SERVIDOR ya cuenta los READY
+        val ui = vm.ui.value
+        // READY: marca «Listo», sólo «Entregado» (sin «Listo» ni «Cancelar»).
+        assertThat(estaListo(leo)).isTrue()
+        assertThat(muestraBotonListo(leo, ui.puedeEntregar, ui.folios.sinConexion)).isFalse()
+        assertThat(muestraListoYEntregado(ui.puedeEntregar, ui.folios.sinConexion)).isTrue()
+        assertThat(muestraCancelarFolio(leo, ui.puedeCancelar, ui.folios.sinConexion)).isFalse()
+        // ACCEPTED: los dos botones, como hoy.
+        assertThat(estaListo(sofi)).isFalse()
+        assertThat(muestraBotonListo(sofi, ui.puedeEntregar, ui.folios.sinConexion)).isTrue()
+        // La pantalla usa esas reglas en la tarjeta y en el folio.
+        val fuente = File("src/main/java/com/jaac/avoqado_tpv/features/onlineorders/presentation/PorPagarScreen.kt").readText()
+        assertThat(fuente).contains("if (muestraBotonListo(folio, ui.puedeEntregar, sinConexion))")
+        assertThat(Regex("if \\(estaListo\\(folio\\)\\) MarcaListo\\(").findAll(fuente).count()).isEqualTo(2)
+    }
+
+    @Test
+    fun `P6 Listo deja el folio visible como READY en Por entregar`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(0, 1), porEntregar = listOf(leo), actualizadoEnMs = 1_000L)
+        coEvery { folios.listo("v1", "m2c") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.listo(leo)
+        // La vuelta que sigue (el SERVIDOR nuevo) lo trae en «Por entregar» como READY: se ve, sólo con «Entregado».
+        estado.value = estado.value.copy(porEntregar = listOf(leo.copy(estado = "READY")), actualizadoEnMs = 2_000L)
+
+        val visto = vm.ui.value.porEntregar.single()
+        assertThat(visto.estado).isEqualTo("READY")
+        assertThat(muestraBotonListo(visto, vm.ui.value.puedeEntregar, false)).isFalse()
+        assertThat(vm.ui.value.numeroPorEntregar).isEqualTo(1)
+    }
+
+    @Test
+    fun `P6 Entregado en un folio READY lo saca de la lista`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "READY")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(0, 1), porEntregar = listOf(leo), actualizadoEnMs = 1_000L)
+        coEvery { folios.entregado("v1", "m2c") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.entregado(leo)
+        assertThat(vm.ui.value.porEntregar).isEmpty()
+        assertThat(vm.ui.value.numeroPorEntregar).isEqualTo(0)
+        assertThat(vm.ui.value.toast).isEqualTo("W8M2C entregado a Leo")
+
+        estado.value = estado.value.copy(counts = ConteoDeFolios(0, 0), porEntregar = emptyList(), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.porEntregar).isEmpty()
+    }
+
+    // endregion
 }

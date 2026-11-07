@@ -660,10 +660,11 @@ class PorPagarViewModelTest {
     }
 
     @Test
-    fun `R92 M3 al cerrarse la pantalla el vigia suelta las paginas extra`() = runTest {
+    fun `R92 M3 al cerrarse la pantalla el vigia suelta las paginas extra de ESTA lista`() = runTest {
+        every { vigia.abrirLista() } returns 7L
         val vm = vm()
         PorPagarViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
-        verify(exactly = 1) { vigia.soltarExtras() }
+        verify(exactly = 1) { vigia.soltarExtras(7L) }
     }
 
     // endregion
@@ -741,6 +742,27 @@ class PorPagarViewModelTest {
 
         coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(conAbono)))
         assertThat(vm.cobrar(conAbono)?.initialAmount).isEqualTo("50.00")
+    }
+
+    // endregion
+
+    // region — R97: la huella es la de ANTES de la acción
+
+    @Test
+    fun `R97 si una vuelta trae el folio READY mientras viaja Listo, al responder se ve con Entregado`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        estado.value = EstadoDeFolios(showTile = true, counts = ConteoDeFolios(0, 1), porEntregar = listOf(leo), actualizadoEnMs = 1_000L)
+        coEvery { folios.listo("v1", "m2c") } coAnswers {
+            // El SERVIDOR ya lo procesó y una vuelta de la página 1 llega antes que la respuesta de «Listo».
+            estado.value = estado.value.copy(porEntregar = listOf(leo.copy(estado = "READY")), actualizadoEnMs = 2_000L)
+            Result.success(Unit)
+        }
+        val vm = vm()
+
+        vm.listo(leo)
+
+        assertThat(vm.ui.value.porEntregar.map { it.orderId to it.estado }).containsExactly("m2c" to "READY")
+        assertThat(muestraListoYEntregado(vm.ui.value.puedeEntregar, vm.ui.value.folios.sinConexion)).isTrue()
     }
 
     // endregion

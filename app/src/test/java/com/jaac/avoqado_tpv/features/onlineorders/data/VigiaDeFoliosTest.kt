@@ -582,7 +582,7 @@ class VigiaDeFoliosTest {
             coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), null))
             vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
 
-            vigia.soltarExtras()
+            vigia.soltarExtras(vigia.abrirLista())
             assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a")
             assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c1")
             assertThat(vigia.estado.value.counts.porPagar).isEqualTo(2) // el recuadro sigue con el número del servidor
@@ -627,6 +627,23 @@ class VigiaDeFoliosTest {
 
             assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b", "d", "e").inOrder()
             assertThat(vigia.estado.value.nextCursors[SeccionDeFolios.POR_PAGAR]).isEqualTo("c3")
+        }
+    }
+
+    @Test
+    fun `R97 la lista vieja que se cierra despues de abrir otra no suelta lo que cargo la nueva`() = runTest {
+        respuesta = { Result.success(conCursor(listOf(folio("a")), "c1", conteo = 2)) }
+        conVigia { vigia ->
+            val vieja = vigia.abrirLista()
+            val nueva = vigia.abrirLista() // la pantalla nueva nace antes de que la vieja se limpie
+            coEvery { folios.cargarMas("v1", SeccionDeFolios.POR_PAGAR, "c1") } returns Result.success(conCursor(listOf(folio("b")), null))
+            vigia.cargarMas(SeccionDeFolios.POR_PAGAR)
+
+            vigia.soltarExtras(vieja)
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a", "b").inOrder()
+
+            vigia.soltarExtras(nueva)
+            assertThat(vigia.estado.value.porPagar.map { it.orderId }).containsExactly("a")
         }
     }
 }

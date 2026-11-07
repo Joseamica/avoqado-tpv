@@ -71,8 +71,12 @@ class VigiaDeFolios internal constructor(
     /** R79 #6: pide releer las páginas extra. Conflated: con una relectura en vuelo, varios sondeos dejan UNA pendiente. */
     private val releer = Channel<Unit>(Channel.CONFLATED)
     private var trabajo: Job? = null
-    /** El alcance de [iniciar]; [soltarExtras] corre ahí (no tiene uno propio). */
+    /** El alcance de [iniciar]; [soltarExtras] corre ahí (no tiene uno propio). Lo escribe el hilo de [iniciar] y lo lee otro. */
+    @Volatile
     private var alcance: CoroutineScope? = null
+
+    /** R97: la pantalla de la lista vigente ([abrirLista]); una que ya no es la vigente no suelta lo de la nueva. */
+    private val listaVigente = java.util.concurrent.atomic.AtomicLong()
     private var negocioActual: String? = null
 
     /** Última respuesta de la checada por persona, para el instante sin red (ahí el latido no se puede mandar de todos modos). */
@@ -113,13 +117,19 @@ class VigiaDeFolios internal constructor(
         }
     }
 
+    /** Una pantalla de la lista nace: desde ahora es la vigente. Regresa su número, para [soltarExtras]. */
+    fun abrirLista(): Long = listaVigente.incrementAndGet()
+
     /**
-     * R92 M3: la pantalla de la lista se fue. Se sueltan las páginas extra (y dejan de releerse cada vuelta); la página 1 y su
-     * número siguen para el recuadro del inicio.
+     * R92 M3: la pantalla [lista] se fue. Se sueltan las páginas extra (y dejan de releerse cada vuelta); la página 1 y su número
+     * siguen para el recuadro del inicio. R97: si ya nació otra pantalla de la lista (la vieja se limpia DESPUÉS de que nace la
+     * nueva), no se suelta nada: esas páginas pueden ser de la nueva.
      */
-    fun soltarExtras() {
+    fun soltarExtras(lista: Long) {
+        if (lista != listaVigente.get()) return
         alcance?.launch {
             candado.withLock {
+                if (lista != listaVigente.get()) return@withLock
                 extras = emptyMap(); cursorExtra = emptyMap()
                 _estado.value = componer(_estado.value)
             }

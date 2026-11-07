@@ -197,12 +197,15 @@ class PorPagarViewModel @Inject constructor(
     )
 
     /**
-     * R92 M2 / R94 / R96: un folio que esta caja sacó, con la [seccion], el [estado] y lo que faltaba ([faltaCentavos]) cuando el
-     * SERVIDOR confirmó la acción. [marca] = `actualizadoEnMs` de la lista en que se sacó (su conteo todavía lo cuenta).
+     * R92 M2 / R94 / R96 / R97: un folio que esta caja sacó, con la [seccion], el [estado] y lo que faltaba ([faltaCentavos]) ANTES
+     * de mandar la acción. [marca] = `actualizadoEnMs` de la lista que se veía al confirmarse (su conteo todavía lo cuenta).
      */
     private data class Quitado(val marca: Long?, val seccion: SeccionDeFolios, val estado: String, val faltaCentavos: Long)
 
     private val local = MutableStateFlow(Local())
+
+    /** R97: el número de esta pantalla en el vigía; al limpiarse sólo suelta lo suyo. */
+    private val lista = vigia.abrirLista()
 
     val ui: StateFlow<PorPagarUi> = combine(vigia.estado, local, ::componer)
         .stateIn(viewModelScope, SharingStarted.Eagerly, componer(vigia.estado.value, local.value))
@@ -253,7 +256,7 @@ class PorPagarViewModel @Inject constructor(
 
     /** R92 M3: la lista se cierra: el vigía deja de releer las páginas extra (la página 1 sigue para el recuadro). */
     override fun onCleared() {
-        vigia.soltarExtras()
+        vigia.soltarExtras(lista)
         super.onCleared()
     }
 
@@ -350,23 +353,24 @@ class PorPagarViewModel @Inject constructor(
     private fun accion(folio: Folio, accion: Accion) {
         val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return
         if (vigia.estado.value.sinConexion || !ocupar(folio.orderId)) return
+        // R97: la huella es la del folio ANTES de mandar la acción (la versión más nueva de la lista ahora, o la que se tocó).
+        // Nunca después de la respuesta: una vuelta que llega en medio ya lo trae cambiado (p. ej. READY) y lo escondería así.
+        val antes = vigia.estado.value.let { e -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == folio.orderId } } ?: folio
         viewModelScope.launch {
             val r = when (accion) {
                 Accion.CANCELAR -> folios.cancelar(venueId, folio.orderId)
                 Accion.LISTO -> folios.listo(venueId, folio.orderId)
                 Accion.ENTREGADO -> folios.entregado(venueId, folio.orderId)
             }
-            val lista = vigia.estado.value
-            val marca = lista.actualizadoEnMs
-            // R96: la huella es la del folio en la lista al confirmarse la acción (la más nueva que tiene esta caja).
-            val visto = (lista.porPagar + lista.porEntregar).firstOrNull { it.orderId == folio.orderId } ?: folio
+            // I1: la lista que se ve al confirmarse; mientras sea ésa, su conteo todavía cuenta el folio.
+            val marca = vigia.estado.value.actualizadoEnMs
             local.update { l ->
                 val base = l.copy(ocupados = l.ocupados - folio.orderId)
                 r.fold(
                     onSuccess = {
                         base.copy(
                             // Cancelar sólo se ofrece por pagar; «Listo» y «Entregado», por entregar.
-                            quitados = l.quitados + (folio.orderId to Quitado(marca, accion.seccion, visto.estado, visto.faltaCentavos)),
+                            quitados = l.quitados + (folio.orderId to Quitado(marca, accion.seccion, antes.estado, antes.faltaCentavos)),
                             seleccionado = l.seleccionado?.takeIf { it.orderId != folio.orderId },
                             toast = when (accion) {
                                 Accion.CANCELAR -> TextosPorPagar.cancelado(folio.folio)

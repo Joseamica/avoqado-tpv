@@ -2421,16 +2421,12 @@ class MenuViewModel @Inject constructor(
 
                 Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
 
-                // PIN de gerente: sólo si este descuento regala la cuenta (sobre subtotal − descuentos, no `total`).
-                // Igual que el servidor: el importe se redondea a centavos (99.999 % de $100 = $100 = regalar la cuenta) y se topa en lo que queda.
+                // PIN de gerente por adelantado sólo con 100 % o un fijo que cubre lo que queda (subtotal − descuentos, no `total`).
+                // Sin predecir redondeos: si el servidor redondea un % menor a regalar la cuenta (99.999 % de $100), contesta 403
+                // `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca pide un PIN que el servidor no pediría.
                 val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
-                val quedaCent = queda.movePointRight(2).toLong()
-                val importeCent = when (type) {
-                    DiscountType.PERCENTAGE -> queda.multiply(java.math.BigDecimal.valueOf(value))
-                        .divide(java.math.BigDecimal(100), 2, java.math.RoundingMode.HALF_UP).movePointRight(2).toLong()
-                    DiscountType.FIXED -> java.math.BigDecimal.valueOf(value).setScale(2, java.math.RoundingMode.HALF_UP).movePointRight(2).toLong()
-                }.coerceAtMost(quedaCent)
-                regalaLaCuenta = quedaCent > 0 && importeCent >= quedaCent
+                regalaLaCuenta = queda.signum() > 0 && ((type == DiscountType.PERCENTAGE && value >= 100) ||
+                    (type == DiscountType.FIXED && java.math.BigDecimal.valueOf(value).setScale(2, java.math.RoundingMode.HALF_UP) >= queda))
                 val motivoPin = "Para dar esta cortesía"
                 var token: String? = null
                 if (regalaLaCuenta) {

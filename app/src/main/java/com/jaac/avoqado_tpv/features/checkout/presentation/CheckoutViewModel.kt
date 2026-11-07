@@ -565,11 +565,14 @@ class CheckoutViewModel @Inject constructor(
         }
     }
 
-    /** Llave cuyo último intento CON token quedó en duda (la orden pudo crearse). Sólo en memoria. */
-    private var llaveDudosa: String? = null
+    /**
+     * Llaves que pudieron llegar al servidor: salieron a la red en esta corrida (con o sin token) o volvieron de disco con su carrito
+     * (pudieron salir antes de morir el proceso). Sólo en memoria. Con una de éstas, cancelar o negar el PIN no es «sin autorizar».
+     */
+    private val llavesQuePudieronSalir = mutableSetOf<String>()
 
     private fun olvidarLlave() {
-        llaveDudosa = null
+        orderAttemptExternalId?.let(llavesQuePudieronSalir::remove)
         orderAttemptExternalId = null
         orderAttemptFingerprint = null
     }
@@ -1330,14 +1333,17 @@ class CheckoutViewModel @Inject constructor(
      * PIN forzado y reintenta UNA vez con la MISMA petición (mismo `externalId`: si la primera sí creó la orden, el servidor la devuelve).
      */
     private val TEXTO_NO_CONFIRMADA_COBRAR = "No pudimos confirmar la venta. Toca Cobrar otra vez"
+    private val TEXTO_VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
 
     private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
         val peticion = pedido.copy(externalId = llave)
         var token: String? = null
-        // Si un intento anterior de ESTA llave mandó token y quedó en duda, cancelar/negar el PIN ahora no vuelve la venta "sin autorizar":
-        // la orden pudo crearse. Se dice que no se pudo confirmar.
-        val dudosa = llaveDudosa == llave
-        fun sinAutorizar(texto: String) = Result.failure<Order>(Exception(if (dudosa) TEXTO_NO_CONFIRMADA_COBRAR else texto))
+        // «Sin autorizar» sólo si sabemos que esta llave nunca salió. Si ya salió (o volvió de disco), la orden pudo crearse y se dice.
+        fun sinAutorizar(texto: String) = Result.failure<Order>(Exception(if (llave in llavesQuePudieronSalir) TEXTO_VENTA_EN_DUDA else texto))
+        suspend fun enviar(): Result<Order> {
+            llavesQuePudieronSalir += llave // ANTES de la red
+            return orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+        }
         if (llevaCortesia(_cartState.value)) {
             token = when (val auth = pedirPinDeCortesia(venueId, forzar = false)) {
                 is Autorizacion.ConPin -> auth.token
@@ -1347,7 +1353,7 @@ class CheckoutViewModel @Inject constructor(
                 null -> return sinAutorizar("No se pudo autorizar la cortesía")
             }
         }
-        var resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+        var resultado = enviar()
         val rechazo = resultado.exceptionOrNull() as? PermisoRequeridoException
         if (rechazo?.required == "orders:comp") {
             token = when (val auth = pedirPinDeCortesia(venueId, forzar = true)) {
@@ -1357,16 +1363,14 @@ class CheckoutViewModel @Inject constructor(
                 is Autorizacion.Negada -> return sinAutorizar(auth.texto)
                 null -> return sinAutorizar("No se pudo autorizar la cortesía")
             }
-            resultado = orderRepository.createOrderWithItems(venueId = venueId, request = peticion, overrideToken = token)
+            resultado = enviar()
         }
-        if (token != null && resultado.exceptionOrNull() is PermisoRequeridoException) llaveDudosa = llave
         (resultado.exceptionOrNull() as? PermisoRequeridoException)?.let {
             return Result.failure(Exception(textoDePermiso(it.required, it.message.orEmpty())))
         }
         // Con token, nada se encola: la reproducción local va por /mobile sin token y daría 403 con el efectivo ya cobrado.
         // Volver a tocar Cobrar es seguro (misma llave: el servidor devuelve la orden si sí se creó).
         if (token != null && resultado.exceptionOrNull()?.let { pasaALaVentaLocal(it) } == true) {
-            llaveDudosa = llave
             return Result.failure(Exception(TEXTO_NO_CONFIRMADA_COBRAR))
         }
         return resultado.onSuccess { olvidarLlave() }
@@ -1456,6 +1460,7 @@ class CheckoutViewModel @Inject constructor(
         _selectedCustomer.value = aMedias.cliente
         // Su llave para su carrito: el siguiente «Cobrar» sin cambios reusa la misma (ver [llaveDelIntento]).
         orderAttemptExternalId = aMedias.llave
+        llavesQuePudieronSalir += aMedias.llave // pudo salir antes de morir el proceso: no sabemos
         orderAttemptFingerprint = pedidoEnLinea(cart, staffId, aMedias.cliente?.id).toString()
         _aviso.value = AVISO_VENTA_RECUPERADA
         Timber.i("🛒 Venta a medias restaurada (${cart.itemCount} artículos)")

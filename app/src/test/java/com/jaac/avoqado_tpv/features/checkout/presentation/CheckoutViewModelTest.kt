@@ -725,6 +725,8 @@ class CheckoutViewModelTest {
         viewModel.viewModelScope.cancel()
     }
 
+    private val VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
+
     private fun carritoConCortesia(vm: CheckoutViewModel) {
         vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
         vm.applyCortesiaToItem(vm.cartState.value.items.first().id, "Cliente frecuente")
@@ -859,18 +861,38 @@ class CheckoutViewModelTest {
         carritoConCortesia(vm)
 
         assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", vm.prepareForPayment().exceptionOrNull()?.message)
-        // Mismo carrito = misma llave: la orden pudo crearse, así que "sin autorizar" mentiría.
-        assertEquals("No pudimos confirmar la venta. Toca Cobrar otra vez", vm.prepareForPayment().exceptionOrNull()?.message)
+        // Mismo carrito = misma llave, que ya salió: la orden pudo crearse, así que "sin autorizar" mentiría.
+        assertEquals(VENTA_EN_DUDA, vm.prepareForPayment().exceptionOrNull()?.message)
         vm.viewModelScope.cancel()
     }
 
     @Test
-    fun `un carrito nuevo cancelado sigue diciendo Cortesia sin autorizar`() = runTest {
-        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Cancelada
+    fun `token gastado - 403 con token y PIN forzado cancelado dice no confirmada`() = runTest {
+        // La respuesta del primer envío se perdió y el reenvío llegó con el token ya gastado: la orden pudo crearse.
+        coEvery { autorizacion.paraCortesia(any(), any(), false) } returns Autorizacion.ConPin("tok-8")
+        coEvery { autorizacion.paraCortesia(any(), any(), true) } returns Autorizacion.Cancelada
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         val vm = createViewModel()
         carritoConCortesia(vm)
 
-        assertEquals("Cortesía sin autorizar", vm.prepareForPayment().exceptionOrNull()?.message)
+        assertEquals(VENTA_EN_DUDA, vm.prepareForPayment().exceptionOrNull()?.message)
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con permiso la cortesia no cambia - tras un fallo el reintento crea la orden sin PIN`() = runTest {
+        // autorizacion: NoHaceFalta (default)
+        val error422 = com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(422, "Producto archivado", "Producto archivado")
+        coEvery { orderRepository.createOrderWithItems(any(), any(), any()) } returnsMany listOf(Result.failure(error422), Result.success(fakeOrder()))
+        val vm = createViewModel()
+        carritoConCortesia(vm)
+
+        assertEquals(error422, vm.prepareForPayment().exceptionOrNull())
+        assertTrue(vm.prepareForPayment().isSuccess)
+        coVerify(exactly = 2) { orderRepository.createOrderWithItems("venue-1", any(), null) }
+        coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), true) }
         vm.viewModelScope.cancel()
     }
 

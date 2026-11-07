@@ -81,6 +81,7 @@ class CheckoutVentaSinRedTest {
     private lateinit var aparato: VentaSinRedEnMemoria
     private lateinit var permissions: PermissionsRepository
     private lateinit var paymentDao: PendingPaymentDao
+    private lateinit var autorizacion: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
     private val guardadas = MutableStateFlow(0)
     private val problemas = MutableStateFlow(0)
 
@@ -103,6 +104,7 @@ class CheckoutVentaSinRedTest {
         permissions = mockk()
         coEvery { permissions.hasPermission(any()) } returns true
         paymentDao = mockk(relaxed = true)
+        autorizacion = mockk { coEvery { paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.NoHaceFalta }
         io.mockk.every { paymentDao.contarVentasGuardadas("venue-1") } returns guardadas
         io.mockk.every { paymentDao.contarConProblema("venue-1") } returns problemas
         io.mockk.every { paymentDao.contarVentasGuardadas("venue-2") } returns MutableStateFlow(7)
@@ -149,9 +151,7 @@ class CheckoutVentaSinRedTest {
             ventaSinRed = aparato,
             impresoraDeVentaGuardada = impresora,
             pendingPaymentDao = paymentDao,
-            autorizacionDeGerente = mockk {
-                coEvery { paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.NoHaceFalta
-            },
+            autorizacionDeGerente = autorizacion,
             permissionsRepository = permissions,
         )
     }
@@ -864,6 +864,20 @@ class CheckoutVentaSinRedTest {
         assertTrue(vm.prepareForPayment().isFailure)
         assertTrue(aparato.filas.isEmpty())
         assertNotNull(aparato.carritos["venue-1"])
+        vm.viewModelScope.cancel()
+    }
+
+    @Test fun `carrito restaurado con cortesia y PIN cancelado dice no confirmada, no sin autorizar`() = runTest {
+        // Pudo salir a la red antes de que muriera el proceso: la orden pudo crearse.
+        aparato.guardarCarrito("venue-1", "llave-antes", CartState(items = listOf(com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem(
+            type = com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType.ProductItem("p-1"),
+            name = "Café", unitPriceCents = 5000, isCortesia = true, cortesiaReason = "VIP"))), null)
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.Cancelada
+        val vm = viewModel()
+        assertTrue(vm.cartState.value.items.single().isCortesia)
+
+        assertEquals("No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar", vm.prepareForPayment().exceptionOrNull()?.message)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any(), any()) }
         vm.viewModelScope.cancel()
     }
 

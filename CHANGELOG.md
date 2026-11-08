@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.17.0] - 2026-11-08
+
 ### **Added**
 - **[PAX/Nexgo] PIN del gerente para cortesías**: quien no tiene permiso puede pedir la autorización de un gerente en Mesas, Menú y Cobrar sin cambiar de sesión. También se pide cuando un descuento manual deja los productos en $0. El PIN autoriza una sola acción, queda en la bitácora y necesita internet; cancelar no aplica nada. Si el negocio tiene el PIN apagado, se explica que la cortesía la da un gerente con su sesión. Requiere publicar primero el SERVIDOR con las cortesías y el descuento total protegidos (#330 y #333).
 

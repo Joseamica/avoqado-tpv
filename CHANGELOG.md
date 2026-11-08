@@ -14,10 +14,17 @@
 - **Pedidos por pagar («Cargar más» siempre al día, tienda híbrida)**: lo que la cajera cargó con «Cargar más» ya no se queda viejo ni regresa a la primera página cuando cambia la lista: en cada consulta la terminal vuelve a leer esas mismas páginas (nunca más de las que cargó), las muestra conforme llegan, enseña cada folio una sola vez aunque haya cambiado de página y suelta las páginas a las que ya no se llega (todas, si ya no hay más), así no se queda en pantalla un folio que otra caja ya entregó; al salir de la lista se sueltan y dejan de leerse. Los números de cada sección son los del servidor (sin tomar el mayor contra lo que hay en pantalla), y un folio que esta caja canceló, marcó «Listo» o «Entregado» ya no regresa un momento con sus botones viejos: se queda fuera mientras el servidor lo siga mandando igual, y aparece en cuanto llega distinto (por ejemplo, un folio cancelado que revive por un cobro que llegó tarde se ve en «Por entregar» con «Listo» y «Entregado», o vuelve a «Por pagar» con «Cobrar» por lo que falta si ese cobro fue sólo una parte).
 - **Pedidos por pagar («Listo» sigue en «Por entregar», tienda híbrida)**: con el SERVIDOR que manda los folios «Listo» en «Por entregar», un folio marcado «Listo» se queda en la lista con la marca «Listo» y sólo el botón «Entregado» (ya no desaparece sin poder entregarse); el número de «Por entregar» los cuenta. Con un SERVIDOR anterior todo sigue como antes.
 
----
-
 ### **Fixed**
 - **[Nexgo] Comanda automática del folio sin papel**: espera el resultado final de la impresora antes de confirmar la comanda; una tapa abierta o un fallo conserva el pedido pagado por entregar. Reutiliza el dueño de impresión existente y mantiene las guardas del SDK en reimpresiones manuales.
+
+---
+
+## [2.17.0] - 2026-11-08
+
+### **Added**
+- **[PAX/Nexgo] PIN del gerente para cortesías**: quien no tiene permiso puede pedir la autorización de un gerente en Mesas, Menú y Cobrar sin cambiar de sesión. También se pide cuando un descuento manual deja los productos en $0. El PIN autoriza una sola acción, queda en la bitácora y necesita internet; cancelar no aplica nada. Si el negocio tiene el PIN apagado, se explica que la cortesía la da un gerente con su sesión. Requiere publicar primero el SERVIDOR con las cortesías y el descuento total protegidos (#330 y #333).
+
+---
 
 ## [2.16.2] - 2026-11-06
 

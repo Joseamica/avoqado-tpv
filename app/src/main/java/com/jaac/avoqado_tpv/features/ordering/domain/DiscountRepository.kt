@@ -78,7 +78,8 @@ interface DiscountRepository {
         type: DiscountType,
         value: Double,
         reason: String?,
-        authorizedById: String? = null
+        authorizedById: String? = null,
+        overrideToken: String? = null
     ): Result<OrderDiscount>
 
     /**

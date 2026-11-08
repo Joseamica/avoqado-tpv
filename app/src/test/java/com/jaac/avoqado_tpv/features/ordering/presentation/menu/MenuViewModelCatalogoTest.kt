@@ -155,6 +155,7 @@ class MenuViewModelCatalogoTest {
         printerManager = mockk(relaxed = true),
         paymentApiService = mockk(relaxed = true),
         permissionsRepository = mockk(relaxed = true),
+        autorizacionDeGerente = mockk(relaxed = true),
     ).also { creados.add(it) }
 
     private fun producto(id: String, nombre: String) = Product(

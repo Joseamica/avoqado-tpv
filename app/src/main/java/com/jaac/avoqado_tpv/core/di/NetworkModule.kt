@@ -220,6 +220,11 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun providePermissionOverrideApi(retrofit: Retrofit): com.jaac.avoqado_tpv.features.permissions.data.override.PermissionOverrideApi =
+        retrofit.create(com.jaac.avoqado_tpv.features.permissions.data.override.PermissionOverrideApi::class.java)
+
+    @Provides
+    @Singleton
     fun provideApiService(retrofit: Retrofit): ApiService {
         return retrofit.create(ApiService::class.java)
     }

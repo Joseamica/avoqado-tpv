@@ -366,6 +366,32 @@ class TokenAuthenticatorTest {
     /**
      * Create a test request with Authorization header
      */
+    private val overridesUrl = "https://api.avoqado.io/api/v1/mobile/venues/venue-123/permission-overrides"
+
+    private fun response401(body: String) = Response.Builder()
+        .request(Request.Builder().url(overridesUrl).header("Authorization", "Bearer $oldToken").build())
+        .protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized")
+        .body(body.toResponseBody("application/json".toMediaTypeOrNull())).build()
+
+    @Test
+    fun `401 OVERRIDE_INVALID_PIN de permission-overrides no renueva ni reenvia`() {
+        every { secureStorage.getToken() } returns oldToken
+        val resp = response401("""{"code":"OVERRIDE_INVALID_PIN","message":"x"}""")
+        assertNull(authenticator.authenticate(null, resp))
+        coVerify(exactly = 0) { authRepository.refreshAccessToken() }
+        verify(exactly = 0) { sessionManager.notifySessionVerifying() }
+        assertEquals("""{"code":"OVERRIDE_INVALID_PIN","message":"x"}""", resp.body!!.string())  // el repositorio aun lo puede leer
+    }
+
+    @Test
+    fun `401 sin code de permission-overrides si renueva`() {
+        every { secureStorage.getToken() } returnsMany listOf(oldToken, newToken, newToken)
+        coEvery { authRepository.refreshAccessToken() } returns Result.Success(RefreshTokenResponse(accessToken = newToken, expiresIn = 3600, tokenType = "Bearer"))
+        val nueva = authenticator.authenticate(null, response401("""{"message":"jwt expired"}"""))
+        assertEquals("Bearer $newToken", nueva!!.header("Authorization"))
+        coVerify(exactly = 1) { authRepository.refreshAccessToken() }
+    }
+
     private fun createRequest(token: String): Request {
         return Request.Builder()
             .url(testUrl)

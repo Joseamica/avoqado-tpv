@@ -109,7 +109,6 @@ fun ShortcutsGridView(
 
     LaunchedEffect(sinRed, canCompItems, canApplyDiscount) {
         if ((sinRed && screen in listOf(ShortcutsScreen.COUPON, ShortcutsScreen.PAY_LATER)) ||
-            (!canCompItems && screen == ShortcutsScreen.CORTESIA) ||
             (!canApplyDiscount && screen == ShortcutsScreen.DISCOUNT)) screen = ShortcutsScreen.MAIN
     }
 
@@ -131,7 +130,7 @@ fun ShortcutsGridView(
         }
         ShortcutsScreen.CORTESIA -> CortesiaSubView(
             cartState = cartState,
-            canCompItems = canCompItems,
+            canCompItems = true, // el PIN del gerente se pide al Cobrar
             onApply = onApplyCortesia,
             onRemove = onRemoveCortesia,
             onBack = { screen = ShortcutsScreen.MAIN },
@@ -280,7 +279,6 @@ private fun ShortcutsMainGrid(
         items(items = actionTiles, key = { "action_${it.label}" }) { tile ->
             val bloqueo = when {
                 sinRed && tile.screen in listOf(ShortcutsScreen.COUPON, ShortcutsScreen.PAY_LATER) -> "Necesita internet"
-                !canCompItems && tile.screen == ShortcutsScreen.CORTESIA -> "Sin permiso"
                 !canApplyDiscount && tile.screen == ShortcutsScreen.DISCOUNT -> "Sin permiso"
                 else -> null
             }

@@ -3,6 +3,9 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
@@ -64,6 +67,7 @@ class TableOrderViewModelTest {
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val secureStorage = mockk<SecureStorage>()
     private val networkMonitor = mockk<NetworkMonitor>()
+    private val autorizacion = mockk<AutorizacionDeGerente>()
     private lateinit var tableSession: TableSession
     private lateinit var pendingCart: PendingRoundCart
     private lateinit var ownershipFlow: MutableStateFlow<TablesRepository.TableOwnership>
@@ -85,6 +89,7 @@ class TableOrderViewModelTest {
         coEvery { syncOutbox.enqueue(any(), any(), any(), any()) } returns "intent-id"
         every { secureStorage.getStaffId() } returns "staff-1"
         every { networkMonitor.isConnected() } returns true
+        coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
         every { networkMonitor.networkStateFlow } returns emptyFlow()
     }
 
@@ -102,6 +107,7 @@ class TableOrderViewModelTest {
         deviceInfoManager = deviceInfoManager,
         secureStorage = secureStorage,
         networkMonitor = networkMonitor,
+        autorizacionDeGerente = autorizacion,
     )
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error
@@ -532,7 +538,7 @@ class TableOrderViewModelTest {
 
         viewModel.compItems(emptySet(), "Error de entrada")
 
-        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
         assertThat(viewModel.error.value).isNotNull()
     }
 
@@ -1201,6 +1207,175 @@ class TableOrderViewModelTest {
 
         coVerify(exactly = 1) { repository.addItems(venueId, "orden-1", any(), 3) }
         assertThat(viewModel.isSending.value).isFalse()
+    }
+
+    // endregion
+
+    // region — PIN de gerente en la cortesía
+
+    private fun conCuenta(): TableOrderViewModel {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        return createViewModel()
+    }
+
+    private val okComp = Result.success(TablesRepository.CompOutcome(queued = false, total = null, version = null))
+
+    @Test
+    fun con_permiso_no_pide_pin_ni_manda_header() = runTest {
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns okComp
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, "Para dar esta cortesía", false) }
+        coVerify(exactly = 1) { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) }
+        assertThat(viewModel.notice.value).isEqualTo("Cortesía aplicada")
+    }
+
+    @Test
+    fun sin_permiso_pide_pin_y_manda_token() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-1") } returns okComp
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 1) { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-1") }
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun negada_muestra_el_texto_y_no_llama_al_repositorio() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada("Esta cortesía la da un gerente con su sesión")
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).isEqualTo("Esta cortesía la da un gerente con su sesión")
+        assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    @Test
+    fun cancelada_no_llama_al_repositorio_ni_muestra_error_y_deja_isComping_en_false() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Cancelada
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).isNull()
+        assertThat(viewModel.isComping.value).isFalse()
+
+        // una segunda cortesía sí arranca
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.NoHaceFalta
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns okComp
+        viewModel.compWholeOrder("Reclamo")
+        coVerify(exactly = 1) { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) }
+    }
+
+    @Test
+    fun no_confirmada_muestra_el_texto_y_recarga_la_cuenta() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-1") } returns
+            Result.failure(TablesRepository.NoConfirmadaException())
+        val viewModel = conCuenta()
+        clearMocks(repository, answers = false, recordedCalls = true)
+
+        viewModel.compWholeOrder("Reclamo")
+
+        assertThat(viewModel.error.value).isEqualTo("No pudimos confirmar la cortesía. Revisa la cuenta")
+        coVerify(atLeast = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    @Test
+    fun `403_orders_comp_tras_NoHaceFalta_pide_pin_forzado_y_reintenta_una_vez`() = runTest {
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        coEvery { autorizacion.paraCortesia(venueId, any(), true) } returns Autorizacion.ConPin("tok-2")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-2") } returns okComp
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, "Para dar esta cortesía", true) }
+        coVerify(exactly = 1) { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-2") }
+        assertThat(viewModel.notice.value).isEqualTo("Cortesía aplicada")
+    }
+
+    @Test
+    fun segundo_403_no_reintenta_otra_vez_y_muestra_el_texto() = runTest {
+        val e = PermisoRequeridoException("orders:comp", true, "Esta cortesía la da un gerente con su sesión")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns Result.failure(e)
+        coEvery { autorizacion.paraCortesia(venueId, any(), true) } returns Autorizacion.ConPin("tok-2")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-2") } returns Result.failure(e)
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, any(), true) }
+        coVerify(exactly = 2) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).isEqualTo("No pudimos confirmar la cortesía. Revisa la cuenta")
+        assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    @Test
+    fun conPin_primer_intento_403_es_NoConfirmada_recarga_y_no_pide_otra_vez() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-1") } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        val viewModel = conCuenta()
+        clearMocks(repository, answers = false, recordedCalls = true)
+
+        viewModel.compWholeOrder("Reclamo")
+
+        assertThat(viewModel.error.value).isEqualTo("No pudimos confirmar la cortesía. Revisa la cuenta")
+        coVerify(atLeast = 1) { repository.getOrder(venueId, "orden-1") }
+        coVerify(exactly = 1) { autorizacion.paraCortesia(any(), any(), any()) }
+        assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    @Test
+    fun NoHaceFalta_403_luego_ConPin_403_es_NoConfirmada_recarga_y_sin_tercera_llamada() = runTest {
+        val e = PermisoRequeridoException("orders:comp", true, "x")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns Result.failure(e)
+        coEvery { autorizacion.paraCortesia(venueId, any(), true) } returns Autorizacion.ConPin("tok-2")
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", "tok-2") } returns Result.failure(e)
+        val viewModel = conCuenta()
+        clearMocks(repository, answers = false, recordedCalls = true)
+
+        viewModel.compWholeOrder("Reclamo")
+
+        assertThat(viewModel.error.value).isEqualTo("No pudimos confirmar la cortesía. Revisa la cuenta")
+        coVerify(atLeast = 1) { repository.getOrder(venueId, "orden-1") }
+        coVerify(exactly = 2) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun forzada_cancelada_es_silenciosa_e_isComping_false() = runTest {
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo", "staff-1", null) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        coEvery { autorizacion.paraCortesia(venueId, any(), true) } returns Autorizacion.Cancelada
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        assertThat(viewModel.error.value).isNull()
+        assertThat(viewModel.isComping.value).isFalse()
+        coVerify(exactly = 1) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun si_el_coordinador_lanza_se_muestra_error_e_isComping_false() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } throws IllegalStateException("boom")
+        val viewModel = conCuenta()
+
+        viewModel.compWholeOrder("Reclamo")
+
+        assertThat(viewModel.error.value).isEqualTo("No se pudo aplicar la cortesía")
+        assertThat(viewModel.isComping.value).isFalse()
     }
 
     // endregion

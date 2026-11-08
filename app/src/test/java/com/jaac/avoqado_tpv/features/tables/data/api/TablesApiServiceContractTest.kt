@@ -93,6 +93,14 @@ class TablesApiServiceContractTest {
     }
 
     @Test
+    fun `compOrder lleva el token de PIN en el header X-Permission-Override`() {
+        val m = TablesApiService::class.java.declaredMethods.first { it.name == "compOrder" }
+        val headers = m.parameterAnnotations.flatMap { it.toList() }.filterIsInstance<retrofit2.http.Header>()
+
+        assertThat(headers.map { it.value }).contains("X-Permission-Override")
+    }
+
+    @Test
     fun `getServiceCharges apunta al venue, no a una orden en particular`() {
         // A diferencia de discounts/available (elegibilidad de UNA cuenta),
         // service-charges es el catálogo del VENUE — sin :orderId en la ruta.

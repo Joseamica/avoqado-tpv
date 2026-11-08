@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -92,7 +94,8 @@ class MenuViewModel @Inject constructor(
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
     private val printerManager: PrinterManager,  // 🖨️ Kitchen ticket printing
     private val paymentApiService: PaymentApiService,  // 🎁 Cortesía: bypass gateway for $0 orders
-    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository  // 🔐 Action gating
+    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository,  // 🔐 Action gating
+    private val autorizacionDeGerente: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente  // 🔐 PIN de gerente
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
@@ -482,7 +485,7 @@ class MenuViewModel @Inject constructor(
      * - remainingBalance (for payment calculations)
      * - paymentStatus (may change to PAID if fully paid)
      */
-    private fun refreshOrderFromBackend(orderId: String) {
+    private fun refreshOrderFromBackend(orderId: String, refreshDiscounts: Boolean = false) {
         viewModelScope.launch {
             try {
                 val venueId = deviceInfoManager.getVenueId() ?: return@launch
@@ -505,6 +508,7 @@ class MenuViewModel @Inject constructor(
                 val currentState = _state.value
                 if (currentState is MenuState.Success) {
                     _state.value = currentState.copy(order = mergedOrder)
+                    if (refreshDiscounts) _appliedDiscounts.value = mergedOrder.discounts
 
                     // 🔍 DEBUG: Detailed order state after payment
                     Timber.i("✅ [MenuViewModel] Order refreshed after payment")
@@ -2403,6 +2407,7 @@ class MenuViewModel @Inject constructor(
             }
 
             _isLoadingDiscounts.value = true
+            var regalaLaCuenta = false
             try {
                 // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
                 // Discount needs accurate totals from backend to calculate correctly
@@ -2416,13 +2421,58 @@ class MenuViewModel @Inject constructor(
 
                 Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
 
-                discountRepository.applyManualDiscount(
-                    venueId = venueId,
-                    orderId = order.id,
-                    type = type,
-                    value = value,
-                    reason = reason
-                ).fold(
+                // PIN de gerente por adelantado sólo con 100 % o un fijo que cubre lo que queda (subtotal − descuentos, no `total`).
+                // El valor se compara TAL COMO SE ESCRIBIÓ, sin redondear ni predecir redondeos: si el servidor redondea a regalar la
+                // cuenta (99.999 % de $100, $1.009 de $1.01), contesta 403 `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca
+                // pide un PIN que el servidor no pediría ($1.005 de $1.01: el servidor deja $0.01).
+                val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
+                regalaLaCuenta = queda.signum() > 0 && ((type == DiscountType.PERCENTAGE && value >= 100) ||
+                    (type == DiscountType.FIXED && java.math.BigDecimal(value.toString()) >= queda))
+                val motivoPin = "Para dar esta cortesía"
+                var token: String? = null
+                if (regalaLaCuenta) {
+                    val auth = autorizacionDeGerente.paraCortesia(venueId, motivoPin)
+                    if (auth is Autorizacion.Cancelada) return@launch
+                    if (auth is Autorizacion.Negada) {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(auth.texto, isError = true))
+                        return@launch
+                    }
+                    token = (auth as? Autorizacion.ConPin)?.token
+                }
+                // Un fallo con token no es un permiso que falta: el POST pudo llegar (o OkHttp reenviarlo tras gastarse el token) y el
+                // descuento pudo aplicarse. Se trata como "no confirmada".
+                var noConfirmada = false
+                suspend fun enviar(t: String?): Result<OrderDiscount> {
+                    val r = discountRepository.applyManualDiscount(
+                        venueId = venueId,
+                        orderId = order.id,
+                        type = type,
+                        value = value,
+                        reason = reason,
+                        overrideToken = t
+                    )
+                    // Con token, cualquier fallo (403, IOException, timeout, 5xx) es dudoso: /discounts/manual no tiene llave de idempotencia.
+                    if (t != null && r.isFailure) noConfirmada = true
+                    return r
+                }
+                var resultado = enviar(token)
+                val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
+                if (token == null && e403?.required == "orders:comp") {
+                    val forzada = autorizacionDeGerente.paraCortesia(venueId, motivoPin, forzar = true)
+                    if (forzada is Autorizacion.Cancelada) return@launch
+                    if (forzada is Autorizacion.Negada) {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(forzada.texto, isError = true))
+                        return@launch
+                    }
+                    token = (forzada as? Autorizacion.ConPin)?.token
+                    resultado = enviar(token)
+                }
+                if (noConfirmada) {
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar("No pudimos confirmar la cortesía. Revisa la cuenta", isError = true))
+                    refreshOrderFromBackend(order.id, refreshDiscounts = true)
+                    return@launch
+                }
+                resultado.fold(
                     onSuccess = { appliedDiscount ->
                         val updatedDiscounts = _appliedDiscounts.value + appliedDiscount
                         _appliedDiscounts.value = updatedDiscounts
@@ -2438,11 +2488,16 @@ class MenuViewModel @Inject constructor(
                         // hid 403/permission/validation failures and made the bug invisible.
                         Timber.e(error, "❌ Error applying manual discount")
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar(
-                            "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
+                            if (error is PermisoRequeridoException) error.message ?: "Sin permiso"
+                            else "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
                             isError = true
                         ))
                     }
                 )
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    if (regalaLaCuenta) "No se pudo aplicar la cortesía" else "No se pudo aplicar el descuento", isError = true))
             } finally {
                 _isLoadingDiscounts.value = false
             }

@@ -42,7 +42,7 @@ class PrinterManagerCandadoTest {
     @Test
     fun `dos impresiones a la vez nunca se enciman - de init a start la impresora es de una sola`() {
         val impresora = ImpresoraQueAnota()
-        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }
             .set(manager, lazyOf(impresora))
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)
@@ -83,7 +83,7 @@ class PrinterManagerCandadoTest {
     @Test
     fun `R86 revisar la impresora mientras otra impresion la tiene espera y luego dice lista`() {
         val impresora = ImpresoraLenta()
-        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }
             .set(manager, lazyOf(impresora))
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)

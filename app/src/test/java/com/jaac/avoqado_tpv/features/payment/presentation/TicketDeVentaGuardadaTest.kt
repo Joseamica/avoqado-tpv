@@ -28,7 +28,7 @@ class TicketDeVentaGuardadaTest {
         val storage = mockk<SecureStorage>(relaxed = true)
         every { storage.getVenueName() } returns "Boutique"
         every { storage.getVenueLogo() } returns null
-        val printer = PrinterManager(mockk(relaxed = true), storage)
+        val printer = PrinterManager(mockk(relaxed = true), storage, io.mockk.mockk(relaxed = true))
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(printer, lazyOf(ImpresoraPax(device)))
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(printer, true)
         val result = ImpresoraDeVentaGuardada.imprimirEnPax(venta, 500, printer, storage)

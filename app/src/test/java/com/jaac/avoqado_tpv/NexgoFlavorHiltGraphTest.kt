@@ -37,6 +37,14 @@ import java.io.File
  */
 class NexgoFlavorHiltGraphTest {
 
+    @Test
+    fun `PrinterManager y su modulo difieren el gateway hasta una comanda Nexgo`() {
+        for (path in listOf("core/printer/PrinterManager.kt", "core/di/PrinterModule.kt")) {
+            val source = File("src/main/java/com/jaac/avoqado_tpv/$path").readText()
+            assertTrue("$path no debe resolver AngelPay al iniciar PAX", source.contains("angelPaySdkGateway: Provider<AngelPaySdkGateway>"))
+        }
+    }
+
     // Test runs with working dir at app/ (Gradle module). Path is relative to that.
     private val appFile: File = File("src/main/java/com/jaac/avoqado_tpv/AvoqadoTPVApplication.kt")
 

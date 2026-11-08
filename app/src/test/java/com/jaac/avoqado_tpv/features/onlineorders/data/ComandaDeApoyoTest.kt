@@ -40,7 +40,7 @@ class ComandaDeApoyoTest {
     )
 
     private fun imprime(resultado: Result<Unit>) {
-        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any()) } returns resultado
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any()) } returns resultado
     }
 
     @Before
@@ -57,7 +57,7 @@ class ComandaDeApoyoTest {
 
         coVerifyOrder {
             folios.reclamarImpresion("v1", "ord-1")
-            impresora.printKitchenTicket("W7K3P", null, any(), null, "Ana", "sin azúcar, por favor")
+            impresora.printKitchenTicket("W7K3P", null, any(), null, "Ana", "sin azúcar, por favor", true)
             folios.confirmarImpresion("v1", "ord-1")
         }
     }
@@ -65,7 +65,7 @@ class ComandaDeApoyoTest {
     @Test
     fun `la comanda lleva cada renglon con su cantidad, sus extras y su nota, sin precios`() = runTest {
         val renglones = slot<List<OrderItem>>()
-        every { impresora.printKitchenTicket(any(), any(), capture(renglones), any(), any(), any()) } returns Result.success(Unit)
+        every { impresora.printKitchenTicket(any(), any(), capture(renglones), any(), any(), any(), true) } returns Result.success(Unit)
 
         comanda.intentar("v1", folio)
 
@@ -93,7 +93,7 @@ class ComandaDeApoyoTest {
         comanda.intentar("v1", folio)
 
         coVerify(exactly = 0) { folios.reclamarImpresion(any(), any()) }
-        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
     }
 
@@ -103,7 +103,7 @@ class ComandaDeApoyoTest {
 
         comanda.intentar("v1", folio)
 
-        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
     }
 
@@ -113,13 +113,13 @@ class ComandaDeApoyoTest {
 
         comanda.intentar("v1", folio)
 
-        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
     }
 
     @Test
     fun `un fallo de la impresora que truena no sale de la comanda`() = runTest {
-        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any()) } throws IllegalStateException("SDK")
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any()) } throws IllegalStateException("SDK")
 
         comanda.intentar("v1", folio)
 

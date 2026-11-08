@@ -21,7 +21,7 @@ class Task7CajaPrinterTest {
         val images = mutableListOf<android.graphics.Bitmap>()
         every { device.printBitmap(capture(images)) } answers { Unit }
         every { device.start() } returns 0
-        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }
             .set(manager, lazyOf(ImpresoraPax(device)))
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)
@@ -55,7 +55,7 @@ class Task7CajaPrinterTest {
         val images = mutableListOf<android.graphics.Bitmap>()
         every { device.printBitmap(capture(images)) } answers { Unit }
         every { device.start() } returns code
-        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }
             .set(manager, lazyOf(ImpresoraPax(device)))
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, true)
@@ -82,7 +82,7 @@ class Task7CajaPrinterTest {
         mockkObject(ImpresoraAngelPay.Companion)
         try {
             every { ImpresoraAngelPay.paraEstaTerminal() } returns adapter
-            val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+            val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
             PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, false)
             val summary = unknownFundSummary("PENDING")
             assertThat(manager.printLocalShiftSummary(summary).isSuccess).isTrue()

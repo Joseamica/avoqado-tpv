@@ -64,7 +64,7 @@ class PrinterManagerLeyendaIvaTest {
         val lines = mutableListOf<String>()
         io.mockk.every { device.printStr(capture(lines), any()) } answers { Unit }
         io.mockk.every { device.start() } returns printerCode
-        val manager = PrinterManager(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true))
+        val manager = PrinterManager(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         // Se evita cargar Neptune. Se ejecuta íntegro printReceipt, incluidos sus totales y printStr.
         // Desde la 2.12.5 la PAX imprime por `ImpresoraPax` y el camino se elige con `esHardwarePax`;
         // se fija a PAX para que el renglón sea el mismo también en la variante Nexgo.

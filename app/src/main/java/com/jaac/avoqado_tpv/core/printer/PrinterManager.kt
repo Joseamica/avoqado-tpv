@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.pax.dal.IDAL
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,6 +14,7 @@ import timber.log.Timber
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -47,7 +49,8 @@ import javax.inject.Singleton
 @Singleton
 class PrinterManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val angelPaySdkGateway: Provider<AngelPaySdkGateway>,
 ) {
     /** Venue timezone for formatting dates on receipts */
     private val venueTimeZone: java.util.TimeZone
@@ -1674,9 +1677,15 @@ class PrinterManager @Inject constructor(
         staffName: String? = null,
         cliente: String? = null,
         notaDelPedido: String? = null,
+        esComandaDeFolio: Boolean = false,
     ): Result<Unit> {
         return synchronized(candado) { try {
-            val printerInstance = printer ?: return Result.failure(
+            // Sólo la comanda automática acredita papel; las reimpresiones conservan las guardas del SDK.
+            val printerInstance = (if (!esHardwarePax && esComandaDeFolio) {
+                ImpresoraAngelPay.paraEstaTerminal { ticket ->
+                    kotlinx.coroutines.runBlocking { angelPaySdkGateway.get().printTicket(ticket) }
+                }
+            } else printer) ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
 

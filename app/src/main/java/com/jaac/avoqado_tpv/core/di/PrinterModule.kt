@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.core.di
 import android.content.Context
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
+import javax.inject.Provider
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -54,8 +56,9 @@ object PrinterModule {
     @Singleton
     fun providePrinterManager(
         @ApplicationContext context: Context,
-        secureStorage: SecureStorage
+        secureStorage: SecureStorage,
+        angelPaySdkGateway: Provider<AngelPaySdkGateway>,
     ): PrinterManager {
-        return PrinterManager(context, secureStorage)
+        return PrinterManager(context, secureStorage, angelPaySdkGateway)
     }
 }

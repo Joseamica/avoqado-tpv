@@ -16,6 +16,9 @@
 
 ---
 
+### **Fixed**
+- **[Nexgo] Comanda automática del folio sin papel**: espera el resultado final de la impresora antes de confirmar la comanda; una tapa abierta o un fallo conserva el pedido pagado por entregar. Reutiliza el dueño de impresión existente y mantiene las guardas del SDK en reimpresiones manuales.
+
 ## [2.16.2] - 2026-11-06
 
 ### **Fixed**

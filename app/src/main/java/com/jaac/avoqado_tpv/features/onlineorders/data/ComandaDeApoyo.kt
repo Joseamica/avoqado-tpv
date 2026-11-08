@@ -35,6 +35,7 @@ class ComandaDeApoyo @Inject constructor(
                 orderItems = folio.renglonesDeCocina(),
                 cliente = folio.nombre,
                 notaDelPedido = folio.nota,
+                esComandaDeFolio = true,
             )
         } catch (e: CancellationException) {
             throw e

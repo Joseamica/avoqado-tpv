@@ -83,10 +83,12 @@ internal class ImpresoraAngelPay(
          * `null` sólo si el SDK dice que ESTE modelo no tiene impresora. Si el modelo no se conoce
          * (SDK todavía sin iniciar), se intenta y el SDK contesta con su error.
          */
-        fun paraEstaTerminal(): ImpresoraAngelPay? {
+        fun paraEstaTerminal(
+            enviar: (PrintTicketRequest) -> Result<*> = { AngelPaySDK.printTicket(it) },
+        ): ImpresoraAngelPay? {
             val modelo = runCatching { AngelPaySDK.getDeviceInfo()?.model }.getOrNull()?.uppercase().orEmpty()
             if (modelo.isNotBlank() && MODELOS_CON_IMPRESORA.none { it in modelo }) return null
-            return ImpresoraAngelPay()
+            return ImpresoraAngelPay(enviar)
         }
     }
 }

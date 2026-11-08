@@ -668,7 +668,7 @@ class SettingsViewModel @Inject constructor(
 
             try {
                 // Print test receipt using PrinterManager
-                val result = printerManager.printTest()
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printerManager.printTest() }
 
                 result.onSuccess {
                     _state.update {

@@ -362,6 +362,12 @@ sealed class NavRoute(val route: String) {
     data object MisSims : NavRoute("mis_sims")
 
     /**
+     * «Pedidos por pagar» (tienda híbrida): los folios por pagar y por entregar, y la pantalla de un folio con «Cobrar».
+     * Se entra por el recuadro del inicio.
+     */
+    data object PorPagar : NavRoute("por_pagar")
+
+    /**
      * Mesas — entry point for the new table-service module (`features/tables/`).
      *
      * Isolated from `features/ordering/` (legacy) and `features/checkout/` (Cobrar);

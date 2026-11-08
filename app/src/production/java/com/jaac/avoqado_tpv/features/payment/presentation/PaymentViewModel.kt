@@ -310,6 +310,8 @@ class PaymentViewModel @Inject constructor(
     private val proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
     // 📸 C7: la pregunta de repetido del número de vinculación (number-check). Hilt siempre la da; null en pruebas viejas.
     proofOfSaleRemote: ProofOfSaleRemote? = null,
+    // 🧾 Tienda híbrida (P4): con el cobro de un folio registrado, lo acepta y prueba la comanda de apoyo. Hilt siempre la da.
+    private val despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
 ) : ViewModel() {
 
     // 🔒 True while handlePaymentSuccess's recording coroutine is running. PaymentState.Success is
@@ -1852,6 +1854,17 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * 🧾 Tienda híbrida (P4): el folio de «Pedidos por pagar» que este cobro paga (null = cobro normal). La pantalla lo da antes de
+     * cada arranque, también tras un [resetPayment] que la regresa a Idle. Con folio el cobro es ORDER (nunca venta de SIM, R78) y,
+     * registrado, [DespuesDeCobrarFolio.alConfirmarse] lo acepta y prueba la comanda.
+     */
+    private var folioDelCobro: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null
+
+    fun setFolio(folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio?) {
+        folioDelCobro = folio
+    }
+
+    /**
      * 📱 PORTABILIDAD: Set portabilidad mode (1 photo vs 2 photos for proof-of-sale)
      */
     fun setIsPortabilidad(isPortabilidad: Boolean) {
@@ -3221,6 +3234,8 @@ class PaymentViewModel @Inject constructor(
         )
         _flowOrigin.value = when {
             sessionSnapshot.isKioskPayment -> PaymentFlowOrigin.KIOSK
+            // 🧾 R78: la cuenta de un folio sólo vive en el servidor (por eso salta Room), pero NUNCA es venta de SIM.
+            folioDelCobro != null -> PaymentFlowOrigin.ORDER
             // 🔴 `skipLocalOrderValidation` NO implica venta serializada: el cobro remoto por
             // socket TAMBIÉN la manda en true ("la orden ya la validó el POS emisor",
             // AppNavigation). Clasificar solo por la bandera disfrazaba TODO cobro remoto de
@@ -5730,6 +5745,7 @@ class PaymentViewModel @Inject constructor(
         // sesión DESPUÉS de la espera es lo que mandó llave vacía en producción: cancelar o
         // reiniciar la pantalla mientras el toque estaba estacionado la borra.
         val ventaLocalCongelada = ventaLocal
+        val folioDelIntento = folioDelCobro  // 🧾 P4: congelado con el toque, como la llave
         val attemptId = ventaLocalCongelada?.llave ?: ensurePaymentAttemptId()
 
         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
@@ -5859,7 +5875,7 @@ class PaymentViewModel @Inject constructor(
                         Timber.d("🖨️ [KIOSK CASH] Auto-printing cash confirmation receipt...")
 
                         // 🖨️ Check printer status before printing
-                        val printerStatus = printerManager.checkPrinterStatus()
+                        val printerStatus = withContext(Dispatchers.IO) { printerManager.checkPrinterStatus() }  // R86: espera el candado fuera de Main
                         if (!printerStatus.hasPaper) {
                             Timber.w("⚠️ [KIOSK CASH] No paper in printer - skipping receipt print")
                             printerWarning = "Sin papel en impresora"
@@ -5868,11 +5884,11 @@ class PaymentViewModel @Inject constructor(
                             printerWarning = "Impresora no disponible: ${printerStatus.message}"
                         } else {
                             // Printer is ready, attempt to print
-                            val printResult = printerManager.printCashConfirmationReceipt(
+                            val printResult = withContext(Dispatchers.IO) { printerManager.printCashConfirmationReceipt(
                                 totalAmount = currentState.totalAmount,
                                 tipAmount = currentState.tipAmount,
                                 orderNumber = getOrderNumberForFlow()
-                            )
+                            ) }
 
                             printResult.onSuccess {
                                 Timber.d("🖨️ [KIOSK CASH] Receipt printed successfully")
@@ -5946,6 +5962,8 @@ class PaymentViewModel @Inject constructor(
 
                 result.onSuccess { receipt ->
                     Timber.d("✅ [Cash Payment] Successfully recorded to backend")
+                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                     Timber.d("   🧾 Payment ID: ${receipt.paymentId} | Receipt URL: ${receipt.receiptUrl}")
 
                     // 📦 Load order data if this is an order payment (Pedido Rápido or Servicio de Mesa)
@@ -6694,6 +6712,7 @@ class PaymentViewModel @Inject constructor(
         }
 
         ventaLocal = null
+        folioDelCobro = null  // 🧾 P4: la pantalla lo vuelve a dar al arrancar el siguiente cobro
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
@@ -6944,7 +6963,8 @@ class PaymentViewModel @Inject constructor(
         // Tip/rating handled via snapshot overrides below
         _flowOrigin.value = context.flowOrigin
 
-        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        // 🧾 R78: la cuenta de un folio sólo vive en el servidor (ORDER, no SERIALIZED): reintentar tampoco la busca en el aparato.
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED || folioDelCobro != null
         val orderContextOverride = context.orderId?.let { orderId ->
             OrderContext(
                 orderId = orderId,
@@ -7022,7 +7042,8 @@ class PaymentViewModel @Inject constructor(
 
         _flowOrigin.value = context.flowOrigin
 
-        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        // 🧾 R78: la cuenta de un folio sólo vive en el servidor (ORDER, no SERIALIZED): reintentar tampoco la busca en el aparato.
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED || folioDelCobro != null
         val orderContextOverride = context.orderId?.let { orderId ->
             OrderContext(
                 orderId = orderId,
@@ -7417,7 +7438,10 @@ class PaymentViewModel @Inject constructor(
         // that when the collector does wake up on Success it sees `recordingInFlight == true` and
         // leaves the flags to our `finally`, instead of declaring the terminal free mid-record.
         recordingInFlight = true
-        viewModelScope.launch {
+        // 🔒 R89: ATOMIC = arranca aunque la pantalla se vaya antes de que la corrutina empiece (se lanza de IO a Main). Sin esto
+        // el cuerpo no corría, su `finally` tampoco, y la ventana del dinero —que onCleared ya no cierra con un registro
+        // pendiente (R86)— se quedaba abierta; además el dinero aprobado ni siquiera intentaba registrarse.
+        viewModelScope.launch(start = CoroutineStart.ATOMIC) {
             try {
                 // Extract authorization and reference using reflection (SDK type not directly accessible)
                 // Null-safe: offline-approved contactless has no saleData (same pattern as handleRefundSuccess)
@@ -7509,6 +7533,8 @@ class PaymentViewModel @Inject constructor(
                 // es el único dato de la fila de la cola que no vive dentro de él, y leerlo después
                 // del POST lo expone al mismo `resetPayment()` que vaciaba todo lo demás.
                 val numeroDeOrdenDelIntento = getOrderNumberForFlow()
+                // 🧾 P4: el folio también se captura aquí, antes del POST, por la misma razón.
+                val folioDelIntento = folioDelCobro
                 val context = if (orderIdForFlow != null) {
                     buildOrderPaymentContext(
                         staffId = effectiveStaffId,  // 🥝 Use effective staff ID (kiosk or auth)
@@ -7569,6 +7595,15 @@ class PaymentViewModel @Inject constructor(
                     // 📒 [Libreta] REGISTRADO — the backend owns the money record from here on.
                     context.idempotencyKey?.let { authorizationUnresolved = false
                         paymentAttemptLedger.markRecorded(it) }
+                    // 🧾 P4: registrado ⇒ aceptar el folio y la comanda de apoyo, ANTES del recibo de siempre. No espera.
+                    // R91: justo después de la libreta, como el efectivo. El candado de la cuenta de abajo (`updateOrderMerchant`)
+                    // es un withContext(IO) cancelable: si la pantalla ya se fue, truena al entrar y lo que sigue no corre.
+                    // ⚠️ OJO: esta línea sólo sobrevive a que la cajera salga del éxito porque `markRecorded` corre en
+                    // `withContext(NonCancellable + IO)` DENTRO de `runCatching`, que se traga la cancelación de su regreso.
+                    // Cualquier cosa que suspenda (cancelable) y se ponga ANTES de esta línea, o quitarle ese runCatching, regresa el error:
+                    // el folio no se acepta y la cocina no se entera. La prueba R91 de PaymentViewModelTest usa un doble de la
+                    // libreta, así que NO lo detectaría.
+                    folioDelIntento?.let { despuesDeCobrarFolio?.alConfirmarse(it) }
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
 
@@ -8166,13 +8201,19 @@ class PaymentViewModel @Inject constructor(
             Timber.i("📄 [Print] No receipt from backend - will print generic receipt with payment data")
         }
 
+        // R91: «Imprimiendo» desde el toque, ANTES de revisar la impresora: esa revisión espera el candado si la comanda de
+        // apoyo de un folio está imprimiendo, y sin la bandera el botón seguía activo (dos toques = dos recibos).
+        if (!_isPrinting.compareAndSet(false, true)) {
+            Timber.d("🖨️ [Print] Ya hay una impresión en curso - se ignora el toque")
+            return
+        }
         val ventaGuardada = ventaLocal
         viewModelScope.launch {
             try {
                 Timber.i("🖨️ [Print] Starting receipt print")
 
                 // 🖨️ Check printer status before printing
-                val printerStatus = printerManager.checkPrinterStatus()
+                val printerStatus = withContext(Dispatchers.IO) { printerManager.checkPrinterStatus() }  // R86: espera el candado fuera de Main
                 Timber.d("🖨️ [Print] Printer status: code=${printerStatus.code}, ready=${printerStatus.isReady}, paper=${printerStatus.hasPaper}")
 
                 if (!printerStatus.hasPaper) {
@@ -8213,9 +8254,6 @@ class PaymentViewModel @Inject constructor(
                     )
                     return@launch
                 }
-
-                // 🖨️ Set printing state (button shows "Imprimiendo..." instead of separate screen)
-                _isPrinting.value = true
 
                 val result = if (ventaGuardada != null) {
                     com.jaac.avoqado_tpv.features.checkout.data.ImpresoraDeVentaGuardada.imprimirEnPax(
@@ -8271,6 +8309,8 @@ class PaymentViewModel @Inject constructor(
                     message = "Error inesperado al imprimir: ${e.message}",
                     previousState = currentState
                 )
+            } finally {
+                _isPrinting.value = false // también en las salidas tempranas (sin papel, no lista, sin productos)
             }
         }
     }
@@ -8540,12 +8580,12 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("🖨️ [Print] Starting kitchen ticket print")
                 _isPrinting.value = true
 
-                val result = printerManager.printKitchenTicket(
+                val result = withContext(Dispatchers.IO) { printerManager.printKitchenTicket(
                     orderNumber = orderNumber,
                     tableName = tableName,
                     orderItems = orderItems,
                     staffName = null  // TODO: Get from auth context if needed
-                )
+                ) }
 
                 result.onSuccess {
                     Timber.i("✅ [Print] Kitchen ticket printed successfully")
@@ -10002,7 +10042,11 @@ class PaymentViewModel @Inject constructor(
         saleData: Any?, // Blumon SDK SaleData object (null for offline refunds)
         entryMode: CardEntryMode,
     ) {
-        viewModelScope.launch {
+        // 🔒 R89: ATOMIC, igual que handlePaymentSuccess: quien publica Success reclamó recordingInFlight y sólo este `finally`
+        // cierra la ventana del dinero, así que tiene que correr aunque la pantalla se vaya antes de que esto arranque.
+        // R91: en esa ventana el registro de la devolución NO se intenta: la primera suspensión cancelable
+        // (restaurarContextoDelIntento, un getById de Room) truena con la cancelación. ATOMIC sólo garantiza que las banderas bajen.
+        viewModelScope.launch(start = CoroutineStart.ATOMIC) {
             var referenciaParaAviso = "sin referencia"
             try {
                 val rawRefundContext = buildRefundPaymentContext() ?: refundContextEnVuelo
@@ -10222,6 +10266,10 @@ class PaymentViewModel @Inject constructor(
                     refundAttemptIdClear = true
                 )
 
+            } catch (e: CancellationException) {
+                // R91: la pantalla se fue (p. ej. antes de que esto arrancara); no es un fallo del registro, así que no va
+                // como «RefundRecordingCrashed». El `finally` de abajo SIGUE corriendo y baja las banderas.
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Refund Recording] Unexpected error")
                 // 🔴 Auditoría de Codex F2: el `catch` sólo limpiaba el contexto — el reembolso aprobado
@@ -10259,8 +10307,10 @@ class PaymentViewModel @Inject constructor(
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)
         // until an app restart — the exact bug this signal exists to fix.
-        recordingInFlight = false
-        paymentStateHolder.setCharging(false)
+        // 🧾 R86: con un registro de tarjeta en vuelo la ventana del dinero NO se cierra aquí. El POST es NonCancellable y sigue
+        // tras salir del éxito (que se ve ANTES de que termine el registro); el `finally` de handlePaymentSuccess suelta las dos
+        // banderas al terminar. Cerrarla aquí dejaba a «Pedidos por pagar» cobrar el mismo folio otra vez a media espera.
+        if (!recordingInFlight) paymentStateHolder.setCharging(false)
         paymentStateHolder.setChargeAttemptActive(false)
     }
 }

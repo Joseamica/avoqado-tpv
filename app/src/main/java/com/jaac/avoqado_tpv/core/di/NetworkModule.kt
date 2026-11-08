@@ -242,4 +242,10 @@ object NetworkModule {
     fun provideTablesApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService {
         return retrofit.create(com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService::class.java)
     }
+
+    /** Tienda híbrida: «Pedidos por pagar» (`features/onlineorders/`), SOLO `tpv/…`. */
+    @Provides
+    @Singleton
+    fun provideOnlineOrdersApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService =
+        retrofit.create(com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService::class.java)
 }

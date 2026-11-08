@@ -16,7 +16,7 @@ class PrinterManagerPaymentHistoryTest {
         val lines = mutableListOf<String>()
         every { device.printStr(capture(lines), any()) } answers { Unit }
         every { device.start() } returns printerCode
-        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true))
+        val manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), io.mockk.mockk(relaxed = true))
         // El renderer real dicta a la impresora; sólo se sustituye el hardware nativo.
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply {
             isAccessible = true

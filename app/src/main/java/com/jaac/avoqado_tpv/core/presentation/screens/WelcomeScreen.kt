@@ -79,6 +79,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.PosInfoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
+import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.StaticActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
@@ -148,6 +149,8 @@ fun WelcomeScreen(
     onNavigateToOrdering: () -> Unit = {},
     onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6) — restaurant mode entry point
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar) — additive rollout
+    estadoDeFolios: EstadoDeFolios = EstadoDeFolios(),  // «Pedidos por pagar» (lo decide el vigía)
+    onNavigateToFolios: () -> Unit = {},
     onNavigateToReports: () -> Unit = {},
     onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
@@ -315,6 +318,8 @@ fun WelcomeScreen(
         onNavigateToOrdering = onNavigateToOrdering,
         onNavigateToTables = onNavigateToTables,  // 🪑 Pass Mesas navigation
         onNavigateToCheckout = onNavigateToCheckout,  // 🆕 Pass Checkout navigation
+        estadoDeFolios = estadoDeFolios,
+        onNavigateToFolios = onNavigateToFolios,
         onNavigateToReports = onNavigateToReports,
         onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
         onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
@@ -542,6 +547,8 @@ internal fun WelcomeScreenContent(
     onNavigateToOrdering: () -> Unit,
     onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6)
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar)
+    estadoDeFolios: EstadoDeFolios = EstadoDeFolios(),
+    onNavigateToFolios: () -> Unit = {},
     onNavigateToReports: () -> Unit,
     onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
@@ -923,6 +930,21 @@ internal fun WelcomeScreenContent(
                     enabled = checkoutEnabled,
                     badge = checkoutBadge,
                     onClick = onNavigateToCheckout
+                )
+            )
+        }
+
+        // «Pedidos por pagar» (tienda híbrida): junto a «Cobrar», con su misma condición. Sólo pinta lo que decide el vigía.
+        recuadroPorPagar(estadoDeFolios, canOperate, canWork, motivoSinTurno)?.let { r ->
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.Receipt,
+                    label = "Pedidos por pagar",
+                    enabled = r.habilitado,
+                    badge = r.badge,
+                    subtitle = r.subtitulo,
+                    subtitleIsWarning = r.subtituloEsAviso,
+                    onClick = onNavigateToFolios
                 )
             )
         }

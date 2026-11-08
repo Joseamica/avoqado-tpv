@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.pax.dal.IDAL
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,6 +14,7 @@ import timber.log.Timber
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -47,7 +49,8 @@ import javax.inject.Singleton
 @Singleton
 class PrinterManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val angelPaySdkGateway: Provider<AngelPaySdkGateway>,
 ) {
     /** Venue timezone for formatting dates on receipts */
     private val venueTimeZone: java.util.TimeZone
@@ -140,8 +143,17 @@ class PrinterManager @Inject constructor(
     private val printer: ImpresoraTermica?
         get() = if (esHardwarePax) impresoraPax else ImpresoraAngelPay.paraEstaTerminal()
 
+    /**
+     * 🔴 La PAX tiene UNA impresora ([impresoraPax]) y cada impresión la usa de `init()` a `start()`. Sin candado, dos a la vez
+     * se encimaban: el `init()` de una borra lo que la otra ya dictó (el recibo baja el logo a media impresión), sale un papel
+     * revuelto y el `start()` contesta 0 igual — la comanda de apoyo de un folio (P4, hilo de IO) se daba por impresa (R83).
+     * Cada `print*` toma este candado de principio a fin. Esperar es bloquear el hilo: nadie imprime desde Main.
+     * En la Nexgo cada impresión ya trae su propia [ImpresoraAngelPay]; el candado sólo las pone en fila.
+     */
+    private val candado = Any()
+
     /** El mismo dictado provisional usa la impresora existente de PAX o de Nexgo. */
-    fun printLocalShiftSummary(summary: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation): Result<Unit> = try {
+    fun printLocalShiftSummary(summary: com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation): Result<Unit> = synchronized(candado) { try {
         val device = printer
         if (device == null) Result.failure(Exception(motivoSinImpresora))
         else {
@@ -152,7 +164,7 @@ class PrinterManager @Inject constructor(
             if (result == 0) Result.success(Unit)
             else Result.failure(Exception("No se pudo imprimir el resumen provisional (código: $result). Vuelve a intentar."))
         }
-    } catch (error: Exception) { Result.failure(error) }
+    } catch (error: Exception) { Result.failure(error) } }
 
     /**
      * Print Mexican fiscal-style receipt (Toast/Square/Clip adapted for Mexico).
@@ -250,7 +262,7 @@ class PrinterManager @Inject constructor(
         serviceChargeAmount: String? = null,  // T11: importe explícito, opcional para llamadores anteriores
         ventaGuardadaSinConexion: Boolean = false,
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
             val discountValue = discountAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
@@ -451,7 +463,7 @@ class PrinterManager @Inject constructor(
             Result.failure(
                 Exception("Error al imprimir: ${e.message ?: "Error desconocido"}")
             )
-        }
+        } }
     }
 
     private fun centerText(text: String, width: Int = LINE_WIDTH): String {
@@ -947,7 +959,7 @@ class PrinterManager @Inject constructor(
         staffSales: List<StaffSalesPrint>? = null,
         staffFilterLabel: String? = null
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1083,7 +1095,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print report")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1092,7 +1104,7 @@ class PrinterManager @Inject constructor(
      * @return Result.success if test print succeeded, Result.failure otherwise
      */
     fun printTest(): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1116,7 +1128,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Test print failed")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1143,7 +1155,7 @@ class PrinterManager @Inject constructor(
         venueId: String,
         venueName: String? = null
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1221,7 +1233,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print historical period")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1252,7 +1264,7 @@ class PrinterManager @Inject constructor(
         venueId: String,
         venueName: String? = null
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1357,7 +1369,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print historical report")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1388,7 +1400,7 @@ class PrinterManager @Inject constructor(
         receiptUrl: String? = null,
         autofacturaAvailable: Boolean = false,
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1476,7 +1488,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print payment history receipt")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1506,7 +1518,7 @@ class PrinterManager @Inject constructor(
         dateRangeLabel: String,
         venueName: String? = null
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1616,7 +1628,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print payments summary")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1654,16 +1666,26 @@ class PrinterManager @Inject constructor(
      * @param tableName Optional table name (e.g., "Mesa 5")
      * @param orderItems List of order items with modifiers and notes
      * @param staffName Optional staff name who sent the ticket
+     * @param cliente 🧾 Tienda híbrida: a quién se le entrega («Para: Ana»); null = no se imprime
+     * @param notaDelPedido 🧾 Tienda híbrida: la nota del pedido entero («Nota: sin azúcar»); null = no se imprime
      * @return Result.success if printed, Result.failure if error
      */
     fun printKitchenTicket(
         orderNumber: String?,
         tableName: String? = null,
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>,
-        staffName: String? = null
+        staffName: String? = null,
+        cliente: String? = null,
+        notaDelPedido: String? = null,
+        esComandaDeFolio: Boolean = false,
     ): Result<Unit> {
-        return try {
-            val printerInstance = printer ?: return Result.failure(
+        return synchronized(candado) { try {
+            // Sólo la comanda automática acredita papel; las reimpresiones conservan las guardas del SDK.
+            val printerInstance = (if (!esHardwarePax && esComandaDeFolio) {
+                ImpresoraAngelPay.paraEstaTerminal { ticket ->
+                    kotlinx.coroutines.runBlocking { angelPaySdkGateway.get().printTicket(ticket) }
+                }
+            } else printer) ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
 
@@ -1691,6 +1713,10 @@ class PrinterManager @Inject constructor(
             // Table name (if available)
             if (!tableName.isNullOrBlank()) {
                 printerInstance.printStr("Mesa: $tableName\n", null)
+            }
+
+            if (!cliente.isNullOrBlank()) {
+                printerInstance.printStr("Para: $cliente\n", null)
             }
 
             printerInstance.printStr("\n", null)
@@ -1729,6 +1755,10 @@ class PrinterManager @Inject constructor(
             // ========================================
             printerInstance.printStr("--------------------------------\n", null)
 
+            if (!notaDelPedido.isNullOrBlank()) {
+                printerInstance.printStr("Nota: $notaDelPedido\n", null)
+            }
+
             if (!staffName.isNullOrBlank()) {
                 printerInstance.printStr("Enviada por: $staffName\n", null)
             }
@@ -1749,7 +1779,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print kitchen ticket")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1812,7 +1842,7 @@ class PrinterManager @Inject constructor(
         venueZipCode: String? = null,
         autofacturaAvailable: Boolean = false,  // 🧾 Backend flag: same QR, caption mentions autofactura
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -1895,7 +1925,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print kiosk receipt")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -1936,7 +1966,7 @@ class PrinterManager @Inject constructor(
         tipAmount: String? = null,
         orderNumber: String? = null
     ): Result<Unit> {
-        return try {
+        return synchronized(candado) { try {
             val printerInstance = printer ?: return Result.failure(
                 Exception(motivoSinImpresora)
             )
@@ -2010,7 +2040,7 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to print cash confirmation receipt")
             Result.failure(e)
-        }
+        } }
     }
 
     /**
@@ -2049,10 +2079,12 @@ class PrinterManager @Inject constructor(
      *
      * @return PrinterStatusResult with status code and human-readable message
      */
-    fun checkPrinterStatus(): PrinterStatusResult {
+    fun checkPrinterStatus(): PrinterStatusResult = synchronized(candado) {
+        // R86: con el candado, una revisión durante otra impresión ESPERA a que termine (y dice «lista») en vez de «Impresora
+        // ocupada». Bloquea el hilo: se llama fuera de Main.
         val printerInstance = printer
         if (printerInstance == null) {
-            return PrinterStatusResult(
+            return@synchronized PrinterStatusResult(
                 code = -1,
                 isReady = false,
                 hasPaper = false,
@@ -2060,7 +2092,7 @@ class PrinterManager @Inject constructor(
             )
         }
 
-        return try {
+        try {
             val statusCode = printerInstance.getStatus()
             Timber.d("🖨️ [Printer] Status code: $statusCode")
 

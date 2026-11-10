@@ -9,8 +9,8 @@ class ConfiguracionDelModuloTest {
         assertEquals("com.jaac.avoqado_tpv.campo", BuildConfig.APPLICATION_ID)
     }
 
-    @Test fun `en debug el almacenamiento es dev`() {
-        assertEquals("dev", BuildConfig.STORAGE_ENV)
+    @Test fun `el almacenamiento sigue al tipo de build`() {
+        assertEquals(if (BuildConfig.DEBUG) "dev" else "prod", BuildConfig.STORAGE_ENV)
     }
 
     @Test fun `la URL del servidor termina en api v1`() {

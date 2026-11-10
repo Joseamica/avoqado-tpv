@@ -70,7 +70,8 @@ fun OrderItemDetailDto.toOrderItem(): OrderItem {
         notes = notes,
         kitchenStatus = kitchenStatus?.toKitchenStatus() ?: KitchenStatus.PENDING,  // ✅ FALLBACK: Backend doesn't have this field
         createdAt = Instant.parse(createdAt),
-        sentToKitchenAt = sentToKitchenAt?.let { Instant.parse(it) }
+        sentToKitchenAt = sentToKitchenAt?.let { Instant.parse(it) },
+        externalId = externalId
     )
 }
 

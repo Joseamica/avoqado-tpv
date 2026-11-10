@@ -61,7 +61,7 @@ class Subidor(
         var copia = false
         fun corte(motivo: String, gracia: Boolean = false) = ResultadoDeVaciado(subidas, motivo, gracia, copia)
 
-        piezas@ for (id in dao.siguientesParaSubir().map { it.id }) {
+        for (id in dao.siguientesParaSubir().map { it.id }) {
             // Releída: otro pudo cambiarla (corregir, quitar) desde que se armó la lista.
             var p = dao.porId(id)?.takeIf { it.estado == EstadoPieza.PENDIENTE || it.estado == EstadoPieza.RETENIDA } ?: continue
 
@@ -96,17 +96,12 @@ class Subidor(
             }
 
             // 4. Fotos: cada una se marca subida en cuanto Storage la confirma.
-            val lista = fotosDe(p.fotosJson).toMutableList()
-            for ((i, f) in lista.withIndex()) {
-                if (f.subida) continue
-                when (val r = fotos.subir(f)) {
-                    ResultadoFoto.Subida -> {
-                        lista[i] = f.copy(subida = true)
-                        p = p.copy(fotosJson = gsonCola.toJson(lista)).also { dao.actualizar(it) }
-                    }
-                    ResultadoFoto.Reintentable -> { esperar(p, null); return corte(REINTENTABLE) }
-                    is ResultadoFoto.Definitiva -> { rechazar(p, "FOTO_NO_SUBIO", r.mensaje); continue@piezas }
-                }
+            val (conFotos, foto) = dao.subirFotos(p, fotos)
+            p = conFotos
+            when (foto) {
+                ResultadoFoto.Subida -> Unit
+                ResultadoFoto.Reintentable -> { esperar(p, null); return corte(REINTENTABLE) }
+                is ResultadoFoto.Definitiva -> { rechazar(p, "FOTO_NO_SUBIO", foto.mensaje); continue }
             }
 
             // 5. El cuerpo.
@@ -180,27 +175,10 @@ class Subidor(
         }
     }
 
-    /** HECHA o AVISO; `resultadoJson` = el cuerpo efectivo (R7-4). Sus fotos ya no hacen falta. */
-    private suspend fun hecha(p: Pieza, cuerpo: String) {
-        val pidioNumero = p.tipo == TipoPieza.EVIDENCIA &&
-            gsonCola.fromJson(p.evidenciaJson, EvidenciaPendiente::class.java).let { it.linkingNumber != null || it.portedNumber != null }
-        val l = desenlaceDe(p.tipo, cuerpo, pidioNumero)
-        dao.marcarHecha(
-            p.copy(rechazoCode = l.code, rechazoMensaje = l.texto, rechazoDatosJson = l.datosJson),
-            cuerpoEfectivo(cuerpo), l.desenlace.name,
-        )
-        fotosDe(p.fotosJson).forEach { File(it.archivo).delete() }
-    }
-
-    private suspend fun rechazar(p: Pieza, code: String, mensaje: String, datosJson: String? = null) = dao.actualizar(
-        p.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = code, rechazoMensaje = mensaje, rechazoDatosJson = datosJson),
-    )
-
-    /** `min(15 min, 5 s · 2^intentos)`, o lo que pidió el servidor (también tope de 15 min). */
-    private suspend fun esperar(p: Pieza, pedidaMs: Long?) {
-        val espera = (pedidaMs ?: (5_000L shl p.intentos.coerceAtMost(8))).coerceAtMost(ESPERA_MAXIMA)
-        dao.actualizar(p.copy(intentos = p.intentos + 1, siguienteIntentoAt = ahora() + espera))
-    }
+    private suspend fun hecha(p: Pieza, cuerpo: String) = dao.hecha(p, cuerpo)
+    private suspend fun rechazar(p: Pieza, code: String, mensaje: String, datosJson: String? = null) =
+        dao.rechazar(p, code, mensaje, datosJson)
+    private suspend fun esperar(p: Pieza, pedidaMs: Long?) = dao.esperar(p, pedidaMs, ahora())
 
     /** P2: sólo archivos de hace más de 24 h que ninguna pieza viva nombra (una foto recién copiada nunca tiene esa edad). */
     private suspend fun barrer() {
@@ -215,15 +193,50 @@ class Subidor(
 
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
-        const val ESPERA_MAXIMA = 15 * 60_000L
         const val UN_DIA = 24 * 3_600_000L
         const val SIETE_DIAS = 7 * UN_DIA
         const val GRACIA = "GRACIA"
         const val NECESITA_PIN = "NECESITA_PIN"
         const val REINTENTABLE = "REINTENTABLE"
-        val TIPOS = setOf(
-            TipoPieza.VENTA, TipoPieza.ENTRADA, TipoPieza.SALIDA, TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR,
-            TipoPieza.EVIDENCIA,
-        )
     }
+}
+
+// Los pasos que comparten la ruta normal y la gracia (Tarea 7).
+
+internal const val ESPERA_MAXIMA = 15 * 60_000L
+internal val TIPOS = setOf(
+    TipoPieza.VENTA, TipoPieza.ENTRADA, TipoPieza.SALIDA, TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR, TipoPieza.EVIDENCIA,
+)
+
+/** Sube las fotos que faltan y marca cada una en Room en cuanto Storage la confirma. `Subida` = todas arriba. */
+internal suspend fun PiezaDao.subirFotos(pieza: Pieza, fotos: SubidorDeFotos): Pair<Pieza, ResultadoFoto> {
+    var p = pieza
+    val lista = fotosDe(p.fotosJson).toMutableList()
+    for ((i, f) in lista.withIndex()) {
+        if (f.subida) continue
+        val r = fotos.subir(f)
+        if (r != ResultadoFoto.Subida) return p to r
+        lista[i] = f.copy(subida = true)
+        p = p.copy(fotosJson = gsonCola.toJson(lista)).also { actualizar(it) }
+    }
+    return p to ResultadoFoto.Subida
+}
+
+/** HECHA o AVISO; `resultadoJson` = el cuerpo efectivo (R7-4). Sus fotos ya no hacen falta. */
+internal suspend fun PiezaDao.hecha(p: Pieza, cuerpo: String) {
+    val pidioNumero = p.tipo == TipoPieza.EVIDENCIA &&
+        gsonCola.fromJson(p.evidenciaJson, EvidenciaPendiente::class.java).let { it.linkingNumber != null || it.portedNumber != null }
+    val l = desenlaceDe(p.tipo, cuerpo, pidioNumero)
+    marcarHecha(p.copy(rechazoCode = l.code, rechazoMensaje = l.texto, rechazoDatosJson = l.datosJson), cuerpoEfectivo(cuerpo), l.desenlace.name)
+    fotosDe(p.fotosJson).forEach { File(it.archivo).delete() }
+}
+
+internal suspend fun PiezaDao.rechazar(p: Pieza, code: String, mensaje: String, datosJson: String? = null) = actualizar(
+    p.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = code, rechazoMensaje = mensaje, rechazoDatosJson = datosJson),
+)
+
+/** `min(15 min, 5 s · 2^intentos)`, o lo que pidió el servidor (también tope de 15 min). */
+internal suspend fun PiezaDao.esperar(p: Pieza, pedidaMs: Long?, ahora: Long) {
+    val espera = (pedidaMs ?: (5_000L shl p.intentos.coerceAtMost(8))).coerceAtMost(ESPERA_MAXIMA)
+    actualizar(p.copy(intentos = p.intentos + 1, siguienteIntentoAt = ahora + espera))
 }

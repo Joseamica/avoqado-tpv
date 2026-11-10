@@ -114,6 +114,13 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     fun marcarDesconocido() = escribir(ESTADO to EstadoDelCelular.DESCONOCIDO.name)
 
+    /** `USA_TU_SESION` de la gracia (R8-2): sólo `DADO_DE_BAJA` vuelve a `VINCULADO`; `DESVINCULADO` y `DESCONOCIDO` no regresan. */
+    fun volverDeLaBaja(): Boolean = synchronized(candado) {
+        if (leerEstado() != EstadoDelCelular.DADO_DE_BAJA) return false
+        escribir(ESTADO to EstadoDelCelular.VINCULADO.name, GRACIA to null)
+        true
+    }
+
     fun marcarNecesitaPin(v: Boolean) = escribir(NECESITA_PIN to v.toString())
 
     fun marcarBloqueada(v: Boolean) = escribir(BLOQUEADA to v.toString())

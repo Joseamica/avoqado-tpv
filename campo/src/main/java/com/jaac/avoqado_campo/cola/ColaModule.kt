@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.cola
 
 import android.content.Context
 import androidx.room.Room
+import com.jaac.avoqado_campo.AlcanceDeLaApp
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.entrada.RepositorioDeEntrada
 import com.jaac.avoqado_campo.gps.ControlDeGps
@@ -22,6 +23,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import java.io.File
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
 import okhttp3.OkHttpClient
 
 @Module
@@ -69,8 +71,8 @@ object ColaModule {
     @Provides @Singleton
     fun proveerEntrada(
         api: CampoApi, quienSoy: QuienSoy, reloj: RelojAnclado, pinLocal: PinLocal, mutexDeSesion: MutexDeSesion,
-        dao: PiezaDao, almacen: AlmacenSeguro, copia: RepositorioDeCopia,
-    ): RepositorioDeEntrada = RepositorioDeEntrada(api, quienSoy, reloj, pinLocal, mutexDeSesion, dao, almacen, copia)
+        dao: PiezaDao, almacen: AlmacenSeguro, copia: RepositorioDeCopia, @AlcanceDeLaApp alcance: CoroutineScope,
+    ): RepositorioDeEntrada = RepositorioDeEntrada(api, quienSoy, reloj, pinLocal, mutexDeSesion, dao, almacen, copia, alcance)
 
     @Provides @Singleton
     fun proveerBorrado(

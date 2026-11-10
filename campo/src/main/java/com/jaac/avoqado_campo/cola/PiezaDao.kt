@@ -24,6 +24,10 @@ abstract class PiezaDao {
     @Query("SELECT * FROM piezas WHERE estado NOT IN ('HECHA','DESCARTADA') ORDER BY id")
     abstract fun pendientesDeVer(): Flow<List<Pieza>>
 
+    /** Lo mismo que [pendientesDeVer], contado (PENDIENTE, RETENIDA, RECHAZADA, AVISO): «la cola vacía» de B6. */
+    @Query("SELECT COUNT(*) FROM piezas WHERE estado NOT IN ('HECHA','DESCARTADA')")
+    abstract suspend fun cuantasVivas(): Int
+
     @Query(
         """SELECT COUNT(*) AS total,
            COALESCE(SUM(tipo = 'VENTA'), 0) AS ventas,

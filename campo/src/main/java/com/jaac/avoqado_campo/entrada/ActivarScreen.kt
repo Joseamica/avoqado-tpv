@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -39,7 +40,7 @@ fun ActivarScreen(vm: EntradaViewModel, onDentro: () -> Unit) {
 @Composable
 fun ActivarContenido(estado: EstadoEntrada, onActivar: (codigo: String, pin: String) -> Unit) {
     var codigo by rememberSaveable { mutableStateOf("") }
-    var pin by rememberSaveable { mutableStateOf("") }
+    var pin by remember { mutableStateOf("") } // nunca saveable: el Bundle del estado guardado va en claro
     val bloqueado = estado.trabajando || estado.terminandoActivacion
     val listo = codigo.length == 6 && pin.length in 4..10
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

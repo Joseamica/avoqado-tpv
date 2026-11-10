@@ -7,7 +7,6 @@ import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -29,9 +28,23 @@ class BorradoDelCelular(
     private val pinLocal: PinLocal,
     private val estadoDelGps: EstadoDelGps,
 ) {
-    suspend fun borrarTodo() = withContext(NonCancellable) {
+    suspend fun borrarTodo() {
+        borrar(exigirColaVacia = false)
+    }
+
+    /** false = con [exigirColaVacia] apareció algo vivo ya con la marca puesta: no se borra nada y se quita la marca. */
+    private suspend fun borrar(exigirColaVacia: Boolean): Boolean = withContext(NonCancellable) {
         // 1 · La marca y una generación nueva ANTES de borrar nada: toda respuesta en vuelo ya no escribe (R8-1, I2).
         quienSoy.empezarLimpieza()
+        if (exigirColaVacia) {
+            // Room pone en fila las transacciones: un encolado ya confirmado se ve aquí, y uno posterior ve `limpiando` y lanza.
+            var vivas = 0
+            dao.enTransaccion { vivas = dao.cuantasVivas() }
+            if (vivas > 0) {
+                quienSoy.marcarLimpiando(false)
+                return@withContext false
+            }
+        }
         // 2 · Espera a que termine un vaciado; y ningún `activar`/`entrar`/`renovar` en vuelo (mismo orden que el Subidor).
         mutexDeSubida.mutex.withLock {
             mutexDeSesion.mutex.withLock {
@@ -48,6 +61,7 @@ class BorradoDelCelular(
                 quienSoy.marcarLimpiando(false)
             }
         }
+        true
     }
 
     /** Lo llama la app al arrancar, antes de mostrar nada (Tarea 13). */
@@ -60,12 +74,11 @@ class BorradoDelCelular(
      * cola vacía (B6); `DESCONOCIDO` sólo con [confirmado] (lo que quede se pierde). true = se borró.
      */
     suspend fun activarDeNuevo(confirmado: Boolean): Boolean {
-        val borrar = when (quienSoy.estado) {
-            EstadoDelCelular.DESVINCULADO, EstadoDelCelular.DADO_DE_BAJA -> dao.pendientesDeVer().first().isEmpty()
-            EstadoDelCelular.DESCONOCIDO -> confirmado
+        return when (quienSoy.estado) {
+            // La revisión de afuera evita estrenar generación sin motivo; la de adentro cierra el hueco hasta la marca.
+            EstadoDelCelular.DESVINCULADO, EstadoDelCelular.DADO_DE_BAJA -> dao.cuantasVivas() == 0 && borrar(exigirColaVacia = true)
+            EstadoDelCelular.DESCONOCIDO -> confirmado && borrar(exigirColaVacia = false)
             else -> false
         }
-        if (borrar) borrarTodo()
-        return borrar
     }
 }

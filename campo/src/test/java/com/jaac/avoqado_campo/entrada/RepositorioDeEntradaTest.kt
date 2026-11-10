@@ -23,12 +23,18 @@ import com.jaac.avoqado_campo.identidad.VerificadorPin
 import com.jaac.avoqado_campo.red.Aparato
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.RedModule
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -62,6 +68,8 @@ class RepositorioDeEntradaTest {
     private val reloj = RelojAnclado(almacen, { ahora }, { 5L }, { 1 })
     private val pinLocal = PinLocal(almacen, { ahora }, { 5L }, { 1 })
     private val copia = mockk<RepositorioDeCopia>(relaxed = true)
+    /** Unconfined: el refresco arranca en el acto y, si no se suspende, ya terminó al volver `activar`/`entrar`. */
+    private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val server = MockWebServer()
     private lateinit var api: CampoApi
     private val pedidos = CopyOnWriteArrayList<Pair<String, String>>() // ruta, cuerpo
@@ -81,12 +89,13 @@ class RepositorioDeEntradaTest {
     }
 
     @After fun tearDown() {
+        alcance.cancel()
         db.close()
         server.shutdown()
     }
 
     private fun repo() = RepositorioDeEntrada(
-        api, quienSoy, reloj, pinLocal, MutexDeSesion(), dao, almacen, copia,
+        api, quienSoy, reloj, pinLocal, MutexDeSesion(), dao, almacen, copia, alcance,
         aparato = { Aparato.de(it, "Motorola", "g54", "14", "0.2.0") }, ahora = { ahora },
     )
 
@@ -122,6 +131,16 @@ class RepositorioDeEntradaTest {
         assertEquals(quienSoy.aparatoId, cuerpo["aparato"].asJsonObject["aparatoId"].asString)
         assertFalse(repo().activacionPendiente())
         coVerify { copia.actualizar("v1") }
+    }
+
+    @Test fun `un refresco de la copia que nunca contesta no retrasa Dentro`() = runBlocking {
+        coEvery { copia.actualizar(any()) } coAnswers { awaitCancellation() }
+        responder = { ok(activado()) }
+        assertEquals(ResultadoEntrada.Dentro, withTimeout(5_000) { repo().activar("ABC123", "1234") })
+        responder = { ok(entrada("acc9")) }
+        quienSoy.marcarBloqueada(true)
+        assertEquals(ResultadoEntrada.Dentro, withTimeout(5_000) { repo().entrar("1234", null) })
+        coVerify(exactly = 2) { copia.actualizar("v1") }
     }
 
     @Test fun `respuesta perdida - el reintento manda el MISMO cuerpo y con el 200 repetida queda activado`() = runBlocking {

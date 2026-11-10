@@ -29,6 +29,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -45,7 +46,16 @@ class BorradoDelCelularTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var db: BaseDeCampo
     private lateinit var dao: PiezaDao
-    private val almacen = AlmacenEnMemoria()
+    /** Se corre cuando el borrado pone su marca (para colar una pieza justo después de la revisión de afuera). */
+    @Volatile private var alPonerLaMarca: () -> Unit = {}
+    private val almacen = object : AlmacenSeguro {
+        val datos = mutableMapOf<String, String>()
+        override fun leer(clave: String) = datos[clave]
+        override fun escribir(cambios: Map<String, String?>) {
+            cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
+            if (cambios["limpiando"] == "true") alPonerLaMarca()
+        }
+    }
     private val quienSoy = QuienSoy(almacen)
     private val pinLocal = PinLocal(almacen, { 0L })
     private val estadoDelGps = EstadoDelGps(almacen)
@@ -127,6 +137,18 @@ class BorradoDelCelularTest {
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertTrue(carpetaCola.exists())
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
+        assertFalse(borrado().activarDeNuevo(false))
+        assertFalse(quienSoy.limpiando)
+        assertEquals(1, dao.pendientesDeVer().first().size)
+        assertEquals("c".repeat(64), quienSoy.credencial)
+        assertTrue(carpetaCola.exists())
+        assertNotNull(dao.turnoAhora())
         assertEquals(0, detenido)
     }
 

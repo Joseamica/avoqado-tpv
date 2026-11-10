@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.entrada
 
 import android.os.Build
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_campo.BuildConfig
@@ -24,7 +25,8 @@ import com.jaac.avoqado_campo.red.aDatos
 import com.jaac.avoqado_campo.red.esperaDe
 import com.jaac.avoqado_campo.red.llamarSeguro
 import com.jaac.avoqado_campo.red.objetoJson
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import retrofit2.Response
 import kotlin.coroutines.cancellation.CancellationException
@@ -43,7 +45,8 @@ private data class ActivacionGuardada(val cuerpo: ActivarBody, val guardadaEn: L
 
 /**
  * Activar el celular y entrar con el PIN. Las dos corren bajo el [MutexDeSesion] (R3-3, R7-2): nunca hay dos en vuelo, ni con
- * un `renovar`. La copia se refresca DESPUÉS de soltar el candado (su descarga puede renovar, que toma el mismo candado).
+ * un `renovar`. La copia se refresca DESPUÉS de soltar el candado (su descarga puede renovar, que toma el mismo candado) y en
+ * el alcance de la app: `Dentro` no espera esa descarga.
  */
 class RepositorioDeEntrada(
     private val api: CampoApi,
@@ -54,6 +57,8 @@ class RepositorioDeEntrada(
     private val dao: PiezaDao,
     private val almacen: AlmacenSeguro,
     private val copia: RepositorioDeCopia,
+    /** Para refrescar la copia sin hacer esperar a la pantalla (`@AlcanceDeLaApp`). */
+    private val alcance: CoroutineScope,
     private val aparato: (aparatoId: String) -> Aparato = {
         Aparato.de(it, Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, BuildConfig.VERSION_NAME)
     },
@@ -78,7 +83,7 @@ class RepositorioDeEntrada(
 
     private suspend fun activarConCandado(codigo: String, pin: String): ResultadoEntrada {
         // B6 y rediseño v7: se activa sólo desde un celular vacío (`BorradoDelCelular` deja SIN_ACTIVAR y la cola vacía).
-        if (dao.pendientesDeVer().first().isNotEmpty()) return ResultadoEntrada.ColaNoVacia
+        if (dao.cuantasVivas() > 0) return ResultadoEntrada.ColaNoVacia
         if (quienSoy.estado != EstadoDelCelular.SIN_ACTIVAR) return ResultadoEntrada.Rechazo("Este celular ya está activado.", null)
 
         // B14: si hay un cuerpo cuyo resultado no se supo, va ESE (aunque la pantalla traiga otro), con su hora original.
@@ -139,13 +144,17 @@ class RepositorioDeEntrada(
         }
     }
 
-    private suspend fun refrescarCopia() {
+    /** Best-effort y sin esperar: «Mis SIMs» se vuelve a bajar en el siguiente contacto si esto falla. */
+    private fun refrescarCopia() {
         val venueId = quienSoy.sesion?.venueId ?: return
-        try {
-            copia.actualizar(venueId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) { // best-effort: «Mis SIMs» se vuelve a bajar en el siguiente contacto
+        alcance.launch {
+            try {
+                copia.actualizar(venueId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("Entrada", "no se pudo refrescar la copia: ${e.javaClass.simpleName}")
+            }
         }
     }
 

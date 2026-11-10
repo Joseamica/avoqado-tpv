@@ -1027,13 +1027,19 @@ internal fun mensajeDelCuponRechazado(cuerpo: String?): String? = runCatching {
 
 /**
  * D20: con un 400 al quitar, anular, dar cortesía o descontar, la cajera lee el motivo del SERVIDOR («Esta cuenta ya está pagada…
- * usa Reembolso.»). Si viene en inglés (el SERVIDOR de antes de D18 y las validaciones de siempre de esas rutas), vacío o de un
- * intermediario, el texto de siempre ([respaldo]). Un cuerpo que no se deja leer tampoco cambia el 400 en otra falla.
+ * usa Reembolso.»): el `message` de un error, o el `error` de un `{ success: false }` (los descuentos). Si viene en inglés (el
+ * SERVIDOR de antes de D18 y las validaciones de siempre de esas rutas), vacío o de un intermediario, el texto de siempre
+ * ([respaldo]). Un cuerpo que no se deja leer tampoco cambia el 400 en otra falla.
  */
-internal fun textoDelRechazo(respuesta: retrofit2.Response<*>, respaldo: String): String =
-    mensajeDelCuponRechazado(runCatching { respuesta.errorBody()?.string() }.getOrNull())
-        ?.takeUnless { mensaje -> RECHAZOS_EN_INGLES.any { mensaje.startsWith(it) } } ?: respaldo
+internal fun textoDelRechazo(respuesta: retrofit2.Response<*>, respaldo: String): String = runCatching {
+    val cuerpo = com.google.gson.Gson().fromJson(respuesta.errorBody()?.string(), com.google.gson.JsonObject::class.java)
+    listOf("message", "error").firstNotNullOfOrNull { llave ->
+        cuerpo?.get(llave)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+    }
+}.getOrNull()?.takeUnless { mensaje -> RECHAZOS_EN_INGLES.any { mensaje.startsWith(it) } } ?: respaldo
 
-// ponytail: lista cerrada de los 400 en inglés de esas cuatro rutas (`order.tpv.service.ts`); uno nuevo en inglés se agrega aquí.
-private val RECHAZOS_EN_INGLES =
-    listOf("Cannot ", "No items found", "Some item IDs", "Order was modified", "Percentage discount", "Fixed discount")
+// ponytail: lista cerrada de los 400 en inglés de esas rutas (`order.tpv.service.ts` y `discountEngine.applyManualDiscount`);
+// uno nuevo en inglés se agrega aquí.
+private val RECHAZOS_EN_INGLES = listOf(
+    "Cannot ", "No items found", "Some item IDs", "Order was modified", "Percentage discount", "Percentage must", "Fixed discount",
+)

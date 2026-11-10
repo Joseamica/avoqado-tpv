@@ -193,7 +193,8 @@ class DiscountRepositoryImpl @Inject constructor(
                     if (permiso != null) return@withContext Result.failure(permiso)
                 }
                 val error = when (response.code()) {
-                    400 -> response.body()?.error ?: "Invalid discount value"
+                    // D20: el cuerpo de un 400 no llega en `body()` (Retrofit lo deja en `errorBody()`): sin esto nunca salía su motivo.
+                    400 -> textoDelRechazo(response, "Descuento inválido. Verifica el valor ingresado.")
                     404 -> "Order not found"
                     409 -> "Order was modified. Please refresh and try again."
                     else -> "Failed to apply discount: HTTP ${response.code()}"

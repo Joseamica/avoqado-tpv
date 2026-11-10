@@ -69,7 +69,9 @@ suspend fun <T> llamarSeguro(llamada: suspend () -> Response<T>): Llamada<T> {
         return Llamada.Ilegible()
     } catch (e: CancellationException) { // también es IllegalStateException: no se traga
         throw e
-    } catch (e: IllegalStateException) { // Gson: «Expected BEGIN_OBJECT but was STRING»
+    } catch (e: IllegalStateException) {
+        // Sólo la de Gson («Expected BEGIN_OBJECT but was STRING»); un `check()` de quien llama es un bug y sube.
+        if (e.stackTrace.firstOrNull()?.className?.startsWith("com.google.gson.") != true) throw e
         return Llamada.Ilegible()
     }
     if (r.isSuccessful) {

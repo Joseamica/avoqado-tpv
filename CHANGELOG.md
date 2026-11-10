@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (la red, arreglo 1)**: renovar sólo pide el PIN con un 401 del servidor (un 400/403/404 de un proxy cuenta como sin red), no repite con la sesión de otra activación, y marca «necesita PIN» y «bloqueada» en una sola escritura.
 - **App de campo (la red)**: las rutas del celular con su credencial y su sesión; la sesión sólo sale con un 401/403 (sin red, un 5xx o el HTML de un portal cautivo no la tocan), se renueva una sola vez aunque fallen varias llamadas a la vez, y cada respuesta del servidor se clasifica en reintentable, definitiva o de sesión.
 - **App de campo (PIN y sesión más firmes)**: la espera del PIN sin señal se mide con el reloj monotónico (mover la hora no la salta), los intentos simultáneos se cuentan todos, datos de verificador mal formados no cierran la app, y los tokens no salen en texto.
 - **App de campo («Quién soy», reloj y PIN)**: el celular guarda su identidad cifrada (sesión, sucursales, estado, generación para descartar respuestas tardías), un reloj anclado a la hora del servidor que no se mueve si cambian la hora del celular, y el PIN sin señal contra el verificador de la sucursal con espera creciente que sobrevive a cerrar la app.

@@ -116,6 +116,9 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     fun marcarBloqueada(v: Boolean) = escribir(BLOQUEADA to v.toString())
 
+    /** La sesión del servidor murió: `necesitaPin` y `bloqueada` en UNA escritura (R3-2). */
+    fun marcarSesionMuerta() = escribir(NECESITA_PIN to "true", BLOQUEADA to "true")
+
     /** Borra todo, también `aparatoId` (el siguiente que se lea es otro). */
     fun borrarTodo() = escribir(*(TODAS.map { it to null } + (GENERACION to nueva())).toTypedArray())
 

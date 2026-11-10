@@ -109,6 +109,40 @@ class GuardiaDeSesionTest {
         }
     }
 
+    @Test fun `renovar con un 4xx que no es 401 con su codigo es SIN_RED y no toca nada`() = runBlocking {
+        val html = "<html><body>Bloqueado por el proxy</body></html>"
+        listOf(
+            MockResponse().setResponseCode(400).setBody("""{"code":"VALIDATION_ERROR","message":"m"}"""),
+            MockResponse().setResponseCode(403).setHeader("Content-Type", "text/html").setBody(html),
+            MockResponse().setResponseCode(404).setBody(html),
+            MockResponse().setResponseCode(408),
+            MockResponse().setResponseCode(401).setBody(html), // 401 sin código: algo en medio
+        ).forEach { resp ->
+            servidor(alRenovar = { resp })
+            assertEquals(MotivoSinSesion.SIN_RED, (vender() as ResultadoConSesion.SinSesion).motivo)
+            assertEquals(sesion1, quienSoy.sesion)
+            assertFalse(quienSoy.necesitaPin); assertFalse(quienSoy.bloqueada)
+            assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+        }
+    }
+
+    @Test fun `401 SESION_CERRADA en la ruta tambien renueva`() = runBlocking {
+        servidor(conTokenViejo = { error(401, "SESION_CERRADA") })
+        assertEquals(201, (vender() as ResultadoConSesion.Respuesta).r.code())
+        assertEquals(1, renovaciones.get())
+    }
+
+    @Test fun `si otra activacion llega mientras se renueva, no se repite con el token de la nueva`() = runBlocking {
+        val otra = Sesion("acc2", "5".repeat(64), "v1")
+        servidor(alRenovar = {
+            quienSoy.guardarActivacion(DatosDeActivacion("cel2", "e".repeat(64), "s2", "Beto", otra, listOf(Sucursal("v1", "Centro", null))))
+            renovado
+        })
+        assertEquals(MotivoSinSesion.SIN_RED, (vender() as ResultadoConSesion.SinSesion).motivo)
+        assertEquals(otra, quienSoy.sesion) // la respuesta tardía del renovar no la pisó
+        assertTrue(pedidos.none { it.getHeader("Authorization") == "Bearer acc2" })
+    }
+
     @Test fun `renovar 429 es ESPERA con Retry-After y sin el es 60 s`() = runBlocking {
         servidor(alRenovar = { error(429, "RATE_LIMIT").setHeader("Retry-After", "12") })
         val r = vender() as ResultadoConSesion.SinSesion

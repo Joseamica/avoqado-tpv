@@ -38,6 +38,8 @@ class GuardiaDeSesion @Inject constructor(
         if (r.code() != 401 || codigoDeError(r) in CODIGOS_DEL_CELULAR) return cerrar(r, generacion)
 
         renovar(sesion.accessToken)?.let { return sin(it.first, it.second) }
+        // Otra activación (o un borrado) mientras se renovaba: la pieza vieja no sale con el token de la nueva.
+        if (quienSoy.generacion != generacion) return sin(MotivoSinSesion.SIN_RED)
         val vigente = quienSoy.sesion ?: return sin(MotivoSinSesion.NECESITA_PIN)
         if (vigente.venueId != venueId) return sin(MotivoSinSesion.OTRA_SUCURSAL)
         val r2 = intentar(vigente.accessToken, llamada) ?: return sin(MotivoSinSesion.SIN_RED)
@@ -55,6 +57,8 @@ class GuardiaDeSesion @Inject constructor(
         val generacion = quienSoy.generacion
         val actual = quienSoy.sesion ?: return@withLock MotivoSinSesion.NECESITA_PIN to null
         if (actual.accessToken != accessUsado) return@withLock null
+        // Quien esperaba detrás de un renovar que ya pidió el PIN no vuelve a pegarle al servidor.
+        if (quienSoy.necesitaPin) return@withLock MotivoSinSesion.NECESITA_PIN to null
         val credencial = quienSoy.credencial ?: return@withLock MotivoSinSesion.DESCONOCIDO to null
         val refreshUsado = actual.refreshToken
 
@@ -68,13 +72,15 @@ class GuardiaDeSesion @Inject constructor(
                 null
             }
             r.code() == 429 -> MotivoSinSesion.ESPERA to (esperaDe(r.headers()["Retry-After"]) ?: 60_000L)
-            r.code() !in 400..499 -> MotivoSinSesion.SIN_RED to null
-            else -> Pair(when (codigoDeError(r)) {
-                "CELULAR_DESVINCULADO" -> desvinculado(generacion)
-                "CELULAR_DESCONOCIDO" -> desconocido(generacion)
-                // SESION_INVALIDA, SIN_ACCESO_A_LA_SUCURSAL y cualquier otro rechazo: el refresh ya no sirve.
-                else -> necesitaPin(generacion)
-            }, null)
+            // Sólo un 401 con su código toca «Quién soy». Lo demás (400, 403/404/407/408 de un proxy, 401 sin código)
+            // es «algo en medio», no el servidor: sin red, con tokens y banderas intactos.
+            r.code() != 401 -> MotivoSinSesion.SIN_RED to null
+            else -> when (codigoDeError(r)) {
+                "CELULAR_DESVINCULADO" -> desvinculado(generacion) to null
+                "CELULAR_DESCONOCIDO" -> desconocido(generacion) to null
+                "SESION_INVALIDA", "SIN_ACCESO_A_LA_SUCURSAL" -> necesitaPin(generacion) to null
+                else -> MotivoSinSesion.SIN_RED to null
+            }
         }
     }
 
@@ -98,7 +104,7 @@ class GuardiaDeSesion @Inject constructor(
     }
 
     private fun necesitaPin(generacion: String): MotivoSinSesion {
-        quienSoy.guardarSi(generacion) { marcarNecesitaPin(true); marcarBloqueada(true) }
+        quienSoy.guardarSi(generacion) { marcarSesionMuerta() }
         return MotivoSinSesion.NECESITA_PIN
     }
     private fun desvinculado(generacion: String): MotivoSinSesion {

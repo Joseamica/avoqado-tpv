@@ -106,6 +106,11 @@ class RespuestaDelServidorTest {
         assertEquals(401, (r as Llamada.Contesto).r.code())
     }
 
+    @Test(expected = IllegalStateException::class)
+    fun `un IllegalStateException que no es de Gson no se disfraza de Ilegible`() {
+        runBlocking { llamarSeguro<Unit> { check(false) { "bug de quien llama" }; error("no llega") } }
+    }
+
     @Test fun `entrar valido lleva la credencial, sin X-App-Version-Name, y se mapea a DatosDeEntrada`() = runBlocking {
         val refresh = "b".repeat(64)
         server.enqueue(MockResponse().setBody(

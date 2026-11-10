@@ -9,6 +9,7 @@ import com.jaac.avoqado_campo.red.MotivoSinSesion
 import com.jaac.avoqado_campo.red.RespuestaDelServidor
 import com.jaac.avoqado_campo.red.ResultadoConSesion
 import com.jaac.avoqado_campo.red.clasificar
+import com.jaac.avoqado_campo.red.objetoJson
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -88,6 +89,12 @@ class Subidor(
             val padre = p.dependeDe?.let { dao.porLlave(it) }
             if (p.dependeDe != null && padre?.estado != EstadoPieza.HECHA) continue
 
+            // Un tipo que esta versión no conoce no puede trabar la cola para siempre.
+            if (p.tipo !in TIPOS) {
+                rechazar(p, "TIPO_DESCONOCIDO", "Esta versión de la app no sabe subir esto. Avísale a tu supervisor.")
+                continue
+            }
+
             // 4. Fotos: cada una se marca subida en cuanto Storage la confirma.
             val lista = fotosDe(p.fotosJson).toMutableList()
             for ((i, f) in lista.withIndex()) {
@@ -127,9 +134,15 @@ class Subidor(
                     if (p.tipo == TipoPieza.VENTA || p.tipo.startsWith("CUSTODIA_")) copia = true
                 }
                 is RespuestaDelServidor.Reintentable -> when {
-                    // R6-B2: el SERVIDOR dice «otra sucursal» de una pieza de la sucursal de la sesión: la venta se trasladó.
-                    k.code == "OTRA_SUCURSAL" && p.venueId == quienSoy.sesion?.venueId ->
+                    // R6-B2: el SERVIDOR dice «otra sucursal» de una evidencia de la sucursal de la sesión: la venta se trasladó.
+                    k.code == "OTRA_SUCURSAL" && p.venueId == quienSoy.sesion?.venueId && p.tipo == TipoPieza.EVIDENCIA ->
                         rechazar(p, "VENTA_MOVIDA", "Esta venta se movió a otra tienda; tu supervisor sube la evidencia")
+                    // En otro tipo no se espera: definitiva, con lo que dijo el SERVIDOR.
+                    k.code == "OTRA_SUCURSAL" && p.venueId == quienSoy.sesion?.venueId -> rechazar(
+                        p, "OTRA_SUCURSAL", objetoJson(texto)?.get("message")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: "El servidor dice que esto es de otra sucursal.",
+                        if (objetoJson(texto) != null) texto else "{}",
+                    )
                     k.code == "OTRA_SUCURSAL" -> Unit // la sesión cambió de sucursal: espera, como la regla 1
                     else -> { esperar(p, k.reintentaEnMs); return corte(REINTENTABLE) }
                 }
@@ -163,7 +176,7 @@ class Subidor(
             TipoPieza.CUSTODIA_ACEPTAR -> api.aceptarCustodia(b, v, rb)
             TipoPieza.CUSTODIA_RECHAZAR -> api.rechazarCustodia(b, v, rb)
             TipoPieza.EVIDENCIA -> api.evidencia(b, v, rb)
-            else -> error("Tipo desconocido: ${p.tipo}")
+            else -> error("Tipo desconocido: ${p.tipo}") // no llega: se rechaza antes
         }
     }
 
@@ -208,5 +221,9 @@ class Subidor(
         const val GRACIA = "GRACIA"
         const val NECESITA_PIN = "NECESITA_PIN"
         const val REINTENTABLE = "REINTENTABLE"
+        val TIPOS = setOf(
+            TipoPieza.VENTA, TipoPieza.ENTRADA, TipoPieza.SALIDA, TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR,
+            TipoPieza.EVIDENCIA,
+        )
     }
 }

@@ -24,11 +24,12 @@ class RespuestaDelServidorTest {
         assertEquals(RespuestaDelServidor.Reintentable(null, null), clasificar(200, "", null))
     }
 
-    @Test fun `5xx y 429 son Reintentable, con Retry-After en ms`() {
+    @Test fun `5xx, 429 y 408 son Reintentable, con Retry-After en ms`() {
         assertEquals(RespuestaDelServidor.Reintentable(null, null), clasificar(502, "<html>", null))
         assertEquals(RespuestaDelServidor.Reintentable("X", null), clasificar(500, cuerpo("X"), null))
         assertEquals(RespuestaDelServidor.Reintentable("RATE_LIMIT", 30_000L), clasificar(429, cuerpo("RATE_LIMIT"), "30"))
         assertEquals(RespuestaDelServidor.Reintentable(null, null), clasificar(429, null, null))
+        assertEquals(RespuestaDelServidor.Reintentable(null, null), clasificar(408, "<html>Request Timeout</html>", null))
     }
 
     @Test fun `codigos en proceso, OTRA_SUCURSAL y VERIFICATION_MOVED son Reintentable`() {

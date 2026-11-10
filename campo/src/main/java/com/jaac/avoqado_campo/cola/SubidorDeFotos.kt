@@ -39,7 +39,7 @@ class SubidorDeFotos(private val cliente: OkHttpClient, private val baseStorage:
                         val size = o?.get("size")?.takeIf { it.isJsonPrimitive }?.asString
                         if (tipo == "image/jpeg" && size == f.bytes.toString()) ResultadoFoto.Subida else ResultadoFoto.Reintentable
                     }
-                    r.code == 429 || r.code >= 500 || r.code !in 400..499 -> ResultadoFoto.Reintentable
+                    r.code == 408 || r.code == 429 || r.code >= 500 || r.code !in 400..499 -> ResultadoFoto.Reintentable // 408 = se acabó el tiempo
                     else -> ResultadoFoto.Definitiva("No se pudo subir la foto (HTTP ${r.code})")
                 }
             }

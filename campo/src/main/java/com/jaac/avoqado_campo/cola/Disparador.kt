@@ -3,6 +3,7 @@ package com.jaac.avoqado_campo.cola
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -33,10 +34,15 @@ object Disparador {
     /** Una vez, al arrancar la app: cada vez que hay red, un vaciado de inmediato. */
     fun alVolverLaRed(context: Context) {
         val app = context.applicationContext
-        app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
-            object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) = ahora(app)
-            },
-        )
+        // Algunos Android 11 lanzan SecurityException aquí: sin la escucha queda el trabajo de cada 15 min, sin cerrar la app.
+        try {
+            app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) = ahora(app)
+                },
+            )
+        } catch (e: RuntimeException) {
+            Log.w("Disparador", "Sin escucha de la red; queda el trabajo de cada 15 min", e)
+        }
     }
 }

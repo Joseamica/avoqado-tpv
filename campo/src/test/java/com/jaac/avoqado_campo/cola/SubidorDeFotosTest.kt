@@ -61,6 +61,12 @@ class SubidorDeFotosTest {
         ).forEach { assertEquals(ResultadoFoto.Reintentable, subir(it)) }
     }
 
+    @Test fun `408 es Reintentable - OkHttp ya repite un 408 una vez y el segundo llega aqui`() {
+        server.enqueue(MockResponse().setResponseCode(408))
+        assertEquals(ResultadoFoto.Reintentable, subir(MockResponse().setResponseCode(408)))
+        assertEquals(2, server.requestCount)
+    }
+
     @Test fun `403 es Definitiva`() =
         assertTrue(subir(MockResponse().setResponseCode(403).setBody("""{"error":{"code":403}}""")) is ResultadoFoto.Definitiva)
 

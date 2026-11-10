@@ -40,7 +40,7 @@ fun clasificar(status: Int, cuerpo: String?, retryAfter: String?): RespuestaDelS
     val code = json?.texto("code")
     return when {
         status in 200..299 -> if (json != null) RespuestaDelServidor.Ok(status, cuerpo!!) else RespuestaDelServidor.Reintentable(null, null)
-        status == 429 || status >= 500 -> RespuestaDelServidor.Reintentable(code, esperaDe(retryAfter))
+        status == 408 || status == 429 || status >= 500 -> RespuestaDelServidor.Reintentable(code, esperaDe(retryAfter)) // 408 = timeout: red
         status !in 400..499 -> RespuestaDelServidor.Reintentable(code, null) // 1xx/3xx: algo en medio, no el servidor
         code in CODIGOS_REINTENTABLES -> RespuestaDelServidor.Reintentable(code, null)
         status == 401 || (status == 403 && code == "PERSONA_DADA_DE_BAJA") -> RespuestaDelServidor.Sesion(status, code)

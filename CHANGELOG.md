@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (el Subidor, arreglo 1)**: un 408 (se acabó el tiempo) cuenta como red mala y se reintenta, en Storage y en el servidor; un tipo de pieza desconocido se rechaza en vez de trabar la cola; «la venta se movió» sólo aplica a la evidencia; y si el celular no deja escuchar la red, la app no se cierra (queda el trabajo de cada 15 min).
 - **App de campo (el Subidor)**: lo guardado en el celular se sube solo, en orden y una sola vez: si la respuesta se pierde se repite el MISMO texto con la MISMA llave; una pieza en espera (5xx, 429, foto que no subió) corta el vaciado para que nada de atrás se le adelante; la evidencia espera a su venta y sale con el pago que le dio el servidor; cada foto sube a Storage y sólo cuenta si Storage confirma tipo y tamaño; un 2xx que no guardó todo (venta ya aprobada, número apagado, custodia en parte) queda como aviso en «Mis pendientes»; una sucursal que ya no es tuya se rechaza con su motivo y la de otra sesión espera; desvincular a media subida corta hacia la gracia. Lo dispara WorkManager con red, cada 15 min y al volver la red.
 - **App de campo (la cola, arreglo 2)**: dos registros al mismo tiempo ya no se estorban: si uno falla, el otro guarda todas sus fotos.
 - **App de campo (la cola, arreglo 1)**: la salida siempre nombra la entrada del turno guardado (nunca una vieja de la pantalla) y no se encola en otra sucursal; no se abre otra entrada con un turno abierto; sólo se corrige lo rechazado; y si algo falla al guardar, la foto original sigue en su lugar para reintentar.

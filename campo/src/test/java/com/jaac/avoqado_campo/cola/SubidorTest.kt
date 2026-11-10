@@ -193,8 +193,8 @@ class SubidorTest {
     @Test fun `dos vaciados a la vez mandan cada pieza una sola vez`() = runBlocking {
         val ps = List(3) { pieza() }
         responder = { _, _ -> Thread.sleep(50); null }
-        val s = subidor()
-        List(2) { async(Dispatchers.IO) { s.vaciar() } }.awaitAll()
+        // Dos instancias (como dos trabajos de WorkManager) con el MISMO mutex de proceso.
+        List(2) { val s = subidor(); async(Dispatchers.IO) { s.vaciar() } }.awaitAll()
         assertEquals(ps.map { it.cuerpoJson }, de("/custodia/rechazar").map { it.texto })
         ps.forEach { assertEquals(EstadoPieza.HECHA, estado(it).estado) }
     }
@@ -380,6 +380,27 @@ class SubidorTest {
         assertEquals("VENTA_MOVIDA", dao.porLlave(llave)!!.rechazoCode)
         assertEquals(EstadoPieza.RECHAZADA, dao.porLlave(llave)!!.estado)
         assertEquals(EstadoPieza.HECHA, estado(otra).estado)
+    }
+
+    @Test fun `403 OTRA_SUCURSAL en una pieza que no es evidencia - RECHAZADA con el codigo del servidor, no VENTA_MOVIDA`() = runBlocking {
+        val a = pieza()
+        val b = pieza()
+        responder = { path, _ -> if (path.endsWith("/custodia/rechazar") && pedidos.size == 1) error(403, "OTRA_SUCURSAL") else null }
+        assertNull(subidor().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.RECHAZADA, estado(a).estado)
+        assertEquals("OTRA_SUCURSAL", estado(a).rechazoCode)
+        assertEquals("m", estado(a).rechazoMensaje)
+        assertEquals(EstadoPieza.HECHA, estado(b).estado)
+    }
+
+    @Test fun `un tipo desconocido se rechaza y no traba la cola`() = runBlocking {
+        val rara = pieza(tipo = "DEL_FUTURO")
+        val buena = pieza()
+        assertNull(subidor().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.RECHAZADA, estado(rara).estado)
+        assertEquals("TIPO_DESCONOCIDO", estado(rara).rechazoCode)
+        assertEquals(EstadoPieza.HECHA, estado(buena).estado)
+        assertEquals(1, pedidos.size)
     }
 
     // ---------- sesión ----------

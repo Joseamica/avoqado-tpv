@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.latido
 
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import com.jaac.avoqado_campo.BuildConfig
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -47,7 +48,7 @@ class Latido(
         val b = r.body()
         when {
             r.isSuccessful && b != null -> {
-                runCatching { reloj.anclar(b.horaDelServidor!!) }
+                runCatching { reloj.anclar(b.horaDelServidor!!) }.onFailure { Log.w("Latido", "horaDelServidor ilegible: ${b.horaDelServidor}") }
                 // I2: no durante un borrado; R6-A1: no si otra activación ganó mientras volaba.
                 var guardado = false
                 quienSoy.guardarSi(generacion) { if (!limpiando) { guardarLatido(b.aDatos()); guardado = true } }

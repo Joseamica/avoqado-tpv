@@ -11,6 +11,7 @@ import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
+import com.jaac.avoqado_campo.identidad.DatosDeEntrada
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.Sesion
@@ -157,6 +158,24 @@ class RepositorioDeCopiaTest {
         assertFalse(archivo.exists())
     }
 
+    @Test fun `un entrar a otra sucursal a media descarga no escribe ni publica la de antes`() = runBlocking {
+        val r = repo()
+        alBajar = { quienSoy.guardarEntrada(DatosDeEntrada(Sesion("acc2", "2".repeat(64), "v2"), listOf(Sucursal("v1", "Centro", null), Sucursal("v2", "Norte", null)))) }
+        assertFalse(r.actualizar("v1"))
+        assertNull(r.copia.value)
+        assertFalse(archivo.exists())
+    }
+
+    @Test fun `marcar no toca una copia de otra sucursal`() = runBlocking {
+        val r = repo()
+        assertTrue(r.actualizar("v1"))
+        val antes = archivo.readText()
+        quienSoy.guardarEntrada(DatosDeEntrada(Sesion("acc2", "2".repeat(64), "v2"), listOf(Sucursal("v2", "Norte", null))))
+        r.marcar("8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
+        assertNull(r.copia.value!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
+        assertEquals(antes, archivo.readText())
+    }
+
     @Test fun `borrar quita el archivo y publica null`() = runBlocking {
         val r = repo()
         assertTrue(r.actualizar("v1"))
@@ -197,6 +216,16 @@ class RepositorioDeCopiaTest {
         assertEquals("Bearer acc1", pedidos.single { it.path!!.endsWith("/mis-sims") }.getHeader("Authorization"))
         // Sobrevive a cerrar la app.
         assertEquals(c, repo().leer())
+    }
+
+    @Test fun `cada bandera de attendance va a su campo`() = runBlocking {
+        // Junto con la prueba de arriba (sí-no-no-sí), cualquier cruce de dos banderas sale.
+        modulos = """{"modules":[{"code":"SERIALIZED_INVENTORY","config":{"attendance":
+            {"requireClockInPhoto":true,"requireClockInGps":true,"requireClockOutPhoto":false,"requireClockOutGps":false}}}]}"""
+        val r = repo()
+        assertTrue(r.actualizar("v1"))
+        val c = r.copia.value!!.config
+        assertEquals(listOf(true, true, false, false), listOf(c.fotoEntrada, c.gpsEntrada, c.fotoSalida, c.gpsSalida))
     }
 
     @Test fun `sin el modulo de SIMs la configuracion lo dice`() = runBlocking {

@@ -162,16 +162,27 @@ class QuienSoyTest {
         assertEquals(null, q.graciaHasta)
     }
 
-    @Test fun `I1 - dado de baja si vuelve a vinculado, y desvinculado sale con borrarTodo o activacion`() {
+    @Test fun `I1 - dado de baja si vuelve a vinculado`() {
         val q = activada()
         q.guardarLatido(DatosDeLatido("DADO_DE_BAJA", null, null, emptyList()))
         q.guardarLatido(DatosDeLatido("VINCULADO", null, null, listOf(suc)))
         assertEquals(EstadoDelCelular.VINCULADO, q.estado)
-        q.marcarDesconocido()
-        q.guardarActivacion(DatosDeActivacion("c2", "cred2", "s1", "Ana", sesion, listOf(suc)))
-        assertEquals(EstadoDelCelular.VINCULADO, q.estado)
-        q.marcarDesvinculado(null)
+    }
+
+    @Test fun `I1 - activar solo desde SIN_ACTIVAR, de desconocido o desvinculado se sale con borrarTodo`() {
+        val otra = DatosDeActivacion("c2", "cred2", "s2", "Beto", Sesion("a2", "r2", "v2"), listOf(Sucursal("v2", "Norte", null)))
+        val q = activada()
+        for (llevar in listOf<(QuienSoy) -> Unit>({}, { it.marcarDesvinculado("g") }, { it.marcarDesconocido() })) {
+            llevar(q)
+            val antes = q.identidad.value
+            val g = q.generacion
+            q.guardarActivacion(otra)
+            assertEquals(antes, q.identidad.value)
+            assertEquals(g, q.generacion); assertEquals("cred", q.credencial); assertEquals(sesion, q.sesion)
+        }
         q.borrarTodo()
         assertEquals(EstadoDelCelular.SIN_ACTIVAR, q.estado)
+        q.guardarActivacion(otra)
+        assertEquals(EstadoDelCelular.VINCULADO, q.estado); assertEquals("cred2", q.credencial)
     }
 }

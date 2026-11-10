@@ -74,6 +74,7 @@ class SubidorDeGraciaTest {
     /** null = la respuesta de [porDefecto]. Recibe el pedido ya registrado. */
     @Volatile private var responder: (Pedido) -> MockResponse? = { null }
     private val mutex = MutexDeSubida()
+    private var copiaDelTrabajo: RepositorioDeCopia? = null
 
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), BaseDeCampo::class.java)
@@ -368,6 +369,7 @@ class SubidorDeGraciaTest {
                 override fun createWorker(c: Context, nombre: String, params: WorkerParameters): ListenableWorker {
                     val latido = Latido(api, quienSoy, dao, RelojAnclado(almacen, { ahora }, { 0L }, { 1 }), AparatoSinId(null, null, null, null)) { 0L }
                     val copia = RepositorioDeCopia(c, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), dao, quienSoy)
+                        .also { copiaDelTrabajo = it }
                     return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia)
                 }
             })
@@ -400,9 +402,11 @@ class SubidorDeGraciaTest {
         responder = {
             when {
                 it.path.endsWith("/gracia") -> error(409, "USA_TU_SESION") // la reactivaron: vuelve a VINCULADO
+                it.path.endsWith("/mis-sims") -> ok("""{"items":[{"serialNumber":"S9","custodyState":"PROMOTER_HELD","custodyVersion":1}]}""")
+                it.path.endsWith("/tpv/modules") -> ok("""{"modules":[]}""")
                 !it.path.endsWith("/custodia/rechazar") -> null
                 it.texto == a.cuerpoJson -> ok("""{"custodyState":"PROMOTER_REJECTED","repetida":false}""")
-                else -> { darDeBaja(); error(403, "PERSONA_DADA_DE_BAJA") } // el latido de la pantalla ya lo supo
+                else -> error(403, "PERSONA_DADA_DE_BAJA") // la Guardia guarda DADO_DE_BAJA y sigue la gracia
             }
         }
 
@@ -411,12 +415,13 @@ class SubidorDeGraciaTest {
         assertEquals(
             listOf(
                 "/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/gracia",
-                "/tpv/campo/latido", "/tpv/campo/venues/v1/mis-sims",
+                "/tpv/campo/latido", "/tpv/campo/venues/v1/mis-sims", "/tpv/modules",
             ),
             pedidos.map { it.path },
         )
         assertEquals(EstadoPieza.HECHA, estado(a).estado)
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+        assertEquals(listOf("S9"), copiaDelTrabajo!!.copia.value!!.sims.map { it.serialNumber })
     }
 
     @Test fun `el trabajo sin venta ni custodia subida no baja la copia`() = runBlocking {

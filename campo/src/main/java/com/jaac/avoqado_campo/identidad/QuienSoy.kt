@@ -114,6 +114,9 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     fun marcarDesconocido() = escribir(ESTADO to EstadoDelCelular.DESCONOCIDO.name)
 
+    /** 403 `PERSONA_DADA_DE_BAJA` en una ruta de la sucursal; las sucursales guardadas se conservan (R2-1). */
+    fun marcarDadoDeBaja() = escribir(ESTADO to EstadoDelCelular.DADO_DE_BAJA.name)
+
     /** `USA_TU_SESION` de la gracia (R8-2): sólo `DADO_DE_BAJA` vuelve a `VINCULADO` (I1 lo garantiza también en `escribir`). */
     fun volverDeLaBaja(): Boolean = synchronized(candado) {
         if (leerEstado() != EstadoDelCelular.DADO_DE_BAJA) return false
@@ -144,16 +147,18 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     }
 
     /**
-     * I1 · el estado no regresa: desde `DESVINCULADO` o `DESCONOCIDO` sólo se sale con `borrarTodo` o una activación (las dos
-     * estrenan `generacion`). Una escritura que traiga otro estado (o `DESCONOCIDO` → `DESVINCULADO`) o una sesión se descarta
-     * ENTERA: así un `entrar`, un latido o un `renovar` tardíos no reviven nada.
+     * I1 · el estado no regresa: desde `DESVINCULADO` o `DESCONOCIDO` sólo se sale con `borrarTodo` (deja `SIN_ACTIVAR`), y
+     * activar sólo se puede desde `SIN_ACTIVAR`. Una escritura que traiga otro estado (o `DESCONOCIDO` → `DESVINCULADO`) o una
+     * sesión se descarta ENTERA: así un `entrar`, un latido, un `renovar` o una activación tardíos no reviven nada.
      */
     private fun permitida(m: Map<String, String?>): Boolean {
-        if (GENERACION in m) return true
         val actual = leerEstado()
+        val nuevo = m[ESTADO]
+        // Las dos escrituras que estrenan generación: `borrarTodo` (estado → null) siempre; la activación sólo sin activar.
+        if (GENERACION in m) return nuevo == null || actual == EstadoDelCelular.SIN_ACTIVAR
         if (actual != EstadoDelCelular.DESVINCULADO && actual != EstadoDelCelular.DESCONOCIDO) return true
         if (SESION in m) return false
-        val nuevo = m[ESTADO] ?: return true
+        if (nuevo == null) return true
         return nuevo == EstadoDelCelular.DESCONOCIDO.name || nuevo == actual.name
     }
 

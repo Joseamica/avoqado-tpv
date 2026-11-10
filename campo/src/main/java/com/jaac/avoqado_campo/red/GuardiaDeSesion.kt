@@ -94,7 +94,7 @@ class GuardiaDeSesion @Inject constructor(
                     else -> necesitaPin(generacion) // un 401 tras renovar: la sesión murió
                 },
             )
-            r.code() == 403 && code == "PERSONA_DADA_DE_BAJA" -> sin(MotivoSinSesion.DADO_DE_BAJA)
+            r.code() == 403 && code == "PERSONA_DADA_DE_BAJA" -> sin(dadoDeBaja(generacion))
             r.code() == 403 && code == "SIN_ACCESO_A_LA_SUCURSAL" -> {
                 necesitaPin(generacion) // R5-1: la pieza va a «Mis pendientes» (Definitiva) y el PIN se pide
                 ResultadoConSesion.Respuesta(r)
@@ -110,6 +110,11 @@ class GuardiaDeSesion @Inject constructor(
     private fun desvinculado(generacion: String): MotivoSinSesion {
         quienSoy.guardarSi(generacion) { marcarDesvinculado(null) }
         return MotivoSinSesion.DESVINCULADO
+    }
+    /** La cola pasa a la gracia: el estado se guarda aquí (I1 lo permite desde VINCULADO, no desde DESVINCULADO). */
+    private fun dadoDeBaja(generacion: String): MotivoSinSesion {
+        quienSoy.guardarSi(generacion) { marcarDadoDeBaja() }
+        return MotivoSinSesion.DADO_DE_BAJA
     }
     private fun desconocido(generacion: String): MotivoSinSesion {
         quienSoy.guardarSi(generacion) { marcarDesconocido() }

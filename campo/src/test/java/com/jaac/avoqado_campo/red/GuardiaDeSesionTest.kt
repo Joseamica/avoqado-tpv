@@ -135,6 +135,7 @@ class GuardiaDeSesionTest {
     @Test fun `si otra activacion llega mientras se renueva, no se repite con el token de la nueva`() = runBlocking {
         val otra = Sesion("acc2", "5".repeat(64), "v1")
         servidor(alRenovar = {
+            quienSoy.borrarTodo()
             quienSoy.guardarActivacion(DatosDeActivacion("cel2", "e".repeat(64), "s2", "Beto", otra, listOf(Sucursal("v1", "Centro", null))))
             renovado
         })
@@ -193,6 +194,10 @@ class GuardiaDeSesionTest {
         servidor(conTokenViejo = { error(403, "PERSONA_DADA_DE_BAJA") })
         assertEquals(MotivoSinSesion.DADO_DE_BAJA, (vender() as ResultadoConSesion.SinSesion).motivo)
         assertEquals(0, renovaciones.get())
+        // Se guarda (la cola pasa a la gracia en la misma corrida) y conserva sus sucursales y su sesión.
+        assertEquals(EstadoDelCelular.DADO_DE_BAJA, quienSoy.estado)
+        assertEquals(listOf("v1"), quienSoy.sucursales.map { it.venueId })
+        assertEquals(sesion1, quienSoy.sesion)
     }
 
     @Test fun `403 SIN_ACCESO_A_LA_SUCURSAL bloquea y devuelve la respuesta, que clasificar da como Definitiva`() = runBlocking {

@@ -67,7 +67,7 @@ class RepositorioDeCopia(
         return candado.withLock {
             // Las marcas se leen bajo el candado: un `marcar` de una venta recién encolada espera y cae sobre esta copia.
             val marcas = marcasDeLaCola()
-            if (!puedeEscribir(generacion)) return@withLock false
+            if (!puedeEscribir(generacion, venueId)) return@withLock false
             val sims = misSims.items.orEmpty().filterNotNull().map { it.aSim(marcas[normalizarSerie(it.serialNumber!!)]) }
             publicar(Copia(BuildConfig.VERSION_CODE, venueId, generacion, sims, configDe(modulos), ahora()))
             true
@@ -76,8 +76,7 @@ class RepositorioDeCopia(
 
     /** La pantalla, justo después de encolar la venta o la custodia de [serial]. Sin copia vigente no hace nada. */
     suspend fun marcar(serial: String, marca: String) = candado.withLock {
-        val c = _copia.value ?: return@withLock
-        if (!puedeEscribir(c.generacion)) return@withLock
+        val c = _copia.value?.takeIf { vigente(it) && !quienSoy.limpiando } ?: return@withLock
         val s = normalizarSerie(serial)
         publicar(c.copy(sims = c.sims.map { if (normalizarSerie(it.serialNumber) == s) it.copy(localmente = marca) else it }))
     }
@@ -88,7 +87,9 @@ class RepositorioDeCopia(
         _copia.value = null
     }
 
-    private fun puedeEscribir(generacion: String) = !quienSoy.limpiando && quienSoy.generacion == generacion
+    /** I2 + R7-1, y que la sesión siga en esa sucursal (un `entrar` a otra a media descarga no se queda con la de antes). */
+    private fun puedeEscribir(generacion: String, venueId: String) =
+        !quienSoy.limpiando && quienSoy.generacion == generacion && quienSoy.sesion?.venueId == venueId
 
     private fun publicar(c: Copia) {
         val tmp = File(archivo.parentFile, "copia.json.tmp")

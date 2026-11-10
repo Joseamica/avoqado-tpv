@@ -106,4 +106,33 @@ class QuienSoyTest {
         assertTrue(q.guardarSi(g2) { guardarLatido(DatosDeLatido("DESVINCULADO", "g", null, emptyList())) })
         assertEquals(EstadoDelCelular.DESVINCULADO, q.estado)
     }
+
+    @Test fun `guardarTokensSi rechaza otra generacion y otro refresh`() {
+        val q = activada()
+        val g = q.generacion
+        assertFalse(q.guardarTokensSi(g, "otro", "a9", "r9", "v1"))
+        assertFalse(q.guardarTokensSi("vieja", "r", "a9", "r9", "v1"))
+        assertEquals("a", q.sesion?.accessToken)
+        assertTrue(q.guardarTokensSi(g, "r", "a9", "r9", "v1"))
+        assertEquals(Sesion("a9", "r9", "v1"), q.sesion)
+    }
+
+    @Test fun `Sesion no imprime tokens`() {
+        assertFalse(sesion.toString().contains("a") && sesion.toString().contains("refreshToken"))
+        assertFalse(sesion.toString().contains("accessToken"))
+    }
+
+    @Test fun `aparatoId concurrente es uno solo`() {
+        val q = QuienSoy(AlmacenEnMemoria())
+        val ids = java.util.Collections.synchronizedList(mutableListOf<String>())
+        (1..8).map { Thread { ids += q.aparatoId } }.also { ts -> ts.forEach { it.start() }; ts.forEach { it.join() } }
+        assertEquals(1, ids.toSet().size)
+    }
+
+    @Test fun `borrarTodo limpia los fallos del PIN`() {
+        val q = activada()
+        almacen.escribir(mapOf("pin.fallos" to "5", "pin.bloqueadoHasta" to "9", "pin.bloqueo" to "x"))
+        q.borrarTodo()
+        assertEquals(null, almacen.leer("pin.fallos")); assertEquals(null, almacen.leer("pin.bloqueo"))
+    }
 }

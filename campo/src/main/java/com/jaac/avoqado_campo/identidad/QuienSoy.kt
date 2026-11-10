@@ -8,7 +8,9 @@ import java.util.UUID
 
 data class VerificadorPin(val algoritmo: String, val iteraciones: Int, val sal: String, val hash: String)
 data class Sucursal(val venueId: String, val nombre: String, val verificadorPin: VerificadorPin?)
-data class Sesion(val accessToken: String, val refreshToken: String, val venueId: String)
+data class Sesion(val accessToken: String, val refreshToken: String, val venueId: String) {
+    override fun toString() = "Sesion(venueId=$venueId, tokens=***)"
+}
 
 enum class EstadoDelCelular { SIN_ACTIVAR, VINCULADO, DESVINCULADO, DESCONOCIDO, DADO_DE_BAJA }
 
@@ -44,7 +46,9 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     val identidad: StateFlow<Identidad> = _identidad
 
     val aparatoId: String
-        get() = almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { almacen.escribir(mapOf(APARATO_ID to it)) }
+        get() = synchronized(candado) {
+            almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { almacen.escribir(mapOf(APARATO_ID to it)) }
+        }
     /** Cambia con cada activación y con `borrarTodo`: una respuesta tardía de la anterior se descarta con `guardarSi`. */
     val generacion: String
         get() = synchronized(candado) {
@@ -67,6 +71,14 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         bloque()
         true
     }
+
+    /** Renovar: escribe sólo si no hubo otra activación Y el refresh guardado sigue siendo el que se gastó. */
+    fun guardarTokensSi(generacion: String, refreshUsado: String, access: String, refresh: String, venueId: String): Boolean =
+        synchronized(candado) {
+            if (almacen.leer(GENERACION) != generacion || sesion?.refreshToken != refreshUsado) return false
+            guardarTokens(access, refresh, venueId)
+            true
+        }
 
     fun guardarActivacion(d: DatosDeActivacion) = escribir(
         GENERACION to nueva(),
@@ -131,6 +143,6 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         const val SESION = "sesion"; const val ESTADO = "estado"; const val GRACIA = "graciaHasta"
         const val GENERACION = "generacion"
         const val BLOQUEADA = "bloqueada"; const val NECESITA_PIN = "necesitaPin"
-        val TODAS = listOf(APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
+        val TODAS = CLAVES_DEL_PIN + listOf(APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
     }
 }

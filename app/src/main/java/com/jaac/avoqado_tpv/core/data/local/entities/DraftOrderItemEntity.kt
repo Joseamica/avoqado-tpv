@@ -118,6 +118,9 @@ data class DraftOrderItemEntity(
          * Generate local item ID for new items.
          * Replaced with server CUID after first sync.
          */
-        fun generateLocalId(): String = "local_item_${java.util.UUID.randomUUID()}"
+        /** Prefijo del id que la TPV le da a un renglón antes de saber su id en el SERVIDOR (D23 lo usa para reconocerlo). */
+        const val LOCAL_ID_PREFIX = "local_item_"
+
+        fun generateLocalId(): String = "$LOCAL_ID_PREFIX${java.util.UUID.randomUUID()}"
     }
 }

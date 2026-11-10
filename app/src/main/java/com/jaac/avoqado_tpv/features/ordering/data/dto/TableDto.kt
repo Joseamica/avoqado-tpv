@@ -69,7 +69,8 @@ data class OrderItemDetailDto(
     @SerializedName("notes") val notes: String?,
     @SerializedName("kitchenStatus") val kitchenStatus: String? = null,  // ✅ NULLABLE: Backend doesn't have this field in OrderItem schema
     @SerializedName("createdAt") val createdAt: String,
-    @SerializedName("sentToKitchenAt") val sentToKitchenAt: String?
+    @SerializedName("sentToKitchenAt") val sentToKitchenAt: String?,
+    @SerializedName("externalId") val externalId: String? = null  // D23: llave con que la TPV dio de alta el renglón
 )
 
 /**

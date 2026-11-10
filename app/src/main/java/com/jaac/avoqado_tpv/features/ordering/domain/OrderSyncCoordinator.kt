@@ -1392,6 +1392,7 @@ class OrderSyncCoordinator @Inject constructor(
         // ⭐ P0 FIX: Track version across all mutations
         // Each mutation (add/remove items) increments the version on the server
         var currentVersion = draftOrder.version
+        var cuentaDelServidor: Order? = null  // D23: lo último que contestó el SERVIDOR en esta vuelta
 
         // Step 1: Add pending items
         val pendingItems = draftOrderItemDao.getPendingItemsByOrder(orderId)
@@ -1451,10 +1452,12 @@ class OrderSyncCoordinator @Inject constructor(
             }
             Timber.d("💾 [Sync] Persisted version=$currentVersion after addItems")
 
-            // Mark items as SYNCED
+            // Mark items as SYNCED — D23: salvo el que la cajera quitó mientras el alta iba en camino (antes revivía).
+            // El renglón conserva su id local a propósito: la pantalla, la impresión y «Anular» lo siguen nombrando así.
             pendingItems.forEach { item ->
-                draftOrderItemDao.updateSyncStatus(item.id, DraftOrderItemEntity.SYNC_STATUS_SYNCED)
+                draftOrderItemDao.marcarSincronizadoSiNoSeQuito(item.id)
             }
+            cuentaDelServidor = updatedOrder
 
             Timber.i("✅ [Sync] Added ${pendingItems.size} items | version=$currentVersion")
         }
@@ -1463,11 +1466,21 @@ class OrderSyncCoordinator @Inject constructor(
         val deletedItems = draftOrderItemDao.getDeletedItemsByOrder(orderId)
 
         for (deletedItem in deletedItems) {
-            if (deletedItem.isServerCreated) {
+            // D23: un renglón agregado en la TPV conserva su id local aunque su alta ya esté en el SERVIDOR (antes se borraba
+            // sólo aquí y el SERVIDOR lo seguía cobrando). Se busca allá por su llave (`externalId`) en lo último que contestó el
+            // SERVIDOR en esta vuelta o en UNA lectura de la cuenta; si no está, nunca llegó y basta borrarlo aquí.
+            // ponytail: un alta que la TPV ya dio por fallida y que el SERVIDOR todavía procesa justo cuando se relee no
+            // aparece (residuo declarado en docs/audit/2026-11-10-tpv-quitar-recien-agregado/promesa.md).
+            val idEnServidor = if (!deletedItem.id.startsWith(DraftOrderItemEntity.LOCAL_ID_PREFIX)) deletedItem.id else {
+                val cuenta = cuentaDelServidor
+                    ?: orderRepository.getOrder(venueId, orderId).getOrThrow().also { cuentaDelServidor = it }
+                cuenta.items.firstOrNull { it.externalId == (deletedItem.externalId ?: deletedItem.id) }?.id
+            }
+            if (idEnServidor != null) {
                 val result = orderRepository.removeOrderItem(
                     venueId = venueId,
                     orderId = orderId,
-                    orderItemId = deletedItem.id,
+                    orderItemId = idEnServidor,
                     currentVersion = currentVersion  // Use tracked version (updated after add)
                 )
 

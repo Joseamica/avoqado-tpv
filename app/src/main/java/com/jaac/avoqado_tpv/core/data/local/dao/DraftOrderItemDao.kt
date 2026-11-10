@@ -185,6 +185,10 @@ interface DraftOrderItemDao {
     @Query("UPDATE draft_order_items SET sync_status = :syncStatus WHERE id = :itemId")
     suspend fun updateSyncStatus(itemId: String, syncStatus: String)
 
+    /** D23: confirma un alta sin revivir el renglón que la cajera quitó mientras el alta iba en camino. */
+    @Query("UPDATE draft_order_items SET sync_status = 'SYNCED' WHERE id = :itemId AND sync_status != 'DELETED'")
+    suspend fun marcarSincronizadoSiNoSeQuito(itemId: String)
+
     /**
      * Replace local ID with server CUID after first sync.
      *

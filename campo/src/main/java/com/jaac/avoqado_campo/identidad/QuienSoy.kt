@@ -35,6 +35,9 @@ data class DatosDeActivacion(
 data class DatosDeEntrada(val sesion: Sesion, val sucursales: List<Sucursal>)
 data class DatosDeLatido(val estado: String, val graciaHasta: String?, val nombre: String?, val sucursales: List<Sucursal>)
 
+/** El cuerpo de `activar` que espera saber su resultado (B14); lo escribe `RepositorioDeEntrada`, lo borra `borrarTodo`. */
+internal const val ACTIVACION_PENDIENTE = "activacion.pendiente"
+
 /** Quién es este celular. Todo vive en el almacén cifrado; cada escritura publica una `Identidad` nueva. */
 class QuienSoy(private val almacen: AlmacenSeguro) {
     private val gson = Gson()
@@ -131,10 +134,13 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     /** No la toca `borrarTodo`: el borrado la pone al empezar y la quita al terminar. */
     fun marcarLimpiando(v: Boolean) = escribir(LIMPIANDO to if (v) "true" else null)
 
+    /** Primer paso del borrado (R8-1): la marca y una `generacion` nueva en UNA escritura, así toda respuesta en vuelo se descarta. */
+    fun empezarLimpieza() = escribir(LIMPIANDO to "true", GENERACION to nueva())
+
     /** La sesión del servidor murió: `necesitaPin` y `bloqueada` en UNA escritura (R3-2). */
     fun marcarSesionMuerta() = escribir(NECESITA_PIN to "true", BLOQUEADA to "true")
 
-    /** Borra todo, también `aparatoId` (el siguiente que se lea es otro). */
+    /** Borra todo, también `aparatoId` (el siguiente que se lea es otro) y la activación pendiente. */
     fun borrarTodo() = escribir(*(TODAS.map { it to null } + (GENERACION to nueva())).toTypedArray())
 
     private fun escribir(vararg cambios: Pair<String, String?>) {
@@ -180,6 +186,6 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         const val GENERACION = "generacion"
         const val BLOQUEADA = "bloqueada"; const val NECESITA_PIN = "necesitaPin"
         const val LIMPIANDO = "limpiando"
-        val TODAS = CLAVES_DEL_PIN + listOf(APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
+        val TODAS = CLAVES_DEL_PIN + listOf(ACTIVACION_PENDIENTE, APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
     }
 }

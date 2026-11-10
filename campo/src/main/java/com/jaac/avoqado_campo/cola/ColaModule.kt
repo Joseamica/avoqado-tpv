@@ -3,7 +3,13 @@ package com.jaac.avoqado_campo.cola
 import android.content.Context
 import androidx.room.Room
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
+import com.jaac.avoqado_campo.entrada.RepositorioDeEntrada
+import com.jaac.avoqado_campo.gps.ControlDeGps
+import com.jaac.avoqado_campo.gps.EstadoDelGps
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
+import com.jaac.avoqado_campo.identidad.BorradoDelCelular
+import com.jaac.avoqado_campo.identidad.MutexDeSesion
+import com.jaac.avoqado_campo.identidad.PinLocal
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.latido.Latido
@@ -59,4 +65,18 @@ object ColaModule {
 
     @Provides @Singleton
     fun proveerLatido(api: CampoApi, quienSoy: QuienSoy, dao: PiezaDao, reloj: RelojAnclado): Latido = Latido(api, quienSoy, dao, reloj)
+
+    @Provides @Singleton
+    fun proveerEntrada(
+        api: CampoApi, quienSoy: QuienSoy, reloj: RelojAnclado, pinLocal: PinLocal, mutexDeSesion: MutexDeSesion,
+        dao: PiezaDao, almacen: AlmacenSeguro, copia: RepositorioDeCopia,
+    ): RepositorioDeEntrada = RepositorioDeEntrada(api, quienSoy, reloj, pinLocal, mutexDeSesion, dao, almacen, copia)
+
+    @Provides @Singleton
+    fun proveerBorrado(
+        quienSoy: QuienSoy, mutexDeSubida: MutexDeSubida, mutexDeSesion: MutexDeSesion, gps: ControlDeGps, base: BaseDeCampo,
+        dao: PiezaDao, copia: RepositorioDeCopia, pinLocal: PinLocal, estadoDelGps: EstadoDelGps, @ApplicationContext context: Context,
+    ): BorradoDelCelular = BorradoDelCelular(
+        quienSoy, mutexDeSubida, mutexDeSesion, gps, base::clearAllTables, dao, File(context.filesDir, "cola"), copia, pinLocal, estadoDelGps,
+    )
 }

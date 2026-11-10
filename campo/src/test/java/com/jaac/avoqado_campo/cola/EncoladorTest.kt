@@ -372,6 +372,30 @@ class EncoladorTest {
         assertEquals(huella("CUSTODIA_RECHAZAR", "v1", p.cuerpoJson!!), p.huella)
     }
 
+    @Test fun `una SIM con su custodia viva no recibe otra decision`() = runBlocking {
+        encolador.aceptarCustodia(listOf(SimConVersion("A1", 2)), "v1")
+        for (intento in listOf<suspend () -> Unit>(
+            { encolador.rechazarCustodia(SimConVersion("a 1", 2), "v1") },
+            { encolador.aceptarCustodia(listOf(SimConVersion("B2", 0), SimConVersion("A1", 2)), "v1") },
+        )) {
+            try { intento(); fail("debió lanzar") } catch (_: SimYaEnCola) {}
+        }
+        assertEquals(1, dao.pendientesDeVer().first().size)
+    }
+
+    @Test fun `decidir otra vez descarta la vieja en la misma transaccion`() = runBlocking {
+        val vieja = dao.porLlave(encolador.rechazarCustodia(SimConVersion("A1", 3), "v1"))!!
+        dao.actualizar(vieja.copy(estado = "RECHAZADA", rechazoCode = "ASIGNACION_CAMBIO"))
+        val nueva = encolador.aceptarCustodia(listOf(SimConVersion("A1", 4)), "v1", reemplaza = listOf(vieja.id))
+        assertEquals("DESCARTADA", dao.porId(vieja.id)!!.estado)
+        assertEquals(listOf(nueva), dao.pendientesDeVer().first().map { it.llave })
+        // Sólo una RECHAZADA de custodia se reemplaza; si no, nada cambia.
+        try {
+            encolador.rechazarCustodia(SimConVersion("Z9", 1), "v1", reemplaza = listOf(dao.porLlave(nueva)!!.id)); fail("debió lanzar")
+        } catch (_: IllegalArgumentException) {}
+        assertEquals(listOf(nueva), dao.pendientesDeVer().first().map { it.llave })
+    }
+
     @Test fun `evidenciaSuelta lleva paymentId y verificationId sin dependeDe`() = runBlocking {
         val k = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", "5511112222", foto("s.jpg"), "Corregir"))
         val p = dao.porLlave(k)!!

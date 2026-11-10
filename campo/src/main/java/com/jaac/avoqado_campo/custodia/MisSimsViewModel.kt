@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
@@ -14,6 +13,8 @@ import com.jaac.avoqado_campo.cola.EvidenciaSueltaNueva
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SimConVersion
+import com.jaac.avoqado_campo.cola.SimYaEnCola
+import com.jaac.avoqado_campo.cola.simsDeCustodia
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.copia.Copia
@@ -34,7 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
-enum class EstadoFila { POR_DECIDIR, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR }
+enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR }
 
 data class FilaSim(val sim: SimEnCopia, val estado: EstadoFila, val nota: String? = null)
 
@@ -67,7 +68,7 @@ class MisSimsViewModel @Inject constructor(
     private val recienDecididas = mutableSetOf<String>()
     private val recienCorregidas = mutableSetOf<String>()
     private val refrescadas = mutableSetOf<Long>()
-    private var aDecidir: Map<String, Pieza> = emptyMap()
+    private var aDecidir: Map<String, Reasignada> = emptyMap()
     private var ultimo: Pair<Copia?, List<Pieza>> = null to emptyList()
 
     init {
@@ -92,36 +93,44 @@ class MisSimsViewModel @Inject constructor(
     private fun porDecidir(serie: String) = _estado.value.porAceptar
         .filter { it.estado == EstadoFila.POR_DECIDIR && it.sim.serialNumber == serie }.map { it.sim }
 
-    /** Hasta 50 SIMs por pieza; cada una con la `custodyVersion` que trae la copia. */
+    /**
+     * Hasta 50 SIMs por pieza; cada una con la `custodyVersion` que trae la copia. La custodia vieja que el SERVIDOR rechazó
+     * por `ASIGNACION_CAMBIO` se descarta en la MISMA transacción que la decisión nueva (Encolador).
+     */
     private fun decidir(sims: List<SimEnCopia>, aceptar: Boolean) {
         val venueId = quienSoy.sesion?.venueId
         if (sims.isEmpty() || _estado.value.ocupado) return
         if (venueId == null) { _estado.update { it.copy(error = SIN_SESION) }; return }
         _estado.update { it.copy(ocupado = true, error = null) }
         viewModelScope.launch {
+            var guardadas = 0
             val error = withContext(NonCancellable) {
                 try {
                     for (lote in sims.chunked(50)) {
                         val v = lote.map { SimConVersion(it.serialNumber, it.custodyVersion) }
-                        if (aceptar) encolador.aceptarCustodia(v, venueId) else encolador.rechazarCustodia(v.single(), venueId)
+                        val viejas = lote.mapNotNull { aDecidir[normalizarSerie(it.serialNumber)]?.pieza }
+                            .filter { it.estado == EstadoPieza.RECHAZADA }.map { it.id }.distinct()
+                        if (aceptar) encolador.aceptarCustodia(v, venueId, viejas) else encolador.rechazarCustodia(v.single(), venueId, viejas)
+                        guardadas += lote.size
                         recienDecididas += lote.map { normalizarSerie(it.serialNumber) }
                         val marca = if (aceptar) MarcaLocal.ACEPTADA_EN_EL_CELULAR else MarcaLocal.RECHAZADA_EN_EL_CELULAR
                         lote.forEach { despues { copia.marcar(it.serialNumber, marca) } }
-                        // La decisión vieja que el SERVIDOR rechazó por ASIGNACION_CAMBIO ya no se va a subir.
-                        lote.mapNotNull { aDecidir[normalizarSerie(it.serialNumber)] }.distinct()
-                            .forEach { despues { dao.actualizar(it.copy(estado = EstadoPieza.DESCARTADA)) } }
                     }
                     null
                 } catch (c: CancellationException) {
                     throw c
-                } catch (_: CelularBorrandose) {
-                    "Espera un momento."
                 } catch (x: Exception) {
-                    "No se guardó. ${x.message.orEmpty()}".trim()
+                    val porque = when (x) {
+                        is CelularBorrandose -> "Espera un momento."
+                        is SimYaEnCola -> "Esta SIM ya tiene una decisión por subir."
+                        else -> "No se guardó. ${x.message.orEmpty()}".trim()
+                    }
+                    if (guardadas == 0) porque else "Se guardaron $guardadas de ${sims.size}; las demás no. $porque"
                 } finally {
-                    despues { Disparador.ahora(context) }
+                    if (guardadas > 0) despues { Disparador.ahora(context) }
                 }
             }
+            derivarOtraVez()
             _estado.update { it.copy(ocupado = false, error = error) }
         }
     }
@@ -203,24 +212,36 @@ class MisSimsViewModel @Inject constructor(
 
     private fun derivar(c: Copia?, cola: List<Pieza>) {
         ultimo = c to cola
-        val custodias = cola.filter { it.tipo == TipoPieza.CUSTODIA_ACEPTAR || it.tipo == TipoPieza.CUSTODIA_RECHAZAR }
+        val porSerie = c?.sims.orEmpty().associateBy { normalizarSerie(it.serialNumber) }
         val enCola = mutableSetOf<String>()
-        val aDecidirAhora = mutableMapOf<String, Pieza>()
-        for (p in custodias) {
-            val series = seriesDe(p)
+        val aDecidirAhora = mutableMapOf<String, Reasignada>()
+        for (p in cola) {
+            if (p.tipo != TipoPieza.CUSTODIA_ACEPTAR && p.tipo != TipoPieza.CUSTODIA_RECHAZAR) continue
+            val sims = simsDeCustodia(p.cuerpoJson)
             when {
-                p.estado == EstadoPieza.RECHAZADA && p.rechazoCode == ASIGNACION_CAMBIO -> series.forEach { aDecidirAhora[it] = p }
-                p.estado in POR_SUBIR -> { enCola += series; recienDecididas.removeAll(series.toSet()) }
+                // Rechazar: el código viene en la pieza. Aceptar: un 200 con la fila en error (AVISO CUSTODIA_EN_PARTE).
+                p.estado == EstadoPieza.RECHAZADA && p.rechazoCode == ASIGNACION_CAMBIO -> sims.forEach { aDecidirAhora[it.serialNumber] = Reasignada(p, it.custodyVersion) }
+                p.estado == EstadoPieza.AVISO -> {
+                    val reasignadas = filasReasignadas(p.rechazoDatosJson)
+                    sims.filter { it.serialNumber in reasignadas }.forEach { aDecidirAhora[it.serialNumber] = Reasignada(p, it.custodyVersion) }
+                }
+                p.estado in POR_SUBIR -> enCola += sims.map { it.serialNumber }
             }
+        }
+        // Lo recién decidido sale de la memoria cuando la cola o la copia ya lo dicen.
+        recienDecididas.removeAll {
+            it in enCola || (it !in aDecidirAhora && porSerie[it]?.let { s -> s.localmente != null || s.custodyState != "PROMOTER_PENDING" } == true)
         }
         enCola += recienDecididas
         aDecidir = aDecidirAhora
-        val corrigiendo = recienCorregidas + cola.filter { it.tipo == TipoPieza.EVIDENCIA && it.estado in POR_SUBIR }
-            .mapNotNull { campo(it.evidenciaJson, "verificationId") }
+        val correccionesEnCola = cola.filter { it.tipo == TipoPieza.EVIDENCIA && it.estado in POR_SUBIR }
+            .mapNotNull { campo(it.evidenciaJson, "verificationId") }.toSet()
+        recienCorregidas.removeAll { it in correccionesEnCola || c?.sims?.none { s -> s.verificationId == it && s.verificationStatus == "FAILED" } == true }
+        val corrigiendo = recienCorregidas + correccionesEnCola
 
-        // «Te volvieron a asignar»: la versión que trae la copia ya no vale; se baja otra (una vez por pieza).
-        val nuevas = aDecidirAhora.values.map { it.id }.filter { refrescadas.add(it) }
-        if (nuevas.isNotEmpty()) actualizar()
+        // «Te volvieron a asignar»: se decide otra vez sólo con la versión NUEVA en la copia; mientras tanto se baja otra (una vez por pieza).
+        val sinVersionNueva = aDecidirAhora.filter { (serie, r) -> porSerie[serie]?.custodyVersion == r.version }
+        if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) actualizar()
 
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
@@ -233,7 +254,8 @@ class MisSimsViewModel @Inject constructor(
                 }
                 s.custodyState == "PROMOTER_PENDING" -> when {
                     serie in enCola -> FilaSim(s, EstadoFila.POR_SUBIR, "Por subir")
-                    serie in aDecidirAhora -> FilaSim(s, EstadoFila.POR_DECIDIR, "Te volvieron a asignar esta SIM: vuelve a decidir")
+                    serie in sinVersionNueva -> FilaSim(s, EstadoFila.ACTUALIZANDO, "Te volvieron a asignar esta SIM · Actualizando…")
+                    serie in aDecidirAhora -> FilaSim(s, EstadoFila.POR_DECIDIR, REASIGNADA)
                     s.localmente == MarcaLocal.ACEPTADA_EN_EL_CELULAR || s.localmente == MarcaLocal.RECHAZADA_EN_EL_CELULAR ->
                         FilaSim(s, EstadoFila.POR_SUBIR, "Por subir")
                     else -> FilaSim(s, EstadoFila.POR_DECIDIR)
@@ -252,6 +274,9 @@ class MisSimsViewModel @Inject constructor(
             )
         }
     }
+
+    /** Una custodia que el SERVIDOR no aplicó porque reasignaron la SIM; [version] es la que se mandó. */
+    private class Reasignada(val pieza: Pieza, val version: Int)
 
     private suspend fun despues(f: suspend () -> Unit) {
         try { f() } catch (c: CancellationException) { throw c } catch (x: Exception) { Log.w("MisSims", "guardado; falló lo de después", x) }
@@ -273,11 +298,14 @@ class MisSimsViewModel @Inject constructor(
         fun motivos(s: SimEnCopia) = (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
             .joinToString(" · ").ifEmpty { "Tu supervisor pidió corregir la evidencia" }
 
-        fun seriesDe(p: Pieza): List<String> = runCatching {
-            val o = JsonParser.parseString(p.cuerpoJson).asJsonObject
-            val lista: List<JsonElement> = o["sims"]?.asJsonArray?.toList() ?: listOf(o)
-            lista.mapNotNull { it.asJsonObject["serialNumber"]?.asString?.let(::normalizarSerie) }
-        }.getOrDefault(emptyList())
+        const val REASIGNADA = "Te volvieron a asignar esta SIM: vuelve a decidir"
+
+        /** Series de las filas `fallidas` (B12) con `ASIGNACION_CAMBIO`. */
+        fun filasReasignadas(datos: String?): Set<String> = runCatching {
+            JsonParser.parseString(datos).asJsonObject["fallidas"].asJsonArray.mapNotNull { f ->
+                f.asJsonObject.takeIf { it["code"]?.asString == ASIGNACION_CAMBIO }?.get("serialNumber")?.asString?.let(::normalizarSerie)
+            }.toSet()
+        }.getOrDefault(emptySet())
 
         fun campo(json: String?, nombre: String): String? = runCatching {
             JsonParser.parseString(json).asJsonObject[nombre]?.takeIf { it.isJsonPrimitive }?.asString

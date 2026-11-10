@@ -80,8 +80,8 @@ class MisSimsViewModelTest {
         coEvery { copia.marcar(any(), any()) } just runs
         every { dao.pendientesDeVer() } returns cola
         coEvery { dao.actualizar(any()) } just runs
-        coEvery { encolador.aceptarCustodia(any(), any()) } returns "k"
-        coEvery { encolador.rechazarCustodia(any(), any()) } returns "k"
+        coEvery { encolador.aceptarCustodia(any(), any(), any()) } returns "k"
+        coEvery { encolador.rechazarCustodia(any(), any(), any()) } returns "k"
     }
 
     @After fun tearDown() {
@@ -95,7 +95,7 @@ class MisSimsViewModelTest {
     @Test fun `aceptar 60 SIMs son dos piezas de 50 y 10 con su version de la copia`() {
         ponerCopia(*Array(60) { sim("S$it", version = it) })
         val lotes = mutableListOf<List<SimConVersion>>()
-        coEvery { encolador.aceptarCustodia(capture(lotes), "v1") } returns "k"
+        coEvery { encolador.aceptarCustodia(capture(lotes), "v1", emptyList()) } returns "k"
         vm().aceptarTodas()
         assertEquals(listOf(50, 10), lotes.map { it.size })
         assertEquals(SimConVersion("S59", 59), lotes[1].last())
@@ -109,39 +109,68 @@ class MisSimsViewModelTest {
         val v = vm()
         assertEquals(EstadoFila.POR_SUBIR, v.estado.value.porAceptar.single().estado)
         v.rechazar("S1")
-        coVerify(exactly = 0) { encolador.rechazarCustodia(any(), any()) }
+        coVerify(exactly = 0) { encolador.rechazarCustodia(any(), any(), any()) }
     }
 
     @Test fun `rechazar manda su version y marca la copia`() {
         ponerCopia(sim("S1", version = 7))
         vm().rechazar("S1")
-        coVerify { encolador.rechazarCustodia(SimConVersion("S1", 7), "v1") }
+        coVerify { encolador.rechazarCustodia(SimConVersion("S1", 7), "v1", emptyList()) }
         coVerify { copia.marcar("S1", MarcaLocal.RECHAZADA_EN_EL_CELULAR) }
     }
 
     @Test fun `dos toques a aceptar son una pieza`() {
         ponerCopia(sim("S1"))
         val v = vm()
-        coEvery { encolador.aceptarCustodia(any(), any()) } coAnswers {
+        coEvery { encolador.aceptarCustodia(any(), any(), any()) } coAnswers {
             cola.value = listOf(custodia(TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3}]}"""))
             "k"
         }
         v.aceptar("S1"); v.aceptar("S1")
-        coVerify(exactly = 1) { encolador.aceptarCustodia(any(), any()) }
+        coVerify(exactly = 1) { encolador.aceptarCustodia(any(), any(), any()) }
     }
 
-    @Test fun `ASIGNACION_CAMBIO deja decidir otra vez, refresca la copia y descarta la vieja`() {
-        ponerCopia(sim("S1"))
-        val vieja = custodia(TipoPieza.CUSTODIA_RECHAZAR, """{"serialNumber":"S1","custodyVersion":3}""", EstadoPieza.RECHAZADA, "ASIGNACION_CAMBIO")
+    @Test fun `ASIGNACION_CAMBIO al rechazar espera la version nueva y luego descarta la vieja al decidir`() {
+        ponerCopia(sim("S1", version = 3))
+        val vieja = custodia(TipoPieza.CUSTODIA_RECHAZAR, """{"serialNumber":"S1","custodyVersion":3}""", EstadoPieza.RECHAZADA, "ASIGNACION_CAMBIO", id = 9)
         cola.value = listOf(vieja)
         val v = vm()
+        assertEquals(EstadoFila.ACTUALIZANDO, v.estado.value.porAceptar.single().estado)
+        coVerify(exactly = 2) { copia.actualizar("v1") } // al abrir y por la reasignación
+        v.aceptar("S1")
+        coVerify(exactly = 0) { encolador.aceptarCustodia(any(), any(), any()) }
+
+        ponerCopia(sim("S1", version = 4))
         val fila = v.estado.value.porAceptar.single()
         assertEquals(EstadoFila.POR_DECIDIR, fila.estado)
         assertEquals("Te volvieron a asignar esta SIM: vuelve a decidir", fila.nota)
-        coVerify { copia.actualizar("v1") }
         v.aceptar("S1")
-        coVerify { encolador.aceptarCustodia(listOf(SimConVersion("S1", 3)), "v1") }
-        coVerify { dao.actualizar(vieja.copy(estado = EstadoPieza.DESCARTADA)) }
+        coVerify { encolador.aceptarCustodia(listOf(SimConVersion("S1", 4)), "v1", listOf(9L)) }
+    }
+
+    @Test fun `ASIGNACION_CAMBIO al aceptar llega como fila fallida de un AVISO`() {
+        ponerCopia(sim("S1", version = 3), sim("S2", version = 3))
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.AVISO, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(rechazoDatosJson = """{"fallidas":[{"serialNumber":"S1","status":"error","code":"ASIGNACION_CAMBIO"}]}"""),
+        )
+        val v = vm()
+        assertEquals(listOf(EstadoFila.ACTUALIZANDO, EstadoFila.POR_DECIDIR), v.estado.value.porAceptar.map { it.estado })
+        coVerify(exactly = 2) { copia.actualizar("v1") }
+        ponerCopia(sim("S1", version = 5))
+        assertEquals("Te volvieron a asignar esta SIM: vuelve a decidir", v.estado.value.porAceptar.single().nota)
+        v.rechazar("S1")
+        coVerify { encolador.rechazarCustodia(SimConVersion("S1", 5), "v1", emptyList()) } // un AVISO no se descarta
+    }
+
+    @Test fun `si el segundo lote falla dice cuantas se guardaron`() {
+        ponerCopia(*Array(60) { sim("S$it") })
+        coEvery { encolador.aceptarCustodia(any(), any(), any()) } returns "k" andThenThrows IllegalStateException("disco lleno")
+        val v = vm()
+        v.aceptarTodas()
+        assertEquals("Se guardaron 50 de 60; las demás no. No se guardó. disco lleno", v.estado.value.error)
     }
 
     @Test fun `vendidas FAILED se revisan con sus motivos y PENDING esta en revision`() {

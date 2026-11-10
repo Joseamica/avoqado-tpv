@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.checada
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +47,7 @@ fun ChecadaScreen(vm: ChecadaViewModel, onRegresar: () -> Unit) {
     val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { conUbicacion = hay() }
     LaunchedEffect(Unit) { if (!conUbicacion) pedir.launch(UBICACION) }
 
+    BackHandler(enabled = estado.ocupado) {} // mientras se guarda, Atrás no sale (la checada seguiría de todos modos)
     val selfie = estado.pideSelfie
     if (selfie != null) {
         Camara(
@@ -85,7 +87,7 @@ fun ChecadaContenido(
             (e.gps as? ResultadoGps.NoSigue)?.takeIf { e.entrada != null && e.aviso == null }?.let {
                 Text("No estamos siguiendo tu ubicación: ${it.motivo}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedButton(regresar, alto) { Text("Regresar") }
+            OutlinedButton(regresar, alto, enabled = !e.ocupado) { Text("Regresar") }
         }
     }
 }

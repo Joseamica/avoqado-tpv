@@ -74,18 +74,36 @@ class Encolador(
         }
     }
 
-    suspend fun aceptarCustodia(sims: List<SimConVersion>, venueId: String): String = llaveNueva().also { llave ->
-        require(sims.size in 1..50) { "De 1 a 50 SIMs" }
-        enTransaccion {
-            val resumen = if (sims.size == 1) "Aceptar SIM ${sims[0].serialNumber}" else "Aceptar ${sims.size} SIMs"
-            dao.insertar(pieza(TipoPieza.CUSTODIA_ACEPTAR, llave, staffId, venueId, CuerpoAceptar(sims), reloj.ahora(), resumen))
+    /**
+     * [reemplaza]: custodias RECHAZADA (`ASIGNACION_CAMBIO`) que esta decisión sustituye; quedan DESCARTADA en la misma
+     * transacción, como `corregirVenta`. Una SIM que ya está en otra custodia viva → [SimYaEnCola] y nada escrito.
+     */
+    suspend fun aceptarCustodia(sims: List<SimConVersion>, venueId: String, reemplaza: List<Long> = emptyList()): String =
+        llaveNueva().also { llave ->
+            require(sims.size in 1..50) { "De 1 a 50 SIMs" }
+            enTransaccion {
+                custodiaNueva(sims, reemplaza)
+                val resumen = if (sims.size == 1) "Aceptar SIM ${sims[0].serialNumber}" else "Aceptar ${sims.size} SIMs"
+                dao.insertar(pieza(TipoPieza.CUSTODIA_ACEPTAR, llave, staffId, venueId, CuerpoAceptar(sims), reloj.ahora(), resumen))
+            }
         }
-    }
 
-    suspend fun rechazarCustodia(sim: SimConVersion, venueId: String): String = llaveNueva().also { llave ->
-        enTransaccion {
-            dao.insertar(pieza(TipoPieza.CUSTODIA_RECHAZAR, llave, staffId, venueId, sim, reloj.ahora(), "Rechazar SIM ${sim.serialNumber}"))
+    suspend fun rechazarCustodia(sim: SimConVersion, venueId: String, reemplaza: List<Long> = emptyList()): String =
+        llaveNueva().also { llave ->
+            enTransaccion {
+                custodiaNueva(listOf(sim), reemplaza)
+                dao.insertar(pieza(TipoPieza.CUSTODIA_RECHAZAR, llave, staffId, venueId, sim, reloj.ahora(), "Rechazar SIM ${sim.serialNumber}"))
+            }
         }
+
+    private suspend fun custodiaNueva(sims: List<SimConVersion>, reemplaza: List<Long>) {
+        reemplaza.forEach { id ->
+            val v = dao.porId(id)
+            require(v != null && v.tipo in CUSTODIAS && v.estado == EstadoPieza.RECHAZADA) { "No es una custodia rechazada: $id" }
+            dao.actualizar(v.copy(estado = EstadoPieza.DESCARTADA))
+        }
+        val nuevas = sims.map { normalizarSerie(it.serialNumber) }.toSet()
+        if (dao.conSimsPorSubir().any { it.tipo in CUSTODIAS && seriesDeCustodia(it.cuerpoJson).any(nuevas::contains) }) throw SimYaEnCola()
     }
 
     /** Con un turno de esta persona ya abierto → `IllegalStateException` y nada escrito (B10: la pantalla no lo ofrece). */
@@ -281,6 +299,7 @@ class Encolador(
     private fun llaveNueva() = UUID.randomUUID().toString()
 
     private companion object {
+        val CUSTODIAS = setOf(TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR)
         const val VINCULACION = "Vinculacion"
         const val PORTABILIDAD = "Portabilidad"
     }

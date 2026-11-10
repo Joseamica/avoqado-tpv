@@ -99,3 +99,15 @@ fun fotosDe(fotosJson: String): List<FotoPorSubir> = gsonCola.fromJson(fotosJson
 
 /** Como lo guarda el inventario (y como lo deja el SERVIDOR): sin espacios y en mayúsculas. */
 fun normalizarSerie(serie: String): String = serie.replace(Regex("\\s+"), "").uppercase()
+
+/** Las SIMs (serie normalizada y versión) del cuerpo de una custodia: `{"sims":[…]}` al aceptar, `{"serialNumber",…}` al rechazar. */
+fun simsDeCustodia(cuerpoJson: String?): List<SimConVersion> = runCatching {
+    val o = com.google.gson.JsonParser.parseString(cuerpoJson).asJsonObject
+    val lista = o["sims"]?.asJsonArray?.toList() ?: listOf(o)
+    lista.mapNotNull { e ->
+        val s = e.asJsonObject
+        s["serialNumber"]?.asString?.let { SimConVersion(normalizarSerie(it), s["custodyVersion"]?.asInt ?: 0) }
+    }
+}.getOrDefault(emptyList())
+
+fun seriesDeCustodia(cuerpoJson: String?): List<String> = simsDeCustodia(cuerpoJson).map { it.serialNumber }

@@ -188,6 +188,23 @@ class ChecadaViewModelTest {
         assertTrue(cuerpo(piezas().single()).has("checkInPhotoUrl"))
     }
 
+    @Test fun `sin copia la selfie se pide igual`() {
+        every { copia.copia } returns MutableStateFlow(null)
+        vm.marcarEntrada()
+        assertEquals(TipoChecada.ENTRADA, vm.estado.value.pideSelfie)
+        assertTrue(piezas().isEmpty())
+    }
+
+    @Test fun `salir de la pantalla durante la espera del GPS no tira la checada`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        vm.viewModelScope.cancel()
+        espera.complete(null)
+        val entradas = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        assertEquals(TipoPieza.ENTRADA, entradas.single().tipo)
+    }
+
     @Test fun `el turno de otra persona no cuenta`() {
         assertNull(refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "otra", "k", null, "v1", 0L), "s1"))
         assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1"))

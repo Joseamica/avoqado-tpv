@@ -84,8 +84,9 @@ class ChecadaViewModel @Inject constructor(
             else -> null
         }
         if (error != null) { _estado.update { it.copy(error = error, aviso = null) }; return }
+        // Sin copia no se sabe lo que pide la sucursal: la selfie se pide igual (B9).
         val config = copia.copia.value?.config
-        val selfie = if (tipo == TipoChecada.ENTRADA) config?.fotoEntrada == true else config?.fotoSalida == true
+        val selfie = config == null || (if (tipo == TipoChecada.ENTRADA) config.fotoEntrada else config.fotoSalida)
         if (selfie) _estado.update { it.copy(pideSelfie = tipo, error = null, aviso = null) } else checar(tipo, null)
     }
 
@@ -96,41 +97,44 @@ class ChecadaViewModel @Inject constructor(
         _estado.update {
             it.copy(ocupado = true, pideSelfie = null, buscandoUbicacion = true, avisoUbicacion = null, aviso = null, error = null)
         }
-        viewModelScope.launch {
-            val l = ubicacion.leer()
-            _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
-            val nueva = ChecadaNueva(
-                venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, foto,
-                if (tipo == TipoChecada.ENTRADA) "Entrada" else "Salida",
-            )
-            val error = try {
-                withContext(NonCancellable) { if (tipo == TipoChecada.ENTRADA) encolador.entrada(nueva) else encolador.salida(nueva) }
-                null
-            } catch (c: CancellationException) {
-                throw c
-            } catch (_: CelularBorrandose) {
-                "Espera un momento."
-            } catch (_: IllegalStateException) {
-                if (tipo == TipoChecada.ENTRADA) YA_HAY_ENTRADA else SIN_ENTRADA
-            } catch (_: IllegalArgumentException) {
-                "Tu entrada es de otra sucursal: marca la salida ahí."
-            } catch (x: Exception) {
-                "No se guardó la checada. ${x.message.orEmpty()}".trim()
-            }
-            if (error != null) {
-                foto?.let { File(it).delete() } // no se guardó: la selfie no se queda en el celular
-                _estado.update { it.copy(ocupado = false, error = error) }
-                return@launch
-            }
-            // Ya está guardada: nada de aquí abajo la deshace.
-            val aviso = withContext(NonCancellable) {
-                val r = despues { if (tipo == TipoChecada.ENTRADA) gps.iniciar() else { gps.detener(); null } }
-                despues { Disparador.ahora(context) }
-                (r as? ResultadoGps.NoSigue)?.let { "La checada quedó guardada · no estamos siguiendo tu ubicación: ${it.motivo}" }
-                    ?: if (tipo == TipoChecada.ENTRADA) "Entrada guardada · se sube sola" else "Salida guardada · se sube sola"
-            }
-            _estado.update { it.copy(ocupado = false, aviso = aviso) }
+        // Salir de la pantalla durante la espera del GPS no tira la checada: todo (ubicación y guardado) sigue (NonCancellable).
+        viewModelScope.launch { withContext(NonCancellable) { checarYa(tipo, foto, venueId) } }
+    }
+
+    private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String) {
+        val l = ubicacion.leer()
+        _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
+        val nueva = ChecadaNueva(
+            venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, foto,
+            if (tipo == TipoChecada.ENTRADA) "Entrada" else "Salida",
+        )
+        val error = try {
+            if (tipo == TipoChecada.ENTRADA) encolador.entrada(nueva) else encolador.salida(nueva)
+            null
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: CelularBorrandose) {
+            "Espera un momento."
+        } catch (_: IllegalStateException) {
+            if (tipo == TipoChecada.ENTRADA) YA_HAY_ENTRADA else SIN_ENTRADA
+        } catch (_: IllegalArgumentException) {
+            "Tu entrada es de otra sucursal: marca la salida ahí."
+        } catch (x: Exception) {
+            "No se guardó la checada. ${x.message.orEmpty()}".trim()
         }
+        if (error != null) {
+            foto?.let { File(it).delete() } // no se guardó: la selfie no se queda en el celular
+            _estado.update { it.copy(ocupado = false, error = error) }
+            return
+        }
+        // Ya está guardada: nada de aquí abajo la deshace.
+        val aviso = run {
+            val r = despues { if (tipo == TipoChecada.ENTRADA) gps.iniciar() else { gps.detener(); null } }
+            despues { Disparador.ahora(context) }
+            (r as? ResultadoGps.NoSigue)?.let { "La checada quedó guardada · no estamos siguiendo tu ubicación: ${it.motivo}" }
+                ?: if (tipo == TipoChecada.ENTRADA) "Entrada guardada · se sube sola" else "Salida guardada · se sube sola"
+        }
+        _estado.update { it.copy(ocupado = false, aviso = aviso) }
     }
 
     private fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }

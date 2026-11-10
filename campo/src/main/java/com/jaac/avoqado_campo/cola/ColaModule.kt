@@ -32,7 +32,7 @@ object ColaModule {
 
     @Provides @Singleton
     fun proveerBase(@ApplicationContext context: Context): BaseDeCampo =
-        Room.databaseBuilder(context, BaseDeCampo::class.java, "campo.db").build()
+        Room.databaseBuilder(context, BaseDeCampo::class.java, "campo.db").addMigrations(MIGRACION_1_2).build()
 
     @Provides
     fun proveerPiezaDao(base: BaseDeCampo): PiezaDao = base.piezaDao()

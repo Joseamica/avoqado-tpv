@@ -10,6 +10,7 @@ import androidx.work.testing.TestListenableWorkerBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
+import com.jaac.avoqado_campo.gps.EnviadorDePings
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.DatosDeLatido
@@ -370,7 +371,8 @@ class SubidorDeGraciaTest {
                     val latido = Latido(api, quienSoy, dao, RelojAnclado(almacen, { ahora }, { 0L }, { 1 }), AparatoSinId(null, null, null, null)) { 0L }
                     val copia = RepositorioDeCopia(c, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), dao, quienSoy)
                         .also { copiaDelTrabajo = it }
-                    return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia)
+                    val pings = EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy) { ahora }
+                    return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia, pings)
                 }
             })
             .build()

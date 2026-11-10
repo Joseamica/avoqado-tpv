@@ -42,6 +42,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    // MigracionTest (Robolectric) lee los esquemas exportados de los assets; las pruebas unitarias sólo ven los de la
+    // variante probada (los de `test` no se mezclan), así que van en `debug` (unos KB en el APK de QA, nunca en release).
+    sourceSets { getByName("debug").assets.srcDir("$projectDir/schemas") }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     buildFeatures {
         compose = true
         buildConfig = true

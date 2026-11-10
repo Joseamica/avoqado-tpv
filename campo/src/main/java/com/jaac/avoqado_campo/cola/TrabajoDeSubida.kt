@@ -6,6 +6,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
+import com.jaac.avoqado_campo.gps.EnviadorDePings
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.latido.Latido
@@ -15,7 +16,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Lo corre WorkManager (con red). Vinculado: la ruta normal, y si a media pasada lo desvinculan, la gracia en el mismo trabajo.
- * Desvinculado o dado de baja: la gracia. Después de la pasada, el latido; y si subió una venta o una custodia, la copia.
+ * Desvinculado o dado de baja: la gracia. Después de la pasada, el latido; si subió una venta o una custodia, la copia; y los
+ * pings del GPS (sólo se mandan vinculado; desvinculado se tiran).
  */
 @HiltWorker
 class TrabajoDeSubida @AssistedInject constructor(
@@ -26,6 +28,7 @@ class TrabajoDeSubida @AssistedInject constructor(
     private val quienSoy: QuienSoy,
     private val latido: Latido,
     private val copia: RepositorioDeCopia,
+    private val pings: EnviadorDePings,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
@@ -44,10 +47,11 @@ class TrabajoDeSubida @AssistedInject constructor(
             // Sin sesión (gracia) no se puede bajar, y un 401 de mis-sims le borraría a la gracia su `graciaHasta`.
             val id = quienSoy.identidad.value
             if (r.copiaPorRefrescar && id.estado == EstadoDelCelular.VINCULADO) id.venueIdDeLaSesion?.let { copia.actualizar(it) }
+            pings.mandar()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("TrabajoDeSubida", "latido o copia después de la pasada", e)
+            Log.w("TrabajoDeSubida", "latido, copia o pings después de la pasada", e)
         }
         // Red, una pieza en espera o la gracia que devolvió la sesión (USA_TU_SESION: sigue la ruta normal) vuelven solos;
         // un PIN o una sucursal piden a la persona.

@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.checada
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,6 +37,8 @@ import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 
 private val UBICACION = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+// Android 13+: el aviso «Turno activo» del GPS. Si lo niega, el seguimiento sigue igual (Android lo muestra en sus tareas).
+private val PEDIR = UBICACION + if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()
 
 /** «Checar»: entrada y salida, con selfie frontal si la sucursal la pide (B9) y la ubicación si hay permiso. */
 @Composable
@@ -45,7 +48,10 @@ fun ChecadaScreen(vm: ChecadaViewModel, onRegresar: () -> Unit) {
     fun hay() = UBICACION.any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
     var conUbicacion by remember { mutableStateOf(hay()) }
     val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { conUbicacion = hay() }
-    LaunchedEffect(Unit) { if (!conUbicacion) pedir.launch(UBICACION) }
+    LaunchedEffect(Unit) {
+        val faltan = PEDIR.any { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+        if (!conUbicacion || (Build.VERSION.SDK_INT >= 33 && faltan)) pedir.launch(PEDIR)
+    }
 
     BackHandler(enabled = estado.ocupado) {} // mientras se guarda, Atrás no sale (la checada seguiría de todos modos)
     val selfie = estado.pideSelfie
@@ -55,7 +61,7 @@ fun ChecadaScreen(vm: ChecadaViewModel, onRegresar: () -> Unit) {
             onFoto = { vm.alTomarSelfie(it.absolutePath) }, onCerrar = vm::cancelarSelfie,
         )
     } else {
-        ChecadaContenido(estado, conUbicacion, { pedir.launch(UBICACION) }, vm::marcarEntrada, vm::marcarSalida, onRegresar)
+        ChecadaContenido(estado, conUbicacion, { pedir.launch(PEDIR) }, vm::marcarEntrada, vm::marcarSalida, onRegresar)
     }
 }
 

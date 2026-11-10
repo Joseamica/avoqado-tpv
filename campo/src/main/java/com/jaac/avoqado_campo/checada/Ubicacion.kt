@@ -1,18 +1,16 @@
 package com.jaac.avoqado_campo.checada
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Build
 import android.os.SystemClock
-import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.android.gms.tasks.Task
+import com.jaac.avoqado_campo.gps.tienePermisoDeUbicacion
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -28,7 +26,7 @@ import kotlin.coroutines.resume
 class Ubicacion(
     private val context: Context,
     private val fused: FusedLocationProviderClient,
-    private val permiso: () -> Boolean = { tienePermiso(context) },
+    private val permiso: () -> Boolean = { tienePermisoDeUbicacion(context) },
     private val ahoraNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
 ) {
     @Inject constructor(@ApplicationContext context: Context) : this(context, LocationServices.getFusedLocationProviderClient(context))
@@ -64,8 +62,5 @@ class Ubicacion(
     private companion object {
         const val MAX_PRECISION_M = 1_000f
         const val DOS_MIN_NANOS = 120_000_000_000L
-
-        fun tienePermiso(c: Context) = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
-            .any { ContextCompat.checkSelfPermission(c, it) == PackageManager.PERMISSION_GRANTED }
     }
 }

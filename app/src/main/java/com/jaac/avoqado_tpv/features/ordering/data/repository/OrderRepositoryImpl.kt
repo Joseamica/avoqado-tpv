@@ -536,7 +536,7 @@ class OrderRepositoryImpl @Inject constructor(
                 } else {
                     val code = response.code()
                     val errorMessage = when (code) {
-                        400 -> "La orden ya está pagada y no puede modificarse."
+                        400 -> textoDelRechazo(response, "La orden ya está pagada y no puede modificarse.")
                         401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         403 -> "No tienes permiso para eliminar items."
                         404 -> "Orden o item no encontrado."
@@ -694,7 +694,7 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 val errorMessage = when (response.code()) {
-                    400 -> "La orden ya está pagada y no puede modificarse."
+                    400 -> textoDelRechazo(response, "La orden ya está pagada y no puede modificarse.")
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     403 -> "No tienes permiso para aplicar cortesías. Contacta a tu administrador."
                     404 -> "Orden no encontrada."
@@ -752,7 +752,7 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        400 -> "La orden ya está pagada y no puede modificarse."
+                        400 -> textoDelRechazo(response, "La orden ya está pagada y no puede modificarse.")
                         401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         403 -> "No tienes permiso para anular items. Contacta a tu administrador."
                         404 -> "Orden no encontrada."
@@ -817,7 +817,7 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        400 -> "Descuento inválido. Verifica el valor ingresado."
+                        400 -> textoDelRechazo(response, "Descuento inválido. Verifica el valor ingresado.")
                         401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         403 -> "No tienes permiso para aplicar descuentos. Contacta a tu administrador."
                         404 -> "Orden no encontrada."
@@ -1024,3 +1024,16 @@ class OrderRepositoryImpl @Inject constructor(
 internal fun mensajeDelCuponRechazado(cuerpo: String?): String? = runCatching {
     com.google.gson.Gson().fromJson(cuerpo, com.google.gson.JsonObject::class.java)?.get("message")?.asString
 }.getOrNull()?.takeIf { it.isNotBlank() }
+
+/**
+ * D20: con un 400 al quitar, anular, dar cortesía o descontar, la cajera lee el motivo del SERVIDOR («Esta cuenta ya está pagada…
+ * usa Reembolso.»). Si viene en inglés (el SERVIDOR de antes de D18 y las validaciones de siempre de esas rutas), vacío o de un
+ * intermediario, el texto de siempre ([respaldo]). Un cuerpo que no se deja leer tampoco cambia el 400 en otra falla.
+ */
+internal fun textoDelRechazo(respuesta: retrofit2.Response<*>, respaldo: String): String =
+    mensajeDelCuponRechazado(runCatching { respuesta.errorBody()?.string() }.getOrNull())
+        ?.takeUnless { mensaje -> RECHAZOS_EN_INGLES.any { mensaje.startsWith(it) } } ?: respaldo
+
+// ponytail: lista cerrada de los 400 en inglés de esas cuatro rutas (`order.tpv.service.ts`); uno nuevo en inglés se agrega aquí.
+private val RECHAZOS_EN_INGLES =
+    listOf("Cannot ", "No items found", "Some item IDs", "Order was modified", "Percentage discount", "Fixed discount")

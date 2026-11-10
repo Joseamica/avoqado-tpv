@@ -12,11 +12,13 @@ object Bateria {
     fun estaOptimizada(context: Context): Boolean =
         !context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
 
-    /** La ventana directa («¿Permitir que se ejecute en segundo plano?») y, si el teléfono no la tiene, la lista de ajustes. */
+    /**
+     * La ventana directa («¿Permitir que se ejecute en segundo plano?») y, si el teléfono no la tiene, la lista de ajustes.
+     * null = el teléfono no tiene ninguna de las dos: la pantalla esconde «Arreglar».
+     */
     @SuppressLint("BatteryLife") // app instalada a mano, no de la Play Store
-    fun intentParaArreglar(context: Context): Intent {
-        val directo = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
-        return if (directo.resolveActivity(context.packageManager) != null) directo
-        else Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-    }
+    fun intentParaArreglar(context: Context): Intent? = listOf(
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+    ).firstOrNull { it.resolveActivity(context.packageManager) != null }
 }

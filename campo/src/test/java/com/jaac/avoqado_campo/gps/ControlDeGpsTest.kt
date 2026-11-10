@@ -3,6 +3,8 @@ package com.jaac.avoqado_campo.gps
 import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ResolveInfo
 import android.location.LocationManager
 import android.provider.Settings
 import androidx.room.Room
@@ -41,6 +43,7 @@ class ControlDeGpsTest {
     }
     private lateinit var db: BaseDeCampo
     private val ubicacion = mockk<Ubicacion>()
+    private val puerta = PuertaDelServicio()
 
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(app, BaseDeCampo::class.java).allowMainThreadQueries().build()
@@ -52,9 +55,14 @@ class ControlDeGpsTest {
 
     private fun conPermiso() = shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
     private fun control(arrancar: ((Intent) -> Unit)? = null) =
-        if (arrancar == null) ControlDeGpsReal(app, estado) else ControlDeGpsReal(app, estado, arrancar)
+        if (arrancar == null) ControlDeGpsReal(app, estado, puerta) else ControlDeGpsReal(app, estado, puerta, arrancar)
     private fun seguimiento(ahora: Long = 1_000L) =
-        SeguimientoDelTurno(estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { ahora }
+        SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { ahora }
+
+    /** Lo que hizo el servicio en `onStartCommand`, en orden. */
+    private val pasos = mutableListOf<String>()
+    private fun arrancarServicio(tienePermiso: Boolean = true, primerPlano: () -> Unit = { pasos += "primerPlano" }) =
+        seguimiento().arrancar(tienePermiso, primerPlano) { pasos += "quitar" }
     private suspend fun abrirTurno(staffId: String = "s1") =
         db.piezaDao().guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = 1L))
 
@@ -91,17 +99,41 @@ class ControlDeGpsTest {
 
     @Test fun `el servicio con un startForeground que truena se detiene y deja NoSigue`() {
         estado.publicar(ResultadoGps.Siguiendo) // lo que dijo iniciar() antes de que el servicio corriera
-        val sigue = seguimiento().arrancar(tienePermiso = true) { throw SecurityException("FOREGROUND_SERVICE_LOCATION") }
-        assertFalse(sigue)
+        assertFalse(arrancarServicio { throw SecurityException("FOREGROUND_SERVICE_LOCATION") })
         assertTrue(estado.estado.value is ResultadoGps.NoSigue)
-        assertFalse(seguimiento().arrancar(tienePermiso = true) { throw IllegalStateException("no permitido") })
+        assertFalse(arrancarServicio { throw IllegalStateException("no permitido") })
+        assertEquals(emptyList<String>(), pasos) // nunca llegó a primer plano: nada que quitar
+        assertFalse(puerta.enPrimerPlano)
     }
 
-    @Test fun `el servicio sin permiso no se pone en primer plano`() {
-        var enPrimerPlano = false
-        assertFalse(seguimiento().arrancar(tienePermiso = false) { enPrimerPlano = true })
-        assertFalse(enPrimerPlano)
+    @Test fun `el servicio sin permiso intenta el primer plano, lo quita y se detiene con NoSigue`() {
+        assertFalse(arrancarServicio(tienePermiso = false))
+        assertEquals(listOf("primerPlano", "quitar"), pasos)
         assertEquals(ResultadoGps.NoSigue("no diste permiso de ubicación"), estado.estado.value)
+        assertFalse(puerta.enPrimerPlano)
+    }
+
+    @Test fun `detener antes de que corra el servicio no hace stopService y el servicio se quita solo`() {
+        conPermiso()
+        control().iniciar()
+        shadowOf(app).nextStartedService
+        control().detener()
+        assertNull(shadowOf(app).nextStoppedService) // stopService aquí cerraría la app (fgRequired)
+        assertFalse(arrancarServicio())
+        assertEquals(listOf("primerPlano", "quitar"), pasos)
+        assertEquals(ResultadoGps.Siguiendo, estado.estado.value) // parar a propósito no es un problema
+    }
+
+    @Test fun `detener con el servicio en primer plano lo para`() {
+        conPermiso()
+        control().iniciar()
+        assertTrue(arrancarServicio())
+        assertTrue(puerta.enPrimerPlano)
+        control().detener()
+        assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStoppedService.component!!.className)
+        // un iniciar() nuevo borra el pedido de detener
+        control().iniciar()
+        assertTrue(arrancarServicio())
     }
 
     @Test fun `con turno abierto guarda un ping de su sucursal`() = runBlocking {
@@ -145,8 +177,11 @@ class ControlDeGpsTest {
         assertEquals(1, intentos)
     }
 
-    @Test fun `bateria - sin la pantalla directa abre la lista de ajustes`() {
+    @Test fun `bateria - sin la pantalla directa abre la lista de ajustes, y sin ninguna no hay boton`() {
         assertTrue(Bateria.estaOptimizada(app))
-        assertEquals(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS, Bateria.intentParaArreglar(app).action)
+        assertNull(Bateria.intentParaArreglar(app))
+        val ajustes = ResolveInfo().apply { activityInfo = ActivityInfo().apply { packageName = "com.android.settings"; name = "Lista" } }
+        shadowOf(app.packageManager).addResolveInfoForIntent(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS), ajustes)
+        assertEquals(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS, Bateria.intentParaArreglar(app)!!.action)
     }
 }

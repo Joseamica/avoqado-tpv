@@ -47,11 +47,18 @@ class TrabajoDeSubida @AssistedInject constructor(
             // Sin sesión (gracia) no se puede bajar, y un 401 de mis-sims le borraría a la gracia su `graciaHasta`.
             val id = quienSoy.identidad.value
             if (r.copiaPorRefrescar && id.estado == EstadoDelCelular.VINCULADO) id.venueIdDeLaSesion?.let { copia.actualizar(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("TrabajoDeSubida", "latido o copia después de la pasada", e)
+        }
+        // Aparte: un latido que truena no deja los pings para la siguiente corrida.
+        try {
             pings.mandar()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("TrabajoDeSubida", "latido, copia o pings después de la pasada", e)
+            Log.w("TrabajoDeSubida", "pings después de la pasada", e)
         }
         // Red, una pieza en espera o la gracia que devolvió la sesión (USA_TU_SESION: sigue la ruta normal) vuelven solos;
         // un PIN o una sucursal piden a la persona.

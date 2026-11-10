@@ -27,10 +27,21 @@ import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
+ * Lo que comparten [ControlDeGpsReal] y el servicio. Android cierra la app si un servicio arrancado con `startForegroundService`
+ * se detiene antes de llamar `startForeground`; por eso `detener()` sólo hace `stopService` si el servicio ya está en primer
+ * plano, y si no, deja [detenerPedido] para que el servicio se quite solo justo después de cumplir con `startForeground`.
+ */
+class PuertaDelServicio {
+    @Volatile var detenerPedido = false
+    @Volatile var enPrimerPlano = false
+}
+
+/**
  * Lo que hace el [ServicioDeUbicacion], fuera de él para probarlo sin Android: ponerse en primer plano sin tronar (R4-2) y
  * tomar una lectura del turno (I2: no escribe durante un borrado ni si cambió la generación mientras leía).
  */
 class SeguimientoDelTurno(
+    private val puerta: PuertaDelServicio,
     private val estado: EstadoDelGps,
     private val ubicacion: Ubicacion,
     private val pings: PingDao,
@@ -38,9 +49,12 @@ class SeguimientoDelTurno(
     private val quienSoy: QuienSoy,
     private val ahora: () -> Long,
 ) {
-    /** false = no quedó en primer plano: quien llama se detiene; el motivo ya está en [EstadoDelGps]. */
-    fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit): Boolean {
-        if (!tienePermiso) return noSigue(SIN_PERMISO)
+    /**
+     * SIEMPRE intenta [primerPlano] primero (cumple el contrato de `startForegroundService` aunque lance) y decide después:
+     * sin permiso o con un `detener()` pedido antes de arrancar, [quitarPrimerPlano] y false. false = quien llama hace
+     * `stopSelf()`; si no sigue por un problema, el motivo ya está en [EstadoDelGps].
+     */
+    fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit): Boolean {
         try {
             primerPlano()
         } catch (e: SecurityException) {
@@ -50,8 +64,24 @@ class SeguimientoDelTurno(
             Log.w("ServicioDeUbicacion", "startForeground", e)
             return noSigue(ANDROID_NO_LO_PERMITIO)
         }
-        estado.publicar(ResultadoGps.Siguiendo)
-        return true
+        puerta.enPrimerPlano = true // después de esto, `detener()` ya puede hacer stopService
+        val motivo = when {
+            puerta.detenerPedido -> null // la salida o el borrado llegaron antes que el servicio
+            !tienePermiso -> SIN_PERMISO
+            else -> {
+                estado.publicar(ResultadoGps.Siguiendo)
+                return true
+            }
+        }
+        quitarPrimerPlano()
+        alTerminar()
+        motivo?.let(::noSigue)
+        return false
+    }
+
+    /** El servicio ya no está en primer plano (lo llama `onDestroy`). */
+    fun alTerminar() {
+        puerta.enPrimerPlano = false
     }
 
     private fun noSigue(motivo: String): Boolean {
@@ -84,10 +114,14 @@ class ServicioDeUbicacion : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val enPrimerPlano = seguimiento.arrancar(tienePermisoDeUbicacion(this)) {
-            val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-            ServiceCompat.startForeground(this, AVISO_ID, aviso(), tipo)
-        }
+        val enPrimerPlano = seguimiento.arrancar(
+            tienePermisoDeUbicacion(this),
+            primerPlano = {
+                val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+                ServiceCompat.startForeground(this, AVISO_ID, aviso(), tipo)
+            },
+            quitarPrimerPlano = { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) },
+        )
         if (!enPrimerPlano) {
             stopSelf()
             return START_NOT_STICKY
@@ -111,6 +145,7 @@ class ServicioDeUbicacion : Service() {
     }
 
     override fun onDestroy() {
+        seguimiento.alTerminar()
         alcance.cancel()
         super.onDestroy()
     }

@@ -48,6 +48,7 @@ internal fun tienePermisoDeUbicacion(c: Context) = listOf(Manifest.permission.AC
 class ControlDeGpsReal(
     private val context: Context,
     private val estado: EstadoDelGps,
+    private val puerta: PuertaDelServicio,
     private val arrancar: (Intent) -> Unit = { ContextCompat.startForegroundService(context, it) },
 ) : ControlDeGps {
     private fun intent() = Intent(context, ServicioDeUbicacion::class.java)
@@ -59,6 +60,7 @@ class ControlDeGpsReal(
             else -> {
                 // Antes de arrancar: si después el servicio no logra ponerse en primer plano, su NoSigue gana (R4-2).
                 estado.publicar(ResultadoGps.Siguiendo)
+                puerta.detenerPedido = false
                 try {
                     arrancar(intent())
                     return ResultadoGps.Siguiendo
@@ -72,8 +74,10 @@ class ControlDeGpsReal(
         return ResultadoGps.NoSigue(motivo).also(estado::publicar)
     }
 
+    /** Sin `stopService` antes de que el servicio llegue a primer plano: ahí lo cierra él mismo ([PuertaDelServicio]). */
     override fun detener() {
-        context.stopService(intent())
+        puerta.detenerPedido = true
+        if (puerta.enPrimerPlano) context.stopService(intent())
     }
 }
 
@@ -94,15 +98,20 @@ object GpsModule {
     fun proveerEstadoDelGps(almacen: AlmacenSeguro): EstadoDelGps = EstadoDelGps(almacen)
 
     @Provides @Singleton
-    fun proveerControlDeGps(@ApplicationContext context: Context, estado: EstadoDelGps): ControlDeGps = ControlDeGpsReal(context, estado)
+    fun proveerPuerta(): PuertaDelServicio = PuertaDelServicio()
+
+    @Provides @Singleton
+    fun proveerControlDeGps(@ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio): ControlDeGps =
+        ControlDeGpsReal(context, estado, puerta)
 
     @Provides
     fun proveerPingDao(base: BaseDeCampo): PingDao = base.pingDao()
 
     @Provides @Singleton
     fun proveerSeguimiento(
-        estado: EstadoDelGps, ubicacion: Ubicacion, pings: PingDao, piezas: PiezaDao, quienSoy: QuienSoy, reloj: RelojAnclado,
-    ): SeguimientoDelTurno = SeguimientoDelTurno(estado, ubicacion, pings, piezas, quienSoy) { reloj.ahora().epochMs }
+        puerta: PuertaDelServicio, estado: EstadoDelGps, ubicacion: Ubicacion, pings: PingDao, piezas: PiezaDao, quienSoy: QuienSoy,
+        reloj: RelojAnclado,
+    ): SeguimientoDelTurno = SeguimientoDelTurno(puerta, estado, ubicacion, pings, piezas, quienSoy) { reloj.ahora().epochMs }
 
     @Provides @Singleton
     fun proveerEnviador(dao: PingDao, api: CampoApi, guardia: GuardiaDeSesion, quienSoy: QuienSoy, reloj: RelojAnclado): EnviadorDePings =

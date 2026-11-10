@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (la cola, arreglo 1)**: la salida siempre nombra la entrada del turno guardado (nunca una vieja de la pantalla) y no se encola en otra sucursal; no se abre otra entrada con un turno abierto; sólo se corrige lo rechazado; y si algo falla al guardar, la foto original sigue en su lugar para reintentar.
 - **App de campo (la cola: nada se pierde sin señal)**: cada venta (con sus fotos de evidencia), custodia y checada se guarda en el celular ANTES de tocar la red, en una sola transacción con su turno y su foto (si algo falla, no queda nada a medias); el texto que se va a mandar y su huella quedan fijos desde el toque, «Corregir» siempre crea una llave nueva, «Usar esa entrada» rehace la salida, y la limpieza nunca borra una venta cuya evidencia sigue pendiente.
 - **App de campo (la red, arreglo 1)**: renovar sólo pide el PIN con un 401 del servidor (un 400/403/404 de un proxy cuenta como sin red), no repite con la sesión de otra activación, y marca «necesita PIN» y «bloqueada» en una sola escritura.
 - **App de campo (la red)**: las rutas del celular con su credencial y su sesión; la sesión sólo sale con un 401/403 (sin red, un 5xx o el HTML de un portal cautivo no la tocan), se renueva una sola vez aunque fallen varias llamadas a la vez, y cada respuesta del servidor se clasifica en reintentable, definitiva o de sesión.

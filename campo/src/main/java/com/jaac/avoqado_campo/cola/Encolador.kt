@@ -12,7 +12,8 @@ import java.util.UUID
 /** I2: el celular se está borrando; la pantalla dice «Espera un momento». No se escribió nada. */
 class CelularBorrandose : Exception("El celular se está borrando")
 
-data class EvidenciaNueva(val photoLabel: String, val replaceIndex: Int, val numero: String?, val archivoFoto: String)
+/** `replaceIndex` sale del `photoLabel` (Vinculacion → 0, Portabilidad → 1), nunca suelto. */
+data class EvidenciaNueva(val photoLabel: String, val numero: String?, val archivoFoto: String)
 
 data class VentaNueva(
     val serialNumber: String, val precio: BigDecimal, val isPortabilidad: Boolean, val venueId: String,
@@ -25,14 +26,9 @@ data class ChecadaNueva(
 )
 
 data class EvidenciaSueltaNueva(
-    val venueId: String, val paymentId: String, val verificationId: String, val photoLabel: String, val replaceIndex: Int,
+    val venueId: String, val paymentId: String, val verificationId: String, val photoLabel: String,
     val numero: String?, val archivoFoto: String, val resumen: String,
 )
-
-sealed interface RefEntrada {
-    data class PorLlave(val llave: String) : RefEntrada
-    data class PorId(val timeEntryId: String) : RefEntrada
-}
 
 // Los cuerpos, en el orden de sus campos; Gson omite los null (zod rechaza `null` en un `.optional()`).
 private data class CuerpoVenta(
@@ -51,7 +47,8 @@ private data class CuerpoAceptar(val sims: List<SimConVersion>)
 
 /**
  * Guarda cada acción del promotor ANTES de cualquier red: una transacción de Room por llamada (también el turno y el
- * movimiento de la foto: si algo falla, no queda nada). El cuerpo se serializa UNA vez y se guarda tal cual se manda.
+ * copiado de la foto: si algo falla, no queda nada y la foto original sigue donde estaba, para reintentar). El cuerpo se
+ * serializa UNA vez y se guarda tal cual se manda.
  */
 class Encolador(
     private val dao: PiezaDao,
@@ -67,7 +64,7 @@ class Encolador(
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))
             v.evidencias.forEach {
-                evidencia(staffId, v.venueId, llave, hora, it.photoLabel, it.replaceIndex, it.numero, it.archivoFoto, null, null, v.resumen)
+                evidencia(staffId, v.venueId, llave, hora, it.photoLabel, it.numero, it.archivoFoto, null, null, v.resumen)
             }
         }
     }
@@ -86,8 +83,11 @@ class Encolador(
         }
     }
 
+    /** Con un turno de esta persona ya abierto → `IllegalStateException` y nada escrito (B10: la pantalla no lo ofrece). */
     suspend fun entrada(e: ChecadaNueva): String = llaveNueva().also { llave ->
         enTransaccion { staffId ->
+            val previo = dao.turnoAhora()
+            check(previo == null || !previo.abierto || previo.staffId != staffId) { "Ya hay un turno abierto" }
             val hora = reloj.ahora()
             val foto = e.archivoFoto?.let { fotoPara(llave, "entrada", e.venueId, "checada", hora, it) }
             val cuerpo = CuerpoChecada(
@@ -95,32 +95,30 @@ class Encolador(
             )
             dao.insertar(pieza(TipoPieza.ENTRADA, llave, staffId, e.venueId, cuerpo, hora, e.resumen, fotos = listOfNotNull(foto)))
             dao.guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = llave, timeEntryId = null, venueId = e.venueId, abiertoAt = hora.epochMs))
-            if (foto != null) mover(e.archivoFoto, foto)
+            if (foto != null) porCopiar(e.archivoFoto, foto)
         }
     }
 
     /**
-     * La salida nombra la entrada de ESTE celular (B10). Si el caller trae `PorLlave` pero la entrada ya subió (el turno
-     * tiene su `timeEntryId`, R2-5), va `PorId` y ya no depende de ella.
+     * La salida nombra la entrada de ESTE celular, leída del turno (B10, R2-5): su `timeEntryId` si ya lo tiene (sin
+     * `dependeDe`), si no su `llaveEntrada` (y depende de ella). Sin turno abierto de esta persona → `IllegalStateException`;
+     * otra sucursal que la del turno → `IllegalArgumentException`. En los dos casos no se escribe nada.
      */
-    suspend fun salida(s: ChecadaNueva, entrada: RefEntrada): String = llaveNueva().also { llave ->
+    suspend fun salida(s: ChecadaNueva): String = llaveNueva().also { llave ->
         enTransaccion { staffId ->
             val t = dao.turnoAhora()
             check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
-            val ref = if (entrada is RefEntrada.PorLlave && entrada.llave == t.llaveEntrada && t.timeEntryId != null) {
-                RefEntrada.PorId(t.timeEntryId)
-            } else entrada
+            require(s.venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
+            val llaveEntrada = if (t.timeEntryId == null) t.llaveEntrada else null
             val hora = reloj.ahora()
             val foto = s.archivoFoto?.let { fotoPara(llave, "salida", s.venueId, "checada", hora, it) }
             val cuerpo = CuerpoChecada(
                 llave, hora.iso, hora.origen, s.lat, s.lon, s.accuracy, s.ubicacionFalsa,
-                timeEntryId = (ref as? RefEntrada.PorId)?.timeEntryId, llaveEntrada = (ref as? RefEntrada.PorLlave)?.llave,
-                checkOutPhotoUrl = foto?.url,
+                timeEntryId = t.timeEntryId, llaveEntrada = llaveEntrada, checkOutPhotoUrl = foto?.url,
             )
-            val dependeDe = (ref as? RefEntrada.PorLlave)?.llave
-            dao.insertar(pieza(TipoPieza.SALIDA, llave, staffId, s.venueId, cuerpo, hora, s.resumen, dependeDe, listOfNotNull(foto)))
+            dao.insertar(pieza(TipoPieza.SALIDA, llave, staffId, s.venueId, cuerpo, hora, s.resumen, llaveEntrada, listOfNotNull(foto)))
             dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = null))
-            if (foto != null) mover(s.archivoFoto, foto)
+            if (foto != null) porCopiar(s.archivoFoto, foto)
         }
     }
 
@@ -129,18 +127,18 @@ class Encolador(
         var llave = ""
         enTransaccion { staffId ->
             llave = evidencia(
-                staffId, e.venueId, null, reloj.ahora(), e.photoLabel, e.replaceIndex, e.numero, e.archivoFoto,
+                staffId, e.venueId, null, reloj.ahora(), e.photoLabel, e.numero, e.archivoFoto,
                 e.paymentId, e.verificationId, e.resumen,
             )
         }
         return llave
     }
 
-    /** `PRECIO_CAMBIO`: la vieja DESCARTADA, la nueva con llave nueva, y sus evidencias pasan a la nueva. */
+    /** `PRECIO_CAMBIO` (sólo una venta RECHAZADA): la vieja DESCARTADA, la nueva con llave nueva, y sus evidencias pasan a la nueva. */
     suspend fun corregirVenta(piezaId: Long, precioNuevo: BigDecimal): String = llaveNueva().also { llave ->
         enTransaccion {
             val v = dao.porId(piezaId)
-            require(v != null && v.tipo == TipoPieza.VENTA) { "No es una venta: $piezaId" }
+            require(v != null && v.tipo == TipoPieza.VENTA && v.estado == EstadoPieza.RECHAZADA) { "No es una venta rechazada: $piezaId" }
             val vieja = gsonCola.fromJson(v.cuerpoJson, CuerpoVenta::class.java)
             val texto = gsonCola.toJson(vieja.copy(llave = llave, precioVisto = precioNuevo.setScale(2)))
             dao.actualizar(v.copy(estado = EstadoPieza.DESCARTADA))
@@ -149,11 +147,11 @@ class Encolador(
         }
     }
 
-    /** `numero`/`archivoFoto` en null = se queda el de antes. Llave y `captureSeq` nuevos. */
+    /** Sólo una evidencia RECHAZADA. `numero`/`archivoFoto` en null = se queda el de antes. Llave y `captureSeq` nuevos. */
     suspend fun corregirEvidencia(piezaId: Long, numero: String?, archivoFoto: String?): String = llaveNueva().also { llave ->
         enTransaccion {
             val ev = dao.porId(piezaId)
-            require(ev != null && ev.tipo == TipoPieza.EVIDENCIA) { "No es una evidencia: $piezaId" }
+            require(ev != null && ev.tipo == TipoPieza.EVIDENCIA && ev.estado == EstadoPieza.RECHAZADA) { "No es una evidencia rechazada: $piezaId" }
             val p = gsonCola.fromJson(ev.evidenciaJson, EvidenciaPendiente::class.java)
             val hora = reloj.ahora()
             val foto = archivoFoto?.let { fotoPara(llave, p.photoLabel.lowercase(), ev.venueId, "venta", hora, it) }
@@ -165,7 +163,7 @@ class Encolador(
             )
             dao.actualizar(ev.copy(estado = EstadoPieza.DESCARTADA))
             dao.insertar(ev.renacida(llave, hora).copy(evidenciaJson = gsonCola.toJson(nueva), fotosJson = gsonCola.toJson(listOf(foto))))
-            if (archivoFoto != null) mover(archivoFoto, foto)
+            if (archivoFoto != null) porCopiar(archivoFoto, foto)
         }
     }
 
@@ -192,20 +190,41 @@ class Encolador(
         }
     }
 
-    private suspend fun enTransaccion(bloque: suspend (staffId: String) -> Unit) = dao.enTransaccion {
-        if (quienSoy.limpiando) throw CelularBorrandose()
-        bloque(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
+    // Fotos de la transacción en curso (una a la vez: Room serializa las transacciones de escritura).
+    private val fotosPorCopiar = mutableListOf<Pair<File, File>>()
+
+    /**
+     * P2: las filas primero; al final de la MISMA transacción se COPIA cada foto a `cola/`. El original se borra sólo
+     * después del commit; si algo falla, se borran las copias y el original sigue ahí para reintentar.
+     */
+    private suspend fun enTransaccion(bloque: suspend (staffId: String) -> Unit) {
+        val copiadas = mutableListOf<Pair<File, File>>()
+        try {
+            dao.enTransaccion {
+                fotosPorCopiar.clear()
+                if (quienSoy.limpiando) throw CelularBorrandose()
+                bloque(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
+                copiadas += fotosPorCopiar
+                fotosPorCopiar.clear()
+                copiadas.forEach { (o, d) -> copiar(o, d) }
+            }
+        } catch (t: Throwable) {
+            copiadas.forEach { it.second.delete() }
+            fotosPorCopiar.clear()
+            throw t
+        }
+        copiadas.forEach { it.first.delete() }
     }
 
     private suspend fun evidencia(
-        staffId: String, venueId: String, dependeDe: String?, hora: HoraDeCampo, label: String, replaceIndex: Int,
+        staffId: String, venueId: String, dependeDe: String?, hora: HoraDeCampo, label: String,
         numero: String?, archivo: String, paymentId: String?, verificationId: String?, resumen: String,
     ): String {
         require(label == VINCULACION || label == PORTABILIDAD) { "photoLabel desconocido: $label" }
         val llave = llaveNueva()
         val foto = fotoPara(llave, label.lowercase(), venueId, "venta", hora, archivo)
         val pendiente = EvidenciaPendiente(
-            label, replaceIndex, numero.takeIf { label == VINCULACION }, numero.takeIf { label == PORTABILIDAD },
+            label, if (label == VINCULACION) 0 else 1, numero.takeIf { label == VINCULACION }, numero.takeIf { label == PORTABILIDAD },
             secuencia.siguiente(), quienSoy.aparatoId, hora.iso, foto.url, paymentId, verificationId,
         )
         dao.insertar(
@@ -215,7 +234,7 @@ class Encolador(
                 creadaAt = hora.epochMs, resumen = resumen,
             ),
         )
-        mover(archivo, foto)
+        porCopiar(archivo, foto)
         return llave
     }
 
@@ -237,17 +256,16 @@ class Encolador(
         return FotoPorSubir(File(dirCola, "${llave}_$slot.jpg").absolutePath, ruta, urlDe(ruta), File(origen).length(), subida = false)
     }
 
-    // ponytail: si una inserción posterior falla, la foto ya movida queda huérfana en `cola/`; el barrido de la Tarea 6 la tira.
-    private fun mover(origen: String, foto: FotoPorSubir) {
+    private fun porCopiar(origen: String, foto: FotoPorSubir) {
         val o = File(origen)
-        val d = File(foto.archivo)
         if (!o.isFile) throw IOException("La foto ya no está en el celular")
+        fotosPorCopiar += o to File(foto.archivo)
+    }
+
+    private fun copiar(o: File, d: File) {
         dirCola.mkdirs()
-        if (!o.renameTo(d)) {
-            o.copyTo(d, overwrite = true)
-            o.delete()
-        }
-        if (d.length() != foto.bytes) throw IOException("La foto no se guardó completa")
+        o.copyTo(d, overwrite = true)
+        if (d.length() != o.length()) throw IOException("La foto no se guardó completa")
     }
 
     private fun Pieza.renacida(llave: String, hora: HoraDeCampo) = copy(

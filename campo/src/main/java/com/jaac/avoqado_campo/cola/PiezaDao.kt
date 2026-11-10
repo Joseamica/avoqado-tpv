@@ -34,6 +34,7 @@ abstract class PiezaDao {
     )
     abstract fun cuantasPorSubir(): Flow<PorSubir>
 
+    // huellasHasta, ventasVivas y fotosVivas son públicas porque Room lo exige; los de fuera usan sus envolturas.
     @Query(
         "SELECT huella FROM piezas WHERE tipo != 'EVIDENCIA' AND huella IS NOT NULL " +
             "AND estado NOT IN ('HECHA','DESCARTADA') ORDER BY id LIMIT :limite"

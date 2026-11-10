@@ -71,8 +71,8 @@ class EncoladorTest {
         isPortabilidad = true,
         venueId = "v1",
         evidencias = listOf(
-            EvidenciaNueva("Vinculacion", 0, "5512345678", foto("v-${System.nanoTime()}.jpg")),
-            EvidenciaNueva("Portabilidad", 1, "5587654321", foto("p-${System.nanoTime()}.jpg")),
+            EvidenciaNueva("Vinculacion", "5512345678", foto("v-${System.nanoTime()}.jpg")),
+            EvidenciaNueva("Portabilidad", "5587654321", foto("p-${System.nanoTime()}.jpg")),
         ),
         resumen = "SIM 89521400001",
     )
@@ -81,6 +81,8 @@ class EncoladorTest {
 
     private fun evidencia(p: Pieza) = gson.fromJson(p.evidenciaJson, EvidenciaPendiente::class.java)
     private fun json(texto: String?) = JsonParser.parseString(texto).asJsonObject
+
+    private suspend fun rechazar(p: Pieza): Long = p.id.also { dao.actualizar(p.copy(estado = "RECHAZADA", rechazoCode = "PRECIO_CAMBIO")) }
 
     private fun trigger(sql: String) = db.openHelper.writableDatabase.execSQL(sql)
 
@@ -109,6 +111,7 @@ class EncoladorTest {
         assertEquals("5587654321", por.second.portedNumber)
         assertNull(por.second.linkingNumber)
         assertEquals(listOf(1L, 2L), listOf(vin.second.captureSeq, por.second.captureSeq))
+        assertEquals(listOf(0, 1), listOf(vin.second.replaceIndex, por.second.replaceIndex))
         assertEquals(quienSoy.aparatoId, vin.second.captureDeviceId)
         assertEquals("2026-11-10T18:00:00Z", vin.second.capturedAt)
         val f = fotosDe(vin.first.fotosJson).single()
@@ -133,8 +136,16 @@ class EncoladorTest {
             "CREATE TRIGGER falla BEFORE INSERT ON piezas WHEN NEW.tipo = 'EVIDENCIA' AND " +
                 "(SELECT COUNT(*) FROM piezas WHERE tipo = 'EVIDENCIA') >= 1 BEGIN SELECT RAISE(ABORT, 'falla'); END",
         )
-        try { encolador.venta(ventaNueva()); fail() } catch (_: Exception) {}
+        val v = ventaNueva()
+        try { encolador.venta(v); fail() } catch (_: Exception) {}
         assertTrue(dao.pendientesDeVer().first().isEmpty())
+        // Las fotos originales siguen ahí para reintentar, y en `cola/` no quedó ninguna copia.
+        v.evidencias.forEach { assertTrue(File(it.archivoFoto).isFile) }
+        assertTrue(dirCola.listFiles().isNullOrEmpty())
+        trigger("DROP TRIGGER falla")
+        encolador.venta(v) // el reintento encuentra sus fotos
+        assertEquals(3, dao.pendientesDeVer().first().size)
+        v.evidencias.forEach { assertFalse(File(it.archivoFoto).exists()) } // tras el commit, el original se borra
     }
 
     @Test fun `captureSeq crece y sobrevive a un Encolador nuevo`() = runBlocking {
@@ -157,7 +168,7 @@ class EncoladorTest {
 
     @Test fun `salida PorLlave lleva llaveEntrada y dependeDe y cierra el turno`() = runBlocking {
         val e = encolador.entrada(checada())
-        val s = encolador.salida(checada(), RefEntrada.PorLlave(e))
+        val s = encolador.salida(checada())
         val p = dao.porLlave(s)!!
         assertEquals(e, json(p.cuerpoJson)["llaveEntrada"].asString)
         assertFalse(json(p.cuerpoJson).has("timeEntryId"))
@@ -168,13 +179,13 @@ class EncoladorTest {
     }
 
     @Test fun `salida sin turno abierto lanza`() = runBlocking {
-        try { encolador.salida(checada(), RefEntrada.PorLlave("x")); fail() } catch (_: IllegalStateException) {}
+        try { encolador.salida(checada()); fail() } catch (_: IllegalStateException) {}
         assertTrue(dao.pendientesDeVer().first().isEmpty())
     }
 
     @Test fun `corregirVenta crea llave nueva, deja la vieja DESCARTADA y mueve sus evidencias`() = runBlocking {
         val vieja = encolador.venta(ventaNueva())
-        val id = dao.porLlave(vieja)!!.id
+        val id = rechazar(dao.porLlave(vieja)!!)
         val nueva = encolador.corregirVenta(id, BigDecimal("150"))
         assertNotEquals(vieja, nueva)
         assertEquals("DESCARTADA", dao.porLlave(vieja)!!.estado)
@@ -189,7 +200,7 @@ class EncoladorTest {
     @Test fun `corregirEvidencia crea llave y captureSeq nuevos y conserva la foto si no hay otra`() = runBlocking {
         encolador.venta(ventaNueva())
         val vieja = dao.pendientesDeVer().first().first { it.tipo == "EVIDENCIA" }
-        val nueva = encolador.corregirEvidencia(vieja.id, "5500000000", null)
+        val nueva = encolador.corregirEvidencia(rechazar(vieja), "5500000000", null)
         assertEquals("DESCARTADA", dao.porLlave(vieja.llave)!!.estado)
         val p = dao.porLlave(nueva)!!
         assertEquals("5500000000", evidencia(p).linkingNumber)
@@ -204,6 +215,8 @@ class EncoladorTest {
         try { encolador.entrada(checada(selfie)); fail() } catch (_: Exception) {}
         assertTrue(dao.pendientesDeVer().first().isEmpty())
         assertNull(dao.turno().first())
+        assertTrue(File(selfie).isFile)
+        assertTrue(dirCola.listFiles().isNullOrEmpty())
     }
 
     @Test fun `si mover la foto falla no queda la pieza`() = runBlocking {
@@ -214,7 +227,7 @@ class EncoladorTest {
 
     @Test fun `usarEntrada rehace la salida encolada con timeEntryId, sin llaveEntrada ni dependeDe`() = runBlocking {
         val e = encolador.entrada(checada())
-        val s = encolador.salida(checada(foto("salida.jpg")), RefEntrada.PorLlave(e))
+        val s = encolador.salida(checada(foto("salida.jpg")))
         val vieja = dao.porLlave(s)!!
         encolador.usarEntrada(dao.porLlave(e)!!.id, "te9", "v1")
         assertEquals("DESCARTADA", dao.porLlave(e)!!.estado)
@@ -236,7 +249,7 @@ class EncoladorTest {
 
     @Test fun `usarEntrada con el venueId de otra sucursal no cambia nada`() = runBlocking {
         val e = encolador.entrada(checada())
-        encolador.salida(checada(), RefEntrada.PorLlave(e))
+        encolador.salida(checada())
         val antes = dao.pendientesDeVer().first()
         val turnoAntes = dao.turno().first()
         try { encolador.usarEntrada(dao.porLlave(e)!!.id, "te9", "v2"); fail() } catch (_: IllegalArgumentException) {}
@@ -261,7 +274,7 @@ class EncoladorTest {
         val e = encolador.entrada(checada())
         dao.marcarHecha(dao.porLlave(e)!!, "{\"timeEntryId\":\"te1\",\"repetida\":false}", "HECHA")
         assertEquals("te1", dao.turno().first()!!.timeEntryId)
-        val s = encolador.salida(checada(), RefEntrada.PorLlave(e))
+        val s = encolador.salida(checada())
         val p = dao.porLlave(s)!!
         assertEquals("te1", json(p.cuerpoJson)["timeEntryId"].asString)
         assertFalse(json(p.cuerpoJson).has("llaveEntrada"))
@@ -287,6 +300,40 @@ class EncoladorTest {
         assertNull(dao.turno().first()!!.llaveEntrada)
     }
 
+    @Test fun `tras usarEntrada sin salida encolada, la salida va con timeEntryId y sin dependeDe`() = runBlocking {
+        val e = encolador.entrada(checada())
+        encolador.usarEntrada(dao.porLlave(e)!!.id, "te9", "v1")
+        val p = dao.porLlave(encolador.salida(checada()))!!
+        assertEquals("te9", json(p.cuerpoJson)["timeEntryId"].asString)
+        assertFalse(json(p.cuerpoJson).has("llaveEntrada"))
+        assertNull(p.dependeDe)
+    }
+
+    @Test fun `salida de otra sucursal que la del turno lanza y no escribe nada`() = runBlocking {
+        encolador.entrada(checada())
+        val antes = dao.pendientesDeVer().first()
+        val turnoAntes = dao.turno().first()
+        try { encolador.salida(checada().copy(venueId = "v2")); fail() } catch (_: IllegalArgumentException) {}
+        assertEquals(antes, dao.pendientesDeVer().first())
+        assertEquals(turnoAntes, dao.turno().first())
+    }
+
+    @Test fun `entrada con un turno ya abierto lanza y no escribe nada`() = runBlocking {
+        encolador.entrada(checada())
+        val turnoAntes = dao.turno().first()
+        try { encolador.entrada(checada()); fail() } catch (_: IllegalStateException) {}
+        assertEquals(1, dao.pendientesDeVer().first().size)
+        assertEquals(turnoAntes, dao.turno().first())
+    }
+
+    @Test fun `corregir sólo una pieza RECHAZADA`() = runBlocking {
+        val v = encolador.venta(ventaNueva())
+        try { encolador.corregirVenta(dao.porLlave(v)!!.id, BigDecimal("150")); fail() } catch (_: IllegalArgumentException) {}
+        val ev = dao.pendientesDeVer().first().first { it.tipo == "EVIDENCIA" }
+        try { encolador.corregirEvidencia(ev.id, "5500000000", null); fail() } catch (_: IllegalArgumentException) {}
+        assertEquals(3, dao.pendientesDeVer().first().size)
+    }
+
     @Test fun `custodia lleva el cuerpo exacto`() = runBlocking {
         val a = encolador.aceptarCustodia(listOf(SimConVersion("A1", 2), SimConVersion("B2", 0)), "v1")
         assertEquals("{\"sims\":[{\"serialNumber\":\"A1\",\"custodyVersion\":2},{\"serialNumber\":\"B2\",\"custodyVersion\":0}]}", dao.porLlave(a)!!.cuerpoJson)
@@ -298,7 +345,7 @@ class EncoladorTest {
     }
 
     @Test fun `evidenciaSuelta lleva paymentId y verificationId sin dependeDe`() = runBlocking {
-        val k = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", 0, "5511112222", foto("s.jpg"), "Corregir"))
+        val k = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", "5511112222", foto("s.jpg"), "Corregir"))
         val p = dao.porLlave(k)!!
         assertNull(p.dependeDe)
         val ev = evidencia(p)

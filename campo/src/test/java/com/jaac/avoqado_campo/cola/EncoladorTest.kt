@@ -11,6 +11,9 @@ import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import com.jaac.avoqado_campo.red.PorSubir
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -332,6 +335,31 @@ class EncoladorTest {
         val ev = dao.pendientesDeVer().first().first { it.tipo == "EVIDENCIA" }
         try { encolador.corregirEvidencia(ev.id, "5500000000", null); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(3, dao.pendientesDeVer().first().size)
+    }
+
+    @Test fun `dos ventas a la vez - la que falla no deja a la otra sin sus fotos`() = runBlocking {
+        trigger(
+            "CREATE TRIGGER falla BEFORE INSERT ON piezas WHEN NEW.resumen = 'falla' AND NEW.tipo = 'EVIDENCIA' AND " +
+                "(SELECT COUNT(*) FROM piezas WHERE resumen = 'falla' AND tipo = 'EVIDENCIA') >= 1 " +
+                "BEGIN SELECT RAISE(ABORT, 'falla'); END",
+        )
+        // ponytail: carrera real, sin ganchos; 30 vueltas para que el cruce (el catch de A durante la transacción de B) salga.
+        repeat(30) {
+            val fallida = ventaNueva().copy(resumen = "falla")
+            val buena = ventaNueva()
+            coroutineScope {
+                val a = async(Dispatchers.IO) { runCatching { encolador.venta(fallida) } }
+                val b = async(Dispatchers.IO) { encolador.venta(buena) }
+                assertTrue(a.await().isFailure)
+                b.await()
+            }
+            fallida.evidencias.forEach { assertTrue(File(it.archivoFoto).isFile) }
+        }
+        val piezas = dao.pendientesDeVer().first()
+        assertEquals(90, piezas.size)
+        assertTrue(piezas.none { it.resumen == "falla" })
+        piezas.flatMap { fotosDe(it.fotosJson) }.forEach { assertTrue("sin archivo: ${it.archivo}", File(it.archivo).isFile) }
+        assertEquals(60, dirCola.listFiles()!!.size)
     }
 
     @Test fun `custodia lleva el cuerpo exacto`() = runBlocking {

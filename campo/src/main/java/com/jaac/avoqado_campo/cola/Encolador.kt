@@ -59,7 +59,7 @@ class Encolador(
     private val env: String = BuildConfig.STORAGE_ENV,
 ) {
     suspend fun venta(v: VentaNueva): String = llaveNueva().also { llave ->
-        enTransaccion { staffId ->
+        enTransaccion {
             val hora = reloj.ahora()
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))
@@ -71,21 +71,21 @@ class Encolador(
 
     suspend fun aceptarCustodia(sims: List<SimConVersion>, venueId: String): String = llaveNueva().also { llave ->
         require(sims.size in 1..50) { "De 1 a 50 SIMs" }
-        enTransaccion { staffId ->
+        enTransaccion {
             val resumen = if (sims.size == 1) "Aceptar SIM ${sims[0].serialNumber}" else "Aceptar ${sims.size} SIMs"
             dao.insertar(pieza(TipoPieza.CUSTODIA_ACEPTAR, llave, staffId, venueId, CuerpoAceptar(sims), reloj.ahora(), resumen))
         }
     }
 
     suspend fun rechazarCustodia(sim: SimConVersion, venueId: String): String = llaveNueva().also { llave ->
-        enTransaccion { staffId ->
+        enTransaccion {
             dao.insertar(pieza(TipoPieza.CUSTODIA_RECHAZAR, llave, staffId, venueId, sim, reloj.ahora(), "Rechazar SIM ${sim.serialNumber}"))
         }
     }
 
     /** Con un turno de esta persona ya abierto → `IllegalStateException` y nada escrito (B10: la pantalla no lo ofrece). */
     suspend fun entrada(e: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion { staffId ->
+        enTransaccion {
             val previo = dao.turnoAhora()
             check(previo == null || !previo.abierto || previo.staffId != staffId) { "Ya hay un turno abierto" }
             val hora = reloj.ahora()
@@ -105,7 +105,7 @@ class Encolador(
      * otra sucursal que la del turno → `IllegalArgumentException`. En los dos casos no se escribe nada.
      */
     suspend fun salida(s: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion { staffId ->
+        enTransaccion {
             val t = dao.turnoAhora()
             check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
             require(s.venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
@@ -125,7 +125,7 @@ class Encolador(
     /** R8-3: «Corregir evidencia» de una venta `FAILED`; ya sabe su pago y su verificación. */
     suspend fun evidenciaSuelta(e: EvidenciaSueltaNueva): String {
         var llave = ""
-        enTransaccion { staffId ->
+        enTransaccion {
             llave = evidencia(
                 staffId, e.venueId, null, reloj.ahora(), e.photoLabel, e.numero, e.archivoFoto,
                 e.paymentId, e.verificationId, e.resumen,
@@ -190,33 +190,39 @@ class Encolador(
         }
     }
 
-    // Fotos de la transacción en curso (una a la vez: Room serializa las transacciones de escritura).
-    private val fotosPorCopiar = mutableListOf<Pair<File, File>>()
+    /** Lo de UNA llamada: la persona y sus fotos por copiar. Nada compartido entre llamadas. */
+    private class Transaccion(val staffId: String) {
+        val fotos = mutableListOf<Pair<File, File>>()
+
+        fun porCopiar(origen: String, foto: FotoPorSubir) {
+            val o = File(origen)
+            if (!o.isFile) throw IOException("La foto ya no está en el celular")
+            fotos += o to File(foto.archivo)
+        }
+    }
 
     /**
      * P2: las filas primero; al final de la MISMA transacción se COPIA cada foto a `cola/`. El original se borra sólo
      * después del commit; si algo falla, se borran las copias y el original sigue ahí para reintentar.
      */
-    private suspend fun enTransaccion(bloque: suspend (staffId: String) -> Unit) {
-        val copiadas = mutableListOf<Pair<File, File>>()
+    private suspend fun enTransaccion(bloque: suspend Transaccion.() -> Unit) {
+        var tx: Transaccion? = null
         try {
             dao.enTransaccion {
-                fotosPorCopiar.clear()
                 if (quienSoy.limpiando) throw CelularBorrandose()
-                bloque(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
-                copiadas += fotosPorCopiar
-                fotosPorCopiar.clear()
-                copiadas.forEach { (o, d) -> copiar(o, d) }
+                val t = Transaccion(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
+                tx = t
+                t.bloque()
+                t.fotos.forEach { (o, d) -> copiar(o, d) }
             }
-        } catch (t: Throwable) {
-            copiadas.forEach { it.second.delete() }
-            fotosPorCopiar.clear()
-            throw t
+        } catch (e: Throwable) {
+            tx?.fotos?.forEach { it.second.delete() }
+            throw e
         }
-        copiadas.forEach { it.first.delete() }
+        tx?.fotos?.forEach { it.first.delete() }
     }
 
-    private suspend fun evidencia(
+    private suspend fun Transaccion.evidencia(
         staffId: String, venueId: String, dependeDe: String?, hora: HoraDeCampo, label: String,
         numero: String?, archivo: String, paymentId: String?, verificationId: String?, resumen: String,
     ): String {
@@ -254,12 +260,6 @@ class Encolador(
     private fun fotoPara(llave: String, slot: String, venueId: String, clase: String, hora: HoraDeCampo, origen: String): FotoPorSubir {
         val ruta = rutaDe(env, venueId, clase, fechaEnMexico(hora.epochMs), llave, slot)
         return FotoPorSubir(File(dirCola, "${llave}_$slot.jpg").absolutePath, ruta, urlDe(ruta), File(origen).length(), subida = false)
-    }
-
-    private fun porCopiar(origen: String, foto: FotoPorSubir) {
-        val o = File(origen)
-        if (!o.isFile) throw IOException("La foto ya no está en el celular")
-        fotosPorCopiar += o to File(foto.archivo)
     }
 
     private fun copiar(o: File, d: File) {

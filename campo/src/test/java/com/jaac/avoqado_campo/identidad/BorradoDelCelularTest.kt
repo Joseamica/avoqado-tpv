@@ -64,6 +64,7 @@ class BorradoDelCelularTest {
     private lateinit var copia: RepositorioDeCopia
     private val carpetaCola get() = File(context.filesDir, "cola")
     private val archivoCopia get() = File(context.filesDir, "copia.json")
+    private val carpetaFotos get() = File(context.cacheDir, "fotos")
     private var detenido = 0
     private val gps = object : ControlDeGps {
         override fun iniciar(): ResultadoGps = ResultadoGps.Siguiendo
@@ -90,19 +91,21 @@ class BorradoDelCelularTest {
         db.close()
         server.shutdown()
         carpetaCola.deleteRecursively()
+        carpetaFotos.deleteRecursively()
         archivoCopia.delete()
     }
 
     private fun borrado() = BorradoDelCelular(
         quienSoy, MutexDeSubida(), MutexDeSesion(), gps,
         { db.clearAllTables(); if (morirTrasRoom) { morirTrasRoom = false; throw IllegalStateException("el proceso muere") } },
-        dao, carpetaCola, copia, pinLocal, estadoDelGps,
+        dao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos,
     )
 
     /** Lo que deja una persona en el celular: turno, foto en la cola, copia, fallos del PIN, estado del GPS y activación pendiente. */
     private fun llenar() = runBlocking {
         dao.guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = 1))
         carpetaCola.mkdirs(); File(carpetaCola, "foto.jpg").writeText("x")
+        carpetaFotos.mkdirs(); File(carpetaFotos, "sin-registrar.jpg").writeText("x")
         archivoCopia.writeText("{}")
         almacen.escribir(mapOf("pin.fallos" to "3", ACTIVACION_PENDIENTE to "{}"))
         estadoDelGps.publicar(ResultadoGps.NoSigue("la ubicación del teléfono está apagada"))
@@ -116,6 +119,7 @@ class BorradoDelCelularTest {
         assertTrue(dao.pendientesDeVer().first().isEmpty())
         assertNull(dao.turnoAhora())
         assertFalse(carpetaCola.exists())
+        assertFalse(carpetaFotos.exists())
         assertFalse(archivoCopia.exists())
         assertNull(copia.copia.value)
         assertNull(almacen.leer("pin.fallos"))

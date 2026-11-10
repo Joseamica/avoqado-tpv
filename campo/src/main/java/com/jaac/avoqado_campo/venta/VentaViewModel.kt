@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.venta
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.cola.CelularBorrandose
@@ -8,6 +9,7 @@ import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.EvidenciaNueva
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.SimYaEnCola
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
@@ -18,10 +20,13 @@ import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.math.BigDecimal
 import javax.inject.Inject
 
@@ -82,6 +87,7 @@ class VentaViewModel @Inject constructor(
     fun alEscanear(texto: String) {
         val serie = Iccid.canonica(texto)
         if (serie.isEmpty() || _estado.value.buscando || _estado.value.registrando) return
+        borrarFotosSinRegistrar()
         _estado.value = EstadoVenta(buscando = true)
         viewModelScope.launch {
             val venueId = quienSoy.sesion?.venueId
@@ -121,7 +127,10 @@ class VentaViewModel @Inject constructor(
     }
 
     /** [archivo] = la foto ya comprimida en `cacheDir`; el `Encolador` la copia a `cola/` al registrar. */
-    fun alTomarFoto(slot: Slot, archivo: String) = cambiar { copy(fotos = fotos + (slot to archivo)) }
+    fun alTomarFoto(slot: Slot, archivo: String) = cambiar {
+        fotos[slot]?.takeIf { it != archivo }?.let { File(it).delete() } // la reemplazada no se queda en el celular
+        copy(fotos = fotos + (slot to archivo))
+    }
 
     fun alEscribirNumero(slot: Slot, n: String) = cambiar { copy(numeros = numeros + (slot to n.filter(Char::isDigit).take(10))) }
 
@@ -144,28 +153,55 @@ class VentaViewModel @Inject constructor(
         _estado.update { it.copy(registrando = true, error = null) }
         viewModelScope.launch {
             try {
-                encolador.venta(
-                    VentaNueva(
-                        serialNumber = sim.serialNumber, precio = e.precio!!, isPortabilidad = e.portabilidad, venueId = venueId,
-                        evidencias = e.slots.map { s -> EvidenciaNueva(s.photoLabel, e.numeros[s].takeIf { e.pideNumero(s) }, e.fotos.getValue(s)) },
-                        resumen = "Venta de ${e.config?.etiquetaArticulo ?: "SIM"} ${sim.serialNumber}",
-                    ),
-                )
-                copia.marcar(sim.serialNumber, MarcaLocal.VENDIDA_EN_EL_CELULAR)
-                Disparador.ahora(context)
-                _estado.update { it.copy(registrando = false, guardada = true) }
+                // Salir de la pantalla a media transacción no la corta: lo que se tocó se guarda o se deshace entero.
+                withContext(NonCancellable) {
+                    encolador.venta(
+                        VentaNueva(
+                            serialNumber = sim.serialNumber, precio = e.precio!!, isPortabilidad = e.portabilidad, venueId = venueId,
+                            evidencias = e.slots.map { s -> EvidenciaNueva(s.photoLabel, e.numeros[s].takeIf { e.pideNumero(s) }, e.fotos.getValue(s)) },
+                            resumen = "Venta de ${e.config?.etiquetaArticulo ?: "SIM"} ${sim.serialNumber}",
+                        ),
+                    )
+                }
             } catch (c: CancellationException) {
                 throw c
             } catch (_: CelularBorrandose) {
                 _estado.update { it.copy(registrando = false, error = "Espera un momento.") }
+                return@launch
+            } catch (_: SimYaEnCola) {
+                _estado.update { it.copy(registrando = false, error = "Esta SIM ya está vendida (o por subir).") }
+                return@launch
             } catch (x: Exception) {
                 _estado.update { it.copy(registrando = false, error = "No se guardó la venta. ${x.message.orEmpty()}".trim()) }
+                return@launch
+            }
+            // Ya está en la cola: desde aquí nada la vuelve a ofrecer, aunque falle la marca o el aviso al Subidor.
+            _estado.update { it.copy(registrando = false, guardada = true) }
+            withContext(NonCancellable) {
+                despues("marcar la SIM") { copia.marcar(sim.serialNumber, MarcaLocal.VENDIDA_EN_EL_CELULAR) }
+                despues("despertar al Subidor") { Disparador.ahora(context) }
             }
         }
     }
 
+    private suspend fun despues(que: String, f: suspend () -> Unit) {
+        try { f() } catch (c: CancellationException) { throw c } catch (x: Exception) { Log.w("Venta", "venta guardada; falló $que", x) }
+    }
+
     /** Después de la confirmación: pantalla limpia para la siguiente. */
-    fun venderOtra() { if (!_estado.value.registrando) _estado.value = EstadoVenta() }
+    fun venderOtra() {
+        if (_estado.value.registrando) return
+        borrarFotosSinRegistrar()
+        _estado.value = EstadoVenta()
+    }
+
+    override fun onCleared() = borrarFotosSinRegistrar()
+
+    /** Las fotos de una venta que no se registró. Las registradas ya son del `Encolador` (y mientras guarda, no se tocan). */
+    private fun borrarFotosSinRegistrar() {
+        val e = _estado.value
+        if (!e.registrando && !e.guardada) e.fotos.values.forEach { File(it).delete() }
+    }
 
     private fun cambiar(f: EstadoVenta.() -> EstadoVenta) {
         if (_estado.value.registrando || _estado.value.guardada) return

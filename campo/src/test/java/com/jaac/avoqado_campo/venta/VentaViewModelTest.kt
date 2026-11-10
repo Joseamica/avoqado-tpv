@@ -1,12 +1,14 @@
 package com.jaac.avoqado_campo.venta
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.SimYaEnCola
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.Copia
@@ -24,9 +26,11 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkObject
+import io.mockk.mockkStatic
 import io.mockk.runs
 import io.mockk.slot
 import io.mockk.unmockkObject
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -42,11 +46,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.math.BigDecimal
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VentaViewModelTest {
+    @get:Rule val tmp = TemporaryFolder()
     private val encolador = mockk<Encolador>()
     private val copia = mockk<RepositorioDeCopia>()
     private val dao = mockk<PiezaDao>()
@@ -69,6 +77,8 @@ class VentaViewModelTest {
     @Before fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         mockkObject(Disparador)
+        mockkStatic(Log::class)
+        every { Log.w(any<String>(), any<String>(), any()) } returns 0
         every { Disparador.ahora(any()) } just runs
         quienSoy.guardarActivacion(
             DatosDeActivacion("cel", "c".repeat(64), "s1", "Ana", Sesion("a", "1".repeat(64), "v1"), listOf(Sucursal("v1", "Centro", null))),
@@ -82,6 +92,7 @@ class VentaViewModelTest {
     @After fun tearDown() {
         vm.viewModelScope.cancel()
         unmockkObject(Disparador)
+        unmockkStatic(Log::class)
         Dispatchers.resetMain()
     }
 
@@ -246,5 +257,49 @@ class VentaViewModelTest {
         assertEquals("Espera un momento.", v.estado.value.error)
         assertFalse(v.estado.value.guardada)
         coVerify(exactly = 0) { copia.marcar(any(), any()) }
+    }
+
+    @Test fun `si falla la marca despues de encolar sigue guardada y no se vende otra vez`() {
+        val v = vm(copiaCon(sim()))
+        coEvery { copia.marcar(any(), any()) } throws java.io.IOException("disco lleno")
+        every { Disparador.ahora(any()) } throws IllegalStateException("WorkManager")
+        v.alEscanear(serie)
+        v.listaParaRegistrar().registrar()
+        assertTrue(v.estado.value.guardada)
+        assertNull(v.estado.value.error)
+        v.registrar()
+        coVerify(exactly = 1) { encolador.venta(any()) }
+    }
+
+    @Test fun `la misma SIM ya en la cola al registrar dice que ya esta vendida`() {
+        val v = vm(copiaCon(sim()))
+        coEvery { encolador.venta(any()) } throws SimYaEnCola()
+        v.alEscanear(serie)
+        v.listaParaRegistrar().registrar()
+        assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
+        assertFalse(v.estado.value.guardada)
+    }
+
+    @Test fun `la foto reemplazada y las de una venta sin registrar se borran`() {
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        val primera = tmp.newFile("1.jpg")
+        val segunda = tmp.newFile("2.jpg")
+        v.alTomarFoto(Slot.VINCULACION, primera.path)
+        v.alTomarFoto(Slot.VINCULACION, segunda.path)
+        assertFalse(primera.exists())
+        assertTrue(segunda.exists())
+        v.alEscanear(serie) // otra búsqueda: la venta a medias se descarta
+        assertFalse(segunda.exists())
+    }
+
+    @Test fun `la foto de una venta registrada no la borra la pantalla`() {
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        val f = tmp.newFile("v.jpg")
+        v.alTomarFoto(Slot.VINCULACION, f.path)
+        v.registrar()
+        v.venderOtra()
+        assertTrue(f.exists()) // es del Encolador (aquí, un mock que no la mueve)
     }
 }

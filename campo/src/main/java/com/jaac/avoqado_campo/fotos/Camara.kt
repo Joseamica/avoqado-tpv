@@ -48,6 +48,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -96,7 +97,9 @@ fun Camara(titulo: String, frontal: Boolean = false, onFoto: (File) -> Unit, onC
         var proveedor by remember { mutableStateOf<ProcessCameraProvider?>(null) }
         var tomando by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
-        DisposableEffect(Unit) { onDispose { proveedor?.unbindAll() } } // suelta la cámara para el escáner (Camera1)
+        val cerrada = remember { AtomicBoolean(false) }
+        // Suelta la cámara para el escáner (Camera1); si el proveedor llega después de cerrar, ya no se abre.
+        DisposableEffect(Unit) { onDispose { cerrada.set(true); proveedor?.unbindAll() } }
 
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(
@@ -104,6 +107,7 @@ fun Camara(titulo: String, frontal: Boolean = false, onFoto: (File) -> Unit, onC
                     PreviewView(ctx).also { vista ->
                         val futuro = ProcessCameraProvider.getInstance(ctx)
                         futuro.addListener({
+                            if (cerrada.get()) return@addListener
                             val p = futuro.get().also { proveedor = it }
                             val previa = Preview.Builder().build().also { it.setSurfaceProvider(vista.surfaceProvider) }
                             val lado = if (frontal) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
@@ -156,7 +160,6 @@ private suspend fun tomarYComprimir(context: android.content.Context, captura: I
             },
         )
     }
-    // ponytail: una foto retomada deja la anterior en cacheDir; Android limpia cacheDir cuando le falta espacio.
     return withContext(Dispatchers.IO) {
         val lista = File(dir, "$nombre.jpg")
         try { Compresor.comprimir(cruda, lista) } finally { cruda.delete() }

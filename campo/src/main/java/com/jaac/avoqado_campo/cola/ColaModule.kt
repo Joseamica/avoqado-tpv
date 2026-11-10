@@ -80,5 +80,6 @@ object ColaModule {
         dao: PiezaDao, copia: RepositorioDeCopia, pinLocal: PinLocal, estadoDelGps: EstadoDelGps, @ApplicationContext context: Context,
     ): BorradoDelCelular = BorradoDelCelular(
         quienSoy, mutexDeSubida, mutexDeSesion, gps, base::clearAllTables, dao, File(context.filesDir, "cola"), copia, pinLocal, estadoDelGps,
+        File(context.cacheDir, "fotos"),
     )
 }

@@ -37,6 +37,7 @@ import com.journeyapps.barcodescanner.BarcodeCallback
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import com.journeyapps.barcodescanner.camera.CameraSettings
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val FORMATOS = listOf(
     BarcodeFormat.EAN_13, BarcodeFormat.EAN_8, BarcodeFormat.UPC_A, BarcodeFormat.UPC_E, BarcodeFormat.CODE_128, BarcodeFormat.QR_CODE,
@@ -55,7 +56,8 @@ fun EscanerScreen(onCodigo: (String) -> Unit, onCerrar: () -> Unit) =
         val principal = remember { Handler(Looper.getMainLooper()) }
         LaunchedEffect(linterna, vista) { vista?.let { if (linterna) it.setTorchOn() else it.setTorchOff() } }
         // Suelta la cámara antes de que CameraX la pida (Camera1 y Camera2 no conviven).
-        DisposableEffect(Unit) { onDispose { vista?.let { it.setTorchOff(); it.barcodeView.pauseAndWait() } } }
+        val cerrada = remember { AtomicBoolean(false) }
+        DisposableEffect(Unit) { onDispose { cerrada.set(true); vista?.let { it.setTorchOff(); it.barcodeView.pauseAndWait() } } }
 
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(
@@ -89,7 +91,7 @@ fun EscanerScreen(onCodigo: (String) -> Unit, onCerrar: () -> Unit) =
                         viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
                             override fun onGlobalLayout() {
                                 viewTreeObserver.removeOnGlobalLayoutListener(this)
-                                principal.postDelayed({ runCatching { resume() } }, 300)
+                                principal.postDelayed({ if (!cerrada.get()) runCatching { resume() } }, 300)
                             }
                         })
                         vista = this

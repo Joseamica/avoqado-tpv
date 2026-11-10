@@ -12,6 +12,9 @@ import java.util.UUID
 /** I2: el celular se está borrando; la pantalla dice «Espera un momento». No se escribió nada. */
 class CelularBorrandose : Exception("El celular se está borrando")
 
+/** Ya hay una VENTA viva (no HECHA ni DESCARTADA) de esa SIM en la cola: no se escribió nada. */
+class SimYaEnCola : Exception("Esta SIM ya está vendida (o por subir)")
+
 /** `replaceIndex` sale del `photoLabel` (Vinculacion → 0, Portabilidad → 1), nunca suelto. */
 data class EvidenciaNueva(val photoLabel: String, val numero: String?, val archivoFoto: String)
 
@@ -60,6 +63,8 @@ class Encolador(
 ) {
     suspend fun venta(v: VentaNueva): String = llaveNueva().also { llave ->
         enTransaccion {
+            // Defensa en la base (Tarea 10): dentro de la transacción, dos registros de la misma SIM no pasan los dos.
+            if (dao.ventaConSerieEnCola(v.serialNumber) != null) throw SimYaEnCola()
             val hora = reloj.ahora()
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))

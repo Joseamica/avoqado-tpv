@@ -68,8 +68,8 @@ class EncoladorTest {
 
     private fun foto(nombre: String): String = tmp.newFile(nombre).also { it.writeBytes(ByteArray(10) { 7 }) }.absolutePath
 
-    private fun ventaNueva(precio: BigDecimal = BigDecimal("50")) = VentaNueva(
-        serialNumber = "8952 140000 1",
+    private fun ventaNueva(precio: BigDecimal = BigDecimal("50"), serie: String = "8952 140000 1") = VentaNueva(
+        serialNumber = serie,
         precio = precio,
         isPortabilidad = true,
         venueId = "v1",
@@ -153,7 +153,7 @@ class EncoladorTest {
 
     @Test fun `captureSeq crece y sobrevive a un Encolador nuevo`() = runBlocking {
         encolador.venta(ventaNueva())
-        nuevoEncolador().venta(ventaNueva())
+        nuevoEncolador().venta(ventaNueva(serie = "8952 140000 2"))
         val seqs = dao.pendientesDeVer().first().filter { it.tipo == "EVIDENCIA" }.map { evidencia(it).captureSeq }
         assertEquals(listOf(1L, 2L, 3L, 4L), seqs)
     }
@@ -345,8 +345,8 @@ class EncoladorTest {
         )
         // ponytail: carrera real, sin ganchos; 30 vueltas para que el cruce (el catch de A durante la transacción de B) salga.
         repeat(30) {
-            val fallida = ventaNueva().copy(resumen = "falla")
-            val buena = ventaNueva()
+            val fallida = ventaNueva(serie = "8952 1400 A$it").copy(resumen = "falla")
+            val buena = ventaNueva(serie = "8952 1400 B$it")
             coroutineScope {
                 val a = async(Dispatchers.IO) { runCatching { encolador.venta(fallida) } }
                 val b = async(Dispatchers.IO) { encolador.venta(buena) }
@@ -387,5 +387,17 @@ class EncoladorTest {
         try { encolador.venta(ventaNueva()); fail() } catch (_: CelularBorrandose) {}
         assertTrue(dao.pendientesDeVer().first().isEmpty())
         assertTrue(quienSoy.limpiando)
+    }
+
+    @Test fun `una segunda venta de la misma SIM viva lanza y no escribe nada`() = runBlocking {
+        encolador.venta(ventaNueva())
+        val otra = ventaNueva(serie = "8952140000 1") // la misma, escrita distinto
+        try { encolador.venta(otra); fail() } catch (_: SimYaEnCola) {}
+        assertEquals(3, dao.pendientesDeVer().first().size)
+        otra.evidencias.forEach { assertTrue(File(it.archivoFoto).isFile) } // sus fotos siguen donde estaban
+        // Descartada la primera, ya se puede volver a vender.
+        dao.ventasVivas().single().let { dao.actualizar(it.copy(estado = EstadoPieza.DESCARTADA)) }
+        encolador.venta(otra)
+        Unit
     }
 }

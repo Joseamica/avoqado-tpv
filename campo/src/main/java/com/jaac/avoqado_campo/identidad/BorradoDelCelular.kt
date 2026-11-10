@@ -27,6 +27,8 @@ class BorradoDelCelular(
     private val copia: RepositorioDeCopia,
     private val pinLocal: PinLocal,
     private val estadoDelGps: EstadoDelGps,
+    /** `cacheDir/fotos`: las fotos tomadas y todavía no registradas (de clientes y de la persona). */
+    private val carpetaFotos: File,
 ) {
     suspend fun borrarTodo() {
         borrar(exigirColaVacia = false)
@@ -52,6 +54,7 @@ class BorradoDelCelular(
                 withContext(Dispatchers.IO) {
                     vaciarBase() // antes que los archivos: una transacción a medias no deja un archivo sin fila
                     carpetaCola.deleteRecursively()
+                    carpetaFotos.deleteRecursively()
                 }
                 copia.borrar()
                 pinLocal.reiniciar()

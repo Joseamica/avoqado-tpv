@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo («Quién soy», reloj y PIN)**: el celular guarda su identidad cifrada (sesión, sucursales, estado, generación para descartar respuestas tardías), un reloj anclado a la hora del servidor que no se mueve si cambian la hora del celular, y el PIN sin señal contra el verificador de la sucursal con espera creciente que sobrevive a cerrar la app.
 - **App de campo (módulo listo para crecer)**: `:campo` 0.2.0 trae sus dependencias (Room, WorkManager con Hilt, cámara, QR, ubicación, navegación), permisos, tema claro propio, `STORAGE_ENV` y URL de QA por `-Pavoqado.devBaseUrl`; se quita el inicio de sesión por correo.
 - **App de campo (tema)**: la ventana es siempre clara (`Theme.Material3.Light`), aunque el celular esté en modo oscuro.
 

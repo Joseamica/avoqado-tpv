@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### App de campo
+- **App de campo (módulo listo para crecer)**: `:campo` 0.2.0 trae sus dependencias (Room, WorkManager con Hilt, cámara, QR, ubicación, navegación), permisos, tema claro propio, `STORAGE_ENV` y URL de QA por `-Pavoqado.devBaseUrl`; se quita el inicio de sesión por correo.
+
 ### **Added**
 - **Pedidos por pagar (datos, tienda híbrida)**: la terminal ya consulta los folios de la tienda en línea (`tpv/venues/{venueId}/online-orders/to-pay`) con un vigía que vive con la actividad, respeta «Puede cobrar» (turno y entrada, igual que «Cobrar») para el latido y conserva la última lista sin red. Sin pantalla todavía.
 - **Pedidos por pagar (pantalla, tienda híbrida)**: el recuadro del inicio abre la lista «Por pagar» y «Por entregar» (búsqueda por folio o nombre, «Cargar más», «Vence en N min» en ámbar con 5 o menos, abono con «Falta $X de $Y»); con 0 por pagar el recuadro ya no dice «0». La pantalla del folio enseña lo que pidió con extras y nota; «Cobrar» relee el folio y abre el cobro de siempre por lo que falta (nunca el total; en Nexgo siempre por todo lo que falta), o avisa si ya venció, ya se pagó o ya no está por pagar. «Cancelar folio» pregunta antes y no existe con dinero (`orders:cancel-unpaid`); «Listo» y «Entregado» con `orders:update`. Sin red la lista se sigue leyendo con «(de hace N min)» y horas fijas, pero no se cobra ni se toca un folio. Sin botón de imprimir antes de pagar; después de cobrar regresa a la lista, nunca a «Órdenes». Al cobrarlo, «Folio W7K3P · Ana» bajo el monto (PAX y Nexgo); el folio sale entero («W7K3P», no «73») en el ticket, en el éxito y en Pagos; el precio de cada renglón aparece cuando el servidor lo manda.

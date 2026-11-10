@@ -114,7 +114,7 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     fun marcarDesconocido() = escribir(ESTADO to EstadoDelCelular.DESCONOCIDO.name)
 
-    /** `USA_TU_SESION` de la gracia (R8-2): sólo `DADO_DE_BAJA` vuelve a `VINCULADO`; `DESVINCULADO` y `DESCONOCIDO` no regresan. */
+    /** `USA_TU_SESION` de la gracia (R8-2): sólo `DADO_DE_BAJA` vuelve a `VINCULADO` (I1 lo garantiza también en `escribir`). */
     fun volverDeLaBaja(): Boolean = synchronized(candado) {
         if (leerEstado() != EstadoDelCelular.DADO_DE_BAJA) return false
         escribir(ESTADO to EstadoDelCelular.VINCULADO.name, GRACIA to null)
@@ -136,9 +136,25 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     private fun escribir(vararg cambios: Pair<String, String?>) {
         synchronized(candado) {
-            almacen.escribir(cambios.toMap())
+            val m = cambios.toMap()
+            if (!permitida(m)) return
+            almacen.escribir(m)
             _identidad.value = leerIdentidad()
         }
+    }
+
+    /**
+     * I1 · el estado no regresa: desde `DESVINCULADO` o `DESCONOCIDO` sólo se sale con `borrarTodo` o una activación (las dos
+     * estrenan `generacion`). Una escritura que traiga otro estado (o `DESCONOCIDO` → `DESVINCULADO`) o una sesión se descarta
+     * ENTERA: así un `entrar`, un latido o un `renovar` tardíos no reviven nada.
+     */
+    private fun permitida(m: Map<String, String?>): Boolean {
+        if (GENERACION in m) return true
+        val actual = leerEstado()
+        if (actual != EstadoDelCelular.DESVINCULADO && actual != EstadoDelCelular.DESCONOCIDO) return true
+        if (SESION in m) return false
+        val nuevo = m[ESTADO] ?: return true
+        return nuevo == EstadoDelCelular.DESCONOCIDO.name || nuevo == actual.name
     }
 
     private fun leerSucursales(): List<Sucursal> =

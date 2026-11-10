@@ -52,6 +52,13 @@ abstract class PiezaDao {
         return ventasVivas().firstOrNull { campo(it.cuerpoJson, "serialNumber") == s }
     }
 
+    /** Ventas y custodias que todavía pueden subir: de aquí salen las marcas locales de la copia (Tarea 8). */
+    @Query(
+        "SELECT * FROM piezas WHERE tipo IN ('VENTA','CUSTODIA_ACEPTAR','CUSTODIA_RECHAZAR') " +
+            "AND estado IN ('PENDIENTE','RETENIDA','RECHAZADA') ORDER BY id"
+    )
+    abstract suspend fun conSimsPorSubir(): List<Pieza>
+
     /** Hijos que todavía pueden subir (los AVISO ya los aceptó el SERVIDOR y no se tocan). */
     @Query("SELECT * FROM piezas WHERE dependeDe = :llave AND estado IN ('PENDIENTE','RETENIDA','RECHAZADA') ORDER BY id")
     abstract suspend fun hijosPorSubir(llave: String): List<Pieza>

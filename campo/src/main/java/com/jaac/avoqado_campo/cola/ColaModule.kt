@@ -2,9 +2,11 @@ package com.jaac.avoqado_campo.cola
 
 import android.content.Context
 import androidx.room.Room
+import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
+import com.jaac.avoqado_campo.latido.Latido
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import dagger.Module
@@ -49,4 +51,12 @@ object ColaModule {
     fun proveerSubidorDeGracia(
         dao: PiezaDao, api: CampoApi, quienSoy: QuienSoy, fotos: SubidorDeFotos, mutex: MutexDeSubida,
     ): SubidorDeGracia = SubidorDeGracia(dao, api, quienSoy, fotos, mutex)
+
+    @Provides @Singleton
+    fun proveerCopia(
+        @ApplicationContext context: Context, api: CampoApi, guardia: GuardiaDeSesion, dao: PiezaDao, quienSoy: QuienSoy,
+    ): RepositorioDeCopia = RepositorioDeCopia(context, api, guardia, dao, quienSoy)
+
+    @Provides @Singleton
+    fun proveerLatido(api: CampoApi, quienSoy: QuienSoy, dao: PiezaDao, reloj: RelojAnclado): Latido = Latido(api, quienSoy, dao, reloj)
 }

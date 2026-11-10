@@ -135,4 +135,43 @@ class QuienSoyTest {
         q.borrarTodo()
         assertEquals(null, almacen.leer("pin.fallos")); assertEquals(null, almacen.leer("pin.bloqueo"))
     }
+
+    // ---------- I1 · el estado no regresa (R8-2, v9) ----------
+
+    @Test fun `I1 - desvinculado no regresa con entrada, latido vinculado, baja ni tokens`() {
+        val q = activada()
+        q.marcarDesvinculado("g")
+        q.guardarEntrada(DatosDeEntrada(Sesion("a2", "r2", "v1"), listOf(Sucursal("v2", "Norte", null))))
+        q.guardarLatido(DatosDeLatido("VINCULADO", null, "Otra", listOf(Sucursal("v2", "Norte", null))))
+        q.guardarLatido(DatosDeLatido("DADO_DE_BAJA", null, null, emptyList()))
+        q.guardarTokens("a3", "r3", "v1")
+        assertEquals(EstadoDelCelular.DESVINCULADO, q.estado)
+        assertEquals(sesion, q.sesion)
+        assertEquals(listOf(suc), q.sucursales)
+        assertEquals("Ana", q.nombre)
+        assertEquals("g", q.graciaHasta)
+        assertFalse(q.volverDeLaBaja())
+    }
+
+    @Test fun `I1 - desconocido no regresa ni a desvinculado`() {
+        val q = activada()
+        q.marcarDesconocido()
+        q.guardarLatido(DatosDeLatido("VINCULADO", null, null, listOf(suc)))
+        q.marcarDesvinculado("g")
+        assertEquals(EstadoDelCelular.DESCONOCIDO, q.estado)
+        assertEquals(null, q.graciaHasta)
+    }
+
+    @Test fun `I1 - dado de baja si vuelve a vinculado, y desvinculado sale con borrarTodo o activacion`() {
+        val q = activada()
+        q.guardarLatido(DatosDeLatido("DADO_DE_BAJA", null, null, emptyList()))
+        q.guardarLatido(DatosDeLatido("VINCULADO", null, null, listOf(suc)))
+        assertEquals(EstadoDelCelular.VINCULADO, q.estado)
+        q.marcarDesconocido()
+        q.guardarActivacion(DatosDeActivacion("c2", "cred2", "s1", "Ana", sesion, listOf(suc)))
+        assertEquals(EstadoDelCelular.VINCULADO, q.estado)
+        q.marcarDesvinculado(null)
+        q.borrarTodo()
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, q.estado)
+    }
 }

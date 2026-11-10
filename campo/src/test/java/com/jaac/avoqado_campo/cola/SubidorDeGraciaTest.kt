@@ -9,6 +9,7 @@ import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.DatosDeLatido
@@ -18,6 +19,8 @@ import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
+import com.jaac.avoqado_campo.latido.Latido
+import com.jaac.avoqado_campo.red.AparatoSinId
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import com.jaac.avoqado_campo.red.RedModule
@@ -362,8 +365,11 @@ class SubidorDeGraciaTest {
     private fun trabajo(): TrabajoDeSubida =
         TestListenableWorkerBuilder<TrabajoDeSubida>(ApplicationProvider.getApplicationContext())
             .setWorkerFactory(object : WorkerFactory() {
-                override fun createWorker(c: Context, nombre: String, params: WorkerParameters): ListenableWorker =
-                    TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy)
+                override fun createWorker(c: Context, nombre: String, params: WorkerParameters): ListenableWorker {
+                    val latido = Latido(api, quienSoy, dao, RelojAnclado(almacen, { ahora }, { 0L }, { 1 }), AparatoSinId(null, null, null, null)) { 0L }
+                    val copia = RepositorioDeCopia(c, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), dao, quienSoy)
+                    return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia)
+                }
             })
             .build()
 
@@ -373,7 +379,7 @@ class SubidorDeGraciaTest {
 
         assertEquals(ListenableWorker.Result.success(), trabajo().doWork())
 
-        assertEquals(listOf("/tpv/campo/gracia"), pedidos.map { it.path })
+        assertEquals(listOf("/tpv/campo/gracia", "/tpv/campo/latido"), pedidos.map { it.path })
         assertEquals(EstadoPieza.HECHA, estado(a).estado)
     }
 
@@ -383,8 +389,38 @@ class SubidorDeGraciaTest {
 
         assertEquals(ListenableWorker.Result.success(), trabajo().doWork())
 
-        assertEquals(listOf("/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/gracia"), pedidos.map { it.path })
+        assertEquals(listOf("/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/gracia", "/tpv/campo/latido"), pedidos.map { it.path })
         assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
         assertEquals(EstadoPieza.HECHA, estado(a).estado)
+    }
+
+    @Test fun `el trabajo refresca la copia si subio una custodia, aunque despues pase por la gracia`() = runBlocking {
+        val a = pieza()
+        val b = pieza()
+        responder = {
+            when {
+                it.path.endsWith("/gracia") -> error(409, "USA_TU_SESION") // la reactivaron: vuelve a VINCULADO
+                !it.path.endsWith("/custodia/rechazar") -> null
+                it.texto == a.cuerpoJson -> ok("""{"custodyState":"PROMOTER_REJECTED","repetida":false}""")
+                else -> { darDeBaja(); error(403, "PERSONA_DADA_DE_BAJA") } // el latido de la pantalla ya lo supo
+            }
+        }
+
+        assertEquals(ListenableWorker.Result.retry(), trabajo().doWork())
+
+        assertEquals(
+            listOf(
+                "/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/gracia",
+                "/tpv/campo/latido", "/tpv/campo/venues/v1/mis-sims",
+            ),
+            pedidos.map { it.path },
+        )
+        assertEquals(EstadoPieza.HECHA, estado(a).estado)
+        assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+    }
+
+    @Test fun `el trabajo sin venta ni custodia subida no baja la copia`() = runBlocking {
+        assertEquals(ListenableWorker.Result.success(), trabajo().doWork())
+        assertEquals(listOf("/tpv/campo/latido"), pedidos.map { it.path })
     }
 }

@@ -48,6 +48,9 @@ android {
     }
 }
 
+// Room exporta el esquema de cada versión (se commitea): la v2 de la Tarea 12 escribe su migración contra éste.
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)                       // trae los temas Theme.Material3.*

@@ -64,6 +64,8 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     val graciaHasta: String? get() = almacen.leer(GRACIA)
     val bloqueada: Boolean get() = almacen.leer(BLOQUEADA) == "true"
     val necesitaPin: Boolean get() = almacen.leer(NECESITA_PIN) == "true"
+    /** I2: el borrado del celular está en curso; nadie escribe datos de la persona (lo maneja `BorradoDelCelular`). */
+    val limpiando: Boolean get() = synchronized(candado) { almacen.leer(LIMPIANDO) == "true" }
 
     /** Lee [generacion] ANTES de la llamada de red y guarda con esto: si ya cambió, no escribe nada. */
     fun guardarSi(generacion: String, bloque: QuienSoy.() -> Unit): Boolean = synchronized(candado) {
@@ -116,6 +118,9 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     fun marcarBloqueada(v: Boolean) = escribir(BLOQUEADA to v.toString())
 
+    /** No la toca `borrarTodo`: el borrado la pone al empezar y la quita al terminar. */
+    fun marcarLimpiando(v: Boolean) = escribir(LIMPIANDO to if (v) "true" else null)
+
     /** La sesión del servidor murió: `necesitaPin` y `bloqueada` en UNA escritura (R3-2). */
     fun marcarSesionMuerta() = escribir(NECESITA_PIN to "true", BLOQUEADA to "true")
 
@@ -146,6 +151,7 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         const val SESION = "sesion"; const val ESTADO = "estado"; const val GRACIA = "graciaHasta"
         const val GENERACION = "generacion"
         const val BLOQUEADA = "bloqueada"; const val NECESITA_PIN = "necesitaPin"
+        const val LIMPIANDO = "limpiando"
         val TODAS = CLAVES_DEL_PIN + listOf(APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
     }
 }

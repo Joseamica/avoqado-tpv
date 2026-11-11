@@ -164,17 +164,20 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
      * (`borrarTodo`, después de vaciar Room) o al activar desde un celular vacío. Por eso una checada APARTADA con la
      * generación del toque siempre se puede completar, salvo que un borrado que sí siguió la haya borrado.
      */
-    fun empezarLimpiezaSi(generacion: String): Boolean = synchronized(candado) {
+    fun empezarLimpiezaSi(generacion: String, marca: String = nueva()): Boolean = synchronized(candado) {
         if (almacen.leer(GENERACION) != generacion || almacen.leer(LIMPIANDO) != null) return false
-        escribir(LIMPIANDO to REVISANDO, GENERACION to nueva(), ANTERIOR to generacion)
+        escribir(LIMPIANDO to REVISANDO, GENERACION to marca, ANTERIOR to generacion)
         true
     }
 
     /**
      * El borrado se negó (o murió antes de contar): quita la marca y devuelve la generación de antes, en UNA escritura y bajo
      * el candado. Nadie pudo cambiarla en medio: activar pide SIN_ACTIVAR y otro borrado pide que no haya marca.
+     * r9: con [marca] (la generación que puso `empezarLimpiezaSi`) sólo deshace ESA marca: si su escritura falló antes de
+     * guardarse, o es de otro borrado, no toca nada. Sin [marca] (al arrancar), la que haya.
      */
-    fun cancelarLimpieza() = synchronized(candado) {
+    fun cancelarLimpieza(marca: String? = null) = synchronized(candado) {
+        if (marca != null && almacen.leer(GENERACION) != marca) return
         val anterior = almacen.leer(ANTERIOR)
         escribir(*(listOf(LIMPIANDO to null, ANTERIOR to null) + listOfNotNull(anterior?.let { GENERACION to it })).toTypedArray())
     }

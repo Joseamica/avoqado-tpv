@@ -34,6 +34,7 @@ import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 data class DatosDeInicio(
     val nombre: String?, val pendientes: Int, val necesitaPin: Boolean, val esperanSucursal: List<String>,
@@ -94,12 +95,16 @@ fun PantallaDeGracia(
             Button({
                 trabajando = true
                 alcance.launch {
-                    mensaje = when (onActivarDeNuevo()) {
-                        ResultadoDelBorrado.BORRADO -> null
-                        ResultadoDelBorrado.QUEDA_ALGO -> "Todavía queda algo por subir. Revisa «Mis pendientes»."
-                        ResultadoDelBorrado.ESPERA -> ESPERA_UN_MOMENTO
+                    try {
+                        mensaje = when (borrarSinTronar(onActivarDeNuevo)) {
+                            ResultadoDelBorrado.BORRADO -> null
+                            ResultadoDelBorrado.QUEDA_ALGO -> "Todavía queda algo por subir. Revisa «Mis pendientes»."
+                            ResultadoDelBorrado.ESPERA -> ESPERA_UN_MOMENTO
+                            null -> NO_SE_PUDO_TERMINAR
+                        }
+                    } finally {
+                        trabajando = false
                     }
-                    trabajando = false
                 }
             }, alto, enabled = !trabajando) { Text("Activar con un código nuevo") }
         }
@@ -140,10 +145,15 @@ fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspe
                     confirmar = false
                     trabajando = true
                     alcance.launch {
-                        when (onBorrar(vistas)) {
-                            ResultadoDelBorrado.BORRADO -> Unit
-                            ResultadoDelBorrado.QUEDA_ALGO -> { trabajando = false; cambio = true; confirmar = true }
-                            ResultadoDelBorrado.ESPERA -> { trabajando = false; mensaje = ESPERA_UN_MOMENTO }
+                        try {
+                            when (borrarSinTronar { onBorrar(vistas) }) {
+                                ResultadoDelBorrado.BORRADO -> Unit
+                                ResultadoDelBorrado.QUEDA_ALGO -> { cambio = true; confirmar = true }
+                                ResultadoDelBorrado.ESPERA -> { mensaje = ESPERA_UN_MOMENTO }
+                                null -> { mensaje = NO_SE_PUDO_TERMINAR }
+                            }
+                        } finally {
+                            trabajando = false
                         }
                     }
                 }) { Text("Borrar") }
@@ -181,3 +191,15 @@ private fun InicioPreview() = TemaCampo {
 
 /** r4: algo que la persona ya tocó (la checada que espera el GPS) no llegó a guardarse a tiempo, u otro borrado sigue: no se borró nada. */
 private const val ESPERA_UN_MOMENTO = "Espera un momento y vuelve a intentar."
+
+/** r9 · R-C: el borrado falló (el almacenamiento del celular); lo que no se confirmó ya se deshizo y no se borró nada. */
+internal const val NO_SE_PUDO_TERMINAR = "No se pudo terminar. Intenta otra vez."
+
+/** R-C: el resultado del borrado, o null si falló: el error se queda aquí, nunca cierra la app (la pantalla dice [NO_SE_PUDO_TERMINAR]). */
+internal suspend fun borrarSinTronar(borrar: suspend () -> ResultadoDelBorrado): ResultadoDelBorrado? = try {
+    borrar()
+} catch (c: CancellationException) {
+    throw c
+} catch (_: Exception) {
+    null
+}

@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
 
@@ -155,7 +156,8 @@ class ChecadaViewModel @Inject constructor(
      * la marca y se decide por la GENERACIÓN, no por cuántas veces chocó: si sigue siendo la del toque, el borrado se negó
      * (invariante 1 de `BorradoDelCelular`) y se repite; si cambió, el borrado siguió y ya la borró (invariante 2): no hay
      * nada que hacer. null = completada. Un `CelularBorrandose` devuelto nunca es definitivo: la APARTADA se queda.
-     * ponytail: tope de [VUELTAS] choques seguidos; si se agota, se queda APARTADA y la completa el arranque.
+     * ponytail: tope de [VUELTAS] choques seguidos y [ESPERA_DE_LA_MARCA_MS] por espera (R-A); si se agota, se queda
+     * APARTADA y la completa el arranque.
      */
     private suspend fun completarAunqueHayaUnBorrado(generacion: String, id: Long, u: ChecadaNueva): Exception? {
         var ultimo: Exception? = null
@@ -163,8 +165,12 @@ class ChecadaViewModel @Inject constructor(
             val x = try { encolador.completarChecada(generacion, id, u); return null } catch (c: CancellationException) { throw c } catch (e: Exception) { e }
             if (x !is CelularBorrandose) return x
             ultimo = x
-            while (quienSoy.limpiando) delay(500)
-            if (quienSoy.generacion != generacion) return x
+            // R-A: ninguna espera es infinita. Con la marca CONFIRMADA ese borrado siguió (ya no hay nada que completar) y
+            // una marca que nadie quita no pasa del tope: en los dos casos se queda APARTADA y la termina el arranque.
+            val quitada = withTimeoutOrNull(ESPERA_DE_LA_MARCA_MS) {
+                while (quienSoy.limpiando && !quienSoy.limpiezaConfirmada) delay(500)
+            } != null
+            if (!quitada || quienSoy.limpiezaConfirmada || quienSoy.generacion != generacion) return x
         }
         return ultimo
     }
@@ -178,6 +184,7 @@ class ChecadaViewModel @Inject constructor(
 
     private companion object {
         const val VUELTAS = 10
+        const val ESPERA_DE_LA_MARCA_MS = 60_000L
         const val YA_HAY_ENTRADA = "Ya tienes una entrada abierta"
         const val SIN_ENTRADA = "Marca tu salida donde marcaste la entrada"
     }

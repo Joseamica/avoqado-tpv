@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
 
 /** [ESPERA]: otra persona u otro borrado ganó (p. ej. un segundo toque); no se borró nada. */
@@ -22,6 +24,15 @@ enum class ResultadoDelBorrado { BORRADO, QUEDA_ALGO, ESPERA }
  *    (y con una APARTADA viva la cola no está vacía). Ningún error al completarla la elimina ni borra su foto.
  * 3. Por 1 y 2, una APARTADA con una generación distinta de la vigente no puede existir: la generación sólo cambia de verdad
  *    en [vaciar] (que vacía Room antes) o al activar (que pide la cola vacía).
+ *
+ * r9 · REGLAS ante una falla del almacenamiento local a media ventana:
+ * R-A. Ninguna espera es infinita: la checada que espera la marca tiene tope, y deja de esperar si la marca está CONFIRMADA
+ *      (ese borrado siguió: invariante 2). Al agotarse se queda APARTADA y la termina el arranque.
+ * R-B. Toda la ventana NO confirmada (desde que la marca pudo escribirse hasta `confirmarLimpieza`) se deshace en UN catch:
+ *      `cancelarLimpieza(marca)`. Si deshacer también falla, la marca sin confirmar la deshace el arranque. Ya confirmada, un
+ *      fallo de [vaciar] se reintenta una vez; si vuelve a fallar, lo termina el arranque (`terminarSiQuedoAMedias`).
+ * R-C. Todo llamador del borrado atiende el error (Ayuda, «Activar con un código nuevo», DESCONOCIDO, el arranque): texto
+ *      honesto, sin cerrar la app y sin borrar nada.
  *
  * El ÚNICO camino para volver a activar (rediseño v7): deja el celular vacío, como recién instalado. r3: los tres que
  * borran (tras «Desvincular», «Activar con un código nuevo» y DESCONOCIDO) pasan por [borrar], que sólo borra a la persona
@@ -81,35 +92,41 @@ class BorradoDelCelular(
     private suspend fun borrar(
         generacion: String, contar: suspend () -> Int, esperadas: Int, siQuedaAlgo: QuienSoy.() -> Unit = {},
     ): ResultadoDelBorrado = withContext(NonCancellable) {
-        // 1 · La revisión de afuera evita estrenar generación sin motivo; la marca, sólo si sigue siendo la misma persona.
+        // 1 · Antes de la marca. La revisión de afuera evita estrenar generación sin motivo; una falla aquí no cambió nada.
         // r5: lo que la persona ya tocó está en Room desde el toque (la checada APARTADA), así que contar basta.
-        val paso1 = when {
-            contar() != esperadas -> ResultadoDelBorrado.QUEDA_ALGO
-            quienSoy.empezarLimpiezaSi(generacion) -> ResultadoDelBorrado.BORRADO
-            else -> ResultadoDelBorrado.ESPERA
-        }
-        if (paso1 != ResultadoDelBorrado.BORRADO) {
+        if (contar() != esperadas) {
             quienSoy.guardarSi(generacion) { siQuedaAlgo() } // otra persona: no se toca
-            return@withContext paso1
-        }
-        // 2 · Con la marca (y una generación nueva: toda respuesta en vuelo ya no escribe, R8-1, I2) se cuenta otra vez. Room
-        // pone en fila las transacciones: un encolado ya confirmado se ve aquí, y uno posterior ve `limpiando` y lanza.
-        var n = -1
-        try {
-            dao.enTransaccion { n = contar() }
-        } catch (e: Throwable) {
-            // r8: si Room falla con la marca puesta y antes de confirmar, es un borrado que no siguió: TODO como estaba (la
-            // marca y la generación), o una checada APARTADA esperaría la marca para siempre.
-            quienSoy.cancelarLimpieza()
-            throw e
-        }
-        if (n != esperadas) {
-            quienSoy.siQuedaAlgo() // la marca es nuestra: nadie activó a otra persona
-            quienSoy.cancelarLimpieza() // r6: se niega → TODO como estaba, también la generación
             return@withContext ResultadoDelBorrado.QUEDA_ALGO
         }
-        quienSoy.confirmarLimpieza()
-        vaciar()
+        // 2 · La ventana NO confirmada (R-B): la marca (con una generación nueva: toda respuesta en vuelo ya no escribe, R8-1,
+        // I2) y la segunda cuenta. Room pone en fila las transacciones: un encolado ya confirmado se ve aquí, y uno posterior
+        // ve `limpiando` y lanza. Cualquier falla, también la de la escritura de la marca o de `siQuedaAlgo`, la deshace.
+        val marca = UUID.randomUUID().toString()
+        try {
+            if (!quienSoy.empezarLimpiezaSi(generacion, marca)) return@withContext ResultadoDelBorrado.ESPERA // otra persona u otro borrado
+            var n = -1
+            dao.enTransaccion { n = contar() }
+            if (n != esperadas) {
+                quienSoy.siQuedaAlgo() // la marca es nuestra: nadie activó a otra persona
+                quienSoy.cancelarLimpieza(marca) // r6: se niega → TODO como estaba, también la generación
+                return@withContext ResultadoDelBorrado.QUEDA_ALGO
+            }
+            quienSoy.confirmarLimpieza()
+        } catch (e: Throwable) {
+            // R-B: TODO como estaba. Si deshacer también falla, la marca sin confirmar la deshace el arranque y la checada que
+            // la espera no pasa de su tope (R-A).
+            runCatching { quienSoy.cancelarLimpieza(marca) }
+            throw e
+        }
+        // 3 · Confirmada: el borrado sigue (aquí ya no se devuelve nada). Con la app viva, un fallo se reintenta una vez; si
+        // vuelve a fallar, lo termina el arranque, y la checada que esperaba deja de esperar al verla confirmada (R-A).
+        try {
+            vaciar()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            vaciar()
+        }
         ResultadoDelBorrado.BORRADO
     }
 

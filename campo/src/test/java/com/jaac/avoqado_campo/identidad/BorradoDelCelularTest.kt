@@ -65,10 +65,13 @@ class BorradoDelCelularTest {
     private lateinit var dao: PiezaDao
     /** Se corre cuando el borrado pone su marca (para colar una pieza justo después de la revisión de afuera). */
     @Volatile private var alPonerLaMarca: () -> Unit = {}
+    /** r9: una escritura del almacén cifrado que falla (antes de escribir nada). */
+    @Volatile private var fallarAlEscribir: (Map<String, String?>) -> Boolean = { false }
     private val almacen = object : AlmacenSeguro {
         val datos = mutableMapOf<String, String>()
         override fun leer(clave: String) = datos[clave]
         override fun escribir(cambios: Map<String, String?>) {
+            if (fallarAlEscribir(cambios)) throw IllegalStateException("el almacén cifrado falló")
             cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
             if (cambios["limpiando"] == "true") alPonerLaMarca()
         }
@@ -89,7 +92,7 @@ class BorradoDelCelularTest {
         override suspend fun revisar() = Unit
     }
     /** Si es true, el borrado «muere» justo después de vaciar Room. */
-    private var morirTrasRoom = false
+    private var morirTrasRoom = 0 // cuántas veces seguidas truena vaciar Room
     @Volatile private var alLatido: () -> MockResponse = { MockResponse().setResponseCode(404) }
 
     @Before fun setUp() {
@@ -115,7 +118,7 @@ class BorradoDelCelularTest {
 
     private fun borrado(conDao: PiezaDao = dao) = BorradoDelCelular(
         quienSoy, MutexDeSubida(), MutexDeSesion(), gps,
-        { db.clearAllTables(); if (morirTrasRoom) { morirTrasRoom = false; throw IllegalStateException("el proceso muere") } },
+        { db.clearAllTables(); if (morirTrasRoom > 0) { morirTrasRoom--; throw IllegalStateException("el proceso muere") } },
         conDao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos,
     )
 
@@ -177,6 +180,36 @@ class BorradoDelCelularTest {
         assertEquals(0, detenido)
     }
 
+    @Test fun `r9 - si falla siQuedaAlgo con la marca puesta, se quita la marca y la generacion vuelve`() = runBlocking {
+        val generacionAntes = quienSoy.generacion
+        alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // la segunda cuenta ve algo: siQuedaAlgo
+        fallarAlEscribir = { it["estado"] == EstadoDelCelular.DESVINCULADO.name }
+        val error = runCatching { borrado().trasDesvincular(generacionAntes) }.exceptionOrNull()
+        assertNotNull(error)
+        assertFalse(quienSoy.limpiando)
+        assertEquals(generacionAntes, quienSoy.generacion)
+        assertEquals(1, dao.pendientesDeVer().first().size)
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `r9 - si la escritura de la marca falla despues de guardarse, se deshace`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val generacionAntes = quienSoy.generacion
+        alPonerLaMarca = { throw IllegalStateException("falló al publicar la marca ya escrita") }
+        assertNotNull(runCatching { borrado().activarDeNuevo() }.exceptionOrNull())
+        assertFalse(quienSoy.limpiando)
+        assertEquals(generacionAntes, quienSoy.generacion)
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `r9 - si vaciar falla una vez con el proceso vivo, se reintenta y el borrado termina`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        morirTrasRoom = 1
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo())
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
+        assertFalse(quienSoy.limpiando)
+    }
+
     @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {
         quienSoy.marcarDesvinculado(null)
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
@@ -220,7 +253,7 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesvinculado(null)
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
-        morirTrasRoom = true
+        morirTrasRoom = 2 // también el reintento: el proceso muere
         try { borrado().activarDeNuevo(); fail("debía morir") } catch (_: IllegalStateException) {}
         assertTrue(quienSoy.limpiando)
         assertTrue(carpetaCola.exists()) // se quedó a medias

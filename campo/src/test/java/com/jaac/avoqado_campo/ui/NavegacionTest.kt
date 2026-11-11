@@ -3,8 +3,12 @@ package com.jaac.avoqado_campo.ui
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
+import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
+import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -52,5 +56,13 @@ class NavegacionTest {
         assertTrue(d(ResultadoGps.NoSigue("no diste permiso de ubicación")).cuidaElGps())
         assertTrue(d(null).cuidaElGps())
         assertFalse(d(ResultadoGps.Siguiendo, turno = false).cuidaElGps())
+    }
+
+    @Test fun `r9 - «Activar con un codigo nuevo» y DESCONOCIDO no truenan si el borrado falla - la pantalla dice el texto`() = runBlocking {
+        assertNull(borrarSinTronar { throw IllegalStateException("el almacén cifrado falló") })
+        assertEquals("No se pudo terminar. Intenta otra vez.", NO_SE_PUDO_TERMINAR)
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrarSinTronar { ResultadoDelBorrado.QUEDA_ALGO })
+        // Cancelar (salir de la pantalla) no se traga.
+        assertTrue(runCatching { borrarSinTronar { throw CancellationException("salió") } }.exceptionOrNull() is CancellationException)
     }
 }

@@ -189,6 +189,32 @@ class ChecadaViewModelTest {
         assertEquals(entrada, runBlocking { dao.siguientesParaSubir() }.single()) // sube
     }
 
+    @Test fun `r9 - con la marca CONFIRMADA (el vaciado fallo con la app viva) la checada deja de esperar y sigue APARTADA`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        assertTrue(quienSoy.empezarLimpiezaSi(quienSoy.generacion))
+        quienSoy.confirmarLimpieza() // el borrado siguió, pero vaciar falló dos veces: lo termina el arranque
+        espera.complete(null)
+        runBlocking { withTimeout(5_000) { vm.estado.first { !it.ocupado } } } // no se cuelga
+        assertEquals(EstadoPieza.APARTADA, piezas().single().estado)
+    }
+
+    @Test fun `r9 - una marca sin confirmar que nunca se quita no cuelga la checada - al tope sigue APARTADA`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        assertTrue(quienSoy.empezarLimpiezaSi(quienSoy.generacion)) // y deshacerla falló: se queda hasta el arranque
+        espera.complete(null)
+        runBlocking { delay(700) }
+        main.scheduler.advanceTimeBy(61_000); main.scheduler.runCurrent()
+        runBlocking { withTimeout(5_000) { vm.estado.first { !it.ocupado } } }
+        val p = piezas().single()
+        assertEquals(EstadoPieza.APARTADA, p.estado) // la completa el arranque; nunca RECHAZADA por esto
+    }
+
     @Test fun `r6 - si completar la checada apartada falla, no se borra - queda en Mis pendientes con su foto`() {
         vm.marcarEntrada(); quieto()
         runBlocking { withTimeout(5_000) { vm.estado.first { it.entrada != null } } }

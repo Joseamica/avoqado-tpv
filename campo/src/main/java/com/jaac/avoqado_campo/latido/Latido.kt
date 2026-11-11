@@ -38,9 +38,11 @@ class Latido(
     suspend fun mandar(): Boolean = candado.withLock {
         val t = monotonico()
         if (ultimoAt?.let { t - it < UN_MINUTO } == true) return@withLock false
-        val credencial = quienSoy.credencial ?: return@withLock false
-        if (quienSoy.limpiando) return@withLock false
-        val generacion = quienSoy.generacion
+        // r3 #2: credencial y generación de UNA instantánea: un borrado y otra activación en medio no las mezclan.
+        val yo = quienSoy.instantanea()
+        val credencial = yo.credencial ?: return@withLock false
+        if (yo.limpiando) return@withLock false
+        val generacion = yo.generacion
         val cuerpo = LatidoBody(dao.cuantasPorSubir().first(), dao.huellasPorSubir(500), aparato)
 
         val r = (llamarSeguro { api.latido(credencial, cuerpo) } as? Llamada.Contesto)?.r ?: return@withLock false

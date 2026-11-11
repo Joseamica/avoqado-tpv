@@ -5,13 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import com.jaac.avoqado_campo.checada.Ubicacion
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
+import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.red.CampoApi
@@ -22,6 +25,12 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface ResultadoGps {
     object Siguiendo : ResultadoGps
@@ -32,8 +41,20 @@ sealed interface ResultadoGps {
 
 /** Arranca y para el seguimiento de la ubicación del turno. */
 interface ControlDeGps {
-    fun iniciar(): ResultadoGps
+    suspend fun iniciar(): ResultadoGps
     fun detener()
+    /** G: si la sucursal del turno ya no sigue la ubicación, para el servicio vivo. Nunca arranca nada (eso es de `iniciar`). */
+    suspend fun revisar()
+}
+
+/**
+ * Familia G (r3 #3 y #4): los pings son de la sucursal del TURNO abierto de esta persona, así que su ajuste decide (sin
+ * turno, la de la sesión). `seguimientoDeUbicacion`: false = no; true o null (SERVIDOR viejo) = sí. La usan `iniciar()`, el
+ * arranque del servicio (también el reinicio que hace Android solo), cada lectura del servicio y `revisar()`.
+ */
+fun debeSeguir(yo: Instantanea, turno: TurnoLocal?): Boolean {
+    val venueId = turno?.takeIf { it.abierto && it.staffId == yo.staffId }?.venueId ?: yo.sesion?.venueId
+    return yo.sucursales.firstOrNull { it.venueId == venueId }?.seguimientoDeUbicacion != false
 }
 
 internal const val SIN_PERMISO = "no diste permiso de ubicación"
@@ -47,24 +68,21 @@ internal fun tienePermisoDeUbicacion(c: Context) = listOf(Manifest.permission.AC
  * P11: revisa permiso y ubicación encendida antes de arrancar el [ServicioDeUbicacion], y lo que Android rechace al arrancarlo
  * (`SecurityException`, `ForegroundServiceStartNotAllowedException`) se vuelve `NoSigue`: nunca sale una excepción.
  * Se llama con la app visible (la checada, o la app al abrir con turno abierto). Lo que devuelve también queda en [EstadoDelGps].
- * H-A1: si la sucursal de la sesión trae `seguimientoDeUbicacion: false` (como la PAX con `trackPromoterLocation`), no arranca;
- * si el servicio ya corría (un latido lo apagó con el turno abierto), lo para.
+ * H-A1 + G: si la sucursal del turno ([debeSeguir]) trae `seguimientoDeUbicacion: false` (como la PAX con
+ * `trackPromoterLocation`), no arranca; si el servicio ya corría (un latido lo apagó con el turno abierto), lo para.
  */
 class ControlDeGpsReal(
     private val context: Context,
     private val estado: EstadoDelGps,
     private val puerta: PuertaDelServicio,
     private val quienSoy: QuienSoy,
+    private val dao: PiezaDao,
     private val arrancar: (Intent) -> Unit = { ContextCompat.startForegroundService(context, it) },
 ) : ControlDeGps {
     private fun intent() = Intent(context, ServicioDeUbicacion::class.java)
 
-    override fun iniciar(): ResultadoGps {
-        val venueId = quienSoy.sesion?.venueId
-        if (quienSoy.sucursales.firstOrNull { it.venueId == venueId }?.seguimientoDeUbicacion == false) {
-            detener()
-            return ResultadoGps.NoLoUsaLaTienda.also(estado::publicar)
-        }
+    override suspend fun iniciar(): ResultadoGps {
+        if (pararSiNoDebe()) return ResultadoGps.NoLoUsaLaTienda
         val motivo = when {
             !tienePermisoDeUbicacion(context) -> SIN_PERMISO
             !LocationManagerCompat.isLocationEnabled(context.getSystemService(LocationManager::class.java)) -> UBICACION_APAGADA
@@ -90,6 +108,33 @@ class ControlDeGpsReal(
         puerta.detenerPedido = true
         if (puerta.enPrimerPlano) context.stopService(intent())
     }
+
+    override suspend fun revisar() { pararSiNoDebe() }
+
+    /** true = la sucursal del turno no sigue: se paró el servicio (si corría) y quedó `NoLoUsaLaTienda`. */
+    private suspend fun pararSiNoDebe(): Boolean {
+        if (debeSeguir(quienSoy.instantanea(), dao.turnoAhora())) return false
+        detener()
+        estado.publicar(ResultadoGps.NoLoUsaLaTienda)
+        return true
+    }
+}
+
+/**
+ * G: cada cambio de las sucursales guardadas (un latido, un `entrar`) revisa el servicio vivo: si la sucursal de su turno ya
+ * no sigue la ubicación, lo para en ese momento; si la prenden, lo arranca el siguiente `reanudarSiHayTurno`. También revisa
+ * al arrancar la app (un reinicio de Android con el ajuste ya apagado). Lo lanza `CampoApplication`.
+ */
+fun CoroutineScope.vigilarElSeguimiento(quienSoy: QuienSoy, gps: ControlDeGps): Job = launch {
+    quienSoy.identidad.map { it.sucursales }.distinctUntilChanged().collect {
+        try {
+            gps.revisar()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("ControlDeGps", "revisar el seguimiento", e)
+        }
+    }
 }
 
 /**
@@ -98,7 +143,8 @@ class ControlDeGpsReal(
  */
 suspend fun reanudarSiHayTurno(gps: ControlDeGps, dao: PiezaDao, quienSoy: QuienSoy): ResultadoGps? {
     val t = dao.turnoAhora()
-    if (quienSoy.limpiando || t == null || !t.abierto || t.staffId != quienSoy.staffId) return null
+    val yo = quienSoy.instantanea()
+    if (yo.limpiando || t == null || !t.abierto || t.staffId != yo.staffId) return null
     return gps.iniciar()
 }
 
@@ -113,8 +159,8 @@ object GpsModule {
 
     @Provides @Singleton
     fun proveerControlDeGps(
-        @ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio, quienSoy: QuienSoy,
-    ): ControlDeGps = ControlDeGpsReal(context, estado, puerta, quienSoy)
+        @ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio, quienSoy: QuienSoy, dao: PiezaDao,
+    ): ControlDeGps = ControlDeGpsReal(context, estado, puerta, quienSoy, dao)
 
     @Provides
     fun proveerPingDao(base: BaseDeCampo): PingDao = base.pingDao()

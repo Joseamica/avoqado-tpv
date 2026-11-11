@@ -51,10 +51,11 @@ class SeguimientoDelTurno(
 ) {
     /**
      * SIEMPRE intenta [primerPlano] primero (cumple el contrato de `startForegroundService` aunque lance) y decide después:
-     * sin permiso o con un `detener()` pedido antes de arrancar, [quitarPrimerPlano] y false. false = quien llama hace
-     * `stopSelf()`; si no sigue por un problema, el motivo ya está en [EstadoDelGps].
+     * con un `detener()` pedido antes de arrancar, con la sucursal del turno sin seguimiento ([debeSeguir], r3 #3: también
+     * cuando Android reinicia el servicio solo, sin pasar por `iniciar()`) o sin permiso, [quitarPrimerPlano] y false.
+     * false = quien llama hace `stopSelf()`; lo que pasó ya está en [EstadoDelGps].
      */
-    fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit): Boolean {
+    suspend fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit): Boolean {
         try {
             primerPlano()
         } catch (e: SecurityException) {
@@ -65,9 +66,10 @@ class SeguimientoDelTurno(
             return noSigue(ANDROID_NO_LO_PERMITIO)
         }
         puerta.enPrimerPlano = true // después de esto, `detener()` ya puede hacer stopService
-        val motivo = when {
+        val fin: ResultadoGps? = when {
             puerta.detenerPedido -> null // la salida o el borrado llegaron antes que el servicio
-            !tienePermiso -> SIN_PERMISO
+            !debeSeguir(quienSoy.instantanea(), piezas.turnoAhora()) -> ResultadoGps.NoLoUsaLaTienda
+            !tienePermiso -> ResultadoGps.NoSigue(SIN_PERMISO)
             else -> {
                 estado.publicar(ResultadoGps.Siguiendo)
                 return true
@@ -75,7 +77,7 @@ class SeguimientoDelTurno(
         }
         quitarPrimerPlano()
         alTerminar()
-        motivo?.let(::noSigue)
+        fin?.let(estado::publicar)
         return false
     }
 
@@ -89,15 +91,22 @@ class SeguimientoDelTurno(
         return false
     }
 
-    /** Una lectura → un ping de la sucursal del turno. false = ya no hay turno de esta persona (el servicio se detiene). */
+    /**
+     * Una lectura → un ping de la sucursal del turno. false = ya no hay turno de esta persona, o su sucursal ya no sigue la
+     * ubicación (G, r3 #4: la misma sucursal que lleva el ping): el servicio se detiene.
+     */
     suspend fun tomarUno(): Boolean {
-        val generacion = quienSoy.generacion
+        val yo = quienSoy.instantanea() // r3: la persona del turno y su generación, juntas
         val t = piezas.turnoAhora()
-        if (t == null || !t.abierto || t.staffId != quienSoy.staffId) return false
-        val venueId = t.venueId ?: quienSoy.sesion?.venueId ?: return true
+        if (t == null || !t.abierto || t.staffId != yo.staffId) return false
+        if (!debeSeguir(yo, t)) {
+            estado.publicar(ResultadoGps.NoLoUsaLaTienda)
+            return false
+        }
+        val venueId = t.venueId ?: yo.sesion?.venueId ?: return true
         val l = ubicacion.leer() ?: return true
         pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = ahora())) {
-            !quienSoy.limpiando && quienSoy.generacion == generacion
+            quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
         }
         return true
     }
@@ -113,33 +122,39 @@ class ServicioDeUbicacion : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * También lo llama Android solo (START_STICKY) tras matar el proceso, sin pasar por `iniciar()`: por eso decide aquí,
+     * con [SeguimientoDelTurno.arrancar] (r3 #3). `alcance` es `Main.immediate`: `primerPlano` corre ya, antes de volver.
+     */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val enPrimerPlano = seguimiento.arrancar(
-            tienePermisoDeUbicacion(this),
-            primerPlano = {
-                val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-                ServiceCompat.startForeground(this, AVISO_ID, aviso(), tipo)
-            },
-            quitarPrimerPlano = { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) },
-        )
-        if (!enPrimerPlano) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (bucle?.isActive != true) bucle = alcance.launch {
-            while (true) {
-                val sigue = try {
-                    seguimiento.tomarUno()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w("ServicioDeUbicacion", "lectura del turno", e)
-                    true
-                }
-                if (!sigue) break
-                delay(CADA_MS)
+        alcance.launch {
+            val enPrimerPlano = seguimiento.arrancar(
+                tienePermisoDeUbicacion(this@ServicioDeUbicacion),
+                primerPlano = {
+                    val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+                    ServiceCompat.startForeground(this@ServicioDeUbicacion, AVISO_ID, aviso(), tipo)
+                },
+                quitarPrimerPlano = { ServiceCompat.stopForeground(this@ServicioDeUbicacion, ServiceCompat.STOP_FOREGROUND_REMOVE) },
+            )
+            if (!enPrimerPlano) {
+                stopSelf()
+                return@launch
             }
-            stopSelf()
+            if (bucle?.isActive != true) bucle = alcance.launch {
+                while (true) {
+                    val sigue = try {
+                        seguimiento.tomarUno()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w("ServicioDeUbicacion", "lectura del turno", e)
+                        true
+                    }
+                    if (!sigue) break
+                    delay(CADA_MS)
+                }
+                stopSelf()
+            }
         }
         return START_STICKY
     }

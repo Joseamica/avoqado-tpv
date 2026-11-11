@@ -10,6 +10,7 @@ import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.ACTIVACION_PENDIENTE
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
+import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
 import com.jaac.avoqado_campo.identidad.PinLocal
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -104,11 +105,14 @@ class RepositorioDeEntrada(
     }
 
     private suspend fun entrarConCandado(pin: String, venueId: String?): ResultadoEntrada {
-        val credencial = quienSoy.credencial ?: return ResultadoEntrada.Rechazo("Este celular no está activado.", null)
-        val generacion = quienSoy.generacion // R6-A1: se lee ANTES de llamar
+        // R6-A1 + r3: credencial y generación de UNA instantánea, leída ANTES de llamar.
+        val yo = quienSoy.instantanea()
+        if (yo.limpiando) return ResultadoEntrada.Rechazo("Espera un momento.", null)
+        val credencial = yo.credencial ?: return ResultadoEntrada.Rechazo("Este celular no está activado.", null)
+        val generacion = yo.generacion
         val r = (llamarSeguro { api.entrar(credencial, EntrarBody(pin, venueId)) } as? Llamada.Contesto)?.r
         // Sin red, portal cautivo o el SERVIDOR caído: se entra con el PIN guardado.
-        if (r == null || resultadoDesconocido(r)) return entrarSinSenal(pin, venueId, generacion)
+        if (r == null || resultadoDesconocido(r)) return entrarSinSenal(pin, venueId, yo)
 
         if (r.isSuccessful) {
             val b = r.body()!!
@@ -133,9 +137,9 @@ class RepositorioDeEntrada(
      * Contra el verificador de la sucursal; abre con la sesión que ya había y NO toca `necesitaPin` (R3-2). Esa sesión es de
      * UNA sucursal: sin señal no se cambia, así que elegir otra se rechaza antes del PIN (no gasta intentos).
      */
-    private suspend fun entrarSinSenal(pin: String, venueId: String?, generacion: String): ResultadoEntrada {
-        val sucursales = quienSoy.sucursales
-        val actual = quienSoy.sesion?.venueId
+    private suspend fun entrarSinSenal(pin: String, venueId: String?, yo: Instantanea): ResultadoEntrada {
+        val sucursales = yo.sucursales
+        val actual = yo.sesion?.venueId
         if (venueId != null && actual != null && venueId != actual) {
             // Nunca el id; y «puedes entrar a» sólo si de verdad se puede (su sucursal con verificador, que un latido pudo quitar).
             fun nombre(id: String) = sucursales.find { it.venueId == id }?.nombre?.takeIf { it.isNotBlank() }
@@ -150,7 +154,7 @@ class RepositorioDeEntrada(
         val verificador = sucursal?.verificadorPin ?: return ResultadoEntrada.SinSenalSinVerificador
         return when (val p = pinLocal.verificar(pin, verificador)) {
             ResultadoPinLocal.Abre ->
-                if (quienSoy.guardarSi(generacion) { marcarBloqueada(false) }) ResultadoEntrada.DentroSinSenal(sucursal.nombre)
+                if (quienSoy.guardarSi(yo.generacion) { marcarBloqueada(false) }) ResultadoEntrada.DentroSinSenal(sucursal.nombre)
                 else ResultadoEntrada.Rechazo("No se pudo entrar. Intenta de nuevo.", null)
             is ResultadoPinLocal.Incorrecto -> ResultadoEntrada.Rechazo(textoPinIncorrecto(p.intentosAntesDeEsperar), p.intentosAntesDeEsperar)
             is ResultadoPinLocal.Bloqueado -> ResultadoEntrada.Bloqueado(p.reintentaEnSeg)

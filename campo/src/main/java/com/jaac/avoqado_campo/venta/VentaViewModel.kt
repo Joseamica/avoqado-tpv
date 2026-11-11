@@ -146,9 +146,10 @@ class VentaViewModel @Inject constructor(
     fun registrar() {
         val e = _estado.value
         if (e.registrando || e.guardada || e.buscando) return
-        // ANTES que la sesión (R6-A1): un borrado y otra activación entre las dos no pasan con el venueId viejo.
-        val generacion = quienSoy.generacion
-        val venueId = quienSoy.sesion?.venueId
+        // R6-A1 + r3: generación y sesión de UNA instantánea: un borrado y otra activación no las mezclan.
+        val yo = quienSoy.instantanea()
+        val generacion = yo.generacion
+        val venueId = yo.sesion?.venueId
         val falta = e.falta ?: if (venueId == null) "Entra con tu PIN para vender." else null
         if (falta != null || venueId == null) { _estado.update { it.copy(error = falta) }; return }
         val sim = e.sim!!
@@ -182,7 +183,7 @@ class VentaViewModel @Inject constructor(
             // Ya está en la cola: desde aquí nada la vuelve a ofrecer, aunque falle la marca o el aviso al Subidor.
             _estado.update { it.copy(registrando = false, guardada = true) }
             withContext(NonCancellable) {
-                despues("marcar la SIM") { copia.marcar(sim.serialNumber, MarcaLocal.VENDIDA_EN_EL_CELULAR) }
+                despues("marcar la SIM") { copia.marcar(generacion, sim.serialNumber, MarcaLocal.VENDIDA_EN_EL_CELULAR) }
                 despues("despertar al Subidor") { Disparador.ahora(context) }
             }
         }

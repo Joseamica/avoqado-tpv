@@ -208,8 +208,9 @@ class PendientesViewModel @Inject constructor(
     /** [bloque] recibe la `generacion` leída al tocar: el `Encolador` no escribe si el celular cambió de persona desde entonces. */
     private fun correr(bloque: suspend (generacion: String) -> Unit) {
         if (_estado.value.ocupado) return
-        if (quienSoy.limpiando) return _estado.update { it.copy(error = "Espera un momento") }
-        val generacion = quienSoy.generacion
+        val yo = quienSoy.instantanea() // r3: la marca y la generación, juntas
+        if (yo.limpiando) return _estado.update { it.copy(error = "Espera un momento") }
+        val generacion = yo.generacion
         _estado.update { it.copy(ocupado = true, error = null) }
         viewModelScope.launch {
             val error = try {

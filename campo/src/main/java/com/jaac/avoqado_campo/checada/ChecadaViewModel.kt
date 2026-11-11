@@ -92,8 +92,10 @@ class ChecadaViewModel @Inject constructor(
 
     /** Doble toque → una pieza: [EstadoChecada.ocupado] se pone antes de lanzar nada. */
     private fun checar(tipo: TipoChecada, foto: String?) {
-        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1): lo que se guarde es de ESTA persona
-        val venueId = quienSoy.sesion?.venueId
+        // R6-A1 + r3: generación y sesión de UNA instantánea: lo que se guarde es de ESTA persona.
+        val yo = quienSoy.instantanea()
+        val generacion = yo.generacion
+        val venueId = yo.sesion?.venueId
         // H5: no se checa; la selfie ya tomada no se queda en el celular.
         if (_estado.value.ocupado || venueId == null) { foto?.let { File(it).delete() }; return }
         _estado.update {
@@ -141,7 +143,8 @@ class ChecadaViewModel @Inject constructor(
         _estado.update { it.copy(ocupado = false, aviso = aviso) }
     }
 
-    private fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }
+    // inline: deja llamar `gps.iniciar()`, que lee el turno (suspend). Corre en NonCancellable: no hay cancelación que tragar.
+    private inline fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }
 
     private companion object {
         const val YA_HAY_ENTRADA = "Ya tienes una entrada abierta"

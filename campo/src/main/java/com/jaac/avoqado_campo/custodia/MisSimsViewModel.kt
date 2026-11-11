@@ -98,8 +98,10 @@ class MisSimsViewModel @Inject constructor(
      * por `ASIGNACION_CAMBIO` se descarta en la MISMA transacción que la decisión nueva (Encolador).
      */
     private fun decidir(sims: List<SimEnCopia>, aceptar: Boolean) {
-        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1): un cambio entre las dos no pasa con el venueId viejo
-        val venueId = quienSoy.sesion?.venueId
+        // R6-A1 + r3: generación y sesión de UNA instantánea: un cambio de persona no pasa con el venueId viejo.
+        val yo = quienSoy.instantanea()
+        val generacion = yo.generacion
+        val venueId = yo.sesion?.venueId
         if (sims.isEmpty() || _estado.value.ocupado) return
         if (venueId == null) { _estado.update { it.copy(error = SIN_SESION) }; return }
         _estado.update { it.copy(ocupado = true, error = null) }
@@ -115,7 +117,7 @@ class MisSimsViewModel @Inject constructor(
                         guardadas += lote.size
                         recienDecididas += lote.map { normalizarSerie(it.serialNumber) }
                         val marca = if (aceptar) MarcaLocal.ACEPTADA_EN_EL_CELULAR else MarcaLocal.RECHAZADA_EN_EL_CELULAR
-                        lote.forEach { despues { copia.marcar(it.serialNumber, marca) } }
+                        lote.forEach { despues { copia.marcar(generacion, it.serialNumber, marca) } }
                     }
                     null
                 } catch (c: CancellationException) {
@@ -165,8 +167,9 @@ class MisSimsViewModel @Inject constructor(
         val c = e.corrigiendo ?: return
         if (e.ocupado) return
         val sim = e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.sim
-        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1)
-        val venueId = quienSoy.sesion?.venueId
+        val yo = quienSoy.instantanea() // R6-A1 + r3
+        val generacion = yo.generacion
+        val venueId = yo.sesion?.venueId
         val pago = sim?.paymentId
         val verificacion = sim?.verificationId
         val foto = c.foto

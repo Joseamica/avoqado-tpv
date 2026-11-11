@@ -79,14 +79,14 @@ fun Navegacion(quienSoy: QuienSoy, dao: PiezaDao, conectividad: Conectividad, bo
                         pendientes = piezasS.value.size,
                         puedeActivarDeNuevo = piezasS.value.isEmpty(),
                         onPendientes = { nav.navigate("pendientes") },
-                        onActivarDeNuevo = { borrado.activarDeNuevo(confirmado = false) },
+                        onActivarDeNuevo = { borrado.activarDeNuevo() },
                     )
                 }
                 composable("desconocido") {
                     PantallaDesconocido(
                         porSubir = porSubir(),
                         onPendientes = { nav.navigate("pendientes") },
-                        onBorrar = { borrado.activarDeNuevo(confirmado = true) },
+                        onBorrar = { vistas -> borrado.activarDeNuevo(confirmadas = vistas) },
                     )
                 }
                 composable("inicio") {

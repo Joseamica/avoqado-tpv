@@ -234,8 +234,10 @@ class Encolador(
         try {
             dao.enTransaccion {
                 // H2: también si desde el toque hubo un borrado (y quizá otra activación): el `staffId` de hoy no es el de quien tocó.
-                if (quienSoy.limpiando || quienSoy.generacion != generacion) throw CelularBorrandose()
-                val t = Transaccion(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
+                // r3: marca, generación y `staffId` de UNA instantánea (nunca la generación de una persona y el id de otra).
+                val yo = quienSoy.instantanea()
+                if (yo.limpiando || yo.generacion != generacion) throw CelularBorrandose()
+                val t = Transaccion(checkNotNull(yo.staffId) { "Este celular no tiene persona" })
                 tx = t
                 t.bloque()
                 t.fotos.forEach { (o, d) -> copiar(o, d) }

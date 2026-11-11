@@ -86,7 +86,7 @@ class VentaViewModelTest {
         )
         coEvery { dao.ventaConSerieEnCola(any()) } returns null
         coEvery { copia.actualizar(any()) } returns false
-        coEvery { copia.marcar(any(), any()) } just runs
+        coEvery { copia.marcar(any(), any(), any()) } just runs
         coEvery { encolador.venta(quienSoy.generacion, capture(venta)) } returns "llave"
     }
 
@@ -242,7 +242,7 @@ class VentaViewModelTest {
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
-        coVerify { copia.marcar(serie, MarcaLocal.VENDIDA_EN_EL_CELULAR) }
+        coVerify { copia.marcar(any(), serie, MarcaLocal.VENDIDA_EN_EL_CELULAR) }
         verify { Disparador.ahora(context) }
         assertTrue(v.estado.value.guardada)
         assertFalse(v.estado.value.registrando)
@@ -257,12 +257,12 @@ class VentaViewModelTest {
         v.listaParaRegistrar().registrar()
         assertEquals("Espera un momento.", v.estado.value.error)
         assertFalse(v.estado.value.guardada)
-        coVerify(exactly = 0) { copia.marcar(any(), any()) }
+        coVerify(exactly = 0) { copia.marcar(any(), any(), any()) }
     }
 
     @Test fun `si falla la marca despues de encolar sigue guardada y no se vende otra vez`() {
         val v = vm(copiaCon(sim()))
-        coEvery { copia.marcar(any(), any()) } throws java.io.IOException("disco lleno")
+        coEvery { copia.marcar(any(), any(), any()) } throws java.io.IOException("disco lleno")
         every { Disparador.ahora(any()) } throws IllegalStateException("WorkManager")
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
@@ -339,6 +339,6 @@ class VentaViewModelTest {
         v.listaParaRegistrar().registrar()
         assertEquals("Espera un momento.", v.estado.value.error)
         assertFalse(v.estado.value.guardada)
-        coVerify(exactly = 0) { copia.marcar(any(), any()) }
+        coVerify(exactly = 0) { copia.marcar(any(), any(), any()) }
     }
 }

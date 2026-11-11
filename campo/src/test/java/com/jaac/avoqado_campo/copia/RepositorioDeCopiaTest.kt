@@ -171,7 +171,7 @@ class RepositorioDeCopiaTest {
         assertTrue(r.actualizar("v1"))
         val antes = archivo.readText()
         quienSoy.guardarEntrada(DatosDeEntrada(Sesion("acc2", "2".repeat(64), "v2"), listOf(Sucursal("v2", "Norte", null))))
-        r.marcar("8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
+        r.marcar(quienSoy.generacion, "8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
         assertNull(r.copia.value!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
         assertEquals(antes, archivo.readText())
     }
@@ -279,10 +279,21 @@ class RepositorioDeCopiaTest {
         assertEquals(MarcaLocal.RECHAZADA_EN_EL_CELULAR, sims["8952140000004"]!!.localmente)
     }
 
+    @Test fun `marcar con la generacion de antes de un borrado y otra activacion no toca la copia de la persona nueva (r3)`() = runBlocking {
+        val r = repo()
+        val deAna = quienSoy.generacion
+        quienSoy.borrarTodo(); activar("s2") // otra persona, misma sucursal
+        assertTrue(r.actualizar("v1"))
+        val antes = archivo.readText()
+        r.marcar(deAna, "8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR) // la venta de Ana, encolada antes del borrado
+        assertNull(r.copia.value!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
+        assertEquals(antes, archivo.readText())
+    }
+
     @Test fun `marcar deja la marca en la copia y en el archivo`() = runBlocking {
         val r = repo()
         assertTrue(r.actualizar("v1"))
-        r.marcar("8952 1400 0000 1", MarcaLocal.VENDIDA_EN_EL_CELULAR)
+        r.marcar(quienSoy.generacion, "8952 1400 0000 1", MarcaLocal.VENDIDA_EN_EL_CELULAR)
         assertEquals(MarcaLocal.VENDIDA_EN_EL_CELULAR, r.copia.value!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
         assertEquals(MarcaLocal.VENDIDA_EN_EL_CELULAR, repo().leer()!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
     }
@@ -291,7 +302,7 @@ class RepositorioDeCopiaTest {
         val r = repo()
         assertTrue(r.actualizar("v1"))
         quienSoy.marcarLimpiando(true)
-        r.marcar("8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
+        r.marcar(quienSoy.generacion, "8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
         assertNull(r.copia.value!!.sims.single { it.serialNumber == "8952140000001" }.localmente)
     }
 

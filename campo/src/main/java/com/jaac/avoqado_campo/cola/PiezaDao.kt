@@ -28,6 +28,10 @@ abstract class PiezaDao {
     @Query("SELECT COUNT(*) FROM piezas WHERE estado NOT IN ('HECHA','DESCARTADA')")
     abstract suspend fun cuantasVivas(): Int
 
+    /** El `total` de [cuantasPorSubir], de una vez: lo que «Desvincular» y el aviso de DESCONOCIDO le enseñan a la persona. */
+    @Query("SELECT COUNT(*) FROM piezas WHERE estado IN ('PENDIENTE','RETENIDA','RECHAZADA')")
+    abstract suspend fun cuantasPorSubirAhora(): Int
+
     @Query(
         """SELECT COUNT(*) AS total,
            COALESCE(SUM(tipo = 'VENTA'), 0) AS ventas,

@@ -185,4 +185,41 @@ class QuienSoyTest {
         q.guardarActivacion(otra)
         assertEquals(EstadoDelCelular.VINCULADO, q.estado); assertEquals("cred2", q.credencial)
     }
+
+    @Test fun `r3 - la instantanea es de UNA persona aunque otro hilo borre y active a otra a la mitad de la lectura`() {
+        val q = activada()
+        val deAna = q.generacion
+        val beto = DatosDeActivacion("c2", "cred2", "s2", "Beto", Sesion("a2", "r2", "v2"), listOf(Sucursal("v2", "Norte", null)))
+        var otro: Thread? = null
+        // A la mitad de la lectura (justo después de la credencial), otro hilo borra a Ana y activa a Beto.
+        almacen.despuesDeLeer("credencial") { otro = kotlin.concurrent.thread { q.borrarTodo(); q.guardarActivacion(beto) }.also { it.join(500) } }
+        val yo = q.instantanea()
+        otro!!.join()
+        assertEquals("cred", yo.credencial)
+        assertEquals(deAna, yo.generacion)
+        assertEquals("s1", yo.staffId)
+        assertEquals("v1", yo.sesion?.venueId)
+        assertEquals(listOf(suc), yo.sucursales)
+        assertEquals("cred2", q.credencial) // Beto sí quedó, después
+        assertFalse(q.guardarSi(yo.generacion) {})
+    }
+
+    @Test fun `r3 - empezarLimpiezaSi sólo marca a la persona que se decidió borrar y una sola vez`() {
+        val q = activada()
+        val g = q.generacion
+        assertFalse(q.empezarLimpiezaSi("otra"))
+        assertFalse(q.limpiando)
+        assertTrue(q.empezarLimpiezaSi(g))
+        assertTrue(q.limpiando); assertFalse(q.limpiezaConfirmada)
+        assertNotEquals(g, q.generacion)
+        assertFalse(q.empezarLimpiezaSi(q.generacion)) // ya hay un borrado en curso
+        q.confirmarLimpieza()
+        assertTrue(q.limpiando); assertTrue(q.limpiezaConfirmada)
+        q.marcarLimpiando(false)
+        assertFalse(q.limpiando)
+    }
+
+    @Test fun `la instantanea no imprime la credencial`() {
+        assertFalse(activada().instantanea().toString().contains("cred"))
+    }
 }

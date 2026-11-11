@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.cola
 
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
+import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
@@ -71,12 +72,13 @@ class Subidor(
             // Releída: otro pudo cambiarla (corregir, quitar) desde que se armó la lista.
             var p = dao.porId(id)?.takeIf { it.estado == EstadoPieza.PENDIENTE || it.estado == EstadoPieza.RETENIDA } ?: continue
 
-            // 0. R2-1 y R3-2: la identidad se lee JUSTO antes de decidir cada pieza.
-            val yo = quienSoy.identidad.value
+            // 0. R2-1 y R3-2: la identidad se lee JUSTO antes de decidir cada pieza; r3: UNA instantánea, la que manda la pieza.
+            val yo = quienSoy.instantanea()
             if (yo.estado != EstadoDelCelular.VINCULADO) {
                 val gracia = yo.estado == EstadoDelCelular.DESVINCULADO || yo.estado == EstadoDelCelular.DADO_DE_BAJA
                 return corte(if (gracia) GRACIA else yo.estado.name, gracia)
             }
+            if (yo.limpiando) return corte(MotivoSinSesion.SIN_RED.name) // un borrado espera este candado: se suelta ya
             if (yo.necesitaPin) return corte(NECESITA_PIN)
 
             // 1. B13: la sucursal ya no es suya → rechazo; es suya pero no la de la sesión → espera sin tocarla.
@@ -84,7 +86,7 @@ class Subidor(
                 rechazar(p, "YA_NO_ES_TU_SUCURSAL", "Ya no estás en esta tienda. Avísale a tu supervisor.")
                 continue
             }
-            if (p.venueId != yo.venueIdDeLaSesion) continue
+            if (p.venueId != yo.sesion?.venueId) continue
 
             // 2. P1: una pieza en espera corta.
             // ponytail: una espera de más de 15 min sólo sale de un reloj que se movió; se ignora para no trabar la cola.
@@ -118,7 +120,7 @@ class Subidor(
             }
 
             // 6. Se manda.
-            val s = mandar(p, cuerpo)
+            val s = mandar(p, cuerpo, yo)
             if (s is ResultadoConSesion.SinSesion) {
                 return when (s.motivo) {
                     MotivoSinSesion.ESPERA -> { esperar(p, s.reintentaEnMs); corte(REINTENTABLE) }
@@ -136,17 +138,17 @@ class Subidor(
                     subidas++
                     if (p.tipo == TipoPieza.VENTA || p.tipo.startsWith("CUSTODIA_")) copia = true
                 }
+                // La pieza salió con la sesión de SU sucursal (regla 1 con la instantánea `yo`): «otra sucursal» es la respuesta a eso.
                 is RespuestaDelServidor.Reintentable -> when {
                     // R6-B2: el SERVIDOR dice «otra sucursal» de una evidencia de la sucursal de la sesión: la venta se trasladó.
-                    k.code == "OTRA_SUCURSAL" && p.venueId == quienSoy.sesion?.venueId && p.tipo == TipoPieza.EVIDENCIA ->
+                    k.code == "OTRA_SUCURSAL" && p.tipo == TipoPieza.EVIDENCIA ->
                         rechazar(p, "VENTA_MOVIDA", "Esta venta se movió a otra tienda; tu supervisor sube la evidencia")
                     // En otro tipo no se espera: definitiva, con lo que dijo el SERVIDOR.
-                    k.code == "OTRA_SUCURSAL" && p.venueId == quienSoy.sesion?.venueId -> rechazar(
+                    k.code == "OTRA_SUCURSAL" -> rechazar(
                         p, "OTRA_SUCURSAL", objetoJson(texto)?.get("message")?.takeIf { it.isJsonPrimitive }?.asString
                             ?: "El servidor dice que esto es de otra sucursal.",
                         if (objetoJson(texto) != null) texto else "{}",
                     )
-                    k.code == "OTRA_SUCURSAL" -> Unit // la sesión cambió de sucursal: espera, como la regla 1
                     else -> { esperar(p, k.reintentaEnMs); return corte(REINTENTABLE) }
                 }
                 is RespuestaDelServidor.Definitiva -> rechazar(p, k.code ?: "HTTP_${k.status}", k.message, k.datosJson)
@@ -169,7 +171,7 @@ class Subidor(
         )
     }
 
-    private suspend fun mandar(p: Pieza, cuerpo: String): ResultadoConSesion<ResponseBody> = guardia.conSesion(p.venueId) { b ->
+    private suspend fun mandar(p: Pieza, cuerpo: String, yo: Instantanea): ResultadoConSesion<ResponseBody> = guardia.conSesion(p.venueId, yo) { b ->
         val rb = cuerpo.toRequestBody(JSON)
         val v = p.venueId
         when (p.tipo) {

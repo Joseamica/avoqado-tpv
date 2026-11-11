@@ -34,6 +34,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -186,6 +189,25 @@ class LatidoTest {
         assertFalse(latido().mandar())
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
         assertEquals("Beto", quienSoy.nombre)
+    }
+
+    @Test fun `un borrado y otra activacion ENTRE las lecturas del latido no tocan a la persona nueva (r3 2)`() = runBlocking {
+        val beto = DatosDeActivacion("cel2", "d".repeat(64), "s2", "Beto", Sesion("a", "2".repeat(64), "v3"), listOf(Sucursal("v3", "Sur", null)))
+        val betoActivado = CountDownLatch(1)
+        // Otro hilo borra a Ana y activa a Beto justo después de que el latido lee la credencial de Ana. Con la instantánea
+        // (todo leído bajo el candado de «Quién soy») ese hilo espera, y la generación que se lee es la de Ana.
+        almacen.despuesDeLeer("credencial") {
+            thread { quienSoy.borrarTodo(); quienSoy.guardarActivacion(beto); betoActivado.countDown() }.join(500)
+        }
+        respuesta = {
+            assertTrue(betoActivado.await(5, TimeUnit.SECONDS)) // la respuesta de Ana llega con Beto ya activado
+            ok("""{"estado":"DESVINCULADO","graciaHasta":"g","persona":{"staffId":"s1","nombre":"Ana"},"sucursales":[],"horaDelServidor":"$HORA"}""")
+        }
+        assertFalse(latido().mandar())
+        assertEquals("c".repeat(64), cabeceras.single()) // salió con la credencial de Ana
+        assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+        assertEquals("Beto", quienSoy.nombre)
+        assertEquals("d".repeat(64), quienSoy.credencial)
     }
 
     @Test fun `mientras se borra el celular no se manda (I2)`() = runBlocking {

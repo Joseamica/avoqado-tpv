@@ -3,6 +3,8 @@ package com.jaac.avoqado_campo.identidad
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_campo.ayuda.AyudaViewModel
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.MutexDeSubida
@@ -19,8 +21,18 @@ import com.jaac.avoqado_campo.red.AparatoSinId
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import com.jaac.avoqado_campo.red.RedModule
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -40,6 +52,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class BorradoDelCelularTest {
@@ -67,8 +80,9 @@ class BorradoDelCelularTest {
     private val carpetaFotos get() = File(context.cacheDir, "fotos")
     private var detenido = 0
     private val gps = object : ControlDeGps {
-        override fun iniciar(): ResultadoGps = ResultadoGps.Siguiendo
+        override suspend fun iniciar(): ResultadoGps = ResultadoGps.Siguiendo
         override fun detener() { detenido++ }
+        override suspend fun revisar() = Unit
     }
     /** Si es true, el borrado «muere» justo después de vaciar Room. */
     private var morirTrasRoom = false
@@ -137,7 +151,7 @@ class BorradoDelCelularTest {
     @Test fun `DESVINCULADO con una pieza RETENIDA no borra nada`() = runBlocking {
         pieza(EstadoPieza.RETENIDA)
         quienSoy.marcarDesvinculado(null)
-        assertFalse(borrado().activarDeNuevo(false))
+        assertFalse(borrado().activarDeNuevo())
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertTrue(carpetaCola.exists())
@@ -147,7 +161,7 @@ class BorradoDelCelularTest {
     @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {
         quienSoy.marcarDesvinculado(null)
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
-        assertFalse(borrado().activarDeNuevo(false))
+        assertFalse(borrado().activarDeNuevo())
         assertFalse(quienSoy.limpiando)
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
@@ -161,7 +175,7 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesvinculado(null)
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
-        assertTrue(borrado().activarDeNuevo(false))
+        assertTrue(borrado().activarDeNuevo())
         quedoVacio(aparato, generacion)
         assertNull(dao.porLlave("k-HECHA"))
         assertEquals(1, detenido)
@@ -172,32 +186,123 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesconocido()
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
-        assertFalse(borrado().activarDeNuevo(false))
+        assertFalse(borrado().activarDeNuevo())
         assertEquals(1, dao.pendientesDeVer().first().size)
-        assertTrue(borrado().activarDeNuevo(true))
+        assertTrue(borrado().activarDeNuevo(confirmadas = 1))
         quedoVacio(aparato, generacion)
     }
 
     @Test fun `VINCULADO no se borra por activarDeNuevo`() = runBlocking {
-        assertFalse(borrado().activarDeNuevo(true))
+        assertFalse(borrado().activarDeNuevo(confirmadas = 0))
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
     }
 
     @Test fun `si el proceso muere a mitad, terminarSiQuedoAMedias deja todo vacio y quita la marca`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
         morirTrasRoom = true
-        try { borrado().borrarTodo(); fail("debía morir") } catch (_: IllegalStateException) {}
+        try { borrado().activarDeNuevo(); fail("debía morir") } catch (_: IllegalStateException) {}
         assertTrue(quienSoy.limpiando)
         assertTrue(carpetaCola.exists()) // se quedó a medias
         borrado().terminarSiQuedoAMedias()
         quedoVacio(aparato, generacion)
     }
 
+    @Test fun `desvincular - una checada guardada entre el 0 pendientes y el 200 no se borra y el celular queda DESVINCULADO (r3 1)`() = runBlocking {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        try {
+            // Mientras vuela el POST, la checada que esperaba el GPS (NonCancellable) termina y queda en Room.
+            alLatido = {
+                runBlocking { dao.insertar(Pieza(tipo = TipoPieza.SALIDA, llave = "salida", staffId = "s1", venueId = "v1", cuerpoJson = "{}", creadaAt = 1, resumen = "Salida")) }
+                MockResponse().setBody("""{"yaEstaba":false}""")
+            }
+            val vm = AyudaViewModel(quienSoy, dao, copia, mockk(relaxed = true), api, borrado(), mockk { every { hayRed() } returns true })
+            vm.desvincular()
+            withTimeout(5_000) { while (vm.estado.value.trabajando) delay(10) }
+            vm.viewModelScope.cancel()
+            assertEquals("/tpv/campo/desvincular", server.takeRequest().path)
+            assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("salida")?.estado) // sigue viva: sube por la gracia
+            assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado) // el SERVIDOR ya lo desvinculó
+            assertEquals("c".repeat(64), quienSoy.credencial) // la gracia la necesita
+            assertTrue(carpetaCola.exists())
+            assertFalse(quienSoy.limpiando)
+            assertEquals(0, detenido)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test fun `si el proceso muere ANTES de revisar la cola, al arrancar no se borra nada y se quita la marca`() = runBlocking {
+        pieza(EstadoPieza.PENDIENTE)
+        quienSoy.marcarDesvinculado(null)
+        quienSoy.marcarLimpiando(true) // la marca puesta y la cola sin revisar: el proceso murió aquí
+        borrado().terminarSiQuedoAMedias()
+        assertFalse(quienSoy.limpiando)
+        assertEquals(1, dao.pendientesDeVer().first().size)
+        assertEquals("c".repeat(64), quienSoy.credencial)
+        assertTrue(carpetaCola.exists())
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `DESCONOCIDO - si cambio lo que queda sin subir desde que se confirmo, no se borra y se vuelve a preguntar`() = runBlocking {
+        pieza(EstadoPieza.PENDIENTE)
+        quienSoy.marcarDesconocido()
+        val aparato = quienSoy.aparatoId
+        val generacion = quienSoy.generacion
+        // La persona vio «1»; con la marca ya puesta se guarda otra (una checada que esperaba el GPS).
+        alPonerLaMarca = { runBlocking { pieza(EstadoPieza.RECHAZADA) } }
+        assertFalse(borrado().activarDeNuevo(confirmadas = 1))
+        assertFalse(quienSoy.limpiando)
+        assertEquals(2, dao.pendientesDeVer().first().size)
+        assertEquals(EstadoDelCelular.DESCONOCIDO, quienSoy.estado)
+        assertEquals(0, detenido)
+        // La pantalla vuelve a preguntar con «2»; ahora sí es lo que se borra.
+        alPonerLaMarca = {}
+        assertFalse(borrado().activarDeNuevo(confirmadas = 1)) // un número viejo no borra, ni sin la marca
+        assertTrue(borrado().activarDeNuevo(confirmadas = 2))
+        quedoVacio(aparato, generacion)
+    }
+
+    @Test fun `desvincular con la cola vacia borra TODO, y el de una persona que ya no esta no borra a la nueva`() = runBlocking {
+        val aparato = quienSoy.aparatoId
+        val deAna = quienSoy.generacion
+        pieza(EstadoPieza.AVISO) // ya subió: no cuenta como «por subir»
+        assertTrue(borrado().trasDesvincular(deAna))
+        quedoVacio(aparato, deAna)
+        // Un 200 tardío de Ana con Beto ya activado: no se toca nada de Beto.
+        quienSoy.guardarActivacion(DatosDeActivacion("cel2", "d".repeat(64), "s2", "Beto", Sesion("a", "2".repeat(64), "v3"), listOf(Sucursal("v3", "Sur", null))))
+        assertFalse(borrado().trasDesvincular(deAna))
+        assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+        assertEquals("Beto", quienSoy.nombre)
+        assertFalse(quienSoy.limpiando)
+    }
+
+    @Test fun `desvincular - algo que se guarda justo antes de la marca tampoco se borra y el celular queda DESVINCULADO`() = runBlocking {
+        alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
+        assertFalse(borrado().trasDesvincular(quienSoy.generacion))
+        assertFalse(quienSoy.limpiando)
+        assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("k-PENDIENTE")?.estado)
+        assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
+        assertEquals("c".repeat(64), quienSoy.credencial)
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `dos borrados a la vez no se pisan - el segundo ve la marca del primero y no hace nada`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val g = quienSoy.generacion
+        var segundo: Boolean? = null
+        alPonerLaMarca = { runBlocking { segundo = borrado().activarDeNuevo() } } // el segundo toque, ya con la marca puesta
+        assertTrue(borrado().trasDesvincular(g))
+        assertEquals(false, segundo)
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
+        assertFalse(quienSoy.limpiando)
+    }
+
     @Test fun `un latido cuya respuesta llega despues de borrar y activar otra vez no escribe nada`() = runBlocking {
         val generacionVieja = quienSoy.generacion
         alLatido = {
-            runBlocking { borrado().borrarTodo() }
+            runBlocking { quienSoy.marcarDesvinculado(null); borrado().activarDeNuevo() }
             quienSoy.guardarActivacion(DatosDeActivacion("cel2", "d".repeat(64), "s2", "Beto", Sesion("a", "2".repeat(64), "v3"), listOf(Sucursal("v3", "Sur", null))))
             MockResponse().setResponseCode(200).setBody(
                 """{"estado":"VINCULADO","graciaHasta":null,"persona":{"staffId":"s1","nombre":"Ana"},

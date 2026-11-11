@@ -17,9 +17,7 @@ import com.jaac.avoqado_campo.red.RedModule
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
-import io.mockk.runs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -60,7 +58,7 @@ class AyudaViewModelTest {
         )
         every { dao.cuantasPorSubir() } returns porSubir
         every { conectividad.hayRed() } returns true
-        coEvery { borrado.borrarTodo() } just runs
+        coEvery { borrado.trasDesvincular(any()) } returns true
         coEvery { latido.mandar() } returns true
         coEvery { copia.actualizar(any()) } returns true
         val api = RedModule.crearRetrofit(server.url("/api/v1/").toString(), OkHttpClient()).create(CampoApi::class.java)
@@ -81,10 +79,11 @@ class AyudaViewModelTest {
         esperarQueTermine()
         assertEquals(0, server.requestCount)
         assertEquals("Primero sube lo pendiente (1)", vm.estado.value.mensaje)
-        coVerify(exactly = 0) { borrado.borrarTodo() }
+        coVerify(exactly = 0) { borrado.trasDesvincular(any()) }
     }
 
     @Test fun `desvincular con la cola vacia manda porSubir 0 y borra el celular`() = runBlocking {
+        val generacion = quienSoy.generacion
         server.enqueue(MockResponse().setBody("""{"yaEstaba":false}"""))
         vm.desvincular()
         esperarQueTermine()
@@ -92,7 +91,7 @@ class AyudaViewModelTest {
         assertEquals("/api/v1/tpv/campo/desvincular", r.path)
         assertEquals("c".repeat(64), r.getHeader(CampoApi.CREDENCIAL))
         assertEquals("""{"porSubir":0}""", r.body.readUtf8())
-        coVerify(exactly = 1) { borrado.borrarTodo() }
+        coVerify(exactly = 1) { borrado.trasDesvincular(generacion) } // la persona del toque, no la de después
     }
 
     @Test fun `desvincular sin senal no borra nada`() = runBlocking {
@@ -101,7 +100,7 @@ class AyudaViewModelTest {
         esperarQueTermine()
         assertEquals(0, server.requestCount)
         assertEquals("Necesitas señal para esto", vm.estado.value.mensaje)
-        coVerify(exactly = 0) { borrado.borrarTodo() }
+        coVerify(exactly = 0) { borrado.trasDesvincular(any()) }
     }
 
     @Test fun `desvincular con 409 TIENE_POR_SUBIR no borra`() = runBlocking {
@@ -109,7 +108,7 @@ class AyudaViewModelTest {
         vm.desvincular()
         esperarQueTermine()
         assertEquals("Primero sube lo pendiente.", vm.estado.value.mensaje)
-        coVerify(exactly = 0) { borrado.borrarTodo() }
+        coVerify(exactly = 0) { borrado.trasDesvincular(any()) }
     }
 
     @Test fun `una excepcion no cierra la app y lo dice`() = runBlocking {

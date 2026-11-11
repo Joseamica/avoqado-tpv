@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.red
 
+import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import kotlinx.coroutines.sync.withLock
@@ -27,11 +28,17 @@ class GuardiaDeSesion @Inject constructor(
     private val quienSoy: QuienSoy,
     private val mutexDeSesion: MutexDeSesion,
 ) {
-    /** [llamada] recibe `"Bearer <access>"`. */
-    suspend fun <T> conSesion(venueId: String, llamada: suspend (bearer: String) -> Response<T>): ResultadoConSesion<T> {
-        val generacion = quienSoy.generacion
-        val sesion = quienSoy.sesion
-        if (sesion == null || quienSoy.necesitaPin) return sin(MotivoSinSesion.NECESITA_PIN)
+    /**
+     * [llamada] recibe `"Bearer <access>"`. [yo]: la instantánea de quien llama (r3); la sesión y la generación salen de ella.
+     * Durante un borrado no se manda nada (`SIN_RED`: se repite solo).
+     */
+    suspend fun <T> conSesion(
+        venueId: String, yo: Instantanea = quienSoy.instantanea(), llamada: suspend (bearer: String) -> Response<T>,
+    ): ResultadoConSesion<T> {
+        val generacion = yo.generacion
+        val sesion = yo.sesion
+        if (yo.limpiando) return sin(MotivoSinSesion.SIN_RED)
+        if (sesion == null || yo.necesitaPin) return sin(MotivoSinSesion.NECESITA_PIN)
         if (sesion.venueId != venueId) return sin(MotivoSinSesion.OTRA_SUCURSAL)
 
         val r = intentar(sesion.accessToken, llamada) ?: return sin(MotivoSinSesion.SIN_RED)
@@ -39,8 +46,9 @@ class GuardiaDeSesion @Inject constructor(
 
         renovar(sesion.accessToken)?.let { return sin(it.first, it.second) }
         // Otra activación (o un borrado) mientras se renovaba: la pieza vieja no sale con el token de la nueva.
-        if (quienSoy.generacion != generacion) return sin(MotivoSinSesion.SIN_RED)
-        val vigente = quienSoy.sesion ?: return sin(MotivoSinSesion.NECESITA_PIN)
+        val ahora = quienSoy.instantanea()
+        if (ahora.generacion != generacion || ahora.limpiando) return sin(MotivoSinSesion.SIN_RED)
+        val vigente = ahora.sesion ?: return sin(MotivoSinSesion.NECESITA_PIN)
         if (vigente.venueId != venueId) return sin(MotivoSinSesion.OTRA_SUCURSAL)
         val r2 = intentar(vigente.accessToken, llamada) ?: return sin(MotivoSinSesion.SIN_RED)
         return cerrar(r2, generacion)
@@ -54,12 +62,14 @@ class GuardiaDeSesion @Inject constructor(
      * Si bajo el candado el access guardado ya no es [accessUsado], otro ya renovó (o entró): no se renueva otra vez.
      */
     private suspend fun renovar(accessUsado: String): Pair<MotivoSinSesion, Long?>? = mutexDeSesion.mutex.withLock {
-        val generacion = quienSoy.generacion
-        val actual = quienSoy.sesion ?: return@withLock MotivoSinSesion.NECESITA_PIN to null
+        val yo = quienSoy.instantanea() // r3: sesión, credencial y generación de la misma persona
+        if (yo.limpiando) return@withLock MotivoSinSesion.SIN_RED to null
+        val generacion = yo.generacion
+        val actual = yo.sesion ?: return@withLock MotivoSinSesion.NECESITA_PIN to null
         if (actual.accessToken != accessUsado) return@withLock null
         // Quien esperaba detrás de un renovar que ya pidió el PIN no vuelve a pegarle al servidor.
-        if (quienSoy.necesitaPin) return@withLock MotivoSinSesion.NECESITA_PIN to null
-        val credencial = quienSoy.credencial ?: return@withLock MotivoSinSesion.DESCONOCIDO to null
+        if (yo.necesitaPin) return@withLock MotivoSinSesion.NECESITA_PIN to null
+        val credencial = yo.credencial ?: return@withLock MotivoSinSesion.DESCONOCIDO to null
         val refreshUsado = actual.refreshToken
 
         val r = (llamarSeguro { api.renovar(credencial, RenovarBody(refreshUsado)) } as? Llamada.Contesto)?.r

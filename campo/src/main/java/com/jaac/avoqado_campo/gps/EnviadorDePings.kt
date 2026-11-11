@@ -29,14 +29,17 @@ class EnviadorDePings(
 ) {
     suspend fun mandar(): Unit = mutex.mutex.withLock {
         dao.borrarAntesDe(ahora() - UN_DIA)
-        when (quienSoy.estado) {
+        val yo = quienSoy.instantanea() // r3: el estado y la sucursal, juntos; cada envío lleva la suya (la Guardia toma una)
+        when (yo.estado) {
             EstadoDelCelular.VINCULADO -> Unit
             EstadoDelCelular.DESVINCULADO, EstadoDelCelular.DESCONOCIDO -> { dao.borrarTodos(); return@withLock }
             else -> return@withLock
         }
-        val venueId = quienSoy.sesion?.venueId ?: return@withLock
+        if (yo.limpiando) return@withLock
+        val venueId = yo.sesion?.venueId ?: return@withLock
         for (p in dao.deSucursal(venueId, LOTE)) {
             val cuerpo = PingBody(p.lat, p.lon, p.precision.toDouble(), Instant.ofEpochMilli(p.capturadoAt).toString())
+            // Una instantánea nueva por ping (si la Guardia renovó, el token vigente); otra sucursal o un borrado → corta.
             val r = (guardia.conSesion(venueId) { api.ubicacion(it, venueId, cuerpo) } as? ResultadoConSesion.Respuesta)?.r
                 ?: return@withLock
             val texto = if (r.isSuccessful) r.body()?.string() else r.errorBody()?.string()

@@ -100,11 +100,15 @@ fun PantallaDeGracia(pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes
     }
 }
 
-/** La credencial ya no existe en el SERVIDOR: sólo se sale borrando, con el número exacto de lo que se pierde. */
+/**
+ * La credencial ya no existe en el SERVIDOR: sólo se sale borrando, con el número exacto de lo que se pierde. r3: [onBorrar]
+ * recibe el número que la persona confirmó; si ya cambió, no borra y se vuelve a preguntar con el nuevo.
+ */
 @Composable
-fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspend () -> Boolean) {
+fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspend (confirmadas: Int) -> Boolean) {
     val alcance = rememberCoroutineScope()
     var confirmar by remember { mutableStateOf(false) }
+    var cambio by remember { mutableStateOf(false) }
     var trabajando by remember { mutableStateOf(false) }
     Pantalla {
         Text("Este celular ya no está registrado. Avísale a tu supervisor.", style = MaterialTheme.typography.titleMedium)
@@ -116,15 +120,19 @@ fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspe
             onDismissRequest = { confirmar = false },
             text = {
                 Text(
-                    if (porSubir > 0) "Se van a borrar $porSubir cosas que no se subieron. Avísale a tu supervisor antes."
-                    else "No queda nada sin subir. ¿Borrar este celular y activarlo de nuevo?",
+                    (if (cambio) "Cambió lo que queda sin subir. " else "") +
+                        if (porSubir > 0) "Se van a borrar $porSubir cosas que no se subieron. Avísale a tu supervisor antes."
+                        else "No queda nada sin subir. ¿Borrar este celular y activarlo de nuevo?",
                 )
             },
             confirmButton = {
                 TextButton({
+                    val vistas = porSubir
                     confirmar = false
                     trabajando = true
-                    alcance.launch { if (!onBorrar()) trabajando = false }
+                    alcance.launch {
+                        if (!onBorrar(vistas)) { trabajando = false; cambio = true; confirmar = true }
+                    }
                 }) { Text("Borrar") }
             },
             dismissButton = { TextButton({ confirmar = false }) { Text("Cancelar") } },

@@ -415,7 +415,7 @@ class EncoladorTest {
 
     /** H2: borrado y activación de otra persona entre el toque y la escritura (la checada espera hasta 10 s al GPS). */
     private fun otraPersona() {
-        quienSoy.empezarLimpieza(); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
+        quienSoy.empezarLimpiezaSi(quienSoy.generacion); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
         quienSoy.guardarActivacion(
             DatosDeActivacion("c2", "cred2", "s2", "Beto", Sesion("b", "r2", "v1"), listOf(Sucursal("v1", "Centro", null))),
         )

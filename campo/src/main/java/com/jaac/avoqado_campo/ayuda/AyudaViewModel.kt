@@ -56,14 +56,24 @@ class AyudaViewModel @Inject constructor(
     /** B5: la próxima vez pide el PIN; la cola sigue subiendo con los tokens. */
     fun cerrarSesion() = quienSoy.marcarBloqueada(true)
 
+    /**
+     * r3 #1: la persona que se desvincula es la de la instantánea del toque; con el 200, el borrado vuelve a contar la cola con
+     * su marca puesta y, si en el vuelo se guardó algo, no borra: el celular queda DESVINCULADO y eso sube por la gracia.
+     */
     fun desvincular() = correr {
+        val yo = quienSoy.instantanea()
+        if (yo.limpiando) return@correr "Espera un momento."
         val n = dao.cuantasPorSubir().first().total
         if (n > 0) return@correr "Primero sube lo pendiente ($n)"
         if (!conectividad.hayRed()) return@correr SIN_SENAL
-        val credencial = quienSoy.credencial ?: return@correr "Este celular no está activado."
+        val credencial = yo.credencial ?: return@correr "Este celular no está activado."
         when (val ll = llamarSeguro { api.desvincular(credencial, DesvincularBody(porSubir = 0)) }) {
             is Llamada.Contesto -> when {
-                ll.r.isSuccessful -> { ll.r.body()?.close(); borrado.borrarTodo(); null }
+                ll.r.isSuccessful -> {
+                    ll.r.body()?.close()
+                    if (borrado.trasDesvincular(yo.generacion)) null
+                    else "Se guardó algo mientras se desvinculaba: se sube para que tu supervisor lo revise."
+                }
                 codigoDe(ll.r.errorBody()?.string()) == "TIENE_POR_SUBIR" -> "Primero sube lo pendiente."
                 else -> "No se pudo desvincular (HTTP ${ll.r.code()}). Intenta otra vez."
             }

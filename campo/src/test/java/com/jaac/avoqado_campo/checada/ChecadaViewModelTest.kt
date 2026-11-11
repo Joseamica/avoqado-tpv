@@ -72,8 +72,9 @@ class ChecadaViewModelTest {
     private var respuestaGps: ResultadoGps = ResultadoGps.Siguiendo
     private var detenido = 0
     private val gps = object : ControlDeGps {
-        override fun iniciar() = respuestaGps
+        override suspend fun iniciar() = respuestaGps
         override fun detener() { detenido++ }
+        override suspend fun revisar() = Unit
     }
     private lateinit var vm: ChecadaViewModel
 
@@ -218,7 +219,7 @@ class ChecadaViewModelTest {
         coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
         vm.marcarEntrada()
         vm.viewModelScope.cancel() // regresó; la checada sigue (NonCancellable)
-        quienSoy.empezarLimpieza(); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
+        quienSoy.empezarLimpiezaSi(quienSoy.generacion); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
         quienSoy.guardarActivacion(
             DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v1"), listOf(Sucursal("v1", "Centro", null))),
         )

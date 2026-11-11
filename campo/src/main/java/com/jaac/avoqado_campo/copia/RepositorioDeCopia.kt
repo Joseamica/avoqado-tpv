@@ -8,6 +8,7 @@ import com.jaac.avoqado_campo.BuildConfig
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
+import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
@@ -57,9 +58,10 @@ class RepositorioDeCopia(
      * la cola. false = no se escribió nada (sin red, sin sesión de esa sucursal, o el celular cambió mientras bajaba).
      */
     suspend fun actualizar(venueId: String): Boolean {
-        val generacion = quienSoy.generacion
-        if (quienSoy.limpiando) return false
-        val misSims = (guardia.conSesion(venueId) { api.misSims(it, venueId) } as? ResultadoConSesion.Respuesta)
+        val yo = quienSoy.instantanea() // r3: la sesión que baja y la generación que se escribe son de la misma persona
+        if (yo.limpiando) return false
+        val generacion = yo.generacion
+        val misSims = (guardia.conSesion(venueId, yo) { api.misSims(it, venueId) } as? ResultadoConSesion.Respuesta)
             ?.r?.takeIf { it.isSuccessful }?.body() ?: return false
         val modulos = (llamarSeguro { api.modulos(venueId) } as? Llamada.Contesto)
             ?.r?.takeIf { it.isSuccessful }?.body() ?: return false
@@ -74,9 +76,13 @@ class RepositorioDeCopia(
         }
     }
 
-    /** La pantalla, justo después de encolar la venta o la custodia de [serial]. Sin copia vigente no hace nada. */
-    suspend fun marcar(serial: String, marca: String) = candado.withLock {
-        val c = _copia.value?.takeIf { vigente(it) && !quienSoy.limpiando } ?: return@withLock
+    /**
+     * La pantalla, justo después de encolar la venta o la custodia de [serial], con la [generacion] con la que encoló: la
+     * copia de otra persona (un borrado y otra activación en medio) no se toca. Sin copia vigente no hace nada.
+     */
+    suspend fun marcar(generacion: String, serial: String, marca: String) = candado.withLock {
+        val yo = quienSoy.instantanea()
+        val c = _copia.value?.takeIf { !yo.limpiando && it.generacion == generacion && vigente(it, yo) } ?: return@withLock
         val s = normalizarSerie(serial)
         publicar(c.copy(sims = c.sims.map { if (normalizarSerie(it.serialNumber) == s) it.copy(localmente = marca) else it }))
     }
@@ -89,7 +95,7 @@ class RepositorioDeCopia(
 
     /** I2 + R7-1, y que la sesión siga en esa sucursal (un `entrar` a otra a media descarga no se queda con la de antes). */
     private fun puedeEscribir(generacion: String, venueId: String) =
-        !quienSoy.limpiando && quienSoy.generacion == generacion && quienSoy.sesion?.venueId == venueId
+        quienSoy.instantanea().let { !it.limpiando && it.generacion == generacion && it.sesion?.venueId == venueId }
 
     private fun publicar(c: Copia) {
         val tmp = File(archivo.parentFile, "copia.json.tmp")
@@ -103,8 +109,8 @@ class RepositorioDeCopia(
 
     // Gson no respeta los no-nulos de Kotlin: un archivo a medias trae null donde el tipo dice que no.
     @Suppress("SENSELESS_COMPARISON")
-    private fun vigente(c: Copia) = c.sims != null && c.config != null &&
-        c.versionApp == BuildConfig.VERSION_CODE && c.generacion == quienSoy.generacion && c.venueId == quienSoy.sesion?.venueId
+    private fun vigente(c: Copia, yo: Instantanea = quienSoy.instantanea()) = c.sims != null && c.config != null &&
+        c.versionApp == BuildConfig.VERSION_CODE && c.generacion == yo.generacion && c.venueId == yo.sesion?.venueId
 
     /** Serie normalizada → marca, de las ventas y custodias que siguen por subir (las HECHA ya están en `mis-sims`). */
     private suspend fun marcasDeLaCola(): Map<String, String> {

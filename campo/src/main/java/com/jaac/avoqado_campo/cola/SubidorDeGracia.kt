@@ -42,10 +42,12 @@ class SubidorDeGracia(
         for (id in dao.siguientesParaSubir().map { it.id }) {
             var p = dao.porId(id)?.takeIf { it.estado == EstadoPieza.PENDIENTE || it.estado == EstadoPieza.RETENIDA } ?: continue
 
-            // Se lee antes de cada pieza: un USA_TU_SESION o un 401 de la anterior ya la cambió.
-            val estado = quienSoy.identidad.value.estado
-            if (estado != EstadoDelCelular.DESVINCULADO && estado != EstadoDelCelular.DADO_DE_BAJA) return corte(estado.name)
-            val credencial = quienSoy.credencial ?: return corte(EstadoDelCelular.DESCONOCIDO.name)
+            // Se lee antes de cada pieza: un USA_TU_SESION o un 401 de la anterior ya la cambió. r3: UNA instantánea por pieza;
+            // su credencial manda y su generación escribe de regreso.
+            val yo = quienSoy.instantanea()
+            if (yo.estado != EstadoDelCelular.DESVINCULADO && yo.estado != EstadoDelCelular.DADO_DE_BAJA) return corte(yo.estado.name)
+            if (yo.limpiando) return corte(SIN_RED) // un borrado espera este candado: se suelta ya
+            val credencial = yo.credencial ?: return corte(EstadoDelCelular.DESCONOCIDO.name)
 
             // Lo retenido espera su turno sin trabar a las demás; lo que espera por red corta (P1).
             val t = ahora()
@@ -75,7 +77,7 @@ class SubidorDeGracia(
             // La EVIDENCIA se arma UNA vez y se guarda antes del primer envío: los reintentos mandan lo mismo.
             val cuerpo = p.cuerpoJson ?: cuerpoDeEvidencia(p).also { p = p.copy(cuerpoJson = it).also { c -> dao.actualizar(c) } }
 
-            val generacion = quienSoy.generacion
+            val generacion = yo.generacion
             val r = when (val ll = llamarSeguro { api.gracia(credencial, GraciaBody(p.tipo, p.venueId, cuerpo)) }) {
                 is Llamada.Contesto -> ll.r
                 else -> return corte(SIN_RED) // sin red o un portal cautivo

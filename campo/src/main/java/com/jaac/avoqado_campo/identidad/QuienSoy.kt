@@ -41,6 +41,16 @@ data class DatosDeLatido(val estado: String, val graciaHasta: String?, val nombr
 /** El cuerpo de `activar` que espera saber su resultado (B14); lo escribe `RepositorioDeEntrada`, lo borra `borrarTodo`. */
 internal const val ACTIVACION_PENDIENTE = "activacion.pendiente"
 
+/**
+ * r3 · lo que un camino necesita de «Quién soy», leído JUNTO bajo su candado: nunca la credencial de una persona con la
+ * generación de otra. Quien manda o escribe algo toma UNA al principio, usa sólo ésa y escribe de regreso con
+ * `guardarSi(generacion)`; con [limpiando] no hace nada. Sin `data`: su `toString` no imprime la credencial.
+ */
+class Instantanea(
+    val generacion: String, val estado: EstadoDelCelular, val credencial: String?, val sesion: Sesion?, val staffId: String?,
+    val sucursales: List<Sucursal>, val necesitaPin: Boolean, val limpiando: Boolean,
+)
+
 /** Quién es este celular. Todo vive en el almacén cifrado; cada escritura publica una `Identidad` nueva. */
 class QuienSoy(private val almacen: AlmacenSeguro) {
     private val gson = Gson()
@@ -71,7 +81,13 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     val bloqueada: Boolean get() = almacen.leer(BLOQUEADA) == "true"
     val necesitaPin: Boolean get() = almacen.leer(NECESITA_PIN) == "true"
     /** I2: el borrado del celular está en curso; nadie escribe datos de la persona (lo maneja `BorradoDelCelular`). */
-    val limpiando: Boolean get() = synchronized(candado) { almacen.leer(LIMPIANDO) == "true" }
+    val limpiando: Boolean get() = synchronized(candado) { almacen.leer(LIMPIANDO) != null }
+    /** El borrado ya revisó la cola con la marca puesta: si el proceso murió, al arrancar se termina (si no, sólo se quita). */
+    val limpiezaConfirmada: Boolean get() = synchronized(candado) { almacen.leer(LIMPIANDO) == BORRANDO }
+
+    fun instantanea(): Instantanea = synchronized(candado) {
+        Instantanea(generacion, leerEstado(), credencial, sesion, staffId, leerSucursales(), necesitaPin, limpiando)
+    }
 
     /** Lee [generacion] ANTES de la llamada de red y guarda con esto: si ya cambió, no escribe nada. */
     fun guardarSi(generacion: String, bloque: QuienSoy.() -> Unit): Boolean = synchronized(candado) {
@@ -135,10 +151,19 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     fun marcarBloqueada(v: Boolean) = escribir(BLOQUEADA to v.toString())
 
     /** No la toca `borrarTodo`: el borrado la pone al empezar y la quita al terminar. */
-    fun marcarLimpiando(v: Boolean) = escribir(LIMPIANDO to if (v) "true" else null)
+    fun marcarLimpiando(v: Boolean) = escribir(LIMPIANDO to if (v) REVISANDO else null)
 
-    /** Primer paso del borrado (R8-1): la marca y una `generacion` nueva en UNA escritura, así toda respuesta en vuelo se descarta. */
-    fun empezarLimpieza() = escribir(LIMPIANDO to "true", GENERACION to nueva())
+    /**
+     * Primer paso del borrado (R8-1): la marca y una `generacion` nueva en UNA escritura, así toda respuesta en vuelo se
+     * descarta. r3: sólo si sigue siendo la persona de [generacion] y no hay otro borrado; false = no se escribió nada.
+     */
+    fun empezarLimpiezaSi(generacion: String): Boolean = synchronized(candado) {
+        if (almacen.leer(GENERACION) != generacion || almacen.leer(LIMPIANDO) != null) return false
+        escribir(LIMPIANDO to REVISANDO, GENERACION to nueva())
+        true
+    }
+
+    fun confirmarLimpieza() = escribir(LIMPIANDO to BORRANDO)
 
     /** La sesión del servidor murió: `necesitaPin` y `bloqueada` en UNA escritura (R3-2). */
     fun marcarSesionMuerta() = escribir(NECESITA_PIN to "true", BLOQUEADA to "true")
@@ -189,6 +214,7 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         const val GENERACION = "generacion"
         const val BLOQUEADA = "bloqueada"; const val NECESITA_PIN = "necesitaPin"
         const val LIMPIANDO = "limpiando"
+        const val REVISANDO = "true"; const val BORRANDO = "borrando" // los valores de LIMPIANDO
         val TODAS = CLAVES_DEL_PIN + listOf(ACTIVACION_PENDIENTE, APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
     }
 }

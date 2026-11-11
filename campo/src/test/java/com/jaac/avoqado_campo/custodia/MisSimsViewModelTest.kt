@@ -82,7 +82,7 @@ class MisSimsViewModelTest {
         every { copia.copia } returns laCopia
         coEvery { copia.leer() } answers { laCopia.value }
         coEvery { copia.actualizar(any()) } returns false
-        coEvery { copia.marcar(any(), any()) } just runs
+        coEvery { copia.marcar(any(), any(), any()) } just runs
         every { dao.pendientesDeVer() } returns cola
         coEvery { dao.actualizar(any()) } just runs
         coEvery { encolador.aceptarCustodia(any(), any(), any(), any()) } returns "k"
@@ -104,7 +104,7 @@ class MisSimsViewModelTest {
         vm().aceptarTodas()
         assertEquals(listOf(50, 10), lotes.map { it.size })
         assertEquals(SimConVersion("S59", 59), lotes[1].last())
-        coVerify(exactly = 60) { copia.marcar(any(), MarcaLocal.ACEPTADA_EN_EL_CELULAR) }
+        coVerify(exactly = 60) { copia.marcar(any(), any(), MarcaLocal.ACEPTADA_EN_EL_CELULAR) }
         io.mockk.verify(exactly = 1) { Disparador.ahora(any()) }
     }
 
@@ -121,7 +121,7 @@ class MisSimsViewModelTest {
         ponerCopia(sim("S1", version = 7))
         vm().rechazar("S1")
         coVerify { encolador.rechazarCustodia(quienSoy.generacion, SimConVersion("S1", 7), "v1", emptyList()) }
-        coVerify { copia.marcar("S1", MarcaLocal.RECHAZADA_EN_EL_CELULAR) }
+        coVerify { copia.marcar(any(), "S1", MarcaLocal.RECHAZADA_EN_EL_CELULAR) }
     }
 
     @Test fun `dos toques a aceptar son una pieza`() {
@@ -259,7 +259,7 @@ class MisSimsViewModelTest {
         otraPersonaAlLeerLaSesion()
         v.aceptar("S1")
         assertEquals("Espera un momento.", v.estado.value.error)
-        coVerify(exactly = 0) { copia.marcar(any(), any()) }
+        coVerify(exactly = 0) { copia.marcar(any(), any(), any()) }
     }
 
     @Test fun `corregir lee la generacion antes que la sesion - otra persona entre las dos no recibe la correccion (H2)`() {

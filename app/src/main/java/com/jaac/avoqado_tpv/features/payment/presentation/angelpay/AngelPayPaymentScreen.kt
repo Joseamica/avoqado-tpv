@@ -350,6 +350,7 @@ fun AngelPayPaymentScreen(
                 showReceiptScreen = false,
                 onPrintReceipt = {},
                 pendingSyncMessage = queuedState.message,
+                registroConfirmado = queuedState.registrado,
                 isSerializedFlow = viewModel.isSerializedSale,
                 isPortabilidad = isPortabilidad,
                 canTakeProofOfSalePhoto = false,

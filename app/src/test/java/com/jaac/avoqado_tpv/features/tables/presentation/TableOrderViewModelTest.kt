@@ -30,7 +30,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -1376,6 +1380,86 @@ class TableOrderViewModelTest {
 
         assertThat(viewModel.error.value).isEqualTo("No se pudo aplicar la cortesía")
         assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    /**
+     * D4 (N86, 10-nov, TPV 2.18.0): con el PIN de gerente apagado, la 1.ª cortesía espera la red y la hoja se cierra; la
+     * 2.ª, con «apagado» ya guardado, termina sin esperar nada. La pantalla observa el ViewModel con un colector que corre
+     * DESPUÉS del toque (Compose), no dentro de él: eso es [observar]. Mirando [TableOrderViewModel.isComping], la 2.ª vez
+     * nunca veía el true (la hoja se quedaba abierta tapando el aviso); por eso la hoja se cierra con
+     * [TableOrderViewModel.compTerminadas].
+     */
+    private fun <T> TestScope.observar(flow: StateFlow<T>): List<T> {
+        val vistos = mutableListOf<T>()
+        backgroundScope.launch(StandardTestDispatcher(testScheduler)) { flow.collect { vistos += it } }
+        runCurrent()
+        return vistos
+    }
+
+    private val textoNegada = "Esta cortesía la da un gerente con su sesión"
+
+    @Test
+    fun D4_misma_pantalla_primera_vez_espera_la_red_segunda_contesta_al_instante_y_las_dos_terminan_y_avisan() = runTest {
+        val red = CompletableDeferred<Autorizacion>()
+        var llamadas = 0
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } coAnswers {
+            if (++llamadas == 1) red.await() else Autorizacion.Negada(textoNegada)
+        }
+        val viewModel = conCuenta()
+        val terminadas = observar(viewModel.compTerminadas)
+        val avisos = observar(viewModel.error)
+
+        // 1.ª: no hay nada guardado, espera la red.
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        red.complete(Autorizacion.Negada(textoNegada))
+        runCurrent()
+        assertThat(terminadas).containsExactly(0, 1).inOrder()
+        viewModel.consumeError(textoNegada, 1) // la pantalla vacía el aviso al mostrarlo
+        runCurrent()
+
+        // 2.ª, en el mismo ViewModel: «apagado» ya guardado, termina dentro del toque.
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        assertThat(terminadas).containsExactly(0, 1, 2).inOrder()
+        assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
+
+        // 3.ª, con el aviso de la 2.ª aún en pantalla (sin vaciar): el error no cambia, sólo el contador. Por eso la
+        // pantalla también repite el aviso con compTerminadas.
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        assertThat(terminadas).containsExactly(0, 1, 2, 3).inOrder()
+        assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun D4_el_aviso_viejo_no_vacia_uno_mas_nuevo_aunque_traiga_el_mismo_texto() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada(textoNegada)
+        val viewModel = conCuenta()
+        viewModel.compWholeOrder("Reclamo") // 1.ª: la pantalla lo muestra con el contador en 1
+        viewModel.compWholeOrder("Reclamo") // 2.ª: mismo texto, contador en 2, antes de que la pantalla recomponga
+
+        viewModel.consumeError(textoNegada, 1) // vence el 1.er aviso
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        viewModel.consumeError("Otro aviso", 2)
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        viewModel.consumeError(textoNegada, 2) // la pantalla ya mostró el 2.º
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun D4_con_la_pantalla_mirando_isComping_la_segunda_vez_no_se_ve_el_aplicando() = runTest {
+        // La causa, fijada: si alguien vuelve a cerrar la hoja con la bajada de isComping, esto explica por qué no sirve.
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada(textoNegada)
+        val viewModel = conCuenta()
+        val aplicando = observar(viewModel.isComping)
+
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+
+        assertThat(aplicando).containsExactly(false)
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
     }
 
     // endregion

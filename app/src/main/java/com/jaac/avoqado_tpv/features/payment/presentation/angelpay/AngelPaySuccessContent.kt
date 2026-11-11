@@ -132,6 +132,8 @@ fun AngelPaySuccessContent(
      * a normal recorded [AngelPayPaymentState.Success], which stays byte-identical.
      */
     pendingSyncMessage: String? = null,
+    /** D4: la cola ya subió esta venta; el aviso de [pendingSyncMessage] sale en verde con una palomita. */
+    registroConfirmado: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val subtotalAmount = remember(state.amount) { state.amount.toBigDecimalOrNull() ?: BigDecimal.ZERO }
@@ -500,14 +502,18 @@ fun AngelPaySuccessContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                            .background(
+                                (if (registroConfirmado) MaterialTheme.avoqadoColors.statusSuccess
+                                else MaterialTheme.avoqadoColors.statusWarning).copy(alpha = 0.12f),
+                            )
                             .padding(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Sync,
+                            imageVector = if (registroConfirmado) Icons.Default.CheckCircle else Icons.Default.Sync,
                             contentDescription = null,
-                            tint = MaterialTheme.avoqadoColors.statusWarning,
+                            tint = if (registroConfirmado) MaterialTheme.avoqadoColors.statusSuccess
+                            else MaterialTheme.avoqadoColors.statusWarning,
                             modifier = Modifier.size(20.dp),
                         )
                         Text(

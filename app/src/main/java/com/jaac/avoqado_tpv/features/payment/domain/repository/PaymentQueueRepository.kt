@@ -128,6 +128,14 @@ interface PaymentQueueRepository {
     suspend fun getPendingCount(): Int
 
     /**
+     * D4 (10-nov): la fila de la cola con esa referencia, o null si no está. El recibo «EN COLA» la vigila para decir
+     * «ya quedó registrado» cuando la cola la sube; quien la lee decide si de verdad es SU venta (Codex r1). Por omisión
+     * no emite nada (los dobles de prueba no tienen que implementarlo).
+     */
+    fun observarEstadoDeVenta(referenceNumber: String): kotlinx.coroutines.flow.Flow<EstadoEnCola?> =
+        kotlinx.coroutines.flow.emptyFlow()
+
+    /**
      * Get count of failed payments (for UI warning).
      *
      * **Use Case:** Show alert "2 payments failed - contact support"
@@ -208,3 +216,16 @@ interface PaymentQueueRepository {
      */
     suspend fun release(queueId: Long, token: String, retryCount: Int, error: String): Int
 }
+
+/**
+ * D4: lo que el recibo necesita de la fila de una venta en la cola para decir, sin mentir, que ya quedó registrada.
+ * [efectivo] usa el mismo criterio que «ventas guardadas» (`CASH-…` o autorización `EFECTIVO…`).
+ */
+data class EstadoEnCola(
+    val estado: String,
+    val llave: String?,
+    val monto: String,
+    val propina: String,
+    val revision: Boolean,
+    val efectivo: Boolean,
+)

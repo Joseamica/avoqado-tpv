@@ -210,6 +210,8 @@ class PaymentQueueRepositoryImpl @Inject constructor(
     // still exists (kept for its own CAS regression test, PendingPaymentClaimTest.kt) — it's
     // just no longer exposed through this application-facing repository.
 
+    override fun observarEstadoDeVenta(referenceNumber: String) = pendingPaymentDao.observarEstadoDeVenta(referenceNumber)
+
     override suspend fun getPendingCount(): Int = withContext(Dispatchers.IO) {
         try {
             pendingPaymentDao.getPendingCount()

@@ -8,6 +8,10 @@
              el ping funciona, internet funciona, y el síntoma no señala la causa. Sólo afecta a builds de DEBUG. -->
         <domain includeSubdomains="false">10.55.1.253</domain>
         <domain includeSubdomains="false">192.168.1.113</domain>
+        <!-- 10-nov-2026: el puente del Alien (red de casa) hacia el banco de pruebas de la nube; `puerta-compilar tpv 0`
+             apunta la copia .lab a http://192.168.100.70:3020. Sin esta línea Android la bloqueaba (CLEARTEXT not
+             permitted) y la TPV se quedaba en «Activar Terminal». -->
+        <domain includeSubdomains="false">192.168.100.70</domain>
         <domain includeSubdomains="false">localhost</domain>
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>

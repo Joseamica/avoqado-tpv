@@ -20,6 +20,8 @@ object RedModule {
     fun proveerCliente(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS) // fotos
+        // BASIC = sólo la línea de petición y de respuesta: los cuerpos y cabeceras llevan PIN, credencial y tokens.
         .addInterceptor(HttpLoggingInterceptor().apply {
             level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
                     else HttpLoggingInterceptor.Level.NONE
@@ -27,8 +29,11 @@ object RedModule {
         .build()
 
     @Provides @Singleton
-    fun proveerRetrofit(cliente: OkHttpClient): Retrofit = Retrofit.Builder()
-        .baseUrl(BuildConfig.API_BASE_URL)
+    fun proveerRetrofit(cliente: OkHttpClient): Retrofit = crearRetrofit(BuildConfig.API_BASE_URL, cliente)
+
+    /** La base va aparte para que las pruebas apunten a MockWebServer. */
+    fun crearRetrofit(baseUrl: String, cliente: OkHttpClient): Retrofit = Retrofit.Builder()
+        .baseUrl(baseUrl)
         .client(cliente)
         .addConverterFactory(GsonConverterFactory.create())
         .build()

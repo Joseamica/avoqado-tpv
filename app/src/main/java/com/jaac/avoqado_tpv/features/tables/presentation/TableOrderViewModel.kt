@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -368,8 +369,13 @@ class TableOrderViewModel @Inject constructor(
         _notice.value = null
     }
 
-    fun consumeError() {
-        _error.value = null
+    /**
+     * Vacía el aviso que la pantalla acaba de mostrar, sólo si sigue siendo ése y no terminó otra cortesía mientras se
+     * mostraba. Vaciar a ciegas se llevaba un aviso más nuevo sin mostrarlo: otro texto que llegó al final, o la 2.ª
+     * cortesía negada con el mismo texto justo cuando vencía el 1.er aviso (D4, Codex r3).
+     */
+    fun consumeError(mostrado: String, cortesias: Int) {
+        if (_compTerminadas.value == cortesias) _error.compareAndSet(mostrado, null)
     }
 
     fun exitToFloor() {
@@ -389,6 +395,14 @@ class TableOrderViewModel @Inject constructor(
 
     private val _isComping = MutableStateFlow(false)
     val isComping: StateFlow<Boolean> = _isComping.asStateFlow()
+
+    /**
+     * Sube cada vez que termina una cortesía (aplicada, negada, cancelada o con error). La hoja se cierra con esto y no con
+     * la bajada de [isComping]: con el PIN de gerente apagado y ya guardado, la cortesía termina dentro del mismo toque,
+     * true→false pasa antes de que Compose mire, y la hoja se quedaba abierta tapando el aviso (D4, N86, 10-nov).
+     */
+    private val _compTerminadas = MutableStateFlow(0)
+    val compTerminadas: StateFlow<Int> = _compTerminadas.asStateFlow()
 
     private val _isMoving = MutableStateFlow(false)
     val isMoving: StateFlow<Boolean> = _isMoving.asStateFlow()
@@ -552,6 +566,7 @@ class TableOrderViewModel @Inject constructor(
                 _error.value = "No se pudo aplicar la cortesía"
             } finally {
                 _isComping.value = false
+                _compTerminadas.update { it + 1 }
             }
         }
     }

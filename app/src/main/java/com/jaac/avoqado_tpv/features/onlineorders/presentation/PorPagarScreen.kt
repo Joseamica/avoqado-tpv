@@ -237,7 +237,7 @@ private fun Lista(
                 Vacio(TextosPorPagar.VACIO, TextosPorPagar.VACIO_AYUDA)
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
                 val filaPorPagar: @Composable (Folio) -> Unit = {
-                    FilaPorPagar(it, ahora, e.sinConexion, zona, saldoEnDuda = it.orderId in ui.saldoSinConfirmar, onAbrir = onAbrir)
+                    FilaPorPagar(it, ahora, e.sinConexion, zona, marcaDeSaldo = marcaDeSaldo(ui, it.orderId), onAbrir = onAbrir)
                 }
                 val filaPorEntregar: @Composable (Folio) -> Unit = {
                     FilaPorEntregar(it, ui, zona, onAbrir, onListo, onEntregado)
@@ -281,7 +281,7 @@ private fun LazyListScope.cargarMas(e: EstadoDeFolios, seccion: SeccionDeFolios,
 }
 
 @Composable
-private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, saldoEnDuda: Boolean, onAbrir: (Folio) -> Unit) {
+private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, marcaDeSaldo: String?, onAbrir: (Folio) -> Unit) {
     Tarjeta(onClick = { onAbrir(folio) }) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             FolioYNombre(folio, Modifier.weight(1f))
@@ -300,9 +300,9 @@ private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zon
         // Parte 2 (S14): «Con cuenta: Ana L. · Premio −$45.00» cuando el SERVIDOR lo manda; sin eso, como hoy.
         LineaDeLaCuenta(folio, Modifier.padding(top = 4.dp), maxLines = 1)
         // Full-testing H2: que la cajera lo vea antes de abrirlo.
-        if (saldoEnDuda) {
+        marcaDeSaldo?.let { marca ->
             Text(
-                "● " + TextosPorPagar.SALDO_SIN_CONFIRMAR_MARCA,
+                "● $marca",
                 Modifier.padding(top = 4.dp),
                 fontSize = 13.sp,
                 color = Warning,
@@ -401,10 +401,14 @@ private fun FolioDetalle(
     // Parte 2: mientras se comprueba un cobro con saldo guardado, el folio no se toca.
     val comprobando = folio.orderId in ui.comprobandoSaldo
     // Full-testing H2: un cobro con saldo guardado sin desenlace (con o sin red).
-    val saldoEnDuda = folio.orderId in ui.saldoSinConfirmar
+    val saldoEnDuda = ui.saldoEnDuda(folio.orderId)
+    // D12 r3: no se sabe por el almacén ilegible (no hay una solicitud de ESTE folio que comprobar).
+    val saldoIlegible = saldoEnDuda && folio.orderId !in ui.saldoSinConfirmar
     val ocupado = folio.orderId in ui.ocupados || comprobando
     val apagado = MaterialTheme.colorScheme.onSurfaceVariant
     var confirmarCancelar by remember(folio.orderId) { mutableStateOf(false) }
+    // D12 r4: si el folio queda en duda con el diálogo abierto (volvió de segundo plano, se comprobó), el diálogo se cierra.
+    LaunchedEffect(saldoEnDuda) { if (saldoEnDuda) confirmarCancelar = false }
 
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
@@ -485,7 +489,7 @@ private fun FolioDetalle(
                 }
             } else if (saldoEnDuda && !sinConexion && !pagado) {
                 Text(
-                    TextosPorPagar.SALDO_SIN_CONFIRMAR.cuerpo,
+                    if (saldoIlegible) TextosPorPagar.SALDO_ILEGIBLE.cuerpo else TextosPorPagar.SALDO_SIN_CONFIRMAR.cuerpo,
                     Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     fontSize = 14.sp,
                     color = Warning,
@@ -497,7 +501,7 @@ private fun FolioDetalle(
                 // Sin red se ve lo que pidió para cobrarlo en «Cobrar», pero no hay botón de cobrar el folio.
                 sinConexion -> {
                     Text(
-                        textoDelFolioSinRed(saldoEnDuda),
+                        textoDelFolioSinRed(saldoEnDuda, ilegible = saldoIlegible),
                         Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         fontSize = 15.sp,
                         color = if (saldoEnDuda) Warning else apagado,
@@ -522,7 +526,7 @@ private fun FolioDetalle(
                     // Parte 2 (P2): «Saldo o tarjeta de regalo», con `giftCards:redeem`.
                     saldo?.let { BotonDeSaldoDelFolio(it, ocupado = ocupado, onClick = { onUsarSaldo(folio) }) }
                     // Lejos de «Cobrar» (20 dp) y siempre pregunta; no existe en un folio con dinero ni con un saldo sin confirmar.
-                    if (muestraCancelarFolio(folio, ui.puedeCancelar, sinConexion, saldoEnDuda = folio.orderId in ui.saldoSinConfirmar)) {
+                    if (muestraCancelarFolio(folio, ui.puedeCancelar, sinConexion, saldoEnDuda = saldoEnDuda)) {
                         Spacer(Modifier.height(20.dp))
                         TextButton(
                             onClick = { confirmarCancelar = true },

@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.giftcards.data
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
@@ -46,9 +47,27 @@ data class SolicitudDeSaldo(
     val orderId: String,
     val cuerpo: String,
     val creadaEn: Long,
+    /** D12: el folio que ve la cajera («W494E»), para avisar sin red. null en las guardadas antes de D12. */
+    val folio: String? = null,
 ) {
+    /** D12: el monto del cuerpo, en centavos; null si no se puede leer. Sin campo propio: también sirve en las guardadas antes de D12. */
+    val montoCents: Long?
+        get() = try {
+            JsonParser.parseString(cuerpo).asJsonObject.get("amount")?.takeUnless { it.isJsonNull }?.asBigDecimal?.centavos()
+        } catch (e: Exception) {
+            null
+        }
     /** El cuerpo trae la prueba (el código o la liga): nunca sale en un log. */
     override fun toString() = "SolicitudDeSaldo(llave=$llave, venueId=$venueId, orderId=$orderId, cuerpo=****)"
+}
+
+/**
+ * D12: lo que el almacén cifrado dice de un folio. [Ilegible] es «no se sabe»: se trata como un cobro en duda, nunca como «no hay».
+ */
+sealed interface SaldoGuardado {
+    data object Ninguno : SaldoGuardado
+    data class EnDuda(val solicitud: SolicitudDeSaldo) : SaldoGuardado
+    data object Ilegible : SaldoGuardado
 }
 
 /** Full-testing H4: por qué el folio ya no admite cobro desde esta pantalla. */
@@ -64,6 +83,11 @@ sealed interface DesenlaceDeSaldo {
     data class NoSalio(val texto: String, val motivo: FolioCerrado? = null) : DesenlaceDeSaldo
     /** No se sabe: la solicitud sigue guardada y ese folio no se cobra con nada hasta comprobarla. */
     data object Incierto : DesenlaceDeSaldo
+    /**
+     * D12: el almacén cifrado de los cobros con saldo no se deja leer (no se pudo descifrar o no se entiende): no se sabe si este folio
+     * tiene un cobro en duda. No se mandó nada ni se tocó el almacén, y el folio no se cobra en esta terminal.
+     */
+    data object Ilegible : DesenlaceDeSaldo
 }
 
 /** Textos del cobro con saldo en la TPV (mockups v2 2e–2e·4 y `TextosDeTarjetas` de ANDROID). */
@@ -103,6 +127,12 @@ object TextosDeSaldo {
     const val LIGA_DE_LA_TARJETA = "Liga de la tarjeta"
     const val REMOTO_COBRANDO_CON_SALDO = "La terminal está cobrando con saldo de tarjeta de regalo"
     const val REMOTO_SALDO_SIN_CONFIRMAR = "Esta cuenta tiene un cobro con saldo sin confirmar en la terminal"
+    /** D12: el almacén cifrado de los cobros con saldo no se deja leer. */
+    const val REMOTO_SALDO_ILEGIBLE = "La terminal no pudo revisar si esta cuenta tiene un cobro con saldo sin confirmar"
+    const val ILEGIBLE_TITULO = "No se pudo revisar el cobro con saldo"
+    const val ILEGIBLE =
+        "Esta terminal no pudo leer sus cobros con saldo guardados: no se sabe si este folio ya se cobró. No lo cobres aquí; " +
+            "revisa en el panel si ya está pagado."
     fun cobrar(cents: Long) = "Cobrar ${pesos(cents)}"
     fun alcanza(saldoCents: Long, montoCents: Long) = "Saldo ${pesos(saldoCents)}: alcanza para ${pesos(montoCents)}"
     fun noAlcanza(saldoCents: Long) = "Saldo ${pesos(saldoCents)}: no alcanza"
@@ -155,7 +185,7 @@ class CobroConSaldoRepository @Inject constructor(
 
     /** La consulta de saldo (no mueve dinero). Falla con [FalloDeSaldo]; nunca lanza otra cosa salvo la cancelación. */
     suspend fun consultar(prueba: PruebaDeSaldo): Result<ConsultaDeSaldo> {
-        val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return Result.failure(FalloDeSaldo(TextosDeSaldo.NO_SE_PUDO_CONSULTAR))
+        val venueId = negocio()?.takeIf { it.isNotBlank() } ?: return Result.failure(FalloDeSaldo(TextosDeSaldo.NO_SE_PUDO_CONSULTAR))
         val cuerpo = when (prueba) {
             is PruebaDeSaldo.Codigo -> mapOf("code" to prueba.codigo)
             is PruebaDeSaldo.Liga -> mapOf("pageToken" to prueba.pageToken)
@@ -201,34 +231,53 @@ class CobroConSaldoRepository @Inject constructor(
      */
     fun motivoParaNoCobrarRemoto(orderId: String?): String? = when {
         candado.isLocked -> TextosDeSaldo.REMOTO_COBRANDO_CON_SALDO
-        orderId != null && pendienteDe(orderId) != null -> TextosDeSaldo.REMOTO_SALDO_SIN_CONFIRMAR
-        else -> null
+        orderId == null -> null
+        else -> when (saldoDe(orderId)) {
+            SaldoGuardado.Ninguno -> null
+            is SaldoGuardado.EnDuda -> TextosDeSaldo.REMOTO_SALDO_SIN_CONFIRMAR
+            // D12 r3: no se sabe si esta cuenta tiene un cobro con saldo en duda: tampoco se admite.
+            SaldoGuardado.Ilegible -> TextosDeSaldo.REMOTO_SALDO_ILEGIBLE
+        }
     }
 
-    /** Full-testing H2: los folios de ESTE negocio con un cobro con saldo guardado sin desenlace (una sola lectura del almacén). */
-    fun foliosPendientes(): Set<String> {
-        val venueId = storage.getVenueId() ?: return emptySet()
-        return leer().filter { it.venueId == venueId }.mapTo(HashSet()) { it.orderId }
+    /** Lo que el almacén dice del cobro con saldo de ESTE negocio para [orderId]. [SaldoGuardado.Ilegible] nunca es «no hay». Nunca lanza. */
+    fun saldoDe(orderId: String): SaldoGuardado {
+        val mias = pendientes() ?: return SaldoGuardado.Ilegible
+        return mias.firstOrNull { it.orderId == orderId }?.let { SaldoGuardado.EnDuda(it) } ?: SaldoGuardado.Ninguno
     }
 
-    /** El cobro con saldo de ESTE negocio para [orderId] que todavía no tiene desenlace; null si no hay. */
-    fun pendienteDe(orderId: String): SolicitudDeSaldo? {
-        val venueId = storage.getVenueId() ?: return null
-        return leer().firstOrNull { it.venueId == venueId && it.orderId == orderId }
+    /**
+     * Los cobros con saldo de ESTE negocio guardados sin desenlace (una sola lectura): `emptyList()` sin sesión o sin nada guardado, y
+     * null si el almacén no se deja leer («no se sabe»). Nunca lanza.
+     */
+    fun pendientes(): List<SolicitudDeSaldo>? {
+        val venueId = negocio() ?: return null
+        if (venueId.isEmpty()) return emptyList()
+        return leer()?.filter { it.venueId == venueId }
     }
 
-    suspend fun cobrar(orderId: String, prueba: PruebaDeSaldo, montoCents: Long): DesenlaceDeSaldo {
+    /** El negocio de la sesión: "" sin sesión, null si el almacén cifrado no se dejó leer. Nunca lanza. */
+    private fun negocio(): String? = try {
+        storage.getVenueId().orEmpty()
+    } catch (e: Exception) {
+        Timber.e(e, "🎁 [Saldo] No se pudo leer el negocio de la sesión")
+        null
+    }
+
+    suspend fun cobrar(orderId: String, prueba: PruebaDeSaldo, montoCents: Long, folio: String? = null): DesenlaceDeSaldo {
         if (!candado.tryLock()) return DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
         try {
             return withContext(NonCancellable + Dispatchers.IO) {
-                val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() }
+                val venueId = (negocio() ?: return@withContext DesenlaceDeSaldo.Ilegible).takeIf { it.isNotBlank() }
                     ?: return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_PREPARAR)
                 if (montoCents <= 0) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_PREPARAR)
-                if (pendienteDe(orderId) != null) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
+                // D12 r3: una sola lectura para revisar y para escribir; ilegible = no se manda nada ni se escribe encima.
+                val guardadas = leer() ?: return@withContext DesenlaceDeSaldo.Ilegible
+                if (guardadas.any { it.venueId == venueId && it.orderId == orderId }) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
                 val serie = serie() ?: return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_PREPARAR)
                 val llave = UUID.randomUUID().toString()
-                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), System.currentTimeMillis())
-                if (!guardar(s)) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_GUARDAR)
+                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), System.currentTimeMillis(), folio)
+                if (!escribir(guardadas + s)) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_GUARDAR)
                 enviar(s, serie, trasDuda = false)
             }
         } finally {
@@ -236,13 +285,24 @@ class CobroConSaldoRepository @Inject constructor(
         }
     }
 
-    /** null = ese folio no tiene cobro con saldo guardado. Ocupado (otro cobro o comprobación en curso) = [DesenlaceDeSaldo.Incierto]. */
+    /**
+     * null = ese folio no tiene cobro con saldo guardado. Ocupado (otro cobro o comprobación en curso) = [DesenlaceDeSaldo.Incierto].
+     * Almacén ilegible = [DesenlaceDeSaldo.Ilegible], sin preguntar ni reenviar nada (no se sabe qué llave preguntar).
+     */
     suspend fun resolver(orderId: String): DesenlaceDeSaldo? {
-        if (pendienteDe(orderId) == null) return null
+        when (saldoDe(orderId)) {
+            SaldoGuardado.Ninguno -> return null
+            SaldoGuardado.Ilegible -> return DesenlaceDeSaldo.Ilegible
+            is SaldoGuardado.EnDuda -> Unit
+        }
         if (!candado.tryLock()) return DesenlaceDeSaldo.Incierto
         try {
             return withContext(NonCancellable + Dispatchers.IO) {
-                val s = pendienteDe(orderId) ?: return@withContext null
+                val s = when (val g = saldoDe(orderId)) {
+                    SaldoGuardado.Ninguno -> return@withContext null
+                    SaldoGuardado.Ilegible -> return@withContext DesenlaceDeSaldo.Ilegible
+                    is SaldoGuardado.EnDuda -> g.solicitud
+                }
                 val r = try {
                     api.cobroDeLaLlave(s.venueId, s.llave)
                 } catch (e: IOException) {
@@ -363,25 +423,38 @@ class CobroConSaldoRepository @Inject constructor(
         null
     }
 
-    private fun leer(): List<SolicitudDeSaldo> {
-        val crudo = storage.getString(LLAVE_DEL_ALMACEN) ?: return emptyList()
-        return try {
-            gson.fromJson(crudo, Array<SolicitudDeSaldo>::class.java)?.filter { s ->
-                // Gson no respeta la nulabilidad de Kotlin: una fila incompleta no se toma por buena.
-                listOf<Any?>(s.llave, s.venueId, s.orderId, s.cuerpo).none { it == null }
-            }.orEmpty()
-        } catch (e: Exception) {
-            Timber.e(e, "🎁 [Saldo] No se pudieron leer los cobros con saldo guardados")
+    /**
+     * El ÚNICO lector del almacén (D12 r3): lo guardado de todos los negocios, `emptyList()` si no hay nada, y null si no se deja leer
+     * (no se descifra —Keystore invalidado, respaldo restaurado—, el JSON no se entiende o trae una fila incompleta). Nunca lanza:
+     * «no se sabe» nunca pasa por «no hay».
+     */
+    private fun leer(): List<SolicitudDeSaldo>? = try {
+        val crudo = storage.getString(LLAVE_DEL_ALMACEN)
+        if (crudo == null) {
             emptyList()
+        } else {
+            val filas: Array<SolicitudDeSaldo?>? = gson.fromJson(crudo, Array<SolicitudDeSaldo?>::class.java)
+            // Gson no respeta la nulabilidad de Kotlin: una fila incompleta es un almacén que no se entiende, no una fila que sobra.
+            val completas = filas?.filterNotNull()?.filter { s -> listOf<Any?>(s.llave, s.venueId, s.orderId, s.cuerpo).none { it == null } }
+            if (filas == null || completas == null || completas.size != filas.size) {
+                Timber.e("🎁 [Saldo] Los cobros con saldo guardados no se entienden: se tratan como «no se sabe»")
+                null
+            } else {
+                completas
+            }
         }
+    } catch (e: Exception) {
+        Timber.e(e, "🎁 [Saldo] No se pudieron leer los cobros con saldo guardados: se tratan como «no se sabe»")
+        null
     }
 
-    private fun guardar(s: SolicitudDeSaldo): Boolean = escribir(leer() + s)
-
-
-
     private fun quitar(llave: String) {
-        if (!escribir(leer().filterNot { it.llave == llave })) {
+        // D12 r3: lo que no se pudo leer no se reescribe (se borrarían solicitudes ajenas); la próxima comprobación la vuelve a cerrar.
+        val guardadas = leer() ?: run {
+            Timber.e("🎁 [Saldo] No se pudo leer el almacén para borrar el cobro con saldo ya resuelto; no se toca")
+            return
+        }
+        if (!escribir(guardadas.filterNot { it.llave == llave })) {
             // Sigue guardada: la próxima comprobación la encuentra por su llave (found:true) y la vuelve a cerrar.
             Timber.e("🎁 [Saldo] No se pudo borrar el cobro con saldo ya resuelto; se volverá a comprobar")
         }

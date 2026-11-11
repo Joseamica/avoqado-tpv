@@ -12,7 +12,7 @@
 - **Depuración: HTTP al puente del Alien**: la configuración de red de debug permite `192.168.100.70` (el puente del laboratorio hacia el banco de la nube). Sin ella Android bloqueaba la copia `.lab` («CLEARTEXT not permitted») y se quedaba en «Activar Terminal» (recorrido de la nube 8d24c0, 10-nov). Release no lo incluye.
 
 ### **Fixed**
-- **El recibo «EN COLA» se actualiza solo (Nexgo)**: si un cobro quedó con «El registro quedó EN COLA… NO vuelvas a cobrar» y el recibo sigue abierto cuando la cola sube esa venta, el aviso cambia solo a verde «Ya quedó registrado en Avoqado» (antes se quedaba en ámbar aunque el servidor ya lo tuviera; recorrido de la nube, 10-nov, D4). Sin red, o si la cola no la pudo subir, sigue en ámbar. QR, imprimir y enviar siguen escondidos como antes.
+- **El recibo «EN COLA» se actualiza solo (Nexgo)**: si un cobro quedó con «El registro quedó EN COLA… NO vuelvas a cobrar» y el recibo sigue abierto cuando la cola sube esa venta, el aviso cambia solo a verde «Ya quedó registrado en Avoqado» (antes se quedaba en ámbar aunque el servidor ya lo tuviera; recorrido de la nube, 10-nov, D4). Sólo en efectivo y sólo si la fila de la cola es ESA venta (misma llave, monto y propina) y subió sin nada por revisar; sin red, si la cola no la pudo subir, o en tarjeta, sigue en ámbar como antes. QR, imprimir y enviar siguen escondidos como antes.
 
 ---
 

@@ -14,8 +14,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv.campo"
         minSdk = 27
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Celulares modernos. :app conserva "armeabi" porque el SDK de Blumon lo exige.
         ndk {
@@ -25,6 +25,8 @@ android {
         }
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
         buildConfigField("String", "STORAGE_ENV", "\"prod\"")
+        // El carril de versiones que consulta (check-update): sigue al versionName (`-sandbox` = SANDBOX), como el alta.
+        buildConfigField("String", "AMBIENTE_DE_VERSIONES", "\"PRODUCTION\"")
     }
 
     buildTypes {
@@ -34,8 +36,9 @@ android {
                 ?: "http://10.0.2.2:3000/api/v1/"
             buildConfigField("String", "API_BASE_URL", "\"$devBaseUrl\"")
             buildConfigField("String", "STORAGE_ENV", "\"dev\"")
+            buildConfigField("String", "AMBIENTE_DE_VERSIONES", "\"SANDBOX\"")
             // La puerta del laboratorio sólo instala (y no frena el aparato con) un `com.jaac.avoqado_tpv*` de pruebas:
-            // `perfil.es_version_de_pruebas` pide «-sandbox» o «-nexgo» en la versión. Release sigue en «0.2.0».
+            // `perfil.es_version_de_pruebas` pide «-sandbox» o «-nexgo» en la versión. Release sigue en «0.3.0».
             versionNameSuffix = "-sandbox"
         }
         release { isMinifyEnabled = false }

@@ -21,6 +21,7 @@ import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.ui.Navegacion
 import com.jaac.avoqado_campo.ui.PantallaDetenida
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.RevisorDeVersion
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var gps: ControlDeGps
     @Inject lateinit var latido: Latido
     @Inject lateinit var arranque: Arranque
+    @Inject lateinit var revisor: RevisorDeVersion
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,13 +50,15 @@ class MainActivity : ComponentActivity() {
             setContent { TemaCampo { PantallaDetenida(onReintentar = ::reiniciar) } }
             return
         }
-        // Cada vez que la app se ve: reintentar el GPS del turno, y el latido al abrir y cada 5 min (Latido no manda más de 1/min).
+        // Cada vez que la app se ve: reintentar el GPS del turno, y el latido y la versión nueva al abrir y cada 5 min (Latido no
+        // manda más de 1/min; la versión se pregunta cada 30 min como mucho).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 withContext(Dispatchers.IO) {
                     intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy) }
                     while (true) {
                         intentar("latido") { latido.mandar() }
+                        intentar("versión nueva") { revisor.revisar() }
                         delay(CINCO_MIN)
                     }
                 }

@@ -111,6 +111,17 @@ data class RespuestaModulos(val modules: List<ModuloDto?>?) : Validable {
     override fun valida() = modules != null
 }
 
+// `GET tpv/check-update?platform=ANDROID_CAMPO`: `fileSize` llega como texto (BigInt del SERVIDOR).
+data class ActualizacionDto(
+    val versionCode: Int?, val versionName: String?, val downloadUrl: String?, val fileSize: String?, val checksum: String?,
+    val releaseNotes: String?,
+)
+data class RespuestaCheckUpdate(val hasUpdate: Boolean?, val minVersionCode: Int?, val update: ActualizacionDto?) : Validable {
+    // Sin `checksum` sigue siendo legible: el Comprobador la rechaza (sha vacío ⇒ Mala), no se confunde con «sin red».
+    override fun valida() = hasUpdate == false ||
+        (hasUpdate == true && update?.versionCode != null && update.versionName != null && !update.downloadUrl.isNullOrBlank())
+}
+
 // ── De la red a «Quién soy». Sólo se llaman sobre respuestas que pasaron `valida()`. ──
 
 private fun SesionDto.aSesion() = Sesion(accessToken!!, refreshToken!!, venueId!!)

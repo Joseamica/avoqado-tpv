@@ -157,6 +157,12 @@ object TextosPorPagar {
     fun conCuenta(nombre: String) = "Con cuenta: $nombre"
     fun beneficio(nombre: String, monto: java.math.BigDecimal) = "$nombre −${CurrencyFormatter.format(monto)}"
     fun yMas(n: Int) = "y $n más"
+    /** Full-testing H2: sin red, el folio con un cobro con saldo sin confirmar dice lo mismo que el diálogo, nunca «cóbralo como venta normal». */
+    const val SALDO_EN_DUDA_SIN_RED = "Hay un cobro con saldo sin confirmar. No cobres este folio otra vez: se comprueba al volver la conexión."
+    /** Full-testing H2: la marca de la lista. */
+    const val SALDO_SIN_CONFIRMAR_MARCA = "Cobro con saldo sin confirmar"
+    /** Full-testing H5 (mockup 2e·3): arriba del monto, cuando ya hubo un abono. */
+    const val FALTA = "Falta"
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
     val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")
 }
@@ -268,7 +274,22 @@ class PorPagarViewModel @Inject constructor(
     /** La hora que ve la cajera es la del negocio. */
     val zona: ZoneId get() = VenueTimeZone.get(storage)
 
+    /**
+     * Full-testing H2: los folios con un cobro con saldo guardado en el aparato se ven «sin confirmar» desde que se abre la lista, también
+     * sin red y sin haberlos abierto (la app pudo morir con la solicitud guardada).
+     */
+    private fun leerSaldosPendientes() {
+        val pendientes = try {
+            saldo.foliosPendientes()
+        } catch (e: Exception) {
+            timber.log.Timber.e(e, "🎁 [Folios] No se pudieron leer los cobros con saldo guardados")
+            return
+        }
+        if (pendientes.isNotEmpty()) local.update { it.copy(saldoSinConfirmar = it.saldoSinConfirmar + pendientes) }
+    }
+
     init {
+        leerSaldosPendientes()
         // R94: un folio que ya no viene en ninguna lista se olvida (el SERVIDOR ya confirmó lo que se hizo con él).
         viewModelScope.launch {
             vigia.estado.collect { e ->
@@ -291,6 +312,7 @@ class PorPagarViewModel @Inject constructor(
      */
     fun pantallaVisible() {
         vigia.sondearYa()
+        leerSaldosPendientes()
         // Parte 2: si se volvió del saldo con el cobro en duda, el folio abierto lo comprueba otra vez.
         local.value.seleccionado?.let { revisarSaldo(it) }
     }
@@ -605,6 +627,13 @@ fun filtrarFolios(lista: List<Folio>, texto: String): List<Folio> {
 fun numeroDeSeccion(conteoDelServidor: Int, sacadosAquiSinDescontar: Int): Int = (conteoDelServidor - sacadosAquiSinDescontar).coerceAtLeast(0)
 
 /** «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
+/** Full-testing H2: lo que dice el folio sin red. */
+fun textoDelFolioSinRed(saldoEnDuda: Boolean): String = if (saldoEnDuda) TextosPorPagar.SALDO_EN_DUDA_SIN_RED else TextosPorPagar.FOLIO_SIN_RED
+
+/** Full-testing H5 (mockup 2e·3): «Falta» arriba del monto del cobro cuando la cuenta ya tiene un abono. */
+fun muestraFalta(folio: ComandaDeFolio): Boolean =
+    (folio.yaPago?.signum() ?: 0) > 0 || (folio.pagadoConSaldo?.signum() ?: 0) > 0
+
 /** Parte 2: tampoco con un cobro con saldo sin confirmar ([saldoEnDuda]): podría haberse cobrado. */
 fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Boolean, saldoEnDuda: Boolean = false): Boolean =
     puedeCancelar && !sinConexion && folio.abono.signum() == 0 && !saldoEnDuda

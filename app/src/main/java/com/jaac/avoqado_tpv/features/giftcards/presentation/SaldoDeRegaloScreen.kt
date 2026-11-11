@@ -134,6 +134,7 @@ internal fun SaldoDeRegaloContenido(
             onClose = onCerrarEscaner,
             requireMultiFrameConsensus = true,
             formats = listOf(BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128),
+            instruccion = TextosDeSaldo.INSTRUCCION_DEL_ESCANER,
             // Codex r2 #2: con el código o la liga se gasta el saldo; nunca al log.
             ocultarContenido = true,
         )
@@ -238,7 +239,7 @@ private fun Captura(
                 modifier = Modifier.weight(1.4f).height(56.dp),
             ) {
                 Text(
-                    if (ui.montoCents > 0) TextosDeSaldo.cobrar(ui.montoCents) else TextosDeSaldo.cobrar(ui.faltaCents),
+                    etiquetaDeCobrar(ui),
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -267,7 +268,14 @@ private fun ColumnScope.Estado(ui: SaldoUi) {
             val lineas = textoDeSaldo(ui)
             when {
                 lineas != null -> {
-                    Text(lineas.first, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (ui.consulta?.usable == true) MaterialTheme.colorScheme.onSurface else Warning)
+                    // Full-testing H5: «alcanza» en verde; «no alcanza» y la tarjeta que no sirve, en ámbar.
+                    val alcanza = ui.consulta?.usable == true && (ui.consulta?.saldoCents ?: 0) >= ui.faltaCents
+                    Text(
+                        lineas.first,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (alcanza) MaterialTheme.avoqadoColors.statusSuccess else Warning,
+                    )
                     lineas.second?.let { Text(it, fontSize = 15.sp, color = apagado, modifier = Modifier.padding(top = 4.dp)) }
                 }
                 ui.error == null && !ui.codigoInvalido -> Text(TextosDeSaldo.AYUDA, fontSize = 15.sp, color = apagado)
@@ -294,9 +302,12 @@ private fun CampoDeCodigo(ui: SaldoUi, onTeclear: (String) -> Unit) {
         },
         visualTransformation = GuionesDelCodigo,
         textStyle = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace, letterSpacing = 1.sp),
+        // Full-testing H3: con este código se gasta el saldo. Teclado de contraseña (sin sugerencias y sin que aprenda lo tecleado) y sin
+        // autocorrección; lo visible lo pinta GuionesDelCodigo.
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Characters,
-            keyboardType = KeyboardType.Ascii,
+            autoCorrectEnabled = false,
+            keyboardType = KeyboardType.Password,
             imeAction = ImeAction.Done,
         ),
         keyboardActions = KeyboardActions(onDone = { foco.clearFocus() }),

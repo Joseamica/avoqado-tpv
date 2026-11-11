@@ -96,6 +96,8 @@ fun BarcodeScannerScreen(
      * caracteres llegaron, nunca el contenido.
      */
     ocultarContenido: Boolean = false,
+    /** El texto de abajo; full-testing H5: la tarjeta de regalo dice «QR o código», no «código de barras». */
+    instruccion: String = "Coloca el código de barras dentro del área",
 ) {
     val enLog: (String) -> String = { if (ocultarContenido) "(oculto, ${it.length} caracteres)" else it }
     val context = LocalContext.current
@@ -238,7 +240,8 @@ fun BarcodeScannerScreen(
                 flashEnabled = flashEnabled,
                 onFlashToggle = { flashEnabled = !flashEnabled },
                 onClose = onClose,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                instruccion = instruccion,
             )
         } else {
             // Permission denied
@@ -507,7 +510,8 @@ private fun ScannerControls(
     flashEnabled: Boolean,
     onFlashToggle: () -> Unit,
     onClose: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    instruccion: String = "Coloca el código de barras dentro del área",
 ) {
     Box(modifier = modifier) {
         // Top bar: Close + Flash toggle
@@ -555,7 +559,7 @@ private fun ScannerControls(
 
         // Instructions (text only, no icon)
         Text(
-            text = "Coloca el código de barras dentro del área",
+            text = instruccion,
             color = Color.White,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,

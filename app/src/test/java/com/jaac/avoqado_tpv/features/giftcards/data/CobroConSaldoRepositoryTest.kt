@@ -3,13 +3,16 @@ package com.jaac.avoqado_tpv.features.giftcards.data
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.di.NetworkModule
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -52,20 +55,21 @@ class CobroConSaldoRepositoryTest {
     @After
     fun tearDown() = server.shutdown()
 
+    /** El cliente base de la app (reintenta en una conexión nueva, como el OkHttp de siempre), con tiempos cortos para las pruebas. */
+    private fun base() = OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).callTimeout(5, TimeUnit.SECONDS).build()
+
+    private fun retrofit(cliente: OkHttpClient) = Retrofit.Builder()
+        .baseUrl(server.url("/api/v1/"))
+        .client(cliente)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+
+    /** Las APIs con el MISMO armado que la app (`NetworkModule`): consultas con el cliente de siempre, el cobro con el suyo. */
+    private fun consultas(b: OkHttpClient = base()) = NetworkModule.provideGiftCardsTpvApi(retrofit(b))
+    private fun cobros(b: OkHttpClient = base()) = NetworkModule.provideCobroConSaldoApi(b, server.url("/api/v1/").toString())
+
     /** Un repositorio nuevo sobre el MISMO almacén: es la app que se reabre después de morir. */
-    private fun repo(): CobroConSaldoRepository {
-        // El MISMO armado del cliente que la app (`NetworkModule.clienteDeTarjetasDeRegalo`): nada se reenvía solo.
-        val cliente = com.jaac.avoqado_tpv.core.di.NetworkModule.clienteDeTarjetasDeRegalo(
-            OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).callTimeout(5, TimeUnit.SECONDS).build(),
-        )
-        val api = Retrofit.Builder()
-            .baseUrl(server.url("/api/v1/"))
-            .client(cliente)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(GiftCardsTpvApi::class.java)
-        return CobroConSaldoRepository(api, storage, device)
-    }
+    private fun repo(): CobroConSaldoRepository = CobroConSaldoRepository(consultas(), cobros(), storage, device)
 
     private fun json(code: Int, body: String) = MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
 
@@ -405,6 +409,65 @@ class CobroConSaldoRepositoryTest {
         assertThat(r.pendienteDe("cord1").toString()).doesNotContain("K7Q29DXM4R8HHB7TR")
         assertThat(PruebaDeSaldo.Codigo("K7Q29DXM4R8HHB7TR").toString()).doesNotContain("K7Q2")
     }
+
+    // region — full-testing en la N86 (H1, H2, H4)
+
+    @Test
+    fun `H1 una consulta por una conexion que el SERVIDOR ya cerro reintenta en otra y no dice Sin conexion`() = runTest {
+        // El SERVIDOR cierra la conexión después de contestar (como Node tras 5 s sin uso); el cliente la deja en su pool.
+        val api = consultas()
+        server.enqueue(json(200, """{"success":true,"data":{"found":false}}""").setSocketPolicy(SocketPolicy.DISCONNECT_AT_END))
+        server.enqueue(json(200, """{"success":true,"data":{"found":false}}"""))
+
+        assertThat(api.cobroDeLaLlave("v1", "llave-1").isSuccessful).isTrue()
+        // La segunda sale por la conexión muerta del pool: «unexpected end of stream» si no reintenta.
+        assertThat(api.cobroDeLaLlave("v1", "llave-1").isSuccessful).isTrue()
+    }
+
+    @Test
+    fun `H1 cada cobro sale por una conexion nueva, nunca por una dormida del pool`() = runTest {
+        val api = cobros()
+        server.enqueue(cobro())
+        server.enqueue(cobro())
+        val cuerpo = """{"idempotencyKey":"k1","proof":{"kind":"CODE","code":"K7Q29DXM4R8HHB7TR"},"amount":50.00,"tip":0}"""
+        val tipo = "application/json".toMediaType()
+
+        api.cobrar("v1", "cord1", "AVQD-1", cuerpo.toRequestBody(tipo)).body()
+        api.cobrar("v1", "cord1", "AVQD-1", cuerpo.toRequestBody(tipo)).body()
+
+        // sequenceNumber = el lugar de la petición en su conexión: 0 = conexión nueva.
+        assertThat(server.takeRequest().sequenceNumber).isEqualTo(0)
+        assertThat(server.takeRequest().sequenceNumber).isEqualTo(0)
+    }
+
+    @Test
+    fun `H2 los folios con un cobro con saldo sin desenlace se leen de una vez, sólo de este negocio`() = runTest {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        val r = repo()
+        r.cobrar("cord1", tarjeta, 5000)
+        r.cobrar("cord2", tarjeta, 5000)
+
+        assertThat(r.foliosPendientes()).containsExactly("cord1", "cord2")
+        every { storage.getVenueId() } returns "otro"
+        assertThat(r.foliosPendientes()).isEmpty()
+    }
+
+    @Test
+    fun `H4 un folio vencido o ya pagado por otra caja dice lo del mockup y cierra el cobro`() = runTest {
+        server.enqueue(rechazo(400, "ORDER_CANCELLED_NO_NEW_CHARGE", "Esta cuenta está cancelada, abre una nueva."))
+        val r = repo()
+        assertThat(r.cobrar("cord1", tarjeta, 5000))
+            .isEqualTo(DesenlaceDeSaldo.NoSalio(TextosDeSaldo.FOLIO_VENCIDO, FolioCerrado.VENCIDO))
+
+        server.enqueue(rechazo(400, null, "Order is already paid"))
+        assertThat(r.cobrar("cord2", tarjeta, 5000))
+            .isEqualTo(DesenlaceDeSaldo.NoSalio(TextosDeSaldo.FOLIO_YA_PAGADO, FolioCerrado.PAGADO))
+        assertThat(TextosDeSaldo.FOLIO_VENCIDO).startsWith("Este pedido ya venció")
+        assertThat(TextosDeSaldo.FOLIO_YA_PAGADO).contains("Lo cobró otra caja")
+    }
+
+    // endregion
 
     @Test
     fun `sin solicitud pendiente, resolver no pregunta nada`() = runTest {

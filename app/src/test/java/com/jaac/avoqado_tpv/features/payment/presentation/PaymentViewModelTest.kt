@@ -3907,7 +3907,10 @@ class PaymentViewModelTest {
         }
         val libreta = mockk<PaymentAttemptLedger> { coEvery { hayDineroEnJuegoDeLaVenta(any()) } returns false }
         // Parte 2: sin cobro con saldo pendiente.
-        val saldo = mockk<com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository> { every { pendienteDe(any()) } returns null }
+        val saldo = mockk<com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository> {
+            every { pendienteDe(any()) } returns null
+            every { foliosPendientes() } returns emptySet()
+        }
         return com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel(
             vigia, folios, permisos, storage, cola, paymentStateHolder, libreta, saldo, mockk(relaxed = true),
         )

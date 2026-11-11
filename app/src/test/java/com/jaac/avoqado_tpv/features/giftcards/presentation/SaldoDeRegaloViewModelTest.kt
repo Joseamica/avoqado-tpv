@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
 import com.jaac.avoqado_tpv.features.giftcards.data.ConsultaDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.FalloDeSaldo
+import com.jaac.avoqado_tpv.features.giftcards.data.FolioCerrado
 import com.jaac.avoqado_tpv.features.giftcards.data.PruebaDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
@@ -228,6 +229,36 @@ class SaldoDeRegaloViewModelTest {
 
         assertThat(vm.ui.value.error).isEqualTo("Saldo insuficiente")
         coVerify(exactly = 2) { repo.consultar(any()) }
+    }
+
+    @Test
+    fun `H4 folio vencido o pagado en otra caja dice el texto del mockup, Cobrar en gris y sin monto`() = runTest {
+        saldo(35000)
+        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.NoSalio(TextosDeSaldo.FOLIO_VENCIDO, FolioCerrado.VENCIDO)
+        val vm = vm()
+        vm.teclear(valido)
+
+        vm.cobrar()
+
+        assertThat(vm.ui.value.error).isEqualTo(TextosDeSaldo.FOLIO_VENCIDO)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+        assertThat(etiquetaDeCobrar(vm.ui.value)).isEqualTo("Cobrar")
+        // No vuelve a leer el saldo: el folio ya no se cobra desde aquí.
+        coVerify(exactly = 1) { repo.consultar(any()) }
+        // Teclear otro código tampoco lo reabre.
+        vm.teclear(valido)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+    }
+
+    @Test
+    fun `H5 Cobrar ensena el monto solo cuando se puede cobrar`() = runTest {
+        saldo(5000)
+        val vm = vm()
+        assertThat(etiquetaDeCobrar(vm.ui.value)).isEqualTo("Cobrar")
+
+        vm.teclear(valido)
+
+        assertThat(etiquetaDeCobrar(vm.ui.value)).isEqualTo("Cobrar $50.00")
     }
 
     @Test

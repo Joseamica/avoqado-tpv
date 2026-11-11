@@ -88,7 +88,10 @@ class PorPagarViewModelTest {
     }
 
     // P2 (parte 2): el cobro con saldo guardado en el aparato. Por defecto no hay ninguno pendiente.
-    private val saldo = mockk<CobroConSaldoRepository> { every { pendienteDe(any()) } returns null }
+    private val saldo = mockk<CobroConSaldoRepository> {
+        every { pendienteDe(any()) } returns null
+        every { foliosPendientes() } returns emptySet()
+    }
     private val despues = mockk<DespuesDeCobrarFolio>(relaxed = true)
 
     private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso, libreta, saldo, despues)
@@ -983,6 +986,30 @@ class PorPagarViewModelTest {
         assertThat(apertura.splitType).isEqualTo(SplitType.FULLPAYMENT.value)
         assertThat(apertura.folio.pagadoConSaldo).isEqualTo(BigDecimal("50.00"))
         assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana", BigDecimal("50.00"))).isEqualTo("Folio W7K3P · Ana · ya pagó $50.00 con saldo")
+    }
+
+    @Test
+    fun `H2 sin red, un folio con un cobro con saldo sin confirmar no dice cobralo como venta normal y sale marcado`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana), sinConexion = true)
+        // La app se reabrió sin red: la solicitud está guardada; nadie la ha comprobado todavía.
+        every { saldo.foliosPendientes() } returns setOf("a1")
+
+        val vm = vm()
+
+        assertThat(vm.ui.value.saldoSinConfirmar).containsExactly("a1")
+        assertThat(textoDelFolioSinRed(saldoEnDuda = true)).isEqualTo(TextosPorPagar.SALDO_EN_DUDA_SIN_RED)
+        assertThat(textoDelFolioSinRed(saldoEnDuda = true)).contains("No cobres este folio otra vez")
+        assertThat(textoDelFolioSinRed(saldoEnDuda = false)).isEqualTo(TextosPorPagar.FOLIO_SIN_RED)
+    }
+
+    @Test
+    fun `H5 Falta arriba del monto cuando la cuenta ya tiene un abono`() {
+        val sin = com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio("a1", "W7K3P", "Ana", null, emptyList())
+        assertThat(muestraFalta(sin)).isFalse()
+        assertThat(muestraFalta(sin.copy(yaPago = BigDecimal("50.00")))).isTrue()
+        assertThat(muestraFalta(sin.copy(pagadoConSaldo = BigDecimal("50.00")))).isTrue()
+        assertThat(TextosPorPagar.FALTA).isEqualTo("Falta")
     }
 
     @Test

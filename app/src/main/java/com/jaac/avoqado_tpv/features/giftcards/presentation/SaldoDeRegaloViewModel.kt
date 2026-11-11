@@ -50,13 +50,16 @@ data class SaldoUi(
     val pagado: PagoConSaldo? = null,
     /** Evento (2e·3): el saldo no alcanzó y ya se cobró; se abre el cobro de siempre por lo que falta. Valor = centavos pagados con saldo. */
     val faltaPorCobrar: Long? = null,
+    /** Full-testing H4: el folio venció o ya lo pagó otra caja; desde aquí ya no se cobra. */
+    val folioCerrado: Boolean = false,
 ) {
     /** Lo que se cobra con saldo: lo menor entre el saldo y lo que falta. */
     val montoCents: Long get() = consulta?.takeIf { it.usable }?.let { minOf(it.saldoCents, faltaCents) }?.coerceAtLeast(0) ?: 0
     /** Cobrando o comprobando: el código ya no se cambia (el cobro guardado es de ESA tarjeta). */
     val esperando: Boolean get() = cobrando || comprobando
     val ocupado: Boolean get() = esperando || consultando
-    val puedeCobrar: Boolean get() = montoCents > 0 && !ocupado && !enDuda && pagado == null && faltaPorCobrar == null
+    val puedeCobrar: Boolean get() =
+        montoCents > 0 && !ocupado && !enDuda && !folioCerrado && pagado == null && faltaPorCobrar == null
 }
 
 /**
@@ -100,6 +103,9 @@ object CodigoDeTarjeta {
         return limpiar(texto).takeIf { esValido(it) && texto.count { c -> c.isLetterOrDigit() } == LARGO }?.let { PruebaDeSaldo.Codigo(it) }
     }
 }
+
+/** Full-testing H5: el botón de cobro. En gris no enseña un monto que no se va a cobrar. */
+fun etiquetaDeCobrar(ui: SaldoUi): String = if (ui.puedeCobrar) TextosDeSaldo.cobrar(ui.montoCents) else TextosDeSaldo.COBRAR
 
 /** Las dos líneas bajo el código (mockups 2e y 2e·2), o la razón por la que la tarjeta no sirve; null sin consulta. */
 fun textoDeSaldo(ui: SaldoUi): Pair<String, String?>? {
@@ -149,7 +155,7 @@ class SaldoDeRegaloViewModel @Inject constructor(
     fun cerrarEscaner() = _ui.update { it.copy(escaneando = false) }
 
     fun escaneado(texto: String) {
-        if (_ui.value.esperando) return
+        if (_ui.value.esperando || _ui.value.folioCerrado) return
         // Lo de antes ya no vale: una consulta vieja que llegue tarde no pinta su saldo sobre este código.
         prueba = null
         val leida = CodigoDeTarjeta.reconocer(texto)
@@ -171,7 +177,7 @@ class SaldoDeRegaloViewModel @Inject constructor(
     }
 
     fun teclear(texto: String) {
-        if (_ui.value.esperando) return
+        if (_ui.value.esperando || _ui.value.folioCerrado) return
         prueba = null
         val limpio = CodigoDeTarjeta.limpiar(texto)
         val completo = limpio.length == CodigoDeTarjeta.LARGO
@@ -223,6 +229,11 @@ class SaldoDeRegaloViewModel @Inject constructor(
                 }
             }
             is DesenlaceDeSaldo.NoSalio -> {
+                // Full-testing H4: vencido o ya pagado: el texto del mockup, «Cobrar» en gris y no se vuelve a leer el saldo.
+                if (d.motivo != null) {
+                    _ui.update { it.copy(enDuda = false, error = d.texto, consulta = null, folioCerrado = true) }
+                    return
+                }
                 _ui.update { it.copy(enDuda = false, error = d.texto, consulta = null) }
                 // El saldo pudo cambiar: se vuelve a leer para que la cajera vea el de ahora.
                 prueba?.let { consultar(it, conservarError = true) }

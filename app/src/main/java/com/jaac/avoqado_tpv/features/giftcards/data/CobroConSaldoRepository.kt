@@ -51,11 +51,17 @@ data class SolicitudDeSaldo(
     override fun toString() = "SolicitudDeSaldo(llave=$llave, venueId=$venueId, orderId=$orderId, cuerpo=****)"
 }
 
+/** Full-testing H4: por qué el folio ya no admite cobro desde esta pantalla. */
+enum class FolioCerrado { VENCIDO, PAGADO }
+
 sealed interface DesenlaceDeSaldo {
     /** El SERVIDOR registró el cobro: [restanteCents] es lo que la cuenta todavía debe (0 = pagada). */
     data class Cobrado(val restanteCents: Long, val montoCents: Long, val last4: String?, val saldoRestanteCents: Long?) : DesenlaceDeSaldo
-    /** No se cobró nada (o ni se mandó): [texto] dice por qué. Ya no hay solicitud guardada de este intento. */
-    data class NoSalio(val texto: String) : DesenlaceDeSaldo
+    /**
+     * No se cobró nada (o ni se mandó): [texto] dice por qué. Ya no hay solicitud guardada de este intento. [motivo] no nulo = el folio ya no
+     * se puede cobrar desde aquí (venció o ya lo pagó otra caja): «Cobrar» queda en gris.
+     */
+    data class NoSalio(val texto: String, val motivo: FolioCerrado? = null) : DesenlaceDeSaldo
     /** No se sabe: la solicitud sigue guardada y ese folio no se cobra con nada hasta comprobarla. */
     data object Incierto : DesenlaceDeSaldo
 }
@@ -79,7 +85,14 @@ object TextosDeSaldo {
     const val NO_SE_PUDO_CONSULTAR = "No se pudo consultar la tarjeta. Inténtalo de nuevo."
     const val NO_SE_COBRO = "No se cobró con saldo. Inténtalo de nuevo."
     const val FOLIO_NO_ENCONTRADO = "No encontramos este folio. Vuelve a la lista."
-    const val FOLIO_YA_PAGADO = "Este folio ya se pagó."
+    /** Full-testing H4 (mockup 2c·4). */
+    const val FOLIO_VENCIDO = "Este pedido ya venció. Cóbralo como venta normal en «Cobrar»."
+    /** Full-testing H4 (mockup 2c·5, sin hora: el rechazo del SERVIDOR no la trae). */
+    const val FOLIO_YA_PAGADO = "Este folio ya se pagó. Lo cobró otra caja; ya está en «Por entregar»."
+    /** Full-testing H5: «Cobrar» en gris no enseña un monto que no se va a cobrar. */
+    const val COBRAR = "Cobrar"
+    /** Full-testing H5: el escáner de la tarjeta (QR de la liga o código de barras del certificado). */
+    const val INSTRUCCION_DEL_ESCANER = "Coloca el QR o el código de la tarjeta dentro del área"
     const val CANCELAR = "Cancelar"
     const val EN_DUDA_TITULO = "No pudimos confirmar el cobro con saldo"
     const val EN_DUDA_CUERPO = "Revisa la conexión. No cobres este folio otra vez hasta comprobarlo: el saldo pudo haberse cobrado."
@@ -133,6 +146,7 @@ object TextosDeSaldo {
 @Singleton
 class CobroConSaldoRepository @Inject constructor(
     private val api: GiftCardsTpvApi,
+    private val apiDeCobro: CobroConSaldoApi,
     private val storage: SecureStorage,
     private val deviceInfoManager: DeviceInfoManager,
 ) {
@@ -189,6 +203,12 @@ class CobroConSaldoRepository @Inject constructor(
         candado.isLocked -> TextosDeSaldo.REMOTO_COBRANDO_CON_SALDO
         orderId != null && pendienteDe(orderId) != null -> TextosDeSaldo.REMOTO_SALDO_SIN_CONFIRMAR
         else -> null
+    }
+
+    /** Full-testing H2: los folios de ESTE negocio con un cobro con saldo guardado sin desenlace (una sola lectura del almacén). */
+    fun foliosPendientes(): Set<String> {
+        val venueId = storage.getVenueId() ?: return emptySet()
+        return leer().filter { it.venueId == venueId }.mapTo(HashSet()) { it.orderId }
     }
 
     /** El cobro con saldo de ESTE negocio para [orderId] que todavía no tiene desenlace; null si no hay. */
@@ -258,7 +278,7 @@ class CobroConSaldoRepository @Inject constructor(
     private suspend fun enviar(s: SolicitudDeSaldo, serie: String, trasDuda: Boolean): DesenlaceDeSaldo {
         repeat(INTENTOS) { intento ->
             val r: Response<SobreEnvelope<CobroConSaldoDto>> = try {
-                api.cobrar(s.venueId, s.orderId, serie, s.cuerpo.toRequestBody(JSON))
+                apiDeCobro.cobrar(s.venueId, s.orderId, serie, s.cuerpo.toRequestBody(JSON))
             } catch (e: Exception) {
                 Timber.w("🎁 [Saldo] Sin respuesta del cobro con saldo de %s: se queda guardado para comprobarlo", s.orderId)
                 return DesenlaceDeSaldo.Incierto
@@ -273,7 +293,8 @@ class CobroConSaldoRepository @Inject constructor(
                 !esDefinitivo(http, codigo, trasDuda) -> return DesenlaceDeSaldo.Incierto
                 else -> {
                     quitar(s.llave)
-                    return DesenlaceDeSaldo.NoSalio(texto(http, codigo, crudo))
+                    val cerrado = folioCerrado(codigo, crudo)
+                    return DesenlaceDeSaldo.NoSalio(texto(http, codigo, crudo, cerrado), cerrado)
                 }
             }
         }
@@ -300,14 +321,22 @@ class CobroConSaldoRepository @Inject constructor(
         )
     }
 
-    private fun texto(http: Int, codigo: String?, crudo: String?): String {
+    /** Full-testing H4: el folio venció (o se canceló) o ya lo pagó otra caja. */
+    private fun folioCerrado(codigo: String?, crudo: String?): FolioCerrado? = when {
+        codigo == "ORDER_CANCELLED_NO_NEW_CHARGE" || codigo == "ORDER_CANCELLED_NO_EDIT" -> FolioCerrado.VENCIDO
+        codigo == null && parseBackendErrorMessage(crudo, "") == "Order is already paid" -> FolioCerrado.PAGADO
+        else -> null
+    }
+
+    private fun texto(http: Int, codigo: String?, crudo: String?, cerrado: FolioCerrado?): String {
         val delServidor = parseBackendErrorMessage(crudo, "").takeIf { it.isNotBlank() && it != "Sin detalle del servidor" }
         return when {
+            cerrado == FolioCerrado.VENCIDO -> TextosDeSaldo.FOLIO_VENCIDO
+            cerrado == FolioCerrado.PAGADO -> TextosDeSaldo.FOLIO_YA_PAGADO
             http == 403 -> TextosDeSaldo.SIN_PERMISO_COBRAR
             codigo == "GIFT_CARD_NOT_FOUND" -> delServidor ?: TextosDeSaldo.TARJETA_NO_ENCONTRADA
             // Sin código y en inglés: los dos de la cuenta que ANDROID ya traduce.
             codigo == null && http == 404 -> TextosDeSaldo.FOLIO_NO_ENCONTRADO
-            codigo == null && delServidor == "Order is already paid" -> TextosDeSaldo.FOLIO_YA_PAGADO
             else -> delServidor ?: TextosDeSaldo.NO_SE_COBRO
         }
     }

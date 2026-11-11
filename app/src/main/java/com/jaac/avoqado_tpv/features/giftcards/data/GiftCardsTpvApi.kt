@@ -27,6 +27,21 @@ interface GiftCardsTpvApi {
         @Body cuerpo: Map<String, String>,
     ): Response<SobreEnvelope<ConsultaDto>>
 
+    /** `{ found: true, payment }` o `{ found: false }`. `found:false` NO prueba que no se cobró: el primer envío puede seguir vivo. */
+    @GET("tpv/venues/{venueId}/gift-cards/payments/{key}")
+    suspend fun cobroDeLaLlave(
+        @Path("venueId") venueId: String,
+        @Path("key") llave: String,
+    ): Response<SobreEnvelope<CobroDeLaLlaveDto>>
+}
+
+/**
+ * El cobro con saldo, aparte de las consultas (full-testing H1): las consultas usan el cliente de siempre, que reintenta en una conexión
+ * nueva si la vieja estaba muerta; el cobro usa uno que nunca reenvía solo y nunca sale por una conexión dormida
+ * (`NetworkModule.clienteDeCobroConSaldo`).
+ */
+interface CobroConSaldoApi {
+
     /** `giftCards:redeem`. Exige `x-device-id` (400 `GIFT_CARD_DEVICE_ID_REQUIRED` sin ella). */
     @POST("tpv/venues/{venueId}/gift-cards/orders/{orderId}/pay")
     suspend fun cobrar(
@@ -35,13 +50,6 @@ interface GiftCardsTpvApi {
         @Header("x-device-id") deviceId: String,
         @Body cuerpo: RequestBody,
     ): Response<SobreEnvelope<CobroConSaldoDto>>
-
-    /** `{ found: true, payment }` o `{ found: false }`. `found:false` NO prueba que no se cobró: el primer envío puede seguir vivo. */
-    @GET("tpv/venues/{venueId}/gift-cards/payments/{key}")
-    suspend fun cobroDeLaLlave(
-        @Path("venueId") venueId: String,
-        @Path("key") llave: String,
-    ): Response<SobreEnvelope<CobroDeLaLlaveDto>>
 }
 
 // Todo opcional: un campo que falte nunca tumba la respuesta. El dinero es BigDecimal para no pasar nunca por Double.

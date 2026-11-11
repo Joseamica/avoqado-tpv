@@ -236,7 +236,9 @@ private fun Lista(
             !ui.buscando && ui.porPagar.isEmpty() && ui.porEntregar.isEmpty() && e.nextCursors.isEmpty() ->
                 Vacio(TextosPorPagar.VACIO, TextosPorPagar.VACIO_AYUDA)
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-                val filaPorPagar: @Composable (Folio) -> Unit = { FilaPorPagar(it, ahora, e.sinConexion, zona, onAbrir) }
+                val filaPorPagar: @Composable (Folio) -> Unit = {
+                    FilaPorPagar(it, ahora, e.sinConexion, zona, saldoEnDuda = it.orderId in ui.saldoSinConfirmar, onAbrir = onAbrir)
+                }
                 val filaPorEntregar: @Composable (Folio) -> Unit = {
                     FilaPorEntregar(it, ui, zona, onAbrir, onListo, onEntregado)
                 }
@@ -279,7 +281,7 @@ private fun LazyListScope.cargarMas(e: EstadoDeFolios, seccion: SeccionDeFolios,
 }
 
 @Composable
-private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, onAbrir: (Folio) -> Unit) {
+private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, saldoEnDuda: Boolean, onAbrir: (Folio) -> Unit) {
     Tarjeta(onClick = { onAbrir(folio) }) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             FolioYNombre(folio, Modifier.weight(1f))
@@ -297,6 +299,16 @@ private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zon
         }
         // Parte 2 (S14): «Con cuenta: Ana L. · Premio −$45.00» cuando el SERVIDOR lo manda; sin eso, como hoy.
         LineaDeLaCuenta(folio, Modifier.padding(top = 4.dp), maxLines = 1)
+        // Full-testing H2: que la cajera lo vea antes de abrirlo.
+        if (saldoEnDuda) {
+            Text(
+                "● " + TextosPorPagar.SALDO_SIN_CONFIRMAR_MARCA,
+                Modifier.padding(top = 4.dp),
+                fontSize = 13.sp,
+                color = Warning,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
@@ -388,6 +400,8 @@ private fun FolioDetalle(
     val pagado = folio.falta.signum() == 0
     // Parte 2: mientras se comprueba un cobro con saldo guardado, el folio no se toca.
     val comprobando = folio.orderId in ui.comprobandoSaldo
+    // Full-testing H2: un cobro con saldo guardado sin desenlace (con o sin red).
+    val saldoEnDuda = folio.orderId in ui.saldoSinConfirmar
     val ocupado = folio.orderId in ui.ocupados || comprobando
     val apagado = MaterialTheme.colorScheme.onSurfaceVariant
     var confirmarCancelar by remember(folio.orderId) { mutableStateOf(false) }
@@ -469,16 +483,25 @@ private fun FolioDetalle(
                     Spacer(Modifier.width(8.dp))
                     Text(TextosPorPagar.COMPROBANDO_SALDO, fontSize = 15.sp, color = apagado)
                 }
+            } else if (saldoEnDuda && !sinConexion && !pagado) {
+                Text(
+                    TextosPorPagar.SALDO_SIN_CONFIRMAR.cuerpo,
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    fontSize = 14.sp,
+                    color = Warning,
+                    textAlign = TextAlign.Center,
+                )
             }
             when {
                 pagado -> AccionesDeEntrega(folio, ui, onListo, onEntregado, Modifier)
                 // Sin red se ve lo que pidió para cobrarlo en «Cobrar», pero no hay botón de cobrar el folio.
                 sinConexion -> {
                     Text(
-                        TextosPorPagar.FOLIO_SIN_RED,
+                        textoDelFolioSinRed(saldoEnDuda),
                         Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         fontSize = 15.sp,
-                        color = apagado,
+                        color = if (saldoEnDuda) Warning else apagado,
+                        fontWeight = if (saldoEnDuda) FontWeight.SemiBold else FontWeight.Normal,
                         textAlign = TextAlign.Center,
                     )
                     saldo?.let { BotonDeSaldoDelFolio(it, ocupado = true, onClick = {}) }
@@ -580,6 +603,13 @@ private fun BotonDeSaldoDelFolio(boton: BotonDeSaldo, ocupado: Boolean, onClick:
 private fun LineaDeLaCuenta(folio: Folio, modifier: Modifier, maxLines: Int = Int.MAX_VALUE) {
     val linea = lineaDeLaCuenta(folio) ?: return
     Text(linea, modifier, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
+
+/** Full-testing H5 (mockup 2e·3): «Falta» arriba del monto de «Método de pago» cuando la cuenta ya tiene un abono. */
+@Composable
+fun FaltaDelCobro(folio: ComandaDeFolio?, modifier: Modifier = Modifier) {
+    if (folio == null || !muestraFalta(folio)) return
+    Text(TextosPorPagar.FALTA, modifier, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /** Mockup 2d: «Folio W7K3P · Ana» bajo el monto de «Método de pago» (PAX y Nexgo), con el folio espaciado (R61). 2e·3: «· ya pagó $X con saldo». */

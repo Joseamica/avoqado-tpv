@@ -252,4 +252,37 @@ class TableOrderScreenStateTest {
         assertThat(formatQuarantineTime(instante, com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)).endsWith("05:21")
         assertThat(formatQuarantineTime(instante, java.time.ZoneOffset.ofHours(-7))).endsWith("04:21")
     }
+
+    /**
+     * D4 (N86, 10-nov): la hoja de cortesía se cierra con el contador del ViewModel, no con la bajada de `isComping`
+     * (que Compose no ve si la cortesía termina dentro del mismo toque). Prueba estática, como
+     * `CheckoutScreenErrorConLaHojaTest`: el repo no corre `createComposeRule` en las pruebas de JVM.
+     */
+    @Test
+    fun D4_la_hoja_de_cortesia_se_cierra_con_el_contador_y_no_con_isComping() {
+        val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableOrderScreen.kt").readText()
+        assertThat(pantalla).doesNotContain("LaunchedEffect(isComping)")
+        val i = pantalla.indexOf("LaunchedEffect(compTerminadas) {")
+        assertThat(i).isAtLeast(0)
+        val efecto = pantalla.substring(i, pantalla.indexOf("\n    }", i))
+        assertThat(efecto).contains("showCompSheet = false")
+    }
+
+    /**
+     * D4 (Codex r1 y r2): el aviso de error también se vuelve a mostrar cuando termina una cortesía, para que la 2.ª
+     * negada con el mismo texto (el 1.er aviso aún en pantalla) salga completa. Se sigue vaciando DESPUÉS de mostrarse:
+     * vaciarlo antes lo perdía si la pantalla se recreaba (Codex r2).
+     */
+    @Test
+    fun D4_el_aviso_de_error_tambien_se_repite_al_terminar_la_cortesia_y_se_vacia_despues_de_mostrarse() {
+        val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableOrderScreen.kt").readText()
+        assertThat(pantalla).contains("val cortesias = compTerminadas")
+        val i = pantalla.indexOf("LaunchedEffect(error, cortesias) {")
+        assertThat(i).isAtLeast(0)
+        val efecto = pantalla.substring(i, pantalla.indexOf("\n    }", i))
+        val avisar = efecto.indexOf("showSnackbar(")
+        val vaciar = efecto.indexOf("viewModel.consumeError(it, cortesias)")
+        assertThat(avisar).isAtLeast(0)
+        assertThat(vaciar).isGreaterThan(avisar)
+    }
 }

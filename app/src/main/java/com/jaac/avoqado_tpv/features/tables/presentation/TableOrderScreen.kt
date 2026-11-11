@@ -115,6 +115,7 @@ fun TableOrderScreen(
     // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER.
     val isSplitting by viewModel.isSplitting.collectAsStateWithLifecycle()
     val isComping by viewModel.isComping.collectAsStateWithLifecycle()
+    val compTerminadas by viewModel.compTerminadas.collectAsStateWithLifecycle()
     val isMoving by viewModel.isMoving.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val availableTargetTables by viewModel.availableTargetTables.collectAsStateWithLifecycle()
@@ -163,8 +164,9 @@ fun TableOrderScreen(
             splitTriggered = false
         }
     }
-    LaunchedEffect(isComping) {
-        if (compTriggered && !isComping) {
+    // Cortesía: por el contador y no por la bajada de isComping (D4): si termina sin esperar, Compose nunca ve el true.
+    LaunchedEffect(compTerminadas) {
+        if (compTriggered) {
             showCompSheet = false
             compTriggered = false
         }
@@ -236,10 +238,14 @@ fun TableOrderScreen(
             viewModel.consumeNotice()
         }
     }
-    LaunchedEffect(error) {
+    // También con el contador de cortesías (D4, Codex r1 y r3): si la 2.ª cortesía negada trae el mismo texto con el
+    // 1.er aviso aún en pantalla, `error` no cambia; al terminar la cortesía el aviso se vuelve a mostrar completo, y el
+    // aviso viejo no lo vacía (consumeError comprueba texto y contador).
+    val cortesias = compTerminadas
+    LaunchedEffect(error, cortesias) {
         error?.let {
             snackbarHostState.showSnackbar(it)
-            viewModel.consumeError()
+            viewModel.consumeError(it, cortesias)
         }
     }
 

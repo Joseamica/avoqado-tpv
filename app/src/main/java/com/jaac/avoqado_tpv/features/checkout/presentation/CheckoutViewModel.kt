@@ -45,6 +45,9 @@ import com.jaac.avoqado_tpv.features.checkout.domain.repository.SavedCartsReposi
 import com.jaac.avoqado_tpv.features.checkout.domain.repository.VentaSinRedRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.DescuentoDelCliente
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
+import com.jaac.avoqado_tpv.features.ordering.domain.comoDescuento
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -102,6 +105,22 @@ data class AvisoSinConexion(val sinRed: Boolean, val guardadas: Int, val conProb
         }
         return listOfNotNull(principal, "$conProblema con problema".takeIf { conProblema > 0 }).joinToString(" · ")
     }
+}
+
+/** D1 · por qué el descuento que el negocio le asignó al cliente no está puesto en la cuenta (la pantalla lo pinta bajo el cliente). */
+sealed interface AvisoDescuentoDelCliente {
+    /** «<Nombre> tiene <valor> de descuento. Tu puesto no puede aplicarlo.» + «Pedir autorización» si [puedePedirPin]. */
+    data class SinPermiso(val nombre: String, val valor: String, val puedePedirPin: Boolean) : AvisoDescuentoDelCliente
+    /** «<Nombre> tiene <valor> de descuento.» + «Usar el de <Nombre>»: la cuenta ya trae otro descuento y no se pisa. */
+    data class YaHayOtro(val nombre: String, val valor: String) : AvisoDescuentoDelCliente
+    /** «Sin conexión: no se puede pedir autorización ahora.» */
+    data object SinRedParaPin : AvisoDescuentoDelCliente
+}
+
+/** `10 %`, `12.5 %` (sin ceros de más) o `$50.00`, como lo leen los avisos del descuento del cliente. */
+fun textoDelValor(d: DescuentoDelCliente): String = when (d.tipo) {
+    DiscountType.PERCENTAGE -> BigDecimal.valueOf(d.valor).stripTrailingZeros().toPlainString() + " %"
+    DiscountType.FIXED -> "$" + BigDecimal.valueOf(d.valor).setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
 }
 
 @HiltViewModel
@@ -182,6 +201,79 @@ class CheckoutViewModel @Inject constructor(
 
     private val _selectedCustomer = MutableStateFlow<Customer?>(null)
     val selectedCustomer: StateFlow<Customer?> = _selectedCustomer.asStateFlow()
+
+    private val _avisoDescuentoDelCliente = MutableStateFlow<AvisoDescuentoDelCliente?>(null)
+    val avisoDescuentoDelCliente: StateFlow<AvisoDescuentoDelCliente?> = _avisoDescuentoDelCliente.asStateFlow()
+
+    /** «Quitar»: vale para esta venta; aunque la cajera vuelva a elegir al cliente, no se pone solo hasta vaciar el carrito. */
+    fun quitarDescuentoDelCliente() {
+        if (candado.rechaza("quitar el descuento del cliente")) return
+        _cartState.update { c ->
+            c.copy(
+                orderDiscount = c.orderDiscount.takeUnless { c.descuentoEsDelCliente },
+                descuentoEsDelCliente = false,
+                descuentoDelClienteQuitado = true,
+            )
+        }
+        _avisoDescuentoDelCliente.value = null
+    }
+
+    /** «Usar el de <Nombre>»: reemplaza al otro descuento de cuenta (manual, cupón o referido), si el puesto puede. */
+    fun usarDescuentoDelCliente() {
+        if (candado.rechaza("usar el descuento del cliente") || necesitaInternet()) return
+        viewModelScope.launch { revisarDescuentoDelCliente(usar = true) }
+    }
+
+    /** «Pedir autorización»: el PIN de un gerente para `discounts:apply` (lo conecta Task 6). Pedirlo necesita al servidor. */
+    fun pedirAutorizacionDescuentoDelCliente() {
+        if (candado.rechaza("pedir autorización del descuento")) return
+        if (!connectionStateManager.hasInternet()) {
+            _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.SinRedParaPin
+            return
+        }
+        // Task 6: AutorizacionDeGerente para `discounts:apply` atado a llaveDelDescuentoDelCliente(cliente, descuento).
+    }
+
+    /**
+     * D1: pone el descuento del cliente elegido o deja el aviso de por qué no. No pisa otro descuento de cuenta salvo con [usar], ni
+     * vuelve a ponerlo tras «Quitar». Con [soloAviso] (al restaurar el carrito) no cambia lo que viaja: la llave de la venta sale de ahí.
+     */
+    private suspend fun revisarDescuentoDelCliente(usar: Boolean = false, soloAviso: Boolean = false) {
+        val cliente = _selectedCustomer.value
+        val d = cliente?.descuentoDelCliente
+        if (cliente == null || d == null || (_cartState.value.descuentoDelClienteQuitado && !usar)) {
+            _avisoDescuentoDelCliente.value = null
+            return
+        }
+        val nombre = cliente.shortName
+        val valor = textoDelValor(d)
+        val puede = _cartState.value.autorizacionDelDescuento != null || permissionsRepository.hasPermission("discounts:apply")
+        // Llegó tarde: otro cliente, o la venta ya se está preparando (lo que viaja no cambia).
+        if (_selectedCustomer.value?.id != cliente.id || (!soloAviso && candado.rechaza("poner el descuento del cliente"))) return
+        val cart = _cartState.value
+        if (!usar && !cart.descuentoEsDelCliente && (cart.orderDiscount != null || cart.manualDiscountCents > 0)) {
+            _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.YaHayOtro(nombre, valor)
+            return
+        }
+        if (!puede) {
+            val pin = secureStorage.getVenueId()?.let { autorizacionDeGerente.pinPrendido(it) }
+            if (_selectedCustomer.value?.id != cliente.id) return
+            _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.SinPermiso(nombre, valor, puedePedirPin = pin != false)
+            return
+        }
+        _avisoDescuentoDelCliente.value = null
+        if (soloAviso) return
+        _cartState.update {
+            it.copy(
+                orderDiscount = d.comoDescuento(),
+                descuentoEsDelCliente = true,
+                descuentoDelClienteQuitado = false,
+                manualDiscountCents = 0,
+                manualDiscountReason = null,
+                manualDiscountSource = null,
+            )
+        }
+    }
 
     private val _customerSearchQuery = MutableStateFlow("")
     val customerSearchQuery: StateFlow<String> = _customerSearchQuery.asStateFlow()
@@ -356,7 +448,7 @@ class CheckoutViewModel @Inject constructor(
 
     fun applyOrderDiscount(discount: Discount?) {
         if (candado.rechaza("cambiar el descuento")) return
-        _cartState.update { it.copy(orderDiscount = discount) }
+        _cartState.update { it.copy(orderDiscount = discount, descuentoEsDelCliente = false) }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -443,6 +535,7 @@ class CheckoutViewModel @Inject constructor(
                 // Manual + predefined are mutually exclusive — clear the
                 // predefined discount so subtotals stay consistent.
                 orderDiscount = null,
+                descuentoEsDelCliente = false,
             )
         }
     }
@@ -511,6 +604,7 @@ class CheckoutViewModel @Inject constructor(
                     _cartState.update {
                         it.copy(
                             orderDiscount = asDiscount,
+                            descuentoEsDelCliente = false,
                             manualDiscountCents = 0,
                             manualDiscountReason = null,
                         )
@@ -550,6 +644,7 @@ class CheckoutViewModel @Inject constructor(
 
     private fun reiniciarCarrito() {
         _cartState.value = CartState()
+        _avisoDescuentoDelCliente.value = null
         // Also reset the referral capture state — the cart is a per-order
         // surface so anything tied to it (referral code, validation) must
         // go too. We do this in two steps so the cart collector emits its
@@ -600,7 +695,16 @@ class CheckoutViewModel @Inject constructor(
         // (the discount was computed for the previous customer's order).
         if (previous?.id != customer?.id) {
             clearReferral()
+            // D1: el descuento y la autorización eran del cliente anterior; un descuento que puso la cajera se queda.
+            _cartState.update { c ->
+                c.copy(
+                    orderDiscount = c.orderDiscount.takeUnless { c.descuentoEsDelCliente },
+                    descuentoEsDelCliente = false,
+                    autorizacionDelDescuento = null,
+                )
+            }
         }
+        viewModelScope.launch { revisarDescuentoDelCliente() }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1073,9 +1177,11 @@ class CheckoutViewModel @Inject constructor(
         val amountPesos = (current.totalCents / 100.0).toString()
         val hayRed = connectionStateManager.hasInternet()
         // 🔴 D5: el cupón necesita al SERVIDOR: sin red no se guarda como venta local (se subiría como un descuento libre), se dice. Y un
-        // cobro rápido no tiene orden donde ligarlo: con cupón siempre hay orden, aunque sean puros importes.
+        // cobro rápido no tiene orden donde ligarlo: con cupón siempre hay orden, aunque sean puros importes. Igual con el descuento del
+        // cliente (D1): se registra como lo que es, en su orden.
         if (current.couponCode != null && !hayRed) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED))
-        return when (caminoDelCobro(current.hasProductItems || current.couponCode != null, current.totalCents, hayRed)) {
+        val llevaOrden = current.hasProductItems || current.couponCode != null || current.descuentoEsDelCliente
+        return when (caminoDelCobro(llevaOrden, current.totalCents, hayRed)) {
             CaminoDelCobro.RAPIDO -> {
                 // Sin orden y sin carrito durable (como hoy). Un carrito a medias de un intento anterior ya no es esta venta.
                 secureStorage.getVenueId()?.let { ventaSinRed.borrarCarrito(it) }
@@ -1155,6 +1261,11 @@ class CheckoutViewModel @Inject constructor(
      * medias se guarda antes de navegar con la venta (sólo efectivo) y la pantalla de cobro inserta la fila (C3).
      */
     private suspend fun ventaLocal(current: CartState, amountPesos: String, llaveYaUsada: String?): Result<PaymentNavigationPayload> {
+        // D1 (diseño v5): el descuento del cliente nunca entra a una venta local. Ésta es la única puerta (sin red, y la caída de
+        // `with-items` por red), como la cortesía sin red: se dice y la cajera lo quita o espera la red.
+        if (current.descuentoEsDelCliente) {
+            return Result.failure(IllegalStateException(textoDescuentoSinRed()))
+        }
         val venueId = secureStorage.getVenueId()
             ?: return Result.failure(IllegalStateException("No venueId in secure storage"))
         val staffId = staffDe(current) ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
@@ -1444,6 +1555,7 @@ class CheckoutViewModel @Inject constructor(
             pendingPaymentDao.existeFilaConLlave(llave) && secureStorage.getVenueId() == venueId) {
             _cartState.value = CartState()
             _selectedCustomer.value = null
+            _avisoDescuentoDelCliente.value = null
             _referralCode.value = ""
             _referralValidation.value = ReferralCaptureUiState.Idle
             olvidarLlave()
@@ -1466,6 +1578,8 @@ class CheckoutViewModel @Inject constructor(
         orderAttemptExternalId = aMedias.llave
         llaveRecuperada = aMedias.llave // pudo salir antes de morir el proceso: no sabemos
         orderAttemptFingerprint = pedidoEnLinea(cart, staffId, aMedias.cliente?.id).toString()
+        // D1: quien la retoma puede no tener el permiso; sólo el aviso (el carrito y su llave no cambian), y «Cobrar» lo vuelve a revisar.
+        revisarDescuentoDelCliente(soloAviso = true)
         _aviso.value = AVISO_VENTA_RECUPERADA
         Timber.i("🛒 Venta a medias restaurada (${cart.itemCount} artículos)")
     }
@@ -1494,8 +1608,23 @@ class CheckoutViewModel @Inject constructor(
         if (cart.orderDiscount == null && cart.manualDiscountCents > 0 && !permissionsRepository.hasPermission("discounts:apply")) {
             return "La venta tiene un descuento y tu sesión no tiene permiso. Pide apoyo al gerente."
         }
+        // D1: un carrito restaurado (otra cajera, permiso revocado) no se cobra rebajado sin permiso ni PIN. Sin red el PIN no se
+        // puede pedir: se dice lo de la red (el freno de la venta local diría lo mismo).
+        if (cart.descuentoEsDelCliente && cart.autorizacionDelDescuento == null && !permissionsRepository.hasPermission("discounts:apply")) {
+            return if (connectionStateManager.hasInternet()) {
+                "Tu puesto no puede aplicar el descuento de ${nombreDelCliente()}. Pide autorización o quítalo."
+            } else {
+                textoDescuentoSinRed()
+            }
+        }
         return if (sesion == sesionActual()) null else "La sesión cambió. Vuelve a Cobrar para continuar."
     }
+
+    /** `<Nombre>` de los textos del descuento del cliente: su nombre de pila. */
+    private fun nombreDelCliente(): String = _selectedCustomer.value?.shortName ?: "Cliente"
+
+    private fun textoDescuentoSinRed() =
+        "Sin conexión: el descuento de ${nombreDelCliente()} necesita internet. Quítalo o cobra cuando vuelva la red"
 
     /** Al volver de un cobro o cambiar de negocio se vuelve a leer Room; nunca se toma una lectura fallida por ausencia. */
     fun actualizarEstadoDeCobrar() {
@@ -1523,6 +1652,7 @@ class CheckoutViewModel @Inject constructor(
             if (anterior != null) {
                 _cartState.value = CartState(selectedStaffId = secureStorage.getStaffId().orEmpty(), selectedStaffName = secureStorage.getStaffName().orEmpty())
                 _selectedCustomer.value = null
+                _avisoDescuentoDelCliente.value = null
                 olvidarLlave()
             }
             contadoresJob?.cancel()

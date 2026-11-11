@@ -104,6 +104,9 @@ class AutorizacionDeGerente @Inject constructor(
         }
     }
 
+    /** ¿Tiene el negocio prendido el PIN de gerente? El mismo dato y la misma caché que [paraCortesia]; `null` = no se sabe. */
+    suspend fun pinPrendido(venueId: String): Boolean? = pinPrendidoCacheado(venueId)
+
     private val cachePin = ConcurrentHashMap<String, Pair<Boolean, Long>>()
     internal var reloj: () -> Long = System::nanoTime
 

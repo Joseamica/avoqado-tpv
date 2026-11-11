@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **Cobrar · descuento del cliente (D1, lógica)**: al elegir un cliente con un descuento asignado en el panel, se pone solo en la cuenta si el puesto tiene «Aplicar descuentos» (`discounts:apply`); si no, queda un aviso «<Nombre> tiene <valor> de descuento. Tu puesto no puede aplicarlo.» (con «Pedir autorización» sólo si el negocio tiene prendido el PIN de gerente). No pisa un descuento manual, un cupón ni un referido: avisa «Usar el de <Nombre>». «Quitar» vale para esa venta; cambiar de cliente quita el del anterior y pone el del nuevo. Con el descuento del cliente siempre se crea orden, aunque sean puros importes tecleados. «Cobrar» vuelve a revisar el permiso (un carrito restaurado por otra cajera sin permiso ni PIN se frena con «Tu puesto no puede aplicar el descuento de <Nombre>. Pide autorización o quítalo.») y sin red no se cobra con él: «Sin conexión: el descuento de <Nombre> necesita internet. Quítalo o cobra cuando vuelva la red» (no se guarda venta local). La pantalla, el PIN y el cuerpo de la venta llegan en las siguientes partes.
+
 ### App de campo
 - **App de campo (GPS con la app detenida, revisión 13)**: si la app quedó detenida porque el teléfono no pudo guardar y Android vuelve a pedir el servicio de ubicación, éste cumple lo que Android exige antes de pararse y ya no cierra la app.
 - **App de campo (sin espacio al abrir, duodécima revisión)**: si al abrir la app el celular no puede guardar lo que tenía que terminar (por ejemplo, sin espacio), ya no se cierra sola una y otra vez: muestra «Tu celular no tiene espacio o no pudo guardar. Libera espacio y toca «Reintentar». No se perdió nada.» y no hace nada más hasta que se reintenta.

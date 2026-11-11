@@ -145,4 +145,32 @@ class InicioScreenTest {
         compose.onNodeWithText(actualiza).assertExists()
         compose.onNodeWithText("Regresar").assertIsEnabled()
     }
+
+    // Codex código r1 #1: Android puede restaurar la pantalla de Venta VACÍA (proceso muerto); con obligatoria no se empieza
+    // otra venta desde ahí, pero la SIM que ya estaba elegida sí se termina.
+    @Test fun `obligatoria - la pantalla de Venta vacia no deja escanear ni buscar una SIM nueva`() {
+        compose.setContent {
+            TemaCampo { VentaContenido(EstadoVenta(), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+        }
+        compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()
+        compose.onNodeWithText("Buscar").assertIsNotEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
+    }
+
+    @Test fun `sin obligatoria, la pantalla de Venta vacia deja escanear`() {
+        compose.setContent {
+            TemaCampo { VentaContenido(EstadoVenta(), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = false) }
+        }
+        compose.onNodeWithText("Escanear la SIM").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria con una SIM ya elegida - se puede terminar (Registrar no depende de la obligatoria)`() {
+        val sim = SimEnCopia("8952140000000000201", "PROMOTER_HELD", 1, "De caja", "0.00", null, null, null, null, emptyList(), null)
+        compose.setContent {
+            TemaCampo { VentaContenido(EstadoVenta(sim = sim), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+        }
+        compose.onNodeWithText("8952140000000000201").assertExists()
+        compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()
+        compose.onNodeWithText("Registrar").assertExists()
+    }
 }

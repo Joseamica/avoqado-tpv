@@ -51,7 +51,8 @@ fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, obligatoria: Boolean, onR
     var escaneando by rememberSaveable { mutableStateOf(false) }
     var fotoDe by rememberSaveable { mutableStateOf<Slot?>(null) }
     when {
-        escaneando -> EscanerScreen(onCodigo = { escaneando = false; vm.alEscanear(it) }, onCerrar = { escaneando = false })
+        // Con obligatoria no entra una SIM nueva, ni siquiera si el escáner ya estaba abierto cuando llegó (Codex código r1 #1).
+        escaneando -> EscanerScreen(onCodigo = { escaneando = false; if (!obligatoria) vm.alEscanear(it) }, onCerrar = { escaneando = false })
         fotoDe != null -> {
             val s = fotoDe!!
             Camara(
@@ -101,7 +102,10 @@ fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta, obliga
                 OutlinedButton(a.regresar, alto) { Text("Regresar") }
                 return@Column
             }
-            Buscar(e, a)
+            // D-2: con obligatoria no se EMPIEZA otra venta (también si Android restauró esta pantalla vacía); la SIM que ya
+            // estaba elegida sí se termina, porque ya pasó en la calle.
+            Buscar(e, a, bloqueado = obligatoria)
+            if (obligatoria && e.sim == null) Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
             e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             val sim = e.sim ?: return@Column
             Card(Modifier.fillMaxWidth()) {
@@ -127,15 +131,15 @@ fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta, obliga
 }
 
 @Composable
-private fun Buscar(e: EstadoVenta, a: AccionesDeVenta) {
+private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
     var escrito by remember { mutableStateOf("") }
-    Button(a.escanear, alto, enabled = !e.buscando && !e.registrando) { Text(if (e.buscando) "Buscando…" else "Escanear la SIM") }
+    Button(a.escanear, alto, enabled = !bloqueado && !e.buscando && !e.registrando) { Text(if (e.buscando) "Buscando…" else "Escanear la SIM") }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             escrito, { escrito = it }, Modifier.weight(1f), singleLine = true,
             label = { Text("O escribe el ${e.config?.etiquetaCodigo ?: "ICCID"}") },
         )
-        OutlinedButton({ a.buscar(escrito) }, Modifier.heightIn(min = 48.dp), enabled = escrito.isNotBlank() && !e.buscando) { Text("Buscar") }
+        OutlinedButton({ a.buscar(escrito) }, Modifier.heightIn(min = 48.dp), enabled = !bloqueado && escrito.isNotBlank() && !e.buscando) { Text("Buscar") }
     }
 }
 

@@ -97,7 +97,16 @@ data class FolioDto(
     @SerializedName("paymentStatus") val paymentStatus: String?,
     @SerializedName("needsPrint") val needsPrint: Boolean?,
     @SerializedName("items") val items: List<ItemDto?>?,
+    // S14 (parte 2), opcionales: de quién es la cuenta (nombre corto, nunca su contacto) y sus filas de descuento en PESOS.
+    @SerializedName("cliente") val cliente: ClienteDto? = null,
+    @SerializedName("beneficios") val beneficios: List<BeneficioDto?>? = null,
+    @SerializedName("beneficiosTotal") val beneficiosTotal: Int? = null,
 )
+
+data class ClienteDto(@SerializedName("id") val id: String?, @SerializedName("nombre") val nombre: String?)
+
+/** El monto llega crudo: un valor raro descarta ese beneficio, nunca la lista. */
+data class BeneficioDto(@SerializedName("nombre") val nombre: String?, @SerializedName("monto") val monto: JsonElement?)
 
 data class ItemDto(
     @SerializedName("name") val name: String?,

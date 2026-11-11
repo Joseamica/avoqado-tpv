@@ -5,7 +5,11 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
+import com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
+import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
+import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
+import com.jaac.avoqado_tpv.features.onlineorders.domain.BeneficioDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
@@ -23,6 +27,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -82,7 +87,11 @@ class PorPagarViewModelTest {
         VenueTimeZone.invalidateCache()
     }
 
-    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso, libreta)
+    // P2 (parte 2): el cobro con saldo guardado en el aparato. Por defecto no hay ninguno pendiente.
+    private val saldo = mockk<CobroConSaldoRepository> { every { pendienteDe(any()) } returns null }
+    private val despues = mockk<DespuesDeCobrarFolio>(relaxed = true)
+
+    private fun vm() = PorPagarViewModel(vigia, folios, permisos, storage, cola, cobroEnCurso, libreta, saldo, despues)
 
     private fun folio(
         id: String,
@@ -824,6 +833,150 @@ class PorPagarViewModelTest {
 
         estado.value = estado.value.copy(counts = ConteoDeFolios(0, 0), porEntregar = emptyList(), actualizadoEnMs = 2_000L)
         assertThat(vm.ui.value.porEntregar).isEmpty()
+    }
+
+    // endregion
+
+    // region — P2 (parte 2): saldo o tarjeta de regalo, y la cuenta de la clienta
+
+    @Test
+    fun `P2 Saldo o tarjeta de regalo solo con giftCards redeem`() = runTest {
+        coEvery { permisos.hasPermission("giftCards:redeem") } returns false
+        assertThat(vm().ui.value.puedeUsarSaldo).isFalse()
+
+        coEvery { permisos.hasPermission("giftCards:redeem") } returns true
+        assertThat(vm().ui.value.puedeUsarSaldo).isTrue()
+    }
+
+    @Test
+    fun `P2 sin red el boton de saldo sale en gris con Necesita conexion`() {
+        assertThat(botonDeSaldo(puedeUsarSaldo = true, sinConexion = true, pagado = false))
+            .isEqualTo(BotonDeSaldo(activo = false, nota = "Necesita conexión"))
+        assertThat(botonDeSaldo(puedeUsarSaldo = true, sinConexion = false, pagado = false)).isEqualTo(BotonDeSaldo(activo = true, nota = null))
+        assertThat(botonDeSaldo(puedeUsarSaldo = false, sinConexion = false, pagado = false)).isNull()
+        assertThat(botonDeSaldo(puedeUsarSaldo = true, sinConexion = false, pagado = true)).isNull()
+        assertThat(TextosPorPagar.SALDO_O_TARJETA).isEqualTo("Saldo o tarjeta de regalo")
+    }
+
+    @Test
+    fun `P2 reabrir con una solicitud pendiente comprueba el cobro con saldo antes de dejar cobrar`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendienteDe("a1") } returns mockk()
+        val respuesta = CompletableDeferred<DesenlaceDeSaldo?>()
+        coEvery { saldo.resolver("a1") } coAnswers { respuesta.await() }
+        val vm = vm()
+
+        vm.abrir(ana)
+        assertThat(vm.ui.value.comprobandoSaldo).containsExactly("a1")
+        assertThat(TextosPorPagar.COMPROBANDO_SALDO).isEqualTo("Comprobando el cobro con saldo…")
+        var abrio = false
+        assertThat(vm.cobrar(ana) { abrio = true }).isNull()
+        assertThat(abrio).isFalse()
+
+        respuesta.complete(DesenlaceDeSaldo.Incierto)
+
+        assertThat(vm.ui.value.comprobandoSaldo).isEmpty()
+        assertThat(vm.ui.value.saldoSinConfirmar).containsExactly("a1")
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_SIN_CONFIRMAR)
+        // «Cancelar folio» no se ofrece con un cobro con saldo sin confirmar.
+        assertThat(muestraCancelarFolio(ana, puedeCancelar = true, sinConexion = false, saldoEnDuda = true)).isFalse()
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `P2 con el cobro con saldo en duda, Cobrar vuelve a comprobar y no abre ningun cobro`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendienteDe("a1") } returns mockk()
+        coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Incierto
+        val vm = vm()
+        var abrio = false
+
+        assertThat(vm.cobrar(ana) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        coVerify(exactly = 1) { saldo.resolver("a1") }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_SIN_CONFIRMAR)
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    @Test
+    fun `P2 si al comprobar el saldo cubrio todo, confirma el folio una vez y lo manda a Por entregar`() = runTest {
+        val ana = folio("a1", folio = "W7K3P")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendienteDe("a1") } returns mockk()
+        coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600)
+        val vm = vm()
+
+        vm.abrir(ana)
+
+        verify(exactly = 1) { despues.alConfirmarse(match { it.orderId == "a1" && it.orderNumber == "W7K3P" }) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.pagadoConSaldo("W7K3P"))
+        assertThat(vm.ui.value.aviso!!.irAPorEntregar).isTrue()
+        verify { vigia.sondearYa() }
+    }
+
+    @Test
+    fun `P2 si al comprobar quedo saldo por cobrar, dice cuanto falta y no abre el cobro solo`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendienteDe("a1") } returns mockk()
+        coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
+        val vm = vm()
+        var abrio = false
+
+        assertThat(vm.cobrar(ana) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        verify(exactly = 0) { despues.alConfirmarse(any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.saldoConfirmado("$84.00"))
+    }
+
+    @Test
+    fun `Codex r1 4 un abono con saldo recuperado al comprobar tambien sale bajo el monto al cobrar lo que falta`() = runTest {
+        val ana = folio("a1", folio = "W7K3P", total = "134.00")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendienteDe("a1") } returns mockk()
+        coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(ana.copy(falta = BigDecimal("84.00")))))
+        val vm = vm()
+        assertThat(vm.cobrar(ana)).isNull()
+        every { saldo.pendienteDe("a1") } returns null
+
+        val apertura = vm.cobrar(ana)!!
+
+        assertThat(apertura.initialAmount).isEqualTo("84.00")
+        assertThat(apertura.folio.pagadoConSaldo).isEqualTo(BigDecimal("50.00"))
+    }
+
+    @Test
+    fun `P2 2e-3 lo que falta despues del saldo abre el cobro de siempre con lo que falta ahora`() = runTest {
+        val ana = folio("a1", folio = "W7K3P", total = "134.00")
+        cargado(porPagar = listOf(ana))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(ana.copy(falta = BigDecimal("84.00")))))
+        val vm = vm()
+        vm.abrir(ana)
+        var abierta: AperturaDeCobro? = null
+
+        val apertura = vm.cobrarResto(5000) { abierta = it }!!
+
+        assertThat(abierta).isEqualTo(apertura)
+        assertThat(apertura.initialAmount).isEqualTo("84.00")
+        assertThat(apertura.splitType).isEqualTo(SplitType.FULLPAYMENT.value)
+        assertThat(apertura.folio.pagadoConSaldo).isEqualTo(BigDecimal("50.00"))
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana", BigDecimal("50.00"))).isEqualTo("Folio W7K3P · Ana · ya pagó $50.00 con saldo")
+    }
+
+    @Test
+    fun `P2 la tarjeta del folio dice Con cuenta y sus beneficios cuando vienen`() {
+        val conCuenta = folio("a1").copy(cliente = "Ana", beneficios = listOf(BeneficioDeFolio("Premio", BigDecimal("45.00"))), beneficiosTotal = 1)
+        assertThat(lineaDeLaCuenta(conCuenta)).isEqualTo("Con cuenta: Ana · Premio −$45.00")
+        // Sin los campos (un SERVIDOR viejo o un folio sin cuenta): como hoy, nada.
+        assertThat(lineaDeLaCuenta(folio("a2"))).isNull()
+        // Nunca recorta en silencio.
+        val conMas = conCuenta.copy(beneficiosTotal = 3)
+        assertThat(lineaDeLaCuenta(conMas)).isEqualTo("Con cuenta: Ana · Premio −$45.00 · y 2 más")
     }
 
     // endregion

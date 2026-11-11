@@ -140,6 +140,7 @@ interface AppNavigationEntryPoint {
     fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun vigiaDeFolios(): com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
+    fun cobroConSaldo(): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
@@ -348,6 +349,8 @@ fun AppNavigation(
     // 🧾 PEDIDOS POR PAGAR (tienda híbrida): el vigía vive con la actividad y, con sesión guardada, sondea solo
     // (también cuando SplashScreen restaura la sesión sin pasar por el login). Idempotente.
     val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }
+    // 🎁 Tienda híbrida, parte 2: el cobro con saldo de un folio (lo mira el cobro remoto del POS antes de entrar).
+    val cobroConSaldo = remember { kioskEntryPoint.cobroConSaldo() }
     LaunchedEffect(vigiaDeFolios) {
         vigiaDeFolios.iniciar(
             kotlinx.coroutines.CoroutineScope(activityOwner.lifecycleScope.coroutineContext + kotlinx.coroutines.Dispatchers.IO)
@@ -467,6 +470,8 @@ fun AppNavigation(
                 enPantallaDeCobro = onBlumonPayment || onAngelPayPayment,
                 estado = paymentStateProvider,
             )
+                // Parte 2 (Codex r2 #1): tampoco mientras cobra con saldo, ni sobre una cuenta con un saldo sin confirmar.
+                ?: cobroConSaldo.motivoParaNoCobrarRemoto(request.orderId)
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
                 // If this came via socket, send rejection back so iOS doesn't hang
@@ -1451,13 +1456,8 @@ fun AppNavigation(
         composable(NavRoute.PorPagar.route) { porPagarEntry ->
             val porPagarViewModel: com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarViewModel = hiltViewModel()
             // Volvió de un cobro que terminó: se ve la lista (el folio ya pasó a «Por entregar»), no el folio cobrado.
-            LaunchedEffect(Unit) {
-                if (porPagarEntry.savedStateHandle.remove<Boolean>(FOLIO_COBRADO) == true) porPagarViewModel.cobroTerminado()
-            }
-            com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarScreen(
-                onBack = { navController.safePopBackStack() },
-                // Suspende hasta abrir el cobro: «Cobrar» sigue ocupado mientras se prepara el lector.
-                onCobrar = abrir@{ apertura ->
+            // Suspende hasta abrir el cobro: «Cobrar» sigue ocupado mientras se prepara el lector.
+            val abrirCobroDelFolio: suspend (com.jaac.avoqado_tpv.features.onlineorders.presentation.AperturaDeCobro) -> Unit = abrir@{ apertura ->
                     if (!awaitPaxPaymentReady(context, initializationManager, "Folio payment")) return@abrir
                     // Un segundo toque mientras se preparaba el lector no abre otro cobro.
                     if (navController.currentDestination?.route != NavRoute.PorPagar.route) return@abrir
@@ -1473,9 +1473,48 @@ fun AppNavigation(
                     }
                     Timber.d("🧾 [Folios] Cobro del folio ${apertura.orderNumber}: falta ${apertura.initialAmount} | nexgo=${isAppToAppPayment()}")
                     navController.navigate(getPaymentRoute())
+            }
+            LaunchedEffect(Unit) {
+                if (porPagarEntry.savedStateHandle.remove<Boolean>(FOLIO_COBRADO) == true) porPagarViewModel.cobroTerminado()
+                // Parte 2 (mockup 2e·3): el saldo no alcanzó; se abre el cobro de siempre por lo que falta AHORA (se relee el folio).
+                porPagarEntry.savedStateHandle.remove<Long>(COBRAR_RESTO_CON_SALDO)?.let { pagado ->
+                    porPagarViewModel.cobrarResto(pagado, abrirCobroDelFolio)
+                }
+            }
+            com.jaac.avoqado_tpv.features.onlineorders.presentation.PorPagarScreen(
+                onBack = { navController.safePopBackStack() },
+                onCobrar = abrirCobroDelFolio,
+                // Parte 2 (P2): sin lector de por medio; el folio ya se releyó y no tiene dinero sin confirmar.
+                onUsarSaldo = saldo@{ apertura ->
+                    if (navController.currentDestination?.route != NavRoute.PorPagar.route) return@saldo
+                    navController.currentBackStackEntry?.savedStateHandle?.set(APERTURA_DE_SALDO, apertura)
+                    navController.navigate(NavRoute.SaldoDeRegalo.route)
                 },
                 viewModel = porPagarViewModel,
             )
+        }
+
+        // 🎁 Tienda híbrida, parte 2 (P2): «Saldo o tarjeta de regalo» al cobrar un folio. El cobro con saldo vive en su repositorio
+        // (guardado ANTES de mandarlo); aquí sólo se decide a dónde se regresa.
+        composable(NavRoute.SaldoDeRegalo.route) { saldoEntry ->
+            val apertura = remember(saldoEntry) {
+                navController.previousBackStackEntry?.savedStateHandle
+                    ?.get<com.jaac.avoqado_tpv.features.onlineorders.presentation.AperturaDeCobro>(APERTURA_DE_SALDO)
+            }
+            if (apertura == null) {
+                LaunchedEffect(Unit) { navController.safePopBackStack() }
+            } else {
+                com.jaac.avoqado_tpv.features.giftcards.presentation.SaldoDeRegaloScreen(
+                    apertura = apertura,
+                    onSalir = { navController.safePopBackStack() },
+                    onPagado = { volverALosFolios(navController, vigiaDeFolios, cobrado = true) },
+                    onFalta = { pagado ->
+                        runCatching { navController.getBackStackEntry(NavRoute.PorPagar.route) }
+                            .onSuccess { it.savedStateHandle[COBRAR_RESTO_CON_SALDO] = pagado }
+                        if (!navController.popBackStack(NavRoute.PorPagar.route, inclusive = false)) navController.safePopBackStack()
+                    },
+                )
+            }
         }
 
         // Fast Payment Entry Screen - Dedicated screen for amount input
@@ -3516,6 +3555,12 @@ private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
 
 /** Marca en la entrada de «Pedidos por pagar»: el cobro del folio terminó (se vuelve a la lista, no al folio). */
 private const val FOLIO_COBRADO = "folioCobrado"
+
+/** Parte 2: el folio releído que abre «Saldo o tarjeta de regalo» (en la entrada de «Pedidos por pagar»). */
+private const val APERTURA_DE_SALDO = "aperturaDeSaldo"
+
+/** Parte 2 (2e·3): centavos pagados con saldo; al volver a «Pedidos por pagar» se abre el cobro de siempre por lo que falta. */
+private const val COBRAR_RESTO_CON_SALDO = "cobrarRestoConSaldo"
 
 /**
  * El cobro de un folio regresa SIEMPRE a «Pedidos por pagar» (nunca a «Órdenes»/`Menu`) y el vigía pregunta ya, para que el folio

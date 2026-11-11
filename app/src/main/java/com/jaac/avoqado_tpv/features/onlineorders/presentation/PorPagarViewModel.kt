@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
 import com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
@@ -37,8 +38,10 @@ object TextosPorPagar {
     const val TITULO = "Pedidos por pagar"
     fun tituloFolio(folio: String) = "Folio $folio"
     /** Mockup 2d: bajo el monto de «Método de pago» al cobrar un folio. */
-    fun folioDelCobro(folio: String, nombre: String?) =
-        "Folio $folio" + (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")
+    fun folioDelCobro(folio: String, nombre: String?, pagadoConSaldo: java.math.BigDecimal? = null) =
+        "Folio $folio" + (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") +
+            // Parte 2 (2e·3): lo que se acaba de pagar con saldo, para que la cajera no lo vuelva a cobrar.
+            (pagadoConSaldo?.takeIf { it.signum() > 0 }?.let { " · ya pagó ${CurrencyFormatter.format(it)} con saldo" } ?: "")
     const val BUSCAR = "Folio o nombre"
     const val POR_PAGAR = "Por pagar"
     const val POR_ENTREGAR = "Por entregar"
@@ -120,6 +123,27 @@ object TextosPorPagar {
         "La tarjeta de este folio ya se aprobó",
         "La terminal lo está registrando. No lo cobres otra vez.",
     )
+    // Parte 2 (P2): saldo o tarjeta de regalo.
+    const val SALDO_O_TARJETA = "Saldo o tarjeta de regalo"
+    const val NECESITA_CONEXION = "Necesita conexión"
+    const val COMPROBANDO_SALDO = "Comprobando el cobro con saldo…"
+    val SALDO_COMPROBANDO = AvisoDeFolio(COMPROBANDO_SALDO, "Espera a que termine.")
+    val SALDO_SIN_CONFIRMAR = AvisoDeFolio(
+        "No pudimos confirmar el cobro con saldo",
+        "Revisa la conexión. No cobres este folio otra vez: al tocar «Cobrar» se vuelve a comprobar.",
+    )
+    fun saldoNoSalio(texto: String) = AvisoDeFolio("No se cobró con saldo", texto)
+    fun pagadoConSaldo(folio: String) = AvisoDeFolio(
+        "Pagado con saldo",
+        "El folio $folio ya está pagado. Está en «Por entregar».",
+        boton = "Ver en «Por entregar»",
+        irAPorEntregar = true,
+    )
+    fun saldoConfirmado(falta: String) = AvisoDeFolio("Cobro con saldo confirmado", "Faltan $falta. Toca «Cobrar» para cobrar lo que falta.")
+    /** S14: la línea de la cuenta de la clienta (como el MCP: «Con cuenta: Ana L. · Premio −$45.00»). */
+    fun conCuenta(nombre: String) = "Con cuenta: $nombre"
+    fun beneficio(nombre: String, monto: java.math.BigDecimal) = "$nombre −${CurrencyFormatter.format(monto)}"
+    fun yMas(n: Int) = "y $n más"
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
     val SIN_PAGAR = AvisoDeFolio("Este folio no está pagado", "Cóbralo antes de entregarlo.")
 }
@@ -142,7 +166,7 @@ data class AperturaDeCobro(
     val orderNumber: String,
     val splitType: String = SplitType.FULLPAYMENT.value,
     val folio: ComandaDeFolio,
-)
+) : java.io.Serializable
 
 data class PorPagarUi(
     val folios: EstadoDeFolios = EstadoDeFolios(),
@@ -164,6 +188,12 @@ data class PorPagarUi(
     val ocupados: Set<String> = emptySet(),
     val aviso: AvisoDeFolio? = null,
     val toast: String? = null,
+    /** Parte 2: `giftCards:redeem`, «Saldo o tarjeta de regalo». */
+    val puedeUsarSaldo: Boolean = false,
+    /** Folios cuyo cobro con saldo guardado en el aparato se está comprobando con el SERVIDOR. */
+    val comprobandoSaldo: Set<String> = emptySet(),
+    /** Folios con un cobro con saldo que no se pudo confirmar: no se cobran ni se cancelan hasta comprobarlo. */
+    val saldoSinConfirmar: Set<String> = emptySet(),
 )
 
 /**
@@ -182,6 +212,9 @@ class PorPagarViewModel @Inject constructor(
     private val cobroEnCurso: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
     // R89: la libreta de cobros con tarjeta (PAX y Nexgo): lo aprobado que el SERVIDOR todavía no registra.
     private val libreta: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
+    // Parte 2 (P2): el cobro con saldo guardado en el aparato, y lo que se hace cuando un folio queda pagado.
+    private val saldo: com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository,
+    private val despuesDeCobrar: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio,
 ) : ViewModel() {
 
     private data class Local(
@@ -194,6 +227,9 @@ class PorPagarViewModel @Inject constructor(
         val quitados: Map<String, Quitado> = emptyMap(),
         val aviso: AvisoDeFolio? = null,
         val toast: String? = null,
+        val puedeUsarSaldo: Boolean = false,
+        val comprobandoSaldo: Set<String> = emptySet(),
+        val saldoSinConfirmar: Set<String> = emptySet(),
     )
 
     /**
@@ -203,6 +239,12 @@ class PorPagarViewModel @Inject constructor(
     private data class Quitado(val marca: Long?, val seccion: SeccionDeFolios, val estado: String, val faltaCentavos: Long)
 
     private val local = MutableStateFlow(Local())
+
+    /**
+     * Parte 2 (Codex r1 #4): lo cobrado con saldo de cada folio en esta pantalla (centavos), venga de «Saldo o tarjeta de regalo» o de una
+     * comprobación que lo recuperó. El cobro de lo que falta lo dice bajo el monto («ya pagó $X con saldo»).
+     */
+    private val pagadoConSaldo = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** R97: el número de esta pantalla en el vigía; al limpiarse sólo suelta lo suyo. */
     private val lista = vigia.abrirLista()
@@ -224,7 +266,9 @@ class PorPagarViewModel @Inject constructor(
         viewModelScope.launch {
             val entregar = permisos.hasPermission("orders:update")
             val cancelar = permisos.hasPermission("orders:cancel-unpaid")
-            local.update { it.copy(puedeEntregar = entregar, puedeCancelar = cancelar) }
+            // Parte 2: el mismo permiso exacto que el SERVIDOR pide para cobrar con saldo.
+            val usarSaldo = permisos.hasPermission("giftCards:redeem")
+            local.update { it.copy(puedeEntregar = entregar, puedeCancelar = cancelar, puedeUsarSaldo = usarSaldo) }
         }
     }
 
@@ -232,10 +276,19 @@ class PorPagarViewModel @Inject constructor(
      * Cada vez que la pantalla vuelve a verse (también al regresar de un cobro): el vigía pregunta ya. Así un folio recién
      * cobrado aquí no sigue enseñando «Cobrar» hasta la siguiente vuelta.
      */
-    fun pantallaVisible() = vigia.sondearYa()
+    fun pantallaVisible() {
+        vigia.sondearYa()
+        // Parte 2: si se volvió del saldo con el cobro en duda, el folio abierto lo comprueba otra vez.
+        local.value.seleccionado?.let { revisarSaldo(it) }
+    }
 
     fun buscar(texto: String) = local.update { it.copy(busqueda = texto) }
-    fun abrir(folio: Folio) = local.update { it.copy(seleccionado = folio) }
+
+    /** Parte 2 (P2): un folio con un cobro con saldo guardado en el aparato lo comprueba ANTES de dejar cobrarlo. */
+    fun abrir(folio: Folio) {
+        local.update { it.copy(seleccionado = folio) }
+        revisarSaldo(folio)
+    }
     fun cerrarFolio() = local.update { it.copy(seleccionado = null) }
     fun toastMostrado() = local.update { it.copy(toast = null) }
     fun reintentar() = vigia.sondearYa()
@@ -265,16 +318,80 @@ class PorPagarViewModel @Inject constructor(
      * que falta AHORA, y llama [abrir] con ella. Vencido, ya pagado, cancelado o sin respuesta: deja su aviso y devuelve null
      * (no empieza ningún cobro). El folio sigue ocupado («Cobrar» en espera) hasta que [abrir] termina (el lector listo).
      */
-    suspend fun cobrar(folio: Folio, abrir: suspend (AperturaDeCobro) -> Unit = {}): AperturaDeCobro? {
+    suspend fun cobrar(folio: Folio, abrir: suspend (AperturaDeCobro) -> Unit = {}): AperturaDeCobro? = cobrarFolio(folio, abrir)
+
+    /**
+     * Parte 2 (mockup 2e·3): el saldo no alcanzó. Abre el cobro de siempre del folio abierto por lo que falta AHORA (se relee, como
+     * «Cobrar»), con «ya pagó $X con saldo» bajo el monto.
+     */
+    suspend fun cobrarResto(pagadoConSaldoCents: Long, abrir: suspend (AperturaDeCobro) -> Unit = {}): AperturaDeCobro? {
+        val folio = ui.value.seleccionado ?: return null
+        sumarPagadoConSaldo(folio.orderId, pagadoConSaldoCents)
+        return cobrarFolio(folio, abrir)
+    }
+
+    private fun sumarPagadoConSaldo(orderId: String, cents: Long) {
+        if (cents > 0) pagadoConSaldo.merge(orderId, cents, Long::plus)
+    }
+
+    private suspend fun cobrarFolio(folio: Folio, abrir: suspend (AperturaDeCobro) -> Unit): AperturaDeCobro? {
         if (vigia.estado.value.sinConexion) return null
         val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return null
         if (!ocupar(folio.orderId)) return null
         try {
+            // Parte 2: un cobro con saldo de este folio guardado en el aparato se comprueba primero (misma llave); con cualquier
+            // desenlace se avisa y NO se sigue a cobrar en el mismo toque (lo que falta cambió, o no se sabe si ya se cobró).
+            comprobarSaldo(folio)?.let { return avisar(it) }
             // R78/R83/R89: el SERVIDOR sólo sabe del cobro cuando sube; hasta entonces la relectura lo daría «por pagar» otra vez.
             dineroSinConfirmar(venueId, folio.orderId)?.let { return avisar(it) }
-            return releer(venueId, folio)?.also { abrir(it) }
+            return releer(venueId, folio, pagadoConSaldo[folio.orderId])?.also { abrir(it) }
         } finally {
             local.update { it.copy(ocupados = it.ocupados - folio.orderId) }
+        }
+    }
+
+    private fun revisarSaldo(folio: Folio) {
+        if (saldo.pendienteDe(folio.orderId) == null) return
+        viewModelScope.launch { comprobarSaldo(folio)?.let { aviso -> local.update { it.copy(aviso = aviso) } } }
+    }
+
+    /**
+     * Parte 2 (P1/P2): si el folio tiene un cobro con saldo guardado en el aparato, se le pregunta al SERVIDOR por SU llave (y, si no
+     * aparece, se reenvía el MISMO cobro: [com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository.resolver]). null = no había
+     * ninguno; si no, el aviso de lo que pasó. Mientras se comprueba, el folio dice «Comprobando el cobro con saldo…».
+     */
+    private suspend fun comprobarSaldo(folio: Folio): AvisoDeFolio? {
+        if (saldo.pendienteDe(folio.orderId) == null) return null
+        var libre = false
+        local.update {
+            libre = folio.orderId !in it.comprobandoSaldo
+            if (libre) it.copy(comprobandoSaldo = it.comprobandoSaldo + folio.orderId) else it
+        }
+        if (!libre) return TextosPorPagar.SALDO_COMPROBANDO
+        val d = try {
+            saldo.resolver(folio.orderId)
+        } finally {
+            local.update { it.copy(comprobandoSaldo = it.comprobandoSaldo - folio.orderId) }
+        }
+        val enDuda = d == com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Incierto
+        local.update {
+            it.copy(saldoSinConfirmar = if (enDuda) it.saldoSinConfirmar + folio.orderId else it.saldoSinConfirmar - folio.orderId)
+        }
+        return when (d) {
+            null -> null
+            com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Incierto -> TextosPorPagar.SALDO_SIN_CONFIRMAR
+            is com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.NoSalio -> TextosPorPagar.saldoNoSalio(d.texto)
+            is com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Cobrado -> {
+                vigia.sondearYa()
+                sumarPagadoConSaldo(folio.orderId, d.montoCents)
+                if (d.restanteCents == 0L) {
+                    // El saldo pagó todo (la app murió antes de confirmarlo): se acepta y sale su comanda, una vez.
+                    despuesDeCobrar.alConfirmarse(ComandaDeFolio(folio.orderId, folio.folio, folio.nombre, folio.nota, folio.productos))
+                    TextosPorPagar.pagadoConSaldo(folio.folio)
+                } else {
+                    TextosPorPagar.saldoConfirmado(CurrencyFormatter.format(java.math.BigDecimal.valueOf(d.restanteCents, 2)))
+                }
+            }
         }
     }
 
@@ -305,7 +422,7 @@ class PorPagarViewModel @Inject constructor(
     fun listo(folio: Folio) = accion(folio, Accion.LISTO)
     fun entregado(folio: Folio) = accion(folio, Accion.ENTREGADO)
 
-    private suspend fun releer(venueId: String, folio: Folio): AperturaDeCobro? {
+    private suspend fun releer(venueId: String, folio: Folio, pagadoConSaldoCents: Long? = null): AperturaDeCobro? {
         val primera = folios.listar(venueId, puedeCobrar = false).getOrElse { return avisar(TextosPorPagar.noSePudoRevisar(sinRed(it))) }
         val ahora = primera.horaDelServidor ?: Instant.now()
         val vivo = buscarEn(venueId, primera, SeccionDeFolios.POR_PAGAR, folio.orderId)
@@ -317,7 +434,10 @@ class PorPagarViewModel @Inject constructor(
                 initialAmount = vivo.falta.setScale(2, RoundingMode.HALF_UP).toPlainString(),
                 orderId = vivo.orderId,
                 orderNumber = vivo.folio,
-                folio = ComandaDeFolio(vivo.orderId, vivo.folio, vivo.nombre, vivo.nota, vivo.productos),
+                folio = ComandaDeFolio(
+                    vivo.orderId, vivo.folio, vivo.nombre, vivo.nota, vivo.productos,
+                    pagadoConSaldo = pagadoConSaldoCents?.let { java.math.BigDecimal.valueOf(it, 2) },
+                ),
             )
         }
         val pagado = vivo ?: buscarEn(venueId, primera, SeccionDeFolios.POR_ENTREGAR, folio.orderId)
@@ -435,6 +555,9 @@ class PorPagarViewModel @Inject constructor(
             ocupados = l.ocupados,
             aviso = l.aviso,
             toast = l.toast,
+            puedeUsarSaldo = l.puedeUsarSaldo,
+            comprobandoSaldo = l.comprobandoSaldo,
+            saldoSinConfirmar = l.saldoSinConfirmar,
         )
     }
 
@@ -468,8 +591,35 @@ fun filtrarFolios(lista: List<Folio>, texto: String): List<Folio> {
 fun numeroDeSeccion(conteoDelServidor: Int, sacadosAquiSinDescontar: Int): Int = (conteoDelServidor - sacadosAquiSinDescontar).coerceAtLeast(0)
 
 /** «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
-fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Boolean): Boolean =
-    puedeCancelar && !sinConexion && folio.abono.signum() == 0
+/** Parte 2: tampoco con un cobro con saldo sin confirmar ([saldoEnDuda]): podría haberse cobrado. */
+fun muestraCancelarFolio(folio: Folio, puedeCancelar: Boolean, sinConexion: Boolean, saldoEnDuda: Boolean = false): Boolean =
+    puedeCancelar && !sinConexion && folio.abono.signum() == 0 && !saldoEnDuda
+
+/** «Saldo o tarjeta de regalo» en el folio: [activo] o en gris con su [nota]. */
+data class BotonDeSaldo(val activo: Boolean, val nota: String?)
+
+/**
+ * Parte 2 (P2): sólo con `giftCards:redeem` y en un folio que todavía debe; sin red sale en gris con «Necesita conexión» (el saldo es en
+ * línea a propósito). null = no se muestra.
+ */
+fun botonDeSaldo(puedeUsarSaldo: Boolean, sinConexion: Boolean, pagado: Boolean): BotonDeSaldo? = when {
+    !puedeUsarSaldo || pagado -> null
+    sinConexion -> BotonDeSaldo(activo = false, nota = TextosPorPagar.NECESITA_CONEXION)
+    else -> BotonDeSaldo(activo = true, nota = null)
+}
+
+/**
+ * S14 (P2-3): «Con cuenta: Ana L. · Premio −$45.00» — de quién es la cuenta y qué beneficios trae, como lo dice el MCP. Nunca recorta en
+ * silencio («y N más»). null sin cuenta ni beneficios (un folio sin cuenta o un SERVIDOR viejo): como hoy, nada.
+ */
+fun lineaDeLaCuenta(folio: Folio): String? {
+    val partes = buildList {
+        folio.cliente?.let { add(TextosPorPagar.conCuenta(it)) }
+        folio.beneficios.forEach { add(TextosPorPagar.beneficio(it.nombre, it.monto)) }
+        (folio.beneficiosTotal - folio.beneficios.size).takeIf { it > 0 }?.let { add(TextosPorPagar.yMas(it)) }
+    }
+    return partes.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
 
 /** «Listo» y «Entregado» sólo con `orders:update` y con red. */
 fun muestraListoYEntregado(puedeEntregar: Boolean, sinConexion: Boolean): Boolean = puedeEntregar && !sinConexion

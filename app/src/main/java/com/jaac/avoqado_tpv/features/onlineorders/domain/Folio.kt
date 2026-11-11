@@ -37,7 +37,12 @@ data class ComandaDeFolio(
     val nombre: String?,
     val nota: String?,
     val renglones: List<FolioProducto>,
+    /** Parte 2 (mockup 2e·3): lo que se acaba de pagar con saldo, para «ya pagó $X con saldo» bajo el monto; null si no. */
+    val pagadoConSaldo: BigDecimal? = null,
 ) : java.io.Serializable
+
+/** S14 (parte 2): una fila de descuento de la cuenta del folio (premio, cupón, puntos…), en pesos. */
+data class BeneficioDeFolio(val nombre: String, val monto: BigDecimal)
 
 /**
  * Un folio de la tienda en línea («W7KQ2»). El SERVIDOR manda el dinero en PESOS (número JSON); aquí queda en [BigDecimal]
@@ -64,6 +69,12 @@ data class Folio(
     val estadoDePago: String?,
     val necesitaImprimir: Boolean,
     val productos: List<FolioProducto>,
+    /** S14 (parte 2): el nombre corto de la clienta dueña de la cuenta («Ana L.»); null sin cuenta o con un SERVIDOR viejo. */
+    val cliente: String? = null,
+    /** S14: las filas de descuento de la cuenta (hasta 10, en el orden en que se aplicaron). */
+    val beneficios: List<BeneficioDeFolio> = emptyList(),
+    /** S14: cuántas filas de descuento tiene la cuenta; si pasa de [beneficios], se dice «y N más». */
+    val beneficiosTotal: Int = 0,
 ) {
     val totalCentavos: Long get() = total.centavos()
     val faltaCentavos: Long get() = falta.centavos()

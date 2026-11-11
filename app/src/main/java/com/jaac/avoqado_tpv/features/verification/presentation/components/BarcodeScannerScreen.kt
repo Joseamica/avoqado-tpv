@@ -91,7 +91,13 @@ fun BarcodeScannerScreen(
      * known format to reduce false-positive decodes.
      */
     formats: List<BarcodeFormat>? = null,
+    /**
+     * true = lo leído es un secreto (el código o la liga de una tarjeta de regalo, con los que se gasta su saldo): el log dice cuántos
+     * caracteres llegaron, nunca el contenido.
+     */
+    ocultarContenido: Boolean = false,
 ) {
+    val enLog: (String) -> String = { if (ocultarContenido) "(oculto, ${it.length} caracteres)" else it }
     val context = LocalContext.current
 
     // Camera state
@@ -194,11 +200,11 @@ fun BarcodeScannerScreen(
                                 // First sighting (or different from previous candidate) — wait for confirmation
                                 pendingDecode = barcode
                                 pendingDecodeTimestamp = now
-                                Timber.d("📷 [BarcodeScannerScreen] First frame, awaiting consensus: $barcode")
+                                Timber.d("📷 [BarcodeScannerScreen] First frame, awaiting consensus: ${enLog(barcode)}")
                             }
                             (now - pendingDecodeTimestamp) <= consensusWindowMs -> {
                                 // Second matching frame within window → confirmed
-                                Timber.d("✅ [BarcodeScannerScreen] Multi-frame consensus confirmed: $barcode (Δ${now - pendingDecodeTimestamp}ms, format: $format)")
+                                Timber.d("✅ [BarcodeScannerScreen] Multi-frame consensus confirmed: ${enLog(barcode)} (Δ${now - pendingDecodeTimestamp}ms, format: $format)")
                                 lastScannedBarcode = barcode
                                 lastScanTimeMs = now
                                 pendingDecode = null
@@ -208,19 +214,20 @@ fun BarcodeScannerScreen(
                             else -> {
                                 // Second matching frame but consensus window expired — restart timer
                                 pendingDecodeTimestamp = now
-                                Timber.d("📷 [BarcodeScannerScreen] Consensus window expired, restarting: $barcode")
+                                Timber.d("📷 [BarcodeScannerScreen] Consensus window expired, restarting: ${enLog(barcode)}")
                             }
                         }
                     } else {
                         // Single-frame mode (default): accept first decode after cooldown
                         lastScannedBarcode = barcode
                         lastScanTimeMs = now
-                        Timber.d("✅ [BarcodeScannerScreen] Barcode scanned: $barcode (format: $format)")
+                        Timber.d("✅ [BarcodeScannerScreen] Barcode scanned: ${enLog(barcode)} (format: $format)")
                         onBarcodeScanned(barcode, format)
                     }
                 },
                 formats = formats,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                enLog = enLog,
             )
 
             // Scan area overlay
@@ -261,7 +268,8 @@ private fun ZXingBarcodeScanner(
     onBarcodeViewReady: (DecoratedBarcodeView) -> Unit,
     onBarcodeDetected: (barcode: String, format: String) -> Unit,
     formats: List<BarcodeFormat>? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enLog: (String) -> String = { it },
 ) {
     // Default formats — reduced to minimize false positives.
     // Removed CODE_39, CODABAR, ITF (high false-positive rates per ZXing maintainers),
@@ -312,7 +320,7 @@ private fun ZXingBarcodeScanner(
                             val barcode = it.text
                             val format = it.barcodeFormat?.name ?: "UNKNOWN"
                             if (!barcode.isNullOrBlank()) {
-                                Timber.d("📷 [ZXingBarcodeScanner] Barcode detected: $barcode ($format)")
+                                Timber.d("📷 [ZXingBarcodeScanner] Barcode detected: ${enLog(barcode)} ($format)")
                                 onBarcodeDetected(barcode, format)
                             }
                         }

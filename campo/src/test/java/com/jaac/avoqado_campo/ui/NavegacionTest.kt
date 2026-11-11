@@ -30,4 +30,15 @@ class NavegacionTest {
             assertEquals("${t.first} cola vacía=${t.second}", t.third, destinoDe(t.first, t.second))
         }
     }
+
+    @Test fun `la banda nunca promete una subida que no corre`() {
+        val sinSenal = "Sin señal · lo que hagas se guarda en el celular y se sube solo"
+        assertEquals(sinSenal, textoDeBanda(true, EstadoDelCelular.VINCULADO, false, 0))
+        assertEquals(sinSenal, textoDeBanda(true, EstadoDelCelular.DESCONOCIDO, false, 2))
+        assertEquals("Subiendo 3…", textoDeBanda(false, EstadoDelCelular.VINCULADO, false, 3))
+        assertEquals("Esperando tu PIN para subir 3", textoDeBanda(false, EstadoDelCelular.VINCULADO, true, 3))
+        assertEquals("Subiendo 2…", textoDeBanda(false, EstadoDelCelular.DESVINCULADO, false, 2)) // la gracia sí sube
+        assertEquals(null, textoDeBanda(false, EstadoDelCelular.DESCONOCIDO, false, 2))
+        assertEquals(null, textoDeBanda(false, EstadoDelCelular.VINCULADO, false, 0))
+    }
 }

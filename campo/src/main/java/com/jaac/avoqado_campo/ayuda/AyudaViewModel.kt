@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.ayuda
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.cola.PiezaDao
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 data class EstadoAyuda(val porSubir: Int = 0, val trabajando: Boolean = false, val mensaje: String? = null)
 
@@ -74,7 +76,16 @@ class AyudaViewModel @Inject constructor(
         _estado.update { it.copy(trabajando = true, mensaje = null) }
         viewModelScope.launch {
             var m: String? = null
-            try { m = bloque() } finally { _estado.update { it.copy(trabajando = false, mensaje = m) } }
+            try {
+                m = bloque()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("Ayuda", "acción de Ayuda", e)
+                m = "No se pudo, intenta otra vez"
+            } finally {
+                _estado.update { it.copy(trabajando = false, mensaje = m) }
+            }
         }
     }
 }

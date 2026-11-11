@@ -104,6 +104,24 @@ class AyudaViewModelTest {
         coVerify(exactly = 0) { borrado.borrarTodo() }
     }
 
+    @Test fun `desvincular con 409 TIENE_POR_SUBIR no borra`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"TIENE_POR_SUBIR","message":"x"}"""))
+        vm.desvincular()
+        esperarQueTermine()
+        assertEquals("Primero sube lo pendiente.", vm.estado.value.mensaje)
+        coVerify(exactly = 0) { borrado.borrarTodo() }
+    }
+
+    @Test fun `una excepcion no cierra la app y lo dice`() = runBlocking {
+        io.mockk.mockkStatic(android.util.Log::class) // prueba JVM: android.util.Log no existe aquí
+        every { android.util.Log.w(any(), any<String>(), any()) } returns 0
+        coEvery { copia.actualizar(any()) } throws java.io.IOException("disco lleno")
+        vm.actualizarDatos()
+        esperarQueTermine()
+        assertEquals("No se pudo, intenta otra vez", vm.estado.value.mensaje)
+        io.mockk.unmockkStatic(android.util.Log::class)
+    }
+
     @Test fun `cerrar sesion bloquea pero no borra los tokens`() {
         vm.cerrarSesion()
         assertTrue(quienSoy.bloqueada)

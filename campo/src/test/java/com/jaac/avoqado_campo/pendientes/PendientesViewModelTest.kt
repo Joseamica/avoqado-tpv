@@ -198,5 +198,10 @@ class PendientesViewModelTest {
         assertEquals("Se sube cuando entres a Norte", filaDe(pendiente.copy(venueId = "v2"), yo(), true, emptySet()).texto)
         assertEquals("Espera a su venta", filaDe(pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(dependeDe = "kv"), yo(), true, setOf("kv")).texto)
         assertTrue(filaDe(pendiente, yo(), true, emptySet()).botones.isEmpty())
+        // DESCONOCIDO: nada sube por ninguna ruta; con o sin red, nunca se promete.
+        val noSeSube = "No se puede subir: este celular ya no está registrado. Avísale a tu supervisor."
+        assertEquals(noSeSube, filaDe(pendiente, yo(EstadoDelCelular.DESCONOCIDO), true, emptySet()).texto)
+        assertEquals(noSeSube, filaDe(pendiente, yo(EstadoDelCelular.DESCONOCIDO), false, emptySet()).texto)
+        assertEquals("Se sube para que tu supervisor lo revise", filaDe(pendiente, yo(EstadoDelCelular.DESVINCULADO), true, emptySet()).texto)
     }
 }

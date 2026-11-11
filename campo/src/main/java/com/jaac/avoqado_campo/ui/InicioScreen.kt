@@ -102,10 +102,11 @@ fun PantallaDeGracia(pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes
 fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspend () -> Boolean) {
     val alcance = rememberCoroutineScope()
     var confirmar by remember { mutableStateOf(false) }
+    var trabajando by remember { mutableStateOf(false) }
     Pantalla {
         Text("Este celular ya no está registrado. Avísale a tu supervisor.", style = MaterialTheme.typography.titleMedium)
         OutlinedButton(onPendientes, alto) { Text("Mis pendientes") }
-        Button({ confirmar = true }, alto) { Text("Borrar este celular y activarlo de nuevo") }
+        Button({ confirmar = true }, alto, enabled = !trabajando) { Text("Borrar este celular y activarlo de nuevo") }
     }
     if (confirmar) {
         AlertDialog(
@@ -116,7 +117,13 @@ fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspe
                     else "No queda nada sin subir. ¿Borrar este celular y activarlo de nuevo?",
                 )
             },
-            confirmButton = { TextButton({ confirmar = false; alcance.launch { onBorrar() } }) { Text("Borrar") } },
+            confirmButton = {
+                TextButton({
+                    confirmar = false
+                    trabajando = true
+                    alcance.launch { if (!onBorrar()) trabajando = false }
+                }) { Text("Borrar") }
+            },
             dismissButton = { TextButton({ confirmar = false }) { Text("Cancelar") } },
         )
     }

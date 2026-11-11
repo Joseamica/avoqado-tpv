@@ -40,13 +40,16 @@ data class Boton(val accion: Accion, val texto: String)
 /** [problema]: RECHAZADA o AVISO (se pinta distinto; nunca rojo por estar sin señal). */
 data class FilaPendiente(val id: Long, val resumen: String, val texto: String, val problema: Boolean, val botones: List<Boton>)
 
-data class CorreccionDeEvidencia(val id: Long, val photoLabel: String, val pideFoto: Boolean, val foto: String? = null, val numero: String = "")
+data class CorreccionDeEvidencia(
+    val id: Long, val photoLabel: String, val pideFoto: Boolean, val foto: String? = null, val numero: String = "", val pideNumero: Boolean = false,
+)
 data class EstadoPendientes(val ocupado: Boolean = false, val error: String? = null, val corrigiendo: CorreccionDeEvidencia? = null)
 
 private val QUITAR = Boton(Accion.QUITAR, "Quitar de mi celular")
 private val ENTENDIDO = Boton(Accion.ENTENDIDO, "Entendido")
 private val VOLVER = Boton(Accion.VOLVER_A_DECIDIR, "Volver a decidir")
 private const val RESPALDO = "No se pudo subir. Pídele a tu supervisor que lo revise."
+internal const val NO_SE_SUBE = "No se puede subir: este celular ya no está registrado. Avísale a tu supervisor."
 private const val RESPALDO_AVISO = "Ya llegó, pero no se guardó todo. Revísalo con tu supervisor."
 private val CUSTODIA_A_MEDIAS = setOf("CUSTODIA_EN_PARTE", "CUSTODIA_SIN_CONFIRMAR")
 private val DESCARTADOS = setOf("SU_VENTA_SE_DESCARTO", "SU_ENTRADA_SE_DESCARTO")
@@ -86,6 +89,8 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
             texto to (propia + QUITAR)
         }
         else -> when { // PENDIENTE
+            // Ni la ruta normal ni la gracia suben nada sin la credencial (v6 §3): nunca prometer una subida.
+            yo.estado == EstadoDelCelular.DESCONOCIDO -> NO_SE_SUBE
             !hayRed -> "Espera señal"
             yo.estado == EstadoDelCelular.VINCULADO && p.venueId != yo.venueIdDeLaSesion && yo.sucursales.any { it.venueId == p.venueId } ->
                 "Se sube cuando entres a ${nombre(p.venueId)}"
@@ -153,19 +158,25 @@ class PendientesViewModel @Inject constructor(
         val p = dao.porId(id)?.takeIf { it.estado == EstadoPieza.RECHAZADA } ?: return@correr
         val e = gsonCola.fromJson(p.evidenciaJson, EvidenciaPendiente::class.java)
         _estado.update {
-            it.copy(corrigiendo = CorreccionDeEvidencia(id, e.photoLabel, p.rechazoCode == "FOTO_NO_SUBIO", numero = e.linkingNumber ?: e.portedNumber.orEmpty()))
+            it.copy(corrigiendo = CorreccionDeEvidencia(
+                    id, e.photoLabel, p.rechazoCode == "FOTO_NO_SUBIO", numero = e.linkingNumber ?: e.portedNumber.orEmpty(),
+                    pideNumero = p.rechazoCode == "INVALID_LINKING_NUMBER",
+                ),)
         }
     }
 
     fun alTomarFoto(archivo: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(foto = archivo)) }
     fun alEscribirNumero(n: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(numero = n.filter(Char::isDigit).take(10))) }
-    fun cancelarCorreccion() = _estado.update { it.copy(corrigiendo = null, error = null) }
+    fun cancelarCorreccion() {
+        _estado.value.corrigiendo?.foto?.let { runCatching { java.io.File(it).delete() } }
+        _estado.update { it.copy(corrigiendo = null, error = null) }
+    }
 
     fun enviarCorreccion() {
         val c = _estado.value.corrigiendo ?: return
         val falta = when {
             c.pideFoto && c.foto == null -> "Toma la foto otra vez."
-            c.numero.isNotEmpty() && c.numero.length !in 9..10 -> "El número lleva 9 o 10 dígitos."
+            (c.pideNumero || c.numero.isNotEmpty()) && c.numero.length !in 9..10 -> "El número lleva 9 o 10 dígitos."
             else -> null
         }
         if (falta != null) return _estado.update { it.copy(error = falta) }

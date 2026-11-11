@@ -75,7 +75,7 @@ fun PendientesContenido(filas: List<FilaPendiente>, e: EstadoPendientes, onRegre
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Mis pendientes", style = MaterialTheme.typography.headlineSmall)
             if (filas.isEmpty()) Text("No tienes nada pendiente. Todo se subió.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            e.error?.let { Text(it, color = ColoresCampo.Naranja) }
             filas.forEach { f ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -108,7 +108,7 @@ private fun Correccion(
                 label = { Text(if (c.photoLabel == "Portabilidad") "Número portado" else "Número de vinculación") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
-            e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            e.error?.let { Text(it, color = ColoresCampo.Naranja) }
             Button(enviar, alto, enabled = !e.ocupado) { Text(if (e.ocupado) "Guardando…" else "Guardar corrección") }
             OutlinedButton(cancelar, alto, enabled = !e.ocupado) { Text("Cancelar") }
         }

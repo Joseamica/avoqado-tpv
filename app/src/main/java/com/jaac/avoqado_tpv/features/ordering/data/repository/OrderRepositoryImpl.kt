@@ -71,7 +71,9 @@ class OrderRepositoryImpl @Inject constructor(
                     else -> "Error al obtener orden: ${response.code()}"
                 }
                 Timber.e("getOrder failed: $errorMessage")
-                Result.failure(Exception(errorMessage))
+                // D23: la cola relee la cuenta para quitar un renglón; si ya no existe, la suelta (como al quitar o agregar).
+                if (response.code() == 404) Result.failure(PermanentSyncException(httpCode = 404, message = errorMessage))
+                else Result.failure(Exception(errorMessage))
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in getOrder")

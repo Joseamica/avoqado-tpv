@@ -149,7 +149,9 @@ data class OrderItem(
     val notes: String?,  // "Sin aceitunas", "Punto medio"
     val kitchenStatus: KitchenStatus,
     val createdAt: Instant,
-    val sentToKitchenAt: Instant?
+    val sentToKitchenAt: Instant?,
+    /** Llave con que la TPV dio de alta el renglón (D23). Sólo viene del SERVIDOR; puede faltar en renglones viejos. */
+    val externalId: String? = null
 ) {
     /**
      * Convenience property: Display price per unit

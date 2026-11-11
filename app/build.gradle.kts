@@ -10,6 +10,17 @@ plugins {
     id("com.google.firebase.crashlytics")  // Firebase Crashlytics
 }
 
+// Sufijo de QA aislado: sólo para depuración. Con la propiedad puesta, ninguna tarea release corre.
+val devApplicationIdSuffix = (project.findProperty("avoqado.devApplicationIdSuffix") as String?)?.trim()
+if (devApplicationIdSuffix != null) {
+    check(devApplicationIdSuffix.matches(Regex("\\.[a-z][a-z0-9_]*"))) {
+        "avoqado.devApplicationIdSuffix inválido: «$devApplicationIdSuffix» (ej. .lab)"
+    }
+    check(gradle.startParameter.taskNames.none { it.contains("release", ignoreCase = true) }) {
+        "avoqado.devApplicationIdSuffix es sólo para depuración: no se usa en un build release"
+    }
+}
+
 android {
     namespace = "com.jaac.avoqado_tpv"
     compileSdk = 36
@@ -18,8 +29,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 128
-        versionName = "2.17.0"
+        versionCode = 129
+        versionName = "2.18.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -399,6 +410,10 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // QA aislado (la nube, puerta del laboratorio): `-Pavoqado.devApplicationIdSuffix=.lab` compila la
+            // depuración como OTRA app (`com.jaac.avoqado_tpv.sandbox.lab` en nexgo/sandbox), que se instala junto a
+            // la de la Mac sin tocarla. Necesita su cliente en google-services.json. Sin la propiedad, nada cambia.
+            devApplicationIdSuffix?.let { applicationIdSuffix = it }
 
             // Development: Force re-init on every app launch to prevent DUKPT key corruption
             // This fixes NA_002 errors when doing rebuild without uninstalling

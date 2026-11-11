@@ -34,6 +34,9 @@ android {
                 ?: "http://10.0.2.2:3000/api/v1/"
             buildConfigField("String", "API_BASE_URL", "\"$devBaseUrl\"")
             buildConfigField("String", "STORAGE_ENV", "\"dev\"")
+            // La puerta del laboratorio sólo instala (y no frena el aparato con) un `com.jaac.avoqado_tpv*` de pruebas:
+            // `perfil.es_version_de_pruebas` pide «-sandbox» o «-nexgo» en la versión. Release sigue en «0.2.0».
+            versionNameSuffix = "-sandbox"
         }
         release { isMinifyEnabled = false }
     }

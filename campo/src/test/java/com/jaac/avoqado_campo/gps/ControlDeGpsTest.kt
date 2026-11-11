@@ -14,6 +14,7 @@ import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
+import com.jaac.avoqado_campo.identidad.DatosDeLatido
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
@@ -36,7 +37,8 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class ControlDeGpsTest {
     private val app = ApplicationProvider.getApplicationContext<Application>()
-    private val estado = EstadoDelGps(AlmacenEnMemoria())
+    private val estadoAlmacen = AlmacenEnMemoria()
+    private val estado = EstadoDelGps(estadoAlmacen)
     private val almacen = AlmacenEnMemoria()
     private val quienSoy = QuienSoy(almacen).also {
         it.guardarActivacion(DatosDeActivacion("c1", "c".repeat(64), "s1", "Ana", Sesion("a", "r", "v1"), listOf(Sucursal("v1", "Centro", null))))
@@ -55,7 +57,10 @@ class ControlDeGpsTest {
 
     private fun conPermiso() = shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
     private fun control(arrancar: ((Intent) -> Unit)? = null) =
-        if (arrancar == null) ControlDeGpsReal(app, estado, puerta) else ControlDeGpsReal(app, estado, puerta, arrancar)
+        if (arrancar == null) ControlDeGpsReal(app, estado, puerta, quienSoy) else ControlDeGpsReal(app, estado, puerta, quienSoy, arrancar)
+    /** Lo que trae un latido: la sucursal v1 con el ajuste de seguimiento que diga el SERVIDOR. */
+    private fun sucursalSigue(sigue: Boolean?) =
+        quienSoy.guardarLatido(DatosDeLatido("VINCULADO", null, null, listOf(Sucursal("v1", "Centro", null, sigue))))
     private fun seguimiento(ahora: Long = 1_000L) =
         SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { ahora }
 
@@ -95,6 +100,41 @@ class ControlDeGpsTest {
         assertEquals(ResultadoGps.Siguiendo, control().iniciar())
         assertEquals(ResultadoGps.Siguiendo, estado.estado.value)
         assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStartedService.component!!.className)
+    }
+
+    @Test fun `H-A1 - la tienda no usa el seguimiento - no arranca el servicio y el estado no es un aviso`() {
+        sucursalSigue(false)
+        // Ni sin permiso: lo que pide la tienda gana, no hay nada que arreglar.
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, control().iniciar())
+        conPermiso()
+        val r = control().iniciar()
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, r)
+        assertFalse(r is ResultadoGps.NoSigue)
+        assertEquals(r, estado.estado.value)
+        assertNull(shadowOf(app).nextStartedService)
+        // Se recuerda al abrir la app otra vez.
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, EstadoDelGps(estadoAlmacen).estado.value)
+    }
+
+    @Test fun `H-A1 - con true o sin el dato (SERVIDOR viejo) arranca como hoy`() {
+        conPermiso()
+        sucursalSigue(true)
+        assertEquals(ResultadoGps.Siguiendo, control().iniciar())
+        assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStartedService.component!!.className)
+        sucursalSigue(null)
+        assertEquals(ResultadoGps.Siguiendo, control().iniciar())
+        assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStartedService.component!!.className)
+    }
+
+    @Test fun `H-A1 - si un latido lo apaga con el turno abierto, el siguiente reanudar para el servicio`() = runBlocking {
+        conPermiso()
+        abrirTurno()
+        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy))
+        assertTrue(arrancarServicio())
+        sucursalSigue(false)
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy))
+        assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStoppedService.component!!.className)
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, estado.estado.value)
     }
 
     @Test fun `el servicio con un startForeground que truena se detiene y deja NoSigue`() {

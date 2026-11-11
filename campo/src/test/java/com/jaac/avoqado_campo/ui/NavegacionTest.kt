@@ -1,8 +1,11 @@
 package com.jaac.avoqado_campo.ui
 
+import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavegacionTest {
@@ -40,5 +43,14 @@ class NavegacionTest {
         assertEquals("Subiendo 2…", textoDeBanda(false, EstadoDelCelular.DESVINCULADO, false, 2)) // la gracia sí sube
         assertEquals(null, textoDeBanda(false, EstadoDelCelular.DESCONOCIDO, false, 2))
         assertEquals(null, textoDeBanda(false, EstadoDelCelular.VINCULADO, false, 0))
+    }
+
+    @Test fun `H-A1 - si la tienda no usa el seguimiento el Inicio no avisa del GPS ni de la bateria`() {
+        fun d(gps: ResultadoGps?, turno: Boolean = true) = DatosDeInicio("Ana", 0, false, emptyList(), turno, gps)
+        assertFalse(d(ResultadoGps.NoLoUsaLaTienda).cuidaElGps())
+        assertTrue(d(ResultadoGps.Siguiendo).cuidaElGps())
+        assertTrue(d(ResultadoGps.NoSigue("no diste permiso de ubicación")).cuidaElGps())
+        assertTrue(d(null).cuidaElGps())
+        assertFalse(d(ResultadoGps.Siguiendo, turno = false).cuidaElGps())
     }
 }

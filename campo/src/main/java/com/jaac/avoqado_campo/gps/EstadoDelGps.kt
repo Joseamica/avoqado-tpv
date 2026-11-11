@@ -10,7 +10,12 @@ class EstadoDelGps(private val almacen: AlmacenSeguro) {
     val estado: StateFlow<ResultadoGps> = _estado
 
     @Synchronized fun publicar(r: ResultadoGps) {
-        almacen.escribir(mapOf(CLAVE to if (r is ResultadoGps.NoSigue) NO_SIGUE + r.motivo else SIGUIENDO))
+        val valor = when (r) {
+            is ResultadoGps.NoSigue -> NO_SIGUE + r.motivo
+            ResultadoGps.Siguiendo -> SIGUIENDO
+            ResultadoGps.NoLoUsaLaTienda -> NO_LO_USA
+        }
+        almacen.escribir(mapOf(CLAVE to valor))
         _estado.value = r
     }
 
@@ -23,6 +28,7 @@ class EstadoDelGps(private val almacen: AlmacenSeguro) {
     private fun leer(): ResultadoGps = when (val v = almacen.leer(CLAVE)) {
         null -> SIN_INICIAR
         SIGUIENDO -> ResultadoGps.Siguiendo
+        NO_LO_USA -> ResultadoGps.NoLoUsaLaTienda
         else -> ResultadoGps.NoSigue(v.removePrefix(NO_SIGUE))
     }
 
@@ -31,5 +37,6 @@ class EstadoDelGps(private val almacen: AlmacenSeguro) {
         private const val CLAVE = "gps.estado"
         private const val SIGUIENDO = "SIGUIENDO"
         private const val NO_SIGUE = "NO_SIGUE:"
+        private const val NO_LO_USA = "NO_LO_USA_LA_TIENDA"
     }
 }

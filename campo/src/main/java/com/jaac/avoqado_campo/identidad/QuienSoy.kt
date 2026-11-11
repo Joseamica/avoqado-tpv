@@ -7,7 +7,10 @@ import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
 data class VerificadorPin(val algoritmo: String, val iteraciones: Int, val sal: String, val hash: String)
-data class Sucursal(val venueId: String, val nombre: String, val verificadorPin: VerificadorPin?)
+/** [seguimientoDeUbicacion]: si la sucursal sigue la ubicación del turno (H-A1); null = SERVIDOR viejo, como siempre. */
+data class Sucursal(
+    val venueId: String, val nombre: String, val verificadorPin: VerificadorPin?, val seguimientoDeUbicacion: Boolean? = null,
+)
 data class Sesion(val accessToken: String, val refreshToken: String, val venueId: String) {
     override fun toString() = "Sesion(venueId=$venueId, tokens=***)"
 }

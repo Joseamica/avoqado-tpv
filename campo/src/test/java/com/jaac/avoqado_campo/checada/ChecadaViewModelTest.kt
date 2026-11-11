@@ -168,6 +168,14 @@ class ChecadaViewModelTest {
         )
     }
 
+    @Test fun `H-A1 - si la tienda no usa el seguimiento el texto de la entrada guardada no habla del GPS`() {
+        respuestaGps = ResultadoGps.NoLoUsaLaTienda
+        vm.marcarEntrada()
+        val e = quieto()
+        assertEquals(1, piezas().count { it.tipo == TipoPieza.ENTRADA })
+        assertEquals("Entrada guardada · se sube sola", e.aviso)
+    }
+
     @Test fun `sin entrada del celular la salida lo explica y no encola`() {
         vm.marcarSalida(); quieto()
         assertTrue(piezas().isEmpty())

@@ -116,7 +116,7 @@ class RespuestaDelServidorTest {
         val refresh = "b".repeat(64)
         server.enqueue(MockResponse().setBody(
             """{"sesion":{"accessToken":"acc","refreshToken":"$refresh","venueId":"v1","expiraEn":86400},
-               "sucursales":[{"venueId":"v1","nombre":"Centro","verificadorPin":{"algoritmo":"PBKDF2-SHA256","iteraciones":100000,"sal":"c2Fs","hash":"aA=="}},
+               "sucursales":[{"venueId":"v1","nombre":"Centro","verificadorPin":{"algoritmo":"PBKDF2-SHA256","iteraciones":100000,"sal":"c2Fs","hash":"aA=="},"seguimientoDeUbicacion":false},
                              {"venueId":"v2","nombre":"Norte","verificadorPin":null}],
                "horaDelServidor":"2026-11-10T00:00:00Z"}""",
         ))
@@ -130,6 +130,9 @@ class RespuestaDelServidorTest {
         assertEquals(listOf("v1", "v2"), d.sucursales.map { it.venueId })
         assertEquals(100_000, d.sucursales[0].verificadorPin!!.iteraciones)
         assertNull(d.sucursales[1].verificadorPin)
+        // H-A1: el ajuste de la sucursal viaja; sin él (SERVIDOR viejo) queda null = como hoy.
+        assertEquals(false, d.sucursales[0].seguimientoDeUbicacion)
+        assertNull(d.sucursales[1].seguimientoDeUbicacion)
     }
 
     @Test fun `activar valido se mapea y el aparato se recorta a 60`() = runBlocking {

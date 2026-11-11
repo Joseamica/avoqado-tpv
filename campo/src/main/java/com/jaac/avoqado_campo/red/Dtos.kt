@@ -48,7 +48,9 @@ private fun String?.esHex64() = this != null && HEX64.matches(this)
 
 data class Persona(val staffId: String?, val nombre: String?)
 data class VerificadorPinDto(val algoritmo: String?, val iteraciones: Int?, val sal: String?, val hash: String?)
-data class SucursalDto(val venueId: String?, val nombre: String?, val verificadorPin: VerificadorPinDto?)
+data class SucursalDto(
+    val venueId: String?, val nombre: String?, val verificadorPin: VerificadorPinDto?, val seguimientoDeUbicacion: Boolean? = null,
+)
 data class SesionDto(val accessToken: String?, val refreshToken: String?, val venueId: String?, val expiraEn: Long?) {
     fun valida() = !accessToken.isNullOrBlank() && refreshToken.esHex64() && !venueId.isNullOrBlank()
     override fun toString() = "SesionDto(venueId=$venueId, tokens=***)"
@@ -114,7 +116,8 @@ data class RespuestaModulos(val modules: List<ModuloDto?>?) : Validable {
 private fun SesionDto.aSesion() = Sesion(accessToken!!, refreshToken!!, venueId!!)
 private fun VerificadorPinDto.aVerificador(): VerificadorPin? =
     if (algoritmo != null && iteraciones != null && sal != null && hash != null) VerificadorPin(algoritmo, iteraciones, sal, hash) else null
-private fun List<SucursalDto?>.aSucursales() = filterNotNull().map { Sucursal(it.venueId!!, it.nombre!!, it.verificadorPin?.aVerificador()) }
+private fun List<SucursalDto?>.aSucursales() =
+    filterNotNull().map { Sucursal(it.venueId!!, it.nombre!!, it.verificadorPin?.aVerificador(), it.seguimientoDeUbicacion) }
 
 fun RespuestaActivar.aDatos() = DatosDeActivacion(
     celularId!!, credencial!!, persona!!.staffId!!, persona.nombre.orEmpty(), sesion!!.aSesion(), sucursales!!.aSucursales(),

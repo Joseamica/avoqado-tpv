@@ -46,13 +46,16 @@ class AccionesDeInicio(
 
 private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
 
+/** El GPS del turno corre o debería correr: sólo entonces el Inicio avisa de él y de la batería (H-A1). */
+internal fun DatosDeInicio.cuidaElGps() = turnoAbierto && gps != ResultadoGps.NoLoUsaLaTienda
+
 @Composable
 fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
     val context = LocalContext.current
     // Se vuelve a medir al regresar de los ajustes del teléfono.
     val ciclo by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsStateWithLifecycle()
-    val bateria = remember(ciclo, d.turnoAbierto) {
-        if (d.turnoAbierto && Bateria.estaOptimizada(context)) Bateria.intentParaArreglar(context) to true else null to false
+    val bateria = remember(ciclo, d.turnoAbierto, d.gps) {
+        if (d.cuidaElGps() && Bateria.estaOptimizada(context)) Bateria.intentParaArreglar(context) to true else null to false
     }
     Pantalla {
         Text(d.nombre?.let { "Hola, $it" } ?: "Avoqado Campo", style = MaterialTheme.typography.headlineSmall)

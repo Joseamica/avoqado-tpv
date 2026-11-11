@@ -26,6 +26,8 @@ import javax.inject.Singleton
 sealed interface ResultadoGps {
     object Siguiendo : ResultadoGps
     data class NoSigue(val motivo: String) : ResultadoGps
+    /** La sucursal de la sesión no sigue la ubicación (H-A1): no es un problema, nada que avisar ni arreglar. */
+    object NoLoUsaLaTienda : ResultadoGps
 }
 
 /** Arranca y para el seguimiento de la ubicación del turno. */
@@ -45,16 +47,24 @@ internal fun tienePermisoDeUbicacion(c: Context) = listOf(Manifest.permission.AC
  * P11: revisa permiso y ubicación encendida antes de arrancar el [ServicioDeUbicacion], y lo que Android rechace al arrancarlo
  * (`SecurityException`, `ForegroundServiceStartNotAllowedException`) se vuelve `NoSigue`: nunca sale una excepción.
  * Se llama con la app visible (la checada, o la app al abrir con turno abierto). Lo que devuelve también queda en [EstadoDelGps].
+ * H-A1: si la sucursal de la sesión trae `seguimientoDeUbicacion: false` (como la PAX con `trackPromoterLocation`), no arranca;
+ * si el servicio ya corría (un latido lo apagó con el turno abierto), lo para.
  */
 class ControlDeGpsReal(
     private val context: Context,
     private val estado: EstadoDelGps,
     private val puerta: PuertaDelServicio,
+    private val quienSoy: QuienSoy,
     private val arrancar: (Intent) -> Unit = { ContextCompat.startForegroundService(context, it) },
 ) : ControlDeGps {
     private fun intent() = Intent(context, ServicioDeUbicacion::class.java)
 
     override fun iniciar(): ResultadoGps {
+        val venueId = quienSoy.sesion?.venueId
+        if (quienSoy.sucursales.firstOrNull { it.venueId == venueId }?.seguimientoDeUbicacion == false) {
+            detener()
+            return ResultadoGps.NoLoUsaLaTienda.also(estado::publicar)
+        }
         val motivo = when {
             !tienePermisoDeUbicacion(context) -> SIN_PERMISO
             !LocationManagerCompat.isLocationEnabled(context.getSystemService(LocationManager::class.java)) -> UBICACION_APAGADA
@@ -102,8 +112,9 @@ object GpsModule {
     fun proveerPuerta(): PuertaDelServicio = PuertaDelServicio()
 
     @Provides @Singleton
-    fun proveerControlDeGps(@ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio): ControlDeGps =
-        ControlDeGpsReal(context, estado, puerta)
+    fun proveerControlDeGps(
+        @ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio, quienSoy: QuienSoy,
+    ): ControlDeGps = ControlDeGpsReal(context, estado, puerta, quienSoy)
 
     @Provides
     fun proveerPingDao(base: BaseDeCampo): PingDao = base.pingDao()

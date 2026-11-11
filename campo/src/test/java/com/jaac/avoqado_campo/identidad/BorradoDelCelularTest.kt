@@ -15,6 +15,8 @@ import com.jaac.avoqado_campo.cola.SecuenciaDeCaptura
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
+import com.jaac.avoqado_campo.entrada.RepositorioDeEntrada
+import com.jaac.avoqado_campo.entrada.ResultadoEntrada
 import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import com.jaac.avoqado_campo.gps.ResultadoGps
@@ -27,6 +29,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -208,6 +211,63 @@ class BorradoDelCelularTest {
         assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo())
         assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
         assertFalse(quienSoy.limpiando)
+    }
+
+    // r10 · el arranque retoma una marca CONFIRMADA y `vaciar` falla al final (identidad ya vaciada y publicada, marca pendiente).
+    private fun entrada() = RepositorioDeEntrada(
+        api, quienSoy, RelojAnclado(almacen, { 0L }, { 0L }, { 1 }), pinLocal, MutexDeSesion(), dao, almacen, copia, CoroutineScope(Dispatchers.Unconfined),
+    )
+    private val activado = MockResponse().setBody(
+        """{"celularId":"cel2","credencial":"${"d".repeat(64)}","persona":{"staffId":"s2","nombre":"Beto"},
+           "sesion":{"accessToken":"a2","refreshToken":"${"2".repeat(64)}","venueId":"v3","expiraEn":900},
+           "sucursales":[{"venueId":"v3","nombre":"Sur","verificadorPin":null}],"horaDelServidor":"2026-11-10T18:00:00Z","repetida":false}""",
+    )
+    private fun quedaLaMarcaConfirmada() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        assertTrue(quienSoy.empezarLimpiezaSi(quienSoy.generacion))
+        quienSoy.confirmarLimpieza()
+        fallarAlEscribir = { it.keys == setOf("limpiando") && it["limpiando"] == null } // el último paso de vaciar
+        assertNotNull(runCatching { borrado().terminarSiQuedoAMedias() }.exceptionOrNull()) // el arranque sigue (R-C)
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
+        assertTrue(quienSoy.limpiezaConfirmada)
+    }
+
+    @Test fun `r10 - con la marca de un borrado pendiente no se activa a nadie - dice que no se pudo terminar de borrar`() = runBlocking {
+        quedaLaMarcaConfirmada()
+        alLatido = { activado }
+        val r = entrada().activar("ABC123", "1234")
+        assertEquals(ResultadoEntrada.Rechazo("No se pudo terminar de borrar el celular. Intenta otra vez.", null), r)
+        assertEquals(0, server.requestCount)
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
+        assertNull(quienSoy.credencial)
+    }
+
+    @Test fun `r10 - con la marca confirmada y vaciar que ya funciona, activar termina ese borrado y luego activa`() = runBlocking {
+        quedaLaMarcaConfirmada()
+        fallarAlEscribir = { false }
+        alLatido = { activado }
+        val repo = RepositorioDeEntrada(
+            api, quienSoy, RelojAnclado(almacen, { 0L }, { 0L }, { 1 }), pinLocal, MutexDeSesion(), dao, almacen, copia,
+            CoroutineScope(Dispatchers.Unconfined), terminarBorrado = { borrado().terminarSiQuedoAMedias() },
+        )
+        assertEquals(ResultadoEntrada.Dentro, repo.activar("ABC123", "1234"))
+        assertFalse(quienSoy.limpiando)
+        assertEquals("Beto", quienSoy.nombre)
+        assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+    }
+
+    @Test fun `r10 - si commit no guarda la marca, no se borra nada y la marca queda deshecha`() = runBlocking {
+        pieza(EstadoPieza.HECHA)
+        quienSoy.marcarDesvinculado(null)
+        val generacionAntes = quienSoy.generacion
+        alPonerLaMarca = { throw AlmacenNoGuardo() } // la marca quedó en memoria; commit() dijo false
+        assertTrue(runCatching { borrado().activarDeNuevo() }.exceptionOrNull() is AlmacenNoGuardo)
+        assertFalse(quienSoy.limpiando)
+        assertEquals(generacionAntes, quienSoy.generacion)
+        assertNotNull(dao.porLlave("k-HECHA")) // vaciarBase no corrió
+        assertTrue(carpetaCola.exists())
+        assertEquals("c".repeat(64), quienSoy.credencial)
+        assertEquals(0, detenido)
     }
 
     @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {

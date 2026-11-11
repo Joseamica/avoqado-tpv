@@ -15,6 +15,7 @@ import com.jaac.avoqado_campo.cola.SubidorDeGracia
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.gsonCola
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
+import com.jaac.avoqado_campo.identidad.AlmacenNoGuardo
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -221,6 +222,8 @@ class PendientesViewModel @Inject constructor(
                 throw e
             } catch (e: CelularBorrandose) {
                 "Espera un momento"
+            } catch (e: AlmacenNoGuardo) {
+                "No se pudo guardar, intenta otra vez" // r10 (p. ej. la secuencia de la evidencia corregida)
             } catch (e: IOException) {
                 "La foto ya no está en el celular. Tómala otra vez."
             } catch (e: IllegalArgumentException) {

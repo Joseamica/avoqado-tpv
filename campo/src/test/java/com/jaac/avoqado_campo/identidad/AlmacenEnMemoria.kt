@@ -11,7 +11,11 @@ class AlmacenEnMemoria(val datos: MutableMap<String, String> = mutableMapOf()) :
         val g = gancho
         if (g != null && g.first == clave) { gancho = null; g.second() }
     }
+    /** r10: como `commit()` en false: el cambio queda en memoria y la escritura lanza (lo que hace el almacén de verdad). */
+    var fallarAlEscribir: (Map<String, String?>) -> Boolean = { false }
+
     override fun escribir(cambios: Map<String, String?>) {
         cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
+        if (fallarAlEscribir(cambios)) throw IllegalStateException("commit() devolvió false")
     }
 }

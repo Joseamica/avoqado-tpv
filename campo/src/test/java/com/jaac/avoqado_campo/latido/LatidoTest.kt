@@ -210,6 +210,15 @@ class LatidoTest {
         assertEquals("d".repeat(64), quienSoy.credencial)
     }
 
+    @Test fun `r10 - si el almacen no guarda la respuesta del latido, no truena y se reintenta en el siguiente`() = runBlocking {
+        almacen.fallarAlEscribir = { it.containsKey("estado") }
+        assertFalse(latido().mandar())
+        almacen.fallarAlEscribir = { false }
+        mono += 61_000
+        assertTrue(latido().mandar())
+        assertEquals("Ana López", quienSoy.nombre)
+    }
+
     @Test fun `mientras se borra el celular no se manda (I2)`() = runBlocking {
         quienSoy.marcarLimpiando(true)
         assertFalse(latido().mandar())

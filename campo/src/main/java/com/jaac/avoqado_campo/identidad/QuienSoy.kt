@@ -63,12 +63,12 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     val aparatoId: String
         get() = synchronized(candado) {
-            almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { almacen.escribir(mapOf(APARATO_ID to it)) }
+            almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { runCatching { almacen.escribir(mapOf(APARATO_ID to it)) } }
         }
     /** Cambia con cada activación y con `borrarTodo`: una respuesta tardía de la anterior se descarta con `guardarSi`. */
     val generacion: String
         get() = synchronized(candado) {
-            almacen.leer(GENERACION) ?: nueva().also { almacen.escribir(mapOf(GENERACION to it)) }
+            almacen.leer(GENERACION) ?: nueva().also { runCatching { almacen.escribir(mapOf(GENERACION to it)) } } // r10: queda en memoria
         }
     val celularId: String? get() = almacen.leer(CELULAR_ID)
     val credencial: String? get() = almacen.leer(CREDENCIAL)
@@ -194,8 +194,8 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         synchronized(candado) {
             val m = cambios.toMap()
             if (!permitida(m)) return
-            almacen.escribir(m)
-            _identidad.value = leerIdentidad()
+            // r10: si no guardó en disco (AlmacenNoGuardo) la copia en memoria sí cambió: se publica igual y la excepción sube.
+            try { almacen.escribir(m) } finally { _identidad.value = leerIdentidad() }
         }
     }
 

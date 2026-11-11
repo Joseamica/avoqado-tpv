@@ -55,7 +55,10 @@ class AyudaViewModel @Inject constructor(
     }
 
     /** B5: la próxima vez pide el PIN; la cola sigue subiendo con los tokens. */
-    fun cerrarSesion() = quienSoy.marcarBloqueada(true)
+    fun cerrarSesion() {
+        // r10: si no se guarda (AlmacenNoGuardo) se bloquea igual en memoria, y se dice; nunca cierra la app.
+        runCatching { quienSoy.marcarBloqueada(true) }.onFailure { _estado.update { it.copy(mensaje = "No se pudo, intenta otra vez") } }
+    }
 
     /**
      * r3 #1: la persona que se desvincula es la de la instantánea del toque; con el 200, el borrado vuelve a contar la cola con

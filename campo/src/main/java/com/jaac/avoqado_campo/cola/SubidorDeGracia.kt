@@ -111,13 +111,13 @@ class SubidorDeGracia(
                 is RespuestaDelServidor.Reintentable -> { dao.esperar(p, k.reintentaEnMs, ahora()); return corte(REINTENTABLE) }
                 is RespuestaDelServidor.Definitiva -> {
                     if (k.code == USA_TU_SESION) {
-                        quienSoy.guardarSi(generacion) { volverDeLaBaja() } // R8-2: DESVINCULADO no cambia
+                        runCatching { quienSoy.guardarSi(generacion) { volverDeLaBaja() } } // R8-2: DESVINCULADO no cambia; r10: si no se guarda, en memoria sí
                         return corte(USA_TU_SESION)
                     }
                     dao.rechazar(p, k.code ?: "HTTP_${k.status}", "Pídele a tu supervisor que lo revise", k.datosJson)
                 }
                 is RespuestaDelServidor.Sesion -> { // R6-B1: cualquier 401 corta sin tocar la pieza
-                    if (k.code == "CELULAR_DESCONOCIDO") quienSoy.guardarSi(generacion) { marcarDesconocido() }
+                    if (k.code == "CELULAR_DESCONOCIDO") runCatching { quienSoy.guardarSi(generacion) { marcarDesconocido() } }
                     return corte(k.code ?: "HTTP_${k.status}")
                 }
                 RespuestaDelServidor.SinRed -> return corte(SIN_RED)

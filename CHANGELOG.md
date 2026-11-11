@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (borrado pendiente y guardado que falla, décima revisión)**: el celular ya no se activa para otra persona mientras quede un borrado a medias: primero lo termina y, si no puede, dice «No se pudo terminar de borrar el celular. Intenta otra vez.»; y cuando el celular no logra guardar un dato, lo sabe: el borrado no sigue, activar y entrar dicen «No se pudo guardar, intenta otra vez» y nada cierra la app.
 - **App de campo (borrado y fallas del almacenamiento, novena revisión)**: si el celular falla al guardar a la mitad de un borrado, lo que no se confirmó se deshace y no se borra nada; «Activar con un código nuevo» y «Borrar este celular» dicen «No se pudo terminar. Intenta otra vez.» en vez de cerrar la app; y una checada que esperaba ese borrado ya no se queda esperando para siempre.
 - **App de campo (borrado, octava revisión)**: si el celular falla al revisar la cola a la mitad de un borrado, el borrado se deshace (se quita la marca y vuelve todo como estaba), así una checada que esperaba ya no se queda esperando hasta reiniciar la app.
 - **App de campo (checada y borrados seguidos, séptima revisión)**: aunque varios borrados se arrepientan seguidos mientras llega el GPS, la checada se termina de guardar con su ubicación y sube; nunca queda como «no se pudo terminar» sólo por eso.

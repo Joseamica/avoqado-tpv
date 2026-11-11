@@ -222,4 +222,20 @@ class QuienSoyTest {
     @Test fun `la instantanea no imprime la credencial`() {
         assertFalse(activada().instantanea().toString().contains("cred"))
     }
+
+    @Test fun `r10 - si commit devuelve false, escribir lanza AlmacenNoGuardo en vez de seguir como si se hubiera guardado`() {
+        val editor = io.mockk.mockk<android.content.SharedPreferences.Editor>(relaxed = true)
+        io.mockk.every { editor.commit() } returns false
+        assertTrue(runCatching { guardar(editor, mapOf("limpiando" to "true")) }.exceptionOrNull() is AlmacenNoGuardo)
+        io.mockk.every { editor.commit() } returns true
+        guardar(editor, mapOf("limpiando" to null))
+        io.mockk.verify { editor.putString("limpiando", "true"); editor.remove("limpiando") }
+    }
+
+    @Test fun `r10 - si el almacen no guarda, QuienSoy publica igual lo que quedo en memoria y la excepcion sube`() {
+        val q = activada()
+        almacen.fallarAlEscribir = { true }
+        assertTrue(runCatching { q.marcarBloqueada(true) }.exceptionOrNull() is IllegalStateException)
+        assertTrue(q.identidad.value.bloqueada) // en memoria sí cambió: la pantalla lo ve
+    }
 }

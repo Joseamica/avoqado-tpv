@@ -951,6 +951,23 @@ class PorPagarViewModelTest {
     }
 
     @Test
+    fun `Codex r5 F2 tras morir la app, el cobro de lo que falta dice cuanto ya pago segun el SERVIDOR`() = runTest {
+        val ana = folio("a1", folio = "W7K3P", total = "134.00", falta = "84.00")
+        cargado(porPagar = listOf(ana))
+        coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(ana)))
+        // Un ViewModel nuevo: no sabe nada del saldo que se cobró antes de morir.
+        val apertura = vm().cobrar(ana)!!
+
+        assertThat(apertura.folio.pagadoConSaldo).isNull()
+        assertThat(apertura.folio.yaPago).isEqualTo(BigDecimal("50.00"))
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana", null, BigDecimal("50.00"))).isEqualTo("Folio W7K3P · Ana · ya pagó $50.00")
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana", BigDecimal("50.00"), BigDecimal("50.00")))
+            .isEqualTo("Folio W7K3P · Ana · ya pagó $50.00 con saldo")
+        assertThat(TextosPorPagar.folioDelCobro("W7K3P", "Ana", BigDecimal("50.00"), BigDecimal("80.00")))
+            .isEqualTo("Folio W7K3P · Ana · ya pagó $80.00 ($50.00 con saldo)")
+    }
+
+    @Test
     fun `P2 2e-3 lo que falta despues del saldo abre el cobro de siempre con lo que falta ahora`() = runTest {
         val ana = folio("a1", folio = "W7K3P", total = "134.00")
         cargado(porPagar = listOf(ana))

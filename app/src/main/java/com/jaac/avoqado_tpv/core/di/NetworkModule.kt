@@ -253,14 +253,32 @@ object NetworkModule {
      * Tienda híbrida, parte 2 (P1): cobrar un folio con saldo o tarjeta de regalo (`tpv/venues/{venueId}/gift-cards/…`). El Retrofit de
      * siempre (25 s): el cobro puede esperar en el SERVIDOR hasta ~15 s el candado de su llave, más de lo que aguanta el cliente de pagos.
      */
+    /**
+     * Codex r1 #1, r4 y r5: OkHttp no reenvía SOLO el cobro con saldo (una copia que nadie conoce): sin `retryOnConnectionFailure`, sin seguir
+     * redirecciones (307/308 repiten el cuerpo) y sin el reintento de un 503 con `Retry-After: 0` (se le quita esa cabecera antes de que la
+     * vea el reintento de OkHttp). Los reenvíos los decide el repositorio, con la misma llave. Lo que queda: el `TokenAuthenticator` repite
+     * tras un 401, que sale antes de tocar el dinero, y un 421 de HTTP/2 (no lo produce esta ruta).
+     */
+    fun clienteDeTarjetasDeRegalo(base: OkHttpClient): OkHttpClient = base.newBuilder()
+        .retryOnConnectionFailure(false)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .addNetworkInterceptor { chain ->
+            val respuesta = chain.proceed(chain.request())
+            if (respuesta.code == 503 && respuesta.header("Retry-After") != null) {
+                respuesta.newBuilder().removeHeader("Retry-After").build()
+            } else {
+                respuesta
+            }
+        }
+        .build()
+
     @Provides
     @Singleton
     fun provideGiftCardsTpvApi(okHttpClient: OkHttpClient, baseUrl: String): com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi =
         Retrofit.Builder()
             .baseUrl(baseUrl)
-            // Codex r1 #1 / r4: OkHttp no reenvía SOLO el cobro (una copia que nadie conoce); los reenvíos los decide el repositorio, con la
-            // misma llave y sabiendo que otra copia puede seguir viva.
-            .client(okHttpClient.newBuilder().retryOnConnectionFailure(false).build())
+            .client(clienteDeTarjetasDeRegalo(okHttpClient))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi::class.java)

@@ -37,8 +37,10 @@ data class ComandaDeFolio(
     val nombre: String?,
     val nota: String?,
     val renglones: List<FolioProducto>,
-    /** Parte 2 (mockup 2e·3): lo que se acaba de pagar con saldo, para «ya pagó $X con saldo» bajo el monto; null si no. */
+    /** Parte 2 (mockup 2e·3): lo que se acaba de pagar con saldo en esta pantalla, para «ya pagó $X con saldo»; null si no se sabe. */
     val pagadoConSaldo: BigDecimal? = null,
+    /** Parte 2 (Codex r5 F2): lo que la cuenta ya tiene pagado según el SERVIDOR (total − falta); sobrevive a que la app muera. */
+    val yaPago: BigDecimal? = null,
 ) : java.io.Serializable
 
 /** S14 (parte 2): una fila de descuento de la cuenta del folio (premio, cupón, puntos…), en pesos. */

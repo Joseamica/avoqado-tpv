@@ -46,8 +46,6 @@ data class SolicitudDeSaldo(
     val orderId: String,
     val cuerpo: String,
     val creadaEn: Long,
-    /** Cuándo salió la última copia (se guarda ANTES de cada envío): hasta [CobroConSaldoRepository.VIDA_MAX_MS] después, puede seguir viva. */
-    val enviadoEn: Long = creadaEn,
 ) {
     /** El cuerpo trae la prueba (el código o la liga): nunca sale en un log. */
     override fun toString() = "SolicitudDeSaldo(llave=$llave, venueId=$venueId, orderId=$orderId, cuerpo=****)"
@@ -209,8 +207,7 @@ class CobroConSaldoRepository @Inject constructor(
                 if (pendienteDe(orderId) != null) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
                 val serie = serie() ?: return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_PREPARAR)
                 val llave = UUID.randomUUID().toString()
-                val ahora = System.currentTimeMillis()
-                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), creadaEn = ahora, enviadoEn = ahora)
+                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), System.currentTimeMillis())
                 if (!guardar(s)) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_GUARDAR)
                 enviar(s, serie, trasDuda = false)
             }
@@ -251,19 +248,15 @@ class CobroConSaldoRepository @Inject constructor(
     /**
      * Manda [s] tal cual: los mismos bytes y la misma llave, siempre. [trasDuda] = antes salió otra copia cuyo desenlace no se supo.
      *
-     * Rediseño tras Codex r4 (la familia «un rechazo de antes del candado de la llave tomado por definitivo» se repitió en r1, r3 y r4): un 4xx
-     * sólo prueba que no se cobró si NINGUNA otra copia puede seguir viva. Con el primer envío no hay otra (el cliente de esta API no reenvía
-     * solo: `retryOnConnectionFailure(false)` en `NetworkModule`), salvo las puertas que pudieron frenar a ésta y no a una anterior
-     * ([NO_PRUEBAN_NADA]). Tras una duda, la copia anterior puede seguir en el SERVIDOR hasta [VIDA_MAX_MS] después de salir: hasta entonces
-     * NINGÚN 4xx borra la solicitud, sea la puerta que sea; pasado ese tiempo, la consulta `found:false` de [resolver] ya fue concluyente.
+     * Un 4xx sólo prueba que no se cobró si NINGUNA otra copia de esta llave puede seguir viva (la familia de Codex r1, r3, r4 y r5):
+     *  - Primer envío: no hay otra. El cliente de esta API no reenvía solo (`NetworkModule.clienteDeTarjetasDeRegalo`: sin
+     *    `retryOnConnectionFailure`, sin redirecciones y sin el reintento de un 503 con `Retry-After: 0`); el `TokenAuthenticator` sólo repite
+     *    tras un 401, que sale antes de tocar el dinero. Aun así no borran las puertas que pudieron frenar a ésta y no a otra ([NO_PRUEBAN_NADA]).
+     *  - Tras una duda: NINGÚN 4xx borra la solicitud. No hay evidencia de que la copia anterior terminó (el SERVIDOR no le pone plazo y el reloj
+     *    del aparato no lo prueba; Codex r5 F1 tumbó el plazo de 5 min de r4). Sólo la borra un cobro confirmado (2xx o `found:true`).
      */
     private suspend fun enviar(s: SolicitudDeSaldo, serie: String, trasDuda: Boolean): DesenlaceDeSaldo {
-        val previoTerminado = !trasDuda || System.currentTimeMillis() - s.enviadoEn >= VIDA_MAX_MS
         repeat(INTENTOS) { intento ->
-            // La hora de ESTA copia queda escrita antes de que salga; si no se puede escribir, no sale.
-            if (trasDuda || intento > 0) {
-                if (!marcarEnvio(s.llave)) return DesenlaceDeSaldo.Incierto
-            }
             val r: Response<SobreEnvelope<CobroConSaldoDto>> = try {
                 api.cobrar(s.venueId, s.orderId, serie, s.cuerpo.toRequestBody(JSON))
             } catch (e: Exception) {
@@ -277,7 +270,7 @@ class CobroConSaldoRepository @Inject constructor(
             when {
                 codigo == "IDEMPOTENCY_KEY_REUSED" -> return consultarLlave(s) ?: DesenlaceDeSaldo.Incierto
                 codigo == "ORDER_PAYMENT_CONFLICT" -> if (intento < INTENTOS - 1) delay(PAUSA_MS * (intento + 1)) else return DesenlaceDeSaldo.Incierto
-                !esDefinitivo(http, codigo, trasDuda, previoTerminado) -> return DesenlaceDeSaldo.Incierto
+                !esDefinitivo(http, codigo, trasDuda) -> return DesenlaceDeSaldo.Incierto
                 else -> {
                     quitar(s.llave)
                     return DesenlaceDeSaldo.NoSalio(texto(http, codigo, crudo))
@@ -356,10 +349,7 @@ class CobroConSaldoRepository @Inject constructor(
 
     private fun guardar(s: SolicitudDeSaldo): Boolean = escribir(leer() + s)
 
-    private fun marcarEnvio(llave: String): Boolean {
-        val ahora = System.currentTimeMillis()
-        return escribir(leer().map { if (it.llave == llave) it.copy(enviadoEn = ahora) else it })
-    }
+
 
     private fun quitar(llave: String) {
         if (!escribir(leer().filterNot { it.llave == llave })) {
@@ -395,18 +385,11 @@ class CobroConSaldoRepository @Inject constructor(
          */
         val NO_PRUEBAN_NADA = setOf(401, 403, 408, 426, 429)
 
-        /**
-         * Cuánto puede seguir viva en el SERVIDOR una copia que salió: el cliente la corta a los 25 s y el candado de su llave espera ~15 s;
-         * 5 min deja holgura. ponytail: reloj de pared del aparato (con NTP); un salto hacia adelante lo acortaría.
-         */
-        const val VIDA_MAX_MS = 5 * 60_000L
-
-        fun esDefinitivo(http: Int, codigo: String?, trasDuda: Boolean, previoTerminado: Boolean): Boolean = when {
+        fun esDefinitivo(http: Int, codigo: String?, trasDuda: Boolean): Boolean = when {
+            // Tras una duda nada prueba que la copia anterior terminó: ningún rechazo la borra (Codex r5 F1). Sale con un cobro confirmado.
+            trasDuda -> false
             http !in 400..499 -> false
             codigo in REINTENTABLES -> false
-            // Tras una duda: mientras la copia anterior pueda seguir viva, ningún 4xx de ésta prueba nada (Codex r4: la cajera dada de baja
-            // da un 400 sin código antes del candado). Ya terminada, `found:false` fue concluyente y este rechazo es el de la única copia.
-            trasDuda -> previoTerminado
             http in NO_PRUEBAN_NADA -> false
             else -> true
         }

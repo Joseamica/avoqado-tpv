@@ -38,10 +38,23 @@ object TextosPorPagar {
     const val TITULO = "Pedidos por pagar"
     fun tituloFolio(folio: String) = "Folio $folio"
     /** Mockup 2d: bajo el monto de «Método de pago» al cobrar un folio. */
-    fun folioDelCobro(folio: String, nombre: String?, pagadoConSaldo: java.math.BigDecimal? = null) =
-        "Folio $folio" + (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") +
-            // Parte 2 (2e·3): lo que se acaba de pagar con saldo, para que la cajera no lo vuelva a cobrar.
-            (pagadoConSaldo?.takeIf { it.signum() > 0 }?.let { " · ya pagó ${CurrencyFormatter.format(it)} con saldo" } ?: "")
+    fun folioDelCobro(folio: String, nombre: String?, pagadoConSaldo: java.math.BigDecimal? = null, yaPago: java.math.BigDecimal? = null) =
+        "Folio $folio" + (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") + abonoDelCobro(pagadoConSaldo, yaPago)
+
+    /**
+     * Parte 2 (2e·3, Codex r5 F2): lo ya pagado, para que la cajera no lo vuelva a cobrar. El número es el del SERVIDOR ([yaPago]); «con saldo»
+     * sólo si esta pantalla lo acaba de cobrar con saldo y es todo el abono. Sin el número del SERVIDOR, lo cobrado con saldo aquí.
+     */
+    private fun abonoDelCobro(pagadoConSaldo: java.math.BigDecimal?, yaPago: java.math.BigDecimal?): String {
+        val saldo = pagadoConSaldo?.takeIf { it.signum() > 0 }
+        val abono = yaPago?.takeIf { it.signum() > 0 }
+        return when {
+            saldo != null && (abono == null || abono.compareTo(saldo) == 0) -> " · ya pagó ${CurrencyFormatter.format(saldo)} con saldo"
+            abono != null && saldo != null -> " · ya pagó ${CurrencyFormatter.format(abono)} (${CurrencyFormatter.format(saldo)} con saldo)"
+            abono != null -> " · ya pagó ${CurrencyFormatter.format(abono)}"
+            else -> ""
+        }
+    }
     const val BUSCAR = "Folio o nombre"
     const val POR_PAGAR = "Por pagar"
     const val POR_ENTREGAR = "Por entregar"
@@ -437,6 +450,7 @@ class PorPagarViewModel @Inject constructor(
                 folio = ComandaDeFolio(
                     vivo.orderId, vivo.folio, vivo.nombre, vivo.nota, vivo.productos,
                     pagadoConSaldo = pagadoConSaldoCents?.let { java.math.BigDecimal.valueOf(it, 2) },
+                    yaPago = vivo.abono.takeIf { it.signum() > 0 },
                 ),
             )
         }

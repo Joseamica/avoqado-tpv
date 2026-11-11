@@ -54,12 +54,10 @@ class CobroConSaldoRepositoryTest {
 
     /** Un repositorio nuevo sobre el MISMO almacén: es la app que se reabre después de morir. */
     private fun repo(): CobroConSaldoRepository {
-        // Sin el reintento automático de OkHttp: un socket cortado se queda cortado (el de la app reenvía los MISMOS bytes, igual llave).
-        val cliente = OkHttpClient.Builder()
-            .readTimeout(2, TimeUnit.SECONDS)
-            .callTimeout(5, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false)
-            .build()
+        // El MISMO armado del cliente que la app (`NetworkModule.clienteDeTarjetasDeRegalo`): nada se reenvía solo.
+        val cliente = com.jaac.avoqado_tpv.core.di.NetworkModule.clienteDeTarjetasDeRegalo(
+            OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).callTimeout(5, TimeUnit.SECONDS).build(),
+        )
         val api = Retrofit.Builder()
             .baseUrl(server.url("/api/v1/"))
             .client(cliente)
@@ -310,32 +308,47 @@ class CobroConSaldoRepositoryTest {
     }
 
     @Test
-    fun `Codex r4 tras una duda, ningun 4xx del reenvio la borra mientras la copia anterior pueda seguir viva`() = runTest {
+    fun `Codex r4 y r5 F1 tras una duda, ningun 4xx del reenvio la borra, ni con el tiempo, solo un cobro confirmado`() = runTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
         repo().cobrar("cord1", tarjeta, 5000)
         // La cajera fue dada de baja: `validateStaffVenue` contesta 400 sin código ANTES del candado de la llave.
         server.enqueue(json(200, """{"success":true,"data":{"found":false}}"""))
         server.enqueue(rechazo(400, null, "El usuario no tiene acceso a este negocio"))
         val reabierta = repo()
-
         assertThat(reabierta.resolver("cord1")).isEqualTo(DesenlaceDeSaldo.Incierto)
         assertThat(reabierta.pendienteDe("cord1")).isNotNull()
-        // El reenvío dejó escrita su hora antes de salir.
-        assertThat(reabierta.pendienteDe("cord1")!!.enviadoEn).isAtLeast(reabierta.pendienteDe("cord1")!!.creadaEn)
+
+        // Aunque la solicitud sea vieja (el reloj del aparato no prueba nada), un rechazo definitivo de la lógica tampoco la borra.
+        almacen.keys.forEach { k -> almacen[k] = almacen[k]!!.replace(Regex("\"creadaEn\":\\d+"), "\"creadaEn\":1") }
+        server.enqueue(json(200, """{"success":true,"data":{"found":false}}"""))
+        server.enqueue(rechazo(422, "GIFT_CARD_INSUFFICIENT_BALANCE", "Saldo insuficiente"))
+        assertThat(reabierta.resolver("cord1")).isEqualTo(DesenlaceDeSaldo.Incierto)
+        assertThat(reabierta.pendienteDe("cord1")).isNotNull()
+
+        // Sólo el cobro confirmado la cierra (la copia anterior sí había cobrado).
+        server.enqueue(
+            json(
+                200,
+                """{"success":true,"data":{"found":true,"payment":{"paymentId":"cpay1","orderId":"cord1","amount":50,"tipAmount":0,
+                   "redeemed":[{"last4":"HB7T","balanceAfter":0}],"orderRemaining":84,"orderPaymentStatus":"PARTIAL"}}}""",
+            ),
+        )
+        assertThat(reabierta.resolver("cord1")).isEqualTo(DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0))
+        assertThat(reabierta.pendienteDe("cord1")).isNull()
     }
 
     @Test
-    fun `Codex r4 pasada la vida de la copia anterior, found false fue concluyente y el 4xx del reenvio la borra`() = runTest {
-        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
-        repo().cobrar("cord1", tarjeta, 5000)
-        // La copia anterior salió hace mucho (más que VIDA_MAX_MS).
-        almacen.keys.forEach { k -> almacen[k] = almacen[k]!!.replace(Regex("\"enviadoEn\":\\d+"), "\"enviadoEn\":1") }
-        server.enqueue(json(200, """{"success":true,"data":{"found":false}}"""))
-        server.enqueue(rechazo(400, null, "El usuario no tiene acceso a este negocio"))
-        val reabierta = repo()
+    fun `Codex r5 el cliente de esta API no reenvia solo un 503 con Retry-After 0 ni sigue redirecciones`() = runTest {
+        // Si OkHttp reenviara solo, la segunda copia se quedaría sin respuesta (cola vacía) y el conteo sería 2.
+        server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0").setBody("{}"))
+        val r = repo()
+        assertThat(r.cobrar("cord1", tarjeta, 5000)).isEqualTo(DesenlaceDeSaldo.Incierto)
+        assertThat(server.requestCount).isEqualTo(1)
 
-        assertThat(reabierta.resolver("cord1")).isEqualTo(DesenlaceDeSaldo.NoSalio("El usuario no tiene acceso a este negocio"))
-        assertThat(reabierta.pendienteDe("cord1")).isNull()
+        server.takeRequest()
+        server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/api/v1/otra"))
+        assertThat(r.cobrar("cord2", tarjeta, 5000)).isEqualTo(DesenlaceDeSaldo.Incierto)
+        assertThat(server.requestCount).isEqualTo(2)
     }
 
     @Test

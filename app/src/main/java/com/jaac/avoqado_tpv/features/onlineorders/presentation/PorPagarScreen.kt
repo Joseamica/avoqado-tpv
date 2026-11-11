@@ -585,7 +585,7 @@ private fun LineaDeLaCuenta(folio: Folio, modifier: Modifier, maxLines: Int = In
 /** Mockup 2d: «Folio W7K3P · Ana» bajo el monto de «Método de pago» (PAX y Nexgo), con el folio espaciado (R61). 2e·3: «· ya pagó $X con saldo». */
 @Composable
 fun FolioDelCobro(folio: ComandaDeFolio, modifier: Modifier = Modifier) {
-    val texto = TextosPorPagar.folioDelCobro(folio.orderNumber, folio.nombre, folio.pagadoConSaldo)
+    val texto = TextosPorPagar.folioDelCobro(folio.orderNumber, folio.nombre, folio.pagadoConSaldo, folio.yaPago)
     val inicio = "Folio ".length
     Text(
         buildAnnotatedString {

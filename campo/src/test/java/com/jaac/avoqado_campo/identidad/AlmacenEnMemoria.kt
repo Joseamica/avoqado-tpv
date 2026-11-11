@@ -11,11 +11,17 @@ class AlmacenEnMemoria(val datos: MutableMap<String, String> = mutableMapOf()) :
         val g = gancho
         if (g != null && g.first == clave) { gancho = null; g.second() }
     }
-    /** r10: como `commit()` en false: el cambio queda en memoria y la escritura lanza (lo que hace el almacén de verdad). */
+    /**
+     * R-D (r11): `commit()` en false. La app se detiene en ese momento ([AppDetenida]) y NO llega al disco: [datos] es el disco,
+     * así que «reabrir» es otro `QuienSoy` sobre los mismos [datos].
+     */
     var fallarAlEscribir: (Map<String, String?>) -> Boolean = { false }
 
     override fun escribir(cambios: Map<String, String?>) {
+        if (fallarAlEscribir(cambios)) throw AppDetenida()
         cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
-        if (fallarAlEscribir(cambios)) throw IllegalStateException("commit() devolvió false")
     }
 }
+
+/** Lo que en la app es `Process.killProcess` (R-D): un `Error`, que ningún `catch (e: Exception)` atrapa. */
+class AppDetenida : Error("R-D: la app se detuvo porque el almacén no guardó")

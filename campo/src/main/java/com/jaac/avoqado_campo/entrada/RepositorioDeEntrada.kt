@@ -8,7 +8,6 @@ import com.jaac.avoqado_campo.BuildConfig
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.ACTIVACION_PENDIENTE
-import com.jaac.avoqado_campo.identidad.AlmacenNoGuardo
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Instantanea
@@ -65,50 +64,28 @@ class RepositorioDeEntrada(
         Aparato.de(it, Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, BuildConfig.VERSION_NAME)
     },
     private val ahora: () -> Long = System::currentTimeMillis,
-    /**
-     * r10: termina el borrado que quedó a medias (`BorradoDelCelular.terminarSiQuedoAMedias`): con la marca confirmada lo
-     * termina; sin confirmar, la deshace. Se llama antes de activar, fuera del [MutexDeSesion] (`vaciar` toma subida → sesión).
-     */
-    private val terminarBorrado: suspend () -> Unit = {},
 ) {
     private val gson = Gson()
 
     /** Hay un cuerpo de activación cuyo resultado no se supo (B14): la pantalla dice «Terminando la activación anterior…». */
     fun activacionPendiente(): Boolean = pendiente() != null
 
-    /**
-     * r10: nunca se activa con la marca de un borrado puesta (si no, el siguiente arranque terminaría ese borrado y borraría a la
-     * persona nueva): primero se termina o se deshace; si no se puede, no se activa. Un dato que no se guardó es texto, no un cierre.
-     */
     suspend fun activar(codigo: String, pin: String): ResultadoEntrada {
-        try {
-            terminarBorrado()
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            return NO_SE_PUDO_BORRAR
-        }
-        val r = try {
-            mutexDeSesion.mutex.withLock { activarConCandado(codigo, pin) }
-        } catch (e: AlmacenNoGuardo) {
-            NO_SE_PUDO_GUARDAR
-        }
+        val r = mutexDeSesion.mutex.withLock { activarConCandado(codigo, pin) }
         if (r == ResultadoEntrada.Dentro) refrescarCopia()
         return r
     }
 
     suspend fun entrar(pin: String, venueId: String?): ResultadoEntrada {
-        val r = try {
-            mutexDeSesion.mutex.withLock { entrarConCandado(pin, venueId) }
-        } catch (e: AlmacenNoGuardo) {
-            NO_SE_PUDO_GUARDAR
-        }
+        val r = mutexDeSesion.mutex.withLock { entrarConCandado(pin, venueId) }
         if (r == ResultadoEntrada.Dentro) refrescarCopia()
         return r
     }
 
     private suspend fun activarConCandado(codigo: String, pin: String): ResultadoEntrada {
-        if (quienSoy.limpiando) return NO_SE_PUDO_BORRAR // r10: la marca de un borrado sigue puesta
+        // r10/r11: nunca con la marca de un borrado puesta. Con R-D (fail-stop del almacén) un borrado confirmado que no terminó
+        // sólo se encuentra al ARRANCAR, y `terminarSiQuedoAMedias` lo termina antes de cualquier pantalla: esto es la defensa.
+        if (quienSoy.limpiando) return NO_SE_PUDO_BORRAR
         // B6 y rediseño v7: se activa sólo desde un celular vacío (`BorradoDelCelular` deja SIN_ACTIVAR y la cola vacía).
         if (dao.cuantasVivas() > 0) return ResultadoEntrada.ColaNoVacia
         if (quienSoy.estado != EstadoDelCelular.SIN_ACTIVAR) return ResultadoEntrada.Rechazo("Este celular ya está activado.", null)
@@ -120,11 +97,15 @@ class RepositorioDeEntrada(
 
         val r = (llamarSeguro { api.activar(cuerpo) } as? Llamada.Contesto)?.r
         if (r == null || resultadoDesconocido(r)) return SIN_SENAL_AL_ACTIVAR // se conserva el cuerpo
-        olvidarPendiente()
-        if (!r.isSuccessful) return rechazo(r)
+        if (!r.isSuccessful) {
+            olvidarPendiente()
+            return rechazo(r)
+        }
 
         val b = r.body()!! // llamarSeguro ya lo validó
         runCatching { reloj.anclar(b.horaDelServidor!!) }
+        // r11 (R-D): la activación y el olvido del cuerpo van en UNA escritura. Si no se guarda, la app se detiene y al reabrir
+        // sigue SIN_ACTIVAR con el MISMO cuerpo (B14): el reintento lo repite y el SERVIDOR contesta lo mismo.
         quienSoy.guardarActivacion(b.aDatos())
         return if (quienSoy.credencial == b.credencial) ResultadoEntrada.Dentro
         else ResultadoEntrada.Rechazo("No se pudo activar. Intenta de nuevo.", null)
@@ -238,7 +219,7 @@ class RepositorioDeEntrada(
         val g = runCatching { gson.fromJson(texto, ActivacionGuardada::class.java) }.getOrNull()
         // Gson no respeta los no-nulos de Kotlin; y a los 10 min (o con la hora movida hacia atrás) se borra solo.
         if (g?.cuerpo != null && ahora() - g.guardadaEn in 0 until DIEZ_MIN) return g
-        runCatching { olvidarPendiente() } // r10: si no se guarda, se vuelve a olvidar la próxima vez (lo lee la pantalla)
+        olvidarPendiente()
         return null
     }
 
@@ -249,7 +230,6 @@ class RepositorioDeEntrada(
         const val DIEZ_MIN = 10 * 60 * 1000L
         val SIN_SENAL_AL_ACTIVAR = ResultadoEntrada.Rechazo("Para activar el celular necesitas señal.", null)
         val NO_SE_PUDO_BORRAR = ResultadoEntrada.Rechazo("No se pudo terminar de borrar el celular. Intenta otra vez.", null)
-        val NO_SE_PUDO_GUARDAR = ResultadoEntrada.Rechazo("No se pudo guardar, intenta otra vez.", null)
 
         /** Sin respuesta del SERVIDOR mismo: timeout (408), 5xx, o 1xx/3xx de algo en medio. Un 4xx sí es su respuesta. */
         fun resultadoDesconocido(r: Response<*>) = !r.isSuccessful && (r.code() == 408 || r.code() !in 400..499)

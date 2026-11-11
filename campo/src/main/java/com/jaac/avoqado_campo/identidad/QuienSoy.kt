@@ -63,12 +63,12 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     val aparatoId: String
         get() = synchronized(candado) {
-            almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { runCatching { almacen.escribir(mapOf(APARATO_ID to it)) } }
+            almacen.leer(APARATO_ID) ?: UUID.randomUUID().toString().also { almacen.escribir(mapOf(APARATO_ID to it)) }
         }
     /** Cambia con cada activación y con `borrarTodo`: una respuesta tardía de la anterior se descarta con `guardarSi`. */
     val generacion: String
         get() = synchronized(candado) {
-            almacen.leer(GENERACION) ?: nueva().also { runCatching { almacen.escribir(mapOf(GENERACION to it)) } } // r10: queda en memoria
+            almacen.leer(GENERACION) ?: nueva().also { almacen.escribir(mapOf(GENERACION to it)) }
         }
     val celularId: String? get() = almacen.leer(CELULAR_ID)
     val credencial: String? get() = almacen.leer(CREDENCIAL)
@@ -105,8 +105,9 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
             true
         }
 
+    /** r11: también olvida el cuerpo de la activación (B14) en la MISMA escritura: si no se guarda (R-D), el cuerpo sigue para reintentar. */
     fun guardarActivacion(d: DatosDeActivacion) = escribir(
-        GENERACION to nueva(),
+        ACTIVACION_PENDIENTE to null, GENERACION to nueva(),
         CELULAR_ID to d.celularId, CREDENCIAL to d.credencial, STAFF_ID to d.staffId, NOMBRE to d.nombre,
         SESION to gson.toJson(d.sesion), SUCURSALES to gson.toJson(d.sucursales),
         ESTADO to EstadoDelCelular.VINCULADO.name, GRACIA to null,
@@ -194,8 +195,8 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         synchronized(candado) {
             val m = cambios.toMap()
             if (!permitida(m)) return
-            // r10: si no guardó en disco (AlmacenNoGuardo) la copia en memoria sí cambió: se publica igual y la excepción sube.
-            try { almacen.escribir(m) } finally { _identidad.value = leerIdentidad() }
+            almacen.escribir(m)
+            _identidad.value = leerIdentidad()
         }
     }
 

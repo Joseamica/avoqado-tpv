@@ -223,19 +223,17 @@ class QuienSoyTest {
         assertFalse(activada().instantanea().toString().contains("cred"))
     }
 
-    @Test fun `r10 - si commit devuelve false, escribir lanza AlmacenNoGuardo en vez de seguir como si se hubiera guardado`() {
+    @Test fun `r11 - R-D - si commit devuelve false (o la escritura lanza), el almacen detiene la app y no sigue`() {
         val editor = io.mockk.mockk<android.content.SharedPreferences.Editor>(relaxed = true)
         io.mockk.every { editor.commit() } returns false
-        assertTrue(runCatching { guardar(editor, mapOf("limpiando" to "true")) }.exceptionOrNull() is AlmacenNoGuardo)
+        var motivo: String? = null
+        val detener: (String) -> Nothing = { motivo = it; throw AppDetenida() }
+        assertTrue(runCatching { guardar(editor, mapOf("credencial" to "secreta"), detener) }.exceptionOrNull() is AppDetenida)
+        assertTrue(motivo!!.contains("credencial"))
+        assertFalse(motivo!!.contains("secreta")) // sólo las claves: los valores pueden ser secretos
+        io.mockk.every { editor.commit() } throws IllegalStateException("disco")
+        assertTrue(runCatching { guardar(editor, mapOf("x" to "1"), detener) }.exceptionOrNull() is AppDetenida)
         io.mockk.every { editor.commit() } returns true
-        guardar(editor, mapOf("limpiando" to null))
-        io.mockk.verify { editor.putString("limpiando", "true"); editor.remove("limpiando") }
-    }
-
-    @Test fun `r10 - si el almacen no guarda, QuienSoy publica igual lo que quedo en memoria y la excepcion sube`() {
-        val q = activada()
-        almacen.fallarAlEscribir = { true }
-        assertTrue(runCatching { q.marcarBloqueada(true) }.exceptionOrNull() is IllegalStateException)
-        assertTrue(q.identidad.value.bloqueada) // en memoria sí cambió: la pantalla lo ve
+        guardar(editor, mapOf("limpiando" to null), detener) // guardó: no se detiene
     }
 }

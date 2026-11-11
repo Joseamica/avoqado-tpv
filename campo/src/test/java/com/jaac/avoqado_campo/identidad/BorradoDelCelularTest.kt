@@ -70,10 +70,13 @@ class BorradoDelCelularTest {
     @Volatile private var alPonerLaMarca: () -> Unit = {}
     /** r9: una escritura del almacén cifrado que falla (antes de escribir nada). */
     @Volatile private var fallarAlEscribir: (Map<String, String?>) -> Boolean = { false }
+    /** r11 · R-D: `commit()` en false; [datos] es el disco, así que «reabrir» es otro `QuienSoy` sobre el mismo almacén. */
+    @Volatile private var detenerAlEscribir: (Map<String, String?>) -> Boolean = { false }
     private val almacen = object : AlmacenSeguro {
         val datos = mutableMapOf<String, String>()
         override fun leer(clave: String) = datos[clave]
         override fun escribir(cambios: Map<String, String?>) {
+            if (detenerAlEscribir(cambios)) throw AppDetenida() // R-D: no llega al disco y la app se detiene
             if (fallarAlEscribir(cambios)) throw IllegalStateException("el almacén cifrado falló")
             cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
             if (cambios["limpiando"] == "true") alPonerLaMarca()
@@ -226,8 +229,8 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesvinculado(null)
         assertTrue(quienSoy.empezarLimpiezaSi(quienSoy.generacion))
         quienSoy.confirmarLimpieza()
-        fallarAlEscribir = { it.keys == setOf("limpiando") && it["limpiando"] == null } // el último paso de vaciar
-        assertNotNull(runCatching { borrado().terminarSiQuedoAMedias() }.exceptionOrNull()) // el arranque sigue (R-C)
+        detenerAlEscribir = { it.keys == setOf("limpiando") && it["limpiando"] == null } // R-D en el último paso de vaciar
+        assertTrue(runCatching { borrado().terminarSiQuedoAMedias() }.exceptionOrNull() is AppDetenida) // la app se detiene
         assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
         assertTrue(quienSoy.limpiezaConfirmada)
     }
@@ -242,28 +245,35 @@ class BorradoDelCelularTest {
         assertNull(quienSoy.credencial)
     }
 
-    @Test fun `r10 - con la marca confirmada y vaciar que ya funciona, activar termina ese borrado y luego activa`() = runBlocking {
+    @Test fun `r11 - commit false al quitar la marca tras vaciar - la app se detiene y al reabrir el arranque termina el borrado ANTES de dejar activar`() = runBlocking {
         quedaLaMarcaConfirmada()
-        fallarAlEscribir = { false }
+        // Reabrir: memoria = disco. El arranque (CampoApplication, antes de cualquier pantalla) termina ese borrado.
+        detenerAlEscribir = { false }
+        val reabierto = QuienSoy(almacen)
+        assertTrue(reabierto.limpiezaConfirmada)
+        BorradoDelCelular(
+            reabierto, MutexDeSubida(), MutexDeSesion(), gps, { db.clearAllTables() }, dao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos,
+        ).terminarSiQuedoAMedias()
+        assertFalse(reabierto.limpiando)
         alLatido = { activado }
         val repo = RepositorioDeEntrada(
-            api, quienSoy, RelojAnclado(almacen, { 0L }, { 0L }, { 1 }), pinLocal, MutexDeSesion(), dao, almacen, copia,
-            CoroutineScope(Dispatchers.Unconfined), terminarBorrado = { borrado().terminarSiQuedoAMedias() },
+            api, reabierto, RelojAnclado(almacen, { 0L }, { 0L }, { 1 }), pinLocal, MutexDeSesion(), dao, almacen, copia, CoroutineScope(Dispatchers.Unconfined),
         )
         assertEquals(ResultadoEntrada.Dentro, repo.activar("ABC123", "1234"))
-        assertFalse(quienSoy.limpiando)
-        assertEquals("Beto", quienSoy.nombre)
-        assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
+        assertEquals("Beto", reabierto.nombre)
+        assertFalse(reabierto.limpiando)
     }
 
-    @Test fun `r10 - si commit no guarda la marca, no se borra nada y la marca queda deshecha`() = runBlocking {
+    @Test fun `r11 - si commit no guarda la marca, la app se detiene y al reabrir no hay marca ni nada borrado`() = runBlocking {
         pieza(EstadoPieza.HECHA)
         quienSoy.marcarDesvinculado(null)
         val generacionAntes = quienSoy.generacion
-        alPonerLaMarca = { throw AlmacenNoGuardo() } // la marca quedó en memoria; commit() dijo false
-        assertTrue(runCatching { borrado().activarDeNuevo() }.exceptionOrNull() is AlmacenNoGuardo)
-        assertFalse(quienSoy.limpiando)
-        assertEquals(generacionAntes, quienSoy.generacion)
+        detenerAlEscribir = { it["limpiando"] == "true" } // R-D: la marca no llegó al disco y la app se detiene
+        assertTrue(runCatching { borrado().activarDeNuevo() }.exceptionOrNull() is AppDetenida)
+        detenerAlEscribir = { false }
+        val reabierto = QuienSoy(almacen) // memoria = disco
+        assertFalse(reabierto.limpiando)
+        assertEquals(generacionAntes, reabierto.generacion)
         assertNotNull(dao.porLlave("k-HECHA")) // vaciarBase no corrió
         assertTrue(carpetaCola.exists())
         assertEquals("c".repeat(64), quienSoy.credencial)

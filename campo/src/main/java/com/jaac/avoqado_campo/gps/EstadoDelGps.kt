@@ -15,13 +15,13 @@ class EstadoDelGps(private val almacen: AlmacenSeguro) {
             ResultadoGps.Siguiendo -> SIGUIENDO
             ResultadoGps.NoLoUsaLaTienda -> NO_LO_USA
         }
-        runCatching { almacen.escribir(mapOf(CLAVE to valor)) } // r10: sólo lo que muestra la pantalla; si no se guarda, en memoria sí
+        almacen.escribir(mapOf(CLAVE to valor))
         _estado.value = r
     }
 
     /** Lo llama el borrado del celular. */
     @Synchronized fun reiniciar() {
-        runCatching { almacen.escribir(mapOf(CLAVE to null)) }
+        almacen.escribir(mapOf(CLAVE to null))
         _estado.value = SIN_INICIAR
     }
 

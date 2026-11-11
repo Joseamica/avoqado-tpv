@@ -11,6 +11,7 @@ import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
+import com.jaac.avoqado_campo.identidad.AppDetenida
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
@@ -162,6 +163,28 @@ class RepositorioDeEntradaTest {
         }
         assertEquals(CRED, quienSoy.credencial)
         assertFalse(r.activacionPendiente())
+    }
+
+    @Test fun `r11 - si commit no guarda la activacion, la app se detiene y al reabrir sigue SIN_ACTIVAR con el MISMO cuerpo para reintentar`() = runBlocking {
+        responder = { ok(activado()) }
+        almacen.fallarAlEscribir = { it.containsKey("credencial") } // la escritura de la activación
+        assertTrue(runCatching { repo().activar("abc-123", "1234") }.exceptionOrNull() is AppDetenida)
+        // Reabrir: memoria = disco.
+        almacen.fallarAlEscribir = { false }
+        val otra = QuienSoy(AlmacenEnMemoria(almacen.datos))
+        assertEquals(EstadoDelCelular.SIN_ACTIVAR, otra.estado)
+        assertNull(otra.credencial)
+        assertEquals(com.jaac.avoqado_campo.ui.Destino.Activar, com.jaac.avoqado_campo.ui.destinoDe(otra.identidad.value, colaVacia = true))
+        // El cuerpo de la activación sigue en disco (B14): el reintento manda EXACTAMENTE el mismo.
+        val repo2 = RepositorioDeEntrada(api, otra, reloj, pinLocal, MutexDeSesion(), dao, AlmacenEnMemoria(almacen.datos), copia, alcance, ahora = { ahora })
+        assertTrue(repo2.activacionPendiente())
+    }
+
+    @Test fun `r11 - si commit no guarda el cuerpo pendiente, la app se detiene ANTES de mandar la activacion`() = runBlocking {
+        responder = { ok(activado()) }
+        almacen.fallarAlEscribir = { it.containsKey("activacion.pendiente") }
+        assertTrue(runCatching { repo().activar("abc-123", "1234") }.exceptionOrNull() is AppDetenida)
+        assertTrue(activaciones().isEmpty())
     }
 
     @Test fun `a los 10 min el cuerpo guardado se borra solo y va el nuevo`() = runBlocking {

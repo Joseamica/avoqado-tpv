@@ -33,6 +33,10 @@ enum class ResultadoDelBorrado { BORRADO, QUEDA_ALGO, ESPERA }
  *      fallo de [vaciar] se reintenta una vez; si vuelve a fallar, lo termina el arranque (`terminarSiQuedoAMedias`).
  * R-C. Todo llamador del borrado atiende el error (Ayuda, «Activar con un código nuevo», DESCONOCIDO, el arranque): texto
  *      honesto, sin cerrar la app y sin borrar nada.
+ * R-D (r11). Fail-stop del almacén cifrado (`AlmacenSeguro`): si una escritura no se confirma en disco, la app se DETIENE
+ *      ahí mismo. Nadie sigue con la copia en memoria; al reabrir, memoria = disco y el arranque termina lo que quedó (la
+ *      marca «borrando» se termina, la «revisando» se deshace, la APARTADA se completa). Por eso R-B y el reintento de
+ *      [vaciar] sólo ven fallas de Room o de archivos, y un borrado confirmado a medias sólo aparece al ARRANCAR.
  *
  * El ÚNICO camino para volver a activar (rediseño v7): deja el celular vacío, como recién instalado. r3: los tres que
  * borran (tras «Desvincular», «Activar con un código nuevo» y DESCONOCIDO) pasan por [borrar], que sólo borra a la persona
@@ -118,8 +122,9 @@ class BorradoDelCelular(
             runCatching { quienSoy.cancelarLimpieza(marca) }
             throw e
         }
-        // 3 · Confirmada: el borrado sigue (aquí ya no se devuelve nada). Con la app viva, un fallo se reintenta una vez; si
-        // vuelve a fallar, lo termina el arranque, y la checada que esperaba deja de esperar al verla confirmada (R-A).
+        // 3 · Confirmada: el borrado sigue (aquí ya no se devuelve nada). Una falla de Room o de archivos se reintenta una vez
+        // (una del almacén detiene la app, R-D); si vuelve a fallar, lo termina el arranque, y la checada que esperaba deja de
+        // esperar al verla confirmada (R-A). Nadie más vacía en paralelo: activar se niega con la marca puesta.
         try {
             vaciar()
         } catch (c: CancellationException) {

@@ -72,10 +72,7 @@ object ColaModule {
     fun proveerEntrada(
         api: CampoApi, quienSoy: QuienSoy, reloj: RelojAnclado, pinLocal: PinLocal, mutexDeSesion: MutexDeSesion,
         dao: PiezaDao, almacen: AlmacenSeguro, copia: RepositorioDeCopia, @AlcanceDeLaApp alcance: CoroutineScope,
-        borrado: BorradoDelCelular,
-    ): RepositorioDeEntrada = RepositorioDeEntrada(
-        api, quienSoy, reloj, pinLocal, mutexDeSesion, dao, almacen, copia, alcance, terminarBorrado = { borrado.terminarSiQuedoAMedias() },
-    )
+    ): RepositorioDeEntrada = RepositorioDeEntrada(api, quienSoy, reloj, pinLocal, mutexDeSesion, dao, almacen, copia, alcance)
 
     @Provides @Singleton
     fun proveerBorrado(

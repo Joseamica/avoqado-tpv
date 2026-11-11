@@ -31,8 +31,9 @@ class CampoApplication : Application(), Configuration.Provider {
         // de cualquier pantalla. ponytail: bloquea el arranque sólo en ese caso raro (borrar tablas y archivos: < 1 s).
         // r5: y la checada que quedó esperando el GPS cuando Android mató la app se completa sin ubicación (antes de cualquier
         // pantalla, así nada nuevo se aparta mientras tanto). ponytail: una consulta a Room en el arranque, casi siempre vacía.
-        // r9 · R-C: si el almacenamiento falla aquí, la app abre igual (sin cerrarse en cada arranque): lo que quede (una marca
-        // o una APARTADA) se reintenta en el siguiente arranque y nada se borra por el error.
+        // r9 · R-C: si Room o los archivos fallan aquí, la app abre igual (sin cerrarse en cada arranque): lo que quede (una marca
+        // o una APARTADA) se reintenta en el siguiente arranque y nada se borra por el error. Mientras quede la marca, activar se
+        // niega. Una falla del almacén cifrado detiene la app (R-D) y se vuelve a intentar al abrirla.
         val completadas = runBlocking {
             try {
                 borrado.terminarSiQuedoAMedias()

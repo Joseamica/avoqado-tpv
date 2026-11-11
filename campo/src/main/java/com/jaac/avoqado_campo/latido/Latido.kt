@@ -52,14 +52,12 @@ class Latido(
             r.isSuccessful && b != null -> {
                 runCatching { reloj.anclar(b.horaDelServidor!!) }.onFailure { Log.w("Latido", "horaDelServidor ilegible: ${b.horaDelServidor}") }
                 // I2: no durante un borrado; R6-A1: no si otra activación ganó mientras volaba.
-                // r10: si no se guardó (AlmacenNoGuardo), queda en memoria y el siguiente latido lo vuelve a traer: no truena.
                 var guardado = false
-                runCatching { quienSoy.guardarSi(generacion) { if (!limpiando) { guardarLatido(b.aDatos()); guardado = true } } }
-                    .onFailure { guardado = false; Log.w("Latido", "no se guardó la respuesta del latido", it) }
+                quienSoy.guardarSi(generacion) { if (!limpiando) { guardarLatido(b.aDatos()); guardado = true } }
                 guardado
             }
             r.code() == 401 && codigoDe(r.errorBody()?.string()) == "CELULAR_DESCONOCIDO" -> {
-                runCatching { quienSoy.guardarSi(generacion) { marcarDesconocido() } }
+                quienSoy.guardarSi(generacion) { marcarDesconocido() }
                 false
             }
             else -> false

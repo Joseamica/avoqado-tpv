@@ -1,6 +1,5 @@
 package com.jaac.avoqado_campo.red
 
-import com.jaac.avoqado_campo.identidad.AlmacenNoGuardo
 import com.jaac.avoqado_campo.identidad.Instantanea
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -35,14 +34,7 @@ class GuardiaDeSesion @Inject constructor(
      */
     suspend fun <T> conSesion(
         venueId: String, yo: Instantanea = quienSoy.instantanea(), llamada: suspend (bearer: String) -> Response<T>,
-    ): ResultadoConSesion<T> = try {
-        conSesionYa(venueId, yo, llamada)
-    } catch (e: AlmacenNoGuardo) {
-        // r10: los tokens o la marca de sesión no se guardaron en disco (en memoria sí): se repite después, como sin red.
-        sin(MotivoSinSesion.SIN_RED)
-    }
-
-    private suspend fun <T> conSesionYa(venueId: String, yo: Instantanea, llamada: suspend (bearer: String) -> Response<T>): ResultadoConSesion<T> {
+    ): ResultadoConSesion<T> {
         val generacion = yo.generacion
         val sesion = yo.sesion
         if (yo.limpiando) return sin(MotivoSinSesion.SIN_RED)

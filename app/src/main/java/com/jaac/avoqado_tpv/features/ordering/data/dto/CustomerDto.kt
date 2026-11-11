@@ -54,7 +54,20 @@ data class CustomerDto(
     val totalSpent: Double,
 
     @SerializedName("customerGroup")
-    val customerGroup: CustomerGroupDto?
+    val customerGroup: CustomerGroupDto?,
+
+    /** El descuento asignado al cliente. Ausente (null) en servidores viejos y en clientes sin descuento. */
+    @SerializedName("descuentoDelCliente")
+    val descuentoDelCliente: DescuentoDelClienteDto? = null
+)
+
+/** `type` llega como "PERCENTAGE" o "FIXED_AMOUNT"; cualquier otro valor se ignora al pasarlo al dominio. */
+data class DescuentoDelClienteDto(
+    @SerializedName("discountId") val discountId: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("type") val type: String,
+    @SerializedName("value") val value: Double,
+    @SerializedName("maxDiscountAmount") val maxDiscountAmount: Double?
 )
 
 /**

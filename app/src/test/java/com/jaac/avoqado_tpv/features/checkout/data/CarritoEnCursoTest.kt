@@ -7,7 +7,9 @@ import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SelectedModifier
+import com.jaac.avoqado_tpv.features.ordering.domain.DescuentoDelCliente
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
+import com.jaac.avoqado_tpv.features.ordering.domain.comoDescuento
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountConditions
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountScope
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
@@ -143,5 +145,37 @@ class CarritoEnCursoTest {
         assertThat(fallo).isNotNull()
         assertThat(contexto.getSharedPreferences("avoqado_carrito_en_curso", android.content.Context.MODE_PRIVATE)
             .getString("carrito_venue-1", null)).isEqualTo("{no es json")
+    }
+
+    @Test fun `el descuento del cliente y las tres marcas del carrito vuelven iguales`() = runTest {
+        val descuento = DescuentoDelCliente("d-1", "Socio", DiscountType.FIXED, 50.0, 30.0)
+        val cliente = com.jaac.avoqado_tpv.features.ordering.domain.Customer(
+            id = "c-1", firstName = "Ana", lastName = null, email = null, phone = null,
+            loyaltyPoints = 0, totalVisits = 0, totalSpent = BigDecimal.ZERO, customerGroup = null, descuentoDelCliente = descuento,
+        )
+        val carrito = carritoCompleto().copy(
+            orderDiscount = descuento.comoDescuento(),
+            descuentoEsDelCliente = true, descuentoDelClienteQuitado = true, autorizacionDelDescuento = "tok-123",
+        )
+        CarritoEnCurso(contexto).guardar("venue-1", llave, carrito, cliente = cliente)
+
+        val guardado = CarritoEnCurso(contexto).leerGuardado("venue-1")!!
+
+        assertThat(guardado.cart).isEqualTo(carrito)
+        assertThat(guardado.cliente?.descuentoDelCliente).isEqualTo(descuento)
+    }
+
+    @Test fun `un carrito guardado por la version de hoy se lee con los valores por omisión`() = runTest {
+        val viejo = """{"version":1,"llave":"$llave","items":[],"manualDiscountCents":0,"selectedStaffId":"s","selectedStaffName":"S",""" +
+            """"guardadoEn":1,"cliente":{"id":"c-1","firstName":"Ana"}}"""
+        contexto.getSharedPreferences("avoqado_carrito_en_curso", android.content.Context.MODE_PRIVATE)
+            .edit().putString("carrito_venue-1", viejo).commit()
+
+        val guardado = CarritoEnCurso(contexto).leerGuardado("venue-1")!!
+
+        assertThat(guardado.cart.descuentoEsDelCliente).isFalse()
+        assertThat(guardado.cart.descuentoDelClienteQuitado).isFalse()
+        assertThat(guardado.cart.autorizacionDelDescuento).isNull()
+        assertThat(guardado.cliente?.descuentoDelCliente).isNull()
     }
 }

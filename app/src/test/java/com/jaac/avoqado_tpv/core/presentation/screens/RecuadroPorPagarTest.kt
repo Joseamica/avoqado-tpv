@@ -123,8 +123,13 @@ class RecuadroPorPagarTest {
         assertTrue(avisoDeSaldoSinConfirmar(alDia.copy(desactualizado = true), listOf(guardada())) != null)
     }
 
-    @Test fun `D12 con la lista al dia no avisa - la marca ya esta en la lista`() {
+    @Test fun `D12 con la lista al dia no avisa - si el folio viene la marca esta en la lista y si ya no viene no se puede cobrar`() {
         assertNull(avisoDeSaldoSinConfirmar(alDia, listOf(guardada())))
+    }
+
+    @Test fun `D12 si el almacen no se pudo leer lo dice - nunca como si no hubiera nada`() {
+        assertEquals(SALDO_GUARDADO_ILEGIBLE, avisoDeSaldoSinConfirmar(EstadoDeFolios(sinConexion = true), null))
+        assertEquals(SALDO_GUARDADO_ILEGIBLE, avisoDeSaldoSinConfirmar(EstadoDeFolios(), null))
     }
 
     @Test fun `D12 sin cobro con saldo guardado no avisa`() {

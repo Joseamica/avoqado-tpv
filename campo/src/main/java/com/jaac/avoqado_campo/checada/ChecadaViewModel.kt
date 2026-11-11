@@ -9,6 +9,7 @@ import com.jaac.avoqado_campo.cola.ChecadaNueva
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
@@ -93,54 +94,50 @@ class ChecadaViewModel @Inject constructor(
 
     /** Doble toque → una pieza: [EstadoChecada.ocupado] se pone antes de lanzar nada. */
     private fun checar(tipo: TipoChecada, foto: String?) {
-        if (_estado.value.ocupado) { foto?.let { File(it).delete() }; return }
-        // R6-A1 + r3: generación y sesión de UNA instantánea: lo que se guarde es de ESTA persona. r4: con una reserva, que
-        // un borrado espera (la checada tarda hasta 10 s en el GPS antes de llegar a Room); null = hay un borrado en curso.
-        val yo = quienSoy.reservar()
-        val venueId = yo?.sesion?.venueId
-        if (yo == null || venueId == null) {
-            if (yo != null) quienSoy.soltar()
-            foto?.let { File(it).delete() } // H5: no se checa; la selfie ya tomada no se queda en el celular
-            if (yo == null) _estado.update { it.copy(error = "Espera un momento.", aviso = null) }
-            return
-        }
+        // R6-A1 + r3: generación y sesión de UNA instantánea: lo que se guarde es de ESTA persona.
+        val yo = quienSoy.instantanea()
+        val venueId = yo.sesion?.venueId
+        // H5: no se checa; la selfie ya tomada no se queda en el celular.
+        if (_estado.value.ocupado || venueId == null) { foto?.let { File(it).delete() }; return }
         _estado.update {
             it.copy(ocupado = true, pideSelfie = null, buscandoUbicacion = true, avisoUbicacion = null, aviso = null, error = null)
         }
         // Salir de la pantalla durante la espera del GPS no tira la checada: todo (ubicación y guardado) sigue (NonCancellable).
-        // UNDISPATCHED: corre aunque la pantalla ya se haya cerrado, así la reserva siempre se suelta.
+        // UNDISPATCHED: corre aunque la pantalla ya se haya cerrado.
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            withContext(NonCancellable) {
-                try { checarYa(tipo, foto, venueId, yo.generacion) } finally { quienSoy.soltar() }
-            }
+            withContext(NonCancellable) { checarYa(tipo, foto, venueId, yo.generacion) }
         }
     }
 
     private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String, generacion: String) {
+        val pieza = if (tipo == TipoChecada.ENTRADA) TipoPieza.ENTRADA else TipoPieza.SALIDA
+        // r5: lo que la persona tocó se guarda ANTES de esperar el GPS (APARTADA, con la selfie): si Android mata la app aquí, al
+        // abrir se completa sin ubicación, y un borrado la cuenta como viva.
+        val apartada = try {
+            encolador.apartarChecada(generacion, pieza, venueId, foto, if (tipo == TipoChecada.ENTRADA) "Entrada" else "Salida")
+        } catch (c: CancellationException) {
+            throw c
+        } catch (x: Exception) {
+            foto?.let { File(it).delete() } // no se guardó: la selfie no se queda en el celular
+            _estado.update { it.copy(ocupado = false, buscandoUbicacion = false, error = porque(x, tipo)) }
+            return
+        }
         // B9: si no llega, se checa igual. Un error del GPS (p. ej. el permiso retirado a media lectura) es «sin ubicación»: no
-        // deja la pantalla ocupada para siempre ni la selfie sin dueño.
+        // deja la pantalla ocupada para siempre.
         val l = try { ubicacion.leer() } catch (c: CancellationException) { throw c } catch (x: Exception) { null }
         _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
-        val nueva = ChecadaNueva(
-            venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, foto,
-            if (tipo == TipoChecada.ENTRADA) "Entrada" else "Salida",
-        )
         val error = try {
-            if (tipo == TipoChecada.ENTRADA) encolador.entrada(generacion, nueva) else encolador.salida(generacion, nueva)
+            encolador.completarChecada(
+                generacion, apartada, ChecadaNueva(venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, null, ""),
+            )
             null
         } catch (c: CancellationException) {
             throw c
-        } catch (_: CelularBorrandose) {
-            "Espera un momento."
-        } catch (_: IllegalStateException) {
-            if (tipo == TipoChecada.ENTRADA) YA_HAY_ENTRADA else SIN_ENTRADA
-        } catch (_: IllegalArgumentException) {
-            "Tu entrada es de otra sucursal: marca la salida ahí."
         } catch (x: Exception) {
-            "No se guardó la checada. ${x.message.orEmpty()}".trim()
+            porque(x, tipo)
         }
         if (error != null) {
-            foto?.let { File(it).delete() } // no se guardó: la selfie no se queda en el celular
+            encolador.descartarApartada(apartada) // no se hizo: la fila y la selfie se van
             _estado.update { it.copy(ocupado = false, error = error) }
             return
         }
@@ -156,6 +153,13 @@ class ChecadaViewModel @Inject constructor(
 
     // inline: deja llamar `gps.iniciar()`, que lee el turno (suspend). Corre en NonCancellable: no hay cancelación que tragar.
     private inline fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }
+
+    private fun porque(x: Exception, tipo: TipoChecada) = when (x) {
+        is CelularBorrandose -> "Espera un momento."
+        is IllegalStateException -> if (tipo == TipoChecada.ENTRADA) YA_HAY_ENTRADA else SIN_ENTRADA
+        is IllegalArgumentException -> "Tu entrada es de otra sucursal: marca la salida ahí."
+        else -> "No se guardó la checada. ${x.message.orEmpty()}".trim()
+    }
 
     private companion object {
         const val YA_HAY_ENTRADA = "Ya tienes una entrada abierta"

@@ -43,8 +43,12 @@ object TipoPieza {
     const val EVIDENCIA = "EVIDENCIA"
 }
 
-/** Terminales = HECHA, DESCARTADA. «Por subir» = PENDIENTE, RETENIDA, RECHAZADA (AVISO no cuenta). */
+/**
+ * Terminales = HECHA, DESCARTADA. «Por subir» = PENDIENTE, RETENIDA, RECHAZADA (AVISO no cuenta). APARTADA (r5): la checada
+ * tocada que espera el GPS; no se manda ni lleva huella, pero está viva (el borrado la cuenta) y al arrancar se completa.
+ */
 object EstadoPieza {
+    const val APARTADA = "APARTADA"
     const val PENDIENTE = "PENDIENTE"
     const val RETENIDA = "RETENIDA"
     const val RECHAZADA = "RECHAZADA"

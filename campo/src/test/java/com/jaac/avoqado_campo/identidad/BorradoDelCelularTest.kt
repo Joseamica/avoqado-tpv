@@ -278,6 +278,18 @@ class BorradoDelCelularTest {
         assertFalse(quienSoy.limpiando)
     }
 
+    @Test fun `una checada apartada (esperaba el GPS cuando murio la app) cuenta como viva para el borrado (r5)`() = runBlocking {
+        dao.insertar(Pieza(tipo = TipoPieza.ENTRADA, llave = "apartada", staffId = "s1", venueId = "v1", cuerpoJson = "{}", estado = "APARTADA", creadaAt = 1, resumen = "Entrada"))
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().trasDesvincular(quienSoy.generacion))
+        assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
+        assertEquals("APARTADA", dao.porLlave("apartada")?.estado)
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
+        quienSoy.marcarDesconocido()
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo(confirmadas = 0)) // la persona vio «1»
+        assertEquals("APARTADA", dao.porLlave("apartada")?.estado)
+        assertTrue(carpetaCola.exists())
+    }
+
     @Test fun `desvincular - algo que se guarda justo antes de la marca tampoco se borra y el celular queda DESVINCULADO`() = runBlocking {
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
         assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().trasDesvincular(quienSoy.generacion))

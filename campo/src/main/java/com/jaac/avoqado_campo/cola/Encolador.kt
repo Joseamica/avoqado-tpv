@@ -8,6 +8,7 @@ import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 
 /** I2: el celular se está borrando; la pantalla dice «Espera un momento». No se escribió nada. */
 class CelularBorrandose : Exception("El celular se está borrando")
@@ -47,6 +48,9 @@ private data class CuerpoChecada(
 )
 
 private data class CuerpoAceptar(val sims: List<SimConVersion>)
+
+/** Lo que guarda la checada APARTADA (r5) hasta completarse: de quién (generación) y la hora del toque. */
+private data class Apartada(val generacion: String, val ocurrioAt: String, val origenHora: String)
 
 /**
  * Guarda cada acción del promotor ANTES de cualquier red: una transacción de Room por llamada (también el turno y el
@@ -108,42 +112,119 @@ class Encolador(
     }
 
     /** Con un turno de esta persona ya abierto → `IllegalStateException` y nada escrito (B10: la pantalla no lo ofrece). */
-    suspend fun entrada(generacion: String, e: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion(generacion) {
-            val previo = dao.turnoAhora()
-            check(previo == null || !previo.abierto || previo.staffId != staffId) { "Ya hay un turno abierto" }
-            val hora = reloj.ahora()
-            val foto = e.archivoFoto?.let { fotoPara(llave, "entrada", e.venueId, "checada", hora, it) }
-            val cuerpo = CuerpoChecada(
-                llave, hora.iso, hora.origen, e.lat, e.lon, e.accuracy, e.ubicacionFalsa, checkInPhotoUrl = foto?.url,
-            )
-            dao.insertar(pieza(TipoPieza.ENTRADA, llave, staffId, e.venueId, cuerpo, hora, e.resumen, fotos = listOfNotNull(foto)))
-            dao.guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = llave, timeEntryId = null, venueId = e.venueId, abiertoAt = hora.epochMs))
-            if (foto != null) porCopiar(e.archivoFoto, foto)
-        }
-    }
+    suspend fun entrada(generacion: String, e: ChecadaNueva): String = deUnaVez(generacion, TipoPieza.ENTRADA, e)
 
     /**
      * La salida nombra la entrada de ESTE celular, leída del turno (B10, R2-5): su `timeEntryId` si ya lo tiene (sin
      * `dependeDe`), si no su `llaveEntrada` (y depende de ella). Sin turno abierto de esta persona → `IllegalStateException`;
      * otra sucursal que la del turno → `IllegalArgumentException`. En los dos casos no se escribe nada.
      */
-    suspend fun salida(generacion: String, s: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion(generacion) {
-            val t = dao.turnoAhora()
-            check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
-            require(s.venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
-            val llaveEntrada = if (t.timeEntryId == null) t.llaveEntrada else null
-            val hora = reloj.ahora()
-            val foto = s.archivoFoto?.let { fotoPara(llave, "salida", s.venueId, "checada", hora, it) }
-            val cuerpo = CuerpoChecada(
-                llave, hora.iso, hora.origen, s.lat, s.lon, s.accuracy, s.ubicacionFalsa,
-                timeEntryId = t.timeEntryId, llaveEntrada = llaveEntrada, checkOutPhotoUrl = foto?.url,
-            )
-            dao.insertar(pieza(TipoPieza.SALIDA, llave, staffId, s.venueId, cuerpo, hora, s.resumen, llaveEntrada, listOfNotNull(foto)))
-            dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = null))
-            if (foto != null) porCopiar(s.archivoFoto, foto)
+    suspend fun salida(generacion: String, s: ChecadaNueva): String = deUnaVez(generacion, TipoPieza.SALIDA, s)
+
+    /** Apartar y completar en UNA transacción: si algo falla no queda nada y la selfie sigue donde estaba (para reintentar). */
+    private suspend fun deUnaVez(generacion: String, tipo: String, c: ChecadaNueva): String {
+        var llave = ""
+        enTransaccion(generacion) { llave = completar(apartar(generacion, tipo, c.venueId, c.archivoFoto, c.resumen), c) }
+        return llave
+    }
+
+    /**
+     * r5 · lo que la persona tocó se guarda ANTES de esperar el GPS: una fila APARTADA con su llave, la hora del toque y la
+     * selfie ya copiada a `cola/` (el barrido de `cacheDir/fotos` no la alcanza). No se manda ni lleva huella. Revisa el
+     * turno con las mismas reglas que [completarChecada]: lo que no se podría checar no se aparta. Devuelve su id.
+     */
+    suspend fun apartarChecada(generacion: String, tipo: String, venueId: String, archivoFoto: String?, resumen: String): Long {
+        var id = 0L
+        enTransaccion(generacion) { id = apartar(generacion, tipo, venueId, archivoFoto, resumen) }
+        return id
+    }
+
+    /**
+     * La APARTADA [id] se vuelve la ENTRADA/SALIDA de siempre, en su misma fila y en UNA transacción: el cuerpo se serializa
+     * una vez, con la hora del toque y la ubicación de [u] (sus `lat`/`lon`/`accuracy`/`ubicacionFalsa`; null = sin ubicación).
+     */
+    suspend fun completarChecada(generacion: String, id: Long, u: ChecadaNueva?): String {
+        var llave = ""
+        enTransaccion(generacion) { llave = completar(id, u) }
+        return llave
+    }
+
+    private suspend fun Transaccion.apartar(generacion: String, tipo: String, venueId: String, archivoFoto: String?, resumen: String): Long {
+        require(tipo == TipoPieza.ENTRADA || tipo == TipoPieza.SALIDA) { "No es una checada: $tipo" }
+        turnoPara(tipo, staffId, venueId)
+        val llave = llaveNueva()
+        val hora = reloj.ahora()
+        val foto = archivoFoto?.let { fotoPara(llave, tipo.lowercase(), venueId, "checada", hora, it) }
+        val id = dao.insertar(
+            Pieza(
+                tipo = tipo, llave = llave, staffId = staffId, venueId = venueId,
+                cuerpoJson = gsonCola.toJson(Apartada(generacion, hora.iso, hora.origen)), estado = EstadoPieza.APARTADA,
+                fotosJson = gsonCola.toJson(listOfNotNull(foto)), creadaAt = hora.epochMs, resumen = resumen,
+            ),
+        )
+        if (foto != null) porCopiar(archivoFoto, foto)
+        return id
+    }
+
+    private suspend fun Transaccion.completar(id: Long, u: ChecadaNueva?): String {
+        val a = checkNotNull(dao.porId(id)?.takeIf { it.estado == EstadoPieza.APARTADA }) { "La checada ya no está apartada" }
+        val d = gsonCola.fromJson(a.cuerpoJson, Apartada::class.java)
+        val hora = HoraDeCampo(d.ocurrioAt, d.origenHora, a.creadaAt)
+        val foto = fotosDe(a.fotosJson).singleOrNull()
+        val t = turnoPara(a.tipo, staffId, a.venueId)
+        val entrada = a.tipo == TipoPieza.ENTRADA
+        val llaveEntrada = if (!entrada && t!!.timeEntryId == null) t.llaveEntrada else null
+        val cuerpo = CuerpoChecada(
+            a.llave, hora.iso, hora.origen, u?.lat, u?.lon, u?.accuracy, u?.ubicacionFalsa,
+            checkInPhotoUrl = foto?.url.takeIf { entrada }, timeEntryId = t?.timeEntryId.takeIf { !entrada },
+            llaveEntrada = llaveEntrada, checkOutPhotoUrl = foto?.url.takeIf { !entrada },
+        )
+        dao.actualizar(pieza(a.tipo, a.llave, staffId, a.venueId, cuerpo, hora, a.resumen, llaveEntrada, listOfNotNull(foto)).copy(id = a.id))
+        if (entrada) dao.guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = a.llave, timeEntryId = null, venueId = a.venueId, abiertoAt = hora.epochMs))
+        else dao.guardarTurno(t!!.copy(llaveEntrada = null, timeEntryId = null))
+        return a.llave
+    }
+
+    /** La checada que no se pudo completar no se hizo: su fila y su selfie se van. */
+    suspend fun descartarApartada(id: Long) {
+        val a = dao.porId(id)?.takeIf { it.estado == EstadoPieza.APARTADA } ?: return
+        dao.quitarApartada(id)
+        fotosDe(a.fotosJson).forEach { File(it.archivo).delete() }
+    }
+
+    /**
+     * r5 · al arrancar, antes de cualquier pantalla: la checada que quedó APARTADA (Android mató la app mientras esperaba el
+     * GPS) se completa sin ubicación («Se checa sin ubicación», B9). Si no se puede (otra activación, que no debería pasar
+     * porque un borrado vacía Room, o el turno ya no la admite) queda RECHAZADA en «Mis pendientes», nunca se pierde en
+     * silencio. Completar es idempotente: sólo una fila APARTADA se completa. Devuelve cuántas se completaron.
+     */
+    suspend fun completarApartadas(): Int {
+        val generacion = quienSoy.instantanea().generacion
+        var n = 0
+        for (a in dao.apartadas()) {
+            try {
+                if (gsonCola.fromJson(a.cuerpoJson, Apartada::class.java).generacion != generacion) throw CelularBorrandose()
+                completarChecada(generacion, a.id, null)
+                n++
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                dao.rechazar(a, "CHECADA_SIN_TERMINAR", "Esta checada no se pudo terminar. Avísale a tu supervisor.")
+            }
         }
+        return n
+    }
+
+    /** ENTRADA: no debe haber turno abierto de [staffId] (null). SALIDA: su turno abierto, de esa sucursal. Si no, lanza. */
+    private suspend fun turnoPara(tipo: String, staffId: String, venueId: String): TurnoLocal? {
+        val t = dao.turnoAhora()
+        if (tipo == TipoPieza.ENTRADA) {
+            check(t == null || !t.abierto || t.staffId != staffId) { "Ya hay un turno abierto" }
+            return null
+        }
+        check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
+        require(venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
+        return t
     }
 
     /** R8-3: «Corregir evidencia» de una venta `FAILED`; ya sabe su pago y su verificación. */

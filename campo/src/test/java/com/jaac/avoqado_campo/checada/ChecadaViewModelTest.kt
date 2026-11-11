@@ -9,6 +9,8 @@ import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
+import com.jaac.avoqado_campo.cola.EstadoPieza
+import com.jaac.avoqado_campo.cola.fotosDe
 import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
@@ -39,7 +41,6 @@ import io.mockk.mockkObject
 import io.mockk.runs
 import io.mockk.unmockkObject
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -50,7 +51,6 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -110,6 +110,10 @@ class ChecadaViewModelTest {
         Dispatchers.resetMain()
     }
 
+    private fun borrado() = BorradoDelCelular(
+        quienSoy, MutexDeSubida(), MutexDeSesion(), gps, db::clearAllTables, dao, File(context.filesDir, "cola"), copia,
+        PinLocal(almacen, { 0L }), estadoDelGps, File(context.cacheDir, "fotos"),
+    )
     private fun quieto() = runBlocking { withTimeout(5_000) { vm.estado.first { !it.ocupado } } }
     private fun piezas(): List<Pieza> = runBlocking { dao.pendientesDeVer().first() }
     private fun cuerpo(p: Pieza) = JsonParser.parseString(p.cuerpoJson).asJsonObject
@@ -222,29 +226,72 @@ class ChecadaViewModelTest {
         assertEquals(TipoPieza.ENTRADA, entradas.single().tipo)
     }
 
-    @Test fun `una checada que espera el GPS cuando llega un borrado no se pierde - el borrado la espera y no borra (r4 1)`() {
+    @Test fun `una checada que espera el GPS cuando llega un borrado no se pierde - el borrado la ve y no borra (r4 1, r5)`() {
         val espera = CompletableDeferred<Ubicacion.Lectura?>()
         coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
         coEvery { copia.borrar() } just runs
         vm.marcarEntrada()
-        // Mientras espera el GPS llega un latido DESVINCULADO: la navegación cambia a la gracia (la pantalla se va), la cola
-        // está en 0 y la persona toca «Activar con un código nuevo».
+        // Mientras espera el GPS llega un latido DESVINCULADO: la navegación cambia a la gracia (la pantalla se va) y la persona
+        // toca «Activar con un código nuevo».
         vm.viewModelScope.cancel()
         quienSoy.marcarDesvinculado(null)
-        val borrado = BorradoDelCelular(
-            quienSoy, MutexDeSubida(), MutexDeSesion(), gps, db::clearAllTables, dao, File(context.filesDir, "cola"), copia,
-            PinLocal(almacen, { 0L }), estadoDelGps, File(context.cacheDir, "fotos"),
-        )
-        runBlocking {
-            val r = async(Dispatchers.IO) { borrado.activarDeNuevo() }
-            assertNull(withTimeoutOrNull(500) { r.await() }) // espera a la checada: no borra todavía
-            espera.complete(null) // llega el GPS (sin ubicación): la checada se guarda
-            assertEquals(ResultadoDelBorrado.QUEDA_ALGO, r.await()) // «Todavía queda algo por subir»
-        }
-        assertEquals(TipoPieza.ENTRADA, piezas().single().tipo) // sube por la gracia
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, runBlocking { borrado().activarDeNuevo() }) // «Todavía queda algo por subir»
+        espera.complete(null) // llega el GPS (sin ubicación): la checada se completa
+        val entrada = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { l -> l.any { it.estado == EstadoPieza.PENDIENTE } } } }.single()
+        assertEquals(TipoPieza.ENTRADA, entrada.tipo) // sube por la gracia
         assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertFalse(quienSoy.limpiando)
+    }
+
+    @Test fun `la checada tocada queda guardada en el celular ANTES de esperar el GPS (r5)`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        every { copia.copia } returns MutableStateFlow(null) // pide selfie
+        vm.marcarEntrada()
+        val selfie = File(context.cacheDir, "fotos/r5.jpg").apply { parentFile!!.mkdirs(); writeBytes(ByteArray(8) { 1 }) }
+        vm.alTomarSelfie(selfie.absolutePath)
+        // Android mata la app aquí, mientras «Buscando tu ubicación…»: lo único que sobrevive es lo que ya está en Room.
+        val apartada = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }.single()
+        assertEquals(EstadoPieza.APARTADA, apartada.estado)
+        assertEquals(TipoPieza.ENTRADA, apartada.tipo)
+        assertEquals("s1", apartada.staffId)
+        assertEquals("v1", apartada.venueId)
+        assertNull(apartada.huella) // el latido no la reporta
+        assertTrue(runBlocking { dao.siguientesParaSubir() }.isEmpty()) // el Subidor no la manda
+        assertFalse(selfie.exists()) // ya no está en cacheDir/fotos, donde la barrería el barrido de 24 h
+        val foto = File(fotosDe(apartada.fotosJson).single().archivo)
+        assertTrue(foto.isFile)
+        // Al volver a abrir (otra app, otro Encolador): se completa sin ubicación, con la hora del toque, y queda para subir.
+        val otroArranque = Encolador(dao, quienSoy, reloj, SecuenciaDeCaptura(almacen), File(context.filesDir, "cola"), env = "dev")
+        assertEquals(1, runBlocking { otroArranque.completarApartadas() })
+        val entrada = piezas().single()
+        assertEquals(EstadoPieza.PENDIENTE, entrada.estado)
+        assertEquals(apartada.llave, entrada.llave)
+        assertEquals(apartada.creadaAt, entrada.creadaAt)
+        val c = cuerpo(entrada)
+        assertFalse(c.has("latitude"))
+        assertEquals(fotosDe(apartada.fotosJson).single().url, c["checkInPhotoUrl"].asString)
+        assertEquals(entrada, runBlocking { dao.siguientesParaSubir() }.single())
+        assertEquals(entrada.huella, runBlocking { dao.huellasPorSubir() }.single())
+        assertEquals(apartada.llave, runBlocking { dao.turnoAhora() }!!.llaveEntrada)
+        assertTrue(foto.isFile)
+        // Doble arranque: no la duplica ni la toca.
+        assertEquals(0, runBlocking { otroArranque.completarApartadas() })
+        assertEquals(listOf(entrada), piezas())
+    }
+
+    @Test fun `el arranque no completa la checada apartada de otra activacion - queda en Mis pendientes, no se pierde (r5)`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        quienSoy.empezarLimpiezaSi(quienSoy.generacion); quienSoy.marcarLimpiando(false) // otra generación (no debería pasar)
+        assertEquals(0, runBlocking { encolador.completarApartadas() })
+        val p = piezas().single()
+        assertEquals(EstadoPieza.RECHAZADA, p.estado)
+        assertEquals("CHECADA_SIN_TERMINAR", p.rechazoCode)
+        assertTrue(runBlocking { dao.siguientesParaSubir() }.isEmpty())
     }
 
     @Test fun `el turno de otra persona no cuenta`() {

@@ -7,13 +7,11 @@ import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
-/** [ESPERA]: algo que la persona ya tocó sigue en vuelo después del tope, u otro borrado está en curso; no se borró nada. */
+/** [ESPERA]: otra persona u otro borrado ganó (p. ej. un segundo toque); no se borró nada. */
 enum class ResultadoDelBorrado { BORRADO, QUEDA_ALGO, ESPERA }
 
 /**
@@ -68,28 +66,19 @@ class BorradoDelCelular(
     }
 
     /**
-     * Sólo BORRADO borra. QUEDA_ALGO: la cola ya no tiene [esperadas]; ESPERA: algo tocado sigue en vuelo tras el tope, u
-     * otra persona u otro borrado ganó desde [generacion]. [siQuedaAlgo] corre en los dos si sigue siendo la misma persona.
+     * Sólo BORRADO borra. QUEDA_ALGO: la cola ya no tiene [esperadas] (r5: cuenta también la checada APARTADA que espera el
+     * GPS); ESPERA: otra persona u otro borrado ganó desde [generacion]. [siQuedaAlgo] corre si sigue siendo la misma persona.
      */
     private suspend fun borrar(
         generacion: String, contar: suspend () -> Int, esperadas: Int, siQuedaAlgo: QuienSoy.() -> Unit = {},
     ): ResultadoDelBorrado = withContext(NonCancellable) {
-        // 1 · r4: lo que la persona ya tocó y todavía no llega a Room (la checada que espera el GPS) también está vivo: se
-        // espera a que llegue (tope EN_VUELO_MS), se cuenta (la revisión de afuera evita estrenar generación sin motivo) y se
-        // pone la marca, que `empezarLimpiezaSi` niega si en medio se reservó otra cosa (entonces se vuelve a esperar).
-        val paso1 = withTimeoutOrNull(EN_VUELO_MS) {
-            var r: ResultadoDelBorrado? = null
-            while (r == null) {
-                quienSoy.enVuelo.first { it == 0 }
-                r = when {
-                    contar() != esperadas -> ResultadoDelBorrado.QUEDA_ALGO
-                    quienSoy.empezarLimpiezaSi(generacion) -> ResultadoDelBorrado.BORRADO
-                    quienSoy.instantanea().let { it.generacion != generacion || it.limpiando } -> ResultadoDelBorrado.ESPERA
-                    else -> null // se reservó otra cosa entre la cuenta y la marca: se vuelve a esperar
-                }
-            }
-            r
-        } ?: ResultadoDelBorrado.ESPERA
+        // 1 · La revisión de afuera evita estrenar generación sin motivo; la marca, sólo si sigue siendo la misma persona.
+        // r5: lo que la persona ya tocó está en Room desde el toque (la checada APARTADA), así que contar basta.
+        val paso1 = when {
+            contar() != esperadas -> ResultadoDelBorrado.QUEDA_ALGO
+            quienSoy.empezarLimpiezaSi(generacion) -> ResultadoDelBorrado.BORRADO
+            else -> ResultadoDelBorrado.ESPERA
+        }
         if (paso1 != ResultadoDelBorrado.BORRADO) {
             quienSoy.guardarSi(generacion) { siQuedaAlgo() } // otra persona: no se toca
             return@withContext paso1
@@ -128,8 +117,4 @@ class BorradoDelCelular(
         }
     }
 
-    private companion object {
-        /** Mayor que la espera del GPS de la checada (10 s, B9). */
-        const val EN_VUELO_MS = 20_000L
-    }
 }

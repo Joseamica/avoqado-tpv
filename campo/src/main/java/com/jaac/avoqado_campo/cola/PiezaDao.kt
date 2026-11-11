@@ -28,9 +28,15 @@ abstract class PiezaDao {
     @Query("SELECT COUNT(*) FROM piezas WHERE estado NOT IN ('HECHA','DESCARTADA')")
     abstract suspend fun cuantasVivas(): Int
 
-    /** El `total` de [cuantasPorSubir], de una vez: lo que «Desvincular» y el aviso de DESCONOCIDO le enseñan a la persona. */
-    @Query("SELECT COUNT(*) FROM piezas WHERE estado IN ('PENDIENTE','RETENIDA','RECHAZADA')")
+    /**
+     * Lo sin subir, de una vez: lo que «Desvincular» y el aviso de DESCONOCIDO le enseñan a la persona. r5: también la checada
+     * APARTADA (todavía no se manda, pero ya es de la persona y un borrado la perdería).
+     */
+    @Query("SELECT COUNT(*) FROM piezas WHERE estado IN ('APARTADA','PENDIENTE','RETENIDA','RECHAZADA')")
     abstract suspend fun cuantasPorSubirAhora(): Int
+
+    @Query("SELECT * FROM piezas WHERE estado = 'APARTADA' ORDER BY id") abstract suspend fun apartadas(): List<Pieza>
+    @Query("DELETE FROM piezas WHERE id = :id AND estado = 'APARTADA'") abstract suspend fun quitarApartada(id: Long)
 
     @Query(
         """SELECT COUNT(*) AS total,

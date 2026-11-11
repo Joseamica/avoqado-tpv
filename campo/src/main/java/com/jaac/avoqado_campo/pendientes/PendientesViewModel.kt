@@ -70,6 +70,7 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
     val code = p.rechazoCode
     val (texto, botones) = when (p.estado) {
         EstadoPieza.RETENIDA -> SubidorDeGracia.EN_REVISION to emptyList()
+        EstadoPieza.APARTADA -> "Buscando tu ubicación…" to emptyList() // r5: la checada que espera el GPS
         EstadoPieza.AVISO -> (p.rechazoMensaje.siHay() ?: RESPALDO_AVISO) to (if (code in CUSTODIA_A_MEDIAS) listOf(VOLVER, ENTENDIDO) else listOf(ENTENDIDO))
         EstadoPieza.RECHAZADA -> {
             val entradaDeAqui = code == "YA_TIENE_ENTRADA" && dato(p, "venueId") == p.venueId && dato(p, "timeEntryId") != null

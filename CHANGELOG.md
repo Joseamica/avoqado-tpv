@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (GPS con la app detenida, revisión 13)**: si la app quedó detenida porque el teléfono no pudo guardar y Android vuelve a pedir el servicio de ubicación, éste cumple lo que Android exige antes de pararse y ya no cierra la app.
 - **App de campo (sin espacio al abrir, duodécima revisión)**: si al abrir la app el celular no puede guardar lo que tenía que terminar (por ejemplo, sin espacio), ya no se cierra sola una y otra vez: muestra «Tu celular no tiene espacio o no pudo guardar. Libera espacio y toca «Reintentar». No se perdió nada.» y no hace nada más hasta que se reintenta.
 - **App de campo (si el celular no guarda, se detiene, undécima revisión)**: cuando el almacenamiento seguro del celular no logra guardar un dato, la app se cierra en ese momento en vez de seguir con un dato que se perdería al reiniciar; al volver a abrirla retoma lo que quedó (termina o deshace un borrado, completa una checada apartada) y una activación que no se guardó se repite con el mismo código.
 - **App de campo (borrado pendiente y guardado que falla, décima revisión)**: el celular ya no se activa para otra persona mientras quede un borrado a medias: primero lo termina y, si no puede, dice «No se pudo terminar de borrar el celular. Intenta otra vez.»; y cuando el celular no logra guardar un dato, lo sabe: el borrado no sigue, activar y entrar dicen «No se pudo guardar, intenta otra vez» y nada cierra la app.

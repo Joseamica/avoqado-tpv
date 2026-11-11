@@ -113,6 +113,22 @@ class SeguimientoDelTurno(
     }
 }
 
+/**
+ * r13: parar el servicio cumpliendo antes `startForeground` (aunque falle por permiso o por Android, se intenta y se sigue):
+ * un `startForegroundService` pendiente que se para sin cumplirlo cierra el proceso.
+ */
+internal fun pararCumpliendoPrimerPlano(primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit, parar: () -> Unit) {
+    try {
+        primerPlano()
+    } catch (e: SecurityException) {
+        Log.w("ServicioDeUbicacion", "startForeground al parar", e)
+    } catch (e: IllegalStateException) {
+        Log.w("ServicioDeUbicacion", "startForeground al parar", e)
+    }
+    quitarPrimerPlano()
+    parar()
+}
+
 /** Servicio en primer plano durante el turno: una lectura al arrancar y luego cada 30 min. Lo arranca [ControlDeGpsReal]. */
 @AndroidEntryPoint
 class ServicioDeUbicacion : Service() {
@@ -129,20 +145,18 @@ class ServicioDeUbicacion : Service() {
      * con [SeguimientoDelTurno.arrancar] (r3 #3). `alcance` es `Main.immediate`: `primerPlano` corre ya, antes de volver.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // r12: con el arranque DETENIDO (no pudo guardar) no se sigue nada. Sólo llega aquí el reinicio de Android, que no
-        // exige `startForeground` (nadie llama `iniciar()` en ese estado).
+        // r12: con el arranque DETENIDO (no pudo guardar) no se sigue nada. r13: aun así hay que cumplir `startForeground`
+        // antes de pararse: Android puede reentregar un `startForegroundService` que quedó pendiente al morir el proceso, y
+        // si el servicio se para sin cumplirlo, cierra la app (ForegroundServiceDidNotStartInTimeException).
         if (arranque.detenido) {
-            stopSelf()
+            pararCumpliendoPrimerPlano(::ponerEnPrimerPlano, ::quitarPrimerPlano) { stopSelf() }
             return START_NOT_STICKY
         }
         alcance.launch {
             val enPrimerPlano = seguimiento.arrancar(
                 tienePermisoDeUbicacion(this@ServicioDeUbicacion),
-                primerPlano = {
-                    val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-                    ServiceCompat.startForeground(this@ServicioDeUbicacion, AVISO_ID, aviso(), tipo)
-                },
-                quitarPrimerPlano = { ServiceCompat.stopForeground(this@ServicioDeUbicacion, ServiceCompat.STOP_FOREGROUND_REMOVE) },
+                primerPlano = ::ponerEnPrimerPlano,
+                quitarPrimerPlano = ::quitarPrimerPlano,
             )
             if (!enPrimerPlano) {
                 stopSelf()
@@ -166,6 +180,13 @@ class ServicioDeUbicacion : Service() {
         }
         return START_STICKY
     }
+
+    private fun ponerEnPrimerPlano() {
+        val tipo = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        ServiceCompat.startForeground(this, AVISO_ID, aviso(), tipo)
+    }
+
+    private fun quitarPrimerPlano() = ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
 
     override fun onDestroy() {
         seguimiento.alTerminar()

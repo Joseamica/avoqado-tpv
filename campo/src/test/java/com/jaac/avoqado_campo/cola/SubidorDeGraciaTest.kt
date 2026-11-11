@@ -134,12 +134,12 @@ class SubidorDeGraciaTest {
     private suspend fun estado(p: Pieza) = dao.porId(p.id)!!
 
     private val serie = AtomicInteger()
-    private suspend fun pieza(): Pieza {
+    private suspend fun pieza(tipo: String = TipoPieza.CUSTODIA_RECHAZAR): Pieza {
         val cuerpo = """{"serialNumber":"S${serie.incrementAndGet()}","custodyVersion":1}"""
         val id = dao.insertar(
             Pieza(
-                tipo = TipoPieza.CUSTODIA_RECHAZAR, llave = UUID.randomUUID().toString(), staffId = "s1", venueId = "v1",
-                cuerpoJson = cuerpo, huella = huella(TipoPieza.CUSTODIA_RECHAZAR, "v1", cuerpo), creadaAt = ahora, resumen = "r",
+                tipo = tipo, llave = UUID.randomUUID().toString(), staffId = "s1", venueId = "v1",
+                cuerpoJson = cuerpo, huella = huella(tipo, "v1", cuerpo), creadaAt = ahora, resumen = "r",
             ),
         )
         return dao.porId(id)!!
@@ -272,6 +272,44 @@ class SubidorDeGraciaTest {
         gracia().vaciar()
         assertEquals(EstadoPieza.HECHA, estado(e).estado)
         assertEquals("te7", dao.turnoAhora()!!.timeEntryId)
+    }
+
+    @Test fun `la gracia no da por hechas custodias con un 2xx incompleto - esperan, y la respuesta completa si (R2-2)`() = runBlocking {
+        desvincular()
+        val bitacora = """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[{"serialNumber":"S2","at":"2026-11-10T17:00:00.000Z"}]}}"""
+        val casos = listOf(
+            Triple(
+                TipoPieza.CUSTODIA_ACEPTAR,
+                listOf(
+                    """{"summary":{},"aplicadoEnGracia":true}""", """{"resuelto":"APLICADO","resultado":{"summary":{}}}""",
+                    """{"eventos":[]}""", """{"resuelto":"APLICADO","eventos":[]}""",
+                ),
+                """{"summary":{"total":1,"succeeded":1,"failed":0},"results":[{"serialNumber":"S1","status":"ok","repetida":false}],"aplicadoEnGracia":true}""",
+            ),
+            Triple(
+                TipoPieza.CUSTODIA_RECHAZAR,
+                listOf(
+                    """{"eventos":[]}""", """{"resuelto":"APLICADO","eventos":[]}""",
+                    """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[]}}""",
+                ),
+                bitacora,
+            ),
+        )
+        for ((tipo, incompletos, completa) in casos) {
+            val p = pieza(tipo)
+            for ((i, cuerpo) in incompletos.withIndex()) {
+                ahora += 3_600_000 // ya pasó su espera: esta vez sí se manda
+                responder = { ok(cuerpo) }
+                assertEquals(cuerpo, "REINTENTABLE", gracia().vaciar().cortadoPor)
+                assertEquals(cuerpo, EstadoPieza.PENDIENTE, estado(p).estado)
+                assertEquals(cuerpo, i + 1, estado(p).intentos)
+            }
+            ahora += 3_600_000
+            responder = { ok(completa) }
+            assertEquals(1, gracia().vaciar().subidas)
+            assertEquals(EstadoPieza.HECHA, estado(p).estado)
+        }
+        assertEquals(9, gracias().size)
     }
 
     // ---------- lo que decide el supervisor ----------
@@ -487,6 +525,27 @@ class SubidorDeGraciaTest {
         )
         assertEquals(EstadoPieza.HECHA, estado(a).estado)
         assertTrue(db.pingDao().todos().isEmpty())
+        assertFalse(mutex.mutex.isLocked)
+    }
+
+    /** R2-3: la gracia también barre (`Subidor.mantener`): una foto sin dueño de un celular desvinculado no se queda para siempre. */
+    @Test fun `el trabajo desvinculado barre las fotos sin dueno de mas de 24 h y purga lo terminal viejo (R2-3)`() = runBlocking {
+        val dirFotos = File(tmp.root, "fotos").apply { mkdirs() }
+        val reciente = File(dirFotos, "reciente.jpg").apply { writeText("x"); setLastModified(ahora - 60_000) }
+        val vieja = File(dirFotos, "vieja.jpg").apply { writeText("x"); setLastModified(ahora - 25 * 3_600_000L) }
+        val terminal = dao.insertar(
+            Pieza(
+                tipo = TipoPieza.CUSTODIA_RECHAZAR, llave = UUID.randomUUID().toString(), staffId = "s1", venueId = "v1",
+                cuerpoJson = "{}", estado = EstadoPieza.HECHA, creadaAt = ahora - 8 * 24 * 3_600_000L, resumen = "r",
+            ),
+        )
+        desvincular()
+
+        assertEquals(ListenableWorker.Result.success(), trabajo().doWork())
+
+        assertTrue(reciente.exists())
+        assertFalse(vieja.exists())
+        assertNull(dao.porId(terminal))
         assertFalse(mutex.mutex.isLocked)
     }
 

@@ -306,6 +306,21 @@ class RepositorioDeEntradaTest {
         assertFalse(quienSoy.bloqueada)
     }
 
+    @Test fun `sin red, otra sucursal nunca se nombra por su id ni promete una que ya no es tuya (H1)`() = runBlocking {
+        yaActivado(listOf(Sucursal("v2", "Norte", VERIFICADOR))) // la sesión es de v1, que un latido ya quitó
+        responder = corta
+        val r = repo()
+        assertEquals(ResultadoEntrada.Rechazo("Para entrar a otra sucursal necesitas señal.", null), r.entrar("1234", "v9"))
+        assertEquals(ResultadoEntrada.Rechazo("Para entrar a Norte necesitas señal.", null), r.entrar("1234", "v2"))
+
+        quienSoy.borrarTodo()
+        yaActivado(listOf(Sucursal("v1", "", VERIFICADOR))) // la suya, sin nombre
+        assertEquals(
+            ResultadoEntrada.Rechazo("Para entrar a otra sucursal necesitas señal. Sin señal puedes entrar a tu sucursal.", null),
+            r.entrar("1234", "v9"),
+        )
+    }
+
     @Test fun `con necesitaPin y sin red el PIN bueno abre pero sigue necesitaPin, con red se quita`() = runBlocking {
         yaActivado()
         quienSoy.marcarSesionMuerta()

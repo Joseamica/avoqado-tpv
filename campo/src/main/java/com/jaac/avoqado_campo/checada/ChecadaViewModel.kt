@@ -92,9 +92,10 @@ class ChecadaViewModel @Inject constructor(
 
     /** Doble toque → una pieza: [EstadoChecada.ocupado] se pone antes de lanzar nada. */
     private fun checar(tipo: TipoChecada, foto: String?) {
+        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1): lo que se guarde es de ESTA persona
         val venueId = quienSoy.sesion?.venueId
-        val generacion = quienSoy.generacion // con la sesión: lo que se guarde es de ESTA persona
-        if (_estado.value.ocupado || venueId == null) return
+        // H5: no se checa; la selfie ya tomada no se queda en el celular.
+        if (_estado.value.ocupado || venueId == null) { foto?.let { File(it).delete() }; return }
         _estado.update {
             it.copy(ocupado = true, pideSelfie = null, buscandoUbicacion = true, avisoUbicacion = null, aviso = null, error = null)
         }
@@ -103,7 +104,9 @@ class ChecadaViewModel @Inject constructor(
     }
 
     private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String, generacion: String) {
-        val l = ubicacion.leer()
+        // B9: si no llega, se checa igual. Un error del GPS (p. ej. el permiso retirado a media lectura) es «sin ubicación»: no
+        // deja la pantalla ocupada para siempre ni la selfie sin dueño.
+        val l = try { ubicacion.leer() } catch (c: CancellationException) { throw c } catch (x: Exception) { null }
         _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
         val nueva = ChecadaNueva(
             venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, foto,

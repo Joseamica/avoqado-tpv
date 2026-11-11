@@ -59,7 +59,8 @@ class VentaViewModelTest {
     private val copia = mockk<RepositorioDeCopia>()
     private val dao = mockk<PiezaDao>()
     private val context = mockk<Context>(relaxed = true)
-    private val quienSoy = QuienSoy(AlmacenEnMemoria())
+    private val almacen = AlmacenEnMemoria()
+    private val quienSoy = QuienSoy(almacen)
     private lateinit var vm: VentaViewModel
     private val venta = slot<VentaNueva>()
 
@@ -319,5 +320,25 @@ class VentaViewModelTest {
         v.registrar()
         v.venderOtra()
         assertTrue(f.exists()) // es del Encolador (aquí, un mock que no la mueve)
+    }
+
+    @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {
+        val v = vm(copiaCon(sim()))
+        // Como el Encolador (EncoladorTest H2): con una generación que ya no es la vigente no escribe nada.
+        coEvery { encolador.venta(any(), any()) } coAnswers {
+            if (firstArg<String>() != quienSoy.generacion) throw CelularBorrandose()
+            "llave"
+        }
+        v.alEscanear(serie)
+        almacen.despuesDeLeer("sesion") { // la sesión se lee, y justo después borran el celular y activan a Beto
+            quienSoy.borrarTodo()
+            quienSoy.guardarActivacion(
+                DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v2"), listOf(Sucursal("v2", "Norte", null))),
+            )
+        }
+        v.listaParaRegistrar().registrar()
+        assertEquals("Espera un momento.", v.estado.value.error)
+        assertFalse(v.estado.value.guardada)
+        coVerify(exactly = 0) { copia.marcar(any(), any()) }
     }
 }

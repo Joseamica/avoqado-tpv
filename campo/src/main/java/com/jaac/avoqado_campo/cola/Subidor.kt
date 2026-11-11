@@ -51,11 +51,15 @@ class Subidor(
     private val dirFotos: File,
     private val ahora: () -> Long = System::currentTimeMillis,
 ) {
-    suspend fun vaciar(): ResultadoDeVaciado = mutex.mutex.withLock {
-        val r = pasada()
+    suspend fun vaciar(): ResultadoDeVaciado = mutex.mutex.withLock { pasada() }.also { mantener() }
+
+    /**
+     * Con el [MutexDeSubida]: lo terminal viejo (P12; una pieza de la que depende otra viva o la entrada del turno no se purga) y
+     * las fotos sin dueño ([barrer]). R2-3: corre tras TODA pasada, también la de la gracia (`TrabajoDeSubida`), que no pasa por aquí.
+     */
+    suspend fun mantener() = mutex.mutex.withLock {
         dao.purgarTerminalesAntesDe(ahora() - SIETE_DIAS)
         barrer()
-        r
     }
 
     private suspend fun pasada(): ResultadoDeVaciado {

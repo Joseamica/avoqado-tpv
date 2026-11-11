@@ -137,9 +137,12 @@ class RepositorioDeEntrada(
         val sucursales = quienSoy.sucursales
         val actual = quienSoy.sesion?.venueId
         if (venueId != null && actual != null && venueId != actual) {
-            fun nombre(id: String) = sucursales.find { it.venueId == id }?.nombre ?: id
+            // Nunca el id; y «puedes entrar a» sólo si de verdad se puede (su sucursal con verificador, que un latido pudo quitar).
+            fun nombre(id: String) = sucursales.find { it.venueId == id }?.nombre?.takeIf { it.isNotBlank() }
+            val suya = sucursales.find { it.venueId == actual && it.verificadorPin != null }?.let { nombre(actual) ?: "tu sucursal" }
             return ResultadoEntrada.Rechazo(
-                "Para entrar a ${nombre(venueId)} necesitas señal. Sin señal puedes entrar a ${nombre(actual)}.", null,
+                "Para entrar a ${nombre(venueId) ?: "otra sucursal"} necesitas señal." + (suya?.let { " Sin señal puedes entrar a $it." } ?: ""),
+                null,
             )
         }
         val destino = venueId ?: actual ?: sucursales.singleOrNull()?.venueId

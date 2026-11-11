@@ -225,4 +225,39 @@ class ChecadaViewModelTest {
         assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1"))
         assertEquals(RefEntrada.PorId("t"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", "t", "v1", 0L), "s1"))
     }
+
+    @Test fun `checar lee la generacion antes que la sesion - otra persona entre las dos no recibe la checada (H2)`() {
+        every { copia.copia } returns MutableStateFlow(null) // pide selfie: la sesión se vuelve a leer al tomarla
+        vm.marcarEntrada()
+        val selfie = File(context.cacheDir, "h2.jpg").apply { writeBytes(ByteArray(8) { 1 }) }
+        almacen.despuesDeLeer("sesion") { // la sesión se lee, y justo después borran el celular y activan a Beto
+            quienSoy.borrarTodo()
+            quienSoy.guardarActivacion(
+                DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v2"), listOf(Sucursal("v2", "Norte", null))),
+            )
+        }
+        vm.alTomarSelfie(selfie.absolutePath)
+        assertEquals("Espera un momento.", runBlocking { withTimeout(5_000) { vm.estado.first { it.error != null } } }.error)
+        assertTrue(piezas().isEmpty())
+        assertNull(runBlocking { dao.turnoAhora() })
+        assertFalse(selfie.exists())
+    }
+
+    @Test fun `sin sesion al tomar la selfie no se checa y la selfie no se queda (H5)`() {
+        every { copia.copia } returns MutableStateFlow(null)
+        vm.marcarEntrada()
+        val selfie = File(context.cacheDir, "sin-sesion.jpg").apply { writeBytes(ByteArray(8) { 1 }) }
+        quienSoy.borrarTodo()
+        vm.alTomarSelfie(selfie.absolutePath)
+        assertFalse(selfie.exists())
+        assertTrue(piezas().isEmpty())
+    }
+
+    @Test fun `si el GPS truena se checa sin ubicacion y la pantalla no se queda ocupada (B9)`() {
+        coEvery { ubicacion.leer(any()) } throws SecurityException("sin permiso")
+        vm.marcarEntrada()
+        val e = quieto()
+        assertEquals(TipoPieza.ENTRADA, piezas().single().tipo)
+        assertEquals("Se checa sin ubicación", e.avisoUbicacion)
+    }
 }

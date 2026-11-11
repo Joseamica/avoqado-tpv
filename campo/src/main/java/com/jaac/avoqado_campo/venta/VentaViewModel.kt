@@ -146,11 +146,12 @@ class VentaViewModel @Inject constructor(
     fun registrar() {
         val e = _estado.value
         if (e.registrando || e.guardada || e.buscando) return
-        val falta = e.falta ?: if (quienSoy.sesion?.venueId == null) "Entra con tu PIN para vender." else null
-        if (falta != null) { _estado.update { it.copy(error = falta) }; return }
+        // ANTES que la sesión (R6-A1): un borrado y otra activación entre las dos no pasan con el venueId viejo.
+        val generacion = quienSoy.generacion
+        val venueId = quienSoy.sesion?.venueId
+        val falta = e.falta ?: if (venueId == null) "Entra con tu PIN para vender." else null
+        if (falta != null || venueId == null) { _estado.update { it.copy(error = falta) }; return }
         val sim = e.sim!!
-        val venueId = quienSoy.sesion!!.venueId
-        val generacion = quienSoy.generacion // con la sesión: la venta es de ESTA persona
         _estado.update { it.copy(registrando = true, error = null) }
         viewModelScope.launch {
             try {

@@ -28,12 +28,14 @@ import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import com.jaac.avoqado_campo.red.Conectividad
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.runs
 import io.mockk.unmockkObject
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -158,6 +160,33 @@ class PendientesViewModelTest {
 
         ViewModelStore().apply { put("pendientes", m) }.clear() // Atrás: la pantalla se va sin enviar
         assertFalse(segunda.exists())
+    }
+
+    @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras (H5)`() = runBlocking {
+        val llave = encolador.evidenciaSuelta(
+            quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
+        )
+        dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
+        val espera = CompletableDeferred<Unit>()
+        val enVuelo = mockk<Encolador>()
+        coEvery { enVuelo.corregirEvidencia(any(), any(), any(), any()) } coAnswers { espera.await(); "k" }
+        val m = PendientesViewModel(
+            dao, enVuelo, quienSoy, mockk(relaxed = true), conectividad, ApplicationProvider.getApplicationContext(),
+        ).also { vm = it }
+        m.empezarCorreccion(dao.porLlave(llave)!!.id)
+        esperar { m.estado.value.let { it.corrigiendo != null && !it.ocupado } }
+        val entregada = File(foto())
+        m.alTomarFoto(entregada.path)
+        m.enviarCorreccion()
+        esperar { m.estado.value.ocupado }
+
+        val otra = File(foto())
+        m.alTomarFoto(otra.path)
+        assertFalse(otra.exists()) // con una enviándose, la nueva es la que sobra
+        ViewModelStore().apply { put("pendientes", m) }.clear() // Atrás con el envío en vuelo
+        assertTrue(entregada.exists())
+        espera.complete(Unit)
+        Unit
     }
 
     @Test fun `quitar descarta la venta y rechaza a sus evidencias`() = runBlocking {

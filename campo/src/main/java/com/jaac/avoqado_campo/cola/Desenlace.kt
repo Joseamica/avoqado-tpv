@@ -32,17 +32,21 @@ fun desenlaceDe(tipo: String, cuerpo: String, pidioNumero: Boolean = false): Lec
 /**
  * H4: ¿el 2xx trae el dato que el SERVIDOR siempre manda cuando lo aplicó? Sin él (`200 {}` de algo en medio) no es HECHA: la
  * pieza espera, como sin red. Se lee el cuerpo efectivo, así que vale igual para `aplicadoEnGracia` y `resuelto: APLICADO`.
- * La custodia recuperada de la bitácora del SERVIDOR (`custodiaHecha`) trae `eventos` en vez de su respuesta normal.
+ * R2-2, custodias: aceptar trae `summary` con `total`, `succeeded` y `failed` numéricos (`custodiaDeCampo.service.ts` y, aceptada
+ * en parte, `{ summary, fallidas }` de `envioDeCampo.ts`); la recuperada de la bitácora (`custodiaHecha`) trae
+ * `recuperadoDeLaBitacora: true` y al menos un evento (con cero eventos el SERVIDOR contesta que no está hecha).
  */
 fun traeSuResultado(tipo: String, cuerpo: String): Boolean {
     val o = objetoJson(cuerpoEfectivo(cuerpo)) ?: return false
     fun texto(campo: String) = !o.txt(campo).isNullOrEmpty()
-    val deLaBitacora = o.arreglo("eventos") != null
+    val deLaBitacora = o.txt("recuperadoDeLaBitacora") == "true" && (o.arreglo("eventos")?.size() ?: 0) > 0
+    val summary = o.get("summary")?.takeIf { it.isJsonObject }?.asJsonObject
+    val conSuSummary = summary != null && listOf("total", "succeeded", "failed").all { summary.numero(it) }
     return when (tipo) {
         TipoPieza.VENTA -> texto("paymentId")
         TipoPieza.ENTRADA, TipoPieza.SALIDA -> texto("timeEntryId")
         TipoPieza.EVIDENCIA -> texto("verificationId")
-        TipoPieza.CUSTODIA_ACEPTAR -> o.get("summary")?.isJsonObject == true || deLaBitacora
+        TipoPieza.CUSTODIA_ACEPTAR -> conSuSummary || deLaBitacora
         TipoPieza.CUSTODIA_RECHAZAR -> texto("custodyState") || deLaBitacora
         else -> false // un tipo desconocido se rechaza antes de mandarse
     }
@@ -97,3 +101,4 @@ private fun custodia(o: JsonObject): Lectura {
 
 private fun JsonObject.txt(campo: String): String? = get(campo)?.takeIf { it.isJsonPrimitive }?.asString
 private fun JsonObject.arreglo(campo: String): JsonArray? = get(campo)?.takeIf { it.isJsonArray }?.asJsonArray
+private fun JsonObject.numero(campo: String): Boolean = get(campo)?.let { it.isJsonPrimitive && it.asJsonPrimitive.isNumber } == true

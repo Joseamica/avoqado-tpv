@@ -98,8 +98,8 @@ class MisSimsViewModel @Inject constructor(
      * por `ASIGNACION_CAMBIO` se descarta en la MISMA transacción que la decisión nueva (Encolador).
      */
     private fun decidir(sims: List<SimEnCopia>, aceptar: Boolean) {
+        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1): un cambio entre las dos no pasa con el venueId viejo
         val venueId = quienSoy.sesion?.venueId
-        val generacion = quienSoy.generacion
         if (sims.isEmpty() || _estado.value.ocupado) return
         if (venueId == null) { _estado.update { it.copy(error = SIN_SESION) }; return }
         _estado.update { it.copy(ocupado = true, error = null) }
@@ -165,8 +165,8 @@ class MisSimsViewModel @Inject constructor(
         val c = e.corrigiendo ?: return
         if (e.ocupado) return
         val sim = e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.sim
+        val generacion = quienSoy.generacion // ANTES que la sesión (R6-A1)
         val venueId = quienSoy.sesion?.venueId
-        val generacion = quienSoy.generacion
         val pago = sim?.paymentId
         val verificacion = sim?.verificationId
         val foto = c.foto
@@ -208,8 +208,13 @@ class MisSimsViewModel @Inject constructor(
 
     override fun onCleared() = borrarFotoDeCorreccion()
 
-    /** La foto de una corrección que no se envió; la enviada ya es del `Encolador`. */
-    private fun borrarFotoDeCorreccion() { _estado.value.corrigiendo?.foto?.let { File(it).delete() } }
+    /**
+     * La foto de una corrección que no se envió. R2-1: enviándose (`ocupado`) ya es del `Encolador`, que la copia y la borra; si
+     * el envío falla con la pantalla ya cerrada, la recoge el barrido de 24 h.
+     */
+    private fun borrarFotoDeCorreccion() {
+        if (!_estado.value.ocupado) _estado.value.corrigiendo?.foto?.let { File(it).delete() }
+    }
 
     private fun derivarOtraVez() = derivar(ultimo.first, ultimo.second)
 

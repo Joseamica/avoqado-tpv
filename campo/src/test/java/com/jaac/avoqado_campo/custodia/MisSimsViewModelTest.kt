@@ -1,7 +1,9 @@
 package com.jaac.avoqado_campo.custodia
 
 import android.content.Context
+import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.EstadoPieza
@@ -29,6 +31,7 @@ import io.mockk.mockkObject
 import io.mockk.runs
 import io.mockk.slot
 import io.mockk.unmockkObject
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -44,6 +47,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MisSimsViewModelTest {
@@ -52,7 +56,8 @@ class MisSimsViewModelTest {
     private val copia = mockk<RepositorioDeCopia>()
     private val dao = mockk<PiezaDao>()
     private val context = mockk<Context>(relaxed = true)
-    private val quienSoy = QuienSoy(AlmacenEnMemoria())
+    private val almacen = AlmacenEnMemoria()
+    private val quienSoy = QuienSoy(almacen)
     private val laCopia = MutableStateFlow<Copia?>(null)
     private val cola = MutableStateFlow<List<Pieza>>(emptyList())
     private lateinit var vm: MisSimsViewModel
@@ -196,5 +201,76 @@ class MisSimsViewModelTest {
         v.enviarCorreccion()
         assertEquals(EvidenciaSueltaNueva("v1", "pay-S1", "ver-S1", "Vinculacion", "5512345678", foto, "Corregir evidencia de SIM S1"), ev.captured)
         assertFalse(v.estado.value.corrigiendo != null)
+    }
+
+    @Test fun `salir con Atras mientras se envia una correccion no borra su foto y el envio la guarda (R2-1)`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        val espera = CompletableDeferred<Unit>()
+        var fotoAlGuardar: Boolean? = null
+        coEvery { encolador.evidenciaSuelta(any(), any()) } coAnswers {
+            espera.await()
+            fotoAlGuardar = File(secondArg<EvidenciaSueltaNueva>().archivoFoto).isFile // aquí el Encolador la copia a cola/
+            "k"
+        }
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        val primera = tmp.newFile("a.jpg")
+        val segunda = tmp.newFile("b.jpg")
+        v.alTomarFotoDeCorreccion(primera.path)
+        v.alTomarFotoDeCorreccion(segunda.path)
+        assertFalse(primera.exists()) // la reemplazada no se queda en el celular
+        v.enviarCorreccion()
+        assertTrue(v.estado.value.ocupado)
+
+        ViewModelStore().apply { put("misSims", v) }.clear() // Atrás con el envío en vuelo
+        assertTrue(segunda.exists())
+        espera.complete(Unit)
+        assertEquals(true, fotoAlGuardar)
+        coVerify(exactly = 1) { encolador.evidenciaSuelta(quienSoy.generacion, any()) }
+    }
+
+    @Test fun `salir con Atras sin enviar la correccion borra su foto (R2-1)`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        val foto = tmp.newFile("a.jpg")
+        v.alTomarFotoDeCorreccion(foto.path)
+        ViewModelStore().apply { put("misSims", v) }.clear()
+        assertFalse(foto.exists())
+    }
+
+    /** H2: la sesión se lee, y justo después borran el celular y activan a Beto (en otra sucursal). */
+    private fun otraPersonaAlLeerLaSesion() = almacen.despuesDeLeer("sesion") {
+        quienSoy.borrarTodo()
+        quienSoy.guardarActivacion(
+            DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v2"), listOf(Sucursal("v2", "Norte", null))),
+        )
+    }
+
+    /** Como el `Encolador` (EncoladorTest H2): con una generación que ya no es la vigente no escribe nada. */
+    private fun comoElEncolador(generacion: String) {
+        if (generacion != quienSoy.generacion) throw CelularBorrandose()
+    }
+
+    @Test fun `decidir lee la generacion antes que la sesion - otra persona entre las dos no recibe la decision (H2)`() {
+        ponerCopia(sim("S1"))
+        coEvery { encolador.aceptarCustodia(any(), any(), any(), any()) } coAnswers { comoElEncolador(firstArg()); "k" }
+        val v = vm()
+        otraPersonaAlLeerLaSesion()
+        v.aceptar("S1")
+        assertEquals("Espera un momento.", v.estado.value.error)
+        coVerify(exactly = 0) { copia.marcar(any(), any()) }
+    }
+
+    @Test fun `corregir lee la generacion antes que la sesion - otra persona entre las dos no recibe la correccion (H2)`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        coEvery { encolador.evidenciaSuelta(any(), any()) } coAnswers { comoElEncolador(firstArg()); "k" }
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        v.alTomarFotoDeCorreccion(tmp.newFile("a.jpg").path)
+        otraPersonaAlLeerLaSesion()
+        v.enviarCorreccion()
+        assertEquals("Espera un momento.", v.estado.value.error)
+        io.mockk.verify(exactly = 0) { Disparador.ahora(any()) }
     }
 }

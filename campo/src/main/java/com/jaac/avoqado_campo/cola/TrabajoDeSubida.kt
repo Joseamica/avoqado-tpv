@@ -38,7 +38,8 @@ class TrabajoDeSubida @AssistedInject constructor(
                 if (normal.modoGracia) gracia.vaciar().let { it.copy(copiaPorRefrescar = it.copiaPorRefrescar || normal.copiaPorRefrescar) }
                 else normal
             }
-            EstadoDelCelular.DESVINCULADO, EstadoDelCelular.DADO_DE_BAJA -> gracia.vaciar()
+            // R2-3: la gracia no barre sola; sin esto, una foto sin dueño de un celular desvinculado se quedaría para siempre.
+            EstadoDelCelular.DESVINCULADO, EstadoDelCelular.DADO_DE_BAJA -> gracia.vaciar().also { subidor.mantener() }
             else -> return Result.success()
         }
         // Lo de después de la pasada no cambia la decisión de reintentar (un disco lleno no frena la cola).

@@ -300,6 +300,27 @@ class SubidorTest {
         assertEquals(EstadoPieza.HECHA, estado(v).estado)
     }
 
+    @Test fun `custodias con un 2xx incompleto no se dan por hechas - esperan, y la respuesta completa si (R2-2)`() = runBlocking {
+        val casos = listOf(
+            Triple(TipoPieza.CUSTODIA_ACEPTAR, "/custodia/aceptar", listOf("""{"summary":{}}""", """{"eventos":[]}""", """{"resuelto":"APLICADO","eventos":[]}""")),
+            Triple(TipoPieza.CUSTODIA_RECHAZAR, "/custodia/rechazar", listOf("""{"eventos":[]}""", """{"resuelto":"APLICADO","eventos":[]}""")),
+        )
+        for ((tipo, ruta, incompletos) in casos) {
+            val p = pieza(tipo = tipo)
+            for ((i, cuerpo) in incompletos.withIndex()) {
+                ahora += 3_600_000 // ya pasó su espera: esta vez sí se manda
+                responder = { path, _ -> if (path.endsWith(ruta)) ok(cuerpo) else null }
+                assertEquals(cuerpo, "REINTENTABLE", subidor().vaciar().cortadoPor)
+                assertEquals(cuerpo, EstadoPieza.PENDIENTE, estado(p).estado)
+                assertEquals(cuerpo, i + 1, estado(p).intentos)
+            }
+            ahora += 3_600_000
+            responder = { _, _ -> null } // lo que contesta el SERVIDOR (porDefecto)
+            assertEquals(1, subidor().vaciar().subidas)
+            assertEquals(EstadoPieza.HECHA, estado(p).estado)
+        }
+    }
+
     @Test fun `201 {} en una ENTRADA no la da por hecha - su foto se queda y el turno no recibe id (H4)`() = runBlocking {
         val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
         val archivo = File(fotosDe(e.fotosJson).single().archivo)
@@ -344,11 +365,20 @@ class SubidorTest {
         assertTrue(traeSuResultado(TipoPieza.EVIDENCIA, """{"success":true,"verificationId":"v"}"""))
         assertFalse(traeSuResultado(TipoPieza.EVIDENCIA, """{"success":true}"""))
         assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, """{"summary":{"total":1,"succeeded":1,"failed":0},"results":[]}"""))
-        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, """{"resuelto":"APLICADO","resultado":{"summary":{"failed":1},"fallidas":[]}}"""))
+        val enParte = """{"resuelto":"APLICADO","resultado":{"summary":{"total":2,"succeeded":1,"failed":1},"fallidas":[]}}"""
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, enParte))
         val bitacora = """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[{"serialNumber":"S1"}]}}"""
         assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, bitacora))
         assertTrue(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, bitacora))
         assertFalse(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, "{}"))
+        // R2-2: la forma COMPLETA que manda el SERVIDOR; un summary vacío o cero eventos no prueban nada.
+        for (tipo in listOf(TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR)) {
+            for (incompleto in listOf(
+                """{"summary":{}}""", """{"summary":{"failed":0}}""", """{"summary":{"total":"1","succeeded":1,"failed":0}}""",
+                """{"eventos":[]}""", """{"resuelto":"APLICADO","eventos":[]}""", """{"eventos":[{"serialNumber":"S1"}]}""",
+                """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[]}}""",
+            )) assertFalse("$tipo $incompleto", traeSuResultado(tipo, incompleto))
+        }
         assertTrue(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, """{"custodyState":"PROMOTER_REJECTED","repetida":true}"""))
         assertFalse(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, """{"repetida":true}"""))
         assertFalse(traeSuResultado(TipoPieza.VENTA, "<html>"))

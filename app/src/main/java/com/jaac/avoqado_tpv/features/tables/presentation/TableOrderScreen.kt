@@ -238,12 +238,14 @@ fun TableOrderScreen(
             viewModel.consumeNotice()
         }
     }
-    // También con compTerminadas (D4, Codex r1): si la 2.ª cortesía negada trae el mismo texto con el 1.er aviso aún en
-    // pantalla, `error` no cambia; al terminar la cortesía el aviso se vuelve a mostrar completo.
-    LaunchedEffect(error, compTerminadas) {
+    // También con el contador de cortesías (D4, Codex r1 y r3): si la 2.ª cortesía negada trae el mismo texto con el
+    // 1.er aviso aún en pantalla, `error` no cambia; al terminar la cortesía el aviso se vuelve a mostrar completo, y el
+    // aviso viejo no lo vacía (consumeError comprueba texto y contador).
+    val cortesias = compTerminadas
+    LaunchedEffect(error, cortesias) {
         error?.let {
             snackbarHostState.showSnackbar(it)
-            viewModel.consumeError()
+            viewModel.consumeError(it, cortesias)
         }
     }
 

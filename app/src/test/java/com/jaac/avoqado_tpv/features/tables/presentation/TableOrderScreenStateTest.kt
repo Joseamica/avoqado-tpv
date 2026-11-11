@@ -276,11 +276,12 @@ class TableOrderScreenStateTest {
     @Test
     fun D4_el_aviso_de_error_tambien_se_repite_al_terminar_la_cortesia_y_se_vacia_despues_de_mostrarse() {
         val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableOrderScreen.kt").readText()
-        val i = pantalla.indexOf("LaunchedEffect(error, compTerminadas) {")
+        assertThat(pantalla).contains("val cortesias = compTerminadas")
+        val i = pantalla.indexOf("LaunchedEffect(error, cortesias) {")
         assertThat(i).isAtLeast(0)
         val efecto = pantalla.substring(i, pantalla.indexOf("\n    }", i))
         val avisar = efecto.indexOf("showSnackbar(")
-        val vaciar = efecto.indexOf("viewModel.consumeError()")
+        val vaciar = efecto.indexOf("viewModel.consumeError(it, cortesias)")
         assertThat(avisar).isAtLeast(0)
         assertThat(vaciar).isGreaterThan(avisar)
     }

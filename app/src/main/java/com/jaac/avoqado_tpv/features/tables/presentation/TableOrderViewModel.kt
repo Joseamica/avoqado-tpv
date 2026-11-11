@@ -369,8 +369,13 @@ class TableOrderViewModel @Inject constructor(
         _notice.value = null
     }
 
-    fun consumeError() {
-        _error.value = null
+    /**
+     * Vacía el aviso que la pantalla acaba de mostrar, sólo si sigue siendo ése y no terminó otra cortesía mientras se
+     * mostraba. Vaciar a ciegas se llevaba un aviso más nuevo sin mostrarlo: otro texto que llegó al final, o la 2.ª
+     * cortesía negada con el mismo texto justo cuando vencía el 1.er aviso (D4, Codex r3).
+     */
+    fun consumeError(mostrado: String, cortesias: Int) {
+        if (_compTerminadas.value == cortesias) _error.compareAndSet(mostrado, null)
     }
 
     fun exitToFloor() {

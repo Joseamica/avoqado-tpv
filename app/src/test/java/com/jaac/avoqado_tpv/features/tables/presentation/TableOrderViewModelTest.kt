@@ -1415,7 +1415,7 @@ class TableOrderViewModelTest {
         red.complete(Autorizacion.Negada(textoNegada))
         runCurrent()
         assertThat(terminadas).containsExactly(0, 1).inOrder()
-        viewModel.consumeError() // la pantalla vacía el aviso al mostrarlo
+        viewModel.consumeError(textoNegada, 1) // la pantalla vacía el aviso al mostrarlo
         runCurrent()
 
         // 2.ª, en el mismo ViewModel: «apagado» ya guardado, termina dentro del toque.
@@ -1431,6 +1431,21 @@ class TableOrderViewModelTest {
         assertThat(terminadas).containsExactly(0, 1, 2, 3).inOrder()
         assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
         coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun D4_el_aviso_viejo_no_vacia_uno_mas_nuevo_aunque_traiga_el_mismo_texto() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada(textoNegada)
+        val viewModel = conCuenta()
+        viewModel.compWholeOrder("Reclamo") // 1.ª: la pantalla lo muestra con el contador en 1
+        viewModel.compWholeOrder("Reclamo") // 2.ª: mismo texto, contador en 2, antes de que la pantalla recomponga
+
+        viewModel.consumeError(textoNegada, 1) // vence el 1.er aviso
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        viewModel.consumeError("Otro aviso", 2)
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        viewModel.consumeError(textoNegada, 2) // la pantalla ya mostró el 2.º
+        assertThat(viewModel.error.value).isNull()
     }
 
     @Test

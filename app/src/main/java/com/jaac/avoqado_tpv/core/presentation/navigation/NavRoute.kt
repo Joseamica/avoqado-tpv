@@ -368,6 +368,12 @@ sealed class NavRoute(val route: String) {
     data object PorPagar : NavRoute("por_pagar")
 
     /**
+     * Tienda híbrida, parte 2 (P2): «Saldo o tarjeta de regalo» al cobrar un folio. Lo abre «Pedidos por pagar» con el folio releído
+     * (llave `aperturaDeSaldo` en su entrada); al pagar todo vuelve a la lista y, si falta, abre el cobro de siempre por lo que falta.
+     */
+    data object SaldoDeRegalo : NavRoute("saldo_de_regalo")
+
+    /**
      * Mesas — entry point for the new table-service module (`features/tables/`).
      *
      * Isolated from `features/ordering/` (legacy) and `features/checkout/` (Cobrar);

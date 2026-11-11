@@ -25,6 +25,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.features.onlineorders.presentation.FaltaDelCobro
 import com.jaac.avoqado_tpv.features.onlineorders.presentation.FolioDelCobro
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -172,6 +173,7 @@ fun MerchantSelectionContent(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 // Hero amount - the star of the show
+                                FaltaDelCobro(folio)
                                 Text(
                                     text = "$$totalAmount",
                                     style = MaterialTheme.typography.displayMedium,
@@ -217,6 +219,7 @@ fun MerchantSelectionContent(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                            FaltaDelCobro(folio)
                             Text(
                                 text = "$$totalAmount",
                                 style = MaterialTheme.typography.displayMedium,

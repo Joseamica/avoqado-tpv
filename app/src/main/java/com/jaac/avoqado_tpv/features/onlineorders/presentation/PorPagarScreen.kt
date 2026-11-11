@@ -76,6 +76,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Warning
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
+import com.jaac.avoqado_tpv.features.onlineorders.domain.BeneficioDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
@@ -100,6 +101,8 @@ fun PorPagarScreen(
     onBack: () -> Unit,
     /** Abre el cobro de siempre; suspende hasta que el lector está listo («Cobrar» sigue ocupado mientras). */
     onCobrar: suspend (AperturaDeCobro) -> Unit,
+    /** Parte 2 (P2): abre «Saldo o tarjeta de regalo» con lo que falta AHORA (el folio ya se releyó, como en «Cobrar»). */
+    onUsarSaldo: suspend (AperturaDeCobro) -> Unit = {},
     viewModel: PorPagarViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
@@ -126,6 +129,7 @@ fun PorPagarScreen(
         onBuscar = viewModel::buscar,
         onAbrir = viewModel::abrir,
         onCobrar = { folio -> scope.launch { viewModel.cobrar(folio, onCobrar) } },
+        onUsarSaldo = { folio -> scope.launch { viewModel.cobrar(folio, onUsarSaldo) } },
         onCancelar = viewModel::cancelar,
         onListo = viewModel::listo,
         onEntregado = viewModel::entregado,
@@ -146,6 +150,7 @@ internal fun PorPagarContenido(
     onBuscar: (String) -> Unit,
     onAbrir: (Folio) -> Unit,
     onCobrar: (Folio) -> Unit,
+    onUsarSaldo: (Folio) -> Unit,
     onCancelar: (Folio) -> Unit,
     onListo: (Folio) -> Unit,
     onEntregado: (Folio) -> Unit,
@@ -181,7 +186,7 @@ internal fun PorPagarContenido(
     ) { inner ->
         Box(Modifier.fillMaxSize().padding(inner)) {
             if (folio != null) {
-                FolioDetalle(folio, ui, ahora, zona, onCobrar, onCancelar, onListo, onEntregado)
+                FolioDetalle(folio, ui, ahora, zona, onCobrar, onUsarSaldo, onCancelar, onListo, onEntregado)
             } else {
                 Lista(ui, ahora, ahoraMs, zona, onBuscar, onAbrir, onListo, onEntregado, onCargarMas, onReintentar)
             }
@@ -231,7 +236,9 @@ private fun Lista(
             !ui.buscando && ui.porPagar.isEmpty() && ui.porEntregar.isEmpty() && e.nextCursors.isEmpty() ->
                 Vacio(TextosPorPagar.VACIO, TextosPorPagar.VACIO_AYUDA)
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-                val filaPorPagar: @Composable (Folio) -> Unit = { FilaPorPagar(it, ahora, e.sinConexion, zona, onAbrir) }
+                val filaPorPagar: @Composable (Folio) -> Unit = {
+                    FilaPorPagar(it, ahora, e.sinConexion, zona, saldoEnDuda = it.orderId in ui.saldoSinConfirmar, onAbrir = onAbrir)
+                }
                 val filaPorEntregar: @Composable (Folio) -> Unit = {
                     FilaPorEntregar(it, ui, zona, onAbrir, onListo, onEntregado)
                 }
@@ -274,7 +281,7 @@ private fun LazyListScope.cargarMas(e: EstadoDeFolios, seccion: SeccionDeFolios,
 }
 
 @Composable
-private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, onAbrir: (Folio) -> Unit) {
+private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zona: ZoneId, saldoEnDuda: Boolean, onAbrir: (Folio) -> Unit) {
     Tarjeta(onClick = { onAbrir(folio) }) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             FolioYNombre(folio, Modifier.weight(1f))
@@ -289,6 +296,18 @@ private fun FilaPorPagar(folio: Folio, ahora: Instant, sinConexion: Boolean, zon
                 Text(TextosPorPagar.productos(cuantos(folio)), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 vencimiento(folio, ahora, sinConexion, zona)?.let { TextoDeVencimiento(it) }
             }
+        }
+        // Parte 2 (S14): «Con cuenta: Ana L. · Premio −$45.00» cuando el SERVIDOR lo manda; sin eso, como hoy.
+        LineaDeLaCuenta(folio, Modifier.padding(top = 4.dp), maxLines = 1)
+        // Full-testing H2: que la cajera lo vea antes de abrirlo.
+        if (saldoEnDuda) {
+            Text(
+                "● " + TextosPorPagar.SALDO_SIN_CONFIRMAR_MARCA,
+                Modifier.padding(top = 4.dp),
+                fontSize = 13.sp,
+                color = Warning,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }
@@ -372,13 +391,18 @@ private fun FolioDetalle(
     ahora: Instant,
     zona: ZoneId,
     onCobrar: (Folio) -> Unit,
+    onUsarSaldo: (Folio) -> Unit,
     onCancelar: (Folio) -> Unit,
     onListo: (Folio) -> Unit,
     onEntregado: (Folio) -> Unit,
 ) {
     val sinConexion = ui.folios.sinConexion
     val pagado = folio.falta.signum() == 0
-    val ocupado = folio.orderId in ui.ocupados
+    // Parte 2: mientras se comprueba un cobro con saldo guardado, el folio no se toca.
+    val comprobando = folio.orderId in ui.comprobandoSaldo
+    // Full-testing H2: un cobro con saldo guardado sin desenlace (con o sin red).
+    val saldoEnDuda = folio.orderId in ui.saldoSinConfirmar
+    val ocupado = folio.orderId in ui.ocupados || comprobando
     val apagado = MaterialTheme.colorScheme.onSurfaceVariant
     var confirmarCancelar by remember(folio.orderId) { mutableStateOf(false) }
 
@@ -394,9 +418,29 @@ private fun FolioDetalle(
                         if (folio.creadoEn != null && cuando != null) Text(" · ", fontSize = 14.sp, color = apagado)
                         cuando?.let { TextoDeVencimiento(it) }
                     }
+                    // Mockup 2c·2: la clienta ya viene ligada (S14); la cajera no tiene que buscarla.
+                    folio.cliente?.let { nombre ->
+                        Text(
+                            "● " + TextosPorPagar.conCuenta(nombre),
+                            Modifier.padding(top = 6.dp),
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                 }
             }
             items(folio.productos) { Renglon(it) }
+            // Mockup 2c·2: si pidió latte y shake y el total es $69, aquí se ve por qué (en verde).
+            items(folio.beneficios) { b ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(b.nombre, Modifier.weight(1f), fontSize = 15.sp, color = MaterialTheme.colorScheme.tertiary)
+                    Text("−" + dinero(b.monto), fontSize = 15.sp, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            (folio.beneficiosTotal - folio.beneficios.size).takeIf { it > 0 }?.let { mas ->
+                item { Text(TextosPorPagar.yMas(mas), Modifier.padding(horizontal = 20.dp, vertical = 4.dp), fontSize = 14.sp, color = MaterialTheme.colorScheme.tertiary) }
+            }
             folio.nota?.let { nota ->
                 item {
                     Text(
@@ -431,17 +475,37 @@ private fun FolioDetalle(
             }
         }
 
+        val saldo = botonDeSaldo(ui.puedeUsarSaldo, sinConexion, pagado)
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+            if (comprobando) {
+                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(TextosPorPagar.COMPROBANDO_SALDO, fontSize = 15.sp, color = apagado)
+                }
+            } else if (saldoEnDuda && !sinConexion && !pagado) {
+                Text(
+                    TextosPorPagar.SALDO_SIN_CONFIRMAR.cuerpo,
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    fontSize = 14.sp,
+                    color = Warning,
+                    textAlign = TextAlign.Center,
+                )
+            }
             when {
                 pagado -> AccionesDeEntrega(folio, ui, onListo, onEntregado, Modifier)
                 // Sin red se ve lo que pidió para cobrarlo en «Cobrar», pero no hay botón de cobrar el folio.
-                sinConexion -> Text(
-                    TextosPorPagar.FOLIO_SIN_RED,
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    fontSize = 15.sp,
-                    color = apagado,
-                    textAlign = TextAlign.Center,
-                )
+                sinConexion -> {
+                    Text(
+                        textoDelFolioSinRed(saldoEnDuda),
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        fontSize = 15.sp,
+                        color = if (saldoEnDuda) Warning else apagado,
+                        fontWeight = if (saldoEnDuda) FontWeight.SemiBold else FontWeight.Normal,
+                        textAlign = TextAlign.Center,
+                    )
+                    saldo?.let { BotonDeSaldoDelFolio(it, ocupado = true, onClick = {}) }
+                }
                 else -> {
                     Button(
                         onClick = { onCobrar(folio) },
@@ -455,8 +519,10 @@ private fun FolioDetalle(
                             Text(TextosPorPagar.cobrar(dinero(folio.falta)), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                     }
-                    // Lejos de «Cobrar» (20 dp) y siempre pregunta; no existe en un folio con dinero.
-                    if (muestraCancelarFolio(folio, ui.puedeCancelar, sinConexion)) {
+                    // Parte 2 (P2): «Saldo o tarjeta de regalo», con `giftCards:redeem`.
+                    saldo?.let { BotonDeSaldoDelFolio(it, ocupado = ocupado, onClick = { onUsarSaldo(folio) }) }
+                    // Lejos de «Cobrar» (20 dp) y siempre pregunta; no existe en un folio con dinero ni con un saldo sin confirmar.
+                    if (muestraCancelarFolio(folio, ui.puedeCancelar, sinConexion, saldoEnDuda = folio.orderId in ui.saldoSinConfirmar)) {
                         Spacer(Modifier.height(20.dp))
                         TextButton(
                             onClick = { confirmarCancelar = true },
@@ -511,10 +577,45 @@ private fun Renglon(p: FolioProducto) {
 
 // region — piezas
 
-/** Mockup 2d: «Folio W7K3P · Ana» bajo el monto de «Método de pago» (PAX y Nexgo), con el folio espaciado (R61). */
+/** Parte 2 (P2): el segundo botón del folio; sin red, en gris y con «Necesita conexión» debajo. */
+@Composable
+private fun BotonDeSaldoDelFolio(boton: BotonDeSaldo, ocupado: Boolean, onClick: () -> Unit) {
+    Spacer(Modifier.height(10.dp))
+    OutlinedButton(
+        onClick = onClick,
+        enabled = boton.activo && !ocupado,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+    ) { Text(TextosPorPagar.SALDO_O_TARJETA, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+    boton.nota?.let {
+        Text(
+            it,
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/** S14: la línea de la cuenta de la clienta, en verde; nada si el SERVIDOR no la manda. */
+@Composable
+private fun LineaDeLaCuenta(folio: Folio, modifier: Modifier, maxLines: Int = Int.MAX_VALUE) {
+    val linea = lineaDeLaCuenta(folio) ?: return
+    Text(linea, modifier, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
+
+/** Full-testing H5 (mockup 2e·3): «Falta» arriba del monto de «Método de pago» cuando la cuenta ya tiene un abono. */
+@Composable
+fun FaltaDelCobro(folio: ComandaDeFolio?, modifier: Modifier = Modifier) {
+    if (folio == null || !muestraFalta(folio)) return
+    Text(TextosPorPagar.FALTA, modifier, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Mockup 2d: «Folio W7K3P · Ana» bajo el monto de «Método de pago» (PAX y Nexgo), con el folio espaciado (R61). 2e·3: «· ya pagó $X con saldo». */
 @Composable
 fun FolioDelCobro(folio: ComandaDeFolio, modifier: Modifier = Modifier) {
-    val texto = TextosPorPagar.folioDelCobro(folio.orderNumber, folio.nombre)
+    val texto = TextosPorPagar.folioDelCobro(folio.orderNumber, folio.nombre, folio.pagadoConSaldo, folio.yaPago)
     val inicio = "Folio ".length
     Text(
         buildAnnotatedString {
@@ -720,7 +821,7 @@ private fun uiDePrueba(sinConexion: Boolean = false, seleccionado: Folio? = null
 @Composable
 private fun Previa(ui: PorPagarUi) = AvoqadoTheme(darkTheme = true) {
     PorPagarContenido(
-        ui, AHORA_PREVIA.toEpochMilli(), ZoneOffset.ofHours(-6), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        ui, AHORA_PREVIA.toEpochMilli(), ZoneOffset.ofHours(-6), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     )
 }
 
@@ -735,5 +836,28 @@ private fun PreviaSinRed() = Previa(uiDePrueba(sinConexion = true))
 @Preview(widthDp = 360, heightDp = 640)
 @Composable
 private fun PreviaFolio() = Previa(uiDePrueba(seleccionado = folioDePrueba("W7K3P", "Ana", "134.00")))
+
+/** Mockup 2c·2: un folio con premio, con «Saldo o tarjeta de regalo». */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun PreviaFolioConPremio() = Previa(
+    uiDePrueba(
+        seleccionado = folioDePrueba("W7K3P", "Ana López", "69.00").copy(
+            cliente = "Ana L.",
+            beneficios = listOf(BeneficioDeFolio("Café gratis (premio de Ana)", BigDecimal("65.00"))),
+            beneficiosTotal = 1,
+        ),
+    ).copy(puedeUsarSaldo = true),
+)
+
+/** Sin red: «Saldo o tarjeta de regalo» en gris con «Necesita conexión». */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun PreviaFolioSinRedClara() = AvoqadoTheme(darkTheme = false) {
+    PorPagarContenido(
+        uiDePrueba(sinConexion = true, seleccionado = folioDePrueba("W7K3P", "Ana", "134.00")).copy(puedeUsarSaldo = true),
+        AHORA_PREVIA.toEpochMilli(), ZoneOffset.ofHours(-6), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+    )
+}
 
 // endregion

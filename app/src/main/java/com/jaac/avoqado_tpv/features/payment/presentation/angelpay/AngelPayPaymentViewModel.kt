@@ -955,6 +955,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 referenceNumber = queued.referenceNumber,
                 orderId = queued.orderId,
                 orderNumber = queued.orderNumber,
+                idempotencyKey = queued.idempotencyKey,
             )
         } else {
             val enqueueError = enqueueResult.exceptionOrNull()
@@ -1180,6 +1181,24 @@ class AngelPayPaymentViewModel @Inject constructor(
         return BuildConfig.ANGELPAY_SDK_FALLBACK_ENABLED && settings.angelPaySdkFallbackEnabled
     }
 
+    /**
+     * D4 + Codex r1: el verde sólo si la fila es ESTA venta y subió sin nada pendiente. Si no, se queda en ámbar como antes:
+     *  - `SUCCESS` y sin `requiere_revision`;
+     *  - en efectivo: en tarjeta, `SUCCESS` también cubre un cobro que el servidor guardó con duda (segunda captura,
+     *    pendiente), y eso no se debe pintar de verde;
+     *  - la MISMA llave (no nula) y el mismo monto y propina: una fila vieja con la misma referencia no presta su verde.
+     */
+    private fun subioLimpia(
+        enCola: AngelPayPaymentState.Queued,
+        fila: com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?,
+    ): Boolean {
+        if (fila == null || fila.estado != "SUCCESS" || fila.revision || !fila.efectivo) return false
+        if (fila.llave == null || fila.llave != enCola.idempotencyKey) return false
+        fun mismo(a: String?, b: String?) =
+            a?.toBigDecimalOrNull()?.let { x -> b?.toBigDecimalOrNull()?.let { x.compareTo(it) == 0 } } == true
+        return mismo(fila.monto, enCola.amount) && mismo(fila.propina, enCola.tipAmount ?: "0")
+    }
+
     init {
         // 📡 Publish "is a charge genuinely active?" to the shared PaymentStateHolder so the
         // socket/BLE charge dispatcher (AppNavigation) can tell a live charge from a stale
@@ -1203,8 +1222,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
 
         // 🧾 D4 (10-nov): el recibo «EN COLA» se quedaba así aunque la cola ya hubiera subido la venta. Mientras ESE
-        // recibo esté a la vista se vigila su fila; con `SUCCESS` cambia a «registrado». Sólo esa venta (por su
-        // referencia) y sólo si la pantalla sigue en ese mismo recibo: al salir, el flatMapLatest deja de vigilar.
+        // recibo esté a la vista se vigila su fila y, sólo si de verdad es esa venta y quedó limpia, cambia a
+        // «registrado» (ver [subioLimpia]). Al salir del recibo, el flatMapLatest deja de vigilar.
         viewModelScope.launch {
             @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
             state.map { (it as? AngelPayPaymentState.Queued)?.takeUnless { q -> q.registrado }?.referenceNumber }
@@ -1213,10 +1232,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                     if (ref == null) emptyFlow()
                     else paymentQueueRepository.observarEstadoDeVenta(ref).map { ref to it }
                 }
-                .collect { (ref, estado) ->
-                    if (estado != "SUCCESS") return@collect
+                .collect { (ref, fila) ->
                     val enCola = _state.value as? AngelPayPaymentState.Queued ?: return@collect
-                    if (enCola.referenceNumber != ref || enCola.registrado) return@collect
+                    if (enCola.referenceNumber != ref || enCola.registrado || !subioLimpia(enCola, fila)) return@collect
                     if (_state.compareAndSet(enCola, enCola.copy(registrado = true, message = MENSAJE_REGISTRADO))) {
                         Timber.i("🧾 [AngelPay] La venta en cola ya quedó registrada: ref=%s", ref)
                     }

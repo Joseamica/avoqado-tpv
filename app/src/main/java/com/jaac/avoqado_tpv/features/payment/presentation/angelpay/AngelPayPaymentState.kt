@@ -149,7 +149,9 @@ sealed class AngelPayPaymentState {
         val referenceNumber: String? = null,
         val orderId: String? = null,
         val orderNumber: String? = null,
-        /** D4: la cola ya subió esta venta; el recibo cambia el aviso ámbar por uno verde. */
+        /** D4: la llave del cobro, para reconocer SU fila en la cola (no basta la referencia). */
+        val idempotencyKey: String? = null,
+        /** D4: la cola ya subió esta venta en efectivo; el recibo cambia el aviso ámbar por uno verde. */
         val registrado: Boolean = false,
     ) : AngelPayPaymentState()
 

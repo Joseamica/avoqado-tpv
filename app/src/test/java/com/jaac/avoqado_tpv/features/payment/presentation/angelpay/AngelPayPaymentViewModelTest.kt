@@ -2128,46 +2128,64 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
-    /** Lleva el cobro hasta el recibo «EN COLA» (aprobado + el registro en el servidor falla) y lo espera. */
-    private fun kotlinx.coroutines.test.TestScope.cobroEnCola(vm: AngelPayPaymentViewModel): AngelPayPaymentState.Queued {
+    /** D4: la fila que la cola enseñaría de [q] ya subida; cada prueba cambia lo que quiere romper. */
+    private fun filaDe(q: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment, estado: String = "SUCCESS") =
+        com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola(
+            estado = estado, llave = q.idempotencyKey, monto = q.amount.toPlainString(), propina = q.tip.toPlainString(),
+            revision = false, efectivo = q.referenceNumber.startsWith("CASH-"),
+        )
+
+    /** D4: cobra $100 en efectivo con el registro en el servidor fallando y espera el recibo «EN COLA». */
+    private fun kotlinx.coroutines.test.TestScope.cobroEnEfectivoEnCola(
+        vm: AngelPayPaymentViewModel,
+        encolado: io.mockk.CapturingSlot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>,
+    ): AngelPayPaymentState.Queued {
         vm.initPayment(amount = "100.00")
         runCurrent()
-        vm.primeSdkLaunch()
-        runCurrent()
-        vm.onAngelPaySdkResult(approvedSdkResult(reference = "R-D4"))
+        vm.startCashPayment()
         repeat(300) {
             runCurrent()
-            (vm.state.value as? AngelPayPaymentState.Queued)?.let { return it }
-            Thread.sleep(10) // el registro→cola salta por Dispatchers.IO (igual que la prueba vecina)
+            (vm.state.value as? AngelPayPaymentState.Queued)?.let { if (encolado.isCaptured) return it }
+            Thread.sleep(10) // el registro→cola salta por Dispatchers.IO (igual que las pruebas vecinas)
         }
-        error("el cobro nunca llegó a Queued: ${vm.state.value}")
+        error("el efectivo nunca llegó a Queued: ${vm.state.value}")
     }
 
-    @Test
-    fun `D4 el recibo en cola pasa a registrado cuando la cola sube ESA venta`() = runTest(testDispatcher) {
+    private fun preparaEfectivoSinServidor(
+        fila: MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>,
+    ): io.mockk.CapturingSlot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment> {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
         coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
-        val estado = MutableStateFlow<String?>("PENDING")
-        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns estado
+        val encolado = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { paymentQueueRepository.enqueue(capture(encolado)) } returns Result.success(Unit)
+        every { paymentQueueRepository.observarEstadoDeVenta(any()) } returns fila
+        return encolado
+    }
 
+    @Test
+    fun `D4 el recibo en cola del efectivo pasa a registrado cuando la cola sube ESA venta`() = runTest(testDispatcher) {
+        val fila = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>(null)
+        val encolado = preparaEfectivoSinServidor(fila)
         val vm = createViewModel()
         try {
-            val enCola = cobroEnCola(vm)
+            val enCola = cobroEnEfectivoEnCola(vm, encolado)
             assertThat(enCola.registrado).isFalse()
             assertThat(enCola.message).contains("EN COLA")
+            assertThat(enCola.idempotencyKey).isEqualTo(encolado.captured.idempotencyKey)
 
-            estado.value = "SYNCING" // la cola la está subiendo: todavía no
+            fila.value = filaDe(encolado.captured, estado = "PENDING")
+            runCurrent()
+            fila.value = filaDe(encolado.captured, estado = "SYNCING") // la está subiendo: todavía no
             runCurrent()
             assertThat((vm.state.value as AngelPayPaymentState.Queued).registrado).isFalse()
 
-            estado.value = "SUCCESS" // el servidor ya la tiene
+            fila.value = filaDe(encolado.captured) // el servidor ya la tiene
             runCurrent()
             val ya = vm.state.value as AngelPayPaymentState.Queued
             assertThat(ya.registrado).isTrue()
-            assertThat(ya.message).doesNotContain("EN COLA")
-            assertThat(ya.message).contains("registrado")
+            assertThat(ya.message).isEqualTo(AngelPayPaymentViewModel.MENSAJE_REGISTRADO)
             assertThat(ya.amount).isEqualTo(enCola.amount)
             assertThat(ya.referenceNumber).isEqualTo(enCola.referenceNumber)
         } finally {
@@ -2176,40 +2194,46 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
-    fun `D4 una venta que la cola no pudo subir sigue en ambar`() = runTest(testDispatcher) {
-        every { authRepository.getVenueId() } returns "v1"
-        every { authRepository.getStaffId() } returns "s1"
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
-        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns MutableStateFlow("FAILED")
-
-        val vm = createViewModel()
-        try {
-            cobroEnCola(vm)
-            runCurrent()
-            val s = vm.state.value as AngelPayPaymentState.Queued
-            assertThat(s.registrado).isFalse()
-            assertThat(s.message).contains("EN COLA")
-        } finally {
-            vm.viewModelScope.cancel()
+    fun `D4 el verde no sale si la fila no es limpiamente ESA venta en efectivo`() = runTest(testDispatcher) {
+        // Codex r1: SUCCESS de tarjeta puede ser un cobro guardado con duda; una fila vieja con la misma referencia no
+        // es esta venta; FAILED o «requiere revisión» no están registrados.
+        val casos = listOf<(com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment) ->
+            com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola>(
+            { filaDe(it, estado = "FAILED") },
+            { filaDe(it).copy(revision = true) },
+            { filaDe(it).copy(efectivo = false) },
+            { filaDe(it).copy(llave = null) },
+            { filaDe(it).copy(llave = "otra-llave") },
+            { filaDe(it).copy(monto = "99.00") },
+            { filaDe(it).copy(propina = "5.00") },
+        )
+        casos.forEachIndexed { i, caso ->
+            val fila = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>(null)
+            val encolado = preparaEfectivoSinServidor(fila)
+            val vm = createViewModel()
+            try {
+                cobroEnEfectivoEnCola(vm, encolado)
+                fila.value = caso(encolado.captured)
+                runCurrent()
+                val s = vm.state.value as AngelPayPaymentState.Queued
+                assertWithMessage("caso $i").that(s.registrado).isFalse()
+                assertWithMessage("caso $i").that(s.message).contains("EN COLA")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
         }
     }
 
     @Test
     fun `D4 al salir del recibo deja de vigilar la cola`() = runTest(testDispatcher) {
-        every { authRepository.getVenueId() } returns "v1"
-        every { authRepository.getStaffId() } returns "s1"
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
-        val estado = MutableStateFlow<String?>("PENDING")
-        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns estado
-
+        val fila = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>(null)
+        val encolado = preparaEfectivoSinServidor(fila)
         val vm = createViewModel()
         try {
-            cobroEnCola(vm)
+            cobroEnEfectivoEnCola(vm, encolado)
             vm.resetPayment()
             runCurrent()
-            estado.value = "SUCCESS" // ya no está el recibo: nada lo debe revivir
+            fila.value = filaDe(encolado.captured) // ya no está el recibo: nada lo debe revivir
             runCurrent()
             assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Queued::class.java)
         } finally {

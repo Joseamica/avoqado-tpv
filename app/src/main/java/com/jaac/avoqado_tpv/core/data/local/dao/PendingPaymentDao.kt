@@ -252,9 +252,15 @@ interface PendingPaymentDao {
     """)
     fun contarVentasGuardadas(venueId: String): kotlinx.coroutines.flow.Flow<Int>
 
-    /** D4: el estado de ESA venta en la cola (`reference_number` es único); null si ya no está. Lo vigila el recibo. */
-    @Query("SELECT sync_status FROM pending_payments WHERE reference_number = :referenceNumber LIMIT 1")
-    fun observarEstadoDeVenta(referenceNumber: String): kotlinx.coroutines.flow.Flow<String?>
+    /** D4: la fila de esa referencia (`reference_number` es único); null si ya no está. La vigila el recibo «EN COLA». */
+    @Query("""
+        SELECT sync_status AS estado, idempotency_key AS llave, amount AS monto, tip AS propina,
+            requiere_revision AS revision,
+            (UPPER(reference_number) LIKE 'CASH-%' OR UPPER(COALESCE(authorization_number, '')) LIKE 'EFECTIVO%') AS efectivo
+        FROM pending_payments WHERE reference_number = :referenceNumber LIMIT 1
+    """)
+    fun observarEstadoDeVenta(referenceNumber: String):
+        kotlinx.coroutines.flow.Flow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>
 
     @Query("""
         SELECT COUNT(*) FROM pending_payments

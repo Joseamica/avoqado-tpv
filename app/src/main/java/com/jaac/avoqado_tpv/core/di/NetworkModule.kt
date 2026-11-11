@@ -248,4 +248,20 @@ object NetworkModule {
     @Singleton
     fun provideOnlineOrdersApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService =
         retrofit.create(com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService::class.java)
+
+    /**
+     * Tienda híbrida, parte 2 (P1): cobrar un folio con saldo o tarjeta de regalo (`tpv/venues/{venueId}/gift-cards/…`). El Retrofit de
+     * siempre (25 s): el cobro puede esperar en el SERVIDOR hasta ~15 s el candado de su llave, más de lo que aguanta el cliente de pagos.
+     */
+    @Provides
+    @Singleton
+    fun provideGiftCardsTpvApi(okHttpClient: OkHttpClient, baseUrl: String): com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi =
+        Retrofit.Builder()
+            .baseUrl(baseUrl)
+            // Codex r1 #1 / r4: OkHttp no reenvía SOLO el cobro (una copia que nadie conoce); los reenvíos los decide el repositorio, con la
+            // misma llave y sabiendo que otra copia puede seguir viva.
+            .client(okHttpClient.newBuilder().retryOnConnectionFailure(false).build())
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi::class.java)
 }

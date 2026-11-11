@@ -1,0 +1,185 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "1231427dcc4e56cc5d99475904a1a306",
+    "entities": [
+      {
+        "tableName": "piezas",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `tipo` TEXT NOT NULL, `llave` TEXT NOT NULL, `staffId` TEXT NOT NULL, `venueId` TEXT NOT NULL, `cuerpoJson` TEXT, `huella` TEXT, `dependeDe` TEXT, `evidenciaJson` TEXT, `fotosJson` TEXT NOT NULL, `estado` TEXT NOT NULL, `rechazoCode` TEXT, `rechazoMensaje` TEXT, `rechazoDatosJson` TEXT, `resultadoJson` TEXT, `intentos` INTEGER NOT NULL, `siguienteIntentoAt` INTEGER NOT NULL, `creadaAt` INTEGER NOT NULL, `resumen` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tipo",
+            "columnName": "tipo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "llave",
+            "columnName": "llave",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staffId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venueId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cuerpoJson",
+            "columnName": "cuerpoJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "huella",
+            "columnName": "huella",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "dependeDe",
+            "columnName": "dependeDe",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "evidenciaJson",
+            "columnName": "evidenciaJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fotosJson",
+            "columnName": "fotosJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "estado",
+            "columnName": "estado",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rechazoCode",
+            "columnName": "rechazoCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "rechazoMensaje",
+            "columnName": "rechazoMensaje",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "rechazoDatosJson",
+            "columnName": "rechazoDatosJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "resultadoJson",
+            "columnName": "resultadoJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "intentos",
+            "columnName": "intentos",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "siguienteIntentoAt",
+            "columnName": "siguienteIntentoAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creadaAt",
+            "columnName": "creadaAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resumen",
+            "columnName": "resumen",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_piezas_llave",
+            "unique": true,
+            "columnNames": [
+              "llave"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_piezas_llave` ON `${TABLE_NAME}` (`llave`)"
+          }
+        ]
+      },
+      {
+        "tableName": "turno",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `staffId` TEXT, `llaveEntrada` TEXT, `timeEntryId` TEXT, `venueId` TEXT, `abiertoAt` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staffId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "llaveEntrada",
+            "columnName": "llaveEntrada",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timeEntryId",
+            "columnName": "timeEntryId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venueId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "abiertoAt",
+            "columnName": "abiertoAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '1231427dcc4e56cc5d99475904a1a306')"
+    ]
+  }
+}

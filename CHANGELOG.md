@@ -56,6 +56,7 @@
 
 ### **Fixed**
 - **Mesas · cortesía con el PIN de gerente apagado, segundo intento (D4)**: la 2.ª vez (con «apagado» ya guardado) la hoja se quedaba abierta y el aviso «Esta cortesía la da un gerente con su sesión» salía detrás, sin verse. La cortesía terminaba dentro del mismo toque y la pantalla nunca veía el «aplicando». Ahora la hoja se cierra cuando la cortesía termina, por un contador del ViewModel, y ese mismo contador vuelve a mostrar el aviso aunque traiga el mismo texto que el anterior: igual la 1.ª vez que la 2.ª.
+- **El recibo «EN COLA» se actualiza solo (Nexgo)**: si un cobro quedó con «El registro quedó EN COLA… NO vuelvas a cobrar» y el recibo sigue abierto cuando la cola sube esa venta, el aviso cambia solo a verde «Ya quedó registrado en Avoqado» (antes se quedaba en ámbar aunque el servidor ya lo tuviera; recorrido de la nube, 10-nov, D4). Sólo en efectivo y sólo si la fila de la cola es ESA venta (misma llave, monto y propina) y subió sin nada por revisar; sin red, si la cola no la pudo subir, o en tarjeta, sigue en ámbar como antes. QR, imprimir y enviar siguen escondidos como antes.
 
 ---
 

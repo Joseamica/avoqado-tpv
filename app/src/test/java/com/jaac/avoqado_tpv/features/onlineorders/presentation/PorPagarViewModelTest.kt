@@ -1064,4 +1064,61 @@ class PorPagarViewModelTest {
     }
 
     // endregion
+
+    // region D12 r4 — «Cancelar folio» se revisa otra vez justo antes de mandar (Codex r3 #2)
+
+    @Test
+    fun `D12r4 cancelar no manda nada si el almacen es ilegible`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        val vm = vm()
+        // El diálogo se abrió con el folio libre; al confirmar, el almacén ya no se lee.
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.Ilegible
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 cancelar no manda nada con un cobro con saldo en duda`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        val vm = vm()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 cancelar tampoco manda si la pantalla ya lo tiene en duda`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendientes() } returns null
+        val vm = vm()
+        assertThat(vm.ui.value.saldoEnDuda("a1")).isTrue()
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 sin duda cancelar sigue mandando`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        coEvery { folios.cancelar("v1", "a1") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 1) { folios.cancelar("v1", "a1") }
+    }
+
+    // endregion
 }

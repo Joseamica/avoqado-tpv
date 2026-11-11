@@ -407,6 +407,8 @@ private fun FolioDetalle(
     val ocupado = folio.orderId in ui.ocupados || comprobando
     val apagado = MaterialTheme.colorScheme.onSurfaceVariant
     var confirmarCancelar by remember(folio.orderId) { mutableStateOf(false) }
+    // D12 r4: si el folio queda en duda con el diálogo abierto (volvió de segundo plano, se comprobó), el diálogo se cierra.
+    LaunchedEffect(saldoEnDuda) { if (saldoEnDuda) confirmarCancelar = false }
 
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {

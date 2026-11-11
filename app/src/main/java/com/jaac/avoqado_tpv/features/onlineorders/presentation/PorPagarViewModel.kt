@@ -167,6 +167,11 @@ object TextosPorPagar {
         com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo.ILEGIBLE,
     )
     const val SALDO_ILEGIBLE_MARCA = "Cobro con saldo sin revisar"
+    /** D12 r4: «Cancelar folio» se revisa otra vez justo antes de mandar (el diálogo pudo abrirse antes de la duda). */
+    val SALDO_NO_CANCELA = AvisoDeFolio(
+        "No se canceló el folio",
+        "Este folio puede tener un cobro con saldo sin confirmar. Revisa en el panel si ya está pagado antes de cancelarlo.",
+    )
     /** D12: sin red, un folio de una terminal cuyo almacén de saldo no se lee. */
     const val SALDO_ILEGIBLE_SIN_RED = "No se pudo revisar si este folio tiene un cobro con saldo sin confirmar. No lo cobres aquí: " +
         "revisa en el panel si ya está pagado."
@@ -471,7 +476,23 @@ class PorPagarViewModel @Inject constructor(
         TextosPorPagar.noSePudoRevisar(sinRed = false)
     }
 
-    fun cancelar(folio: Folio) = accion(folio, Accion.CANCELAR)
+    fun cancelar(folio: Folio) {
+        // D12 r4 (Codex r3 #2): el diálogo pudo abrirse antes de que el folio quedara en duda; se revisa otra vez justo antes de
+        // mandar. Con un cobro con saldo en duda o el almacén ilegible no se cancela (el saldo pudo haberse cobrado).
+        val guardado = saldo.saldoDe(folio.orderId)
+        if (guardado != com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno || ui.value.saldoEnDuda(folio.orderId)) {
+            local.update {
+                when (guardado) {
+                    com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ilegible -> it.copy(saldoIlegible = true, aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                    is com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.EnDuda ->
+                        it.copy(saldoSinConfirmar = it.saldoSinConfirmar + folio.orderId, aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                    com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno -> it.copy(aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                }
+            }
+            return
+        }
+        accion(folio, Accion.CANCELAR)
+    }
     fun listo(folio: Folio) = accion(folio, Accion.LISTO)
     fun entregado(folio: Folio) = accion(folio, Accion.ENTREGADO)
 

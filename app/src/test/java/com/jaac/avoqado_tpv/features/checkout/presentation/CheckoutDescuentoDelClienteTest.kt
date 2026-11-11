@@ -349,7 +349,7 @@ class CheckoutDescuentoDelClienteTest {
 
         assertNull(vm.cartState.value.orderDiscount)
         assertFalse(vm.cartState.value.descuentoEsDelCliente)
-        assertTrue(vm.cartState.value.descuentoDelClienteQuitado)
+        assertEquals("c-cecilia", vm.cartState.value.descuentoDelClienteQuitadoDe)
         assertEquals(10000, vm.cartState.value.totalCents)
 
         vm.selectCustomer(cecilia)
@@ -366,7 +366,138 @@ class CheckoutDescuentoDelClienteTest {
         vm.selectCustomer(cecilia)
         assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
         assertTrue(vm.cartState.value.descuentoEsDelCliente)
-        assertFalse(vm.cartState.value.descuentoDelClienteQuitado)
+        assertNull(vm.cartState.value.descuentoDelClienteQuitadoDe)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `4 quitar es por cliente - Ernesto lleva el suyo y de regreso Cecilia sigue sin el suyo`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+
+        vm.selectCustomer(ernesto)
+        assertEquals(treinta.comoDescuento(), vm.cartState.value.orderDiscount)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals(7000, vm.cartState.value.totalCents)
+
+        vm.selectCustomer(cecilia)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertFalse(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `4 el Quitar descuento de los atajos cuenta como quitar el de Cecilia`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        // Lo que hace «Quitar descuento» de los atajos (CheckoutScreen, onClearManualDiscount).
+        vm.clearManualOrderDiscount()
+        vm.applyOrderDiscount(null)
+        vm.selectCustomer(cecilia)
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals("c-cecilia", vm.cartState.value.descuentoDelClienteQuitadoDe)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `4 quitar un descuento manual en los atajos no marca al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.applyManualOrderDiscount(500, "5 %")
+        vm.selectCustomer(cecilia) // YaHayOtro
+
+        vm.clearManualOrderDiscount()
+        vm.applyOrderDiscount(null)
+
+        assertNull(vm.cartState.value.descuentoDelClienteQuitadoDe)
+        vm.viewModelScope.cancel()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Tras limpiar el carrito con el cliente todavía elegido, la venta que sigue trae su descuento
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `tras limpiar el carrito con Cecilia elegida su descuento vuelve para la venta que sigue`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.clearCart()
+        vm.addCustomAmount("Importe", 10000)
+
+        assertEquals(cecilia, vm.selectedCustomer.value)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals(9000, vm.cartState.value.totalCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras limpiar el carrito sin permiso vuelve su aviso`() = runTest {
+        sinPermisoDeDescuento()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.clearCart()
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+        vm.addCustomAmount("Importe", 10000)
+
+        assertEquals(10000, vm.cartState.value.totalCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras limpiar el carrito sin red no se pone solo`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        connectionStateManager.setInternetConnected(false)
+
+        vm.clearCart()
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertFalse(vm.cartState.value.descuentoEsDelCliente)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras guardar una venta en 0 pesos con Cecilia elegida su descuento vuelve al soltarse la venta`() = runTest {
+        val vm = createViewModel()
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+        vm.addCustomAmount("Servicio", 5000)
+        vm.applyCortesiaToItem(vm.cartState.value.items.single().id, "Cortesía")
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("Salió $payload", payload is PaymentNavigationPayload.VentaEnCeroGuardada)
+        assertTrue(vm.cartState.value.isEmpty)
+        assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `sin nombre de pila los textos usan su apellido o El cliente`() = runTest {
+        sinPermisoDeDescuento()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+
+        vm.selectCustomer(cecilia.copy(id = "c-v", firstName = "  ", lastName = "Valdivia"))
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Valdivia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+
+        vm.selectCustomer(cecilia.copy(id = "c-x", firstName = "", lastName = null, phone = " ", email = null))
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("El cliente", "10 %", true), vm.avisoDescuentoDelCliente.value)
         vm.viewModelScope.cancel()
     }
 

@@ -155,7 +155,7 @@ class CarritoEnCursoTest {
         )
         val carrito = carritoCompleto().copy(
             orderDiscount = descuento.comoDescuento(),
-            descuentoEsDelCliente = true, descuentoDelClienteQuitado = true, autorizacionDelDescuento = "tok-123",
+            descuentoEsDelCliente = true, descuentoDelClienteQuitadoDe = "c-1", autorizacionDelDescuento = "tok-123",
         )
         CarritoEnCurso(contexto).guardar("venue-1", llave, carrito, cliente = cliente)
 
@@ -174,8 +174,19 @@ class CarritoEnCursoTest {
         val guardado = CarritoEnCurso(contexto).leerGuardado("venue-1")!!
 
         assertThat(guardado.cart.descuentoEsDelCliente).isFalse()
-        assertThat(guardado.cart.descuentoDelClienteQuitado).isFalse()
+        assertThat(guardado.cart.descuentoDelClienteQuitadoDe).isNull()
         assertThat(guardado.cart.autorizacionDelDescuento).isNull()
         assertThat(guardado.cliente?.descuentoDelCliente).isNull()
+    }
+
+    @Test fun `la marca booleana de quitar de una version de prueba se lee como null y el carrito vuelve`() = runTest {
+        val viejo = """{"version":1,"llave":"$llave","items":[],"manualDiscountCents":0,"selectedStaffId":"s","selectedStaffName":"S",""" +
+            """"guardadoEn":1,"descuentoEsDelCliente":false,"descuentoDelClienteQuitado":true}"""
+        contexto.getSharedPreferences("avoqado_carrito_en_curso", android.content.Context.MODE_PRIVATE)
+            .edit().putString("carrito_venue-1", viejo).commit()
+
+        val guardado = CarritoEnCurso(contexto).leerGuardado("venue-1")!!
+
+        assertThat(guardado.cart.descuentoDelClienteQuitadoDe).isNull()
     }
 }

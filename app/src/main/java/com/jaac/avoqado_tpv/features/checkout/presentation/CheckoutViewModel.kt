@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -116,6 +117,10 @@ sealed interface AvisoDescuentoDelCliente {
     /** «Sin conexión: no se puede pedir autorización ahora.» */
     data object SinRedParaPin : AvisoDescuentoDelCliente
 }
+
+/** `<Nombre>` de los textos del descuento del cliente: su nombre de pila; si está en blanco, su apellido, teléfono o correo; si nada, «El cliente». */
+internal fun nombreParaElDescuento(c: Customer?): String =
+    listOfNotNull(c?.firstName, c?.lastName, c?.phone, c?.email).map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "El cliente"
 
 /** `10 %`, `12.5 %` (sin ceros de más) o `$50.00`, como lo leen los avisos del descuento del cliente. */
 fun textoDelValor(d: DescuentoDelCliente): String = when (d.tipo) {
@@ -205,14 +210,14 @@ class CheckoutViewModel @Inject constructor(
     private val _avisoDescuentoDelCliente = MutableStateFlow<AvisoDescuentoDelCliente?>(null)
     val avisoDescuentoDelCliente: StateFlow<AvisoDescuentoDelCliente?> = _avisoDescuentoDelCliente.asStateFlow()
 
-    /** «Quitar»: vale para esta venta; aunque la cajera vuelva a elegir al cliente, no se pone solo hasta vaciar el carrito. */
+    /** «Quitar»: vale para esta venta y este cliente; aunque la cajera lo vuelva a elegir, el suyo no se pone solo (el de otro sí). */
     fun quitarDescuentoDelCliente() {
         if (candado.rechaza("quitar el descuento del cliente")) return
         _cartState.update { c ->
             c.copy(
                 orderDiscount = c.orderDiscount.takeUnless { c.descuentoEsDelCliente },
                 descuentoEsDelCliente = false,
-                descuentoDelClienteQuitado = true,
+                descuentoDelClienteQuitadoDe = _selectedCustomer.value?.id,
             )
         }
         _avisoDescuentoDelCliente.value = null
@@ -241,11 +246,11 @@ class CheckoutViewModel @Inject constructor(
     private suspend fun revisarDescuentoDelCliente(usar: Boolean = false, soloAviso: Boolean = false) {
         val cliente = _selectedCustomer.value
         val d = cliente?.descuentoDelCliente
-        if (cliente == null || d == null || (_cartState.value.descuentoDelClienteQuitado && !usar)) {
+        if (cliente == null || d == null || (_cartState.value.descuentoDelClienteQuitadoDe == cliente.id && !usar)) {
             _avisoDescuentoDelCliente.value = null
             return
         }
-        val nombre = cliente.shortName
+        val nombre = nombreParaElDescuento(cliente)
         val valor = textoDelValor(d)
         val puede = _cartState.value.autorizacionDelDescuento != null || permissionsRepository.hasPermission("discounts:apply")
         // Llegó tarde: otro cliente, o la venta ya se está preparando (lo que viaja no cambia).
@@ -267,7 +272,7 @@ class CheckoutViewModel @Inject constructor(
             it.copy(
                 orderDiscount = d.comoDescuento(),
                 descuentoEsDelCliente = true,
-                descuentoDelClienteQuitado = false,
+                descuentoDelClienteQuitadoDe = it.descuentoDelClienteQuitadoDe.takeUnless { q -> q == cliente.id },
                 manualDiscountCents = 0,
                 manualDiscountReason = null,
                 manualDiscountSource = null,
@@ -448,7 +453,18 @@ class CheckoutViewModel @Inject constructor(
 
     fun applyOrderDiscount(discount: Discount?) {
         if (candado.rechaza("cambiar el descuento")) return
-        _cartState.update { it.copy(orderDiscount = discount, descuentoEsDelCliente = false) }
+        _cartState.update {
+            it.copy(
+                orderDiscount = discount,
+                descuentoEsDelCliente = false,
+                // «Quitar descuento» de los atajos también quita el del cliente: cuenta como su «Quitar».
+                descuentoDelClienteQuitadoDe = if (discount == null && it.descuentoEsDelCliente) {
+                    _selectedCustomer.value?.id
+                } else {
+                    it.descuentoDelClienteQuitadoDe
+                },
+            )
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -654,6 +670,14 @@ class CheckoutViewModel @Inject constructor(
         // ActiveCartState is updated by the collector in init.
         // Venta nueva = llave nueva (la huella ya lo garantizaría; esto es higiene).
         olvidarLlave()
+        // D1: el cliente sigue elegido; la venta que sigue trae su descuento (o su aviso), como al elegirlo. Sólo con red, como al
+        // elegirlo. La venta en $0 reinicia con el candado puesto: se espera a que se suelte.
+        if (_selectedCustomer.value?.descuentoDelCliente != null && connectionStateManager.hasInternet()) {
+            viewModelScope.launch {
+                candado.activo.first { !it }
+                revisarDescuentoDelCliente()
+            }
+        }
         // El cajero vació (o la venta terminó): el carrito a medias del aparato ya no es una venta pendiente.
         secureStorage.getVenueId()?.let { venueId ->
             borradoDelCarrito = viewModelScope.launch { ventaSinRed.borrarCarrito(venueId) }
@@ -1620,8 +1644,7 @@ class CheckoutViewModel @Inject constructor(
         return if (sesion == sesionActual()) null else "La sesión cambió. Vuelve a Cobrar para continuar."
     }
 
-    /** `<Nombre>` de los textos del descuento del cliente: su nombre de pila. */
-    private fun nombreDelCliente(): String = _selectedCustomer.value?.shortName ?: "Cliente"
+    private fun nombreDelCliente(): String = nombreParaElDescuento(_selectedCustomer.value)
 
     private fun textoDescuentoSinRed() =
         "Sin conexión: el descuento de ${nombreDelCliente()} necesita internet. Quítalo o cobra cuando vuelva la red"

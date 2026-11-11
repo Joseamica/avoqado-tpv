@@ -44,8 +44,8 @@ data class CartState(
     val selectedStaffName: String = "Staff",
     /** [orderDiscount] vino del cliente seleccionado (no lo eligió el cajero). */
     val descuentoEsDelCliente: Boolean = false,
-    /** El cajero quitó el descuento del cliente: no se vuelve a poner solo. */
-    val descuentoDelClienteQuitado: Boolean = false,
+    /** Id del cliente al que el cajero le quitó su descuento en esta venta: el suyo no se vuelve a poner solo (el de otro cliente sí). */
+    val descuentoDelClienteQuitadoDe: String? = null,
     /** Token del PIN que autorizó el descuento, si hizo falta. */
     val autorizacionDelDescuento: String? = null,
 ) {

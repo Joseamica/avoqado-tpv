@@ -115,7 +115,8 @@ internal data class CarritoDto(
     val cliente: ClienteDto? = null,
     /** Nulos/false en lo guardado antes de estos campos. */
     val descuentoEsDelCliente: Boolean = false,
-    val descuentoDelClienteQuitado: Boolean = false,
+    /** Una marca booleana de una versión de prueba anterior (`descuentoDelClienteQuitado`) se ignora: queda null. */
+    val descuentoDelClienteQuitadoDe: String? = null,
     val autorizacionDelDescuento: String? = null,
 ) {
     fun aCarrito() = CartState(
@@ -129,7 +130,7 @@ internal data class CarritoDto(
         selectedStaffId = selectedStaffId,
         selectedStaffName = selectedStaffName,
         descuentoEsDelCliente = descuentoEsDelCliente,
-        descuentoDelClienteQuitado = descuentoDelClienteQuitado,
+        descuentoDelClienteQuitadoDe = descuentoDelClienteQuitadoDe,
         autorizacionDelDescuento = autorizacionDelDescuento,
     )
 
@@ -146,7 +147,7 @@ internal data class CarritoDto(
             selectedStaffId = cart.selectedStaffId,
             selectedStaffName = cart.selectedStaffName,
             descuentoEsDelCliente = cart.descuentoEsDelCliente,
-            descuentoDelClienteQuitado = cart.descuentoDelClienteQuitado,
+            descuentoDelClienteQuitadoDe = cart.descuentoDelClienteQuitadoDe,
             autorizacionDelDescuento = cart.autorizacionDelDescuento,
         )
     }

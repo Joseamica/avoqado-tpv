@@ -11,6 +11,9 @@
 - **Copia de laboratorio (`.lab`) para la nube**: `-Pavoqado.devApplicationIdSuffix=.lab` compila la depuración como otra app (`com.jaac.avoqado_tpv.sandbox.lab` en `nexgoDebug`), que la puerta del laboratorio instala en la N86 junto a la TPV de pruebas de la Mac sin tocarla. Sólo debug: con la propiedad, un build release falla. Sin ella, nada cambia. Necesita el cliente `.lab` en `google-services.json` (registrado en Firebase el 10-nov).
 - **Depuración: HTTP al puente del Alien**: la configuración de red de debug permite `192.168.100.70` (el puente del laboratorio hacia el banco de la nube). Sin ella Android bloqueaba la copia `.lab` («CLEARTEXT not permitted») y se quedaba en «Activar Terminal» (recorrido de la nube 8d24c0, 10-nov). Release no lo incluye.
 
+### **Fixed**
+- **Mesas · cortesía con el PIN de gerente apagado, segundo intento (D4)**: la 2.ª vez (con «apagado» ya guardado) la hoja se quedaba abierta y el aviso «Esta cortesía la da un gerente con su sesión» salía detrás, sin verse. La cortesía terminaba dentro del mismo toque y la pantalla nunca veía el «aplicando». Ahora la hoja se cierra cuando la cortesía termina, por un contador del ViewModel: igual la 1.ª vez que la 2.ª.
+
 ---
 
 ## [2.18.0] - 2026-11-10

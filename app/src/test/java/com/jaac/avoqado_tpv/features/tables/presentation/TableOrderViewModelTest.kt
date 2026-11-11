@@ -30,7 +30,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -1376,6 +1380,51 @@ class TableOrderViewModelTest {
 
         assertThat(viewModel.error.value).isEqualTo("No se pudo aplicar la cortesía")
         assertThat(viewModel.isComping.value).isFalse()
+    }
+
+    /**
+     * D4 (N86, 10-nov, TPV 2.18.0): con el PIN de gerente apagado, la 1.ª cortesía espera la red y la hoja se cierra; la
+     * 2.ª, con «apagado» ya guardado, termina sin esperar nada. La pantalla observa el ViewModel con un colector que corre
+     * DESPUÉS del toque (Compose), no dentro de él: eso es [observar]. Mirando [TableOrderViewModel.isComping], la 2.ª vez
+     * nunca veía el true (la hoja se quedaba abierta tapando el aviso); por eso la hoja se cierra con
+     * [TableOrderViewModel.compTerminadas].
+     */
+    private fun <T> TestScope.observar(flow: StateFlow<T>): List<T> {
+        val vistos = mutableListOf<T>()
+        backgroundScope.launch(StandardTestDispatcher(testScheduler)) { flow.collect { vistos += it } }
+        runCurrent()
+        return vistos
+    }
+
+    private val textoNegada = "Esta cortesía la da un gerente con su sesión"
+
+    @Test
+    fun D4_primera_vez_espera_la_red_y_la_pantalla_ve_terminar_la_cortesia() = runTest {
+        val red = CompletableDeferred<Autorizacion>()
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } coAnswers { red.await() }
+        val viewModel = conCuenta()
+        val vistos = observar(viewModel.compTerminadas)
+
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        red.complete(Autorizacion.Negada(textoNegada))
+        runCurrent()
+
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        assertThat(vistos).containsExactly(0, 1).inOrder()
+    }
+
+    @Test
+    fun D4_segunda_vez_contesta_sin_esperar_y_la_pantalla_tambien_ve_terminar_la_cortesia() = runTest {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada(textoNegada)
+        val viewModel = conCuenta()
+        val vistos = observar(viewModel.compTerminadas)
+
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+
+        assertThat(viewModel.error.value).isEqualTo(textoNegada)
+        assertThat(vistos).containsExactly(0, 1).inOrder()
     }
 
     // endregion

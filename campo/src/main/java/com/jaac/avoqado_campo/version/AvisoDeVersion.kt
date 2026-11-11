@@ -24,6 +24,8 @@ internal const val ACTIVA_EL_PERMISO = "Para actualizar, activa «Permitir de es
  */
 @Composable
 fun AvisoDeVersion(nueva: VersionNueva?, obligatoria: Boolean, paso: PasoDeActualizacion, onActualizar: () -> Unit) {
+    // Sin nada pendiente no hay aviso, aunque el último intento haya fallado (el superadmin retiró la versión mala).
+    if (nueva == null && !obligatoria) return
     val lineas = listOfNotNull(
         nueva?.let { "Hay una versión nueva (${it.versionName})" } ?: NO_SE_PUDO_COMPROBAR.takeIf { obligatoria },
         ACTUALIZA_PARA_SEGUIR.takeIf { obligatoria },

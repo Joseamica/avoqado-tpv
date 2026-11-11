@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.ui
 
 import androidx.compose.ui.test.assertAll
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.isNotEnabled
@@ -21,6 +22,7 @@ import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.venta.AccionesDeVenta
 import com.jaac.avoqado_campo.venta.EstadoVenta
 import com.jaac.avoqado_campo.venta.VentaContenido
+import com.jaac.avoqado_campo.version.NO_SE_PUDO_COMPROBAR
 import com.jaac.avoqado_campo.version.PasoDeActualizacion
 import com.jaac.avoqado_campo.version.VersionNueva
 import org.junit.Assert.assertEquals
@@ -172,5 +174,13 @@ class InicioScreenTest {
         compose.onNodeWithText("8952140000000000201").assertExists()
         compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()
         compose.onNodeWithText("Registrar").assertExists()
+    }
+
+    // Hallado en el SAMSUNG (full-testing del bloque 3): el superadmin retiró la obligatoria mala y el aviso «No se pudo
+    // comprobar…» del último intento seguía, aunque ya no había nada pendiente.
+    @Test fun `sin version nueva ni obligatoria, el fallo del ultimo intento ya no se muestra`() {
+        inicio(base.copy(version = null, obligatoria = false, paso = PasoDeActualizacion.Fallo(NO_SE_PUDO_COMPROBAR)))
+        compose.onAllNodesWithText(NO_SE_PUDO_COMPROBAR).assertCountEquals(0)
+        compose.onNodeWithText("Vender").assertIsEnabled()
     }
 }

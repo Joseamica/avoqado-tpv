@@ -1423,6 +1423,13 @@ class TableOrderViewModelTest {
         runCurrent()
         assertThat(terminadas).containsExactly(0, 1, 2).inOrder()
         assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
+
+        // 3.ª, con el aviso de la 2.ª aún en pantalla (sin vaciar): el error no cambia, sólo el contador. Por eso la
+        // pantalla también repite el aviso con compTerminadas.
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        assertThat(terminadas).containsExactly(0, 1, 2, 3).inOrder()
+        assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
         coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
     }
 

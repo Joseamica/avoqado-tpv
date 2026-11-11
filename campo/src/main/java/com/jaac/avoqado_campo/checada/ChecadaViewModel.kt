@@ -20,6 +20,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -126,18 +127,12 @@ class ChecadaViewModel @Inject constructor(
         // deja la pantalla ocupada para siempre.
         val l = try { ubicacion.leer() } catch (c: CancellationException) { throw c } catch (x: Exception) { null }
         _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
-        val error = try {
-            encolador.completarChecada(
-                generacion, apartada, ChecadaNueva(venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, null, ""),
-            )
-            null
-        } catch (c: CancellationException) {
-            throw c
-        } catch (x: Exception) {
-            porque(x, tipo)
-        }
-        if (error != null) {
-            encolador.descartarApartada(apartada) // no se hizo: la fila y la selfie se van
+        val fallo = completarAunqueHayaUnBorrado(generacion, apartada, ChecadaNueva(venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, null, ""))
+        if (fallo != null) {
+            val error = porque(fallo, tipo)
+            // r6: no se borra (invariante 2 de BorradoDelCelular): queda en «Mis pendientes», con su foto. Si ya no existe es
+            // porque un borrado que sí siguió la borró.
+            encolador.rechazarApartada(apartada, error)
             _estado.update { it.copy(ocupado = false, error = error) }
             return
         }
@@ -153,6 +148,22 @@ class ChecadaViewModel @Inject constructor(
 
     // inline: deja llamar `gps.iniciar()`, que lee el turno (suspend). Corre en NonCancellable: no hay cancelación que tragar.
     private inline fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }
+
+    /**
+     * r6: un borrado en su ventana (la marca puesta) hace fallar el completar con `CelularBorrandose`: se espera a que termine
+     * y se repite. Si se negó, la generación volvió a ser la del toque y esto la completa; si siguió, la fila ya no existe
+     * (la borró él) y se sale. Un `CelularBorrandose` sin borrado en curso, ya repetido, no es transitorio: se devuelve.
+     * null = completada. ponytail: espera revisando cada medio segundo; el borrado dura lo que tarda en vaciar Room.
+     */
+    private suspend fun completarAunqueHayaUnBorrado(generacion: String, id: Long, u: ChecadaNueva): Exception? {
+        var repetida = false
+        while (true) {
+            val x = try { encolador.completarChecada(generacion, id, u); return null } catch (c: CancellationException) { throw c } catch (x: Exception) { x }
+            if (x !is CelularBorrandose || (!quienSoy.limpiando && repetida)) return x
+            repetida = true
+            while (quienSoy.limpiando) delay(500)
+        }
+    }
 
     private fun porque(x: Exception, tipo: TipoChecada) = when (x) {
         is CelularBorrandose -> "Espera un momento."

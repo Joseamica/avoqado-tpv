@@ -36,7 +36,6 @@ abstract class PiezaDao {
     abstract suspend fun cuantasPorSubirAhora(): Int
 
     @Query("SELECT * FROM piezas WHERE estado = 'APARTADA' ORDER BY id") abstract suspend fun apartadas(): List<Pieza>
-    @Query("DELETE FROM piezas WHERE id = :id AND estado = 'APARTADA'") abstract suspend fun quitarApartada(id: Long)
 
     @Query(
         """SELECT COUNT(*) AS total,

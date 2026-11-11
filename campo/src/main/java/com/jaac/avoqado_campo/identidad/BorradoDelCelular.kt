@@ -15,6 +15,14 @@ import java.io.File
 enum class ResultadoDelBorrado { BORRADO, QUEDA_ALGO, ESPERA }
 
 /**
+ * r6 · INVARIANTES (la familia «lo que la persona ya hizo, en vuelo, contra un borrado»):
+ * 1. Un borrado que se niega deja TODO como estaba, incluida la generación (`QuienSoy.cancelarLimpieza`).
+ * 2. Una checada APARTADA sólo desaparece de dos formas: se completa (`Encolador.completarChecada`), o la borra un borrado
+ *    que SÍ siguió hasta el final ([vaciar]): DESCONOCIDO confirmado con su número, o activar/desvincular con la cola vacía
+ *    (y con una APARTADA viva la cola no está vacía). Ningún error al completarla la elimina ni borra su foto.
+ * 3. Por 1 y 2, una APARTADA con una generación distinta de la vigente no puede existir: la generación sólo cambia de verdad
+ *    en [vaciar] (que vacía Room antes) o al activar (que pide la cola vacía).
+ *
  * El ÚNICO camino para volver a activar (rediseño v7): deja el celular vacío, como recién instalado. r3: los tres que
  * borran (tras «Desvincular», «Activar con un código nuevo» y DESCONOCIDO) pasan por [borrar], que sólo borra a la persona
  * que se decidió borrar y vuelve a contar la cola CON la marca puesta. Si el proceso muere ya confirmado, `limpiando`
@@ -61,8 +69,9 @@ class BorradoDelCelular(
     /** Lo llama la app al arrancar, antes de mostrar nada (Tarea 13). */
     suspend fun terminarSiQuedoAMedias() {
         if (quienSoy.limpiezaConfirmada) vaciar()
-        // Murió antes de revisar la cola: no se sabe si quedó algo vivo, así que no se borra (la persona lo vuelve a pedir).
-        else if (quienSoy.limpiando) quienSoy.marcarLimpiando(false)
+        // Murió antes de revisar la cola: no se sabe si quedó algo vivo, así que no se borra (la persona lo vuelve a pedir), y
+        // como todo borrado que se niega, devuelve la generación (r6): una checada APARTADA de antes se sigue completando.
+        else if (quienSoy.limpiando) quienSoy.cancelarLimpieza()
     }
 
     /**
@@ -89,7 +98,7 @@ class BorradoDelCelular(
         dao.enTransaccion { n = contar() }
         if (n != esperadas) {
             quienSoy.siQuedaAlgo() // la marca es nuestra: nadie activó a otra persona
-            quienSoy.marcarLimpiando(false)
+            quienSoy.cancelarLimpieza() // r6: se niega → TODO como estaba, también la generación
             return@withContext ResultadoDelBorrado.QUEDA_ALGO
         }
         quienSoy.confirmarLimpieza()

@@ -157,11 +157,26 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
     /**
      * Primer paso del borrado (R8-1): la marca y una `generacion` nueva en UNA escritura, así toda respuesta en vuelo se
      * descarta. r3: sólo si sigue siendo la persona de [generacion] y no hay otro borrado; false = no se escribió nada.
+     *
+     * r6 · INVARIANTE: **un borrado que se niega deja TODO como estaba, incluida la generación.** La anterior ([generacion])
+     * se guarda con la marca, en la misma escritura, y [cancelarLimpieza] la devuelve (también al arrancar, si el proceso
+     * murió con la marca «revisando»). La generación sólo cambia de verdad cuando el borrado sigue hasta el final
+     * (`borrarTodo`, después de vaciar Room) o al activar desde un celular vacío. Por eso una checada APARTADA con la
+     * generación del toque siempre se puede completar, salvo que un borrado que sí siguió la haya borrado.
      */
     fun empezarLimpiezaSi(generacion: String): Boolean = synchronized(candado) {
         if (almacen.leer(GENERACION) != generacion || almacen.leer(LIMPIANDO) != null) return false
-        escribir(LIMPIANDO to REVISANDO, GENERACION to nueva())
+        escribir(LIMPIANDO to REVISANDO, GENERACION to nueva(), ANTERIOR to generacion)
         true
+    }
+
+    /**
+     * El borrado se negó (o murió antes de contar): quita la marca y devuelve la generación de antes, en UNA escritura y bajo
+     * el candado. Nadie pudo cambiarla en medio: activar pide SIN_ACTIVAR y otro borrado pide que no haya marca.
+     */
+    fun cancelarLimpieza() = synchronized(candado) {
+        val anterior = almacen.leer(ANTERIOR)
+        escribir(*(listOf(LIMPIANDO to null, ANTERIOR to null) + listOfNotNull(anterior?.let { GENERACION to it })).toTypedArray())
     }
 
     fun confirmarLimpieza() = escribir(LIMPIANDO to BORRANDO)
@@ -216,6 +231,7 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         const val BLOQUEADA = "bloqueada"; const val NECESITA_PIN = "necesitaPin"
         const val LIMPIANDO = "limpiando"
         const val REVISANDO = "true"; const val BORRANDO = "borrando" // los valores de LIMPIANDO
-        val TODAS = CLAVES_DEL_PIN + listOf(ACTIVACION_PENDIENTE, APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
+        const val ANTERIOR = "generacion.anterior" // r6: la de antes de la marca, para devolverla si el borrado se niega
+        val TODAS = CLAVES_DEL_PIN + listOf(ANTERIOR, ACTIVACION_PENDIENTE, APARATO_ID, CELULAR_ID, CREDENCIAL, STAFF_ID, NOMBRE, SUCURSALES, SESION, ESTADO, GRACIA, BLOQUEADA, NECESITA_PIN)  // sin GENERACION: borrarTodo la renueva
     }
 }

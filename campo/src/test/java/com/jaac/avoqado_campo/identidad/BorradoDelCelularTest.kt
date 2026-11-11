@@ -6,10 +6,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.ayuda.AyudaViewModel
 import com.jaac.avoqado_campo.cola.BaseDeCampo
+import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.SecuenciaDeCaptura
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
@@ -288,6 +290,60 @@ class BorradoDelCelularTest {
         assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo(confirmadas = 0)) // la persona vio «1»
         assertEquals("APARTADA", dao.porLlave("apartada")?.estado)
         assertTrue(carpetaCola.exists())
+    }
+
+    // r6 · el cruce: la checada se aparta entre la primera cuenta del borrado y su marca (con la generación del toque).
+    private fun encolador() = Encolador(dao, quienSoy, RelojAnclado(almacen, { 0L }, { 0L }, { 1 }), SecuenciaDeCaptura(almacen), carpetaCola, env = "dev")
+    private suspend fun apartada(generacion: String, foto: File? = null) = dao.insertar(
+        Pieza(
+            tipo = TipoPieza.SALIDA, llave = "apartada", staffId = "s1", venueId = "v1", estado = "APARTADA", creadaAt = 1, resumen = "Salida",
+            cuerpoJson = """{"generacion":"$generacion","ocurrioAt":"2026-11-10T18:00:00Z","origenHora":"RELOJ_DEL_CELULAR"}""",
+            fotosJson = foto?.let { """[{"archivo":"${it.absolutePath}","ruta":"r","url":"u","bytes":1,"subida":false}]""" } ?: "[]",
+        ),
+    )
+
+    @Test fun `r6 - un borrado que se niega deja la generacion como estaba y el GPS completa la checada apartada en el cruce`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val g = quienSoy.generacion
+        var id = 0L
+        alPonerLaMarca = { runBlocking { id = apartada(g) } } // ya pasó la primera cuenta (0)
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
+        assertEquals(g, quienSoy.generacion) // nada cambió: tampoco la generación
+        assertFalse(quienSoy.limpiando)
+        encolador().completarChecada(g, id, null) // llega el GPS: con la generación del toque
+        assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("apartada")?.estado)
+        assertEquals("e1", dao.porLlave("apartada")?.dependeDe)
+    }
+
+    @Test fun `r6 - si la app muere despues de un borrado negado, el arranque completa la checada apartada`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val g = quienSoy.generacion
+        alPonerLaMarca = { runBlocking { apartada(g) } }
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
+        alPonerLaMarca = {}
+        assertEquals(1, encolador().completarApartadas()) // otro arranque
+        assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("apartada")?.estado)
+    }
+
+    @Test fun `r6 - si la app muere con la marca puesta antes de contar, el arranque devuelve la generacion y completa la apartada`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val g = quienSoy.generacion
+        apartada(g)
+        assertTrue(quienSoy.empezarLimpiezaSi(g)) // la marca, y el proceso muere aquí
+        borrado().terminarSiQuedoAMedias()
+        assertEquals(g, quienSoy.generacion)
+        assertFalse(quienSoy.limpiando)
+        assertEquals(1, encolador().completarApartadas())
+        assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("apartada")?.estado)
+    }
+
+    @Test fun `r6 - DESCONOCIDO confirmado con su numero si borra la checada apartada y su foto`() = runBlocking {
+        val foto = File(carpetaCola, "apartada_salida.jpg").apply { writeText("x") }
+        apartada(quienSoy.generacion, foto)
+        quienSoy.marcarDesconocido()
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo(confirmadas = 1))
+        assertNull(dao.porLlave("apartada"))
+        assertFalse(foto.exists())
     }
 
     @Test fun `desvincular - algo que se guarda justo antes de la marca tampoco se borra y el celular queda DESVINCULADO`() = runBlocking {

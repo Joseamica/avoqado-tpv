@@ -185,31 +185,35 @@ class Encolador(
         return a.llave
     }
 
-    /** La checada que no se pudo completar no se hizo: su fila y su selfie se van. */
-    suspend fun descartarApartada(id: Long) {
+    /**
+     * r6: una APARTADA que no se pudo completar por algo que no es un borrado en curso (p. ej. el turno ya no la admite) NO se
+     * borra: queda RECHAZADA en «Mis pendientes», con su foto y «Quitar» (la persona decide). Sin fila APARTADA, nada.
+     */
+    suspend fun rechazarApartada(id: Long, mensaje: String) {
         val a = dao.porId(id)?.takeIf { it.estado == EstadoPieza.APARTADA } ?: return
-        dao.quitarApartada(id)
-        fotosDe(a.fotosJson).forEach { File(it.archivo).delete() }
+        dao.rechazar(a, CHECADA_SIN_TERMINAR, mensaje)
     }
 
     /**
      * r5 · al arrancar, antes de cualquier pantalla: la checada que quedó APARTADA (Android mató la app mientras esperaba el
-     * GPS) se completa sin ubicación («Se checa sin ubicación», B9). Si no se puede (otra activación, que no debería pasar
-     * porque un borrado vacía Room, o el turno ya no la admite) queda RECHAZADA en «Mis pendientes», nunca se pierde en
-     * silencio. Completar es idempotente: sólo una fila APARTADA se completa. Devuelve cuántas se completaron.
+     * GPS) se completa sin ubicación («Se checa sin ubicación», B9). Completar es idempotente: sólo una fila APARTADA se
+     * completa. r6: con un borrado en curso se queda APARTADA (nada la borra); si no se puede por otra cosa queda RECHAZADA
+     * en «Mis pendientes», nunca se pierde en silencio. Una generación distinta no debería existir (invariante 3 de
+     * `BorradoDelCelular`): si apareciera, tampoco se completa a nombre de otra persona. Devuelve cuántas se completaron.
      */
     suspend fun completarApartadas(): Int {
-        val generacion = quienSoy.instantanea().generacion
+        val yo = quienSoy.instantanea()
         var n = 0
         for (a in dao.apartadas()) {
             try {
-                if (gsonCola.fromJson(a.cuerpoJson, Apartada::class.java).generacion != generacion) throw CelularBorrandose()
-                completarChecada(generacion, a.id, null)
+                if (gsonCola.fromJson(a.cuerpoJson, Apartada::class.java).generacion != yo.generacion) throw CelularBorrandose()
+                completarChecada(yo.generacion, a.id, null)
                 n++
             } catch (c: CancellationException) {
                 throw c
-            } catch (_: Exception) {
-                dao.rechazar(a, "CHECADA_SIN_TERMINAR", "Esta checada no se pudo terminar. Avísale a tu supervisor.")
+            } catch (x: Exception) {
+                if (x is CelularBorrandose && quienSoy.limpiando) continue
+                rechazarApartada(a.id, "Esta checada no se pudo terminar. Avísale a tu supervisor.")
             }
         }
         return n
@@ -384,6 +388,7 @@ class Encolador(
     private fun llaveNueva() = UUID.randomUUID().toString()
 
     private companion object {
+        const val CHECADA_SIN_TERMINAR = "CHECADA_SIN_TERMINAR"
         val CUSTODIAS = setOf(TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR)
         const val VINCULACION = "Vinculacion"
         const val PORTABILIDAD = "Portabilidad"

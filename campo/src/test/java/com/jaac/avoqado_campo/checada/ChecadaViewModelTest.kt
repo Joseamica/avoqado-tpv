@@ -44,6 +44,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -85,9 +86,11 @@ class ChecadaViewModelTest {
         override suspend fun revisar() = Unit
     }
     private lateinit var vm: ChecadaViewModel
+    /** Main de la prueba: su reloj es virtual (el `delay` de la pantalla sólo avanza con `advanceTimeBy`). */
+    private val main = UnconfinedTestDispatcher()
 
     @Before fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        Dispatchers.setMain(main)
         mockkObject(Disparador)
         every { Disparador.ahora(any()) } just runs
         db = Room.inMemoryDatabaseBuilder(context, BaseDeCampo::class.java).allowMainThreadQueries().build()
@@ -144,6 +147,43 @@ class ChecadaViewModelTest {
         assertEquals(entrada.llave, cuerpo(salida)["llaveEntrada"].asString)
         assertEquals(entrada.llave, salida.dependeDe)
         assertEquals(1, detenido)
+    }
+
+    @Test fun `r6 - si el GPS llega con un borrado en su ventana, la checada espera a que se niegue y se completa con su ubicacion`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        val g = quienSoy.generacion
+        assertTrue(quienSoy.empezarLimpiezaSi(g)) // un borrado pone su marca…
+        espera.complete(Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)) // …justo cuando llega el GPS
+        runBlocking { delay(700) } // el completar ya chocó con la marca y espera
+        assertEquals(EstadoPieza.APARTADA, piezas().single().estado) // no la borró
+        quienSoy.cancelarLimpieza() // …y el borrado se niega (vio la APARTADA)
+        main.scheduler.advanceTimeBy(1_000); main.scheduler.runCurrent() // la pantalla vuelve a revisar
+        val entrada = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { l -> l.any { it.estado == EstadoPieza.PENDIENTE } } } }.single()
+        assertEquals(g, quienSoy.generacion)
+        assertEquals(19.43, cuerpo(entrada)["latitude"].asDouble, 0.0)
+    }
+
+    @Test fun `r6 - si completar la checada apartada falla, no se borra - queda en Mis pendientes con su foto`() {
+        vm.marcarEntrada(); quieto()
+        runBlocking { withTimeout(5_000) { vm.estado.first { it.entrada != null } } }
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        every { copia.copia } returns MutableStateFlow(null) // pide selfie
+        vm.marcarSalida()
+        vm.alTomarSelfie(File(context.cacheDir, "fotos/r6.jpg").apply { parentFile!!.mkdirs(); writeBytes(ByteArray(8) { 1 }) }.absolutePath)
+        val salida = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { l -> l.any { it.tipo == TipoPieza.SALIDA } } } }
+            .single { it.tipo == TipoPieza.SALIDA }
+        // Mientras espera el GPS, la gracia descarta su entrada (cierra el turno): la salida ya no se puede completar.
+        val entrada = piezas().single { it.tipo == TipoPieza.ENTRADA }
+        runBlocking { dao.descartarConHijos(entrada.id, "SU_ENTRADA_SE_DESCARTO") }
+        espera.complete(null)
+        quieto()
+        val p = runBlocking { dao.porId(salida.id) }!!
+        assertEquals(EstadoPieza.RECHAZADA, p.estado) // a la vista, con «Quitar»; nunca se borra sola
+        assertTrue(File(fotosDe(p.fotosJson).single().archivo).isFile)
     }
 
     @Test fun `tras usarEntrada la salida lleva el timeEntryId`() {

@@ -72,15 +72,28 @@ class MisSimsViewModel @Inject constructor(
     private var ultimo: Pair<Copia?, List<Pieza>> = null to emptyList()
 
     init {
-        viewModelScope.launch { copia.leer(); actualizar() }
+        viewModelScope.launch { copia.leer(); bajar(avisar = false) }
         viewModelScope.launch { combine(copia.copia, dao.pendientesDeVer()) { a, b -> a to b }.collect { (c, cola) -> derivar(c, cola) } }
     }
 
-    fun actualizar() {
+    /** El botón «Actualizar»: si no baja nada (sin red o el SERVIDOR no contesta) lo dice; al abrir la pantalla no se avisa. */
+    fun actualizar() = bajar(avisar = true)
+
+    private fun bajar(avisar: Boolean) {
         val venueId = quienSoy.sesion?.venueId ?: return
         _estado.update { it.copy(actualizando = true) }
         viewModelScope.launch {
-            try { copia.actualizar(venueId) } finally { _estado.update { it.copy(actualizando = false) } }
+            var bajo = false
+            try { bajo = copia.actualizar(venueId) } finally {
+                _estado.update {
+                    val error = when {
+                        bajo && it.error == NO_SE_PUDO_ACTUALIZAR -> null
+                        !bajo && avisar -> NO_SE_PUDO_ACTUALIZAR
+                        else -> it.error
+                    }
+                    it.copy(actualizando = false, error = error)
+                }
+            }
         }
     }
 
@@ -252,7 +265,7 @@ class MisSimsViewModel @Inject constructor(
 
         // «Te volvieron a asignar»: se decide otra vez sólo con la versión NUEVA en la copia; mientras tanto se baja otra (una vez por pieza).
         val sinVersionNueva = aDecidirAhora.filter { (serie, r) -> porSerie[serie]?.custodyVersion == r.version }
-        if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) actualizar()
+        if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) bajar(avisar = false)
 
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
@@ -296,6 +309,7 @@ class MisSimsViewModel @Inject constructor(
     private companion object {
         const val ASIGNACION_CAMBIO = "ASIGNACION_CAMBIO"
         const val SIN_SESION = "Entra con tu PIN para esto."
+        const val NO_SE_PUDO_ACTUALIZAR = "No se pudo actualizar, revisa tu señal."
         val POR_SUBIR = setOf(EstadoPieza.PENDIENTE, EstadoPieza.RETENIDA, EstadoPieza.RECHAZADA)
 
         val MOTIVOS = mapOf(

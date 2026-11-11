@@ -108,6 +108,18 @@ class MisSimsViewModelTest {
         io.mockk.verify(exactly = 1) { Disparador.ahora(any()) }
     }
 
+    @Test fun `Actualizar que no baja nada dice que no se pudo y al lograrlo se quita`() {
+        ponerCopia(sim("S1"))
+        val v = vm()
+        assertEquals(null, v.estado.value.error) // al abrir sin red no se avisa
+        v.actualizar()
+        assertEquals("No se pudo actualizar, revisa tu señal.", v.estado.value.error)
+        assertFalse(v.estado.value.actualizando)
+        coEvery { copia.actualizar(any()) } returns true
+        v.actualizar()
+        assertEquals(null, v.estado.value.error)
+    }
+
     @Test fun `rechazar una ya por subir no hace nada`() {
         ponerCopia(sim("S1"))
         cola.value = listOf(custodia(TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3}]}"""))

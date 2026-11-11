@@ -127,6 +127,10 @@ class RecuadroPorPagarTest {
         assertNull(avisoDeSaldoSinConfirmar(alDia, listOf(guardada())))
     }
 
+    @Test fun `D12r3 almacen ilegible con la lista al dia tambien avisa - la lista tampoco puede marcar nada`() {
+        assertEquals(SALDO_GUARDADO_ILEGIBLE, avisoDeSaldoSinConfirmar(alDia, null))
+    }
+
     @Test fun `D12 si el almacen no se pudo leer lo dice - nunca como si no hubiera nada`() {
         assertEquals(SALDO_GUARDADO_ILEGIBLE, avisoDeSaldoSinConfirmar(EstadoDeFolios(sinConexion = true), null))
         assertEquals(SALDO_GUARDADO_ILEGIBLE, avisoDeSaldoSinConfirmar(EstadoDeFolios(), null))

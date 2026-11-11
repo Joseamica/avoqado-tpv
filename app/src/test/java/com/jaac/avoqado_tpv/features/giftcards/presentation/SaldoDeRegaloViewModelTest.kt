@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.FalloDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.FolioCerrado
 import com.jaac.avoqado_tpv.features.giftcards.data.PruebaDeSaldo
+import com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado
 import com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
@@ -45,7 +46,7 @@ class SaldoDeRegaloViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
-        every { repo.pendienteDe(any()) } returns null
+        every { repo.saldoDe(any()) } returns SaldoGuardado.Ninguno
     }
 
     @After
@@ -263,13 +264,49 @@ class SaldoDeRegaloViewModelTest {
 
     @Test
     fun `al entrar con una solicitud pendiente de ese folio la comprueba antes de dejar cobrar`() = runTest {
-        every { repo.pendienteDe("cord1") } returns mockk()
+        every { repo.saldoDe("cord1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { repo.resolver("cord1") } returns DesenlaceDeSaldo.Incierto
 
         val vm = vm()
 
         coVerify(exactly = 1) { repo.resolver("cord1") }
         assertThat(vm.ui.value.enDuda).isTrue()
+    }
+
+    // endregion
+
+    // region D12 r3 — el almacén de los cobros con saldo no se deja leer: «no se sabe», nunca «no hay»
+
+    @Test
+    fun `D12r3 al entrar con el almacen ilegible dice que no se pudo revisar y Cobrar queda en gris`() = runTest {
+        every { repo.saldoDe("cord1") } returns SaldoGuardado.Ilegible
+        coEvery { repo.resolver("cord1") } returns DesenlaceDeSaldo.Ilegible
+        saldo(35000)
+
+        val vm = vm()
+        vm.teclear(valido)
+        vm.cobrar()
+
+        coVerify(exactly = 1) { repo.resolver("cord1") }
+        assertThat(vm.ui.value.error).isEqualTo(TextosDeSaldo.ILEGIBLE)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+        assertThat(vm.ui.value.enDuda).isFalse()
+        coVerify(exactly = 0) { repo.cobrar(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D12r3 si al cobrar el almacen resulta ilegible no vuelve a consultar y Cobrar queda en gris`() = runTest {
+        saldo(35000)
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.Ilegible
+        val vm = vm()
+        vm.teclear(valido)
+
+        vm.cobrar()
+
+        assertThat(vm.ui.value.error).isEqualTo(TextosDeSaldo.ILEGIBLE)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+        assertThat(vm.ui.value.enDuda).isFalse()
+        coVerify(exactly = 1) { repo.consultar(any()) }
     }
 
     // endregion

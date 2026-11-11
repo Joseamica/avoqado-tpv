@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.giftcards.data
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.di.NetworkModule
@@ -37,6 +38,8 @@ class CobroConSaldoRepositoryTest {
     private lateinit var server: MockWebServer
     private val almacen = mutableMapOf<String, String>()
     private var guardarFalla = false
+    /** D12 r3: el valor cifrado de los cobros con saldo ya no se deja descifrar (Keystore invalidado, respaldo restaurado). */
+    private var cifradoRoto = false
     private val storage = mockk<SecureStorage>(relaxed = true)
     private val device = mockk<DeviceInfoManager>()
 
@@ -44,7 +47,10 @@ class CobroConSaldoRepositoryTest {
     fun setUp() {
         server = MockWebServer().also { it.start() }
         every { storage.getVenueId() } returns "v1"
-        every { storage.getString(any(), any()) } answers { almacen[firstArg()] ?: secondArg() }
+        every { storage.getString(any(), any()) } answers {
+            if (cifradoRoto && firstArg<String>() == ALMACEN) throw SecurityException("Could not decrypt value")
+            almacen[firstArg()] ?: secondArg()
+        }
         every { storage.putStringDurably(any(), any()) } answers {
             check(!guardarFalla) { "Could not persist" }
             almacen[firstArg()] = secondArg()
@@ -546,7 +552,7 @@ class CobroConSaldoRepositoryTest {
         assertThat(repo().cobrar("cord1", tarjeta, 5000, folio = "W7K3P")).isEqualTo(DesenlaceDeSaldo.Incierto)
 
         // Otra instancia sobre el mismo almacén = la app que se reabre sin red.
-        val guardada = repo().pendientes().single()
+        val guardada = repo().pendientes()!!.single()
         assertThat(guardada.orderId).isEqualTo("cord1")
         assertThat(guardada.folio).isEqualTo("W7K3P")
         assertThat(guardada.montoCents).isEqualTo(5000)
@@ -569,10 +575,10 @@ class CobroConSaldoRepositoryTest {
 
     @Test
     fun `D12 una guardada por la version anterior (sin folio) se lee con su monto`() {
-        almacen["tienda_hibrida_cobros_con_saldo"] =
+        almacen[ALMACEN] =
             """[{"llave":"k1234567","venueId":"v1","orderId":"cord1","cuerpo":"{\"idempotencyKey\":\"k1234567\",\"amount\":134.50,\"tip\":0}","creadaEn":1}]"""
 
-        val guardada = repo().pendientes().single()
+        val guardada = repo().pendientes()!!.single()
 
         assertThat(guardada.folio).isNull()
         assertThat(guardada.montoCents).isEqualTo(13450)
@@ -580,11 +586,11 @@ class CobroConSaldoRepositoryTest {
 
     @Test
     fun `D12 sólo las de este negocio`() {
-        almacen["tienda_hibrida_cobros_con_saldo"] =
+        almacen[ALMACEN] =
             """[{"llave":"k1234567","venueId":"otro","orderId":"cord1","cuerpo":"{}","creadaEn":1,"folio":"W1111"},""" +
             """{"llave":"k7654321","venueId":"v1","orderId":"cord2","cuerpo":"{}","creadaEn":1,"folio":"W2222"}]"""
 
-        val guardadas = repo().pendientes()
+        val guardadas = repo().pendientes()!!
 
         assertThat(guardadas.map { it.folio }).containsExactly("W2222")
         // Un cuerpo sin monto no tumba el aviso: sale sin monto.
@@ -592,4 +598,89 @@ class CobroConSaldoRepositoryTest {
     }
 
     // endregion
+
+    // region D12 r3 — pasada de la familia «almacén ilegible»: un solo lector que dice «no se sabe» y nunca lanza
+
+    /** Las tres formas en que el almacén deja de leerse: no se descifra, el JSON no se entiende o trae una fila incompleta. */
+    private val ilegibles: List<Pair<String, () -> Unit>> = listOf(
+        "no se descifra" to { almacen[ALMACEN] = "[]"; cifradoRoto = true },
+        "JSON roto" to { almacen[ALMACEN] = "{esto no es json" },
+        "fila incompleta" to { almacen[ALMACEN] = """[{"llave":"k1234567","venueId":"v1","orderId":"cord1"}]""" },
+    )
+
+    private inline fun conCadaIlegible(prueba: (String) -> Unit) = ilegibles.forEach { (nombre, romper) ->
+        almacen.clear(); cifradoRoto = false
+        romper()
+        prueba(nombre)
+    }
+
+    @Test
+    fun `D12r3 el lector distingue ilegible de vacio y nunca lanza`() {
+        assertThat(repo().pendientes()).isEmpty()
+        assertThat(repo().saldoDe("cord1")).isEqualTo(SaldoGuardado.Ninguno)
+        conCadaIlegible { nombre ->
+            assertWithMessage(nombre).that(repo().pendientes()).isNull()
+            assertWithMessage(nombre).that(repo().saldoDe("cord1")).isEqualTo(SaldoGuardado.Ilegible)
+        }
+        // Tampoco si la sesión (el negocio) no se deja leer.
+        almacen.clear(); cifradoRoto = false
+        every { storage.getVenueId() } throws SecurityException("Could not decrypt value")
+        assertThat(repo().pendientes()).isNull()
+        assertThat(repo().saldoDe("cord1")).isEqualTo(SaldoGuardado.Ilegible)
+    }
+
+    @Test
+    fun `D12r3 cobrar con el almacen ilegible no manda nada ni escribe encima`() = runTest {
+        conCadaIlegible { nombre ->
+            val antes = almacen[ALMACEN]
+            val d = repo().cobrar("cord1", tarjeta, 5000, folio = "W7K3P")
+            assertWithMessage(nombre).that(d).isEqualTo(DesenlaceDeSaldo.Ilegible)
+            assertWithMessage(nombre).that(almacen[ALMACEN]).isEqualTo(antes)
+        }
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `D12r3 comprobar con el almacen ilegible dice Ilegible sin preguntar ni reenviar`() = runTest {
+        conCadaIlegible { nombre ->
+            assertWithMessage(nombre).that(repo().resolver("cord1")).isEqualTo(DesenlaceDeSaldo.Ilegible)
+        }
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `D12r3 el cobro remoto de una cuenta no se admite con el almacen ilegible y sin cuenta si`() {
+        conCadaIlegible { nombre ->
+            assertWithMessage(nombre).that(repo().motivoParaNoCobrarRemoto("cord1")).isEqualTo(TextosDeSaldo.REMOTO_SALDO_ILEGIBLE)
+            assertWithMessage(nombre).that(repo().motivoParaNoCobrarRemoto(null)).isNull()
+        }
+    }
+
+    @Test
+    fun `D12r3 si el almacen deja de leerse a media confirmacion no borra nada ni lanza`() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                cifradoRoto = true
+                return cobro()
+            }
+        }
+
+        val d = repo().cobrar("cord1", tarjeta, 5000, folio = "W7K3P")
+
+        assertThat(d).isInstanceOf(DesenlaceDeSaldo.Cobrado::class.java)
+        // Sólo la escritura de antes de mandar: el borrado de la solicitud ya cobrada no escribe a ciegas sobre lo que no leyó.
+        io.mockk.verify(exactly = 1) { storage.putStringDurably(ALMACEN, any()) }
+        cifradoRoto = false
+        assertThat(repo().saldoDe("cord1")).isInstanceOf(SaldoGuardado.EnDuda::class.java)
+    }
+
+    // endregion
 }
+
+private const val ALMACEN = "tienda_hibrida_cobros_con_saldo"
+
+/** Para las pruebas de siempre: la solicitud guardada de [orderId], o null si no hay (el lector de verdad es [CobroConSaldoRepository.saldoDe]). */
+private fun CobroConSaldoRepository.pendienteDe(orderId: String): SolicitudDeSaldo? =
+    (saldoDe(orderId) as? SaldoGuardado.EnDuda)?.solicitud
+
+private fun CobroConSaldoRepository.foliosPendientes(): Set<String> = pendientes()!!.mapTo(HashSet()) { it.orderId }

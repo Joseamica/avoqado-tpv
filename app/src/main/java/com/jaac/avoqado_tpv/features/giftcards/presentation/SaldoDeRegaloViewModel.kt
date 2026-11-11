@@ -145,7 +145,8 @@ class SaldoDeRegaloViewModel @Inject constructor(
         orderId = apertura.orderId
         val falta = apertura.initialAmount.toBigDecimalOrNull()?.setScale(2, RoundingMode.HALF_UP)?.movePointRight(2)?.toLong() ?: 0L
         _ui.update { it.copy(faltaCents = falta, folio = apertura.folio) }
-        if (repo.pendienteDe(apertura.orderId) != null) comprobar()
+        // D12 r3: también con el almacén ilegible: la comprobación lo dice y deja «Cobrar» en gris.
+        if (repo.saldoDe(apertura.orderId) != com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno) comprobar()
     }
 
     fun elegir(entrada: EntradaDeCodigo) = _ui.update {
@@ -239,6 +240,9 @@ class SaldoDeRegaloViewModel @Inject constructor(
                 prueba?.let { consultar(it, conservarError = true) }
             }
             DesenlaceDeSaldo.Incierto -> _ui.update { it.copy(enDuda = true) }
+            // D12 r3: el almacén no se deja leer: no se sabe si este folio ya se cobró. «Cobrar» en gris y no se vuelve a leer el saldo.
+            DesenlaceDeSaldo.Ilegible ->
+                _ui.update { it.copy(enDuda = false, error = TextosDeSaldo.ILEGIBLE, consulta = null, folioCerrado = true) }
         }
     }
 

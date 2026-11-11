@@ -34,7 +34,7 @@ sealed interface Autorizacion {
 data class PromptDePin(val id: Long, val motivo: String, val error: String?, val enviando: Boolean)
 
 /**
- * Decide si una cortesía necesita el PIN de un gerente, lo pide por un diálogo (StateFlow) y
+ * Decide si una cortesía (u otro permiso, [paraPermiso]) necesita el PIN de un gerente, lo pide por un diálogo (StateFlow) y
  * devuelve el token de un solo uso. Un diálogo a la vez; las demás solicitudes esperan su turno.
  */
 @Singleton
@@ -56,16 +56,31 @@ class AutorizacionDeGerente @Inject constructor(
     private val _prompt = MutableStateFlow<PromptDePin?>(null)
     val prompt: StateFlow<PromptDePin?> = _prompt.asStateFlow()
 
-    suspend fun paraCortesia(venueId: String, motivo: String, forzar: Boolean = false): Autorizacion {
+    suspend fun paraCortesia(venueId: String, motivo: String, forzar: Boolean = false): Autorizacion =
+        paraPermiso(venueId, PERMISO_LOCAL, PERMISO_SERVIDOR, motivo, forzar = forzar)
+
+    /**
+     * El PIN de un gerente para [permisoServidor] cuando la sesión no tiene [permisoLocal]. [operationKey] ata la autorización a UNA
+     * operación (p. ej. `descuento-cliente:<cliente>:<descuento>`); sin ella el cuerpo es el de siempre.
+     */
+    suspend fun paraPermiso(
+        venueId: String,
+        permisoLocal: String,
+        permisoServidor: String,
+        motivo: String,
+        operationKey: String? = null,
+        forzar: Boolean = false,
+    ): Autorizacion {
+        val esCortesia = permisoServidor == PERMISO_SERVIDOR
         val epocaAlLlegar = epoca.get()
         if (forzar) {
             PermissionsRepository.invalidarListaTrasRechazo(secureStorage, venueId, secureStorage.getStaffId())
-        } else if (permisos.hasPermission(PERMISO_LOCAL)) {
+        } else if (permisos.hasPermission(permisoLocal)) {
             return Autorizacion.NoHaceFalta
         }
         if (pinPrendidoCacheado(venueId) == false) {
             if (epoca.get() != epocaAlLlegar) return Autorizacion.Cancelada
-            return Autorizacion.Negada(TEXTO_NEGADA)
+            return Autorizacion.Negada(if (esCortesia) TEXTO_NEGADA else TEXTO_NEGADA_OTRO)
         }
         return turno.withLock {
             val s = Solicitud(ids.incrementAndGet())
@@ -79,7 +94,7 @@ class AutorizacionDeGerente @Inject constructor(
                         for (pin in s.pins) {
                             if (s.resultado.isCompleted) break
                             val r = try {
-                                repo.pedirToken(venueId, pin, PERMISO_SERVIDOR)
+                                repo.pedirToken(venueId, pin, permisoServidor, operationKey)
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
@@ -89,7 +104,9 @@ class AutorizacionDeGerente @Inject constructor(
                             if (r.isFailure) {
                                 val e = r.exceptionOrNull()
                                 if (e is ErrorDeAutorizacion.PinApagado) guardar(venueId, false)
-                                val texto = (e as? ErrorDeAutorizacion)?.texto ?: GENERICO
+                                // El texto de PinApagado habla de la cortesía: para otro permiso se dice sin nombrarla.
+                                val texto = if (e is ErrorDeAutorizacion.PinApagado && !esCortesia) PIN_APAGADO_OTRO
+                                else (e as? ErrorDeAutorizacion)?.texto ?: GENERICO
                                 _prompt.update { p -> if (p?.id == s.id) p.copy(error = texto, enviando = false) else p }
                                 s.enviando.set(false)
                             }
@@ -145,6 +162,8 @@ class AutorizacionDeGerente @Inject constructor(
         const val CACHE_NS = 5 * 60_000_000_000L
         const val ESPERA_MS = 3_000L
         const val TEXTO_NEGADA = "Esta cortesía la da un gerente con su sesión"
+        const val TEXTO_NEGADA_OTRO = "Lo autoriza un gerente con su sesión"
+        const val PIN_APAGADO_OTRO = "En este negocio el PIN de gerente está apagado. $TEXTO_NEGADA_OTRO"
         const val GENERICO = "No se pudo autorizar. Intenta otra vez"
     }
 }

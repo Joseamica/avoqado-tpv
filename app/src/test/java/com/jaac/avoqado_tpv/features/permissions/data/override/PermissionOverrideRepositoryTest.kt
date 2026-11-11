@@ -73,6 +73,22 @@ class PermissionOverrideRepositoryTest {
         coVerify { api.crear("v9", PedirTokenBody(pin = "4321", permission = "orders:comp")) }
     }
 
+    @Test fun manda_operationKey_cuando_viene() {
+        coEvery { api.crear(any(), any()) } returns error(401, """{"code":"OVERRIDE_INVALID_PIN"}""")
+        runBlocking { repo.pedirToken("v9", "4321", "discounts:apply", "descuento-cliente:c1:d1") }
+        coVerify {
+            api.crear("v9", PedirTokenBody(pin = "4321", permission = "discounts:apply", operationKey = "descuento-cliente:c1:d1"))
+        }
+    }
+
+    // El esquema del servidor acepta `operationKey` ausente, no `null`: sin llave el cuerpo es el de siempre (el converter usa Gson()).
+    @Test fun sin_operationKey_el_cuerpo_no_la_lleva() {
+        val gson = com.google.gson.Gson()
+        assertThat(gson.toJson(PedirTokenBody("4321", "orders:comp"))).isEqualTo("""{"pin":"4321","permission":"orders:comp"}""")
+        assertThat(gson.toJson(PedirTokenBody("4321", "discounts:apply", "descuento-cliente:c1:d1")))
+            .isEqualTo("""{"pin":"4321","permission":"discounts:apply","operationKey":"descuento-cliente:c1:d1"}""")
+    }
+
     private fun settings(json: String) = Response.success(
         com.google.gson.Gson().fromJson(json, VenueSettingsResponse::class.java),
     )

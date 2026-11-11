@@ -48,6 +48,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.DescuentoDelCliente
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.comoDescuento
+import com.jaac.avoqado_tpv.features.ordering.domain.llaveDelDescuentoDelCliente
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -229,21 +230,50 @@ class CheckoutViewModel @Inject constructor(
         viewModelScope.launch { revisarDescuentoDelCliente(usar = true) }
     }
 
-    /** «Pedir autorización»: el PIN de un gerente para `discounts:apply` (lo conecta Task 6). Pedirlo necesita al servidor. */
+    private var pinDelDescuento: Job? = null
+
+    /**
+     * «Pedir autorización»: el PIN de un gerente para `discounts:apply`, atado a ESTE cliente y a ESTE descuento (el servidor guarda la
+     * autorización con esa llave). El token sólo vive en el carrito: viaja con la venta y se va al cambiar de cliente. Necesita red.
+     */
     fun pedirAutorizacionDescuentoDelCliente() {
         if (candado.rechaza("pedir autorización del descuento")) return
         if (!connectionStateManager.hasInternet()) {
             _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.SinRedParaPin
             return
         }
-        // Task 6: AutorizacionDeGerente para `discounts:apply` atado a llaveDelDescuentoDelCliente(cliente, descuento).
+        if (pinDelDescuento?.isActive == true) return
+        val cliente = _selectedCustomer.value ?: return
+        val d = cliente.descuentoDelCliente ?: return
+        val venueId = secureStorage.getVenueId() ?: return
+        pinDelDescuento = viewModelScope.launch {
+            val auth = try {
+                autorizacionDeGerente.paraPermiso(
+                    venueId, PERMISO_DESCUENTO, PERMISO_DESCUENTO, "Descuento de ${nombreParaElDescuento(cliente)}",
+                    llaveDelDescuentoDelCliente(cliente.id, d.discountId),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "No se pudo pedir la autorización del descuento del cliente")
+                _aviso.value = "No se pudo pedir la autorización. Intenta otra vez"
+                null
+            }
+            // Llegó tarde: la autorización es de ese cliente y ese descuento, no del que esté elegido ahora.
+            val ahora = _selectedCustomer.value
+            if (ahora?.id != cliente.id || ahora.descuentoDelCliente?.discountId != d.discountId) return@launch
+            // Con token se pone; sin él (cancelado, PIN apagado, error) se vuelve a revisar: el aviso queda como deba (sin el botón si
+            // el PIN se apagó), o se pone si mientras tanto le dieron el permiso.
+            revisarDescuentoDelCliente(usar = true, autorizacion = (auth as? Autorizacion.ConPin)?.token)
+        }
     }
 
     /**
      * D1: pone el descuento del cliente elegido o deja el aviso de por qué no. No pisa otro descuento de cuenta salvo con [usar], ni
      * vuelve a ponerlo tras «Quitar». Con [soloAviso] (al restaurar el carrito) no cambia lo que viaja: la llave de la venta sale de ahí.
+     * [autorizacion] es el token del PIN del gerente: se guarda en el carrito junto con el descuento, en el mismo cambio.
      */
-    private suspend fun revisarDescuentoDelCliente(usar: Boolean = false, soloAviso: Boolean = false) {
+    private suspend fun revisarDescuentoDelCliente(usar: Boolean = false, soloAviso: Boolean = false, autorizacion: String? = null) {
         val cliente = _selectedCustomer.value
         val d = cliente?.descuentoDelCliente
         if (cliente == null || d == null || (_cartState.value.descuentoDelClienteQuitadoDe == cliente.id && !usar)) {
@@ -252,7 +282,8 @@ class CheckoutViewModel @Inject constructor(
         }
         val nombre = nombreParaElDescuento(cliente)
         val valor = textoDelValor(d)
-        val puede = _cartState.value.autorizacionDelDescuento != null || permissionsRepository.hasPermission("discounts:apply")
+        val puede = autorizacion != null || _cartState.value.autorizacionDelDescuento != null ||
+            permissionsRepository.hasPermission(PERMISO_DESCUENTO)
         // Llegó tarde: otro cliente, o la venta ya se está preparando (lo que viaja no cambia).
         if (_selectedCustomer.value?.id != cliente.id || (!soloAviso && candado.rechaza("poner el descuento del cliente"))) return
         val cart = _cartState.value
@@ -272,6 +303,7 @@ class CheckoutViewModel @Inject constructor(
             it.copy(
                 orderDiscount = d.comoDescuento(),
                 descuentoEsDelCliente = true,
+                autorizacionDelDescuento = autorizacion ?: it.autorizacionDelDescuento,
                 descuentoDelClienteQuitadoDe = it.descuentoDelClienteQuitadoDe.takeUnless { q -> q == cliente.id },
                 manualDiscountCents = 0,
                 manualDiscountReason = null,
@@ -962,6 +994,9 @@ class CheckoutViewModel @Inject constructor(
          * companion porque el primer refresco sale del `init`; las pruebas lo ponen en `Dispatchers.Unconfined` en `@Before`.
          */
         internal var despachadorDelCatalogo: CoroutineDispatcher = Dispatchers.Default
+
+        /** D1: el permiso del descuento del cliente; el mismo nombre en la sesión y en el PIN del gerente. */
+        private const val PERMISO_DESCUENTO = "discounts:apply"
     }
 
     /**

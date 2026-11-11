@@ -749,6 +749,189 @@ class CheckoutDescuentoDelClienteTest {
 
         assertEquals(AvisoDescuentoDelCliente.SinRedParaPin, vm.avisoDescuentoDelCliente.value)
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
+        coVerify(exactly = 0) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Task 6 · «Pedir autorización»: PIN de gerente para `discounts:apply`, atado a Cecilia y a su descuento
+    // ─────────────────────────────────────────────────────────────────────
+
+    private val LLAVE_CECILIA = "descuento-cliente:c-cecilia:d-10"
+
+    private fun pinDeCecilia(r: Autorizacion) {
+        coEvery {
+            autorizacion.paraPermiso("venue-1", "discounts:apply", "discounts:apply", "Descuento de Cecilia", LLAVE_CECILIA, false)
+        } returns r
+    }
+
+    @Test
+    fun `PIN correcto pone el descuento de Cecilia con su autorizacion, que sigue al agregar y se va al cambiar de cliente`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        coVerify(exactly = 1) {
+            autorizacion.paraPermiso("venue-1", "discounts:apply", "discounts:apply", "Descuento de Cecilia", LLAVE_CECILIA, false)
+        }
+        assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals("tok-d", vm.cartState.value.autorizacionDelDescuento)
+        assertEquals(9000, vm.cartState.value.totalCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+
+        vm.addCustomAmount("Importe", 5000)
+        assertEquals("Agregar otro importe no borra la autorización", "tok-d", vm.cartState.value.autorizacionDelDescuento)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals(13500, vm.cartState.value.totalCents)
+
+        vm.selectCustomer(ernesto)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Ernesto", "30 %", true), vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con la autorizacion del PIN Cobrar pasa aunque la cajera no tenga permiso`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        val vm = createViewModel()
+        vm.addCustomAmount("Importe", 10000)
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("Salió $payload", payload is PaymentNavigationPayload.Order)
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `PIN cancelado o apagado sigue el aviso y no pone nada`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.Cancelada)
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertEquals(10000, vm.cartState.value.totalCents)
+
+        // El negocio apagó el PIN: el aviso se queda, ya sin «Pedir autorización».
+        pinDeCecilia(Autorizacion.Negada("Lo autoriza un gerente con su sesión"))
+        coEvery { autorizacion.pinPrendido("venue-1") } returns false
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", false), vm.avisoDescuentoDelCliente.value)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `si pedir el PIN falla se dice y sigue el aviso`() = runTest {
+        sinPermisoDeDescuento()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } throws IllegalStateException("boom")
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        assertEquals("No se pudo pedir la autorización. Intenta otra vez", vm.aviso.value)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `si cambia de cliente mientras el gerente teclea el token no se pone a nadie`() = runTest {
+        sinPermisoDeDescuento()
+        val gerente = kotlinx.coroutines.CompletableDeferred<Autorizacion>()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } coAnswers { gerente.await() }
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        vm.selectCustomer(ernesto)
+        gerente.complete(Autorizacion.ConPin("tok-d"))
+
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Ernesto", "30 %", true), vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `doble toque en Pedir autorizacion abre un solo PIN`() = runTest {
+        sinPermisoDeDescuento()
+        val gerente = kotlinx.coroutines.CompletableDeferred<Autorizacion>()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } coAnswers { gerente.await() }
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.pedirAutorizacionDescuentoDelCliente()
+        vm.pedirAutorizacionDescuentoDelCliente()
+        gerente.complete(Autorizacion.ConPin("tok-d"))
+
+        coVerify(exactly = 1) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
+        assertEquals("tok-d", vm.cartState.value.autorizacionDelDescuento)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `SinRedParaPin no atrapa - con la red de vuelta pedir otra vez abre el PIN`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        connectionStateManager.setInternetConnected(false)
+        vm.pedirAutorizacionDescuentoDelCliente()
+        assertEquals(AvisoDescuentoDelCliente.SinRedParaPin, vm.avisoDescuentoDelCliente.value)
+
+        connectionStateManager.setInternetConnected(true)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        assertEquals("tok-d", vm.cartState.value.autorizacionDelDescuento)
+        assertTrue(vm.cartState.value.descuentoEsDelCliente)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `SinRedParaPin - elegirla otra vez o limpiar el carrito regresa al aviso normal`() = runTest {
+        sinPermisoDeDescuento()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        val normal = AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true)
+
+        connectionStateManager.setInternetConnected(false)
+        vm.pedirAutorizacionDescuentoDelCliente()
+        connectionStateManager.setInternetConnected(true)
+        vm.selectCustomer(cecilia)
+        assertEquals(normal, vm.avisoDescuentoDelCliente.value)
+
+        connectionStateManager.setInternetConnected(false)
+        vm.pedirAutorizacionDescuentoDelCliente()
+        connectionStateManager.setInternetConnected(true)
+        vm.clearCart()
+        assertEquals(normal, vm.avisoDescuentoDelCliente.value)
+        coVerify(exactly = 0) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
         vm.viewModelScope.cancel()
     }
 

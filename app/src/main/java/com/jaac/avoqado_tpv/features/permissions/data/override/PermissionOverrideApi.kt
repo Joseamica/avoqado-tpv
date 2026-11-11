@@ -6,7 +6,8 @@ import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
 
-data class PedirTokenBody(val pin: String, val permission: String)
+/** [operationKey] ata la autorización a una operación; `null` no se manda (Gson omite los nulos) y el servidor no lo acepta como valor. */
+data class PedirTokenBody(val pin: String, val permission: String, val operationKey: String? = null)
 data class AutorizadoPor(val id: String, val name: String)
 data class TokenData(val token: String, val expiresAt: String, val authorizedBy: AutorizadoPor?)
 data class TokenResponse(val success: Boolean, val data: TokenData?)

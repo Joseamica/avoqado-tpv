@@ -282,6 +282,39 @@ class AutorizacionDeGerenteTest {
         coVerify(exactly = 2) { repo.pinPrendido("v1") }
     }
 
+    // D1: el mismo diálogo para otro permiso, con su motivo y la llave de la operación que autoriza.
+    private val LLAVE = "descuento-cliente:c1:d1"
+
+    private fun TestScope.pideDescuento() =
+        async { auth.paraPermiso("v1", "discounts:apply", "discounts:apply", "Descuento de Cecilia", LLAVE) }
+
+    @Test fun paraPermiso_pide_su_permiso_con_la_llave_y_el_motivo() = runTest {
+        coEvery { permisos.hasPermission("discounts:apply") } returns false
+        coEvery { repo.pedirToken("v1", "1234", "discounts:apply", LLAVE) } returns Result.success("tok-d")
+        val r = pideDescuento(); advanceUntilIdle()
+        val p = auth.prompt.value!!
+        assertThat(p.motivo).isEqualTo("Descuento de Cecilia")
+        auth.enviarPin(p.id, "1234"); advanceUntilIdle()
+        assertThat(r.await()).isEqualTo(Autorizacion.ConPin("tok-d"))
+        coVerify(exactly = 0) { permisos.hasPermission("tpv-orders:comp") }
+    }
+
+    @Test fun paraPermiso_con_su_permiso_no_abre_dialogo() = runTest {
+        coEvery { permisos.hasPermission("discounts:apply") } returns true
+        assertThat(pideDescuento().await()).isEqualTo(Autorizacion.NoHaceFalta)
+        assertThat(auth.prompt.value).isNull()
+    }
+
+    @Test fun paraPermiso_con_el_PIN_apagado_no_habla_de_cortesia() = runTest {
+        coEvery { permisos.hasPermission("discounts:apply") } returns false
+        coEvery { repo.pedirToken("v1", "1234", "discounts:apply", LLAVE) } returns Result.failure(ErrorDeAutorizacion.PinApagado)
+        pideDescuento(); advanceUntilIdle()
+        auth.enviarPin(auth.prompt.value!!.id, "1234"); advanceUntilIdle()
+        assertThat(auth.prompt.value!!.error).isEqualTo("En este negocio el PIN de gerente está apagado. Lo autoriza un gerente con su sesión")
+        auth.cancelarTodo(); advanceUntilIdle()
+        assertThat(pideDescuento().await()).isEqualTo(Autorizacion.Negada("Lo autoriza un gerente con su sesión"))
+    }
+
     @Test fun PinApagado_del_servidor_guarda_false() = runTest {
         coEvery { repo.pinPrendido("v1") } returns true
         coEvery { repo.pedirToken("v1", "1234", "orders:comp") } returns Result.failure(ErrorDeAutorizacion.PinApagado)

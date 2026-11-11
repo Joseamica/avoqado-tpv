@@ -18,9 +18,9 @@ sealed class ErrorDeAutorizacion(val texto: String) : Exception(texto) {
 
 class PermissionOverrideRepository @Inject constructor(private val api: PermissionOverrideApi) {
 
-    suspend fun pedirToken(venueId: String, pin: String, permiso: String): Result<String> {
+    suspend fun pedirToken(venueId: String, pin: String, permiso: String, operationKey: String? = null): Result<String> {
         val resp = try {
-            api.crear(venueId, PedirTokenBody(pin, permiso))
+            api.crear(venueId, PedirTokenBody(pin, permiso, operationKey))
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {

@@ -11,6 +11,9 @@
 - **Copia de laboratorio (`.lab`) para la nube**: `-Pavoqado.devApplicationIdSuffix=.lab` compila la depuración como otra app (`com.jaac.avoqado_tpv.sandbox.lab` en `nexgoDebug`), que la puerta del laboratorio instala en la N86 junto a la TPV de pruebas de la Mac sin tocarla. Sólo debug: con la propiedad, un build release falla. Sin ella, nada cambia. Necesita el cliente `.lab` en `google-services.json` (registrado en Firebase el 10-nov).
 - **Depuración: HTTP al puente del Alien**: la configuración de red de debug permite `192.168.100.70` (el puente del laboratorio hacia el banco de la nube). Sin ella Android bloqueaba la copia `.lab` («CLEARTEXT not permitted») y se quedaba en «Activar Terminal» (recorrido de la nube 8d24c0, 10-nov). Release no lo incluye.
 
+### **Fixed**
+- **El recibo «EN COLA» se actualiza solo (Nexgo)**: si un cobro quedó con «El registro quedó EN COLA… NO vuelvas a cobrar» y el recibo sigue abierto cuando la cola sube esa venta, el aviso cambia solo a verde «Ya quedó registrado en Avoqado» (antes se quedaba en ámbar aunque el servidor ya lo tuviera; recorrido de la nube, 10-nov, D4). Sin red, o si la cola no la pudo subir, sigue en ámbar. QR, imprimir y enviar siguen escondidos como antes.
+
 ---
 
 ## [2.18.0] - 2026-11-10

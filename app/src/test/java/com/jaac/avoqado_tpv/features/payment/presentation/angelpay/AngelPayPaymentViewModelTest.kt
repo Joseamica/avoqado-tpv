@@ -2128,6 +2128,95 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    /** Lleva el cobro hasta el recibo «EN COLA» (aprobado + el registro en el servidor falla) y lo espera. */
+    private fun kotlinx.coroutines.test.TestScope.cobroEnCola(vm: AngelPayPaymentViewModel): AngelPayPaymentState.Queued {
+        vm.initPayment(amount = "100.00")
+        runCurrent()
+        vm.primeSdkLaunch()
+        runCurrent()
+        vm.onAngelPaySdkResult(approvedSdkResult(reference = "R-D4"))
+        repeat(300) {
+            runCurrent()
+            (vm.state.value as? AngelPayPaymentState.Queued)?.let { return it }
+            Thread.sleep(10) // el registro→cola salta por Dispatchers.IO (igual que la prueba vecina)
+        }
+        error("el cobro nunca llegó a Queued: ${vm.state.value}")
+    }
+
+    @Test
+    fun `D4 el recibo en cola pasa a registrado cuando la cola sube ESA venta`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
+        val estado = MutableStateFlow<String?>("PENDING")
+        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns estado
+
+        val vm = createViewModel()
+        try {
+            val enCola = cobroEnCola(vm)
+            assertThat(enCola.registrado).isFalse()
+            assertThat(enCola.message).contains("EN COLA")
+
+            estado.value = "SYNCING" // la cola la está subiendo: todavía no
+            runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Queued).registrado).isFalse()
+
+            estado.value = "SUCCESS" // el servidor ya la tiene
+            runCurrent()
+            val ya = vm.state.value as AngelPayPaymentState.Queued
+            assertThat(ya.registrado).isTrue()
+            assertThat(ya.message).doesNotContain("EN COLA")
+            assertThat(ya.message).contains("registrado")
+            assertThat(ya.amount).isEqualTo(enCola.amount)
+            assertThat(ya.referenceNumber).isEqualTo(enCola.referenceNumber)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D4 una venta que la cola no pudo subir sigue en ambar`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
+        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns MutableStateFlow("FAILED")
+
+        val vm = createViewModel()
+        try {
+            cobroEnCola(vm)
+            runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.Queued
+            assertThat(s.registrado).isFalse()
+            assertThat(s.message).contains("EN COLA")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D4 al salir del recibo deja de vigilar la cola`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
+        val estado = MutableStateFlow<String?>("PENDING")
+        every { paymentQueueRepository.observarEstadoDeVenta("R-D4") } returns estado
+
+        val vm = createViewModel()
+        try {
+            cobroEnCola(vm)
+            vm.resetPayment()
+            runCurrent()
+            estado.value = "SUCCESS" // ya no está el recibo: nada lo debe revivir
+            runCurrent()
+            assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Queued::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `charge-active flag flips false on a resolved Queued screen (terminal not stuck-busy)`() = runTest(testDispatcher) {
         // F-1 fix round 1 (sibling of the Error case above): Queued is a RESOLVED outcome

@@ -252,6 +252,10 @@ interface PendingPaymentDao {
     """)
     fun contarVentasGuardadas(venueId: String): kotlinx.coroutines.flow.Flow<Int>
 
+    /** D4: el estado de ESA venta en la cola (`reference_number` es único); null si ya no está. Lo vigila el recibo. */
+    @Query("SELECT sync_status FROM pending_payments WHERE reference_number = :referenceNumber LIMIT 1")
+    fun observarEstadoDeVenta(referenceNumber: String): kotlinx.coroutines.flow.Flow<String?>
+
     @Query("""
         SELECT COUNT(*) FROM pending_payments
         WHERE venue_id = :venueId AND (sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0

@@ -100,6 +100,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -1197,6 +1200,27 @@ class AngelPayPaymentViewModel @Inject constructor(
                         s !is AngelPayPaymentState.Cancelled,
                 )
             }
+        }
+
+        // 🧾 D4 (10-nov): el recibo «EN COLA» se quedaba así aunque la cola ya hubiera subido la venta. Mientras ESE
+        // recibo esté a la vista se vigila su fila; con `SUCCESS` cambia a «registrado». Sólo esa venta (por su
+        // referencia) y sólo si la pantalla sigue en ese mismo recibo: al salir, el flatMapLatest deja de vigilar.
+        viewModelScope.launch {
+            @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+            state.map { (it as? AngelPayPaymentState.Queued)?.takeUnless { q -> q.registrado }?.referenceNumber }
+                .distinctUntilChanged()
+                .flatMapLatest { ref ->
+                    if (ref == null) emptyFlow()
+                    else paymentQueueRepository.observarEstadoDeVenta(ref).map { ref to it }
+                }
+                .collect { (ref, estado) ->
+                    if (estado != "SUCCESS") return@collect
+                    val enCola = _state.value as? AngelPayPaymentState.Queued ?: return@collect
+                    if (enCola.referenceNumber != ref || enCola.registrado) return@collect
+                    if (_state.compareAndSet(enCola, enCola.copy(registrado = true, message = MENSAJE_REGISTRADO))) {
+                        Timber.i("🧾 [AngelPay] La venta en cola ya quedó registrada: ref=%s", ref)
+                    }
+                }
         }
 
         // 💵 D2: «Método de pago» sigue a la conexión mientras está a la vista (sólo efectivo ⇄ tarjeta). Con
@@ -5717,6 +5741,9 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     companion object {
+        /** D4: lo que dice el recibo cuando la cola ya subió la venta que estaba «EN COLA». */
+        const val MENSAJE_REGISTRADO = "Ya quedó registrado en Avoqado."
+
         /**
          * Cuánto se espera a que el cajero retome un cobro del POS que quedó en pantalla con
          * «Reintentar» antes de cerrarle la fila al POS.

@@ -128,6 +128,14 @@ interface PaymentQueueRepository {
     suspend fun getPendingCount(): Int
 
     /**
+     * D4 (10-nov): el estado de la fila de ESA venta (`PENDING`, `SYNCING`, `SUCCESS`, `FAILED`), o null si no está.
+     * El recibo «EN COLA» lo vigila para decir «ya quedó registrado» cuando la cola la sube. Por omisión no emite nada
+     * (los dobles de prueba no tienen que implementarlo).
+     */
+    fun observarEstadoDeVenta(referenceNumber: String): kotlinx.coroutines.flow.Flow<String?> =
+        kotlinx.coroutines.flow.emptyFlow()
+
+    /**
      * Get count of failed payments (for UI warning).
      *
      * **Use Case:** Show alert "2 payments failed - contact support"

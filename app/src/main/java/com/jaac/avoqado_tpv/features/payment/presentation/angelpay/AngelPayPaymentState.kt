@@ -149,6 +149,8 @@ sealed class AngelPayPaymentState {
         val referenceNumber: String? = null,
         val orderId: String? = null,
         val orderNumber: String? = null,
+        /** D4: la cola ya subió esta venta; el recibo cambia el aviso ámbar por uno verde. */
+        val registrado: Boolean = false,
     ) : AngelPayPaymentState()
 
     /**

@@ -290,6 +290,22 @@ class RepositorioDeEntradaTest {
         assertEquals("acc0", quienSoy.sesion?.accessToken) // la que ya tenía
     }
 
+    @Test fun `sin red no se cambia de sucursal - rechaza antes del PIN y la sesion sigue en la anterior (H1)`() = runBlocking {
+        yaActivado(listOf(Sucursal("v1", "Centro", VERIFICADOR), Sucursal("v2", "Norte", VERIFICADOR)))
+        quienSoy.marcarBloqueada(true)
+        responder = corta
+        val r = repo()
+        val rechazo = ResultadoEntrada.Rechazo("Para entrar a Norte necesitas señal. Sin señal puedes entrar a Centro.", null)
+        assertEquals(rechazo, r.entrar("1234", "v2"))
+        assertEquals(rechazo, r.entrar("0000", "v2")) // un PIN malo tampoco cuenta: no se verificó
+        assertEquals("v1", quienSoy.sesion?.venueId)
+        assertTrue(quienSoy.bloqueada)
+        assertNull(almacen.leer("pin.fallos"))
+
+        assertEquals(ResultadoEntrada.DentroSinSenal("Centro"), r.entrar("1234", "v1"))
+        assertFalse(quienSoy.bloqueada)
+    }
+
     @Test fun `con necesitaPin y sin red el PIN bueno abre pero sigue necesitaPin, con red se quita`() = runBlocking {
         yaActivado()
         quienSoy.marcarSesionMuerta()

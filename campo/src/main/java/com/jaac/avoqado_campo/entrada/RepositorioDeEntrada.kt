@@ -129,10 +129,20 @@ class RepositorioDeEntrada(
         return rechazo(r, json)
     }
 
-    /** Contra el verificador de la sucursal; abre con la sesión que ya había y NO toca `necesitaPin` (R3-2). */
+    /**
+     * Contra el verificador de la sucursal; abre con la sesión que ya había y NO toca `necesitaPin` (R3-2). Esa sesión es de
+     * UNA sucursal: sin señal no se cambia, así que elegir otra se rechaza antes del PIN (no gasta intentos).
+     */
     private suspend fun entrarSinSenal(pin: String, venueId: String?, generacion: String): ResultadoEntrada {
         val sucursales = quienSoy.sucursales
-        val destino = venueId ?: quienSoy.sesion?.venueId ?: sucursales.singleOrNull()?.venueId
+        val actual = quienSoy.sesion?.venueId
+        if (venueId != null && actual != null && venueId != actual) {
+            fun nombre(id: String) = sucursales.find { it.venueId == id }?.nombre ?: id
+            return ResultadoEntrada.Rechazo(
+                "Para entrar a ${nombre(venueId)} necesitas señal. Sin señal puedes entrar a ${nombre(actual)}.", null,
+            )
+        }
+        val destino = venueId ?: actual ?: sucursales.singleOrNull()?.venueId
         val sucursal = sucursales.find { it.venueId == destino }
         val verificador = sucursal?.verificadorPin ?: return ResultadoEntrada.SinSenalSinVerificador
         return when (val p = pinLocal.verificar(pin, verificador)) {

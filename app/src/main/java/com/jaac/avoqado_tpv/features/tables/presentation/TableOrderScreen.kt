@@ -52,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextAlign
@@ -78,6 +79,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.launch
 
 /**
  * `TableOrderScreen` (Plan C, Task 7) — lo ya enviado a cocina (por rondas) vs
@@ -238,10 +240,15 @@ fun TableOrderScreen(
             viewModel.consumeNotice()
         }
     }
+    // Se vacía ANTES de avisar: así el mismo texto otra vez (2.ª cortesía negada con el aviso aún en pantalla) vuelve a
+    // emitir y sale completo (D4, Codex r1). El aviso corre en su propio scope para que vaciar no lo cancele.
+    val snackbarScope = rememberCoroutineScope()
     LaunchedEffect(error) {
-        error?.let {
-            snackbarHostState.showSnackbar(it)
-            viewModel.consumeError()
+        val texto = error ?: return@LaunchedEffect
+        viewModel.consumeError()
+        snackbarScope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(texto)
         }
     }
 

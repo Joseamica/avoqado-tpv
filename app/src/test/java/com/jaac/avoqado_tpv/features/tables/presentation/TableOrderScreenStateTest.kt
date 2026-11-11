@@ -267,4 +267,18 @@ class TableOrderScreenStateTest {
         val efecto = pantalla.substring(i, pantalla.indexOf("\n    }", i))
         assertThat(efecto).contains("showCompSheet = false")
     }
+
+    /** D4 (Codex r1): el aviso se vacía antes de mostrarse, para que el mismo texto otra vez vuelva a salir completo. */
+    @Test
+    fun D4_el_aviso_de_error_se_vacia_antes_de_mostrarse_y_en_su_propio_scope() {
+        val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableOrderScreen.kt").readText()
+        val i = pantalla.indexOf("LaunchedEffect(error) {")
+        assertThat(i).isAtLeast(0)
+        val efecto = pantalla.substring(i, pantalla.indexOf("\n    }", i))
+        val vaciar = efecto.indexOf("viewModel.consumeError()")
+        val avisar = efecto.indexOf("showSnackbar(")
+        assertThat(vaciar).isAtLeast(0)
+        assertThat(avisar).isGreaterThan(vaciar)
+        assertThat(efecto).contains("snackbarScope.launch")
+    }
 }

@@ -1399,32 +1399,45 @@ class TableOrderViewModelTest {
     private val textoNegada = "Esta cortesía la da un gerente con su sesión"
 
     @Test
-    fun D4_primera_vez_espera_la_red_y_la_pantalla_ve_terminar_la_cortesia() = runTest {
+    fun D4_misma_pantalla_primera_vez_espera_la_red_segunda_contesta_al_instante_y_las_dos_terminan_y_avisan() = runTest {
         val red = CompletableDeferred<Autorizacion>()
-        coEvery { autorizacion.paraCortesia(venueId, any(), false) } coAnswers { red.await() }
+        var llamadas = 0
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } coAnswers {
+            if (++llamadas == 1) red.await() else Autorizacion.Negada(textoNegada)
+        }
         val viewModel = conCuenta()
-        val vistos = observar(viewModel.compTerminadas)
+        val terminadas = observar(viewModel.compTerminadas)
+        val avisos = observar(viewModel.error)
 
+        // 1.ª: no hay nada guardado, espera la red.
         viewModel.compWholeOrder("Reclamo")
         runCurrent()
         red.complete(Autorizacion.Negada(textoNegada))
         runCurrent()
+        assertThat(terminadas).containsExactly(0, 1).inOrder()
+        viewModel.consumeError() // la pantalla vacía el aviso al mostrarlo
+        runCurrent()
 
-        assertThat(viewModel.error.value).isEqualTo(textoNegada)
-        assertThat(vistos).containsExactly(0, 1).inOrder()
+        // 2.ª, en el mismo ViewModel: «apagado» ya guardado, termina dentro del toque.
+        viewModel.compWholeOrder("Reclamo")
+        runCurrent()
+        assertThat(terminadas).containsExactly(0, 1, 2).inOrder()
+        assertThat(avisos).containsExactly(null, textoNegada, null, textoNegada).inOrder()
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun D4_segunda_vez_contesta_sin_esperar_y_la_pantalla_tambien_ve_terminar_la_cortesia() = runTest {
+    fun D4_con_la_pantalla_mirando_isComping_la_segunda_vez_no_se_ve_el_aplicando() = runTest {
+        // La causa, fijada: si alguien vuelve a cerrar la hoja con la bajada de isComping, esto explica por qué no sirve.
         coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.Negada(textoNegada)
         val viewModel = conCuenta()
-        val vistos = observar(viewModel.compTerminadas)
+        val aplicando = observar(viewModel.isComping)
 
         viewModel.compWholeOrder("Reclamo")
         runCurrent()
 
+        assertThat(aplicando).containsExactly(false)
         assertThat(viewModel.error.value).isEqualTo(textoNegada)
-        assertThat(vistos).containsExactly(0, 1).inOrder()
     }
 
     // endregion

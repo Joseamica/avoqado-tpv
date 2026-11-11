@@ -166,6 +166,29 @@ class ChecadaViewModelTest {
         assertEquals(19.43, cuerpo(entrada)["latitude"].asDouble, 0.0)
     }
 
+    @Test fun `r7 - con dos borrados negados seguidos la checada se completa con su ubicacion y sube`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
+        val g = quienSoy.generacion
+        assertTrue(quienSoy.empezarLimpiezaSi(g)) // el borrado A pone su marca…
+        espera.complete(Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)) // …llega el GPS: primer choque
+        runBlocking { delay(700) }
+        quienSoy.cancelarLimpieza() // A se niega
+        // B pone su marca justo cuando el segundo completar lee «Quién soy», y se niega antes de que la pantalla lo revise.
+        almacen.despuesDeLeer("credencial") {
+            quienSoy.empezarLimpiezaSi(quienSoy.generacion)
+            almacen.despuesDeLeer("limpiando") { quienSoy.cancelarLimpieza() }
+        }
+        main.scheduler.advanceTimeBy(1_000); main.scheduler.runCurrent()
+        val entrada = runBlocking { withTimeout(5_000) { vm.estado.first { !it.ocupado } }; dao.pendientesDeVer().first() }.single()
+        assertEquals(EstadoPieza.PENDIENTE, entrada.estado) // no RECHAZADA: la persona y la generación son las mismas
+        assertEquals(g, quienSoy.generacion)
+        assertEquals(19.43, cuerpo(entrada)["latitude"].asDouble, 0.0)
+        assertEquals(entrada, runBlocking { dao.siguientesParaSubir() }.single()) // sube
+    }
+
     @Test fun `r6 - si completar la checada apartada falla, no se borra - queda en Mis pendientes con su foto`() {
         vm.marcarEntrada(); quieto()
         runBlocking { withTimeout(5_000) { vm.estado.first { it.entrada != null } } }

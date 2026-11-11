@@ -130,9 +130,10 @@ class ChecadaViewModel @Inject constructor(
         val fallo = completarAunqueHayaUnBorrado(generacion, apartada, ChecadaNueva(venueId, l?.lat, l?.lon, l?.precision?.toDouble(), l?.falsa, null, ""))
         if (fallo != null) {
             val error = porque(fallo, tipo)
-            // r6: no se borra (invariante 2 de BorradoDelCelular): queda en «Mis pendientes», con su foto. Si ya no existe es
-            // porque un borrado que sí siguió la borró.
-            encolador.rechazarApartada(apartada, error)
+            // r6: no se borra (invariante 2 de BorradoDelCelular). r7: un choque con la marca de un borrado nunca la vuelve
+            // RECHAZADA: si el borrado siguió, ya la borró; si no, se queda APARTADA y la completa el arranque. Lo demás queda
+            // RECHAZADA en «Mis pendientes», con su foto.
+            if (fallo !is CelularBorrandose) encolador.rechazarApartada(apartada, error)
             _estado.update { it.copy(ocupado = false, error = error) }
             return
         }
@@ -150,19 +151,22 @@ class ChecadaViewModel @Inject constructor(
     private inline fun <T> despues(f: () -> T): T? = try { f() } catch (x: Exception) { Log.w("Checada", "checada guardada; falló lo de después", x); null }
 
     /**
-     * r6: un borrado en su ventana (la marca puesta) hace fallar el completar con `CelularBorrandose`: se espera a que termine
-     * y se repite. Si se negó, la generación volvió a ser la del toque y esto la completa; si siguió, la fila ya no existe
-     * (la borró él) y se sale. Un `CelularBorrandose` sin borrado en curso, ya repetido, no es transitorio: se devuelve.
-     * null = completada. ponytail: espera revisando cada medio segundo; el borrado dura lo que tarda en vaciar Room.
+     * r6/r7: un borrado en su ventana (la marca puesta) hace fallar el completar con `CelularBorrandose`. Se espera a que quite
+     * la marca y se decide por la GENERACIÓN, no por cuántas veces chocó: si sigue siendo la del toque, el borrado se negó
+     * (invariante 1 de `BorradoDelCelular`) y se repite; si cambió, el borrado siguió y ya la borró (invariante 2): no hay
+     * nada que hacer. null = completada. Un `CelularBorrandose` devuelto nunca es definitivo: la APARTADA se queda.
+     * ponytail: tope de [VUELTAS] choques seguidos; si se agota, se queda APARTADA y la completa el arranque.
      */
     private suspend fun completarAunqueHayaUnBorrado(generacion: String, id: Long, u: ChecadaNueva): Exception? {
-        var repetida = false
-        while (true) {
-            val x = try { encolador.completarChecada(generacion, id, u); return null } catch (c: CancellationException) { throw c } catch (x: Exception) { x }
-            if (x !is CelularBorrandose || (!quienSoy.limpiando && repetida)) return x
-            repetida = true
+        var ultimo: Exception? = null
+        repeat(VUELTAS) {
+            val x = try { encolador.completarChecada(generacion, id, u); return null } catch (c: CancellationException) { throw c } catch (e: Exception) { e }
+            if (x !is CelularBorrandose) return x
+            ultimo = x
             while (quienSoy.limpiando) delay(500)
+            if (quienSoy.generacion != generacion) return x
         }
+        return ultimo
     }
 
     private fun porque(x: Exception, tipo: TipoChecada) = when (x) {
@@ -173,6 +177,7 @@ class ChecadaViewModel @Inject constructor(
     }
 
     private companion object {
+        const val VUELTAS = 10
         const val YA_HAY_ENTRADA = "Ya tienes una entrada abierta"
         const val SIN_ENTRADA = "Marca tu salida donde marcaste la entrada"
     }

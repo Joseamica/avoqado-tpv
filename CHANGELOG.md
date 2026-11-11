@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### App de campo
+- **App de campo (checada y borrados seguidos, séptima revisión)**: aunque varios borrados se arrepientan seguidos mientras llega el GPS, la checada se termina de guardar con su ubicación y sube; nunca queda como «no se pudo terminar» sólo por eso.
 - **App de campo (checada y borrado, sexta revisión)**: un borrado que se arrepiente porque apareció una checada deja el celular exactamente como estaba, así que esa checada se termina de guardar con su ubicación (o al volver a abrir la app); y una checada que no se pudo terminar ya nunca se borra sola: queda en «Mis pendientes» con su foto.
 - **App de campo (la checada se guarda al tocar, quinta revisión)**: al marcar entrada o salida, la checada (con su selfie y la hora del toque) se guarda en el celular antes de esperar el GPS; si Android cierra la app en esa espera, al volver a abrirla se guarda sin ubicación y se sube sola, y un borrado o «Desvincular» la cuentan como algo por subir.
 - **App de campo (borrado y GPS, cuarta revisión)**: una checada que todavía espera el GPS ya no se pierde si en ese momento se borra o se desvincula el celular: el borrado la espera (hasta 20 s), y si llega, no borra y la sube por la gracia; si no llega a tiempo, dice «Espera un momento». El GPS del turno ya no sigue una sucursal que el supervisor le quitó a la persona.

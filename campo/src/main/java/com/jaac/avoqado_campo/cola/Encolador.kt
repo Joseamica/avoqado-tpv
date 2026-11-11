@@ -202,17 +202,18 @@ class Encolador(
      * `BorradoDelCelular`): si apareciera, tampoco se completa a nombre de otra persona. Devuelve cuántas se completaron.
      */
     suspend fun completarApartadas(): Int {
-        val yo = quienSoy.instantanea()
         var n = 0
         for (a in dao.apartadas()) {
+            val de = gsonCola.fromJson(a.cuerpoJson, Apartada::class.java).generacion
             try {
-                if (gsonCola.fromJson(a.cuerpoJson, Apartada::class.java).generacion != yo.generacion) throw CelularBorrandose()
-                completarChecada(yo.generacion, a.id, null)
+                if (de != quienSoy.generacion) throw CelularBorrandose()
+                completarChecada(de, a.id, null)
                 n++
             } catch (c: CancellationException) {
                 throw c
             } catch (x: Exception) {
-                if (x is CelularBorrandose && quienSoy.limpiando) continue
+                // r7: un choque con la marca de un borrado (en curso, o que ya se negó y devolvió su generación) no la rechaza.
+                if (x is CelularBorrandose && (quienSoy.limpiando || de == quienSoy.generacion)) continue
                 rechazarApartada(a.id, "Esta checada no se pudo terminar. Avísale a tu supervisor.")
             }
         }

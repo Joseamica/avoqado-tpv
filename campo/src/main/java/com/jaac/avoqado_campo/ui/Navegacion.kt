@@ -27,6 +27,8 @@ import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.pendientes.PendientesScreen
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.venta.VentaScreen
+import com.jaac.avoqado_campo.version.Actualizador
+import com.jaac.avoqado_campo.version.RevisorDeVersion
 
 /** La primera pantalla, según «Quién soy» y la cola. */
 sealed interface Destino {
@@ -52,12 +54,18 @@ fun destinoDe(identidad: Identidad, colaVacia: Boolean): Destino = when (identid
  * el celular se vuelve a la raíz y ninguna pantalla vieja sigue abierta para encolar a nombre de otro.
  */
 @Composable
-fun Navegacion(quienSoy: QuienSoy, dao: PiezaDao, conectividad: Conectividad, borrado: BorradoDelCelular, estadoDelGps: EstadoDelGps) {
+fun Navegacion(
+    quienSoy: QuienSoy, dao: PiezaDao, conectividad: Conectividad, borrado: BorradoDelCelular, estadoDelGps: EstadoDelGps,
+    revisor: RevisorDeVersion, actualizador: Actualizador,
+) {
     val identidadS = quienSoy.identidad.collectAsStateWithLifecycle()
     val piezasS = remember { dao.pendientesDeVer() }.collectAsStateWithLifecycle(emptyList())
     val conRedS = remember { conectividad.cambios }.collectAsStateWithLifecycle(conectividad.hayRed())
     val turnoS = remember { dao.turno() }.collectAsStateWithLifecycle(null)
     val gpsS = estadoDelGps.estado.collectAsStateWithLifecycle()
+    val versionS = revisor.nueva.collectAsStateWithLifecycle()
+    val obligatoriaS = revisor.obligatoria.collectAsStateWithLifecycle()
+    val pasoS = actualizador.paso.collectAsStateWithLifecycle()
     val identidad by identidadS
     val piezas by piezasS
     val destino = destinoDe(identidad, piezas.isEmpty())
@@ -98,16 +106,20 @@ fun Navegacion(quienSoy: QuienSoy, dao: PiezaDao, conectividad: Conectividad, bo
                         DatosDeInicio(
                             nombre = yo.nombre, pendientes = piezasS.value.size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             turnoAbierto = t != null && t.abierto && t.staffId == yo.staffId, gps = gpsS.value,
+                            version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },
                             pendientes = { nav.navigate("pendientes") }, ayuda = { nav.navigate("ayuda") }, entrar = { nav.navigate("pin") },
+                            actualizar = actualizador::empezar,
                         ),
                     )
                 }
-                composable("venta") { VentaScreen(hiltViewModel(), sinSenal = !conRedS.value, onRegresar = regresar) }
-                composable("sims") { MisSimsScreen(hiltViewModel(), onRegresar = regresar) }
-                composable("checada") { ChecadaScreen(hiltViewModel(), onRegresar = regresar) }
+                composable("venta") {
+                    VentaScreen(hiltViewModel(), sinSenal = !conRedS.value, obligatoria = obligatoriaS.value, onRegresar = regresar)
+                }
+                composable("sims") { MisSimsScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
+                composable("checada") { ChecadaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
                 composable("pendientes") {
                     PendientesScreen(hiltViewModel(), onRegresar = regresar, onMisSims = {
                         if (identidadS.value.estado == EstadoDelCelular.VINCULADO) nav.navigate("sims")

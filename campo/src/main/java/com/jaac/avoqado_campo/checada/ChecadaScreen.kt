@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 
 private val UBICACION = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 // Android 13+: el aviso «Turno activo» del GPS. Si lo niega, el seguimiento sigue igual (Android lo muestra en sus tareas).
@@ -42,7 +43,7 @@ private val PEDIR = UBICACION + if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifes
 
 /** «Checar»: entrada y salida, con selfie frontal si la sucursal la pide (B9) y la ubicación si hay permiso. */
 @Composable
-fun ChecadaScreen(vm: ChecadaViewModel, onRegresar: () -> Unit) {
+fun ChecadaScreen(vm: ChecadaViewModel, obligatoria: Boolean, onRegresar: () -> Unit) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     val context = LocalContext.current
     fun hay() = UBICACION.any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
@@ -61,7 +62,7 @@ fun ChecadaScreen(vm: ChecadaViewModel, onRegresar: () -> Unit) {
             onFoto = { vm.alTomarSelfie(it.absolutePath) }, onCerrar = vm::cancelarSelfie,
         )
     } else {
-        ChecadaContenido(estado, conUbicacion, { pedir.launch(PEDIR) }, vm::marcarEntrada, vm::marcarSalida, onRegresar)
+        ChecadaContenido(estado, conUbicacion, { pedir.launch(PEDIR) }, vm::marcarEntrada, vm::marcarSalida, onRegresar, obligatoria)
     }
 }
 
@@ -70,7 +71,7 @@ private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
 @Composable
 fun ChecadaContenido(
     e: EstadoChecada, conUbicacion: Boolean, pedirUbicacion: () -> Unit,
-    entrada: () -> Unit, salida: () -> Unit, regresar: () -> Unit,
+    entrada: () -> Unit, salida: () -> Unit, regresar: () -> Unit, obligatoria: Boolean = false,
 ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -84,7 +85,9 @@ fun ChecadaContenido(
                     }
                 }
             }
-            Button(entrada, alto, enabled = !e.ocupado) { Text("Marcar entrada") }
+            // D-2: con una obligatoria pendiente no se abre un turno nuevo; la salida sigue (no dejar un turno atrapado).
+            Button(entrada, alto, enabled = !e.ocupado && !obligatoria) { Text("Marcar entrada") }
+            if (obligatoria) Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(salida, alto, enabled = !e.ocupado) { Text("Marcar salida") }
             if (e.buscandoUbicacion) Text("Buscando tu ubicación…")
             e.avisoUbicacion?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }

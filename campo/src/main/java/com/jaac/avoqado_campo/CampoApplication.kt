@@ -12,6 +12,7 @@ import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.ArranqueSinGuardar
 import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.version.Actualizador
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,8 @@ class CampoApplication : Application(), Configuration.Provider {
     @Inject lateinit var gps: ControlDeGps
     @Inject lateinit var encolador: Encolador
     @Inject lateinit var arranque: Arranque
+    /** También para [com.jaac.avoqado_campo.version.ReceptorDeInstalacion], que no es de Hilt. */
+    @Inject lateinit var actualizador: Actualizador
 
     override fun onCreate() {
         super.onCreate() // Hilt inyecta aquí: WorkManager ya tiene su fábrica
@@ -46,6 +49,12 @@ class CampoApplication : Application(), Configuration.Provider {
                 CoroutineScope(SupervisorJob() + Dispatchers.IO).vigilarElSeguimiento(quienSoy, gps)
                 Disparador.programar(this@CampoApplication)
                 Disparador.alVolverLaRed(this@CampoApplication)
+                // Una instalación o una bajada que quedó a medias (la app murió) se descarta; «Actualizar» empieza de nuevo.
+                try {
+                    actualizador.alArrancar()
+                } catch (e: Exception) {
+                    Log.w("CampoApplication", "limpiar la actualización a medias", e)
+                }
             }
         }
     }

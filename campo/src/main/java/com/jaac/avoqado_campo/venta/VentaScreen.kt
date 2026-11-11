@@ -35,6 +35,7 @@ import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 import java.math.BigDecimal
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
@@ -45,7 +46,7 @@ import java.util.Locale
  * celular antes de cualquier red. [sinSenal] lo da quien la muestra (Tarea 13); sin señal se vende igual.
  */
 @Composable
-fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, onRegresar: () -> Unit) {
+fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, obligatoria: Boolean, onRegresar: () -> Unit) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var escaneando by rememberSaveable { mutableStateOf(false) }
     var fotoDe by rememberSaveable { mutableStateOf<Slot?>(null) }
@@ -66,6 +67,7 @@ fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, onRegresar: () -> Unit) {
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
                 otra = vm::venderOtra, regresar = onRegresar,
             ),
+            obligatoria,
         )
     }
 }
@@ -79,7 +81,7 @@ class AccionesDeVenta(
 private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
 
 @Composable
-fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta) {
+fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta, obligatoria: Boolean = false) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Vender una ${e.config?.etiquetaArticulo ?: "SIM"}", style = MaterialTheme.typography.headlineSmall)
@@ -93,7 +95,9 @@ fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta) {
                         Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium,
                     )
                 }
-                Button(a.otra, alto) { Text("Vender otra") }
+                // D-2: la venta que ya estaba en curso se termina (ya pasó en la calle); otra nueva, no.
+                Button(a.otra, alto, enabled = !obligatoria) { Text("Vender otra") }
+                if (obligatoria) Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(a.regresar, alto) { Text("Regresar") }
                 return@Column
             }

@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- La app se actualiza sola por su carril (PackageInstaller); el promotor da «Permitir de esta fuente» una vez. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Bateria.intentParaArreglar: sin esto, en Android 11+ la ventana directa no se ve y se abre la lista de ajustes. -->
     <queries>
@@ -31,6 +33,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Sólo recibe el resultado de nuestras sesiones de instalación (PendingIntent explícito). -->
+        <receiver android:name=".version.ReceptorDeInstalacion" android:exported="false" />
 
         <service
             android:name=".gps.ServicioDeUbicacion"

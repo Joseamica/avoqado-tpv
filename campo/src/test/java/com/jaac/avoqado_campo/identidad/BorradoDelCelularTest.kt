@@ -387,7 +387,7 @@ class BorradoDelCelularTest {
                 runBlocking { dao.insertar(Pieza(tipo = TipoPieza.SALIDA, llave = "salida", staffId = "s1", venueId = "v1", cuerpoJson = "{}", creadaAt = 1, resumen = "Salida")) }
                 MockResponse().setBody("""{"yaEstaba":false}""")
             }
-            val vm = AyudaViewModel(quienSoy, dao, copia, mockk(relaxed = true), api, borrado(), mockk { every { hayRed() } returns true })
+            val vm = AyudaViewModel(quienSoy, dao, copia, mockk(relaxed = true), api, borrado(), mockk { every { hayRed() } returns true }, mockk())
             vm.desvincular()
             withTimeout(5_000) { while (vm.estado.value.trabajando) delay(10) }
             vm.viewModelScope.cancel()

@@ -1,0 +1,148 @@
+package com.jaac.avoqado_campo.ui
+
+import androidx.compose.ui.test.assertAll
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.isNotEnabled
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import com.jaac.avoqado_campo.checada.ChecadaContenido
+import com.jaac.avoqado_campo.checada.EstadoChecada
+import com.jaac.avoqado_campo.checada.RefEntrada
+import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.custodia.AccionesDeMisSims
+import com.jaac.avoqado_campo.custodia.EstadoFila
+import com.jaac.avoqado_campo.custodia.EstadoMisSims
+import com.jaac.avoqado_campo.custodia.FilaSim
+import com.jaac.avoqado_campo.custodia.MisSimsContenido
+import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.venta.AccionesDeVenta
+import com.jaac.avoqado_campo.venta.EstadoVenta
+import com.jaac.avoqado_campo.venta.VentaContenido
+import com.jaac.avoqado_campo.version.PasoDeActualizacion
+import com.jaac.avoqado_campo.version.VersionNueva
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/** El aviso de la versión nueva en el Inicio y, con una obligatoria pendiente, qué queda en gris y qué sigue (D-2). */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], qualifiers = "w360dp-h1280dp")
+class InicioScreenTest {
+    @get:Rule val compose = createComposeRule()
+
+    private val base = DatosDeInicio("Ana", 2, necesitaPin = false, esperanSucursal = emptyList(), turnoAbierto = false, gps = null)
+    private val v031 = VersionNueva(4, "0.3.1", "https://x/campo.apk", "ab".repeat(32), 10, obligatoria = false, notas = null)
+    private val actualiza = "Actualiza para seguir vendiendo. Lo que ya hiciste sigue subiendo"
+    private var toques = mutableListOf<String>()
+
+    private fun inicio(d: DatosDeInicio) = compose.setContent {
+        TemaCampo {
+            InicioScreen(
+                d,
+                AccionesDeInicio(
+                    vender = { toques += "vender" }, sims = { toques += "sims" }, checar = { toques += "checar" },
+                    pendientes = { toques += "pendientes" }, ayuda = { toques += "ayuda" }, entrar = {}, actualizar = { toques += "actualizar" },
+                ),
+            )
+        }
+    }
+
+    @Test fun `con version nueva normal muestra «Hay una version nueva (0_3_1)» y «Actualizar», y Vender sigue`() {
+        inicio(base.copy(version = v031))
+        compose.onNodeWithText("Hay una versión nueva (0.3.1)").assertExists()
+        compose.onNodeWithText("Actualizar").assertIsEnabled().performClick()
+        compose.onNodeWithText("Vender").assertIsEnabled()
+        compose.onNodeWithText(actualiza).assertDoesNotExist()
+        assertEquals(listOf("actualizar"), toques)
+    }
+
+    @Test fun `sin version nueva no hay aviso`() {
+        inicio(base)
+        compose.onNodeWithText("Actualizar").assertDoesNotExist()
+        compose.onNodeWithText("Vender").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria - Vender en gris con «Actualiza para seguir», y Mis pendientes, Ayuda, Checar y Mis SIMs activos`() {
+        inicio(base.copy(version = v031.copy(obligatoria = true), obligatoria = true))
+        compose.onNodeWithText("Vender").assertIsNotEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
+        compose.onNodeWithText("Actualizar").assertIsEnabled()
+        compose.onNodeWithText("Mis pendientes (2)").assertIsEnabled()
+        compose.onNodeWithText("Ayuda").assertIsEnabled()
+        compose.onNodeWithText("Checar").assertIsEnabled()
+        compose.onNodeWithText("Mis SIMs").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria cuya version no paso la revision - avisa al supervisor, sin boton, y Vender sigue en gris`() {
+        inicio(base.copy(version = null, obligatoria = true))
+        compose.onNodeWithText("No se pudo comprobar la versión nueva. Avisa a tu supervisor").assertExists()
+        compose.onNodeWithText("Actualizar").assertDoesNotExist()
+        compose.onNodeWithText("Vender").assertIsNotEnabled()
+    }
+
+    @Test fun `bajando - el boton dice «Bajando…» y no se puede tocar`() {
+        inicio(base.copy(version = v031, paso = PasoDeActualizacion.Bajando))
+        compose.onNodeWithText("Bajando…").assertIsNotEnabled()
+    }
+
+    @Test fun `falta el permiso - dice como activarlo`() {
+        inicio(base.copy(version = v031, paso = PasoDeActualizacion.FaltaPermiso))
+        compose.onNodeWithText("Para actualizar, activa «Permitir de esta fuente» y regresa").assertExists()
+        compose.onNodeWithText("Actualizar").assertIsEnabled()
+    }
+
+    @Test fun `un fallo de la instalacion se ve con su texto`() {
+        inicio(base.copy(version = v031, paso = PasoDeActualizacion.Fallo("No se instaló: INSTALL_FAILED_ABORTED")))
+        compose.onNodeWithText("No se instaló: INSTALL_FAILED_ABORTED").assertExists()
+        compose.onNodeWithText("Actualizar").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria con turno abierto - en Checar, «Marcar salida» activo y «Marcar entrada» en gris`() {
+        compose.setContent {
+            TemaCampo { ChecadaContenido(EstadoChecada(entrada = RefEntrada.PorLlave("k")), true, {}, {}, {}, {}, obligatoria = true) }
+        }
+        compose.onNodeWithText("Marcar entrada").assertIsNotEnabled()
+        compose.onNodeWithText("Marcar salida").assertIsEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
+        compose.onNodeWithText("Regresar").assertIsEnabled()
+    }
+
+    @Test fun `sin obligatoria, Marcar entrada sigue activo`() {
+        compose.setContent { TemaCampo { ChecadaContenido(EstadoChecada(), true, {}, {}, {}, {}) } }
+        compose.onNodeWithText("Marcar entrada").assertIsEnabled()
+        compose.onNodeWithText(actualiza).assertDoesNotExist()
+    }
+
+    @Test fun `obligatoria - en Mis SIMs, Aceptar, Rechazar y Aceptar todas en gris, Actualizar y Regresar siguen`() {
+        fun fila(serie: String) = FilaSim(SimEnCopia(serie, "PROMOTER_PENDING", 1, "Prepago", "150.00", null, null, null, null, emptyList(), null), EstadoFila.POR_DECIDIR)
+        compose.setContent {
+            TemaCampo {
+                MisSimsContenido(
+                    EstadoMisSims(porAceptar = listOf(fila("8952020012345678901F"), fila("8952020012345678902F")), sinCopia = false),
+                    AccionesDeMisSims({}, {}, {}, { _, _ -> }, {}, {}), obligatoria = true,
+                )
+            }
+        }
+        compose.onAllNodesWithText("Aceptar").assertAll(isNotEnabled())
+        compose.onAllNodesWithText("Rechazar").assertAll(isNotEnabled())
+        compose.onNodeWithText("Aceptar todas").assertIsNotEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
+        compose.onNodeWithText("Actualizar").assertIsEnabled()
+        compose.onNodeWithText("Regresar").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria - tras guardar una venta, «Vender otra» en gris y Regresar sigue`() {
+        compose.setContent {
+            TemaCampo { VentaContenido(EstadoVenta(guardada = true), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+        }
+        compose.onNodeWithText("Vender otra").assertIsNotEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
+        compose.onNodeWithText("Regresar").assertIsEnabled()
+    }
+}

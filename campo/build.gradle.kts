@@ -106,4 +106,7 @@ dependencies {
     testImplementation("androidx.room:room-testing:2.7.0")
     testImplementation("androidx.work:work-testing:2.9.0")
     testImplementation("androidx.test:core:1.6.1")
+    // Pruebas de pantalla (D-2: qué queda en gris) con Robolectric; el manifiesto de prueba sólo entra al APK de debug.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

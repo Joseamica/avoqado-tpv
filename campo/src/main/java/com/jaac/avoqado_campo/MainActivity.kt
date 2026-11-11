@@ -21,6 +21,7 @@ import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.ui.Navegacion
 import com.jaac.avoqado_campo.ui.PantallaDetenida
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.Actualizador
 import com.jaac.avoqado_campo.version.RevisorDeVersion
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var latido: Latido
     @Inject lateinit var arranque: Arranque
     @Inject lateinit var revisor: RevisorDeVersion
+    @Inject lateinit var actualizador: Actualizador
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,7 +66,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps) } }
+        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps, revisor, actualizador) } }
+    }
+
+    /** Al volver de «Permitir de esta fuente» (con el permiso, instala) o del diálogo de Android que no instaló. */
+    override fun onResume() {
+        super.onResume()
+        if (!arranque.detenido) actualizador.alRegresar()
     }
 
     /** «Reintentar»: un proceso nuevo, donde memoria = disco, vuelve a correr la recuperación del arranque. */

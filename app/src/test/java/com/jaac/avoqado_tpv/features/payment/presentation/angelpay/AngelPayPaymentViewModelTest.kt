@@ -66,6 +66,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -2238,6 +2239,33 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Queued::class.java)
         } finally {
             vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D4 el vigia de la cola termina sin pedir el hilo principal`() = runTest(testDispatcher) {
+        // CI del PR #33 (traza): una prueba cerró el VM mientras el vigía trabajaba en un hilo de fondo; el vigía terminó
+        // ya sin prueba viva (resetMain) y, al terminar, avisó a su dueño en Dispatchers.Main: tronó la prueba de al lado.
+        // Aquí se reproduce ese orden con candados: el vigía queda a media emisión en otro hilo, se cierra el VM, se va
+        // el hilo principal y sólo entonces termina. No debe tocar Dispatchers.Main.
+        val fila = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.repository.EstadoEnCola?>(null)
+        val encolado = preparaEfectivoSinServidor(fila)
+        val entro = java.util.concurrent.CountDownLatch(1)
+        val sigue = java.util.concurrent.CountDownLatch(1)
+        every { paymentQueueRepository.observarEstadoDeVenta(any()) } returns fila.onEach {
+            if (it != null) { entro.countDown(); sigue.await() } // el vigía, ocupado en el hilo que lo despertó
+        }
+        val vm = createViewModel()
+        cobroEnEfectivoEnCola(vm, encolado)
+        val fondo = Thread { fila.value = filaDe(encolado.captured, estado = "PENDING") }.apply { start() }
+        assertThat(entro.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+        vm.viewModelScope.cancel() // la prueba termina con el vigía todavía a media emisión
+        Dispatchers.resetMain()
+        try {
+            sigue.countDown()
+            fondo.join(5_000)
+        } finally {
+            Dispatchers.setMain(testDispatcher)
         }
     }
 

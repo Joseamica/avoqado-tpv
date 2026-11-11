@@ -1224,7 +1224,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         // 🧾 D4 (10-nov): el recibo «EN COLA» se quedaba así aunque la cola ya hubiera subido la venta. Mientras ESE
         // recibo esté a la vista se vigila su fila y, sólo si de verdad es esa venta y quedó limpia, cambia a
         // «registrado» (ver [subioLimpia]). Al salir del recibo, el flatMapLatest deja de vigilar.
-        viewModelScope.launch {
+        // Unconfined: el vigía sólo lee y hace compareAndSet de un StateFlow (seguro en cualquier hilo), así que no pide
+        // Dispatchers.Main. Pedirlo tronaba el CI cuando un cobro seguía en Dispatchers.IO tras terminar su prueba.
+        viewModelScope.launch(Dispatchers.Unconfined) {
             @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
             state.map { (it as? AngelPayPaymentState.Queued)?.takeUnless { q -> q.registrado }?.referenceNumber }
                 .distinctUntilChanged()

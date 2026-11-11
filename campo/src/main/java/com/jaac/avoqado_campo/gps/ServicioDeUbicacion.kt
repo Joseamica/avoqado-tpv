@@ -14,6 +14,7 @@ import androidx.core.app.ServiceCompat
 import com.jaac.avoqado_campo.MainActivity
 import com.jaac.avoqado_campo.checada.Ubicacion
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -116,6 +117,7 @@ class SeguimientoDelTurno(
 @AndroidEntryPoint
 class ServicioDeUbicacion : Service() {
     @Inject lateinit var seguimiento: SeguimientoDelTurno
+    @Inject lateinit var arranque: Arranque
 
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var bucle: Job? = null
@@ -127,6 +129,12 @@ class ServicioDeUbicacion : Service() {
      * con [SeguimientoDelTurno.arrancar] (r3 #3). `alcance` es `Main.immediate`: `primerPlano` corre ya, antes de volver.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // r12: con el arranque DETENIDO (no pudo guardar) no se sigue nada. Sólo llega aquí el reinicio de Android, que no
+        // exige `startForeground` (nadie llama `iniciar()` en ese estado).
+        if (arranque.detenido) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         alcance.launch {
             val enPrimerPlano = seguimiento.arrancar(
                 tienePermisoDeUbicacion(this@ServicioDeUbicacion),

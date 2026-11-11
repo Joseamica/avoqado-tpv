@@ -37,6 +37,7 @@ enum class ResultadoDelBorrado { BORRADO, QUEDA_ALGO, ESPERA }
  *      ahí mismo. Nadie sigue con la copia en memoria; al reabrir, memoria = disco y el arranque termina lo que quedó (la
  *      marca «borrando» se termina, la «revisando» se deshace, la APARTADA se completa). Por eso R-B y el reintento de
  *      [vaciar] sólo ven fallas de Room o de archivos, y un borrado confirmado a medias sólo aparece al ARRANCAR.
+ *      r12: en el arranque se detiene con pantalla; después, mata el proceso (`Arranque`: DETENIDO con «Reintentar»).
  *
  * El ÚNICO camino para volver a activar (rediseño v7): deja el celular vacío, como recién instalado. r3: los tres que
  * borran (tras «Desvincular», «Activar con un código nuevo» y DESCONOCIDO) pasan por [borrar], que sólo borra a la persona

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_campo.arrancar
 import com.jaac.avoqado_campo.ayuda.AyudaViewModel
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.Encolador
@@ -70,13 +71,16 @@ class BorradoDelCelularTest {
     @Volatile private var alPonerLaMarca: () -> Unit = {}
     /** r9: una escritura del almacén cifrado que falla (antes de escribir nada). */
     @Volatile private var fallarAlEscribir: (Map<String, String?>) -> Boolean = { false }
+    /** r12: el de este «proceso»; reabrir es otro. */
+    @Volatile private var arranque = Arranque()
     /** r11 · R-D: `commit()` en false; [datos] es el disco, así que «reabrir» es otro `QuienSoy` sobre el mismo almacén. */
     @Volatile private var detenerAlEscribir: (Map<String, String?>) -> Boolean = { false }
     private val almacen = object : AlmacenSeguro {
         val datos = mutableMapOf<String, String>()
         override fun leer(clave: String) = datos[clave]
         override fun escribir(cambios: Map<String, String?>) {
-            if (detenerAlEscribir(cambios)) throw AppDetenida() // R-D: no llega al disco y la app se detiene
+            // R-D: no llega al disco. Fuera del arranque la app se detiene; en el arranque (r12), ArranqueSinGuardar.
+            if (detenerAlEscribir(cambios)) arranque.alNoGuardar("no se guardó: ${cambios.keys}") { throw AppDetenida() }
             if (fallarAlEscribir(cambios)) throw IllegalStateException("el almacén cifrado falló")
             cambios.forEach { (k, v) -> if (v == null) datos.remove(k) else datos[k] = v }
             if (cambios["limpiando"] == "true") alPonerLaMarca()
@@ -278,6 +282,50 @@ class BorradoDelCelularTest {
         assertTrue(carpetaCola.exists())
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertEquals(0, detenido)
+    }
+
+    @Test fun `r12 - en el ARRANQUE una escritura que no se guarda no mata - queda DETENIDO y no sigue con WorkManager ni GPS`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        assertTrue(quienSoy.empezarLimpiezaSi(quienSoy.generacion)) // la marca «revisando» en disco
+        detenerAlEscribir = { it.containsKey("limpiando") } // sin espacio: deshacerla no se guarda
+        var siguio = false
+        arrancar(arranque, recuperar = { borrado().terminarSiQuedoAMedias(); 0 }) { siguio = true }
+        assertTrue(arranque.detenido) // no mató el proceso: la pantalla honesta
+        assertFalse(siguio) // ni WorkManager, ni GPS, ni la escucha de la red
+        assertTrue(quienSoy.limpiando) // no se perdió nada: la marca sigue en disco
+    }
+
+    @Test fun `r12 - fuera del arranque R-D sigue igual - una escritura que no se guarda detiene la app`() = runBlocking {
+        var siguio = false
+        arrancar(arranque, recuperar = { borrado().terminarSiQuedoAMedias(); 0 }) { siguio = true }
+        assertTrue(siguio)
+        assertFalse(arranque.detenido)
+        detenerAlEscribir = { true } // ya terminó el arranque: sin espacio a media sesión
+        assertTrue(runCatching { quienSoy.marcarBloqueada(true) }.exceptionOrNull() is AppDetenida)
+        assertFalse(arranque.detenido) // no es la pantalla: mata el proceso
+    }
+
+    @Test fun `r12 - «Reintentar» con la escritura ya funcionando termina la recuperacion y sale del estado detenido`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val g = quienSoy.generacion
+        assertTrue(quienSoy.empezarLimpiezaSi(g))
+        detenerAlEscribir = { it.containsKey("limpiando") }
+        arrancar(arranque, recuperar = { borrado().terminarSiQuedoAMedias(); 0 }) {}
+        assertTrue(arranque.detenido)
+        // «Reintentar» = un proceso nuevo (memoria = disco), ya con espacio.
+        detenerAlEscribir = { false }
+        arranque = Arranque()
+        val reabierto = QuienSoy(almacen)
+        var siguio = false
+        arrancar(arranque, recuperar = {
+            BorradoDelCelular(reabierto, MutexDeSubida(), MutexDeSesion(), gps, { db.clearAllTables() }, dao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos)
+                .terminarSiQuedoAMedias()
+            0
+        }) { siguio = true }
+        assertFalse(arranque.detenido)
+        assertTrue(siguio)
+        assertFalse(reabierto.limpiando)
+        assertEquals(g, reabierto.generacion) // la marca sin confirmar se deshizo: TODO como estaba
     }
 
     @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {

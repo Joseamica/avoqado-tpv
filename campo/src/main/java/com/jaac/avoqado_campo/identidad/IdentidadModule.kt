@@ -15,7 +15,7 @@ import javax.inject.Singleton
 object IdentidadModule {
 
     @Provides @Singleton
-    fun proveerAlmacen(@ApplicationContext context: Context): AlmacenSeguro = AlmacenSeguroCifrado(context)
+    fun proveerAlmacen(@ApplicationContext context: Context, arranque: Arranque): AlmacenSeguro = AlmacenSeguroCifrado(context, arranque)
 
     @Provides @Singleton
     fun proveerQuienSoy(almacen: AlmacenSeguro): QuienSoy = QuienSoy(almacen)

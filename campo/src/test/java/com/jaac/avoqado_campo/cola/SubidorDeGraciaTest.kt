@@ -13,6 +13,8 @@ import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.gps.EnviadorDePings
 import com.jaac.avoqado_campo.gps.Ping
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
+import com.jaac.avoqado_campo.identidad.Arranque
+import com.jaac.avoqado_campo.identidad.ArranqueSinGuardar
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.DatosDeLatido
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
@@ -450,7 +452,7 @@ class SubidorDeGraciaTest {
 
     // ---------- el trabajo de WorkManager ----------
 
-    private fun trabajo(): TrabajoDeSubida =
+    private fun trabajo(arranque: Arranque = Arranque()): TrabajoDeSubida =
         TestListenableWorkerBuilder<TrabajoDeSubida>(ApplicationProvider.getApplicationContext())
             .setWorkerFactory(object : WorkerFactory() {
                 override fun createWorker(c: Context, nombre: String, params: WorkerParameters): ListenableWorker {
@@ -458,10 +460,21 @@ class SubidorDeGraciaTest {
                     val copia = RepositorioDeCopia(c, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), dao, quienSoy)
                         .also { copiaDelTrabajo = it }
                     val pings = EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy, mutex) { ahora }
-                    return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia, pings)
+                    return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia, pings, arranque)
                 }
             })
             .build()
+
+    @Test fun `r12 - con la app DETENIDA por el arranque el trabajo no sube ni escribe nada`() = runBlocking {
+        val a = pieza()
+        val detenida = Arranque().also { it.recuperar { throw ArranqueSinGuardar("sin espacio") } }
+        assertTrue(detenida.detenido)
+
+        assertEquals(ListenableWorker.Result.retry(), trabajo(detenida).doWork())
+
+        assertTrue(pedidos.isEmpty())
+        assertEquals(a, estado(a))
+    }
 
     @Test fun `el trabajo con el celular desvinculado sube por la gracia`() = runBlocking {
         val a = pieza()

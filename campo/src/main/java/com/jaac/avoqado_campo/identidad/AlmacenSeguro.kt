@@ -6,6 +6,8 @@ import android.os.Process
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlin.system.exitProcess
 
 /**
@@ -15,13 +17,16 @@ import kotlin.system.exitProcess
  * su copia en memoria, y seguir con ella sería trabajar con un estado que desaparece al reiniciar. Al volver a abrir,
  * memoria = disco, y las recuperaciones del arranque (`BorradoDelCelular.terminarSiQuedoAMedias`,
  * `Encolador.completarApartadas`) terminan lo que quedó. Por eso aquí no hay excepción que atrapar.
+ * r12: **en el arranque se detiene con pantalla; después, mata el proceso.** Mientras corre la recuperación del arranque
+ * ([Arranque.recuperar]) matar el proceso haría un bucle (sin espacio, cada reapertura vuelve a fallar). Ahí se lanza
+ * [ArranqueSinGuardar] y la app queda DETENIDA en una pantalla honesta, sin correr ni escribir nada más.
  */
 interface AlmacenSeguro {
     fun leer(clave: String): String?
     fun escribir(cambios: Map<String, String?>)
 }
 
-class AlmacenSeguroCifrado(context: Context) : AlmacenSeguro {
+class AlmacenSeguroCifrado(context: Context, private val arranque: Arranque) : AlmacenSeguro {
     private val prefs = EncryptedSharedPreferences.create(
         context, "quien_soy",
         MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
@@ -31,7 +36,41 @@ class AlmacenSeguroCifrado(context: Context) : AlmacenSeguro {
 
     override fun leer(clave: String): String? = prefs.getString(clave, null)
 
-    override fun escribir(cambios: Map<String, String?>) = guardar(prefs.edit(), cambios, ::detenerLaApp)
+    override fun escribir(cambios: Map<String, String?>) = guardar(prefs.edit(), cambios) { arranque.alNoGuardar(it, ::detenerLaApp) }
+}
+
+/** r12: una escritura de la recuperación del arranque no se guardó. La atrapa sólo [Arranque.recuperar]. */
+class ArranqueSinGuardar(motivo: String) : Exception(motivo)
+
+/**
+ * r12 · R-D en el arranque. Durante [recuperar] (antes de cualquier pantalla, WorkManager o GPS) una escritura que no se guarda
+ * no mata el proceso: deja la app [detenido], que sólo muestra «Tu celular no tiene espacio o no pudo guardar…» con
+ * «Reintentar». «Reintentar» abre un proceso nuevo (memoria = disco) que vuelve a correr la recuperación; reintentar en este
+ * mismo proceso no sería seguro, porque la copia en memoria ya quedó distinta del disco.
+ */
+@Singleton
+class Arranque @Inject constructor() {
+    @Volatile var enCurso = false
+        private set
+    @Volatile var detenido = false
+        private set
+
+    /** Lo que hace un almacén cuando no guardó: en el arranque [ArranqueSinGuardar]; después, [detener] (matar el proceso). */
+    fun alNoGuardar(motivo: String, detener: (String) -> Nothing): Nothing =
+        if (enCurso) throw ArranqueSinGuardar(motivo) else detener(motivo)
+
+    /** null = DETENIDO (una escritura no se guardó); si no, lo que devuelve [bloque]. */
+    suspend fun <T> recuperar(bloque: suspend () -> T): T? {
+        enCurso = true
+        return try {
+            bloque().also { detenido = false }
+        } catch (e: ArranqueSinGuardar) {
+            detenido = true
+            null
+        } finally {
+            enCurso = false
+        }
+    }
 }
 
 /** UNA escritura con `commit()`. Si no guardó (o la escritura lanzó), [detener]: nada de lo que sigue corre (R-D). */

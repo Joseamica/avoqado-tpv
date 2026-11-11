@@ -203,3 +203,17 @@ internal suspend fun borrarSinTronar(borrar: suspend () -> ResultadoDelBorrado):
 } catch (_: Exception) {
     null
 }
+
+/**
+ * r12 · el arranque no pudo guardar (p. ej. sin espacio): sólo esto, sin otra pantalla ni escritura. «Reintentar» abre un
+ * proceso nuevo que vuelve a correr la recuperación del arranque.
+ */
+@Composable
+fun PantallaDetenida(onReintentar: () -> Unit) {
+    Pantalla {
+        Text(TEXTO_DETENIDA, style = MaterialTheme.typography.titleMedium)
+        Button(onReintentar, alto) { Text("Reintentar") }
+    }
+}
+
+internal const val TEXTO_DETENIDA = "Tu celular no tiene espacio o no pudo guardar. Libera espacio y toca «Reintentar». No se perdió nada."

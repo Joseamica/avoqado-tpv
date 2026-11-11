@@ -7,6 +7,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.gps.EnviadorDePings
+import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.latido.Latido
@@ -29,9 +30,11 @@ class TrabajoDeSubida @AssistedInject constructor(
     private val latido: Latido,
     private val copia: RepositorioDeCopia,
     private val pings: EnviadorDePings,
+    private val arranque: Arranque = Arranque(),
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        if (arranque.detenido) return Result.retry() // r12: el arranque no pudo guardar; nada corre ni escribe hasta reabrir
         val r = when (quienSoy.identidad.value.estado) {
             EstadoDelCelular.VINCULADO -> subidor.vaciar().let { normal ->
                 // Pasó a la gracia a media pasada: lo que la ruta normal ya subió también pide refrescar la copia.

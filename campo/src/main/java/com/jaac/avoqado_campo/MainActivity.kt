@@ -1,6 +1,8 @@
 package com.jaac.avoqado_campo
 
+import android.content.Intent
 import android.os.Bundle
+import android.os.Process
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,11 +13,13 @@ import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import com.jaac.avoqado_campo.gps.reanudarSiHayTurno
+import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.latido.Latido
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.ui.Navegacion
+import com.jaac.avoqado_campo.ui.PantallaDetenida
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -35,9 +39,15 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var estadoDelGps: EstadoDelGps
     @Inject lateinit var gps: ControlDeGps
     @Inject lateinit var latido: Latido
+    @Inject lateinit var arranque: Arranque
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // r12: el arranque no pudo guardar. Sólo la pantalla honesta: nada más corre ni escribe.
+        if (arranque.detenido) {
+            setContent { TemaCampo { PantallaDetenida(onReintentar = ::reiniciar) } }
+            return
+        }
         // Cada vez que la app se ve: reintentar el GPS del turno, y el latido al abrir y cada 5 min (Latido no manda más de 1/min).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -51,6 +61,12 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps) } }
+    }
+
+    /** «Reintentar»: un proceso nuevo, donde memoria = disco, vuelve a correr la recuperación del arranque. */
+    private fun reiniciar() {
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        Process.killProcess(Process.myPid())
     }
 
     private suspend fun intentar(que: String, bloque: suspend () -> Unit) {

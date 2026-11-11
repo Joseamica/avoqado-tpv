@@ -151,7 +151,7 @@ class BorradoDelCelularTest {
     @Test fun `DESVINCULADO con una pieza RETENIDA no borra nada`() = runBlocking {
         pieza(EstadoPieza.RETENIDA)
         quienSoy.marcarDesvinculado(null)
-        assertFalse(borrado().activarDeNuevo())
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertTrue(carpetaCola.exists())
@@ -161,7 +161,7 @@ class BorradoDelCelularTest {
     @Test fun `una pieza que aparece justo antes de la marca frena el borrado y quita la marca`() = runBlocking {
         quienSoy.marcarDesvinculado(null)
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
-        assertFalse(borrado().activarDeNuevo())
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
         assertFalse(quienSoy.limpiando)
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
@@ -175,7 +175,7 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesvinculado(null)
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
-        assertTrue(borrado().activarDeNuevo())
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo())
         quedoVacio(aparato, generacion)
         assertNull(dao.porLlave("k-HECHA"))
         assertEquals(1, detenido)
@@ -186,14 +186,14 @@ class BorradoDelCelularTest {
         quienSoy.marcarDesconocido()
         val aparato = quienSoy.aparatoId
         val generacion = quienSoy.generacion
-        assertFalse(borrado().activarDeNuevo())
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo())
         assertEquals(1, dao.pendientesDeVer().first().size)
-        assertTrue(borrado().activarDeNuevo(confirmadas = 1))
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo(confirmadas = 1))
         quedoVacio(aparato, generacion)
     }
 
     @Test fun `VINCULADO no se borra por activarDeNuevo`() = runBlocking {
-        assertFalse(borrado().activarDeNuevo(confirmadas = 0))
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo(confirmadas = 0))
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
     }
 
@@ -252,15 +252,15 @@ class BorradoDelCelularTest {
         val generacion = quienSoy.generacion
         // La persona vio «1»; con la marca ya puesta se guarda otra (una checada que esperaba el GPS).
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.RECHAZADA) } }
-        assertFalse(borrado().activarDeNuevo(confirmadas = 1))
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo(confirmadas = 1))
         assertFalse(quienSoy.limpiando)
         assertEquals(2, dao.pendientesDeVer().first().size)
         assertEquals(EstadoDelCelular.DESCONOCIDO, quienSoy.estado)
         assertEquals(0, detenido)
         // La pantalla vuelve a preguntar con «2»; ahora sí es lo que se borra.
         alPonerLaMarca = {}
-        assertFalse(borrado().activarDeNuevo(confirmadas = 1)) // un número viejo no borra, ni sin la marca
-        assertTrue(borrado().activarDeNuevo(confirmadas = 2))
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().activarDeNuevo(confirmadas = 1)) // un número viejo no borra, ni sin la marca
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().activarDeNuevo(confirmadas = 2))
         quedoVacio(aparato, generacion)
     }
 
@@ -268,11 +268,11 @@ class BorradoDelCelularTest {
         val aparato = quienSoy.aparatoId
         val deAna = quienSoy.generacion
         pieza(EstadoPieza.AVISO) // ya subió: no cuenta como «por subir»
-        assertTrue(borrado().trasDesvincular(deAna))
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().trasDesvincular(deAna))
         quedoVacio(aparato, deAna)
         // Un 200 tardío de Ana con Beto ya activado: no se toca nada de Beto.
         quienSoy.guardarActivacion(DatosDeActivacion("cel2", "d".repeat(64), "s2", "Beto", Sesion("a", "2".repeat(64), "v3"), listOf(Sucursal("v3", "Sur", null))))
-        assertFalse(borrado().trasDesvincular(deAna))
+        assertEquals(ResultadoDelBorrado.ESPERA, borrado().trasDesvincular(deAna))
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
         assertEquals("Beto", quienSoy.nombre)
         assertFalse(quienSoy.limpiando)
@@ -280,7 +280,7 @@ class BorradoDelCelularTest {
 
     @Test fun `desvincular - algo que se guarda justo antes de la marca tampoco se borra y el celular queda DESVINCULADO`() = runBlocking {
         alPonerLaMarca = { runBlocking { pieza(EstadoPieza.PENDIENTE) } } // ya pasó la revisión de afuera
-        assertFalse(borrado().trasDesvincular(quienSoy.generacion))
+        assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrado().trasDesvincular(quienSoy.generacion))
         assertFalse(quienSoy.limpiando)
         assertEquals(EstadoPieza.PENDIENTE, dao.porLlave("k-PENDIENTE")?.estado)
         assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
@@ -291,10 +291,10 @@ class BorradoDelCelularTest {
     @Test fun `dos borrados a la vez no se pisan - el segundo ve la marca del primero y no hace nada`() = runBlocking {
         quienSoy.marcarDesvinculado(null)
         val g = quienSoy.generacion
-        var segundo: Boolean? = null
+        var segundo: ResultadoDelBorrado? = null
         alPonerLaMarca = { runBlocking { segundo = borrado().activarDeNuevo() } } // el segundo toque, ya con la marca puesta
-        assertTrue(borrado().trasDesvincular(g))
-        assertEquals(false, segundo)
+        assertEquals(ResultadoDelBorrado.BORRADO, borrado().trasDesvincular(g))
+        assertEquals(ResultadoDelBorrado.ESPERA, segundo)
         assertEquals(EstadoDelCelular.SIN_ACTIVAR, quienSoy.estado)
         assertFalse(quienSoy.limpiando)
     }

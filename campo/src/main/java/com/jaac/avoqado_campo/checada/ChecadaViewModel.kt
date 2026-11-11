@@ -17,6 +17,7 @@ import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -92,17 +93,27 @@ class ChecadaViewModel @Inject constructor(
 
     /** Doble toque → una pieza: [EstadoChecada.ocupado] se pone antes de lanzar nada. */
     private fun checar(tipo: TipoChecada, foto: String?) {
-        // R6-A1 + r3: generación y sesión de UNA instantánea: lo que se guarde es de ESTA persona.
-        val yo = quienSoy.instantanea()
-        val generacion = yo.generacion
-        val venueId = yo.sesion?.venueId
-        // H5: no se checa; la selfie ya tomada no se queda en el celular.
-        if (_estado.value.ocupado || venueId == null) { foto?.let { File(it).delete() }; return }
+        if (_estado.value.ocupado) { foto?.let { File(it).delete() }; return }
+        // R6-A1 + r3: generación y sesión de UNA instantánea: lo que se guarde es de ESTA persona. r4: con una reserva, que
+        // un borrado espera (la checada tarda hasta 10 s en el GPS antes de llegar a Room); null = hay un borrado en curso.
+        val yo = quienSoy.reservar()
+        val venueId = yo?.sesion?.venueId
+        if (yo == null || venueId == null) {
+            if (yo != null) quienSoy.soltar()
+            foto?.let { File(it).delete() } // H5: no se checa; la selfie ya tomada no se queda en el celular
+            if (yo == null) _estado.update { it.copy(error = "Espera un momento.", aviso = null) }
+            return
+        }
         _estado.update {
             it.copy(ocupado = true, pideSelfie = null, buscandoUbicacion = true, avisoUbicacion = null, aviso = null, error = null)
         }
         // Salir de la pantalla durante la espera del GPS no tira la checada: todo (ubicación y guardado) sigue (NonCancellable).
-        viewModelScope.launch { withContext(NonCancellable) { checarYa(tipo, foto, venueId, generacion) } }
+        // UNDISPATCHED: corre aunque la pantalla ya se haya cerrado, así la reserva siempre se suelta.
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            withContext(NonCancellable) {
+                try { checarYa(tipo, foto, venueId, yo.generacion) } finally { quienSoy.soltar() }
+            }
+        }
     }
 
     private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String, generacion: String) {

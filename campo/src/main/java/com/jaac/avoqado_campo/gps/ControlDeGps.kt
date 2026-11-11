@@ -54,7 +54,9 @@ interface ControlDeGps {
  */
 fun debeSeguir(yo: Instantanea, turno: TurnoLocal?): Boolean {
     val venueId = turno?.takeIf { it.abierto && it.staffId == yo.staffId }?.venueId ?: yo.sesion?.venueId
-    return yo.sucursales.firstOrNull { it.venueId == venueId }?.seguimientoDeUbicacion != false
+    // r4 · B13: una sucursal que ya no está en sus sucursales ya no es suya: no se sigue.
+    val sucursal = yo.sucursales.firstOrNull { it.venueId == venueId } ?: return false
+    return sucursal.seguimientoDeUbicacion != false
 }
 
 internal const val SIN_PERMISO = "no diste permiso de ubicación"

@@ -156,6 +156,22 @@ class ControlDeGpsTest {
         assertNull(shadowOf(app).nextStartedService)
     }
 
+    @Test fun `G - la sucursal del turno que ya no es suya no se sigue, aunque la de la sesion si (r4 2)`() = runBlocking<Unit> {
+        conPermiso()
+        abrirTurno() // en v1, que el supervisor le quitó: el latido deja sólo v2
+        for (deLaSesion in listOf(false, true)) {
+            quienSoy.guardarEntrada(DatosDeEntrada(Sesion("a2", "r2", "v2"), listOf(Sucursal("v2", "Norte", null, deLaSesion))))
+            assertEquals(ResultadoGps.NoLoUsaLaTienda, control().iniciar())
+            assertNull(shadowOf(app).nextStartedService)
+            pasos.clear()
+            puerta.detenerPedido = false // el reinicio de Android: nadie pidió detener, decide `debeSeguir`
+            assertFalse(arrancarServicio()) // ni el reinicio de Android
+            assertEquals(listOf("primerPlano", "quitar"), pasos)
+            assertFalse(seguimiento().tomarUno()) // ni la lectura de cada 30 min
+            assertTrue(db.pingDao().todos().isEmpty())
+        }
+    }
+
     @Test fun `G - el servicio que Android reinicia solo con la sucursal del turno apagada se detiene sin aviso fijo (r3 3)`() = runBlocking<Unit> {
         conPermiso()
         abrirTurno()

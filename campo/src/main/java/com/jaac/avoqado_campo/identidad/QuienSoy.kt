@@ -89,6 +89,20 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
         Instantanea(generacion, leerEstado(), credencial, sesion, staffId, leerSucursales(), necesitaPin, limpiando)
     }
 
+    private val _enVuelo = MutableStateFlow(0)
+    /** r4: lo que la persona ya tocó y todavía no llega a Room (la checada que espera el GPS). El borrado espera a que sea 0. */
+    val enVuelo: StateFlow<Int> = _enVuelo
+
+    /**
+     * La instantánea del toque y una reserva, juntas y bajo el mismo candado que la marca del borrado: nunca hay las dos.
+     * null = hay un borrado en curso (no se reserva). Quien la toma la suelta con [soltar] al terminar de guardar.
+     */
+    fun reservar(): Instantanea? = synchronized(candado) {
+        instantanea().takeUnless { it.limpiando }?.also { _enVuelo.value = _enVuelo.value + 1 }
+    }
+
+    fun soltar() = synchronized(candado) { _enVuelo.value = _enVuelo.value - 1 }
+
     /** Lee [generacion] ANTES de la llamada de red y guarda con esto: si ya cambió, no escribe nada. */
     fun guardarSi(generacion: String, bloque: QuienSoy.() -> Unit): Boolean = synchronized(candado) {
         if (almacen.leer(GENERACION) != generacion) return false
@@ -155,10 +169,11 @@ class QuienSoy(private val almacen: AlmacenSeguro) {
 
     /**
      * Primer paso del borrado (R8-1): la marca y una `generacion` nueva en UNA escritura, así toda respuesta en vuelo se
-     * descarta. r3: sólo si sigue siendo la persona de [generacion] y no hay otro borrado; false = no se escribió nada.
+     * descarta. r3: sólo si sigue siendo la persona de [generacion] y no hay otro borrado; r4: ni nada en vuelo
+     * ([reservar]). false = no se escribió nada.
      */
     fun empezarLimpiezaSi(generacion: String): Boolean = synchronized(candado) {
-        if (almacen.leer(GENERACION) != generacion || almacen.leer(LIMPIANDO) != null) return false
+        if (almacen.leer(GENERACION) != generacion || almacen.leer(LIMPIANDO) != null || _enVuelo.value > 0) return false
         escribir(LIMPIANDO to REVISANDO, GENERACION to nueva())
         true
     }

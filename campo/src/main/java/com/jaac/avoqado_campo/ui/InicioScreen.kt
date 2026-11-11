@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.cola.SubidorDeGracia
 import com.jaac.avoqado_campo.gps.Bateria
 import com.jaac.avoqado_campo.gps.ResultadoGps
+import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import kotlinx.coroutines.launch
 
@@ -77,7 +78,9 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
 
 /** DESVINCULADO o DADO_DE_BAJA: la gracia sube lo que quedó; con la cola vacía se puede activar con otro código (B6). */
 @Composable
-fun PantallaDeGracia(pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes: () -> Unit, onActivarDeNuevo: suspend () -> Boolean) {
+fun PantallaDeGracia(
+    pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes: () -> Unit, onActivarDeNuevo: suspend () -> ResultadoDelBorrado,
+) {
     val alcance = rememberCoroutineScope()
     var mensaje by remember { mutableStateOf<String?>(null) }
     var trabajando by remember { mutableStateOf(false) }
@@ -91,7 +94,11 @@ fun PantallaDeGracia(pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes
             Button({
                 trabajando = true
                 alcance.launch {
-                    if (!onActivarDeNuevo()) mensaje = "Todavía queda algo por subir. Revisa «Mis pendientes»."
+                    mensaje = when (onActivarDeNuevo()) {
+                        ResultadoDelBorrado.BORRADO -> null
+                        ResultadoDelBorrado.QUEDA_ALGO -> "Todavía queda algo por subir. Revisa «Mis pendientes»."
+                        ResultadoDelBorrado.ESPERA -> ESPERA_UN_MOMENTO
+                    }
                     trabajando = false
                 }
             }, alto, enabled = !trabajando) { Text("Activar con un código nuevo") }
@@ -105,15 +112,17 @@ fun PantallaDeGracia(pendientes: Int, puedeActivarDeNuevo: Boolean, onPendientes
  * recibe el número que la persona confirmó; si ya cambió, no borra y se vuelve a preguntar con el nuevo.
  */
 @Composable
-fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspend (confirmadas: Int) -> Boolean) {
+fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspend (confirmadas: Int) -> ResultadoDelBorrado) {
     val alcance = rememberCoroutineScope()
     var confirmar by remember { mutableStateOf(false) }
     var cambio by remember { mutableStateOf(false) }
     var trabajando by remember { mutableStateOf(false) }
+    var mensaje by remember { mutableStateOf<String?>(null) }
     Pantalla {
         Text("Este celular ya no está registrado. Avísale a tu supervisor.", style = MaterialTheme.typography.titleMedium)
         OutlinedButton(onPendientes, alto) { Text("Mis pendientes") }
-        Button({ confirmar = true }, alto, enabled = !trabajando) { Text("Borrar este celular y activarlo de nuevo") }
+        Button({ confirmar = true; mensaje = null }, alto, enabled = !trabajando) { Text("Borrar este celular y activarlo de nuevo") }
+        mensaje?.let { Text(it) }
     }
     if (confirmar) {
         AlertDialog(
@@ -131,7 +140,11 @@ fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspe
                     confirmar = false
                     trabajando = true
                     alcance.launch {
-                        if (!onBorrar(vistas)) { trabajando = false; cambio = true; confirmar = true }
+                        when (onBorrar(vistas)) {
+                            ResultadoDelBorrado.BORRADO -> Unit
+                            ResultadoDelBorrado.QUEDA_ALGO -> { trabajando = false; cambio = true; confirmar = true }
+                            ResultadoDelBorrado.ESPERA -> { trabajando = false; mensaje = ESPERA_UN_MOMENTO }
+                        }
                     }
                 }) { Text("Borrar") }
             },
@@ -165,3 +178,6 @@ private fun InicioPreview() = TemaCampo {
         AccionesDeInicio({}, {}, {}, {}, {}, {}),
     )
 }
+
+/** r4: algo que la persona ya tocó (la checada que espera el GPS) no llegó a guardarse a tiempo, u otro borrado sigue: no se borró nada. */
+private const val ESPERA_UN_MOMENTO = "Espera un momento y vuelve a intentar."

@@ -9,6 +9,7 @@ import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
+import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SecuenciaDeCaptura
@@ -20,9 +21,14 @@ import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
+import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
+import com.jaac.avoqado_campo.identidad.EstadoDelCelular
+import com.jaac.avoqado_campo.identidad.MutexDeSesion
+import com.jaac.avoqado_campo.identidad.PinLocal
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
+import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import io.mockk.coEvery
@@ -33,6 +39,7 @@ import io.mockk.mockkObject
 import io.mockk.runs
 import io.mockk.unmockkObject
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -43,6 +50,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -214,19 +222,29 @@ class ChecadaViewModelTest {
         assertEquals(TipoPieza.ENTRADA, entradas.single().tipo)
     }
 
-    @Test fun `si durante la espera del GPS borran el celular y activan a otra persona, no queda ninguna pieza (H2)`() {
+    @Test fun `una checada que espera el GPS cuando llega un borrado no se pierde - el borrado la espera y no borra (r4 1)`() {
         val espera = CompletableDeferred<Ubicacion.Lectura?>()
         coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        coEvery { copia.borrar() } just runs
         vm.marcarEntrada()
-        vm.viewModelScope.cancel() // regresó; la checada sigue (NonCancellable)
-        quienSoy.empezarLimpiezaSi(quienSoy.generacion); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
-        quienSoy.guardarActivacion(
-            DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v1"), listOf(Sucursal("v1", "Centro", null))),
+        // Mientras espera el GPS llega un latido DESVINCULADO: la navegación cambia a la gracia (la pantalla se va), la cola
+        // está en 0 y la persona toca «Activar con un código nuevo».
+        vm.viewModelScope.cancel()
+        quienSoy.marcarDesvinculado(null)
+        val borrado = BorradoDelCelular(
+            quienSoy, MutexDeSubida(), MutexDeSesion(), gps, db::clearAllTables, dao, File(context.filesDir, "cola"), copia,
+            PinLocal(almacen, { 0L }), estadoDelGps, File(context.cacheDir, "fotos"),
         )
-        espera.complete(null)
-        assertEquals("Espera un momento.", runBlocking { withTimeout(5_000) { vm.estado.first { it.error != null } } }.error)
-        assertTrue(piezas().isEmpty())
-        assertNull(runBlocking { dao.turnoAhora() })
+        runBlocking {
+            val r = async(Dispatchers.IO) { borrado.activarDeNuevo() }
+            assertNull(withTimeoutOrNull(500) { r.await() }) // espera a la checada: no borra todavía
+            espera.complete(null) // llega el GPS (sin ubicación): la checada se guarda
+            assertEquals(ResultadoDelBorrado.QUEDA_ALGO, r.await()) // «Todavía queda algo por subir»
+        }
+        assertEquals(TipoPieza.ENTRADA, piezas().single().tipo) // sube por la gracia
+        assertEquals(EstadoDelCelular.DESVINCULADO, quienSoy.estado)
+        assertEquals("c".repeat(64), quienSoy.credencial)
+        assertFalse(quienSoy.limpiando)
     }
 
     @Test fun `el turno de otra persona no cuenta`() {

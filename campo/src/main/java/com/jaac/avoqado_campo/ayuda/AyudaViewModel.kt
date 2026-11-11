@@ -7,6 +7,7 @@ import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.latido.Latido
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.Conectividad
@@ -71,8 +72,11 @@ class AyudaViewModel @Inject constructor(
             is Llamada.Contesto -> when {
                 ll.r.isSuccessful -> {
                     ll.r.body()?.close()
-                    if (borrado.trasDesvincular(yo.generacion)) null
-                    else "Se guardó algo mientras se desvinculaba: se sube para que tu supervisor lo revise."
+                    when (borrado.trasDesvincular(yo.generacion)) {
+                        ResultadoDelBorrado.BORRADO -> null
+                        ResultadoDelBorrado.QUEDA_ALGO -> "Se guardó algo mientras se desvinculaba: se sube para que tu supervisor lo revise."
+                        ResultadoDelBorrado.ESPERA -> "Espera un momento."
+                    }
                 }
                 codigoDe(ll.r.errorBody()?.string()) == "TIENE_POR_SUBIR" -> "Primero sube lo pendiente."
                 else -> "No se pudo desvincular (HTTP ${ll.r.code()}). Intenta otra vez."

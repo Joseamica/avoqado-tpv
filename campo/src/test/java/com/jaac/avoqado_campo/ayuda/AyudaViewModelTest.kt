@@ -7,6 +7,7 @@ import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import com.jaac.avoqado_campo.latido.Latido
@@ -58,7 +59,7 @@ class AyudaViewModelTest {
         )
         every { dao.cuantasPorSubir() } returns porSubir
         every { conectividad.hayRed() } returns true
-        coEvery { borrado.trasDesvincular(any()) } returns true
+        coEvery { borrado.trasDesvincular(any()) } returns ResultadoDelBorrado.BORRADO
         coEvery { latido.mandar() } returns true
         coEvery { copia.actualizar(any()) } returns true
         val api = RedModule.crearRetrofit(server.url("/api/v1/").toString(), OkHttpClient()).create(CampoApi::class.java)

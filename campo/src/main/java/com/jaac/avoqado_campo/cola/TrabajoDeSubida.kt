@@ -52,7 +52,8 @@ class TrabajoDeSubida @AssistedInject constructor(
         } catch (e: Exception) {
             Log.w("TrabajoDeSubida", "latido o copia después de la pasada", e)
         }
-        // Aparte: un latido que truena no deja los pings para la siguiente corrida.
+        // Aparte: un latido que truena no deja los pings para la siguiente corrida. Toma el MutexDeSubida (H3), que el
+        // Subidor y la gracia ya soltaron al volver de `vaciar()`: no es reentrante, nunca se llama desde dentro de ellos.
         try {
             pings.mandar()
         } catch (e: CancellationException) {

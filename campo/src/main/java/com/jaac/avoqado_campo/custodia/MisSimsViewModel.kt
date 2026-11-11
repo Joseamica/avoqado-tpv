@@ -99,6 +99,7 @@ class MisSimsViewModel @Inject constructor(
      */
     private fun decidir(sims: List<SimEnCopia>, aceptar: Boolean) {
         val venueId = quienSoy.sesion?.venueId
+        val generacion = quienSoy.generacion
         if (sims.isEmpty() || _estado.value.ocupado) return
         if (venueId == null) { _estado.update { it.copy(error = SIN_SESION) }; return }
         _estado.update { it.copy(ocupado = true, error = null) }
@@ -110,7 +111,7 @@ class MisSimsViewModel @Inject constructor(
                         val v = lote.map { SimConVersion(it.serialNumber, it.custodyVersion) }
                         val viejas = lote.mapNotNull { aDecidir[normalizarSerie(it.serialNumber)]?.pieza }
                             .filter { it.estado == EstadoPieza.RECHAZADA }.map { it.id }.distinct()
-                        if (aceptar) encolador.aceptarCustodia(v, venueId, viejas) else encolador.rechazarCustodia(v.single(), venueId, viejas)
+                        if (aceptar) encolador.aceptarCustodia(generacion, v, venueId, viejas) else encolador.rechazarCustodia(generacion, v.single(), venueId, viejas)
                         guardadas += lote.size
                         recienDecididas += lote.map { normalizarSerie(it.serialNumber) }
                         val marca = if (aceptar) MarcaLocal.ACEPTADA_EN_EL_CELULAR else MarcaLocal.RECHAZADA_EN_EL_CELULAR
@@ -165,6 +166,7 @@ class MisSimsViewModel @Inject constructor(
         if (e.ocupado) return
         val sim = e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.sim
         val venueId = quienSoy.sesion?.venueId
+        val generacion = quienSoy.generacion
         val pago = sim?.paymentId
         val verificacion = sim?.verificationId
         val foto = c.foto
@@ -183,6 +185,7 @@ class MisSimsViewModel @Inject constructor(
             val error = withContext(NonCancellable) {
                 try {
                     encolador.evidenciaSuelta(
+                        generacion,
                         EvidenciaSueltaNueva(
                             venueId, pago, verificacion, c.photoLabel, c.numero.ifEmpty { null }, foto, "Corregir evidencia de SIM ${c.serie}",
                         ),

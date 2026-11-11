@@ -29,6 +29,25 @@ fun desenlaceDe(tipo: String, cuerpo: String, pidioNumero: Boolean = false): Lec
     }
 }
 
+/**
+ * H4: ¿el 2xx trae el dato que el SERVIDOR siempre manda cuando lo aplicó? Sin él (`200 {}` de algo en medio) no es HECHA: la
+ * pieza espera, como sin red. Se lee el cuerpo efectivo, así que vale igual para `aplicadoEnGracia` y `resuelto: APLICADO`.
+ * La custodia recuperada de la bitácora del SERVIDOR (`custodiaHecha`) trae `eventos` en vez de su respuesta normal.
+ */
+fun traeSuResultado(tipo: String, cuerpo: String): Boolean {
+    val o = objetoJson(cuerpoEfectivo(cuerpo)) ?: return false
+    fun texto(campo: String) = !o.txt(campo).isNullOrEmpty()
+    val deLaBitacora = o.arreglo("eventos") != null
+    return when (tipo) {
+        TipoPieza.VENTA -> texto("paymentId")
+        TipoPieza.ENTRADA, TipoPieza.SALIDA -> texto("timeEntryId")
+        TipoPieza.EVIDENCIA -> texto("verificationId")
+        TipoPieza.CUSTODIA_ACEPTAR -> o.get("summary")?.isJsonObject == true || deLaBitacora
+        TipoPieza.CUSTODIA_RECHAZAR -> texto("custodyState") || deLaBitacora
+        else -> false // un tipo desconocido se rechaza antes de mandarse
+    }
+}
+
 private val HECHA = Lectura(Desenlace.HECHA)
 private fun aviso(code: String, texto: String, datos: JsonObject? = null) = Lectura(Desenlace.AVISO, code, texto, datos?.toString())
 

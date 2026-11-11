@@ -51,7 +51,8 @@ private data class CuerpoAceptar(val sims: List<SimConVersion>)
 /**
  * Guarda cada acción del promotor ANTES de cualquier red: una transacción de Room por llamada (también el turno y el
  * copiado de la foto: si algo falla, no queda nada y la foto original sigue donde estaba, para reintentar). El cuerpo se
- * serializa UNA vez y se guarda tal cual se manda.
+ * serializa UNA vez y se guarda tal cual se manda. Cada escritura recibe la `generacion` que leyó quien llama al tocar
+ * (junto con la sesión): si el celular se borró o se activó para otra persona desde entonces, no escribe nada.
  */
 class Encolador(
     private val dao: PiezaDao,
@@ -61,8 +62,8 @@ class Encolador(
     private val dirCola: File,
     private val env: String = BuildConfig.STORAGE_ENV,
 ) {
-    suspend fun venta(v: VentaNueva): String = llaveNueva().also { llave ->
-        enTransaccion {
+    suspend fun venta(generacion: String, v: VentaNueva): String = llaveNueva().also { llave ->
+        enTransaccion(generacion) {
             // Defensa en la base (Tarea 10): dentro de la transacción, dos registros de la misma SIM no pasan los dos.
             if (dao.ventaConSerieEnCola(v.serialNumber) != null) throw SimYaEnCola()
             val hora = reloj.ahora()
@@ -78,19 +79,19 @@ class Encolador(
      * [reemplaza]: custodias RECHAZADA (`ASIGNACION_CAMBIO`) que esta decisión sustituye; quedan DESCARTADA en la misma
      * transacción, como `corregirVenta`. Una SIM que ya está en otra custodia viva → [SimYaEnCola] y nada escrito.
      */
-    suspend fun aceptarCustodia(sims: List<SimConVersion>, venueId: String, reemplaza: List<Long> = emptyList()): String =
+    suspend fun aceptarCustodia(generacion: String, sims: List<SimConVersion>, venueId: String, reemplaza: List<Long> = emptyList()): String =
         llaveNueva().also { llave ->
             require(sims.size in 1..50) { "De 1 a 50 SIMs" }
-            enTransaccion {
+            enTransaccion(generacion) {
                 custodiaNueva(sims, reemplaza)
                 val resumen = if (sims.size == 1) "Aceptar SIM ${sims[0].serialNumber}" else "Aceptar ${sims.size} SIMs"
                 dao.insertar(pieza(TipoPieza.CUSTODIA_ACEPTAR, llave, staffId, venueId, CuerpoAceptar(sims), reloj.ahora(), resumen))
             }
         }
 
-    suspend fun rechazarCustodia(sim: SimConVersion, venueId: String, reemplaza: List<Long> = emptyList()): String =
+    suspend fun rechazarCustodia(generacion: String, sim: SimConVersion, venueId: String, reemplaza: List<Long> = emptyList()): String =
         llaveNueva().also { llave ->
-            enTransaccion {
+            enTransaccion(generacion) {
                 custodiaNueva(listOf(sim), reemplaza)
                 dao.insertar(pieza(TipoPieza.CUSTODIA_RECHAZAR, llave, staffId, venueId, sim, reloj.ahora(), "Rechazar SIM ${sim.serialNumber}"))
             }
@@ -107,8 +108,8 @@ class Encolador(
     }
 
     /** Con un turno de esta persona ya abierto → `IllegalStateException` y nada escrito (B10: la pantalla no lo ofrece). */
-    suspend fun entrada(e: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion {
+    suspend fun entrada(generacion: String, e: ChecadaNueva): String = llaveNueva().also { llave ->
+        enTransaccion(generacion) {
             val previo = dao.turnoAhora()
             check(previo == null || !previo.abierto || previo.staffId != staffId) { "Ya hay un turno abierto" }
             val hora = reloj.ahora()
@@ -127,8 +128,8 @@ class Encolador(
      * `dependeDe`), si no su `llaveEntrada` (y depende de ella). Sin turno abierto de esta persona → `IllegalStateException`;
      * otra sucursal que la del turno → `IllegalArgumentException`. En los dos casos no se escribe nada.
      */
-    suspend fun salida(s: ChecadaNueva): String = llaveNueva().also { llave ->
-        enTransaccion {
+    suspend fun salida(generacion: String, s: ChecadaNueva): String = llaveNueva().also { llave ->
+        enTransaccion(generacion) {
             val t = dao.turnoAhora()
             check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
             require(s.venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
@@ -146,9 +147,9 @@ class Encolador(
     }
 
     /** R8-3: «Corregir evidencia» de una venta `FAILED`; ya sabe su pago y su verificación. */
-    suspend fun evidenciaSuelta(e: EvidenciaSueltaNueva): String {
+    suspend fun evidenciaSuelta(generacion: String, e: EvidenciaSueltaNueva): String {
         var llave = ""
-        enTransaccion {
+        enTransaccion(generacion) {
             llave = evidencia(
                 staffId, e.venueId, null, reloj.ahora(), e.photoLabel, e.numero, e.archivoFoto,
                 e.paymentId, e.verificationId, e.resumen,
@@ -158,8 +159,8 @@ class Encolador(
     }
 
     /** `PRECIO_CAMBIO` (sólo una venta RECHAZADA): la vieja DESCARTADA, la nueva con llave nueva, y sus evidencias pasan a la nueva. */
-    suspend fun corregirVenta(piezaId: Long, precioNuevo: BigDecimal): String = llaveNueva().also { llave ->
-        enTransaccion {
+    suspend fun corregirVenta(generacion: String, piezaId: Long, precioNuevo: BigDecimal): String = llaveNueva().also { llave ->
+        enTransaccion(generacion) {
             val v = dao.porId(piezaId)
             require(v != null && v.tipo == TipoPieza.VENTA && v.estado == EstadoPieza.RECHAZADA) { "No es una venta rechazada: $piezaId" }
             val vieja = gsonCola.fromJson(v.cuerpoJson, CuerpoVenta::class.java)
@@ -171,8 +172,8 @@ class Encolador(
     }
 
     /** Sólo una evidencia RECHAZADA. `numero`/`archivoFoto` en null = se queda el de antes. Llave y `captureSeq` nuevos. */
-    suspend fun corregirEvidencia(piezaId: Long, numero: String?, archivoFoto: String?): String = llaveNueva().also { llave ->
-        enTransaccion {
+    suspend fun corregirEvidencia(generacion: String, piezaId: Long, numero: String?, archivoFoto: String?): String = llaveNueva().also { llave ->
+        enTransaccion(generacion) {
             val ev = dao.porId(piezaId)
             require(ev != null && ev.tipo == TipoPieza.EVIDENCIA && ev.estado == EstadoPieza.RECHAZADA) { "No es una evidencia rechazada: $piezaId" }
             val p = gsonCola.fromJson(ev.evidenciaJson, EvidenciaPendiente::class.java)
@@ -194,8 +195,8 @@ class Encolador(
      * P4 + R2-4: la ENTRADA rechazada `YA_TIENE_ENTRADA` queda DESCARTADA y cada salida viva que dependía de ella se rehace
      * con llave nueva y `timeEntryId` (misma hora, ubicación y foto). Otra sucursal → `IllegalArgumentException`, sin cambios.
      */
-    suspend fun usarEntrada(piezaEntradaId: Long, timeEntryId: String, venueIdDeLaEntrada: String) {
-        enTransaccion {
+    suspend fun usarEntrada(generacion: String, piezaEntradaId: Long, timeEntryId: String, venueIdDeLaEntrada: String) {
+        enTransaccion(generacion) {
             val e = dao.porId(piezaEntradaId)
             require(e != null && e.tipo == TipoPieza.ENTRADA) { "No es una entrada: $piezaEntradaId" }
             require(e.venueId == venueIdDeLaEntrada) { "La entrada abierta es de otra sucursal" }
@@ -228,11 +229,12 @@ class Encolador(
      * P2: las filas primero; al final de la MISMA transacción se COPIA cada foto a `cola/`. El original se borra sólo
      * después del commit; si algo falla, se borran las copias y el original sigue ahí para reintentar.
      */
-    private suspend fun enTransaccion(bloque: suspend Transaccion.() -> Unit) {
+    private suspend fun enTransaccion(generacion: String, bloque: suspend Transaccion.() -> Unit) {
         var tx: Transaccion? = null
         try {
             dao.enTransaccion {
-                if (quienSoy.limpiando) throw CelularBorrandose()
+                // H2: también si desde el toque hubo un borrado (y quizá otra activación): el `staffId` de hoy no es el de quien tocó.
+                if (quienSoy.limpiando || quienSoy.generacion != generacion) throw CelularBorrandose()
                 val t = Transaccion(checkNotNull(quienSoy.staffId) { "Este celular no tiene persona" })
                 tx = t
                 t.bloque()

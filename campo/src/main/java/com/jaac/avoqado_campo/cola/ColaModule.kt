@@ -53,7 +53,7 @@ object ColaModule {
     fun proveerSubidor(
         dao: PiezaDao, api: CampoApi, guardia: GuardiaDeSesion, quienSoy: QuienSoy, fotos: SubidorDeFotos,
         mutex: MutexDeSubida, @ApplicationContext context: Context,
-    ): Subidor = Subidor(dao, api, guardia, quienSoy, fotos, mutex, File(context.filesDir, "cola"))
+    ): Subidor = Subidor(dao, api, guardia, quienSoy, fotos, mutex, File(context.filesDir, "cola"), File(context.cacheDir, "fotos"))
 
     @Provides @Singleton
     fun proveerSubidorDeGracia(

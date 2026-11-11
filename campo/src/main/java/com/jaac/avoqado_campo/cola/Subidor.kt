@@ -47,6 +47,8 @@ class Subidor(
     private val fotos: SubidorDeFotos,
     private val mutex: MutexDeSubida,
     private val dirCola: File,
+    /** `cacheDir/fotos` (`Camara`): lo tomado y todavía no encolado; el `Encolador` COPIA de ahí a [dirCola]. */
+    private val dirFotos: File,
     private val ahora: () -> Long = System::currentTimeMillis,
 ) {
     suspend fun vaciar(): ResultadoDeVaciado = mutex.mutex.withLock {
@@ -124,6 +126,8 @@ class Subidor(
             val texto = (r.body() ?: r.errorBody())?.use { it.string() }
             when (val k = clasificar(r.code(), texto, r.headers()["Retry-After"])) {
                 is RespuestaDelServidor.Ok -> {
+                    // H4: un 2xx sin el dato que prueba que se aplicó es «algo en medio»: la pieza sólo espera (y su foto se queda).
+                    if (!traeSuResultado(p.tipo, k.cuerpo)) { esperar(p, null); return corte(REINTENTABLE) }
                     hecha(p, k.cuerpo)
                     subidas++
                     if (p.tipo == TipoPieza.VENTA || p.tipo.startsWith("CUSTODIA_")) copia = true
@@ -180,11 +184,15 @@ class Subidor(
         dao.rechazar(p, code, mensaje, datosJson)
     private suspend fun esperar(p: Pieza, pedidaMs: Long?) = dao.esperar(p, pedidaMs, ahora())
 
-    /** P2: sólo archivos de hace más de 24 h que ninguna pieza viva nombra (una foto recién copiada nunca tiene esa edad). */
+    /**
+     * P2: sólo archivos de hace más de 24 h que ninguna pieza viva nombra (una foto recién copiada nunca tiene esa edad). H5: y
+     * de [dirFotos] lo de más de 24 h, que dejó una pantalla cuando la app murió con ella abierta (ninguna pieza nombra ahí nada).
+     */
     private suspend fun barrer() {
         val vivos = dao.archivosVivos().toSet()
         val limite = ahora() - UN_DIA
         dirCola.listFiles()?.filter { it.isFile && it.lastModified() < limite && it.absolutePath !in vivos }?.forEach { it.delete() }
+        dirFotos.listFiles()?.filter { it.isFile && it.lastModified() < limite }?.forEach { it.delete() }
     }
 
     private fun campo(json: String?, nombre: String): String? = runCatching {

@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.cola.BaseDeCampo
+import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.MutexDeSesion
@@ -13,13 +14,19 @@ import com.jaac.avoqado_campo.identidad.Sucursal
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import com.jaac.avoqado_campo.red.RedModule
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -63,7 +70,8 @@ class EnviadorDePingsTest {
         server.shutdown()
     }
 
-    private fun enviador() = EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy) { ahora }
+    private fun enviador(mutex: MutexDeSubida = MutexDeSubida()) =
+        EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy, mutex) { ahora }
     private suspend fun ping(capturadoAt: Long = ahora - hora, venueId: String = "v1") =
         db.pingDao().insertar(Ping(venueId = venueId, lat = 19.43, lon = -99.13, precision = 12f, capturadoAt = capturadoAt))
 
@@ -110,6 +118,23 @@ class EnviadorDePingsTest {
         enviador().mandar()
         assertTrue(pedidos.isEmpty())
         assertEquals(1, db.pingDao().todos().size)
+    }
+
+    /** H3: el borrado del celular espera a este mutex; con él tomado, nada sale (ni un ping viejo con la sesión nueva). */
+    @Test fun `con el mutex de subida tomado no manda nada hasta que se suelta (H3)`() = runBlocking {
+        ping(); ping()
+        val mutex = MutexDeSubida()
+        mutex.mutex.lock()
+        val envio = launch(Dispatchers.IO) { enviador(mutex).mandar() }
+        assertNull(withTimeoutOrNull(1_000) { envio.join() }) // sigue esperando el mutex
+        assertTrue(pedidos.isEmpty())
+        assertEquals(2, db.pingDao().todos().size)
+
+        mutex.mutex.unlock()
+        withTimeout(5_000) { envio.join() }
+        assertEquals(2, pedidos.size)
+        assertTrue(db.pingDao().todos().isEmpty())
+        assertFalse(mutex.mutex.isLocked) // lo suelta al terminar
     }
 
     @Test fun `con el celular DESVINCULADO se borran todos sin mandarse`() = runBlocking {

@@ -93,15 +93,16 @@ class ChecadaViewModel @Inject constructor(
     /** Doble toque → una pieza: [EstadoChecada.ocupado] se pone antes de lanzar nada. */
     private fun checar(tipo: TipoChecada, foto: String?) {
         val venueId = quienSoy.sesion?.venueId
+        val generacion = quienSoy.generacion // con la sesión: lo que se guarde es de ESTA persona
         if (_estado.value.ocupado || venueId == null) return
         _estado.update {
             it.copy(ocupado = true, pideSelfie = null, buscandoUbicacion = true, avisoUbicacion = null, aviso = null, error = null)
         }
         // Salir de la pantalla durante la espera del GPS no tira la checada: todo (ubicación y guardado) sigue (NonCancellable).
-        viewModelScope.launch { withContext(NonCancellable) { checarYa(tipo, foto, venueId) } }
+        viewModelScope.launch { withContext(NonCancellable) { checarYa(tipo, foto, venueId, generacion) } }
     }
 
-    private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String) {
+    private suspend fun checarYa(tipo: TipoChecada, foto: String?, venueId: String, generacion: String) {
         val l = ubicacion.leer()
         _estado.update { it.copy(buscandoUbicacion = false, avisoUbicacion = if (l == null) "Se checa sin ubicación" else null) }
         val nueva = ChecadaNueva(
@@ -109,7 +110,7 @@ class ChecadaViewModel @Inject constructor(
             if (tipo == TipoChecada.ENTRADA) "Entrada" else "Salida",
         )
         val error = try {
-            if (tipo == TipoChecada.ENTRADA) encolador.entrada(nueva) else encolador.salida(nueva)
+            if (tipo == TipoChecada.ENTRADA) encolador.entrada(generacion, nueva) else encolador.salida(generacion, nueva)
             null
         } catch (c: CancellationException) {
             throw c

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
 import javax.inject.Inject
@@ -136,15 +137,15 @@ class PendientesViewModel @Inject constructor(
         dao.descartarConHijos(id, if (p.tipo == TipoPieza.ENTRADA) "SU_ENTRADA_SE_DESCARTO" else "SU_VENTA_SE_DESCARTO")
     }
 
-    fun corregirPrecio(id: Long) = correr {
+    fun corregirPrecio(id: Long) = correr { generacion ->
         val precio = dao.porId(id)?.let(::precioActual) ?: return@correr
-        encolador.corregirVenta(id, precio)
+        encolador.corregirVenta(generacion, id, precio)
         despertar()
     }
 
-    fun usarEntrada(id: Long) = correr {
+    fun usarEntrada(id: Long) = correr { generacion ->
         val p = dao.porId(id) ?: return@correr
-        encolador.usarEntrada(id, dato(p, "timeEntryId") ?: return@correr, dato(p, "venueId") ?: return@correr)
+        encolador.usarEntrada(generacion, id, dato(p, "timeEntryId") ?: return@correr, dato(p, "venueId") ?: return@correr)
         despertar()
     }
 
@@ -165,11 +166,24 @@ class PendientesViewModel @Inject constructor(
         }
     }
 
-    fun alTomarFoto(archivo: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(foto = archivo)) }
+    /** H5: la reemplazada se borra; sin corrección abierta, o con una enviándose (su foto ya es del `Encolador`), la nueva sobra. */
+    fun alTomarFoto(archivo: String) {
+        val e = _estado.value
+        val c = e.corrigiendo
+        if (c == null || e.ocupado) { File(archivo).delete(); return }
+        c.foto?.takeIf { it != archivo }?.let { File(it).delete() }
+        _estado.update { it.copy(corrigiendo = c.copy(foto = archivo)) }
+    }
     fun alEscribirNumero(n: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(numero = n.filter(Char::isDigit).take(10))) }
     fun cancelarCorreccion() {
-        _estado.value.corrigiendo?.foto?.let { runCatching { java.io.File(it).delete() } }
+        _estado.value.corrigiendo?.foto?.let { runCatching { File(it).delete() } }
         _estado.update { it.copy(corrigiendo = null, error = null) }
+    }
+
+    /** H5: salir con Atrás deja la foto de la corrección sin enviar; enviándose (`ocupado`), es del `Encolador` y no se toca. */
+    override fun onCleared() {
+        val e = _estado.value
+        if (!e.ocupado) e.corrigiendo?.foto?.let { File(it).delete() }
     }
 
     fun enviarCorreccion() {
@@ -180,8 +194,8 @@ class PendientesViewModel @Inject constructor(
             else -> null
         }
         if (falta != null) return _estado.update { it.copy(error = falta) }
-        correr {
-            encolador.corregirEvidencia(c.id, c.numero.ifEmpty { null }, c.foto)
+        correr { generacion ->
+            encolador.corregirEvidencia(generacion, c.id, c.numero.ifEmpty { null }, c.foto)
             _estado.update { it.copy(corrigiendo = null) }
             despertar()
         }
@@ -189,13 +203,15 @@ class PendientesViewModel @Inject constructor(
 
     private fun despertar() = runCatching { Disparador.ahora(context) }.onFailure { Log.w("Pendientes", "despertar al Subidor", it) }
 
-    private fun correr(bloque: suspend () -> Unit) {
+    /** [bloque] recibe la `generacion` leída al tocar: el `Encolador` no escribe si el celular cambió de persona desde entonces. */
+    private fun correr(bloque: suspend (generacion: String) -> Unit) {
         if (_estado.value.ocupado) return
         if (quienSoy.limpiando) return _estado.update { it.copy(error = "Espera un momento") }
+        val generacion = quienSoy.generacion
         _estado.update { it.copy(ocupado = true, error = null) }
         viewModelScope.launch {
             val error = try {
-                bloque(); null
+                bloque(generacion); null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: CelularBorrandose) {

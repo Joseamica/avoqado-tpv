@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import com.jaac.avoqado_campo.checada.Ubicacion
 import com.jaac.avoqado_campo.cola.BaseDeCampo
+import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.identidad.AlmacenSeguro
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -114,6 +115,7 @@ object GpsModule {
     ): SeguimientoDelTurno = SeguimientoDelTurno(puerta, estado, ubicacion, pings, piezas, quienSoy) { reloj.ahora().epochMs }
 
     @Provides @Singleton
-    fun proveerEnviador(dao: PingDao, api: CampoApi, guardia: GuardiaDeSesion, quienSoy: QuienSoy, reloj: RelojAnclado): EnviadorDePings =
-        EnviadorDePings(dao, api, guardia, quienSoy) { reloj.ahora().epochMs }
+    fun proveerEnviador(
+        dao: PingDao, api: CampoApi, guardia: GuardiaDeSesion, quienSoy: QuienSoy, mutex: MutexDeSubida, reloj: RelojAnclado,
+    ): EnviadorDePings = EnviadorDePings(dao, api, guardia, quienSoy, mutex) { reloj.ahora().epochMs }
 }

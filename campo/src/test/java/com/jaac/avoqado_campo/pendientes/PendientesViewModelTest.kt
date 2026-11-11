@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.pendientes
 
 import android.content.Context
+import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -10,6 +11,7 @@ import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.EvidenciaNueva
+import com.jaac.avoqado_campo.cola.EvidenciaSueltaNueva
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SecuenciaDeCaptura
@@ -45,6 +47,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -104,7 +107,7 @@ class PendientesViewModelTest {
     private fun foto() = tmp.newFile("f${System.nanoTime()}.jpg").also { it.writeBytes(ByteArray(10) { 7 }) }.absolutePath
 
     private suspend fun ventaRechazada(code: String, datos: String?): Pieza {
-        val llave = encolador.venta(
+        val llave = encolador.venta(quienSoy.generacion, 
             VentaNueva("89521400001", BigDecimal("50"), false, "v1", listOf(EvidenciaNueva("Vinculacion", "5512345678", foto())), "SIM 89521400001"),
         )
         val v = dao.porLlave(llave)!!
@@ -138,6 +141,25 @@ class PendientesViewModelTest {
         assertEquals(nueva.llave, dao.siguientesParaSubir().single { it.tipo == TipoPieza.EVIDENCIA }.dependeDe)
     }
 
+    @Test fun `la foto de una correccion - la reemplazada y la no enviada al salir con Atras se borran (H5)`() = runBlocking {
+        val llave = encolador.evidenciaSuelta(
+            quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
+        )
+        dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
+        val m = nuevoVm()
+        m.empezarCorreccion(dao.porLlave(llave)!!.id)
+        esperar { m.estado.value.let { it.corrigiendo != null && !it.ocupado } }
+        val primera = File(foto())
+        val segunda = File(foto())
+        m.alTomarFoto(primera.path)
+        m.alTomarFoto(segunda.path)
+        assertFalse(primera.exists())
+        assertTrue(segunda.exists())
+
+        ViewModelStore().apply { put("pendientes", m) }.clear() // Atrás: la pantalla se va sin enviar
+        assertFalse(segunda.exists())
+    }
+
     @Test fun `quitar descarta la venta y rechaza a sus evidencias`() = runBlocking {
         val v = ventaRechazada("SIM_YA_VENDIDA", null)
         val m = nuevoVm()
@@ -149,7 +171,7 @@ class PendientesViewModelTest {
     }
 
     @Test fun `quitar no toca lo que todavia puede subir`() = runBlocking {
-        val llave = encolador.venta(VentaNueva("89521400002", BigDecimal("50"), false, "v1", emptyList(), "SIM 2"))
+        val llave = encolador.venta(quienSoy.generacion, VentaNueva("89521400002", BigDecimal("50"), false, "v1", emptyList(), "SIM 2"))
         val id = dao.porLlave(llave)!!.id
         val m = nuevoVm()
         m.quitar(id)

@@ -97,6 +97,8 @@ class SubidorDeGracia(
                                 p.id, if (p.tipo == TipoPieza.ENTRADA) "SU_ENTRADA_SE_DESCARTO" else "SU_VENTA_SE_DESCARTO",
                             )
                         }
+                        // H4: ni `aplicadoEnGracia` ni `resuelto: APLICADO` sin su resultado cuentan: espera, como sin red.
+                        !traeSuResultado(p.tipo, k.cuerpo) -> { dao.esperar(p, null, ahora()); return corte(REINTENTABLE) }
                         else -> { // aplicadoEnGracia o resuelto: APLICADO (R2-3, R7-4)
                             dao.hecha(p, k.cuerpo)
                             subidas++

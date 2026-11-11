@@ -86,7 +86,7 @@ class VentaViewModelTest {
         coEvery { dao.ventaConSerieEnCola(any()) } returns null
         coEvery { copia.actualizar(any()) } returns false
         coEvery { copia.marcar(any(), any()) } just runs
-        coEvery { encolador.venta(capture(venta)) } returns "llave"
+        coEvery { encolador.venta(quienSoy.generacion, capture(venta)) } returns "llave"
     }
 
     @After fun tearDown() {
@@ -173,7 +173,7 @@ class VentaViewModelTest {
         assertEquals(TipoDePrecio.LIBRE, v.estado.value.tipoDePrecio)
         v.listaParaRegistrar().registrar()
         listOf("0", "1.234", "abc").forEach { v.alEscribirPrecio(it); v.registrar() }
-        coVerify(exactly = 0) { encolador.venta(any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
         v.alEscribirPrecio("120.50")
         v.registrar()
         assertEquals(0, venta.captured.precio.compareTo(BigDecimal("120.50")))
@@ -183,7 +183,7 @@ class VentaViewModelTest {
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
         assertEquals("Falta la foto de vinculación.", v.estado.value.error)
     }
 
@@ -193,7 +193,7 @@ class VentaViewModelTest {
         v.listaParaRegistrar()
         v.alEscribirNumero(Slot.VINCULACION, "12345678")
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
         v.alEscribirNumero(Slot.VINCULACION, "55 1234 5678")
         v.registrar()
         assertEquals("5512345678", venta.captured.evidencias.single().numero)
@@ -207,7 +207,7 @@ class VentaViewModelTest {
         v.listaParaRegistrar().registrar()
         v.alTomarFoto(Slot.PORTABILIDAD, "/tmp/p.jpg")
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
         v.alEscribirNumero(Slot.PORTABILIDAD, "551234567")
         v.registrar()
         assertTrue(venta.captured.isPortabilidad)
@@ -226,7 +226,7 @@ class VentaViewModelTest {
     @Test fun `dos registrar seguidos son una sola venta`() {
         val v = vm(copiaCon(sim()))
         val espera = CompletableDeferred<String>()
-        coEvery { encolador.venta(any()) } coAnswers { espera.await() }
+        coEvery { encolador.venta(any(), any()) } coAnswers { espera.await() }
         v.alEscanear(serie)
         v.listaParaRegistrar()
         v.registrar()
@@ -234,7 +234,7 @@ class VentaViewModelTest {
         assertTrue(v.estado.value.registrando)
         espera.complete("llave")
         v.registrar()
-        coVerify(exactly = 1) { encolador.venta(any()) }
+        coVerify(exactly = 1) { encolador.venta(any(), any()) }
     }
 
     @Test fun `al guardar marca la SIM, despierta al subidor y confirma`() {
@@ -251,7 +251,7 @@ class VentaViewModelTest {
 
     @Test fun `durante el borrado dice espera un momento y no marca nada`() {
         val v = vm(copiaCon(sim()))
-        coEvery { encolador.venta(any()) } throws CelularBorrandose()
+        coEvery { encolador.venta(any(), any()) } throws CelularBorrandose()
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
         assertEquals("Espera un momento.", v.estado.value.error)
@@ -268,12 +268,12 @@ class VentaViewModelTest {
         assertTrue(v.estado.value.guardada)
         assertNull(v.estado.value.error)
         v.registrar()
-        coVerify(exactly = 1) { encolador.venta(any()) }
+        coVerify(exactly = 1) { encolador.venta(any(), any()) }
     }
 
     @Test fun `la misma SIM ya en la cola al registrar dice que ya esta vendida`() {
         val v = vm(copiaCon(sim()))
-        coEvery { encolador.venta(any()) } throws SimYaEnCola()
+        coEvery { encolador.venta(any(), any()) } throws SimYaEnCola()
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
         assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
@@ -291,6 +291,24 @@ class VentaViewModelTest {
         assertTrue(segunda.exists())
         v.alEscanear(serie) // otra búsqueda: la venta a medias se descarta
         assertFalse(segunda.exists())
+    }
+
+    @Test fun `portabilidad prendida, su foto, apagada y registrar - esa foto se borra y la de vinculacion no (H5)`() {
+        val v = vm(copiaCon(sim(), config = config(portabilidad = true)))
+        v.alEscanear(serie)
+        val vinculacion = tmp.newFile("v.jpg")
+        val portabilidad = tmp.newFile("p.jpg")
+        v.alCambiarPortabilidad(true)
+        v.alTomarFoto(Slot.VINCULACION, vinculacion.path)
+        v.alTomarFoto(Slot.PORTABILIDAD, portabilidad.path)
+        v.alCambiarPortabilidad(false)
+        v.registrar()
+        assertTrue(v.estado.value.guardada)
+        assertEquals(listOf(vinculacion.path), venta.captured.evidencias.map { it.archivoFoto })
+        assertFalse(portabilidad.exists()) // nadie la encoló: no se queda en el celular
+        assertTrue(vinculacion.exists()) // es del Encolador (aquí, un mock que no la mueve)
+        v.venderOtra()
+        assertTrue(vinculacion.exists())
     }
 
     @Test fun `la foto de una venta registrada no la borra la pantalla`() {

@@ -11,6 +11,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.gps.EnviadorDePings
+import com.jaac.avoqado_campo.gps.Ping
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
 import com.jaac.avoqado_campo.identidad.DatosDeActivacion
 import com.jaac.avoqado_campo.identidad.DatosDeLatido
@@ -26,6 +27,7 @@ import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import com.jaac.avoqado_campo.red.RedModule
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -109,7 +111,7 @@ class SubidorDeGraciaTest {
     private fun fotos() = SubidorDeFotos(RedModule.proveerCliente(), server.url("/").toString())
     private fun gracia() = SubidorDeGracia(dao, api, quienSoy, fotos(), mutex) { ahora }
     private fun subidor() =
-        Subidor(dao, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy, fotos(), mutex, dirCola) { ahora }
+        Subidor(dao, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy, fotos(), mutex, dirCola, File(tmp.root, "fotos")) { ahora }
 
     private fun ok(body: String, code: Int = 200) = MockResponse().setResponseCode(code).setBody(body)
     private fun error(status: Int, code: String) = ok("""{"code":"$code","message":"m"}""", status)
@@ -122,6 +124,7 @@ class SubidorDeGraciaTest {
         p.tipo == TipoPieza.EVIDENCIA ->
             ok("""{"success":true,"verificationId":"sv1","outcome":"APPLIED","photoOutcome":"APPLIED","aplicadoEnGracia":true}""")
         p.path.endsWith("/gracia") -> ok("""{"custodyState":"PROMOTER_REJECTED","repetida":false,"aplicadoEnGracia":true}""")
+        p.path.endsWith("/custodia/rechazar") -> ok("""{"custodyState":"PROMOTER_REJECTED","repetida":false}""")
         else -> ok("{}")
     }
 
@@ -145,7 +148,7 @@ class SubidorDeGraciaTest {
     private fun foto(): String = tmp.newFile("f-${System.nanoTime()}.jpg").also { it.writeBytes(ByteArray(321) { 9 }) }.absolutePath
 
     private suspend fun ventaConEvidencia(): Pair<Pieza, Pieza> {
-        val llave = encolador.venta(
+        val llave = encolador.venta(quienSoy.generacion, 
             VentaNueva("8952140000001", BigDecimal("50"), false, "v1", listOf(EvidenciaNueva("Vinculacion", "5512345678", foto())), "SIM 1"),
         )
         return dao.porLlave(llave)!! to dao.siguientesParaSubir().single { it.dependeDe == llave }
@@ -157,7 +160,7 @@ class SubidorDeGraciaTest {
     // ---------- el texto exacto ----------
 
     @Test fun `la VENTA va con el MISMO cuerpoJson de la ruta normal y la huella que reporto el latido`() = runBlocking {
-        val v = dao.porLlave(encolador.venta(VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
+        val v = dao.porLlave(encolador.venta(quienSoy.generacion, VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
         val huellas = dao.huellasPorSubir()
         desvincular()
 
@@ -207,7 +210,7 @@ class SubidorDeGraciaTest {
     }
 
     @Test fun `evidencia suelta no se manda - RECHAZADA con el texto de R9-B1`() = runBlocking {
-        val llave = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Vinculacion", null, foto(), "SIM 9"))
+        val llave = encolador.evidenciaSuelta(quienSoy.generacion, EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Vinculacion", null, foto(), "SIM 9"))
         val otra = pieza()
         desvincular()
 
@@ -224,6 +227,51 @@ class SubidorDeGraciaTest {
         assertEquals(listOf(TipoPieza.CUSTODIA_RECHAZAR), gracias().map { it.tipo })
         assertTrue(storage().isEmpty())
         assertEquals(EstadoPieza.HECHA, estado(otra).estado)
+    }
+
+    // ---------- 2xx sin el dato que prueba que se aplicó (H4) ----------
+
+    @Test fun `la gracia no da por aplicada una VENTA ni una EVIDENCIA sin su resultado - esperan y la foto se queda (H4)`() = runBlocking {
+        val (v, ev) = ventaConEvidencia()
+        desvincular()
+        responder = { if (it.tipo == TipoPieza.VENTA) ok("""{"aplicadoEnGracia":true}""", 201) else null }
+        assertEquals("REINTENTABLE", gracia().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.PENDIENTE, estado(v).estado)
+        assertEquals(1, estado(v).intentos)
+
+        ahora += 6_000
+        responder = { if (it.tipo == TipoPieza.VENTA) ok("""{"resuelto":"APLICADO","resultado":{}}""") else null }
+        assertEquals("REINTENTABLE", gracia().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.PENDIENTE, estado(v).estado)
+        assertNull(estado(v).resultadoJson)
+
+        ahora += 11_000
+        responder = { if (it.tipo == TipoPieza.EVIDENCIA) ok("{}") else null }
+        assertEquals("REINTENTABLE", gracia().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.HECHA, estado(v).estado)
+        assertEquals(EstadoPieza.PENDIENTE, estado(ev).estado)
+        val archivo = File(fotosDe(ev.fotosJson).single().archivo)
+        assertTrue(archivo.exists())
+
+        ahora += 6_000
+        responder = { null }
+        gracia().vaciar()
+        assertEquals(EstadoPieza.HECHA, estado(ev).estado)
+        assertFalse(archivo.exists())
+    }
+
+    @Test fun `la gracia no da por aplicada una ENTRADA sin su timeEntryId (H4)`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, null, "Entrada")))!!
+        desvincular()
+        responder = { if (it.tipo == TipoPieza.ENTRADA) ok("{}", 201) else null }
+        assertEquals("REINTENTABLE", gracia().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.PENDIENTE, estado(e).estado)
+
+        ahora += 6_000
+        responder = { if (it.tipo == TipoPieza.ENTRADA) ok("""{"timeEntryId":"te7","repetida":false,"aplicadoEnGracia":true}""", 201) else null }
+        gracia().vaciar()
+        assertEquals(EstadoPieza.HECHA, estado(e).estado)
+        assertEquals("te7", dao.turnoAhora()!!.timeEntryId)
     }
 
     // ---------- lo que decide el supervisor ----------
@@ -371,7 +419,7 @@ class SubidorDeGraciaTest {
                     val latido = Latido(api, quienSoy, dao, RelojAnclado(almacen, { ahora }, { 0L }, { 1 }), AparatoSinId(null, null, null, null)) { 0L }
                     val copia = RepositorioDeCopia(c, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), dao, quienSoy)
                         .also { copiaDelTrabajo = it }
-                    val pings = EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy) { ahora }
+                    val pings = EnviadorDePings(db.pingDao(), api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy, mutex) { ahora }
                     return TrabajoDeSubida(c, params, subidor(), gracia(), quienSoy, latido, copia, pings)
                 }
             })
@@ -424,6 +472,22 @@ class SubidorDeGraciaTest {
         assertEquals(EstadoPieza.HECHA, estado(a).estado)
         assertEquals(EstadoDelCelular.VINCULADO, quienSoy.estado)
         assertEquals(listOf("S9"), copiaDelTrabajo!!.copia.value!!.sims.map { it.serialNumber })
+    }
+
+    /** H3: el trabajo toma el mutex en el Subidor y lo suelta antes de los pings, que lo vuelven a tomar (no es reentrante). */
+    @Test fun `el trabajo con piezas y pings en la misma corrida no se traba con el mutex (H3)`() = runBlocking {
+        val a = pieza()
+        db.pingDao().insertar(Ping(venueId = "v1", lat = 19.43, lon = -99.13, precision = 12f, capturadoAt = ahora - 60_000))
+
+        assertEquals(ListenableWorker.Result.success(), withTimeout(10_000) { trabajo().doWork() })
+
+        assertEquals( // entre los dos van el latido y la copia (subió una custodia)
+            listOf("/tpv/campo/venues/v1/custodia/rechazar", "/tpv/campo/venues/v1/ubicacion"),
+            pedidos.map { it.path }.filter { it.endsWith("/custodia/rechazar") || it.endsWith("/ubicacion") },
+        )
+        assertEquals(EstadoPieza.HECHA, estado(a).estado)
+        assertTrue(db.pingDao().todos().isEmpty())
+        assertFalse(mutex.mutex.isLocked)
     }
 
     @Test fun `el trabajo sin venta ni custodia subida no baja la copia`() = runBlocking {

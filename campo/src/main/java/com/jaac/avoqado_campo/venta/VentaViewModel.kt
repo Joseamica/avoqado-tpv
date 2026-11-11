@@ -150,18 +150,21 @@ class VentaViewModel @Inject constructor(
         if (falta != null) { _estado.update { it.copy(error = falta) }; return }
         val sim = e.sim!!
         val venueId = quienSoy.sesion!!.venueId
+        val generacion = quienSoy.generacion // con la sesión: la venta es de ESTA persona
         _estado.update { it.copy(registrando = true, error = null) }
         viewModelScope.launch {
             try {
                 // Salir de la pantalla a media transacción no la corta: lo que se tocó se guarda o se deshace entero.
                 withContext(NonCancellable) {
                     encolador.venta(
+                        generacion,
                         VentaNueva(
                             serialNumber = sim.serialNumber, precio = e.precio!!, isPortabilidad = e.portabilidad, venueId = venueId,
                             evidencias = e.slots.map { s -> EvidenciaNueva(s.photoLabel, e.numeros[s].takeIf { e.pideNumero(s) }, e.fotos.getValue(s)) },
                             resumen = "Venta de ${e.config?.etiquetaArticulo ?: "SIM"} ${sim.serialNumber}",
                         ),
                     )
+                    borrarFotosQueNoSeEncolaron(e) // H5: aquí, y no después, para que salir de la pantalla no las salte
                 }
             } catch (c: CancellationException) {
                 throw c
@@ -196,6 +199,12 @@ class VentaViewModel @Inject constructor(
     }
 
     override fun onCleared() = borrarFotosSinRegistrar()
+
+    /** H5: las de un slot que ya no va (p. ej. portabilidad apagada). Las encoladas son del `Encolador`, que las borra al copiarlas. */
+    private fun borrarFotosQueNoSeEncolaron(e: EstadoVenta) {
+        val encoladas = e.slots.mapNotNull { e.fotos[it] }.toSet()
+        e.fotos.values.filterNot { it in encoladas }.forEach { File(it).delete() }
+    }
 
     /** Las fotos de una venta que no se registró. Las registradas ya son del `Encolador` (y mientras guarda, no se tocan). */
     private fun borrarFotosSinRegistrar() {

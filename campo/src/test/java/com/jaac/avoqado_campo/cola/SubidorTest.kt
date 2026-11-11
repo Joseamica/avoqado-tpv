@@ -62,6 +62,7 @@ class SubidorTest {
     private val server = MockWebServer()
     private lateinit var api: CampoApi
     private lateinit var dirCola: File
+    private val dirFotos by lazy { File(tmp.root, "fotos") }
     private lateinit var encolador: Encolador
     private val pedidos: MutableList<Pedido> = Collections.synchronizedList(mutableListOf())
     /** null = la respuesta normal de [porDefecto]. */
@@ -98,7 +99,7 @@ class SubidorTest {
 
     private fun subidor(mutex: MutexDeSubida = mutexCompartido) = Subidor(
         dao, api, GuardiaDeSesion(api, quienSoy, MutexDeSesion()), quienSoy,
-        SubidorDeFotos(RedModule.proveerCliente(), server.url("/").toString()), mutex, dirCola,
+        SubidorDeFotos(RedModule.proveerCliente(), server.url("/").toString()), mutex, dirCola, dirFotos,
     ) { ahora }
     private val mutexCompartido = MutexDeSubida()
 
@@ -115,6 +116,8 @@ class SubidorTest {
         path.endsWith("/ventas") -> venta()
         path.endsWith("/evidencia") -> ok("""{"success":true,"verificationId":"sv1","status":"PENDING","outcome":"APPLIED","photoOutcome":"APPLIED"}""")
         path.endsWith("/checadas/entrada") -> ok("""{"timeEntryId":"te1","repetida":false,"hora":"2026-11-10T18:00:00.000Z"}""", 201)
+        path.endsWith("/checadas/salida") -> ok("""{"timeEntryId":"te1","repetida":false,"hora":"2026-11-10T19:00:00.000Z"}""")
+        path.endsWith("/custodia/aceptar") -> ok("""{"summary":{"total":1,"succeeded":1,"failed":0},"results":[]}""")
         else -> ok("""{"custodyState":"PROMOTER_REJECTED","repetida":false}""")
     }
 
@@ -135,7 +138,7 @@ class SubidorTest {
     private fun foto(): String = tmp.newFile("f-${System.nanoTime()}.jpg").also { it.writeBytes(ByteArray(321) { 9 }) }.absolutePath
 
     private suspend fun ventaConEvidencia(): Pair<Pieza, Pieza> {
-        val llave = encolador.venta(
+        val llave = encolador.venta(quienSoy.generacion, 
             VentaNueva("8952140000001", BigDecimal("50"), false, "v1", listOf(EvidenciaNueva("Vinculacion", "5512345678", foto())), "SIM 1"),
         )
         val v = dao.porLlave(llave)!!
@@ -147,7 +150,7 @@ class SubidorTest {
     // ---------- el texto exacto, una sola vez ----------
 
     @Test fun `respuesta perdida - se repite la MISMA llave y el MISMO cuerpo byte a byte`() = runBlocking {
-        val v = dao.porLlave(encolador.venta(VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
+        val v = dao.porLlave(encolador.venta(quienSoy.generacion, VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
         val n = AtomicInteger()
         responder = { path, _ ->
             if (path.endsWith("/ventas")) {
@@ -169,7 +172,7 @@ class SubidorTest {
     }
 
     @Test fun `proceso muerto a mitad - el Subidor nuevo manda la misma llave, nunca otra`() = runBlocking {
-        val v = dao.porLlave(encolador.venta(VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
+        val v = dao.porLlave(encolador.venta(quienSoy.generacion, VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
         val llego = CountDownLatch(1)
         val suelta = CountDownLatch(1)
         val n = AtomicInteger()
@@ -269,13 +272,86 @@ class SubidorTest {
     }
 
     @Test fun `evidencia suelta lleva el paymentId y verificationId de su evidenciaJson (R8-3)`() = runBlocking {
-        val llave = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Portabilidad", "5587654321", foto(), "SIM 9"))
+        val llave = encolador.evidenciaSuelta(quienSoy.generacion, EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Portabilidad", "5587654321", foto(), "SIM 9"))
         subidor().vaciar()
         val cuerpo = json(de("/evidencia").single().texto)
         assertEquals("cpay9", cuerpo["paymentId"].asString)
         assertEquals("cver9", cuerpo["verificationId"].asString)
         assertEquals("5587654321", cuerpo["portedNumber"].asString)
         assertEquals(EstadoPieza.HECHA, dao.porLlave(llave)!!.estado)
+    }
+
+    // ---------- 2xx sin el dato que prueba que se aplicó (H4): «algo en medio», la pieza sólo espera ----------
+
+    @Test fun `200 {} en una VENTA no la da por hecha - espera, y el 201 completo la deja HECHA (H4)`() = runBlocking {
+        val v = dao.porLlave(encolador.venta(quienSoy.generacion, VentaNueva("8952140000001", BigDecimal("50"), false, "v1", emptyList(), "SIM")))!!
+        responder = { path, _ -> if (path.endsWith("/ventas")) ok("{}") else null }
+        assertEquals("REINTENTABLE", subidor().vaciar().cortadoPor)
+        val e = estado(v)
+        assertEquals(EstadoPieza.PENDIENTE, e.estado)
+        assertEquals(1, e.intentos)
+        assertEquals(ahora + 5_000, e.siguienteIntentoAt)
+        assertNull(e.resultadoJson)
+
+        ahora += 6_000
+        responder = { _, _ -> null }
+        assertEquals(1, subidor().vaciar().subidas)
+        assertEquals("pay1", json(estado(v).resultadoJson)["paymentId"].asString)
+        assertEquals(EstadoPieza.HECHA, estado(v).estado)
+    }
+
+    @Test fun `201 {} en una ENTRADA no la da por hecha - su foto se queda y el turno no recibe id (H4)`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
+        val archivo = File(fotosDe(e.fotosJson).single().archivo)
+        responder = { path, _ -> if (path.endsWith("/checadas/entrada")) ok("{}", 201) else null }
+        assertEquals("REINTENTABLE", subidor().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.PENDIENTE, estado(e).estado)
+        assertTrue(archivo.exists())
+        assertNull(dao.turnoAhora()!!.timeEntryId)
+
+        ahora += 6_000
+        responder = { _, _ -> null }
+        subidor().vaciar()
+        assertEquals(EstadoPieza.HECHA, estado(e).estado)
+        assertEquals("te1", dao.turnoAhora()!!.timeEntryId)
+        assertFalse(archivo.exists())
+    }
+
+    @Test fun `200 {} en una EVIDENCIA no la da por hecha y su foto local no se borra (H4)`() = runBlocking {
+        val (v, ev) = ventaConEvidencia()
+        val archivo = File(fotosDe(ev.fotosJson).single().archivo)
+        responder = { path, _ -> if (path.endsWith("/evidencia")) ok("{}") else null }
+        assertEquals("REINTENTABLE", subidor().vaciar().cortadoPor)
+        assertEquals(EstadoPieza.HECHA, estado(v).estado)
+        assertEquals(EstadoPieza.PENDIENTE, estado(ev).estado)
+        assertTrue(archivo.exists())
+
+        ahora += 6_000
+        responder = { _, _ -> null }
+        subidor().vaciar()
+        assertEquals(EstadoPieza.HECHA, estado(ev).estado)
+        assertFalse(archivo.exists())
+    }
+
+    @Test fun `traeSuResultado - el dato de cada tipo, tambien en las formas de la gracia (H4)`() {
+        assertTrue(traeSuResultado(TipoPieza.VENTA, """{"orderId":"o","paymentId":"p","repetida":false}"""))
+        assertTrue(traeSuResultado(TipoPieza.VENTA, """{"resuelto":"APLICADO","resultado":{"paymentId":"p","recuperado":true}}"""))
+        assertFalse(traeSuResultado(TipoPieza.VENTA, """{"paymentId":""}"""))
+        assertFalse(traeSuResultado(TipoPieza.VENTA, """{"aplicadoEnGracia":true}"""))
+        assertTrue(traeSuResultado(TipoPieza.ENTRADA, """{"timeEntryId":"t","repetida":true}"""))
+        assertTrue(traeSuResultado(TipoPieza.SALIDA, """{"timeEntryId":"t","totalHours":1}"""))
+        assertFalse(traeSuResultado(TipoPieza.SALIDA, "{}"))
+        assertTrue(traeSuResultado(TipoPieza.EVIDENCIA, """{"success":true,"verificationId":"v"}"""))
+        assertFalse(traeSuResultado(TipoPieza.EVIDENCIA, """{"success":true}"""))
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, """{"summary":{"total":1,"succeeded":1,"failed":0},"results":[]}"""))
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, """{"resuelto":"APLICADO","resultado":{"summary":{"failed":1},"fallidas":[]}}"""))
+        val bitacora = """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[{"serialNumber":"S1"}]}}"""
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, bitacora))
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, bitacora))
+        assertFalse(traeSuResultado(TipoPieza.CUSTODIA_ACEPTAR, "{}"))
+        assertTrue(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, """{"custodyState":"PROMOTER_REJECTED","repetida":true}"""))
+        assertFalse(traeSuResultado(TipoPieza.CUSTODIA_RECHAZAR, """{"repetida":true}"""))
+        assertFalse(traeSuResultado(TipoPieza.VENTA, "<html>"))
     }
 
     // ---------- 2xx que no guardó todo (AVISO) ----------
@@ -373,7 +449,7 @@ class SubidorTest {
     }
 
     @Test fun `403 OTRA_SUCURSAL del servidor en una pieza de la sucursal de la sesion - VENTA_MOVIDA y sigue (R6-B2)`() = runBlocking {
-        val llave = encolador.evidenciaSuelta(EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Vinculacion", null, foto(), "SIM 9"))
+        val llave = encolador.evidenciaSuelta(quienSoy.generacion, EvidenciaSueltaNueva("v1", "cpay9", "cver9", "Vinculacion", null, foto(), "SIM 9"))
         val otra = pieza()
         responder = { path, _ -> if (path.endsWith("/evidencia")) error(403, "OTRA_SUCURSAL") else null }
         subidor().vaciar()
@@ -460,7 +536,7 @@ class SubidorTest {
     // ---------- fotos ----------
 
     @Test fun `checada con foto - primero la foto, luego la checada con la url guardada, y el turno recibe su timeEntryId`() = runBlocking {
-        val llave = encolador.entrada(ChecadaNueva("v1", 19.4, -99.1, 10.0, false, foto(), "Entrada"))
+        val llave = encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", 19.4, -99.1, 10.0, false, foto(), "Entrada"))
         val e = dao.porLlave(llave)!!
         val f = fotosDe(e.fotosJson).single()
         subidor().vaciar()
@@ -476,7 +552,7 @@ class SubidorTest {
     }
 
     @Test fun `un 200 de Storage con otro size - la checada NO se manda`() = runBlocking {
-        val e = dao.porLlave(encolador.entrada(ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
         responder = { path, _ -> if (path.startsWith("/v0/b/")) ok("""{"contentType":"image/jpeg","size":"1"}""") else null }
         assertEquals("REINTENTABLE", subidor().vaciar().cortadoPor)
         assertTrue(de("/checadas/entrada").isEmpty())
@@ -485,7 +561,7 @@ class SubidorTest {
     }
 
     @Test fun `foto que ya no esta - RECHAZADA FOTO_NO_SUBIO y la siguiente se manda`() = runBlocking {
-        val e = dao.porLlave(encolador.entrada(ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
         File(fotosDe(e.fotosJson).single().archivo).delete()
         val otra = pieza()
         subidor().vaciar()
@@ -495,11 +571,20 @@ class SubidorTest {
 
     // ---------- limpieza ----------
 
+    @Test fun `el barrido tambien borra de cacheDir-fotos lo de mas de 24 h y no toca lo reciente (H5)`() = runBlocking {
+        dirFotos.mkdirs()
+        val reciente = File(dirFotos, "reciente.jpg").apply { writeText("x"); setLastModified(ahora - 60_000) }
+        val vieja = File(dirFotos, "vieja.jpg").apply { writeText("x"); setLastModified(ahora - 25 * 3_600_000L) }
+        subidor().vaciar()
+        assertTrue(reciente.exists())
+        assertFalse(vieja.exists())
+    }
+
     @Test fun `el barrido sólo borra archivos sin pieza de hace mas de 24 h (P2)`() = runBlocking {
         dirCola.mkdirs()
         val reciente = File(dirCola, "reciente.jpg").apply { writeText("x"); setLastModified(ahora - 60_000) }
         val vieja = File(dirCola, "vieja.jpg").apply { writeText("x"); setLastModified(ahora - 25 * 3_600_000L) }
-        val e = dao.porLlave(encolador.entrada(ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, ChecadaNueva("v1", null, null, null, null, foto(), "Entrada")))!!
         val viva = File(fotosDe(e.fotosJson).single().archivo).apply { setLastModified(ahora - 25 * 3_600_000L) }
         quienSoy.marcarNecesitaPin(true) // que nada se suba: la viva sigue siendo de una pieza viva
         subidor().vaciar()

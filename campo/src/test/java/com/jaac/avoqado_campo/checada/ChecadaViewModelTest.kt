@@ -136,7 +136,7 @@ class ChecadaViewModelTest {
     @Test fun `tras usarEntrada la salida lleva el timeEntryId`() {
         vm.marcarEntrada(); quieto()
         val entrada = piezas().single()
-        runBlocking { encolador.usarEntrada(entrada.id, "te1", "v1") }
+        runBlocking { encolador.usarEntrada(quienSoy.generacion, entrada.id, "te1", "v1") }
         runBlocking { withTimeout(5_000) { vm.estado.first { it.entrada == RefEntrada.PorId("te1") } } }
         vm.marcarSalida(); quieto()
         val salida = piezas().single { it.tipo == TipoPieza.SALIDA }
@@ -203,6 +203,21 @@ class ChecadaViewModelTest {
         espera.complete(null)
         val entradas = runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { it.isNotEmpty() } } }
         assertEquals(TipoPieza.ENTRADA, entradas.single().tipo)
+    }
+
+    @Test fun `si durante la espera del GPS borran el celular y activan a otra persona, no queda ninguna pieza (H2)`() {
+        val espera = CompletableDeferred<Ubicacion.Lectura?>()
+        coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
+        vm.marcarEntrada()
+        vm.viewModelScope.cancel() // regresó; la checada sigue (NonCancellable)
+        quienSoy.empezarLimpieza(); quienSoy.borrarTodo(); quienSoy.marcarLimpiando(false)
+        quienSoy.guardarActivacion(
+            DatosDeActivacion("c2", "d".repeat(64), "s2", "Beto", Sesion("b", "r2", "v1"), listOf(Sucursal("v1", "Centro", null))),
+        )
+        espera.complete(null)
+        assertEquals("Espera un momento.", runBlocking { withTimeout(5_000) { vm.estado.first { it.error != null } } }.error)
+        assertTrue(piezas().isEmpty())
+        assertNull(runBlocking { dao.turnoAhora() })
     }
 
     @Test fun `el turno de otra persona no cuenta`() {

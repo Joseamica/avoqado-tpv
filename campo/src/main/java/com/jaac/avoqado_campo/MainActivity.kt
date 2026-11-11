@@ -21,6 +21,8 @@ import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.ui.Navegacion
 import com.jaac.avoqado_campo.ui.PantallaDetenida
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.Actualizador
+import com.jaac.avoqado_campo.version.RevisorDeVersion
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -40,6 +42,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var gps: ControlDeGps
     @Inject lateinit var latido: Latido
     @Inject lateinit var arranque: Arranque
+    @Inject lateinit var revisor: RevisorDeVersion
+    @Inject lateinit var actualizador: Actualizador
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,19 +52,27 @@ class MainActivity : ComponentActivity() {
             setContent { TemaCampo { PantallaDetenida(onReintentar = ::reiniciar) } }
             return
         }
-        // Cada vez que la app se ve: reintentar el GPS del turno, y el latido al abrir y cada 5 min (Latido no manda más de 1/min).
+        // Cada vez que la app se ve: reintentar el GPS del turno, y el latido y la versión nueva al abrir y cada 5 min (Latido no
+        // manda más de 1/min; la versión se pregunta cada 30 min como mucho).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 withContext(Dispatchers.IO) {
                     intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy) }
                     while (true) {
                         intentar("latido") { latido.mandar() }
+                        intentar("versión nueva") { revisor.revisar() }
                         delay(CINCO_MIN)
                     }
                 }
             }
         }
-        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps) } }
+        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps, revisor, actualizador) } }
+    }
+
+    /** Al volver de «Permitir de esta fuente» (con el permiso, instala) o del diálogo de Android que no instaló. */
+    override fun onResume() {
+        super.onResume()
+        if (!arranque.detenido) actualizador.alRegresar()
     }
 
     /** «Reintentar»: un proceso nuevo, donde memoria = disco, vuelve a correr la recuperación del arranque. */

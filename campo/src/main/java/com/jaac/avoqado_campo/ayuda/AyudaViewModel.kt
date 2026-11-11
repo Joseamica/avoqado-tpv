@@ -15,6 +15,8 @@ import com.jaac.avoqado_campo.red.DesvincularBody
 import com.jaac.avoqado_campo.red.Llamada
 import com.jaac.avoqado_campo.red.codigoDe
 import com.jaac.avoqado_campo.red.llamarSeguro
+import com.jaac.avoqado_campo.version.NO_SE_PUDO_COMPROBAR
+import com.jaac.avoqado_campo.version.RevisorDeVersion
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +40,7 @@ class AyudaViewModel @Inject constructor(
     private val api: CampoApi,
     private val borrado: BorradoDelCelular,
     private val conectividad: Conectividad,
+    private val revisor: RevisorDeVersion,
 ) : ViewModel() {
     private val _estado = MutableStateFlow(EstadoAyuda())
     val estado: StateFlow<EstadoAyuda> = _estado
@@ -52,6 +55,18 @@ class AyudaViewModel @Inject constructor(
         val ok = v != null && copia.actualizar(v)
         latido.mandar()
         if (ok) "Listo: tus datos están al día." else "No se pudo actualizar. Intenta otra vez."
+    }
+
+    /** «Buscar actualización»: pregunta ya (sin esperar los 30 min). Se actualiza desde el aviso del Inicio. */
+    fun buscarActualizacion() = correr {
+        if (!conectividad.hayRed()) return@correr SIN_SENAL
+        if (!revisor.revisar(forzar = true)) return@correr "No se pudo revisar. Intenta otra vez."
+        val v = revisor.nueva.value
+        when {
+            v != null -> "Hay una versión nueva (${v.versionName}). Actualízala desde el inicio."
+            revisor.obligatoria.value -> NO_SE_PUDO_COMPROBAR
+            else -> "Ya tienes la versión más nueva."
+        }
     }
 
     /** B5: la próxima vez pide el PIN; la cola sigue subiendo con los tokens. */

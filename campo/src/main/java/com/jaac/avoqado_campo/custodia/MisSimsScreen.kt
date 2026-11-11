@@ -31,10 +31,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 
 /** «Mis SIMs»: aceptar o rechazar lo que te asignaron, lo que tienes y lo vendido (con «Revisar» si el supervisor lo pide). */
 @Composable
-fun MisSimsScreen(vm: MisSimsViewModel, onRegresar: () -> Unit) {
+fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> Unit) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var camara by rememberSaveable { mutableStateOf(false) }
     val c = estado.corrigiendo
@@ -47,6 +48,7 @@ fun MisSimsScreen(vm: MisSimsViewModel, onRegresar: () -> Unit) {
         else -> MisSimsContenido(
             estado,
             AccionesDeMisSims(vm::aceptar, vm::rechazar, vm::aceptarTodas, vm::empezarCorreccion, vm::actualizar, onRegresar),
+            obligatoria,
         )
     }
 }
@@ -59,7 +61,7 @@ class AccionesDeMisSims(
 private val alto = Modifier.heightIn(min = 48.dp)
 
 @Composable
-fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims) {
+fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Mis SIMs", style = MaterialTheme.typography.headlineSmall)
@@ -70,15 +72,20 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims) {
             e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
             Seccion("Por aceptar", e.porAceptar)
+            // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
+            val decidir = !e.ocupado && !obligatoria
+            if (obligatoria && e.porAceptar.any { it.estado == EstadoFila.POR_DECIDIR }) {
+                Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR } > 1) {
-                Button(a.aceptarTodas, alto.fillMaxWidth(), enabled = !e.ocupado) { Text("Aceptar todas") }
+                Button(a.aceptarTodas, alto.fillMaxWidth(), enabled = decidir) { Text("Aceptar todas") }
             }
             e.porAceptar.forEach { f ->
                 Fila(f) {
                     if (f.estado == EstadoFila.POR_DECIDIR) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button({ a.aceptar(f.sim.serialNumber) }, alto, enabled = !e.ocupado) { Text("Aceptar") }
-                            OutlinedButton({ a.rechazar(f.sim.serialNumber) }, alto, enabled = !e.ocupado) { Text("Rechazar") }
+                            Button({ a.aceptar(f.sim.serialNumber) }, alto, enabled = decidir) { Text("Aceptar") }
+                            OutlinedButton({ a.rechazar(f.sim.serialNumber) }, alto, enabled = decidir) { Text("Rechazar") }
                         }
                     }
                 }

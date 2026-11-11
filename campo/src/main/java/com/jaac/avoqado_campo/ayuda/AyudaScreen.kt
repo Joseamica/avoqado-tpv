@@ -40,6 +40,7 @@ fun AyudaScreen(vm: AyudaViewModel, onRegresar: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Ayuda", style = MaterialTheme.typography.headlineSmall)
             Button(vm::actualizarDatos, alto, enabled = !e.trabajando) { Text("Actualizar datos") }
+            OutlinedButton(vm::buscarActualizacion, alto, enabled = !e.trabajando) { Text("Buscar actualización") }
             OutlinedButton(vm::cerrarSesion, alto, enabled = !e.trabajando) { Text("Cerrar sesión") }
             OutlinedButton({ confirmar = true }, alto, enabled = !e.trabajando && e.porSubir == 0) { Text("Desvincular este celular") }
             if (e.porSubir > 0) Text("Primero sube lo pendiente (${e.porSubir})", color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -33,17 +33,21 @@ import com.jaac.avoqado_campo.gps.Bateria
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.AvisoDeVersion
+import com.jaac.avoqado_campo.version.PasoDeActualizacion
+import com.jaac.avoqado_campo.version.VersionNueva
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
 data class DatosDeInicio(
     val nombre: String?, val pendientes: Int, val necesitaPin: Boolean, val esperanSucursal: List<String>,
     val turnoAbierto: Boolean, val gps: ResultadoGps?,
+    val version: VersionNueva? = null, val obligatoria: Boolean = false, val paso: PasoDeActualizacion = PasoDeActualizacion.Quieto,
 )
 
 class AccionesDeInicio(
     val vender: () -> Unit, val sims: () -> Unit, val checar: () -> Unit, val pendientes: () -> Unit, val ayuda: () -> Unit,
-    val entrar: () -> Unit,
+    val entrar: () -> Unit, val actualizar: () -> Unit = {},
 )
 
 private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
@@ -61,6 +65,7 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
     }
     Pantalla {
         Text(d.nombre?.let { "Hola, $it" } ?: "Avoqado Campo", style = MaterialTheme.typography.headlineSmall)
+        AvisoDeVersion(d.version, d.obligatoria, d.paso, a.actualizar)
         if (d.necesitaPin) Aviso("Escribe tu PIN con señal para subir lo pendiente", "Escribir mi PIN", a.entrar)
         d.esperanSucursal.forEach { Aviso("Tienes cosas por subir de $it", "Entrar a $it", a.entrar) }
         if (d.turnoAbierto && d.gps is ResultadoGps.NoSigue) Aviso("El GPS del turno no está siguiendo: ${d.gps.motivo}", null) {}
@@ -69,7 +74,8 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
                 bateria.first?.let(context::startActivity)
             }
         }
-        Button(a.vender, alto) { Text("Vender") }
+        // D-2: con una obligatoria pendiente no se empieza nada NUEVO; Mis SIMs y Checar siguen (dentro, aceptar y entrar en gris).
+        Button(a.vender, alto, enabled = !d.obligatoria) { Text("Vender") }
         Button(a.sims, alto) { Text("Mis SIMs") }
         Button(a.checar, alto) { Text("Checar") }
         OutlinedButton(a.pendientes, alto) { Text("Mis pendientes (${d.pendientes})") }

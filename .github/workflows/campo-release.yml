@@ -1,0 +1,142 @@
+name: App de campo · release firmado
+
+# Compila y firma el APK release de la app de campo (`:campo`, com.jaac.avoqado_tpv.campo: el celular PERSONAL del
+# promotor) en cada push a main que toque `campo/`, y lo deja en un GitHub Release. De ahí lo baja el superadmin y lo sube
+# en el panel de versiones con la plataforma «App de campo» (el SERVIDOR rechaza en producción un APK con otra llave).
+#
+# 🔴 LA LLAVE ES PROPIA DE LA APP DE CAMPO (founder, 11-nov-2026), NO la debug.keystore de la TPV (signed-builds.yml):
+# así ningún APK de prueba —que se firma con la llave de debug de la Mac— puede instalarse encima de la app de un
+# promotor. Se reconstruye del secreto CAMPO_KEYSTORE_BASE64 (con CAMPO_KEYSTORE_PASSWORD) y la huella se comprueba DOS
+# veces contra HUELLA_CAMPO: al reconstruirla y sobre el APK ya firmado. Si no coincide, no se publica nada.
+# Perderla deja a todos los celulares sin poder actualizarse (cada promotor reinstala y pierde lo pendiente). Dónde
+# vive: docs/audit/2026-11-11-app-de-campo-bloque-3/llave-de-firma.md del workspace.
+#
+# Esto NO es la ceremonia /avoqado:release-production (que es sólo de las terminales) y no toca la TPV: no compila `:app`
+# ni sube nada al sistema de versiones de Avoqado.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'campo/**'
+      - '.github/workflows/campo-release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: campo-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # sólo para crear el GitHub Release; nunca empuja un commit
+
+env:
+  # Huella SHA-256 del certificado de la llave propia de la app de campo («CN=Avoqado Campo, O=Avoqado, C=MX»). Va EN
+  # CLARO a propósito: es pública y es el candado; un secreto se podría cambiar en silencio, este número no.
+  HUELLA_CAMPO: 'd9d5375f270a0910c4ecf07080b33744aabf1d2366283771cf8340eaa6c91079'
+
+jobs:
+  compilar_y_firmar:
+    name: Compilar y firmar la app de campo
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Va ANTES de compilar: un secreto que falta, o que trae otra llave, se caza en segundos.
+      - name: Reconstruir la llave de la app de campo
+        env:
+          CAMPO_KEYSTORE_BASE64: ${{ secrets.CAMPO_KEYSTORE_BASE64 }}
+          CAMPO_KEYSTORE_PASSWORD: ${{ secrets.CAMPO_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$CAMPO_KEYSTORE_BASE64" ] || [ -z "$CAMPO_KEYSTORE_PASSWORD" ]; then
+            echo "::error::Faltan los secretos CAMPO_KEYSTORE_BASE64 / CAMPO_KEYSTORE_PASSWORD del repo."
+            exit 1
+          fi
+          mkdir -p ~/.campo
+          printf '%s' "$CAMPO_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > ~/.campo/avoqado-campo-release.jks
+          test -s ~/.campo/avoqado-campo-release.jks || { echo "::error::CAMPO_KEYSTORE_BASE64 no decodificó a nada."; exit 1; }
+          huella=$(keytool -list -v -keystore ~/.campo/avoqado-campo-release.jks -storepass:env CAMPO_KEYSTORE_PASSWORD \
+            -alias avoqado-campo 2>/dev/null | grep -iE 'SHA-?256:' | head -1 | sed -E 's/.*SHA-?256:[[:space:]]*//' \
+            | tr -d ':[:space:]' | tr 'A-Z' 'a-z')
+          echo "huella de la llave reconstruida: ${huella:-<no se pudo leer>}"
+          if [ "$huella" != "$HUELLA_CAMPO" ]; then
+            echo "::error::La llave del secreto NO es la de la app de campo."
+            echo "::error::  esperada: $HUELLA_CAMPO"
+            echo "::error::  obtenida: ${huella:-<no se pudo leer: alias o contraseña distintos>}"
+            exit 1
+          fi
+          echo "✓ llave correcta (alias avoqado-campo, huella $HUELLA_CAMPO)"
+
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx3g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          EOF
+
+      - name: SDK de Android + build-tools con apksigner
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      # Puerta: si una prueba de la app de campo truena, no se produce ningún APK.
+      - name: Pruebas de la app de campo (puerta)
+        run: ./gradlew :campo:testDebugUnitTest
+
+      - name: Compilar el release de la app de campo, sin firmar
+        run: ./gradlew :campo:assembleRelease
+
+      - name: Firmar con la llave de la app de campo y comprobar la huella
+        id: firma
+        env:
+          CAMPO_KEYSTORE_PASSWORD: ${{ secrets.CAMPO_KEYSTORE_PASSWORD }}
+        run: |
+          RAIZ_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$RAIZ_SDK/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          [ -x "$APKSIGNER" ] || { echo "::error::No encontré apksigner bajo $RAIZ_SDK/build-tools"; exit 1; }
+          SHA=$(git rev-parse --short HEAD)
+          NOMBRE=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' campo/build.gradle.kts | head -1)
+          [ -n "$NOMBRE" ] || { echo "::error::No pude leer versionName de campo/build.gradle.kts"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "nombre=$NOMBRE" >> "$GITHUB_OUTPUT"
+          SIN_FIRMA=campo/build/outputs/apk/release/campo-release-unsigned.apk
+          SALIDA="avoqado-campo-${NOMBRE}-${SHA}.apk"
+          test -s "$SIN_FIRMA" || { echo "::error::No se generó $SIN_FIRMA"; exit 1; }
+          "$APKSIGNER" sign --ks ~/.campo/avoqado-campo-release.jks --ks-key-alias avoqado-campo \
+            --ks-pass env:CAMPO_KEYSTORE_PASSWORD --key-pass env:CAMPO_KEYSTORE_PASSWORD --out "$SALIDA" "$SIN_FIRMA"
+          "$APKSIGNER" verify --verbose --print-certs "$SALIDA" | tee /tmp/verify-campo.txt
+          grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/verify-campo.txt \
+            || { echo "::error::El APK NO quedó firmado con v2 (el SERVIDOR lee la huella del bloque v2)."; exit 1; }
+          huella=$(grep -m1 -i 'certificate SHA-256 digest' /tmp/verify-campo.txt | sed 's/.*digest: *//' \
+            | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+          if [ "$huella" != "$HUELLA_CAMPO" ]; then
+            echo "::error::Firmado con la llave EQUIVOCADA: esperada $HUELLA_CAMPO, obtenida ${huella:-<no se pudo leer>}"
+            exit 1
+          fi
+          echo "salida=$SALIDA" >> "$GITHUB_OUTPUT"
+          echo "✓ $SALIDA firmado, v2 verificado y con la llave de la app de campo"
+
+      - name: Publicar en GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="campo-v${{ steps.firma.outputs.nombre }}-${{ steps.firma.outputs.sha }}"
+          gh release create "$TAG" "${{ steps.firma.outputs.salida }}" \
+            --title "App de campo ${{ steps.firma.outputs.nombre }} (${{ steps.firma.outputs.sha }})" \
+            --notes "APK de la app de campo firmado con su llave propia (huella $HUELLA_CAMPO). Súbelo en el panel de versiones con la plataforma «App de campo» y el ambiente PRODUCTION." \
+            --target "${{ github.sha }}"

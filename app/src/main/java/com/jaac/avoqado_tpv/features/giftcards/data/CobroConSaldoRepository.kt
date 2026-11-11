@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.giftcards.data
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
@@ -46,7 +47,16 @@ data class SolicitudDeSaldo(
     val orderId: String,
     val cuerpo: String,
     val creadaEn: Long,
+    /** D12: el folio que ve la cajera («W494E»), para avisar sin red. null en las guardadas antes de D12. */
+    val folio: String? = null,
 ) {
+    /** D12: el monto del cuerpo, en centavos; null si no se puede leer. Sin campo propio: también sirve en las guardadas antes de D12. */
+    val montoCents: Long?
+        get() = try {
+            JsonParser.parseString(cuerpo).asJsonObject.get("amount")?.takeUnless { it.isJsonNull }?.asBigDecimal?.centavos()
+        } catch (e: Exception) {
+            null
+        }
     /** El cuerpo trae la prueba (el código o la liga): nunca sale en un log. */
     override fun toString() = "SolicitudDeSaldo(llave=$llave, venueId=$venueId, orderId=$orderId, cuerpo=****)"
 }
@@ -206,10 +216,7 @@ class CobroConSaldoRepository @Inject constructor(
     }
 
     /** Full-testing H2: los folios de ESTE negocio con un cobro con saldo guardado sin desenlace (una sola lectura del almacén). */
-    fun foliosPendientes(): Set<String> {
-        val venueId = storage.getVenueId() ?: return emptySet()
-        return leer().filter { it.venueId == venueId }.mapTo(HashSet()) { it.orderId }
-    }
+    fun foliosPendientes(): Set<String> = pendientes().mapTo(HashSet()) { it.orderId }
 
     /** El cobro con saldo de ESTE negocio para [orderId] que todavía no tiene desenlace; null si no hay. */
     fun pendienteDe(orderId: String): SolicitudDeSaldo? {
@@ -217,7 +224,13 @@ class CobroConSaldoRepository @Inject constructor(
         return leer().firstOrNull { it.venueId == venueId && it.orderId == orderId }
     }
 
-    suspend fun cobrar(orderId: String, prueba: PruebaDeSaldo, montoCents: Long): DesenlaceDeSaldo {
+    /** D12: los cobros con saldo de ESTE negocio guardados sin desenlace (una sola lectura del almacén), para el aviso del Inicio sin red. */
+    fun pendientes(): List<SolicitudDeSaldo> {
+        val venueId = storage.getVenueId() ?: return emptyList()
+        return leer().filter { it.venueId == venueId }
+    }
+
+    suspend fun cobrar(orderId: String, prueba: PruebaDeSaldo, montoCents: Long, folio: String? = null): DesenlaceDeSaldo {
         if (!candado.tryLock()) return DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
         try {
             return withContext(NonCancellable + Dispatchers.IO) {
@@ -227,7 +240,7 @@ class CobroConSaldoRepository @Inject constructor(
                 if (pendienteDe(orderId) != null) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.COMPROBANDO)
                 val serie = serie() ?: return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_PREPARAR)
                 val llave = UUID.randomUUID().toString()
-                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), System.currentTimeMillis())
+                val s = SolicitudDeSaldo(llave, venueId, orderId, cuerpo(llave, prueba, montoCents), System.currentTimeMillis(), folio)
                 if (!guardar(s)) return@withContext DesenlaceDeSaldo.NoSalio(TextosDeSaldo.NO_SE_PUDO_GUARDAR)
                 enviar(s, serie, trasDuda = false)
             }

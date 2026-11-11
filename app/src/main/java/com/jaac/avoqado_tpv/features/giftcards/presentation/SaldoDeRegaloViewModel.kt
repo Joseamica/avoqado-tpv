@@ -194,7 +194,7 @@ class SaldoDeRegaloViewModel @Inject constructor(
         val monto = u.montoCents
         _ui.update { it.copy(cobrando = true, error = null) }
         viewModelScope.launch {
-            val d = repo.cobrar(id, p, monto)
+            val d = repo.cobrar(id, p, monto, u.folio?.orderNumber)
             _ui.update { it.copy(cobrando = false) }
             atender(d)
         }

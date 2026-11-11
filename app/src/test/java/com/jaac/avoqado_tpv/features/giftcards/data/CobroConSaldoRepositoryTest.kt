@@ -536,4 +536,60 @@ class CobroConSaldoRepositoryTest {
     }
 
     // endregion
+
+    // region D12 — lo que el Inicio sin red necesita para avisar: el folio y el monto, guardados antes de mandar
+
+    @Test
+    fun `D12 la duda guarda el folio y el monto y se leen al reabrir la app`() = runTest {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+
+        assertThat(repo().cobrar("cord1", tarjeta, 5000, folio = "W7K3P")).isEqualTo(DesenlaceDeSaldo.Incierto)
+
+        // Otra instancia sobre el mismo almacén = la app que se reabre sin red.
+        val guardada = repo().pendientes().single()
+        assertThat(guardada.orderId).isEqualTo("cord1")
+        assertThat(guardada.folio).isEqualTo("W7K3P")
+        assertThat(guardada.montoCents).isEqualTo(5000)
+    }
+
+    @Test
+    fun `D12 el folio va guardado ANTES de mandar`() = runTest {
+        var guardadoAlLlegar: String? = null
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                guardadoAlLlegar = almacen.values.firstOrNull()
+                return cobro()
+            }
+        }
+
+        repo().cobrar("cord1", tarjeta, 5000, folio = "W7K3P")
+
+        assertThat(guardadoAlLlegar).contains("W7K3P")
+    }
+
+    @Test
+    fun `D12 una guardada por la version anterior (sin folio) se lee con su monto`() {
+        almacen["tienda_hibrida_cobros_con_saldo"] =
+            """[{"llave":"k1234567","venueId":"v1","orderId":"cord1","cuerpo":"{\"idempotencyKey\":\"k1234567\",\"amount\":134.50,\"tip\":0}","creadaEn":1}]"""
+
+        val guardada = repo().pendientes().single()
+
+        assertThat(guardada.folio).isNull()
+        assertThat(guardada.montoCents).isEqualTo(13450)
+    }
+
+    @Test
+    fun `D12 sólo las de este negocio`() {
+        almacen["tienda_hibrida_cobros_con_saldo"] =
+            """[{"llave":"k1234567","venueId":"otro","orderId":"cord1","cuerpo":"{}","creadaEn":1,"folio":"W1111"},""" +
+            """{"llave":"k7654321","venueId":"v1","orderId":"cord2","cuerpo":"{}","creadaEn":1,"folio":"W2222"}]"""
+
+        val guardadas = repo().pendientes()
+
+        assertThat(guardadas.map { it.folio }).containsExactly("W2222")
+        // Un cuerpo sin monto no tumba el aviso: sale sin monto.
+        assertThat(guardadas.single().montoCents).isNull()
+    }
+
+    // endregion
 }

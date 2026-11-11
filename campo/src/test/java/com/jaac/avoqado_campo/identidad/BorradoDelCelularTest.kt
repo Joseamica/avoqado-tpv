@@ -23,8 +23,10 @@ import com.jaac.avoqado_campo.red.AparatoSinId
 import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.GuardiaDeSesion
 import com.jaac.avoqado_campo.red.RedModule
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.spyk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -111,10 +113,10 @@ class BorradoDelCelularTest {
         archivoCopia.delete()
     }
 
-    private fun borrado() = BorradoDelCelular(
+    private fun borrado(conDao: PiezaDao = dao) = BorradoDelCelular(
         quienSoy, MutexDeSubida(), MutexDeSesion(), gps,
         { db.clearAllTables(); if (morirTrasRoom) { morirTrasRoom = false; throw IllegalStateException("el proceso muere") } },
-        dao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos,
+        conDao, carpetaCola, copia, pinLocal, estadoDelGps, carpetaFotos,
     )
 
     /** Lo que deja una persona en el celular: turno, foto en la cola, copia, fallos del PIN, estado del GPS y activación pendiente. */
@@ -157,6 +159,21 @@ class BorradoDelCelularTest {
         assertEquals(1, dao.pendientesDeVer().first().size)
         assertEquals("c".repeat(64), quienSoy.credencial)
         assertTrue(carpetaCola.exists())
+        assertEquals(0, detenido)
+    }
+
+    @Test fun `r8 - si Room falla al recontar con la marca puesta, se quita la marca y la generacion vuelve`() = runBlocking {
+        quienSoy.marcarDesvinculado(null)
+        val generacionAntes = quienSoy.generacion
+        // El segundo conteo (ya con la marca puesta) truena, como si Room fallara.
+        val daoQueFalla = spyk(dao)
+        coEvery { daoQueFalla.cuantasVivas() } answers { if (quienSoy.limpiando) throw IllegalStateException("Room falló") else 0 }
+        var resultado: Any? = null
+        val error = runCatching { resultado = borrado(daoQueFalla).activarDeNuevo() }.exceptionOrNull()
+        assertNotNull("el error de Room debía subir; regresó $resultado", error)
+        assertFalse("la marca sigue puesta tras ${error?.javaClass?.simpleName}", quienSoy.limpiando)
+        assertEquals("la generación no volvió", generacionAntes, quienSoy.generacion)
+        assertEquals("c".repeat(64), quienSoy.credencial)
         assertEquals(0, detenido)
     }
 

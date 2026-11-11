@@ -95,7 +95,14 @@ class BorradoDelCelular(
         // 2 · Con la marca (y una generación nueva: toda respuesta en vuelo ya no escribe, R8-1, I2) se cuenta otra vez. Room
         // pone en fila las transacciones: un encolado ya confirmado se ve aquí, y uno posterior ve `limpiando` y lanza.
         var n = -1
-        dao.enTransaccion { n = contar() }
+        try {
+            dao.enTransaccion { n = contar() }
+        } catch (e: Throwable) {
+            // r8: si Room falla con la marca puesta y antes de confirmar, es un borrado que no siguió: TODO como estaba (la
+            // marca y la generación), o una checada APARTADA esperaría la marca para siempre.
+            quienSoy.cancelarLimpieza()
+            throw e
+        }
         if (n != esperadas) {
             quienSoy.siQuedaAlgo() // la marca es nuestra: nadie activó a otra persona
             quienSoy.cancelarLimpieza() // r6: se niega → TODO como estaba, también la generación

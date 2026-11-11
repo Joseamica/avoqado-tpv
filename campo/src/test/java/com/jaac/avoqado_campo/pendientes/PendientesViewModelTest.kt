@@ -162,14 +162,17 @@ class PendientesViewModelTest {
         assertFalse(segunda.exists())
     }
 
-    @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras (H5)`() = runBlocking {
+    @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras, y Atras no la cancela (H5)`() = runBlocking {
         val llave = encolador.evidenciaSuelta(
             quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
         )
         dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
         val espera = CompletableDeferred<Unit>()
         val enVuelo = mockk<Encolador>()
-        coEvery { enVuelo.corregirEvidencia(any(), any(), any(), any()) } coAnswers { espera.await(); "k" }
+        coEvery { enVuelo.corregirEvidencia(any(), any(), any(), any()) } coAnswers {
+            espera.await()
+            encolador.corregirEvidencia(arg(0), arg(1), arg(2), arg(3)) // el de verdad, ya con la pantalla cerrada
+        }
         val m = PendientesViewModel(
             dao, enVuelo, quienSoy, mockk(relaxed = true), conectividad, ApplicationProvider.getApplicationContext(),
         ).also { vm = it }
@@ -186,7 +189,11 @@ class PendientesViewModelTest {
         ViewModelStore().apply { put("pendientes", m) }.clear() // Atrás con el envío en vuelo
         assertTrue(entregada.exists())
         espera.complete(Unit)
-        Unit
+        // Atrás a media acción no la pierde: la corrección queda guardada con llave nueva y la vieja DESCARTADA.
+        esperar { dao.porLlave(llave)!!.estado == EstadoPieza.DESCARTADA }
+        val nueva = dao.siguientesParaSubir().single { it.tipo == TipoPieza.EVIDENCIA }
+        assertNotEquals(llave, nueva.llave)
+        assertEquals(EstadoPieza.PENDIENTE, nueva.estado)
     }
 
     @Test fun `quitar descarta la venta y rechaza a sus evidencias`() = runBlocking {

@@ -22,6 +22,7 @@ import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.red.objetoJson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
@@ -211,7 +213,8 @@ class PendientesViewModel @Inject constructor(
         _estado.update { it.copy(ocupado = true, error = null) }
         viewModelScope.launch {
             val error = try {
-                bloque(generacion); null
+                // Salir de la pantalla a media escritura no la corta (como Venta, Checada y Mis SIMs): se guarda o se deshace entera.
+                withContext(NonCancellable) { bloque(generacion) }; null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: CelularBorrandose) {

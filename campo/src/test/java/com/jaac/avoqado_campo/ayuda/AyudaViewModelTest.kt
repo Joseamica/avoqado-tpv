@@ -15,6 +15,8 @@ import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.red.PorSubir
 import com.jaac.avoqado_campo.red.RedModule
+import com.jaac.avoqado_campo.version.RevisorDeVersion
+import com.jaac.avoqado_campo.version.VersionNueva
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -49,6 +51,9 @@ class AyudaViewModelTest {
     private val latido = mockk<Latido>()
     private val borrado = mockk<BorradoDelCelular>()
     private val conectividad = mockk<Conectividad>()
+    private val revisor = mockk<RevisorDeVersion>()
+    private val nueva = MutableStateFlow<VersionNueva?>(null)
+    private val obligatoria = MutableStateFlow(false)
     private lateinit var vm: AyudaViewModel
 
     @Before fun setUp() {
@@ -63,7 +68,9 @@ class AyudaViewModelTest {
         coEvery { latido.mandar() } returns true
         coEvery { copia.actualizar(any()) } returns true
         val api = RedModule.crearRetrofit(server.url("/api/v1/").toString(), OkHttpClient()).create(CampoApi::class.java)
-        vm = AyudaViewModel(quienSoy, dao, copia, latido, api, borrado, conectividad)
+        every { revisor.nueva } returns nueva
+        every { revisor.obligatoria } returns obligatoria
+        vm = AyudaViewModel(quienSoy, dao, copia, latido, api, borrado, conectividad, revisor)
     }
 
     @After fun tearDown() {
@@ -136,5 +143,28 @@ class AyudaViewModelTest {
         esperarQueTermine()
         assertEquals("Necesitas señal para esto", vm.estado.value.mensaje)
         coVerify(exactly = 0) { copia.actualizar(any()) }
+    }
+
+    @Test fun `buscar actualizacion pregunta forzando y dice si hay una nueva`() = runBlocking {
+        coEvery { revisor.revisar(true) } coAnswers { nueva.value = VersionNueva(4, "0.3.1", "https://x", "ab", 1, false, null); true }
+        vm.buscarActualizacion()
+        esperarQueTermine()
+        coVerify(exactly = 1) { revisor.revisar(true) }
+        assertEquals("Hay una versión nueva (0.3.1). Actualízala desde el inicio.", vm.estado.value.mensaje)
+    }
+
+    @Test fun `buscar actualizacion sin nada nuevo lo dice`() = runBlocking {
+        coEvery { revisor.revisar(true) } returns true
+        vm.buscarActualizacion()
+        esperarQueTermine()
+        assertEquals("Ya tienes la versión más nueva.", vm.estado.value.mensaje)
+    }
+
+    @Test fun `buscar actualizacion sin señal no pregunta`() = runBlocking {
+        every { conectividad.hayRed() } returns false
+        vm.buscarActualizacion()
+        esperarQueTermine()
+        coVerify(exactly = 0) { revisor.revisar(any()) }
+        assertEquals("Necesitas señal para esto", vm.estado.value.mensaje)
     }
 }

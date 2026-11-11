@@ -8,6 +8,7 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Las rutas del celular (sin `/api/v1/`: ya está en la base). Las tipadas se llaman SIEMPRE con [llamarSeguro].
@@ -56,6 +57,17 @@ interface CampoApi {
 
     @POST("tpv/campo/venues/{venueId}/ubicacion")
     suspend fun ubicacion(@Header("Authorization") bearer: String, @Path("venueId") venueId: String, @Body b: PingBody): Response<ResponseBody>
+
+    /**
+     * Pública y sin cabeceras: la versión nueva del carril de la app de campo. Sin `X-App-Version-*`: el 426 nunca aplica a
+     * la app de campo (D-1; la obligatoria la aplica la app con `minVersionCode`).
+     */
+    @GET("tpv/check-update")
+    suspend fun checkUpdate(
+        @Query("currentVersion") currentVersion: Int,
+        @Query("environment") environment: String,
+        @Query("platform") platform: String,
+    ): Response<RespuestaCheckUpdate>
 
     /** Semipública (B2): sin `Authorization`, sólo `X-Venue-Id`. */
     @GET("tpv/modules")

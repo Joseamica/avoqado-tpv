@@ -35,6 +35,7 @@ import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 import java.math.BigDecimal
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
@@ -45,12 +46,13 @@ import java.util.Locale
  * celular antes de cualquier red. [sinSenal] lo da quien la muestra (Tarea 13); sin señal se vende igual.
  */
 @Composable
-fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, onRegresar: () -> Unit) {
+fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, obligatoria: Boolean, onRegresar: () -> Unit) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var escaneando by rememberSaveable { mutableStateOf(false) }
     var fotoDe by rememberSaveable { mutableStateOf<Slot?>(null) }
     when {
-        escaneando -> EscanerScreen(onCodigo = { escaneando = false; vm.alEscanear(it) }, onCerrar = { escaneando = false })
+        // Con obligatoria no entra una SIM nueva, ni siquiera si el escáner ya estaba abierto cuando llegó (Codex código r1 #1).
+        escaneando -> EscanerScreen(onCodigo = { escaneando = false; if (!obligatoria) vm.alEscanear(it) }, onCerrar = { escaneando = false })
         fotoDe != null -> {
             val s = fotoDe!!
             Camara(
@@ -66,6 +68,7 @@ fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, onRegresar: () -> Unit) {
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
                 otra = vm::venderOtra, regresar = onRegresar,
             ),
+            obligatoria,
         )
     }
 }
@@ -79,7 +82,7 @@ class AccionesDeVenta(
 private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
 
 @Composable
-fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta) {
+fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta, obligatoria: Boolean = false) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Vender una ${e.config?.etiquetaArticulo ?: "SIM"}", style = MaterialTheme.typography.headlineSmall)
@@ -93,11 +96,16 @@ fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta) {
                         Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium,
                     )
                 }
-                Button(a.otra, alto) { Text("Vender otra") }
+                // D-2: la venta que ya estaba en curso se termina (ya pasó en la calle); otra nueva, no.
+                Button(a.otra, alto, enabled = !obligatoria) { Text("Vender otra") }
+                if (obligatoria) Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(a.regresar, alto) { Text("Regresar") }
                 return@Column
             }
-            Buscar(e, a)
+            // D-2: con obligatoria no se EMPIEZA otra venta (también si Android restauró esta pantalla vacía); la SIM que ya
+            // estaba elegida sí se termina, porque ya pasó en la calle.
+            Buscar(e, a, bloqueado = obligatoria)
+            if (obligatoria && e.sim == null) Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
             e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             val sim = e.sim ?: return@Column
             Card(Modifier.fillMaxWidth()) {
@@ -123,15 +131,15 @@ fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta) {
 }
 
 @Composable
-private fun Buscar(e: EstadoVenta, a: AccionesDeVenta) {
+private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
     var escrito by remember { mutableStateOf("") }
-    Button(a.escanear, alto, enabled = !e.buscando && !e.registrando) { Text(if (e.buscando) "Buscando…" else "Escanear la SIM") }
+    Button(a.escanear, alto, enabled = !bloqueado && !e.buscando && !e.registrando) { Text(if (e.buscando) "Buscando…" else "Escanear la SIM") }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             escrito, { escrito = it }, Modifier.weight(1f), singleLine = true,
             label = { Text("O escribe el ${e.config?.etiquetaCodigo ?: "ICCID"}") },
         )
-        OutlinedButton({ a.buscar(escrito) }, Modifier.heightIn(min = 48.dp), enabled = escrito.isNotBlank() && !e.buscando) { Text("Buscar") }
+        OutlinedButton({ a.buscar(escrito) }, Modifier.heightIn(min = 48.dp), enabled = !bloqueado && escrito.isNotBlank() && !e.buscando) { Text("Buscar") }
     }
 }
 

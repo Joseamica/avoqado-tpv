@@ -27,12 +27,24 @@ object LoggingInterceptor {
      * clave que sólo CONTIENE «pin» (`pinned`, `spinCount`) no se toca porque el patrón exige las comillas de la clave completa.
      */
     fun censurarCuerpoSensible(message: String): String =
-        if (!message.contains('"')) message else CUERPO_SENSIBLE.replace(message) { m -> "\"${m.groupValues[1]}\":\"***\"" }
+        if (!message.contains('"')) {
+            message
+        } else {
+            val sinClaves = CUERPO_SENSIBLE.replace(message) { m -> "\"${m.groupValues[1]}\":\"***\"" }
+            CODIGO_DE_TARJETA.replace(sinClaves) { m -> "\"${m.groupValues[1]}\":\"***\"" }
+        }
 
     private val CUERPO_SENSIBLE = Regex(
         // "clave"  :  "cadena con \" escapadas"  |  -12.5
-        "\"(supervisorPin|pin|password|newPin|currentPin|commandToken|token|accessToken|refreshToken)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
+        // Tienda híbrida parte 2 (Codex r1 #2): `pageToken` y `proofToken` son la prueba de posesión de una tarjeta de regalo.
+        "\"(supervisorPin|pin|password|newPin|currentPin|commandToken|token|accessToken|refreshToken|pageToken|proofToken)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
     )
+
+    /**
+     * El código de una tarjeta de regalo (`XXXX-XXXX-XXXX-XXXX-X`, con o sin guiones) en `"code"`: con él se gasta su saldo. Sólo con esa
+     * forma; los `"code"` de los errores (`GIFT_CARD_NOT_FOUND`, con guion bajo) se siguen viendo.
+     */
+    private val CODIGO_DE_TARJETA = Regex("\"(code)\"\\s*:\\s*\"[0-9A-Za-z]{4}(?:-?[0-9A-Za-z]{4}){3}-?[0-9A-Za-z]\"")
 
     /**
      * Create logging interceptor

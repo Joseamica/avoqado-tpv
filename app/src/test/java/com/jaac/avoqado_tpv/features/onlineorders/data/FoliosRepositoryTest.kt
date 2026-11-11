@@ -101,6 +101,36 @@ class FoliosRepositoryTest {
     }
 
     @Test
+    fun `P2 trae la clienta y los beneficios de la cuenta cuando vienen, en pesos exactos`() = runTest {
+        server.enqueue(
+            json(
+                """{"success":true,"data":{"serverTime":"2026-11-06T18:30:00.000Z","showTile":true,"counts":{"toPay":2,"toDeliver":0},
+                  "toPay":[
+                    {"orderId":"cord1","orderNumber":"W7K3P","status":"PENDING_ACCEPTANCE","total":69,"remaining":69,
+                     "cliente":{"id":"ccu1","nombre":"Ana L."},
+                     "beneficios":[{"nombre":"Café gratis (premio de Ana)","monto":65},{"nombre":"Cupón","monto":"4.1"}],
+                     "beneficiosTotal":12,"items":[]},
+                    {"orderId":"cord2","orderNumber":"W9D5F","status":"PENDING_ACCEPTANCE","total":95,"remaining":95,
+                     "cliente":null,"items":[]}
+                  ],"toDeliver":[]}}""",
+            ),
+        )
+
+        val pagina = repo.listar("v1", puedeCobrar = false).getOrThrow()
+
+        val ana = pagina.porPagar[0]
+        assertThat(ana.cliente).isEqualTo("Ana L.")
+        assertThat(ana.beneficios.map { it.nombre to it.monto })
+            .containsExactly("Café gratis (premio de Ana)" to BigDecimal("65.00"), "Cupón" to BigDecimal("4.10")).inOrder()
+        assertThat(ana.beneficiosTotal).isEqualTo(12)
+        // Un SERVIDOR viejo o un folio sin cuenta: nada.
+        val pau = pagina.porPagar[1]
+        assertThat(pau.cliente).isNull()
+        assertThat(pau.beneficios).isEmpty()
+        assertThat(pau.beneficiosTotal).isEqualTo(0)
+    }
+
+    @Test
     fun `un campo desconocido se ignora`() = runTest {
         server.enqueue(json(respuesta))
         // si Gson fallara con campos nuevos, listar() sería failure; llegar aquí ya lo prueba

@@ -12,6 +12,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import okhttp3.CertificatePinner
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -248,4 +249,52 @@ object NetworkModule {
     @Singleton
     fun provideOnlineOrdersApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService =
         retrofit.create(com.jaac.avoqado_tpv.features.onlineorders.data.OnlineOrdersApiService::class.java)
+
+    /**
+     * Tienda híbrida, parte 2: las CONSULTAS de saldo y de la llave de un cobro (`GiftCardsTpvApi`) van por el Retrofit de siempre, que
+     * reintenta en una conexión nueva si la del pool estaba muerta (full-testing H1: «Sin conexión» falso tras unos minutos sin uso).
+     */
+    @Provides
+    @Singleton
+    fun provideGiftCardsTpvApi(retrofit: Retrofit): com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi =
+        retrofit.create(com.jaac.avoqado_tpv.features.giftcards.data.GiftCardsTpvApi::class.java)
+
+    /**
+     * Codex r1 #1, r4 y r5: OkHttp no reenvía SOLO el cobro con saldo (una copia que nadie conoce): sin `retryOnConnectionFailure`, sin seguir
+     * redirecciones (307/308 repiten el cuerpo) y sin el reintento de un 503 con `Retry-After: 0` (se le quita esa cabecera antes de que la
+     * vea el reintento de OkHttp). Los reenvíos los decide el repositorio, con la misma llave. Lo que queda: el `TokenAuthenticator` repite
+     * tras un 401, que sale antes de tocar el dinero, y un 421 de HTTP/2 (no lo produce esta ruta).
+     *
+     * Full-testing H1: sin reintento, una conexión que el SERVIDOR cerró por estar dormida («unexpected end of stream») no tendría salida.
+     * Por eso este cliente no guarda conexiones ociosas (pool propio con 0): cada cobro sale por una conexión nueva. Un cobro es raro; el
+     * apretón de manos de más no se nota.
+     */
+    fun clienteDeCobroConSaldo(base: OkHttpClient): OkHttpClient = base.newBuilder()
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
+        .retryOnConnectionFailure(false)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .addNetworkInterceptor { chain ->
+            val respuesta = chain.proceed(chain.request())
+            if (respuesta.code == 503 && respuesta.header("Retry-After") != null) {
+                respuesta.newBuilder().removeHeader("Retry-After").build()
+            } else {
+                respuesta
+            }
+        }
+        .build()
+
+    /**
+     * El COBRO con saldo (`CobroConSaldoApi`), con [clienteDeCobroConSaldo]. Retrofit de 25 s: el cobro puede esperar en el SERVIDOR hasta
+     * ~15 s el candado de su llave, más de lo que aguanta el cliente de pagos.
+     */
+    @Provides
+    @Singleton
+    fun provideCobroConSaldoApi(okHttpClient: OkHttpClient, baseUrl: String): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoApi =
+        Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(clienteDeCobroConSaldo(okHttpClient))
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoApi::class.java)
 }

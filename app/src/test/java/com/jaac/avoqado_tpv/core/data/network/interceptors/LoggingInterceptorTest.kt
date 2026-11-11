@@ -31,6 +31,16 @@ class LoggingInterceptorTest {
         assertThat(LoggingInterceptor.censurarCuerpoSensible(cabecera)).isEqualTo(cabecera)
         assertThat(LoggingInterceptor.censurarCuerpoSensible("")).isEqualTo("")
     }
+    @Test fun `Codex r1 2 el codigo y la liga de una tarjeta de regalo no salen en el log, el codigo de error si`() {
+        val pago = """{"idempotencyKey":"k1","proof":{"kind":"CODE","code":"K7Q29DXM4R8HHB7TR"},"amount":50.00,"tip":0}"""
+        assertThat(LoggingInterceptor.censurarCuerpoSensible(pago))
+            .isEqualTo("""{"idempotencyKey":"k1","proof":{"kind":"CODE","code":"***"},"amount":50.00,"tip":0}""")
+        assertThat(LoggingInterceptor.censurarCuerpoSensible("""{"code":"K7Q2-9DXM-4R8H-HB7T-R"}""")).isEqualTo("""{"code":"***"}""")
+        assertThat(LoggingInterceptor.censurarCuerpoSensible("""{"pageToken":"AbCdEfGhIjKlMnOpQrStUvWxYz012345"}""")).isEqualTo("""{"pageToken":"***"}""")
+        val error = """{"success":false,"message":"No encontramos esa tarjeta","code":"GIFT_CARD_NOT_FOUND"}"""
+        assertThat(LoggingInterceptor.censurarCuerpoSensible(error)).isEqualTo(error)
+    }
+
     @Test fun `device command credentials are redacted from activation responses`() {
         val body = """{"commandToken":"never-log-this","venueId":"v1"}"""
         assertThat(LoggingInterceptor.censurarCuerpoSensible(body)).isEqualTo("""{"commandToken":"***","venueId":"v1"}""")

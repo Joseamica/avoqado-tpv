@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorCode
 import com.jaac.avoqado_tpv.core.data.network.parseBackendErrorMessage
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.onlineorders.domain.BeneficioDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
@@ -128,6 +129,11 @@ private fun FolioDto.aFolio(): Folio? {
                 total = i.total.aPesos(),
             )
         },
+        cliente = cliente?.nombre?.takeIf { it.isNotBlank() },
+        beneficios = beneficios.orEmpty().filterNotNull().mapNotNull { b ->
+            b.monto.aPesos()?.let { BeneficioDeFolio(b.nombre?.takeIf { it.isNotBlank() } ?: "Descuento", it) }
+        },
+        beneficiosTotal = beneficiosTotal ?: 0,
     )
 }
 

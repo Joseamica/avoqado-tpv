@@ -747,11 +747,13 @@ class CheckoutViewModel @Inject constructor(
         if (candado.rechaza("cambiar el cliente") || necesitaInternet()) return
         val previous = _selectedCustomer.value
         _selectedCustomer.value = customer
+        val otroCliente = previous?.id != customer?.id
         // Switching customer invalidates any cached referral validation
         // (the discount was computed for the previous customer's order).
-        if (previous?.id != customer?.id) {
-            clearReferral()
-            // D1: el descuento y la autorización eran del cliente anterior; un descuento que puso la cajera se queda.
+        if (otroCliente) clearReferral()
+        // D1: el descuento y la autorización eran de ESE cliente y de ESE descuento (si el negocio le cambió el suyo, se decide de
+        // nuevo: la autorización del PIN no vale para otro descuento); un descuento que puso la cajera se queda.
+        if (otroCliente || previous?.descuentoDelCliente?.discountId != customer?.descuentoDelCliente?.discountId) {
             _cartState.update { c ->
                 c.copy(
                     orderDiscount = c.orderDiscount.takeUnless { c.descuentoEsDelCliente },
@@ -1435,7 +1437,10 @@ class CheckoutViewModel @Inject constructor(
     private fun staffDe(current: CartState): String? =
         current.selectedStaffId.takeIf { it.isNotBlank() } ?: secureStorage.getStaffId()
 
-    /** El cuerpo de `/tpv/.../orders/with-items` del carrito, SIN `externalId` (es también la huella de la venta). */
+    /**
+     * El cuerpo de `/tpv/.../orders/with-items` del carrito, SIN `externalId` ni la autorización del descuento (es también la huella de
+     * la venta: un reintento con o sin el PIN del gerente conserva su llave). Las dos se ponen en [crearOrdenEnLinea].
+     */
     private fun pedidoEnLinea(current: CartState, staffId: String, customerId: String?): TpvCreateOrderWithItemsRequest {
         val requestItems = current.items.map { item ->
             val productId = (item.type as? CartItemType.ProductItem)?.productId
@@ -1456,15 +1461,10 @@ class CheckoutViewModel @Inject constructor(
 
         // When `orderDiscount` is null but `manualDiscountCents` > 0, the
         // freeform manual discount travels as `discount`; backend treats it
-        // as an unbacked reduction with no Discount entity. When predefined
-        // is set, `discount` may stay 0 — the service recomputes from the
-        // discount's value/type against the gross subtotal.
+        // as an unbacked reduction with no Discount entity. Con cupón o con un descuento del catálogo (el del cliente incluido) viaja
+        // lo que muestra el carrito: el SERVIDOR lo calcula al centavo y lo compara; si cambió, lo dice (antes iba 0 y lo rechazaba).
         val cupon = current.couponCode
-        val discountForWire = when {
-            cupon != null -> current.discountCents // el SERVIDOR lo recalcula y lo compara: si el cupón cambió, lo dice
-            current.orderDiscount != null -> 0 // backend recomputes from id
-            else -> current.manualDiscountCents
-        }
+        val discountForWire = if (current.orderDiscount != null) current.discountCents else current.manualDiscountCents
 
         return TpvCreateOrderWithItemsRequest(
             items = requestItems,
@@ -1509,7 +1509,12 @@ class CheckoutViewModel @Inject constructor(
     private val TEXTO_VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
 
     private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
-        val peticion = pedido.copy(externalId = llave)
+        // D1: la autorización del PIN para el descuento del cliente va en el CUERPO (el encabezado es de la cortesía), y sólo mientras
+        // el descuento puesto sea el del cliente (tras «Quitar» u otro descuento se queda en el carrito, pero ya no viaja).
+        val peticion = pedido.copy(
+            externalId = llave,
+            autorizacionDelDescuento = _cartState.value.let { c -> c.autorizacionDelDescuento.takeIf { c.descuentoEsDelCliente } },
+        )
         var token: String? = null
         // «Sin autorizar» sólo si sabemos que esta llave nunca salió. Si ya salió (o volvió de disco), la orden pudo crearse y se dice.
         fun sinAutorizar(texto: String) =

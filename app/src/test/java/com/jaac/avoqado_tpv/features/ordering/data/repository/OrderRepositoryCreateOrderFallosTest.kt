@@ -94,6 +94,26 @@ class OrderRepositoryCreateOrderFallosTest {
         assertThat(falla()!!.message).isEqualTo("No tienes permiso para crear órdenes.")
     }
 
+    @Test fun `D1 la autorizacion del descuento viaja en el cuerpo y la cortesia en el encabezado`() {
+        servidor.enqueue(MockResponse().setResponseCode(503))
+        val conDescuento = pedido.copy(
+            discount = BigDecimal("5.00"), orderDiscountId = "d-10", total = BigDecimal("45.00"), autorizacionDelDescuento = "tok-d",
+        )
+        runBlocking { repo.createOrderWithItems("venue-1", conDescuento, overrideToken = "tok-c") }
+
+        val llegada = servidor.takeRequest()
+        val cuerpo = com.google.gson.JsonParser.parseString(llegada.body.readUtf8()).asJsonObject
+        assertThat(cuerpo["autorizacionDelDescuento"].asString).isEqualTo("tok-d")
+        assertThat(cuerpo["orderDiscountId"].asString).isEqualTo("d-10")
+        assertThat(cuerpo["discount"].asDouble).isEqualTo(5.0)
+        assertThat(llegada.getHeader("X-Permission-Override")).isEqualTo("tok-c")
+
+        // Sin autorización, el cuerpo es el de siempre: la clave ni aparece.
+        servidor.enqueue(MockResponse().setResponseCode(503))
+        falla()
+        assertThat(servidor.takeRequest().body.readUtf8()).doesNotContain("autorizacionDelDescuento")
+    }
+
     @Test fun `un 400 con cupon conserva la razon del servidor`() {
         servidor.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":"Este cupón ya venció."}"""))
         val e = runBlocking { repo.createOrderWithItems("venue-1", pedido.copy(couponCode = "VERANO")) }.exceptionOrNull() as ApiException.HttpError

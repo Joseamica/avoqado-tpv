@@ -550,6 +550,10 @@ data class TpvCreateOrderWithItemsRequest(
      *  hace que el backend devuelva la orden original en vez de crear otra.
      *  null = comportamiento previo (sin dedup). */
     val externalId: String? = null,
+    /** D1: el token del PIN del gerente para el descuento del cliente (`discounts:apply`, atado al cliente y al descuento). Viaja en
+     *  el cuerpo, nunca en `X-Permission-Override` (ése es de la cortesía); el servidor lo lee sin gastarlo y nunca rechaza por él.
+     *  NO entra en la huella de la venta: un reintento con o sin él conserva su `externalId`. */
+    val autorizacionDelDescuento: String? = null,
 )
 
 data class TpvCreateOrderWithItemsItem(

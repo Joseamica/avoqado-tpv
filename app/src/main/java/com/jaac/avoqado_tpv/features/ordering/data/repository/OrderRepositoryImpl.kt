@@ -302,6 +302,7 @@ class OrderRepositoryImpl @Inject constructor(
                 total = request.total.toDouble(),
                 note = request.note,
                 externalId = request.externalId,
+                autorizacionDelDescuento = request.autorizacionDelDescuento,
             )
 
             val response = apiService.createOrderWithItems(venueId, dto, overrideToken)

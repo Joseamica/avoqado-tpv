@@ -30,6 +30,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.comoDescuento
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
@@ -932,6 +933,227 @@ class CheckoutDescuentoDelClienteTest {
         vm.clearCart()
         assertEquals(normal, vm.avisoDescuentoDelCliente.value)
         coVerify(exactly = 0) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `elegir otra vez a Cecilia con el mismo descuento conserva la autorizacion, con otro la borra y se decide de nuevo`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+        assertEquals("tok-d", vm.cartState.value.autorizacionDelDescuento)
+
+        vm.selectCustomer(cecilia)
+        assertEquals("mismo cliente y mismo descuento", "tok-d", vm.cartState.value.autorizacionDelDescuento)
+        assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
+
+        // El negocio le cambió el descuento a Cecilia: la autorización era del de 10 %, no del de 30 %.
+        vm.selectCustomer(cecilia.copy(descuentoDelCliente = treinta))
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertFalse(vm.cartState.value.descuentoEsDelCliente)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "30 %", true), vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `si a Cecilia le cambian el descuento mientras el gerente teclea el token no se pone`() = runTest {
+        sinPermisoDeDescuento()
+        val gerente = kotlinx.coroutines.CompletableDeferred<Autorizacion>()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } coAnswers { gerente.await() }
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        vm.selectCustomer(cecilia.copy(descuentoDelCliente = treinta))
+        gerente.complete(Autorizacion.ConPin("tok-d"))
+
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "30 %", true), vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Task 7 · lo que viaja en `with-items`: el id, el monto exacto y, con PIN, la autorización (en el cuerpo, nunca en el encabezado)
+    // ─────────────────────────────────────────────────────────────────────
+
+    private val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
+    private val encabezados = mutableListOf<String?>()
+
+    private fun capturarPedidos(respuesta: Result<Order> = Result.success(orden())) {
+        coEvery { orderRepository.createOrderWithItems(any(), capture(enviados), captureNullable(encabezados)) } returns respuesta
+    }
+
+    private fun assertPesos(esperado: String, real: BigDecimal) =
+        assertEquals("esperaba $esperado, salió $real", 0, BigDecimal(esperado).compareTo(real))
+
+    @Test
+    fun `cobro en linea con el de Cecilia manda su id, su monto y el total`() = runTest {
+        capturarPedidos()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+
+        vm.prepareForPayment().getOrThrow()
+
+        val pedido = enviados.single()
+        assertEquals("d-10", pedido.orderDiscountId)
+        assertPesos("10.00", pedido.discount)
+        assertPesos("100.00", pedido.subtotal)
+        assertPesos("90.00", pedido.total)
+        assertEquals("c-cecilia", pedido.customerId)
+        assertNull(pedido.couponCode)
+        assertNull("con permiso no hay autorización", pedido.autorizacionDelDescuento)
+        assertNull(encabezados.single())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `con el PIN el cuerpo lleva ademas la autorizacion y el encabezado sigue vacio`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        capturarPedidos()
+        val vm = createViewModel()
+        vm.addCustomAmount("Importe", 10000)
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        vm.prepareForPayment().getOrThrow()
+
+        val pedido = enviados.single()
+        assertEquals("tok-d", pedido.autorizacionDelDescuento)
+        assertEquals("d-10", pedido.orderDiscountId)
+        assertPesos("10.00", pedido.discount)
+        assertPesos("90.00", pedido.total)
+        assertNull("X-Permission-Override es sólo de la cortesía", encabezados.single())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cortesia con PIN y descuento del cliente - encabezado de cortesia y autorizacion en el cuerpo`() = runTest {
+        coEvery { permisos.hasPermission(any()) } returns false // ni tpv-orders:comp ni discounts:apply
+        coEvery { autorizacion.paraCortesia("venue-1", "Para cobrar con cortesía", false) } returns Autorizacion.ConPin("tok-c")
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        capturarPedidos()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.applyCortesiaToItem(vm.cartState.value.items.first().id, "Cliente frecuente")
+        vm.addCustomAmount("Importe", 10000)
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        vm.prepareForPayment().getOrThrow()
+
+        val pedido = enviados.single()
+        assertEquals("tok-c", encabezados.single())
+        assertEquals("tok-d", pedido.autorizacionDelDescuento)
+        assertTrue(pedido.items.first().isCortesia)
+        assertPesos("10.00", pedido.discount)
+        assertPesos("90.00", pedido.total)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `misma venta con y sin autorizacion - misma llave al restaurar y reintentar tras morir la app`() = runTest {
+        // La cajera con permiso tocó Cobrar y la app murió: el carrito quedó con la llave-1 y SIN autorización. Lo retoma otra sin
+        // permiso, pide el PIN y cobra: la orden es la misma (si la primera sí llegó, el servidor la devuelve por `externalId`).
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        carritoGuardadoConElDeCecilia(autorizacion = null)
+        capturarPedidos(Result.failure(ApiException.HttpError(500, "boom", "Error al crear orden: 500")))
+        val vm = createViewModel()
+        vm.pedirAutorizacionDescuentoDelCliente()
+        assertEquals("tok-d", vm.cartState.value.autorizacionDelDescuento)
+
+        assertTrue(vm.prepareForPayment().isFailure)
+        assertEquals("el carrito durable conserva su llave", "llave-1", aparato.carritos["venue-1"]?.llave)
+        capturarPedidos()
+        vm.prepareForPayment().getOrThrow()
+
+        assertEquals(listOf("llave-1", "llave-1"), enviados.map { it.externalId })
+        assertEquals(listOf("tok-d", "tok-d"), enviados.map { it.autorizacionDelDescuento })
+        assertPesos("10.00", enviados.last().discount)
+        assertPesos("90.00", enviados.last().total)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `carrito restaurado con autorizacion manda el mismo cuerpo con su llave`() = runTest {
+        sinPermisoDeDescuento()
+        carritoGuardadoConElDeCecilia(autorizacion = "tok-1")
+        capturarPedidos()
+        val vm = createViewModel()
+
+        vm.prepareForPayment().getOrThrow()
+
+        val pedido = enviados.single()
+        assertEquals("llave-1", pedido.externalId)
+        assertEquals("tok-1", pedido.autorizacionDelDescuento)
+        assertEquals("d-10", pedido.orderDiscountId)
+        assertEquals("c-cecilia", pedido.customerId)
+        assertPesos("10.00", pedido.discount)
+        assertPesos("90.00", pedido.total)
+        assertNull(encabezados.single())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `pagar despues con el de Cecilia y PIN manda el monto y la autorizacion`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        capturarPedidos()
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        assertTrue(vm.createPayLaterOrder().isSuccess)
+
+        val pedido = enviados.single()
+        assertEquals("tok-d", pedido.autorizacionDelDescuento)
+        assertEquals("d-10", pedido.orderDiscountId)
+        assertPesos("10.00", pedido.discount)
+        assertPesos("90.00", pedido.total)
+        assertNull(encabezados.single())
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras Quitar o con otro descuento del catalogo la autorizacion no viaja y el catalogo manda su monto`() = runTest {
+        sinPermisoDeDescuento()
+        pinDeCecilia(Autorizacion.ConPin("tok-d"))
+        capturarPedidos(Result.failure(ApiException.HttpError(500, "boom", "Error al crear orden: 500")))
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.pedirAutorizacionDescuentoDelCliente()
+
+        vm.quitarDescuentoDelCliente()
+        vm.prepareForPayment()
+
+        val sinDescuento = enviados.last()
+        assertNull(sinDescuento.autorizacionDelDescuento)
+        assertNull(sinDescuento.orderDiscountId)
+        assertPesos("0", sinDescuento.discount)
+
+        // Un descuento del catálogo que pone la cajera (no es del cliente): su monto viaja (antes 0) y la autorización no.
+        val delCatalogo = Discount(
+            id = "d-cat", name = "Lunes 20 %", type = DiscountType.PERCENTAGE, value = BigDecimal(20), scope = DiscountScope.ORDER,
+            conditions = null, active = true, requiresAuthorization = false,
+        )
+        vm.applyOrderDiscount(delCatalogo)
+        vm.prepareForPayment()
+
+        val conCatalogo = enviados.last()
+        assertEquals("d-cat", conCatalogo.orderDiscountId)
+        assertPesos("20.00", conCatalogo.discount)
+        assertPesos("80.00", conCatalogo.total)
+        assertNull(conCatalogo.autorizacionDelDescuento)
         vm.viewModelScope.cancel()
     }
 

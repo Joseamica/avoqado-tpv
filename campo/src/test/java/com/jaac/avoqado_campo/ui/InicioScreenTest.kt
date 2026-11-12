@@ -328,4 +328,21 @@ class InicioScreenTest {
         inicio(base)
         compose.onNodeWithTag(ETIQUETA_CONTENIDO).assertWidthIsEqualTo(ANCHO_MAXIMO)
     }
+
+    // Hallado en el SAMSUNG (rediseño): «Regresar» de la confirmación quedó donde estaba «Registrar venta»; el segundo toque
+    // de un doble toque se la saltaba y el promotor no veía «No la vuelvas a hacer». Los botones esperan un instante.
+    @Test fun `la confirmacion de venta ignora el toque que llega junto con el de Registrar`() {
+        var regresos = 0
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            TemaCampo {
+                VentaContenido(EstadoVenta(guardada = true), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, { regresos++ }))
+            }
+        }
+        compose.onNodeWithText("Regresar").performClick()
+        assertEquals(0, regresos)
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onNodeWithText("Regresar").performClick()
+        assertEquals(1, regresos)
+    }
 }

@@ -22,6 +22,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +63,7 @@ import java.math.BigDecimal
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 /**
  * «Vender una SIM»: escanear (o escribir) el código, ver el precio, tomar las evidencias y «Registrar», que guarda en el
@@ -247,14 +249,19 @@ private fun VentaGuardada(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boole
             else -> e.precio?.let { "${pesos(it)} en efectivo" }
         },
     ).joinToString(" · ")
+    // «Regresar» quedó donde estaba «Registrar venta»: el segundo toque de un doble toque se saltaba esta confirmación y el
+    // promotor no leía «No la vuelvas a hacer» (SAMSUNG, rediseño). Los botones responden tras un instante.
+    var listo by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(ESPERA_DE_LA_CONFIRMACION_MS); listo = true }
+    fun cuandoListo(f: () -> Unit): () -> Unit = { if (listo) f() }
     PantallaCampo(
         null, centrado = true,
         abajo = {
             // D-2: la venta que ya estaba en curso se termina (ya pasó en la calle); otra nueva, no.
-            BotonPrincipal("Vender otra", a.otra, enabled = !obligatoria)
+            BotonPrincipal("Vender otra", cuandoListo(a.otra), enabled = !obligatoria)
             if (obligatoria) Tenue(ACTUALIZA_PARA_SEGUIR)
-            BotonSecundario("Ver mis pendientes", a.pendientes)
-            TextButton(a.regresar, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Regresar", color = ColoresCampo.Gris700, fontWeight = FontWeight.SemiBold) }
+            BotonSecundario("Ver mis pendientes", cuandoListo(a.pendientes))
+            TextButton(cuandoListo(a.regresar), Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Regresar", color = ColoresCampo.Gris700, fontWeight = FontWeight.SemiBold) }
         },
     ) {
         Box(Modifier.padding(top = 16.dp).size(72.dp).background(ColoresCampo.VerdeClaro, CircleShape), contentAlignment = Alignment.Center) {
@@ -295,3 +302,6 @@ private fun VentaPreview() = TemaCampo {
 private fun VentaGuardadaPreview() = TemaCampo {
     VentaContenido(EstadoVenta(guardada = true), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}))
 }
+
+/** Lo que la confirmación espera antes de aceptar toques (un doble toque en «Registrar venta» dura menos). */
+private const val ESPERA_DE_LA_CONFIRMACION_MS = 700L

@@ -350,7 +350,7 @@ class CheckoutDescuentoDelClienteTest {
 
         assertNull(vm.cartState.value.orderDiscount)
         assertFalse(vm.cartState.value.descuentoEsDelCliente)
-        assertEquals("c-cecilia", vm.cartState.value.descuentoDelClienteQuitadoDe)
+        assertEquals(setOf("c-cecilia"), vm.cartState.value.descuentosDelClienteQuitados)
         assertEquals(10000, vm.cartState.value.totalCents)
 
         vm.selectCustomer(cecilia)
@@ -367,7 +367,7 @@ class CheckoutDescuentoDelClienteTest {
         vm.selectCustomer(cecilia)
         assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
         assertTrue(vm.cartState.value.descuentoEsDelCliente)
-        assertNull(vm.cartState.value.descuentoDelClienteQuitadoDe)
+        assertEquals(emptySet<String>(), vm.cartState.value.descuentosDelClienteQuitados)
         vm.viewModelScope.cancel()
     }
 
@@ -392,6 +392,43 @@ class CheckoutDescuentoDelClienteTest {
     }
 
     @Test
+    fun `4 quitar recuerda a cada cliente - Cecilia, Ernesto y de regreso Cecilia no vuelve a ponerse`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+        vm.selectCustomer(ernesto)
+        vm.quitarDescuentoDelCliente()
+        assertEquals(setOf("c-cecilia", "c-ernesto"), vm.cartState.value.descuentosDelClienteQuitados)
+
+        vm.selectCustomer(cecilia)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.selectCustomer(ernesto)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `4 Usar el de Cecilia tras quitar lo pone y la saca de las quitadas`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+        vm.selectCustomer(ernesto)
+        vm.quitarDescuentoDelCliente()
+        vm.selectCustomer(cecilia)
+
+        vm.usarDescuentoDelCliente()
+
+        assertEquals(diez.comoDescuento(), vm.cartState.value.orderDiscount)
+        assertEquals(setOf("c-ernesto"), vm.cartState.value.descuentosDelClienteQuitados)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun `4 el Quitar descuento de los atajos cuenta como quitar el de Cecilia`() = runTest {
         val vm = createViewModel()
         vm.addProduct(producto())
@@ -403,7 +440,7 @@ class CheckoutDescuentoDelClienteTest {
         vm.selectCustomer(cecilia)
 
         assertNull(vm.cartState.value.orderDiscount)
-        assertEquals("c-cecilia", vm.cartState.value.descuentoDelClienteQuitadoDe)
+        assertEquals(setOf("c-cecilia"), vm.cartState.value.descuentosDelClienteQuitados)
         assertEquals(10000, vm.cartState.value.totalCents)
         assertNull(vm.avisoDescuentoDelCliente.value)
         vm.viewModelScope.cancel()
@@ -419,7 +456,7 @@ class CheckoutDescuentoDelClienteTest {
         vm.clearManualOrderDiscount()
         vm.applyOrderDiscount(null)
 
-        assertNull(vm.cartState.value.descuentoDelClienteQuitadoDe)
+        assertEquals(emptySet<String>(), vm.cartState.value.descuentosDelClienteQuitados)
         vm.viewModelScope.cancel()
     }
 

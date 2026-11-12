@@ -218,7 +218,7 @@ class CheckoutViewModel @Inject constructor(
             c.copy(
                 orderDiscount = c.orderDiscount.takeUnless { c.descuentoEsDelCliente },
                 descuentoEsDelCliente = false,
-                descuentoDelClienteQuitadoDe = _selectedCustomer.value?.id,
+                descuentosDelClienteQuitados = c.descuentosDelClienteQuitados + listOfNotNull(_selectedCustomer.value?.id),
             )
         }
         _avisoDescuentoDelCliente.value = null
@@ -276,7 +276,7 @@ class CheckoutViewModel @Inject constructor(
     private suspend fun revisarDescuentoDelCliente(usar: Boolean = false, soloAviso: Boolean = false, autorizacion: String? = null) {
         val cliente = _selectedCustomer.value
         val d = cliente?.descuentoDelCliente
-        if (cliente == null || d == null || (_cartState.value.descuentoDelClienteQuitadoDe == cliente.id && !usar)) {
+        if (cliente == null || d == null || (cliente.id in _cartState.value.descuentosDelClienteQuitados && !usar)) {
             _avisoDescuentoDelCliente.value = null
             return
         }
@@ -304,7 +304,7 @@ class CheckoutViewModel @Inject constructor(
                 orderDiscount = d.comoDescuento(),
                 descuentoEsDelCliente = true,
                 autorizacionDelDescuento = autorizacion ?: it.autorizacionDelDescuento,
-                descuentoDelClienteQuitadoDe = it.descuentoDelClienteQuitadoDe.takeUnless { q -> q == cliente.id },
+                descuentosDelClienteQuitados = it.descuentosDelClienteQuitados - cliente.id,
                 manualDiscountCents = 0,
                 manualDiscountReason = null,
                 manualDiscountSource = null,
@@ -490,10 +490,10 @@ class CheckoutViewModel @Inject constructor(
                 orderDiscount = discount,
                 descuentoEsDelCliente = false,
                 // «Quitar descuento» de los atajos también quita el del cliente: cuenta como su «Quitar».
-                descuentoDelClienteQuitadoDe = if (discount == null && it.descuentoEsDelCliente) {
-                    _selectedCustomer.value?.id
+                descuentosDelClienteQuitados = if (discount == null && it.descuentoEsDelCliente) {
+                    it.descuentosDelClienteQuitados + listOfNotNull(_selectedCustomer.value?.id)
                 } else {
-                    it.descuentoDelClienteQuitadoDe
+                    it.descuentosDelClienteQuitados
                 },
             )
         }

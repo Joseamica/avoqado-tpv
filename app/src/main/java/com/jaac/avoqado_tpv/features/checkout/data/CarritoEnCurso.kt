@@ -115,8 +115,8 @@ internal data class CarritoDto(
     val cliente: ClienteDto? = null,
     /** Nulos/false en lo guardado antes de estos campos. */
     val descuentoEsDelCliente: Boolean = false,
-    /** Una marca booleana de una versión de prueba anterior (`descuentoDelClienteQuitado`) se ignora: queda null. */
-    val descuentoDelClienteQuitadoDe: String? = null,
+    /** Gson no llama al constructor: lo guardado antes de este campo (o con el `descuentoDelClienteQuitadoDe` de una versión de prueba) llega null = ninguno. */
+    val descuentosDelClienteQuitados: List<String>? = null,
     val autorizacionDelDescuento: String? = null,
 ) {
     fun aCarrito() = CartState(
@@ -130,7 +130,7 @@ internal data class CarritoDto(
         selectedStaffId = selectedStaffId,
         selectedStaffName = selectedStaffName,
         descuentoEsDelCliente = descuentoEsDelCliente,
-        descuentoDelClienteQuitadoDe = descuentoDelClienteQuitadoDe,
+        descuentosDelClienteQuitados = descuentosDelClienteQuitados.orEmpty().toSet(),
         autorizacionDelDescuento = autorizacionDelDescuento,
     )
 
@@ -147,7 +147,7 @@ internal data class CarritoDto(
             selectedStaffId = cart.selectedStaffId,
             selectedStaffName = cart.selectedStaffName,
             descuentoEsDelCliente = cart.descuentoEsDelCliente,
-            descuentoDelClienteQuitadoDe = cart.descuentoDelClienteQuitadoDe,
+            descuentosDelClienteQuitados = cart.descuentosDelClienteQuitados.toList(),
             autorizacionDelDescuento = cart.autorizacionDelDescuento,
         )
     }

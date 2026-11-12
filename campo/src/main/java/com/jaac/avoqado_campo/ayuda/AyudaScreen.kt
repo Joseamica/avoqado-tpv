@@ -84,7 +84,7 @@ private fun Opcion(titulo: String, explicacion: String, onClick: () -> Unit, ena
             Text(titulo, fontWeight = FontWeight.SemiBold, color = if (enabled) ColoresCampo.Gris900 else ColoresCampo.Gris400)
             Text(
                 explicacion, style = MaterialTheme.typography.bodySmall,
-                color = if (!enabled && avisoSiNo) ColoresCampo.NaranjaSinRed else ColoresCampo.Gris500,
+                color = if (!enabled && avisoSiNo) ColoresCampo.NaranjaTinta else ColoresCampo.Gris500,
             )
         }
     }

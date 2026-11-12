@@ -113,6 +113,7 @@ fun CheckoutScreen(
     viewModel: CheckoutViewModel = hiltViewModel(),
 ) {
     val cartState by viewModel.cartState.collectAsState()
+    val avisoDescuentoDelCliente by viewModel.avisoDescuentoDelCliente.collectAsState()
     val products by viewModel.products.collectAsState()
     val familias by viewModel.familias.collectAsState()
     val categories by viewModel.categories.collectAsState()
@@ -357,6 +358,10 @@ fun CheckoutScreen(
             CartPanelView(
                 cartState = cartState,
                 onTap = { showCartDetailsSheet = true },
+                avisoDescuentoDelCliente = avisoDescuentoDelCliente,
+                onQuitarDescuentoDelCliente = { viewModel.quitarDescuentoDelCliente() },
+                onPedirAutorizacionDescuento = { viewModel.pedirAutorizacionDescuentoDelCliente() },
+                onUsarDescuentoDelCliente = { viewModel.usarDescuentoDelCliente() },
             )
         }
     }
@@ -417,6 +422,10 @@ fun CheckoutScreen(
                 // Con la venta preparándose, ni el cliente ni la nota cambian (el ViewModel los rechazaría en silencio).
                 onCustomerTap = { if (!ventaEnPreparacion && !sinRed) showCustomerSheet = true },
                 necesitaInternet = sinRed,
+                avisoDescuentoDelCliente = avisoDescuentoDelCliente,
+                onQuitarDescuentoDelCliente = { viewModel.quitarDescuentoDelCliente() },
+                onPedirAutorizacionDescuento = { viewModel.pedirAutorizacionDescuentoDelCliente() },
+                onUsarDescuentoDelCliente = { viewModel.usarDescuentoDelCliente() },
                 onClose = { showCartDetailsSheet = false },
                 onClearCart = {
                     if (!ventaEnPreparacion) {

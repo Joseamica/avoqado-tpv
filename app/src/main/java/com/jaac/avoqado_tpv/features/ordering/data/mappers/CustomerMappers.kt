@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.CustomerGroupDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.OrderCustomerDto
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerGroup
+import com.jaac.avoqado_tpv.features.ordering.domain.DescuentoDelCliente
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import java.math.BigDecimal
 import java.time.LocalDateTime
@@ -34,7 +36,15 @@ fun CustomerDto.toCustomer(): Customer {
         loyaltyPoints = loyaltyPoints,
         totalVisits = totalVisits,
         totalSpent = BigDecimal.valueOf(totalSpent),
-        customerGroup = customerGroup?.toCustomerGroup()
+        customerGroup = customerGroup?.toCustomerGroup(),
+        descuentoDelCliente = descuentoDelCliente?.let {
+            val tipo = when (it.type) {
+                "PERCENTAGE" -> DiscountType.PERCENTAGE
+                "FIXED_AMOUNT" -> DiscountType.FIXED
+                else -> return@let null
+            }
+            DescuentoDelCliente(it.discountId, it.name, tipo, it.value, it.maxDiscountAmount)
+        }
     )
 }
 

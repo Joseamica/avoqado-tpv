@@ -37,7 +37,8 @@ object LoggingInterceptor {
     private val CUERPO_SENSIBLE = Regex(
         // "clave"  :  "cadena con \" escapadas"  |  -12.5
         // Tienda híbrida parte 2 (Codex r1 #2): `pageToken` y `proofToken` son la prueba de posesión de una tarjeta de regalo.
-        "\"(supervisorPin|pin|password|newPin|currentPin|commandToken|token|accessToken|refreshToken|pageToken|proofToken)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
+        // D1: `autorizacionDelDescuento` es el token del PIN del gerente que viaja en el cuerpo de `with-items`.
+        "\"(supervisorPin|pin|password|newPin|currentPin|commandToken|token|accessToken|refreshToken|pageToken|proofToken|autorizacionDelDescuento)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|-?\\d+(?:\\.\\d+)?)",
     )
 
     /**

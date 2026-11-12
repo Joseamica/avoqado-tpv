@@ -22,7 +22,9 @@ data class Customer(
     val loyaltyPoints: Int,
     val totalVisits: Int,
     val totalSpent: BigDecimal,
-    val customerGroup: CustomerGroup?
+    val customerGroup: CustomerGroup?,
+    /** El descuento que el negocio le asignó a este cliente; null si no tiene (o el servidor es viejo). */
+    val descuentoDelCliente: DescuentoDelCliente? = null
 ) {
     /**
      * Display name for customer
@@ -68,6 +70,29 @@ data class Customer(
         get() = customerGroup?.name?.contains("VIP", ignoreCase = true) == true ||
                 totalSpent >= BigDecimal(10000)
 }
+
+/**
+ * El descuento asignado a un cliente. [valor] es un % o pesos según [tipo]; [tope] son pesos.
+ * [discountId] es el id del descuento del catálogo en el servidor.
+ */
+@Immutable
+data class DescuentoDelCliente(
+    val discountId: String,
+    val nombre: String,
+    val tipo: DiscountType,
+    val valor: Double,
+    val tope: Double?
+)
+
+/** El [Discount] de cuenta que el carrito ya sabe calcular y mandar (sin cupón). */
+fun DescuentoDelCliente.comoDescuento(): Discount = Discount(
+    id = discountId, name = nombre, type = tipo, value = BigDecimal.valueOf(valor),
+    scope = DiscountScope.ORDER, conditions = null, active = true, requiresAuthorization = false,
+    maxDiscountAmount = tope?.let(BigDecimal::valueOf), couponCode = null,
+)
+
+/** Llave de idempotencia del descuento de un cliente en una venta; espejo de la del servidor. */
+fun llaveDelDescuentoDelCliente(customerId: String, discountId: String): String = "descuento-cliente:$customerId:$discountId"
 
 /**
  * Customer Group domain model

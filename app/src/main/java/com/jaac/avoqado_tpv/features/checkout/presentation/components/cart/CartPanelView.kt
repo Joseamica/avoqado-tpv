@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.features.checkout.presentation.AvisoDescuentoDelCliente
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
@@ -37,6 +38,10 @@ fun CartPanelView(
     cartState: CartState,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
+    avisoDescuentoDelCliente: AvisoDescuentoDelCliente? = null,
+    onQuitarDescuentoDelCliente: (() -> Unit)? = null,
+    onPedirAutorizacionDescuento: () -> Unit = {},
+    onUsarDescuentoDelCliente: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -44,6 +49,22 @@ fun CartPanelView(
             .background(MaterialTheme.colorScheme.surface),
     ) {
         HorizontalDivider()
+        if (avisoDescuentoDelCliente != null) {
+            AvisoDescuentoDelClienteCard(
+                aviso = avisoDescuentoDelCliente,
+                onPedirAutorizacion = onPedirAutorizacionDescuento,
+                onUsarDescuento = onUsarDescuentoDelCliente,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+            )
+        }
+        if (cartState.descuentoEsDelCliente && cartState.orderDiscount != null && cartState.discountCents > 0 && onQuitarDescuentoDelCliente != null) {
+            LineaDescuentoDelCliente(
+                nombre = cartState.orderDiscount.name,
+                monto = "−${cartState.discountDisplay}",
+                onQuitar = onQuitarDescuentoDelCliente,
+                modifier = Modifier.padding(start = 16.dp, end = 4.dp),
+            )
+        }
         Button(
             onClick = onTap,
             enabled = !cartState.isEmpty,

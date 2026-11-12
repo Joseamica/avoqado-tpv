@@ -142,8 +142,9 @@ data class OrderDiscountDto(
     @SerializedName("id")
     val id: String,
 
+    // Nullable (como `type`): la línea recortada { id, name, amount } del SERVIDOR viejo no lo trae.
     @SerializedName("orderId")
-    val orderId: String,
+    val orderId: String?,
 
     @SerializedName("discountId")
     val discountId: String?,
@@ -154,8 +155,10 @@ data class OrderDiscountDto(
     @SerializedName("name")
     val name: String,
 
+    // Nullable: el SERVIDOR anterior al descuento del cliente manda cada descuento de la cuenta recortado a
+    // { id, name, amount }; sin tipo, el traductor tronaba al releer la venta tras cobrar (QA en la PAX, 11-nov).
     @SerializedName("type")
-    val type: String,  // PERCENTAGE, FIXED, MANUAL, COUPON
+    val type: String?,  // PERCENTAGE, FIXED, MANUAL, COUPON
 
     @SerializedName("value")
     val value: Double,

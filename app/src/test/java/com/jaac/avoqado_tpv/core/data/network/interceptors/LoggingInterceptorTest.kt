@@ -41,6 +41,12 @@ class LoggingInterceptorTest {
         assertThat(LoggingInterceptor.censurarCuerpoSensible(error)).isEqualTo(error)
     }
 
+    @Test fun `la autorizacion del descuento del cliente no sale en el log, el resto del cuerpo si`() {
+        val cuerpo = """{"orderDiscountId":"d-10","discount":10.0,"total":90.0,"autorizacionDelDescuento":"tok-d","externalId":"llave-1"}"""
+        assertThat(LoggingInterceptor.censurarCuerpoSensible(cuerpo))
+            .isEqualTo("""{"orderDiscountId":"d-10","discount":10.0,"total":90.0,"autorizacionDelDescuento":"***","externalId":"llave-1"}""")
+    }
+
     @Test fun `device command credentials are redacted from activation responses`() {
         val body = """{"commandToken":"never-log-this","venueId":"v1"}"""
         assertThat(LoggingInterceptor.censurarCuerpoSensible(body)).isEqualTo("""{"commandToken":"***","venueId":"v1"}""")

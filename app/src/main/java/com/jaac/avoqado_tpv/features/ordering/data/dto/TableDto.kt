@@ -180,6 +180,8 @@ data class TpvCreateOrderWithItemsRequest(
     @SerializedName("total") val total: Double,
     @SerializedName("note") val note: String? = null,
     @SerializedName("externalId") val externalId: String? = null,
+    // D1: token del PIN del gerente para el descuento del cliente. Gson omite el nulo: sin él, el cuerpo es el de siempre.
+    @SerializedName("autorizacionDelDescuento") val autorizacionDelDescuento: String? = null,
 )
 
 data class TpvCreateOrderWithItemsItemDto(

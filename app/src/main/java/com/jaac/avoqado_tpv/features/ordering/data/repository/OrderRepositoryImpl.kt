@@ -302,6 +302,7 @@ class OrderRepositoryImpl @Inject constructor(
                 total = request.total.toDouble(),
                 note = request.note,
                 externalId = request.externalId,
+                autorizacionDelDescuento = request.autorizacionDelDescuento,
             )
 
             val response = apiService.createOrderWithItems(venueId, dto, overrideToken)
@@ -343,8 +344,12 @@ class OrderRepositoryImpl @Inject constructor(
                 )?.let { return Result.failure(it) }
                 val errorMessage = when (response.code()) {
                     // D5: con cupón, la razón del SERVIDOR ya viene para la cajera (venció, se agotó, este cliente ya lo usó, cambió de valor).
-                    400 -> request.couponCode?.let { mensajeDelCuponRechazado(cuerpo) }
-                        ?: "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
+                    // D1: con un descuento del catálogo sólo pasa el aviso de que cambió (el resto viene en inglés o no es para ella).
+                    400 -> when {
+                        request.couponCode != null -> mensajeDelCuponRechazado(cuerpo)
+                        request.orderDiscountId != null -> mensajeDelCuponRechazado(cuerpo)?.takeIf { it.startsWith("El descuento «") }
+                        else -> null
+                    } ?: "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     403 -> "No tienes permiso para crear órdenes."
                     404 -> "Producto, descuento o staff no encontrado."

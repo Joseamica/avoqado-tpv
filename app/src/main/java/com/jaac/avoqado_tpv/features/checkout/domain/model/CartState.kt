@@ -42,6 +42,12 @@ data class CartState(
     val orderTaxPercent: Int? = null,
     val selectedStaffId: String = "",
     val selectedStaffName: String = "Staff",
+    /** [orderDiscount] vino del cliente seleccionado (no lo eligió el cajero). */
+    val descuentoEsDelCliente: Boolean = false,
+    /** Ids de los clientes a los que el cajero les quitó su descuento en esta venta: el suyo no se vuelve a poner solo (el de otro cliente sí). */
+    val descuentosDelClienteQuitados: Set<String> = emptySet(),
+    /** Token del PIN que autorizó el descuento, si hizo falta. */
+    val autorizacionDelDescuento: String? = null,
 ) {
     val itemCount: Int
         get() = items.sumOf { it.quantity }

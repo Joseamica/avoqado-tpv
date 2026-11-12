@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.SelectedModifier
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
+import com.jaac.avoqado_tpv.features.ordering.domain.DescuentoDelCliente
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountConditions
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountScope
@@ -112,6 +113,11 @@ internal data class CarritoDto(
     /** Epoch ms del aparato al guardar; null en lo guardado antes de este campo. */
     val guardadoEn: Long? = null,
     val cliente: ClienteDto? = null,
+    /** Nulos/false en lo guardado antes de estos campos. */
+    val descuentoEsDelCliente: Boolean = false,
+    /** Gson no llama al constructor: lo guardado antes de este campo (o con el `descuentoDelClienteQuitadoDe` de una versión de prueba) llega null = ninguno. */
+    val descuentosDelClienteQuitados: List<String>? = null,
+    val autorizacionDelDescuento: String? = null,
 ) {
     fun aCarrito() = CartState(
         items = items.map { it.aRenglon() },
@@ -123,6 +129,9 @@ internal data class CarritoDto(
         orderTaxPercent = orderTaxPercent,
         selectedStaffId = selectedStaffId,
         selectedStaffName = selectedStaffName,
+        descuentoEsDelCliente = descuentoEsDelCliente,
+        descuentosDelClienteQuitados = descuentosDelClienteQuitados.orEmpty().toSet(),
+        autorizacionDelDescuento = autorizacionDelDescuento,
     )
 
     companion object {
@@ -137,6 +146,9 @@ internal data class CarritoDto(
             orderTaxPercent = cart.orderTaxPercent,
             selectedStaffId = cart.selectedStaffId,
             selectedStaffName = cart.selectedStaffName,
+            descuentoEsDelCliente = cart.descuentoEsDelCliente,
+            descuentosDelClienteQuitados = cart.descuentosDelClienteQuitados.toList(),
+            autorizacionDelDescuento = cart.autorizacionDelDescuento,
         )
     }
 }
@@ -192,16 +204,32 @@ internal data class ClienteDto(
     val lastName: String?,
     val email: String?,
     val phone: String?,
+    /** Nulo en lo guardado antes de este campo. */
+    val descuento: DescuentoDelClienteGuardadoDto? = null,
 ) {
     fun aCliente() = Customer(
         id = id, firstName = firstName, lastName = lastName, email = email, phone = phone,
         loyaltyPoints = 0, totalVisits = 0, totalSpent = BigDecimal.ZERO, customerGroup = null,
+        descuentoDelCliente = descuento?.let {
+            DescuentoDelCliente(it.discountId, it.nombre, DiscountType.fromString(it.tipo), it.valor, it.tope)
+        },
     )
 
     companion object {
-        fun desde(c: Customer) = ClienteDto(c.id, c.firstName, c.lastName, c.email, c.phone)
+        fun desde(c: Customer) = ClienteDto(
+            c.id, c.firstName, c.lastName, c.email, c.phone,
+            c.descuentoDelCliente?.let { DescuentoDelClienteGuardadoDto(it.discountId, it.nombre, it.tipo.name, it.valor, it.tope) },
+        )
     }
 }
+
+internal data class DescuentoDelClienteGuardadoDto(
+    val discountId: String,
+    val nombre: String,
+    val tipo: String,
+    val valor: Double,
+    val tope: Double?,
+)
 
 /** El descuento de cuenta, con los `BigDecimal` como texto plano para que Gson los vuelva a leer igual. */
 internal data class DescuentoDto(

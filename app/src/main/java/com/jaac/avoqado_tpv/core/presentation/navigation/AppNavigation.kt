@@ -1041,6 +1041,26 @@ fun AppNavigation(
                         onAyuda = { navController.navigate(NavRoute.Support.route) },
                     )
                 }
+                // D12: un cobro con saldo de un folio guardado sin desenlace, cuando la lista de folios no está al día (la app arrancó
+                // sin red, se cayó la red o un 4xx). Sin esto no había recuadro ni marca y la cajera podía cobrar el folio otra vez como
+                // venta normal. Sólo lee lo guardado en el aparato; se relee al cambiar de pantalla (Inicio ↔ Cobrar ↔ Pago rápido).
+                // D12 r3: el lector nunca lanza; null = el almacén cifrado no se deja leer, y el aviso lo dice (nunca pasa por «no hay»).
+                val estadoDeLosFolios by vigiaDeFolios.estado.collectAsStateWithLifecycle()
+                val saldosGuardados by androidx.compose.runtime.produceState<List<com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo>?>(
+                    emptyList(), bannerRoute,
+                ) {
+                    value = withContext(Dispatchers.IO) { cobroConSaldo.pendientes() }
+                }
+                com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar(estadoDeLosFolios, saldosGuardados)?.let { texto ->
+                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+                        Text(
+                            text = texto,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
             }
         }
 

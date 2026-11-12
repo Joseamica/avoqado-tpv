@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
 import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
+import com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado
 import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
 import com.jaac.avoqado_tpv.features.onlineorders.domain.BeneficioDeFolio
@@ -89,8 +90,8 @@ class PorPagarViewModelTest {
 
     // P2 (parte 2): el cobro con saldo guardado en el aparato. Por defecto no hay ninguno pendiente.
     private val saldo = mockk<CobroConSaldoRepository> {
-        every { pendienteDe(any()) } returns null
-        every { foliosPendientes() } returns emptySet()
+        every { saldoDe(any()) } returns SaldoGuardado.Ninguno
+        every { pendientes() } returns emptyList()
     }
     private val despues = mockk<DespuesDeCobrarFolio>(relaxed = true)
 
@@ -865,7 +866,7 @@ class PorPagarViewModelTest {
     fun `P2 reabrir con una solicitud pendiente comprueba el cobro con saldo antes de dejar cobrar`() = runTest {
         val ana = folio("a1")
         cargado(porPagar = listOf(ana))
-        every { saldo.pendienteDe("a1") } returns mockk()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
         val respuesta = CompletableDeferred<DesenlaceDeSaldo?>()
         coEvery { saldo.resolver("a1") } coAnswers { respuesta.await() }
         val vm = vm()
@@ -891,7 +892,7 @@ class PorPagarViewModelTest {
     fun `P2 con el cobro con saldo en duda, Cobrar vuelve a comprobar y no abre ningun cobro`() = runTest {
         val ana = folio("a1")
         cargado(porPagar = listOf(ana))
-        every { saldo.pendienteDe("a1") } returns mockk()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Incierto
         val vm = vm()
         var abrio = false
@@ -908,7 +909,7 @@ class PorPagarViewModelTest {
     fun `P2 si al comprobar el saldo cubrio todo, confirma el folio una vez y lo manda a Por entregar`() = runTest {
         val ana = folio("a1", folio = "W7K3P")
         cargado(porPagar = listOf(ana))
-        every { saldo.pendienteDe("a1") } returns mockk()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600)
         val vm = vm()
 
@@ -924,7 +925,7 @@ class PorPagarViewModelTest {
     fun `P2 si al comprobar quedo saldo por cobrar, dice cuanto falta y no abre el cobro solo`() = runTest {
         val ana = folio("a1")
         cargado(porPagar = listOf(ana))
-        every { saldo.pendienteDe("a1") } returns mockk()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
         val vm = vm()
         var abrio = false
@@ -940,12 +941,12 @@ class PorPagarViewModelTest {
     fun `Codex r1 4 un abono con saldo recuperado al comprobar tambien sale bajo el monto al cobrar lo que falta`() = runTest {
         val ana = folio("a1", folio = "W7K3P", total = "134.00")
         cargado(porPagar = listOf(ana))
-        every { saldo.pendienteDe("a1") } returns mockk()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
         coEvery { folios.listar("v1", false) } returns Result.success(pagina(porPagar = listOf(ana.copy(falta = BigDecimal("84.00")))))
         val vm = vm()
         assertThat(vm.cobrar(ana)).isNull()
-        every { saldo.pendienteDe("a1") } returns null
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.Ninguno
 
         val apertura = vm.cobrar(ana)!!
 
@@ -993,7 +994,7 @@ class PorPagarViewModelTest {
         val ana = folio("a1")
         cargado(porPagar = listOf(ana), sinConexion = true)
         // La app se reabrió sin red: la solicitud está guardada; nadie la ha comprobado todavía.
-        every { saldo.foliosPendientes() } returns setOf("a1")
+        every { saldo.pendientes() } returns listOf(mockk<com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo> { every { orderId } returns "a1" })
 
         val vm = vm()
 
@@ -1021,6 +1022,102 @@ class PorPagarViewModelTest {
         // Nunca recorta en silencio.
         val conMas = conCuenta.copy(beneficiosTotal = 3)
         assertThat(lineaDeLaCuenta(conMas)).isEqualTo("Con cuenta: Ana · Premio −$45.00 · y 2 más")
+    }
+
+    // endregion
+
+    // region D12 r3 — el almacén de los cobros con saldo no se deja leer: «no se sabe», nunca «no hay»
+
+    @Test
+    fun `D12r3 la lista con el almacen ilegible pone en duda todos los folios con su marca y no ofrece cancelarlos`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendientes() } returns null
+
+        val vm = vm()
+
+        assertThat(vm.ui.value.saldoIlegible).isTrue()
+        assertThat(vm.ui.value.saldoEnDuda("a1")).isTrue()
+        assertThat(marcaDeSaldo(vm.ui.value, "a1")).isEqualTo(TextosPorPagar.SALDO_ILEGIBLE_MARCA)
+        assertThat(textoDelFolioSinRed(saldoEnDuda = true, ilegible = true)).isEqualTo(TextosPorPagar.SALDO_ILEGIBLE_SIN_RED)
+        assertThat(muestraCancelarFolio(ana, puedeCancelar = true, sinConexion = false, saldoEnDuda = vm.ui.value.saldoEnDuda("a1"))).isFalse()
+    }
+
+    @Test
+    fun `D12r3 abrir y cobrar un folio con el almacen ilegible avisa y no abre ningun cobro`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.Ilegible
+        coEvery { saldo.resolver("a1") } returns DesenlaceDeSaldo.Ilegible
+        val vm = vm()
+
+        vm.abrir(ana)
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_ILEGIBLE)
+        assertThat(vm.ui.value.saldoEnDuda("a1")).isTrue()
+        vm.cerrarAviso()
+        var abrio = false
+        assertThat(vm.cobrar(ana) { abrio = true }).isNull()
+
+        assertThat(abrio).isFalse()
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_ILEGIBLE)
+        coVerify(exactly = 0) { folios.listar(any(), any()) }
+    }
+
+    // endregion
+
+    // region D12 r4 — «Cancelar folio» se revisa otra vez justo antes de mandar (Codex r3 #2)
+
+    @Test
+    fun `D12r4 cancelar no manda nada si el almacen es ilegible`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        val vm = vm()
+        // El diálogo se abrió con el folio libre; al confirmar, el almacén ya no se lee.
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.Ilegible
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 cancelar no manda nada con un cobro con saldo en duda`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        val vm = vm()
+        every { saldo.saldoDe("a1") } returns SaldoGuardado.EnDuda(mockk())
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 cancelar tampoco manda si la pantalla ya lo tiene en duda`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        every { saldo.pendientes() } returns null
+        val vm = vm()
+        assertThat(vm.ui.value.saldoEnDuda("a1")).isTrue()
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 0) { folios.cancelar(any(), any()) }
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.SALDO_NO_CANCELA)
+    }
+
+    @Test
+    fun `D12r4 sin duda cancelar sigue mandando`() = runTest {
+        val ana = folio("a1")
+        cargado(porPagar = listOf(ana))
+        coEvery { folios.cancelar("v1", "a1") } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.cancelar(ana)
+
+        coVerify(exactly = 1) { folios.cancelar("v1", "a1") }
     }
 
     // endregion

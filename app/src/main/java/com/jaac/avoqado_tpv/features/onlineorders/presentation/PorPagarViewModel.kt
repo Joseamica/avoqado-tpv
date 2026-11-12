@@ -161,6 +161,20 @@ object TextosPorPagar {
     const val SALDO_EN_DUDA_SIN_RED = "Hay un cobro con saldo sin confirmar. No cobres este folio otra vez: se comprueba al volver la conexión."
     /** Full-testing H2: la marca de la lista. */
     const val SALDO_SIN_CONFIRMAR_MARCA = "Cobro con saldo sin confirmar"
+    /** D12: el almacén cifrado de los cobros con saldo no se dejó leer (no se sabe si el folio tiene un cobro en duda). */
+    val SALDO_ILEGIBLE = AvisoDeFolio(
+        com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo.ILEGIBLE_TITULO,
+        com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo.ILEGIBLE,
+    )
+    const val SALDO_ILEGIBLE_MARCA = "Cobro con saldo sin revisar"
+    /** D12 r4: «Cancelar folio» se revisa otra vez justo antes de mandar (el diálogo pudo abrirse antes de la duda). */
+    val SALDO_NO_CANCELA = AvisoDeFolio(
+        "No se canceló el folio",
+        "Este folio puede tener un cobro con saldo sin confirmar. Revisa en el panel si ya está pagado antes de cancelarlo.",
+    )
+    /** D12: sin red, un folio de una terminal cuyo almacén de saldo no se lee. */
+    const val SALDO_ILEGIBLE_SIN_RED = "No se pudo revisar si este folio tiene un cobro con saldo sin confirmar. No lo cobres aquí: " +
+        "revisa en el panel si ya está pagado."
     /** Full-testing H5 (mockup 2e·3): arriba del monto, cuando ya hubo un abono. */
     const val FALTA = "Falta"
     val YA_CAMBIO = AvisoDeFolio("Este folio ya cambió", "Otra caja, el panel o la clienta lo cambió. La lista se está actualizando.")
@@ -213,7 +227,12 @@ data class PorPagarUi(
     val comprobandoSaldo: Set<String> = emptySet(),
     /** Folios con un cobro con saldo que no se pudo confirmar: no se cobran ni se cancelan hasta comprobarlo. */
     val saldoSinConfirmar: Set<String> = emptySet(),
-)
+    /** D12: el almacén cifrado de los cobros con saldo no se dejó leer: CUALQUIER folio puede tener un cobro en duda. */
+    val saldoIlegible: Boolean = false,
+) {
+    /** D12: el folio no se cobra ni se cancela aquí: tiene un cobro con saldo sin confirmar, o no se sabe porque el almacén no se lee. */
+    fun saldoEnDuda(orderId: String): Boolean = orderId in saldoSinConfirmar || saldoIlegible
+}
 
 /**
  * «Pedidos por pagar» (P3): la lista viene del vigía (P1); aquí se busca, se abre un folio, se relee antes de cobrar y se
@@ -249,6 +268,7 @@ class PorPagarViewModel @Inject constructor(
         val puedeUsarSaldo: Boolean = false,
         val comprobandoSaldo: Set<String> = emptySet(),
         val saldoSinConfirmar: Set<String> = emptySet(),
+        val saldoIlegible: Boolean = false,
     )
 
     /**
@@ -279,13 +299,12 @@ class PorPagarViewModel @Inject constructor(
      * sin red y sin haberlos abierto (la app pudo morir con la solicitud guardada).
      */
     private fun leerSaldosPendientes() {
-        val pendientes = try {
-            saldo.foliosPendientes()
-        } catch (e: Exception) {
-            timber.log.Timber.e(e, "🎁 [Folios] No se pudieron leer los cobros con saldo guardados")
-            return
+        // D12 r3: el lector nunca lanza; null = el almacén no se deja leer y CUALQUIER folio puede tener un cobro en duda.
+        val pendientes = saldo.pendientes()?.map { it.orderId }
+        local.update {
+            if (pendientes == null) it.copy(saldoIlegible = true)
+            else it.copy(saldoIlegible = false, saldoSinConfirmar = it.saldoSinConfirmar + pendientes)
         }
-        if (pendientes.isNotEmpty()) local.update { it.copy(saldoSinConfirmar = it.saldoSinConfirmar + pendientes) }
     }
 
     init {
@@ -386,7 +405,7 @@ class PorPagarViewModel @Inject constructor(
     }
 
     private fun revisarSaldo(folio: Folio) {
-        if (saldo.pendienteDe(folio.orderId) == null) return
+        if (saldo.saldoDe(folio.orderId) == com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno) return
         viewModelScope.launch { comprobarSaldo(folio)?.let { aviso -> local.update { it.copy(aviso = aviso) } } }
     }
 
@@ -396,7 +415,7 @@ class PorPagarViewModel @Inject constructor(
      * ninguno; si no, el aviso de lo que pasó. Mientras se comprueba, el folio dice «Comprobando el cobro con saldo…».
      */
     private suspend fun comprobarSaldo(folio: Folio): AvisoDeFolio? {
-        if (saldo.pendienteDe(folio.orderId) == null) return null
+        if (saldo.saldoDe(folio.orderId) == com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno) return null
         var libre = false
         local.update {
             libre = folio.orderId !in it.comprobandoSaldo
@@ -415,6 +434,10 @@ class PorPagarViewModel @Inject constructor(
         return when (d) {
             null -> null
             com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Incierto -> TextosPorPagar.SALDO_SIN_CONFIRMAR
+            com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Ilegible -> {
+                local.update { it.copy(saldoIlegible = true) }
+                TextosPorPagar.SALDO_ILEGIBLE
+            }
             is com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.NoSalio -> TextosPorPagar.saldoNoSalio(d.texto)
             is com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo.Cobrado -> {
                 vigia.sondearYa()
@@ -453,7 +476,23 @@ class PorPagarViewModel @Inject constructor(
         TextosPorPagar.noSePudoRevisar(sinRed = false)
     }
 
-    fun cancelar(folio: Folio) = accion(folio, Accion.CANCELAR)
+    fun cancelar(folio: Folio) {
+        // D12 r4 (Codex r3 #2): el diálogo pudo abrirse antes de que el folio quedara en duda; se revisa otra vez justo antes de
+        // mandar. Con un cobro con saldo en duda o el almacén ilegible no se cancela (el saldo pudo haberse cobrado).
+        val guardado = saldo.saldoDe(folio.orderId)
+        if (guardado != com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno || ui.value.saldoEnDuda(folio.orderId)) {
+            local.update {
+                when (guardado) {
+                    com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ilegible -> it.copy(saldoIlegible = true, aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                    is com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.EnDuda ->
+                        it.copy(saldoSinConfirmar = it.saldoSinConfirmar + folio.orderId, aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                    com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado.Ninguno -> it.copy(aviso = TextosPorPagar.SALDO_NO_CANCELA)
+                }
+            }
+            return
+        }
+        accion(folio, Accion.CANCELAR)
+    }
     fun listo(folio: Folio) = accion(folio, Accion.LISTO)
     fun entregado(folio: Folio) = accion(folio, Accion.ENTREGADO)
 
@@ -594,6 +633,7 @@ class PorPagarViewModel @Inject constructor(
             puedeUsarSaldo = l.puedeUsarSaldo,
             comprobandoSaldo = l.comprobandoSaldo,
             saldoSinConfirmar = l.saldoSinConfirmar,
+            saldoIlegible = l.saldoIlegible,
         )
     }
 
@@ -628,7 +668,18 @@ fun numeroDeSeccion(conteoDelServidor: Int, sacadosAquiSinDescontar: Int): Int =
 
 /** «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
 /** Full-testing H2: lo que dice el folio sin red. */
-fun textoDelFolioSinRed(saldoEnDuda: Boolean): String = if (saldoEnDuda) TextosPorPagar.SALDO_EN_DUDA_SIN_RED else TextosPorPagar.FOLIO_SIN_RED
+fun textoDelFolioSinRed(saldoEnDuda: Boolean, ilegible: Boolean = false): String = when {
+    !saldoEnDuda -> TextosPorPagar.FOLIO_SIN_RED
+    ilegible -> TextosPorPagar.SALDO_ILEGIBLE_SIN_RED
+    else -> TextosPorPagar.SALDO_EN_DUDA_SIN_RED
+}
+
+/** D12 r3: la marca de la fila: el cobro con saldo de ESE folio sin confirmar, o el almacén que no se deja leer (cualquier folio). */
+fun marcaDeSaldo(ui: PorPagarUi, orderId: String): String? = when {
+    orderId in ui.saldoSinConfirmar -> TextosPorPagar.SALDO_SIN_CONFIRMAR_MARCA
+    ui.saldoIlegible -> TextosPorPagar.SALDO_ILEGIBLE_MARCA
+    else -> null
+}
 
 /** Full-testing H5 (mockup 2e·3): «Falta» arriba del monto del cobro cuando la cuenta ya tiene un abono. */
 fun muestraFalta(folio: ComandaDeFolio): Boolean =

@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.FalloDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.FolioCerrado
 import com.jaac.avoqado_tpv.features.giftcards.data.PruebaDeSaldo
+import com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado
 import com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
@@ -45,7 +46,7 @@ class SaldoDeRegaloViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
-        every { repo.pendienteDe(any()) } returns null
+        every { repo.saldoDe(any()) } returns SaldoGuardado.Ninguno
     }
 
     @After
@@ -154,14 +155,14 @@ class SaldoDeRegaloViewModelTest {
     @Test
     fun `si el saldo cubre todo, el folio se confirma UNA sola vez`() = runTest {
         saldo(35000)
-        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600)
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600)
         val vm = vm()
         vm.teclear(valido)
 
         vm.cobrar()
         vm.cobrar()
 
-        coVerify(exactly = 1) { repo.cobrar("cord1", PruebaDeSaldo.Codigo("K7Q29DXM4R8HHB7TR"), 13400) }
+        coVerify(exactly = 1) { repo.cobrar("cord1", PruebaDeSaldo.Codigo("K7Q29DXM4R8HHB7TR"), 13400, "W7K3P") }
         verify(exactly = 1) { despues.alConfirmarse(comanda) }
         assertThat(vm.ui.value.pagado).isEqualTo(PagoConSaldo(13400, "HB7T", 21600))
         assertThat(vm.ui.value.faltaPorCobrar).isNull()
@@ -170,7 +171,7 @@ class SaldoDeRegaloViewModelTest {
     @Test
     fun `2e-3 si falta, pide abrir el cobro de siempre por lo que falta y no confirma el folio`() = runTest {
         saldo(5000)
-        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.Cobrado(8400, 5000, "HB7T", 0)
         val vm = vm()
         vm.teclear(valido)
 
@@ -186,7 +187,7 @@ class SaldoDeRegaloViewModelTest {
     fun `mientras se cobra dice Comprobando el cobro con saldo y un segundo toque no cobra otra vez`() = runTest {
         saldo(35000)
         val respuesta = CompletableDeferred<DesenlaceDeSaldo>()
-        coEvery { repo.cobrar(any(), any(), any()) } coAnswers { respuesta.await() }
+        coEvery { repo.cobrar(any(), any(), any(), any()) } coAnswers { respuesta.await() }
         val vm = vm()
         vm.teclear(valido)
 
@@ -195,14 +196,14 @@ class SaldoDeRegaloViewModelTest {
         vm.cobrar()
         respuesta.complete(DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600))
 
-        coVerify(exactly = 1) { repo.cobrar(any(), any(), any()) }
+        coVerify(exactly = 1) { repo.cobrar(any(), any(), any(), any()) }
         assertThat(vm.ui.value.cobrando).isFalse()
     }
 
     @Test
     fun `si no se sabe si se cobro, queda en duda y Volver a comprobar resuelve con la misma solicitud`() = runTest {
         saldo(35000)
-        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.Incierto
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.Incierto
         coEvery { repo.resolver("cord1") } returns DesenlaceDeSaldo.Cobrado(0, 13400, "HB7T", 21600)
         val vm = vm()
         vm.teclear(valido)
@@ -213,7 +214,7 @@ class SaldoDeRegaloViewModelTest {
 
         vm.comprobar()
 
-        coVerify(exactly = 1) { repo.cobrar(any(), any(), any()) }
+        coVerify(exactly = 1) { repo.cobrar(any(), any(), any(), any()) }
         assertThat(vm.ui.value.enDuda).isFalse()
         verify(exactly = 1) { despues.alConfirmarse(comanda) }
     }
@@ -221,7 +222,7 @@ class SaldoDeRegaloViewModelTest {
     @Test
     fun `un rechazo definitivo dice el texto del SERVIDOR y vuelve a leer el saldo`() = runTest {
         saldo(35000)
-        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.NoSalio("Saldo insuficiente")
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.NoSalio("Saldo insuficiente")
         val vm = vm()
         vm.teclear(valido)
 
@@ -234,7 +235,7 @@ class SaldoDeRegaloViewModelTest {
     @Test
     fun `H4 folio vencido o pagado en otra caja dice el texto del mockup, Cobrar en gris y sin monto`() = runTest {
         saldo(35000)
-        coEvery { repo.cobrar(any(), any(), any()) } returns DesenlaceDeSaldo.NoSalio(TextosDeSaldo.FOLIO_VENCIDO, FolioCerrado.VENCIDO)
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.NoSalio(TextosDeSaldo.FOLIO_VENCIDO, FolioCerrado.VENCIDO)
         val vm = vm()
         vm.teclear(valido)
 
@@ -263,13 +264,49 @@ class SaldoDeRegaloViewModelTest {
 
     @Test
     fun `al entrar con una solicitud pendiente de ese folio la comprueba antes de dejar cobrar`() = runTest {
-        every { repo.pendienteDe("cord1") } returns mockk()
+        every { repo.saldoDe("cord1") } returns SaldoGuardado.EnDuda(mockk())
         coEvery { repo.resolver("cord1") } returns DesenlaceDeSaldo.Incierto
 
         val vm = vm()
 
         coVerify(exactly = 1) { repo.resolver("cord1") }
         assertThat(vm.ui.value.enDuda).isTrue()
+    }
+
+    // endregion
+
+    // region D12 r3 — el almacén de los cobros con saldo no se deja leer: «no se sabe», nunca «no hay»
+
+    @Test
+    fun `D12r3 al entrar con el almacen ilegible dice que no se pudo revisar y Cobrar queda en gris`() = runTest {
+        every { repo.saldoDe("cord1") } returns SaldoGuardado.Ilegible
+        coEvery { repo.resolver("cord1") } returns DesenlaceDeSaldo.Ilegible
+        saldo(35000)
+
+        val vm = vm()
+        vm.teclear(valido)
+        vm.cobrar()
+
+        coVerify(exactly = 1) { repo.resolver("cord1") }
+        assertThat(vm.ui.value.error).isEqualTo(TextosDeSaldo.ILEGIBLE)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+        assertThat(vm.ui.value.enDuda).isFalse()
+        coVerify(exactly = 0) { repo.cobrar(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D12r3 si al cobrar el almacen resulta ilegible no vuelve a consultar y Cobrar queda en gris`() = runTest {
+        saldo(35000)
+        coEvery { repo.cobrar(any(), any(), any(), any()) } returns DesenlaceDeSaldo.Ilegible
+        val vm = vm()
+        vm.teclear(valido)
+
+        vm.cobrar()
+
+        assertThat(vm.ui.value.error).isEqualTo(TextosDeSaldo.ILEGIBLE)
+        assertThat(vm.ui.value.puedeCobrar).isFalse()
+        assertThat(vm.ui.value.enDuda).isFalse()
+        coVerify(exactly = 1) { repo.consultar(any()) }
     }
 
     // endregion

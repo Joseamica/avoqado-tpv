@@ -73,7 +73,7 @@ fun Navegacion(
     fun porSubir() = piezasS.value.count { it.estado != EstadoPieza.AVISO }
 
     Column(Modifier.fillMaxSize()) {
-        BandaDeSenal(textoDeBanda(!conRedS.value, identidad.estado, identidad.necesitaPin, piezas.count { it.estado == EstadoPieza.PENDIENTE }))
+        BandaDeSenal(textoDeBanda(!conRedS.value, identidad.estado, identidad.necesitaPin, cuantasPuedenSubir(piezas, identidad)))
         key(destino.raiz, identidad.estado, generacion) {
             val nav = rememberNavController()
             val regresar: () -> Unit = { nav.popBackStack() }

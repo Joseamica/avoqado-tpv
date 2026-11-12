@@ -1,9 +1,13 @@
 package com.jaac.avoqado_campo.ui
 
+import com.jaac.avoqado_campo.cola.EstadoPieza
+import com.jaac.avoqado_campo.cola.Pieza
+import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
+import com.jaac.avoqado_campo.identidad.Sucursal
 import kotlinx.coroutines.runBlocking
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
@@ -47,6 +51,28 @@ class NavegacionTest {
         assertEquals("Subiendo 2…", textoDeBanda(false, EstadoDelCelular.DESVINCULADO, false, 2)) // la gracia sí sube
         assertEquals(null, textoDeBanda(false, EstadoDelCelular.DESCONOCIDO, false, 2))
         assertEquals(null, textoDeBanda(false, EstadoDelCelular.VINCULADO, false, 0))
+    }
+
+    // D2 (full-testing del bloque 2): con todo retenido en la gracia la banda decía «Subiendo 1…» y nada subía. Cuenta con el
+    // mismo filtro que el Subidor y la SubidorDeGracia.
+    @Test fun `«Subiendo N» cuenta solo lo que la pasada puede subir ahora`() {
+        fun p(id: Long, venue: String = "v1", estado: String = EstadoPieza.PENDIENTE, tipo: String = TipoPieza.VENTA, depende: String? = null) =
+            Pieza(id = id, tipo = tipo, llave = "k$id", staffId = "s1", venueId = venue, cuerpoJson = "{}", dependeDe = depende, estado = estado, creadaAt = 0, resumen = "")
+        val ventaRetenida = p(1, estado = EstadoPieza.RETENIDA)
+        val esperaSuVenta = p(2, tipo = TipoPieza.EVIDENCIA, depende = "k1")
+        val otraSucursal = p(3, venue = "v2")
+        val lista = p(4)
+        val suVentaYaSubio = p(5, tipo = TipoPieza.EVIDENCIA, depende = "k99") // HECHA: ya no está en la cola viva
+        val todas = listOf(ventaRetenida, esperaSuVenta, otraSucursal, lista, suVentaYaSubio)
+        val vinculado = Identidad(
+            EstadoDelCelular.VINCULADO, "s1", "Ana", listOf(Sucursal("v1", "Centro", null), Sucursal("v2", "Norte", null)), "v1", false, false, null,
+        )
+        assertEquals(2, cuantasPuedenSubir(todas, vinculado))
+        // La gracia no tiene la regla de la sucursal; la corrección suelta no la sube (la rechaza).
+        val gracia = vinculado.copy(estado = EstadoDelCelular.DESVINCULADO)
+        assertEquals(3, cuantasPuedenSubir(todas + p(6, tipo = TipoPieza.EVIDENCIA), gracia))
+        // El caso del reporte: la venta retenida y su evidencia esperándola → sin banda.
+        assertNull(textoDeBanda(false, EstadoDelCelular.DESVINCULADO, false, cuantasPuedenSubir(listOf(ventaRetenida, esperaSuVenta), gracia)))
     }
 
     @Test fun `H-A1 - si la tienda no usa el seguimiento el Inicio no avisa del GPS ni de la bateria`() {

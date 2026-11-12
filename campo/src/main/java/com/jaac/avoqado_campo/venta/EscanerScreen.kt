@@ -11,11 +11,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -33,6 +31,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.DecodeHintType
 import com.jaac.avoqado_campo.fotos.ConCamara
+import com.jaac.avoqado_campo.ui.ANCHO_MAXIMO
+import com.jaac.avoqado_campo.ui.BotonPrincipal
+import com.jaac.avoqado_campo.ui.BotonSecundario
 import com.journeyapps.barcodescanner.BarcodeCallback
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
@@ -100,14 +101,14 @@ fun EscanerScreen(onCodigo: (String) -> Unit, onCerrar: () -> Unit) =
                 modifier = Modifier.fillMaxSize(),
             )
             Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.5f)).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.6f)).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text("Apunta al código de barras de la SIM", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onCerrar, Modifier.heightIn(min = 48.dp)) { Text("Cerrar", color = Color.White) }
-                    Button({ linterna = !linterna }, Modifier.heightIn(min = 48.dp)) { Text(if (linterna) "Apagar luz" else "Prender luz") }
+                Row(Modifier.widthIn(max = ANCHO_MAXIMO), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BotonSecundario("Cerrar", onCerrar, Modifier.weight(1f))
+                    BotonPrincipal(if (linterna) "Apagar luz" else "Prender luz", { linterna = !linterna }, Modifier.weight(1f))
                 }
             }
         }

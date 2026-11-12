@@ -104,7 +104,9 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
             else -> "Subiendo…"
         } to emptyList()
     }
-    return FilaPendiente(p.id, p.resumen, texto, p.estado == EstadoPieza.RECHAZADA || p.estado == EstadoPieza.AVISO, botones)
+    // La evidencia guarda el resumen de su venta: sin distinguirla, cada SIM se veía dos veces, como si se hubiera vendido dos veces.
+    val titulo = if (p.tipo == TipoPieza.EVIDENCIA) "Foto y número · ${p.resumen}" else p.resumen
+    return FilaPendiente(p.id, titulo, texto, p.estado == EstadoPieza.RECHAZADA || p.estado == EstadoPieza.AVISO, botones)
 }
 
 @HiltViewModel

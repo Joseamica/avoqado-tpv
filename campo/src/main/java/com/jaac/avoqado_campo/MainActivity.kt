@@ -11,6 +11,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.gps.ControlDeGps
 import com.jaac.avoqado_campo.gps.EstadoDelGps
 import com.jaac.avoqado_campo.gps.reanudarSiHayTurno
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var arranque: Arranque
     @Inject lateinit var revisor: RevisorDeVersion
     @Inject lateinit var actualizador: Actualizador
+    @Inject lateinit var copia: RepositorioDeCopia
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,7 +70,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps, revisor, actualizador) } }
+        setContent { TemaCampo { Navegacion(quienSoy, dao, conectividad, borrado, estadoDelGps, revisor, actualizador, copia) } }
     }
 
     /** Al volver de «Permitir de esta fuente» (con el permiso, instala) o del diálogo de Android que no instaló. */

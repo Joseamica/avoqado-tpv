@@ -245,6 +245,15 @@ class PendientesViewModelTest {
         }
     }
 
+    // Hallado en el SAMSUNG (rediseño): la evidencia de una venta salía con el mismo título que su venta y cada SIM se veía
+    // dos veces, como si se hubiera vendido dos veces.
+    @Test fun `la foto y el numero de una venta no se titulan igual que la venta`() {
+        val venta = filaDe(pieza(TipoPieza.VENTA, EstadoPieza.PENDIENTE).copy(resumen = "Venta de SIM 8952140000000000401"), yo(), true, emptySet())
+        val evidencia = filaDe(pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(resumen = "Venta de SIM 8952140000000000401"), yo(), true, emptySet())
+        assertEquals("Venta de SIM 8952140000000000401", venta.resumen)
+        assertEquals("Foto y número · Venta de SIM 8952140000000000401", evidencia.resumen)
+    }
+
     @Test fun `los avisos se entienden y lo pendiente dice que espera`() {
         assertEquals(listOf(Accion.ENTENDIDO), acciones(filaDe(pieza(TipoPieza.EVIDENCIA, EstadoPieza.AVISO, "SALE_ALREADY_APPROVED", "Ya aprobada"), yo(), true, emptySet())))
         assertEquals(

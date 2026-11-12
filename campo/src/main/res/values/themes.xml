@@ -1,5 +1,9 @@
 <resources>
     <style name="Theme.Campo" parent="Theme.Material3.Light.NoActionBar">
+        <!-- El fondo claro de la app (ColoresCampo.Fondo) también en la barra de estado: sin el morado de Material3. -->
+        <item name="android:windowBackground">@color/fondo_campo</item>
+        <item name="android:statusBarColor">@color/fondo_campo</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+    <color name="fondo_campo">#FFFAF8F6</color>
 </resources>

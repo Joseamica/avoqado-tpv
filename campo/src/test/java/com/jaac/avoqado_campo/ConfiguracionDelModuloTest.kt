@@ -17,13 +17,13 @@ class ConfiguracionDelModuloTest {
         assertTrue(BuildConfig.API_BASE_URL.endsWith("/api/v1/"))
     }
 
-    @Test fun `la version es la 3 (0_3_0)`() {
-        assertEquals(3, BuildConfig.VERSION_CODE)
-        assertTrue(BuildConfig.VERSION_NAME.startsWith("0.3.0"))
+    @Test fun `la version es la 4 (0_4_0)`() {
+        assertEquals(4, BuildConfig.VERSION_CODE)
+        assertTrue(BuildConfig.VERSION_NAME.startsWith("0.4.0"))
     }
 
     @Test fun `el carril de versiones sigue al versionName`() {
-        // debug = «0.3.0-sandbox» → SANDBOX; release = «0.3.0» → PRODUCTION (como decide el alta del SERVIDOR).
+        // debug = «0.4.0-sandbox» → SANDBOX; release = «0.4.0» → PRODUCTION (como decide el alta del SERVIDOR).
         assertEquals(if (BuildConfig.VERSION_NAME.contains("sandbox")) "SANDBOX" else "PRODUCTION", BuildConfig.AMBIENTE_DE_VERSIONES)
     }
 }

@@ -284,8 +284,11 @@ class CheckoutViewModel @Inject constructor(
         val valor = textoDelValor(d)
         val puede = autorizacion != null || _cartState.value.autorizacionDelDescuento != null ||
             permissionsRepository.hasPermission(PERMISO_DESCUENTO)
-        // Llegó tarde: otro cliente, o la venta ya se está preparando (lo que viaja no cambia).
-        if (_selectedCustomer.value?.id != cliente.id || (!soloAviso && candado.rechaza("poner el descuento del cliente"))) return
+        // Llegó tarde: otro cliente, le dieron «Quitar» mientras se revisaba el permiso (Codex r7 #2), o la venta ya se está
+        // preparando (lo que viaja no cambia).
+        if (_selectedCustomer.value?.id != cliente.id || quitadoMientras(cliente.id, usar) ||
+            (!soloAviso && candado.rechaza("poner el descuento del cliente"))
+        ) return
         val cart = _cartState.value
         if (!usar && !cart.descuentoEsDelCliente && (cart.orderDiscount != null || cart.manualDiscountCents > 0)) {
             _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.YaHayOtro(nombre, valor)
@@ -293,7 +296,7 @@ class CheckoutViewModel @Inject constructor(
         }
         if (!puede) {
             val pin = secureStorage.getVenueId()?.let { autorizacionDeGerente.pinPrendido(it) }
-            if (_selectedCustomer.value?.id != cliente.id) return
+            if (_selectedCustomer.value?.id != cliente.id || quitadoMientras(cliente.id, usar)) return
             _avisoDescuentoDelCliente.value = AvisoDescuentoDelCliente.SinPermiso(nombre, valor, puedePedirPin = pin != false)
             return
         }
@@ -311,6 +314,8 @@ class CheckoutViewModel @Inject constructor(
             )
         }
     }
+
+    private fun quitadoMientras(clienteId: String, usar: Boolean) = !usar && clienteId in _cartState.value.descuentosDelClienteQuitados
 
     private val _customerSearchQuery = MutableStateFlow("")
     val customerSearchQuery: StateFlow<String> = _customerSearchQuery.asStateFlow()
@@ -485,6 +490,7 @@ class CheckoutViewModel @Inject constructor(
 
     fun applyOrderDiscount(discount: Discount?) {
         if (candado.rechaza("cambiar el descuento")) return
+        val quitaElDelCliente = discount == null && _cartState.value.descuentoEsDelCliente
         _cartState.update {
             it.copy(
                 orderDiscount = discount,
@@ -497,6 +503,8 @@ class CheckoutViewModel @Inject constructor(
                 },
             )
         }
+        // Como el botón «Quitar»: su aviso (y «Pedir autorización») se va con él (Codex r8 #4).
+        if (quitaElDelCliente) _avisoDescuentoDelCliente.value = null
     }
 
     // ─────────────────────────────────────────────────────────────────────

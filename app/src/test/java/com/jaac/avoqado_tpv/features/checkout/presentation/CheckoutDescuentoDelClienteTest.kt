@@ -411,6 +411,41 @@ class CheckoutDescuentoDelClienteTest {
         vm.viewModelScope.cancel()
     }
 
+    // Codex r7 #2: la revisión espera el permiso (puede ir a la red); un «Quitar» tocado mientras tanto no se deshace al volver.
+    @Test
+    fun `4 quitar mientras se revisa el permiso no se deshace al llegar la respuesta`() = runTest {
+        val permiso = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        coEvery { permisos.hasPermission("discounts:apply") } coAnswers { permiso.await() }
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+
+        permiso.complete(true)
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(setOf("c-cecilia"), vm.cartState.value.descuentosDelClienteQuitados)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `4 quitar mientras se revisa el permiso no deja volver su aviso`() = runTest {
+        val permiso = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        coEvery { permisos.hasPermission("discounts:apply") } coAnswers { permiso.await() }
+        val vm = createViewModel()
+        vm.addProduct(producto())
+        vm.selectCustomer(cecilia)
+        vm.quitarDescuentoDelCliente()
+
+        permiso.complete(false)
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.viewModelScope.cancel()
+    }
+
     @Test
     fun `4 Usar el de Cecilia tras quitar lo pone y la saca de las quitadas`() = runTest {
         val vm = createViewModel()
@@ -627,6 +662,22 @@ class CheckoutDescuentoDelClienteTest {
         assertTrue(resultado.isFailure)
         assertEquals(TEXTO_SIN_PERMISO, resultado.exceptionOrNull()?.message)
         coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    // Codex r8 #4: el «Quitar descuento» de los atajos quita el del cliente; su aviso (y «Pedir autorización») se va con él.
+    @Test
+    fun `7 carrito restaurado sin permiso - el Quitar de los atajos quita el descuento y su aviso`() = runTest {
+        sinPermisoDeDescuento()
+        carritoGuardadoConElDeCecilia(autorizacion = null)
+        val vm = createViewModel()
+        assertEquals(AvisoDescuentoDelCliente.SinPermiso("Cecilia", "10 %", true), vm.avisoDescuentoDelCliente.value)
+
+        vm.applyOrderDiscount(null)
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertTrue("c-cecilia" in vm.cartState.value.descuentosDelClienteQuitados)
+        assertNull(vm.avisoDescuentoDelCliente.value)
         vm.viewModelScope.cancel()
     }
 

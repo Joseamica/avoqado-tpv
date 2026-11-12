@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.ui
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.assertAll
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -8,7 +9,10 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.isNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.performClick
 import com.jaac.avoqado_campo.checada.ChecadaContenido
 import com.jaac.avoqado_campo.checada.EstadoChecada
@@ -33,8 +37,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.time.ZoneId
+import java.time.ZonedDateTime
 
-/** El aviso de la versión nueva en el Inicio y, con una obligatoria pendiente, qué queda en gris y qué sigue (D-2). */
+/**
+ * El aviso de la versión nueva en el Inicio y, con una obligatoria pendiente, qué queda en gris y qué sigue (D-2); y lo que el
+ * Inicio del mockup dice: el turno, las SIMs en custodia, el contador de pendientes y el ancho en la tableta.
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h1280dp")
 class InicioScreenTest {
@@ -61,7 +70,7 @@ class InicioScreenTest {
         inicio(base.copy(version = v031))
         compose.onNodeWithText("Hay una versión nueva (0.3.1)").assertExists()
         compose.onNodeWithText("Actualizar").assertIsEnabled().performClick()
-        compose.onNodeWithText("Vender").assertIsEnabled()
+        compose.onNodeWithText("Vender SIM").assertIsEnabled()
         compose.onNodeWithText(actualiza).assertDoesNotExist()
         assertEquals(listOf("actualizar"), toques)
     }
@@ -69,17 +78,17 @@ class InicioScreenTest {
     @Test fun `sin version nueva no hay aviso`() {
         inicio(base)
         compose.onNodeWithText("Actualizar").assertDoesNotExist()
-        compose.onNodeWithText("Vender").assertIsEnabled()
+        compose.onNodeWithText("Vender SIM").assertIsEnabled()
     }
 
     @Test fun `obligatoria - Vender en gris con «Actualiza para seguir», y Mis pendientes, Ayuda, Checar y Mis SIMs activos`() {
         inicio(base.copy(version = v031.copy(obligatoria = true), obligatoria = true))
-        compose.onNodeWithText("Vender").assertIsNotEnabled()
+        compose.onNodeWithText("Vender SIM").assertIsNotEnabled()
         compose.onNodeWithText(actualiza).assertExists()
         compose.onNodeWithText("Actualizar").assertIsEnabled()
-        compose.onNodeWithText("Mis pendientes (2)").assertIsEnabled()
+        compose.onNodeWithText("Mis pendientes").assertIsEnabled()
         compose.onNodeWithText("Ayuda").assertIsEnabled()
-        compose.onNodeWithText("Checar").assertIsEnabled()
+        compose.onNodeWithText("Checar entrada").assertIsEnabled()
         compose.onNodeWithText("Mis SIMs").assertIsEnabled()
     }
 
@@ -87,7 +96,7 @@ class InicioScreenTest {
         inicio(base.copy(version = null, obligatoria = true))
         compose.onNodeWithText("No se pudo comprobar la versión nueva. Avisa a tu supervisor").assertExists()
         compose.onNodeWithText("Actualizar").assertDoesNotExist()
-        compose.onNodeWithText("Vender").assertIsNotEnabled()
+        compose.onNodeWithText("Vender SIM").assertIsNotEnabled()
     }
 
     @Test fun `bajando - el boton dice «Bajando…» y no se puede tocar`() {
@@ -107,14 +116,21 @@ class InicioScreenTest {
         compose.onNodeWithText("Actualizar").assertIsEnabled()
     }
 
-    @Test fun `obligatoria con turno abierto - en Checar, «Marcar salida» activo y «Marcar entrada» en gris`() {
+    // Como el mockup, Checar ofrece sólo la acción que toca: con entrada abierta, la salida (activa aunque haya obligatoria).
+    @Test fun `obligatoria con turno abierto - en Checar, «Marcar salida» activo y no se ofrece otra entrada`() {
         compose.setContent {
             TemaCampo { ChecadaContenido(EstadoChecada(entrada = RefEntrada.PorLlave("k")), true, {}, {}, {}, {}, obligatoria = true) }
         }
-        compose.onNodeWithText("Marcar entrada").assertIsNotEnabled()
+        compose.onNodeWithText("Marcar entrada").assertDoesNotExist()
         compose.onNodeWithText("Marcar salida").assertIsEnabled()
         compose.onNodeWithText(actualiza).assertExists()
-        compose.onNodeWithText("Regresar").assertIsEnabled()
+        compose.onNodeWithContentDescription("Regresar").assertIsEnabled()
+    }
+
+    @Test fun `obligatoria sin turno abierto - en Checar, «Marcar entrada» en gris`() {
+        compose.setContent { TemaCampo { ChecadaContenido(EstadoChecada(), true, {}, {}, {}, {}, obligatoria = true) } }
+        compose.onNodeWithText("Marcar entrada").assertIsNotEnabled()
+        compose.onNodeWithText(actualiza).assertExists()
     }
 
     @Test fun `sin obligatoria, Marcar entrada sigue activo`() {
@@ -138,7 +154,7 @@ class InicioScreenTest {
         compose.onNodeWithText("Aceptar todas").assertIsNotEnabled()
         compose.onNodeWithText(actualiza).assertExists()
         compose.onNodeWithText("Actualizar").assertIsEnabled()
-        compose.onNodeWithText("Regresar").assertIsEnabled()
+        compose.onNodeWithContentDescription("Regresar").assertIsEnabled()
     }
 
     @Test fun `obligatoria - tras guardar una venta, «Vender otra» en gris y Regresar sigue`() {
@@ -161,12 +177,12 @@ class InicioScreenTest {
         compose.onNodeWithText(actualiza).assertExists()
     }
 
-    // D2 (full-testing del bloque 2): sin señal, «Vender» mostraba la banda dos veces (la de la navegación y otra suya).
+    // D2 (full-testing del bloque 2): sin señal, «Vender» mostraba la banda dos veces (la de la navegación y otra suya). Ahora
+    // la navegación la da una vez (LocalBanda) y la pantalla la pinta bajo su encabezado.
     @Test fun `sin senal, en Vender la banda sale una sola vez`() {
         compose.setContent {
             TemaCampo {
-                Column {
-                    BandaDeSenal(textoDeBanda(true, EstadoDelCelular.VINCULADO, false, 0)) // la de la navegación
+                CompositionLocalProvider(LocalBanda provides textoDeBanda(true, EstadoDelCelular.VINCULADO, false, 0)) {
                     VentaContenido(EstadoVenta(), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}))
                 }
             }
@@ -186,9 +202,10 @@ class InicioScreenTest {
         compose.setContent {
             TemaCampo { VentaContenido(EstadoVenta(sim = sim), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
         }
-        compose.onNodeWithText("8952140000000000201").assertExists()
+        compose.onNodeWithText("8952 1400 0000 0000 201").assertExists()
+        compose.onNodeWithText("✓ Está en tu custodia y aceptada").assertExists()
         compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()
-        compose.onNodeWithText("Registrar").assertExists()
+        compose.onNodeWithText("Registrar venta").assertExists()
     }
 
     // Hallado en el SAMSUNG (full-testing del bloque 3): el superadmin retiró la obligatoria mala y el aviso «No se pudo
@@ -196,7 +213,7 @@ class InicioScreenTest {
     @Test fun `sin version nueva ni obligatoria, el fallo del ultimo intento ya no se muestra`() {
         inicio(base.copy(version = null, obligatoria = false, paso = PasoDeActualizacion.Fallo(NO_SE_PUDO_COMPROBAR)))
         compose.onAllNodesWithText(NO_SE_PUDO_COMPROBAR).assertCountEquals(0)
-        compose.onNodeWithText("Vender").assertIsEnabled()
+        compose.onNodeWithText("Vender SIM").assertIsEnabled()
     }
 
     // Codex D2 r3: con la entrada ya confirmada («Entrada guardada»), si el GPS deja de seguir, «Checar» lo tiene que decir.
@@ -247,5 +264,68 @@ class InicioScreenTest {
             }
         }
         compose.onNodeWithText("No estamos siguiendo tu ubicación: la ubicación del teléfono está apagada").assertExists()
+    }
+
+    // ---- El Inicio del mockup (8-nov) ----
+
+    private val a902 = ZonedDateTime.of(2026, 11, 11, 9, 2, 0, 0, ZoneId.of("America/Mexico_City")).toInstant().toEpochMilli()
+
+    @Test fun `con turno abierto - chip «Turno abierto · entraste a las 9_02» y el mosaico dice «Checar salida»`() {
+        inicio(base.copy(turnoAbierto = true, entradaAt = a902))
+        compose.onNodeWithText("Turno abierto · entraste a las 9:02").assertExists()
+        compose.onNodeWithText("Checar salida").assertIsEnabled().performClick()
+        compose.onNodeWithText("Entraste 9:02").assertExists()
+        assertEquals(listOf("checar"), toques)
+    }
+
+    @Test fun `sin turno - no hay chip de turno y el mosaico dice «Checar entrada»`() {
+        inicio(base)
+        compose.onAllNodesWithText("Turno abierto", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("Checar entrada").assertIsEnabled()
+    }
+
+    @Test fun `Mis SIMs dice cuantas hay en custodia, y nada si todavia no hay copia`() {
+        inicio(base.copy(enCustodia = 24))
+        compose.onNodeWithText("24 en tu custodia").assertExists()
+        compose.onNodeWithText("Mis SIMs").performClick()
+        assertEquals(listOf("sims"), toques)
+    }
+
+    @Test fun `sin copia de Mis SIMs no inventa un numero`() {
+        inicio(base.copy(enCustodia = null))
+        compose.onAllNodesWithText("en tu custodia", substring = true).assertCountEquals(0)
+    }
+
+    @Test fun `Mis pendientes lleva su contador, y sin pendientes dice «Todo subido»`() {
+        inicio(base.copy(pendientes = 3))
+        compose.onNodeWithText("3").assertExists()
+        compose.onNodeWithText("Mis pendientes").performClick()
+        assertEquals(listOf("pendientes"), toques)
+    }
+
+    @Test fun `sin pendientes no hay contador`() {
+        inicio(base.copy(pendientes = 0))
+        compose.onNodeWithText("Todo subido").assertExists()
+        compose.onAllNodesWithText("0").assertCountEquals(0)
+    }
+
+    @Test fun `el encabezado lleva las iniciales y Ayuda sigue a la mano`() {
+        inicio(base.copy(nombre = "Ana Martínez", sucursal = "Walmart Coapa"))
+        compose.onNodeWithText("AM").assertExists()
+        compose.onNodeWithText("Hola, Ana Martínez · Walmart Coapa").assertExists()
+        compose.onNodeWithText("Ayuda").performClick()
+        assertEquals(listOf("ayuda"), toques)
+    }
+
+    @Test fun `en el celular angosto el contenido usa todo el ancho`() {
+        inicio(base)
+        compose.onNodeWithTag(ETIQUETA_CONTENIDO).assertWidthIsEqualTo(360.dp)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h1280dp")
+    fun `en la tableta ancha el contenido no se estira mas de 560 dp`() {
+        inicio(base)
+        compose.onNodeWithTag(ETIQUETA_CONTENIDO).assertWidthIsEqualTo(ANCHO_MAXIMO)
     }
 }

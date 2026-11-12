@@ -1,8 +1,8 @@
 package com.jaac.avoqado_campo.ui
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
@@ -16,6 +16,7 @@ import com.jaac.avoqado_campo.ayuda.AyudaScreen
 import com.jaac.avoqado_campo.checada.ChecadaScreen
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.custodia.MisSimsScreen
 import com.jaac.avoqado_campo.entrada.ActivarScreen
 import com.jaac.avoqado_campo.entrada.PinScreen
@@ -51,12 +52,14 @@ fun destinoDe(identidad: Identidad, colaVacia: Boolean): Destino = when (identid
 
 /**
  * Todas las pantallas. El NavHost vive dentro de `key(raíz, estado, generación)`: al cambiar de persona, de estado o al borrar
- * el celular se vuelve a la raíz y ninguna pantalla vieja sigue abierta para encolar a nombre de otro.
+ * el celular se vuelve a la raíz y ninguna pantalla vieja sigue abierta para encolar a nombre de otro. La banda de señal se
+ * calcula aquí UNA vez y cada pantalla la pinta bajo su encabezado ([LocalBanda]). [copia] sólo se lee (el Inicio cuenta las
+ * SIMs en custodia).
  */
 @Composable
 fun Navegacion(
     quienSoy: QuienSoy, dao: PiezaDao, conectividad: Conectividad, borrado: BorradoDelCelular, estadoDelGps: EstadoDelGps,
-    revisor: RevisorDeVersion, actualizador: Actualizador,
+    revisor: RevisorDeVersion, actualizador: Actualizador, copia: RepositorioDeCopia,
 ) {
     val identidadS = quienSoy.identidad.collectAsStateWithLifecycle()
     val piezasS = remember { dao.pendientesDeVer() }.collectAsStateWithLifecycle(emptyList())
@@ -66,18 +69,19 @@ fun Navegacion(
     val versionS = revisor.nueva.collectAsStateWithLifecycle()
     val obligatoriaS = revisor.obligatoria.collectAsStateWithLifecycle()
     val pasoS = actualizador.paso.collectAsStateWithLifecycle()
+    val copiaS = copia.copia.collectAsStateWithLifecycle()
     val identidad by identidadS
     val piezas by piezasS
     val destino = destinoDe(identidad, piezas.isEmpty())
     val generacion = remember(identidad) { quienSoy.generacion }
     fun porSubir() = piezasS.value.count { it.estado != EstadoPieza.AVISO }
 
-    Column(Modifier.fillMaxSize()) {
-        BandaDeSenal(textoDeBanda(!conRedS.value, identidad.estado, identidad.necesitaPin, cuantasPuedenSubir(piezas, identidad)))
+    val banda = textoDeBanda(!conRedS.value, identidad.estado, identidad.necesitaPin, cuantasPuedenSubir(piezas, identidad))
+    CompositionLocalProvider(LocalBanda provides banda) {
         key(destino.raiz, identidad.estado, generacion) {
             val nav = rememberNavController()
             val regresar: () -> Unit = { nav.popBackStack() }
-            NavHost(nav, startDestination = destino.raiz, modifier = Modifier.weight(1f)) {
+            NavHost(nav, startDestination = destino.raiz, modifier = Modifier.fillMaxSize()) {
                 composable("activar") { ActivarScreen(hiltViewModel()) {} }
                 composable("pin") {
                     PinScreen(hiltViewModel(), sinSenal = !conRedS.value) { if (nav.previousBackStackEntry != null) nav.popBackStack() }
@@ -100,6 +104,7 @@ fun Navegacion(
                 composable("inicio") {
                     val yo = identidadS.value
                     val t = turnoS.value
+                    val c = copiaS.value
                     val esperan = piezasS.value.filter { it.estado == EstadoPieza.PENDIENTE && it.venueId != yo.venueIdDeLaSesion }
                         .mapNotNull { p -> yo.sucursales.firstOrNull { it.venueId == p.venueId }?.nombre }.distinct()
                     InicioScreen(
@@ -107,6 +112,9 @@ fun Navegacion(
                             nombre = yo.nombre, pendientes = piezasS.value.size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             turnoAbierto = t != null && t.abierto && t.staffId == yo.staffId, gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
+                            sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
+                            entradaAt = t?.takeIf { it.abierto && it.staffId == yo.staffId }?.abiertoAt,
+                            enCustodia = cuantasEnCustodia(c), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },
@@ -116,7 +124,10 @@ fun Navegacion(
                     )
                 }
                 composable("venta") {
-                    VentaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar)
+                    VentaScreen(
+                        hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar,
+                        onPendientes = { nav.navigate("pendientes") { popUpTo("inicio") } },
+                    )
                 }
                 composable("sims") { MisSimsScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
                 composable("checada") { ChecadaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }

@@ -3,12 +3,18 @@ package com.jaac.avoqado_campo.ui
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.TipoPieza
+import com.jaac.avoqado_campo.copia.ConfigDeSucursal
+import com.jaac.avoqado_campo.copia.Copia
+import com.jaac.avoqado_campo.copia.MarcaLocal
+import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.identidad.Sucursal
 import kotlinx.coroutines.runBlocking
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -90,5 +96,30 @@ class NavegacionTest {
         assertEquals(ResultadoDelBorrado.QUEDA_ALGO, borrarSinTronar { ResultadoDelBorrado.QUEDA_ALGO })
         // Cancelar (salir de la pantalla) no se traga.
         assertTrue(runCatching { borrarSinTronar { throw CancellationException("salió") } }.exceptionOrNull() is CancellationException)
+    }
+
+    // El mosaico «Mis SIMs» del Inicio cuenta lo mismo que la sección «En tu custodia»: suyas y aceptadas, sin las vendidas aquí.
+    @Test fun `en custodia cuenta las aceptadas que no se vendieron en el celular`() {
+        fun sim(serie: String, estado: String, marca: String? = null) =
+            SimEnCopia(serie, estado, 1, "De caja", "0", marca, null, null, null, emptyList(), null)
+        val c = Copia(
+            4, "v1", "g",
+            listOf(
+                sim("1", "PROMOTER_HELD"), sim("2", "PROMOTER_HELD"), sim("3", "PROMOTER_HELD", MarcaLocal.VENDIDA_EN_EL_CELULAR),
+                sim("4", "PROMOTER_PENDING"), sim("5", "SOLD"),
+            ),
+            ConfigDeSucursal("SIM", "ICCID", true, true, false, false, false, false, true), 0,
+        )
+        assertEquals(2, cuantasEnCustodia(c))
+        assertNull("sin copia no se inventa un número", cuantasEnCustodia(null))
+    }
+
+    @Test fun `iniciales, la serie en grupos de 4 y la hora corta de Mexico`() {
+        assertEquals("AM", iniciales("Ana  Martínez Ruiz"))
+        assertEquals("A", iniciales("ana"))
+        assertEquals("", iniciales(null))
+        assertEquals("8952 0200 1234 5678 471F", enGrupos("8952020012345678471F"))
+        val t = ZonedDateTime.of(2026, 11, 11, 9, 2, 0, 0, ZoneId.of("America/Mexico_City")).toInstant().toEpochMilli()
+        assertEquals("9:02", horaCorta(t))
     }
 }

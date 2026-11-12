@@ -10,7 +10,9 @@ import androidx.compose.ui.graphics.Color
 object ColoresCampo {
     // Verde de la TPV: la acción principal, el turno abierto y lo que ya quedó.
     val Verde = Color(0xFF10B981) // AvoqadoGreen
-    val VerdeOscuro = Color(0xFF059669) // AvoqadoGreenDark
+    // Para TEXTO verde chico: el AvoqadoGreenDark (#059669) da 3.8:1 sobre blanco y lo mínimo es 4.5:1 (Codex rediseño
+    // r2). Éste da 5.5:1 sobre blanco y 5.2:1 sobre el fondo. Lo cuida ContrasteTest.
+    val VerdeTexto = Color(0xFF047857)
     val VerdeClaro = Color(0xFFD1FAE5) // LightPrimaryContainer
     val VerdeTinta = Color(0xFF064E3B) // LightOnPrimaryContainer
 

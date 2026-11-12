@@ -74,14 +74,12 @@ fun ConCamara(para: String, onCerrar: () -> Unit, contenido: @Composable () -> U
     val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permitida = it; negada = !it }
     LaunchedEffect(Unit) { if (!permitida) pedir.launch(Manifest.permission.CAMERA) }
     val banda = LocalBanda.current
-    when {
-        !permitida -> PermisoDeCamara(para, negada, { pedir.launch(Manifest.permission.CAMERA) }, onCerrar)
-        banda == null -> contenido()
-        // La cámara tapa la pantalla: la banda va en su propia franja arriba (Codex rediseño #1).
-        else -> Column(Modifier.fillMaxSize()) {
-            BandaDeSenal(banda, Modifier.background(ColoresCampo.Fondo).padding(horizontal = 16.dp, vertical = 6.dp))
-            Box(Modifier.weight(1f)) { contenido() }
-        }
+    if (!permitida) return PermisoDeCamara(para, negada, { pedir.launch(Manifest.permission.CAMERA) }, onCerrar)
+    // La cámara tapa la pantalla: la banda va en su propia franja arriba (Codex rediseño #1). El contenido se queda SIEMPRE
+    // en el mismo lugar: si cambiara de sitio al ir y venir la señal, la cámara se reiniciaría a media foto (r2).
+    Column(Modifier.fillMaxSize()) {
+        if (banda != null) BandaDeSenal(banda, Modifier.background(ColoresCampo.Fondo).padding(horizontal = 16.dp, vertical = 6.dp))
+        Box(Modifier.weight(1f)) { contenido() }
     }
 }
 

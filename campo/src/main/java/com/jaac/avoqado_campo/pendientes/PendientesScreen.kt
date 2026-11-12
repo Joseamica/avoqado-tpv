@@ -89,7 +89,7 @@ fun PendientesContenido(filas: List<FilaPendiente>, e: EstadoPendientes, onRegre
         if (filas.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.size(64.dp).background(ColoresCampo.VerdeClaro, CircleShape), contentAlignment = Alignment.Center) {
-                    Text("✓", color = ColoresCampo.VerdeOscuro, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                    Text("✓", color = ColoresCampo.VerdeTexto, fontSize = 32.sp, fontWeight = FontWeight.Bold)
                 }
                 Tenue("No tienes nada pendiente. Todo se subió.")
             }
@@ -144,7 +144,7 @@ private fun Correccion(
             BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
         },
     ) {
-        if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeOscuro, fontWeight = FontWeight.SemiBold)
+        if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(
             if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto, enabled = !e.ocupado,
         )

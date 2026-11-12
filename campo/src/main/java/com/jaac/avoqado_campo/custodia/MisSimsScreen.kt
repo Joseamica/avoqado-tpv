@@ -72,7 +72,7 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
         "Mis SIMs", onRegresar = a.regresar,
         derecha = {
             TextButton(a.actualizar, Modifier.heightIn(min = 48.dp), enabled = !e.actualizando) {
-                Text(if (e.actualizando) "Actualizando…" else "Actualizar", color = if (e.actualizando) ColoresCampo.Gris400 else ColoresCampo.VerdeOscuro, fontWeight = FontWeight.Bold)
+                Text(if (e.actualizando) "Actualizando…" else "Actualizar", color = if (e.actualizando) ColoresCampo.Gris400 else ColoresCampo.VerdeTexto, fontWeight = FontWeight.Bold)
             }
         },
     ) {
@@ -162,7 +162,7 @@ private fun PantallaDeCorreccion(
             Text(enGrupos(c.serie), fontWeight = FontWeight.Bold)
             e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.nota?.let { Text(it, color = ColoresCampo.RojoTinta) }
         }
-        if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeOscuro, fontWeight = FontWeight.SemiBold)
+        if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,

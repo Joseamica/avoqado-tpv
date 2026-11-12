@@ -1,6 +1,8 @@
 package com.jaac.avoqado_campo.ui
 
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.assertAll
 import androidx.compose.ui.test.assertCountEquals
@@ -358,6 +360,29 @@ class InicioScreenTest {
         }
         compose.onNodeWithText("vista de la cámara").assertExists()
         compose.onNodeWithText(SIN_SENAL).assertExists()
+    }
+
+    // Codex rediseño r2: al ir y venir la señal, la cámara no se reinicia (perdería la linterna o la foto a medias).
+    @Test fun `la camara no se reinicia cuando cambia la senal`() {
+        org.robolectric.Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication()).grantPermissions(android.Manifest.permission.CAMERA)
+        var banda by androidx.compose.runtime.mutableStateOf<String?>(null)
+        compose.setContent {
+            TemaCampo {
+                CompositionLocalProvider(LocalBanda provides banda) {
+                    com.jaac.avoqado_campo.fotos.ConCamara("para probar", {}) {
+                        var toques by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+                        androidx.compose.material3.TextButton({ toques++ }) { androidx.compose.material3.Text("toques $toques") }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("toques 0").performClick()
+        banda = SIN_SENAL
+        compose.onNodeWithText(SIN_SENAL).assertExists()
+        compose.onNodeWithText("toques 1").assertExists()
+        banda = null
+        compose.onAllNodesWithText(SIN_SENAL).assertCountEquals(0)
+        compose.onNodeWithText("toques 1").assertExists()
     }
 
     // Codex rediseño #2: con permiso no se sabe si la ubicación está encendida: el chip no afirma «activada».

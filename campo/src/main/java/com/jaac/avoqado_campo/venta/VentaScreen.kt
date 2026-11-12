@@ -125,7 +125,7 @@ fun VentaContenido(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean = fa
         Tarjeta {
             Text(enGrupos(sim.serialNumber), fontWeight = FontWeight.Bold, fontSize = 16.sp)
             // El ViewModel sólo deja aquí una SIM en custodia y aceptada (o con su aceptación por subir).
-            Text("✓ Está en tu custodia y aceptada", color = ColoresCampo.VerdeOscuro, style = MaterialTheme.typography.bodyMedium)
+            Text("✓ Está en tu custodia y aceptada", color = ColoresCampo.VerdeTexto, style = MaterialTheme.typography.bodyMedium)
             if (sim.categoria.isNotBlank()) Tenue(sim.categoria)
         }
         Precio(e, a)
@@ -229,7 +229,7 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
         }
-        if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeOscuro, fontWeight = FontWeight.SemiBold)
+        if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
     }
 }
@@ -261,7 +261,7 @@ private fun VentaGuardada(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boole
         },
     ) {
         Box(Modifier.padding(top = 16.dp).size(72.dp).background(ColoresCampo.VerdeClaro, CircleShape), contentAlignment = Alignment.Center) {
-            Text("✓", color = ColoresCampo.VerdeOscuro, fontSize = 38.sp, fontWeight = FontWeight.Bold)
+            Text("✓", color = ColoresCampo.VerdeTexto, fontSize = 38.sp, fontWeight = FontWeight.Bold)
         }
         Text("Venta guardada en el celular", style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
         if (detalle.isNotEmpty()) Tenue(detalle)

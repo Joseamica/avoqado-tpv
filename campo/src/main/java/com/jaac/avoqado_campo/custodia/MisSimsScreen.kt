@@ -2,26 +2,23 @@ package com.jaac.avoqado_campo.custodia
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -30,6 +27,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.fotos.Camara
+import com.jaac.avoqado_campo.ui.BotonPrincipal
+import com.jaac.avoqado_campo.ui.BotonSecundario
+import com.jaac.avoqado_campo.ui.PantallaCampo
+import com.jaac.avoqado_campo.ui.Pastilla
+import com.jaac.avoqado_campo.ui.Recuadro
+import com.jaac.avoqado_campo.ui.Tarjeta
+import com.jaac.avoqado_campo.ui.Tenue
+import com.jaac.avoqado_campo.ui.TituloDeSeccion
+import com.jaac.avoqado_campo.ui.Tono
+import com.jaac.avoqado_campo.ui.enGrupos
+import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 
@@ -58,76 +66,84 @@ class AccionesDeMisSims(
     val corregir: (String, String) -> Unit, val actualizar: () -> Unit, val regresar: () -> Unit,
 )
 
-private val alto = Modifier.heightIn(min = 48.dp)
-
 @Composable
 fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Mis SIMs", style = MaterialTheme.typography.headlineSmall)
-            OutlinedButton(a.actualizar, alto.fillMaxWidth(), enabled = !e.actualizando) {
-                Text(if (e.actualizando) "Actualizando…" else "Actualizar")
+    PantallaCampo(
+        "Mis SIMs", onRegresar = a.regresar,
+        derecha = {
+            TextButton(a.actualizar, Modifier.heightIn(min = 48.dp), enabled = !e.actualizando) {
+                Text(if (e.actualizando) "Actualizando…" else "Actualizar", color = if (e.actualizando) ColoresCampo.Gris400 else ColoresCampo.VerdeOscuro, fontWeight = FontWeight.Bold)
             }
-            if (e.sinCopia) Text("Todavía no están tus SIMs en el celular. Conéctate a internet una vez para bajarlas.")
-            e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        },
+    ) {
+        if (e.sinCopia) Recuadro("Todavía no están tus SIMs en el celular. Conéctate a internet una vez para bajarlas.", Tono.AVISO)
+        e.error?.let { Recuadro(it, Tono.ERROR) }
 
-            Seccion("Por aceptar", e.porAceptar)
-            // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
-            val decidir = !e.ocupado && !obligatoria
-            if (obligatoria && e.porAceptar.any { it.estado == EstadoFila.POR_DECIDIR }) {
-                Text(ACTUALIZA_PARA_SEGUIR, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR } > 1) {
-                Button(a.aceptarTodas, alto.fillMaxWidth(), enabled = decidir) { Text("Aceptar todas") }
-            }
-            e.porAceptar.forEach { f ->
-                Fila(f) {
-                    if (f.estado == EstadoFila.POR_DECIDIR) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button({ a.aceptar(f.sim.serialNumber) }, alto, enabled = decidir) { Text("Aceptar") }
-                            OutlinedButton({ a.rechazar(f.sim.serialNumber) }, alto, enabled = decidir) { Text("Rechazar") }
-                        }
-                    }
+        // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
+        val decidir = !e.ocupado && !obligatoria
+        val porDecidir = e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR }
+        Seccion("Por aceptar", e.porAceptar, vacio = "No tienes SIMs por aceptar.") { f ->
+            if (f.estado == EstadoFila.POR_DECIDIR) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BotonPrincipal("Aceptar", { a.aceptar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
+                    BotonSecundario("Rechazar", { a.rechazar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
                 }
             }
-            Seccion("En tu custodia", e.enCustodia)
-            e.enCustodia.forEach { Fila(it) {} }
-            Seccion("Vendidas", e.vendidas)
-            e.vendidas.forEach { f ->
-                Fila(f) {
-                    if (f.estado == EstadoFila.REVISAR) {
-                        Button({ a.corregir(f.sim.serialNumber, "Vinculacion") }, alto.fillMaxWidth(), enabled = !e.ocupado) {
-                            Text("Corregir evidencia de vinculación")
-                        }
-                        if ("REVIEW_PORTABILIDAD" in f.sim.rejectionReasons) {
-                            OutlinedButton({ a.corregir(f.sim.serialNumber, "Portabilidad") }, alto.fillMaxWidth(), enabled = !e.ocupado) {
-                                Text("Corregir evidencia de portabilidad")
-                            }
-                        }
-                    }
+        }
+        if (obligatoria && porDecidir > 0) Recuadro(ACTUALIZA_PARA_SEGUIR, Tono.AVISO)
+        if (porDecidir > 1) BotonPrincipal("Aceptar todas", a.aceptarTodas, enabled = decidir)
+        Seccion("En tu custodia", e.enCustodia, vacio = "Todavía no tienes SIMs en tu custodia.") {}
+        Seccion("Vendidas", e.vendidas, vacio = "Aquí salen las que vendas.") { f ->
+            if (f.estado == EstadoFila.REVISAR) {
+                BotonPrincipal("Corregir evidencia de vinculación", { a.corregir(f.sim.serialNumber, "Vinculacion") }, enabled = !e.ocupado)
+                if ("REVIEW_PORTABILIDAD" in f.sim.rejectionReasons) {
+                    BotonSecundario("Corregir evidencia de portabilidad", { a.corregir(f.sim.serialNumber, "Portabilidad") }, enabled = !e.ocupado)
                 }
             }
-            OutlinedButton(a.regresar, alto.fillMaxWidth()) { Text("Regresar") }
         }
     }
 }
 
+/** Una sección con su contador y sus SIMs en una sola tarjeta, separadas por una línea (como «Mis pendientes» del mockup). */
 @Composable
-private fun Seccion(titulo: String, filas: List<FilaSim>) {
-    Text("$titulo (${filas.size})", style = MaterialTheme.typography.titleMedium)
-    if (filas.isEmpty()) Text("Nada por ahora.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun Seccion(titulo: String, filas: List<FilaSim>, vacio: String, acciones: @Composable (FilaSim) -> Unit) {
+    TituloDeSeccion("$titulo (${filas.size})")
+    if (filas.isEmpty()) {
+        Tenue(vacio)
+        return
+    }
+    Tarjeta(relleno = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
+        filas.forEachIndexed { i, f ->
+            if (i > 0) HorizontalDivider(color = ColoresCampo.Gris100)
+            Column(Modifier.padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Fila(f)
+                acciones(f)
+            }
+        }
+    }
 }
 
+/** La serie en grupos de 4, su categoría y, a la derecha, en qué va. */
 @Composable
-private fun Fila(f: FilaSim, acciones: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(f.sim.serialNumber, fontWeight = FontWeight.Bold)
-            if (f.sim.categoria.isNotBlank()) Text(f.sim.categoria, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            val etiqueta = if (f.estado == EstadoFila.REVISAR) "Revisar · ${f.nota}" else f.nota
-            etiqueta?.let { Text(it, color = if (f.estado == EstadoFila.REVISAR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }
-            acciones()
+private fun Fila(f: FilaSim) {
+    val (pastilla, tono) = when (f.estado) {
+        EstadoFila.POR_SUBIR -> "Por subir" to Tono.SIN_RED
+        EstadoFila.VENDIDA -> "Vendida" to Tono.OK
+        EstadoFila.EN_REVISION -> "En revisión" to Tono.INFO
+        EstadoFila.REVISAR -> "Revisar" to Tono.ERROR
+        EstadoFila.CORRECCION_POR_SUBIR -> "Corrección por subir" to Tono.SIN_RED
+        EstadoFila.POR_DECIDIR, EstadoFila.EN_CUSTODIA, EstadoFila.ACTUALIZANDO -> null to Tono.NEUTRO
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(enGrupos(f.sim.serialNumber), fontWeight = FontWeight.Bold)
+            if (f.sim.categoria.isNotBlank()) Tenue(f.sim.categoria)
         }
+        pastilla?.let { Pastilla(it, tono) }
+    }
+    // La nota que no es la misma que la pastilla: los motivos de «Revisar» o «Te volvieron a asignar…».
+    f.nota?.takeIf { it != pastilla }?.let {
+        Text(it, color = if (f.estado == EstadoFila.REVISAR) ColoresCampo.RojoTinta else ColoresCampo.AmbarTinta, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -135,21 +151,25 @@ private fun Fila(f: FilaSim, acciones: @Composable () -> Unit) {
 private fun PantallaDeCorreccion(
     e: EstadoMisSims, c: Correccion, foto: () -> Unit, numero: (String) -> Unit, enviar: () -> Unit, cancelar: () -> Unit,
 ) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Corregir evidencia", style = MaterialTheme.typography.headlineSmall)
-            Text(c.serie, fontWeight = FontWeight.Bold)
-            e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.nota?.let { Text(it) }
-            OutlinedButton(foto, alto.fillMaxWidth(), enabled = !e.ocupado) { Text(if (c.foto != null) "Foto lista · Tomar otra" else "Tomar la foto") }
-            OutlinedTextField(
-                c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado,
-                label = { Text(if (c.photoLabel == "Portabilidad") "Número portado (si cambia)" else "Número de vinculación (si cambia)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            )
-            e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(enviar, alto.fillMaxWidth(), enabled = !e.ocupado && c.foto != null) { Text(if (e.ocupado) "Guardando…" else "Enviar corrección") }
-            OutlinedButton(cancelar, alto.fillMaxWidth(), enabled = !e.ocupado) { Text("Cancelar") }
+    PantallaCampo(
+        "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
+        abajo = {
+            BotonPrincipal(if (e.ocupado) "Guardando…" else "Enviar corrección", enviar, enabled = !e.ocupado && c.foto != null, cargando = e.ocupado)
+            BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
+        },
+    ) {
+        Tarjeta {
+            Text(enGrupos(c.serie), fontWeight = FontWeight.Bold)
+            e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.nota?.let { Text(it, color = ColoresCampo.RojoTinta) }
         }
+        if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeOscuro, fontWeight = FontWeight.SemiBold)
+        BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado)
+        OutlinedTextField(
+            c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
+            label = { Text(if (c.photoLabel == "Portabilidad") "Número portado (si cambia)" else "Número de vinculación (si cambia)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        )
+        e.error?.let { Recuadro(it, Tono.ERROR) }
     }
 }
 

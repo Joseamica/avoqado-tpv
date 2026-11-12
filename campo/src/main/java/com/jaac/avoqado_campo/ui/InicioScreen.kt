@@ -154,7 +154,7 @@ private fun Mosaico(
                 if (principal) Text("+", color = tinta, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 else Text(
                     detalle.orEmpty(), Modifier.padding(end = if (insignia != null) 32.dp else 0.dp),
-                    color = if (enabled) ColoresCampo.Gris500 else tinta, style = MaterialTheme.typography.bodySmall,
+                    color = if (enabled) ColoresCampo.GrisTexto else tinta, style = MaterialTheme.typography.bodySmall,
                 )
                 Text(titulo, color = tinta, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
             }

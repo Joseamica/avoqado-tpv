@@ -88,7 +88,7 @@ fun PantallaCampo(
                         }
                         Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
                             Text(titulo.orEmpty(), style = MaterialTheme.typography.titleLarge)
-                            subtitulo?.let { Text(it, color = C.Gris500, style = MaterialTheme.typography.bodyMedium) }
+                            subtitulo?.let { Text(it, color = C.GrisTexto, style = MaterialTheme.typography.bodyMedium) }
                         }
                         derecha?.invoke()
                     }
@@ -202,7 +202,7 @@ fun TituloDeSeccion(texto: String) {
 
 /** Texto gris secundario. */
 @Composable
-fun Tenue(texto: String, modifier: Modifier = Modifier, color: Color = C.Gris500) {
+fun Tenue(texto: String, modifier: Modifier = Modifier, color: Color = C.GrisTexto) {
     Text(texto, modifier, color = color, style = MaterialTheme.typography.bodyMedium)
 }
 

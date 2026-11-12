@@ -4,15 +4,16 @@ import androidx.compose.ui.graphics.Color
 
 /**
  * Tokens copiados de `:app` (core/presentation/theme/Color.kt, tema claro); `:campo` no depende de `:app`. Son los mismos
- * valores que pinta el mockup aprobado del 8-nov (`app-de-campo-recorrido-v2.html`). Sólo [AmbarTinta] no está en `:app`:
- * es el texto de los avisos ámbar del mockup (Amber 800), para que se lea sobre su fondo.
+ * valores que pinta el mockup aprobado del 8-nov (`app-de-campo-recorrido-v2.html`). No están en `:app` los de TEXTO que
+ * tienen que leerse (4.5:1, lo mide ContrasteTest): [AmbarTinta] (el de los avisos ámbar del mockup), [NaranjaTinta],
+ * [NaranjaFuerte], [VerdeTexto] y [GrisTexto].
  */
 object ColoresCampo {
     // Verde de la TPV: la acción principal, el turno abierto y lo que ya quedó.
     val Verde = Color(0xFF10B981) // AvoqadoGreen
     // Para TEXTO verde chico: el AvoqadoGreenDark (#059669) da 3.8:1 sobre blanco y lo mínimo es 4.5:1 (Codex rediseño
-    // r2). Éste da 5.5:1 sobre blanco y 5.2:1 sobre el fondo. Lo cuida ContrasteTest.
-    val VerdeTexto = Color(0xFF047857)
+    // r2). Éste da 6.4:1 sobre blanco y 4.9:1 en el peor caso (botón con foco en una confirmación). Lo cuida ContrasteTest.
+    val VerdeTexto = Color(0xFF046C4E)
     val VerdeClaro = Color(0xFFD1FAE5) // LightPrimaryContainer
     val VerdeTinta = Color(0xFF064E3B) // LightOnPrimaryContainer
 
@@ -41,7 +42,9 @@ object ColoresCampo {
     val Gris200 = Color(0xFFE5E7EB)
     val Gris300 = Color(0xFFD1D5DB)
     val Gris400 = Color(0xFF9CA3AF)
-    val Gris500 = Color(0xFF6B7280)
+    // Gris del texto secundario. El Gris500 de la TPV (#6B7280) da 4.2:1 en una confirmación y 4.5 justo con foco (Codex
+    // rediseño r4); éste deja margen: 5.1:1 en el peor caso.
+    val GrisTexto = Color(0xFF5B6271)
     val Gris700 = Color(0xFF374151)
     val Gris800 = Color(0xFF1F2937)
     val Gris900 = Color(0xFF111827)

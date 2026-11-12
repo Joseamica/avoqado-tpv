@@ -163,12 +163,12 @@ private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 16.dp)) {
             Text(
                 if (e.buscando) "Buscando…" else "Escanear la SIM",
-                color = if (puede) ColoresCampo.Blanco else ColoresCampo.Gris500, fontWeight = FontWeight.Bold, fontSize = 17.sp,
+                color = if (puede) ColoresCampo.Blanco else ColoresCampo.GrisTexto, fontWeight = FontWeight.Bold, fontSize = 17.sp,
             )
             if (grande) {
                 Spacer(Modifier.height(28.dp))
                 Text(
-                    "Toca y apunta al código de la SIM", color = if (puede) ColoresCampo.Gris200 else ColoresCampo.Gris500,
+                    "Toca y apunta al código de la SIM", color = if (puede) ColoresCampo.Gris200 else ColoresCampo.GrisTexto,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

@@ -88,11 +88,12 @@ fun CouponCodeDto.toCouponCode(): CouponCode {
 fun OrderDiscountDto.toOrderDiscount(): OrderDiscount {
     return OrderDiscount(
         id = id,
-        orderId = orderId,
+        orderId = orderId.orEmpty(),
         discountId = discountId,
         couponCodeId = couponCodeId,
         name = name,
-        type = parseDiscountType(type),
+        // Sin tipo (línea recortada del servidor viejo) sólo vale su monto: se lee como monto fijo.
+        type = type?.let { parseDiscountType(it) } ?: DiscountType.FIXED,
         value = BigDecimal.valueOf(value),
         amount = BigDecimal.valueOf(amount),
         reason = reason,

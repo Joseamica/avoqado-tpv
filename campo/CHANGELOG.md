@@ -10,6 +10,10 @@ TPV (`/avoqado:release-production`).
   iniciales y teclado; Vender con zona de escáner, tarjeta de la SIM y «Registrar venta» fijo; venta guardada con palomita;
   Checar con una sola acción y la selfie con óvalo; Mis SIMs, Mis pendientes y Ayuda con el mismo estilo. Tema claro
   completo con los colores de la TPV (sin el lila por defecto de Material3) y ancho máximo en pantallas anchas.
+- Lo que se lee, se lee: textos de aviso y verdes con contraste de 4.5:1 o más (lo cuida una prueba), avisos con fondo sólido
+  aunque vayan encima de la cámara, y la banda «Sin señal» también en el escáner y las fotos, sin reiniciar la cámara al ir y
+  venir la señal. Checar ya no afirma «Ubicación activada» con sólo el permiso; «N en tu custodia» cuenta sólo la sucursal en
+  la que entraste, y «Entraste HH:MM» sólo sale si la entrada se marcó en este celular.
 - Detalles de pantalla del full-testing del bloque 2 (D2): «Actualizar» en Mis SIMs dice «No se pudo actualizar, revisa tu
   señal.»; la banda «Sin señal» sale una sola vez; el GPS se revisa al volver al frente y Checar dice su estado actual;
   «Subiendo N» cuenta sólo lo que de verdad sube.

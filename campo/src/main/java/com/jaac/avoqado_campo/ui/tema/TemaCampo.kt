@@ -17,7 +17,9 @@ import com.jaac.avoqado_campo.ui.tema.ColoresCampo as C
  * SIMs» se veían lilas por eso). `secondaryContainer` es gris a propósito, igual que en `:app` (los chips no se ponen amarillos).
  */
 internal val Esquema = lightColorScheme(
-    primary = C.Verde,
+    // Material pinta con `primary` TEXTO (TextButton, etiqueta de un campo enfocado): el verde de marca da 2.5:1 ahí.
+    // Los botones y mosaicos de marca piden C.Verde explícito (Codex rediseño r3).
+    primary = C.VerdeTexto,
     onPrimary = C.Blanco,
     primaryContainer = C.VerdeClaro,
     onPrimaryContainer = C.VerdeTinta,

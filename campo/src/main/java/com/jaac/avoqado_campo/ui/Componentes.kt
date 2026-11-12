@@ -33,6 +33,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -158,8 +159,9 @@ fun Tarjeta(modifier: Modifier = Modifier, relleno: PaddingValues = PaddingValue
  */
 enum class Tono(val fondo: Color, val tinta: Color, val borde: Color? = null) {
     OK(C.VerdeClaro, C.VerdeTinta),
-    AVISO(C.Naranja.copy(alpha = 0.12f), C.AmbarTinta),
-    SIN_RED(C.NaranjaSinRed.copy(alpha = 0.07f), C.NaranjaTinta, C.NaranjaSinRed),
+    // Fondos sólidos (el tinte ya mezclado con blanco): un aviso encima de la selfie se lee igual que en la pantalla (r3).
+    AVISO(C.Naranja.copy(alpha = 0.12f).compositeOver(C.Blanco), C.AmbarTinta),
+    SIN_RED(C.NaranjaSinRed.copy(alpha = 0.07f).compositeOver(C.Blanco), C.NaranjaTinta, C.NaranjaSinRed),
     ERROR(C.RojoClaro, C.RojoTinta),
     INFO(C.AzulClaro, C.AzulTinta),
     NEUTRO(C.Gris100, C.Gris700),

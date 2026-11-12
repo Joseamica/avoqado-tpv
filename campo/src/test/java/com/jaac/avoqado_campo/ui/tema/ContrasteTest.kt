@@ -30,6 +30,19 @@ class ContrasteTest {
         }
     }
 
+    // Codex rediseño r3: un aviso con fondo transparente encima de la selfie quedó en 2.6:1. Con fondo sólido se lee igual
+    // sobre la cámara, sobre la pantalla o sobre una tarjeta.
+    @Test fun `el fondo de cada aviso es solido`() {
+        for (t in Tono.entries) assertTrue("Tono.$t transparente", t.fondo.alpha == 1f)
+    }
+
+    // Codex rediseño r3: Material pinta con `primary` el texto de los TextButton y la etiqueta de un campo enfocado.
+    @Test fun `el verde que Material usa como texto se lee`() {
+        seLee("primary en la pantalla", Esquema.primary, C.Fondo)
+        seLee("primary en tarjeta", Esquema.primary, C.Blanco)
+        seLee("onPrimary sobre primary", Esquema.onPrimary, Esquema.primary)
+    }
+
     @Test fun `los colores de texto sueltos se leen donde se usan`() {
         for ((donde, base) in listOf("pantalla" to C.Fondo, "tarjeta" to C.Blanco)) {
             seLee("VerdeTexto en $donde", C.VerdeTexto, base)

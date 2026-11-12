@@ -116,7 +116,7 @@ fun Navegacion(
                     )
                 }
                 composable("venta") {
-                    VentaScreen(hiltViewModel(), sinSenal = !conRedS.value, obligatoria = obligatoriaS.value, onRegresar = regresar)
+                    VentaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar)
                 }
                 composable("sims") { MisSimsScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
                 composable("checada") { ChecadaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }

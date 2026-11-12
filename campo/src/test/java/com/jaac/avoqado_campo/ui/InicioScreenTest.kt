@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.ui
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.test.assertAll
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -18,6 +19,7 @@ import com.jaac.avoqado_campo.custodia.EstadoFila
 import com.jaac.avoqado_campo.custodia.EstadoMisSims
 import com.jaac.avoqado_campo.custodia.FilaSim
 import com.jaac.avoqado_campo.custodia.MisSimsContenido
+import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.venta.AccionesDeVenta
 import com.jaac.avoqado_campo.venta.EstadoVenta
@@ -141,7 +143,7 @@ class InicioScreenTest {
 
     @Test fun `obligatoria - tras guardar una venta, «Vender otra» en gris y Regresar sigue`() {
         compose.setContent {
-            TemaCampo { VentaContenido(EstadoVenta(guardada = true), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+            TemaCampo { VentaContenido(EstadoVenta(guardada = true), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
         }
         compose.onNodeWithText("Vender otra").assertIsNotEnabled()
         compose.onNodeWithText(actualiza).assertExists()
@@ -152,16 +154,29 @@ class InicioScreenTest {
     // otra venta desde ahí, pero la SIM que ya estaba elegida sí se termina.
     @Test fun `obligatoria - la pantalla de Venta vacia no deja escanear ni buscar una SIM nueva`() {
         compose.setContent {
-            TemaCampo { VentaContenido(EstadoVenta(), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+            TemaCampo { VentaContenido(EstadoVenta(), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
         }
         compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()
         compose.onNodeWithText("Buscar").assertIsNotEnabled()
         compose.onNodeWithText(actualiza).assertExists()
     }
 
+    // D2 (full-testing del bloque 2): sin señal, «Vender» mostraba la banda dos veces (la de la navegación y otra suya).
+    @Test fun `sin senal, en Vender la banda sale una sola vez`() {
+        compose.setContent {
+            TemaCampo {
+                Column {
+                    BandaDeSenal(textoDeBanda(true, EstadoDelCelular.VINCULADO, false, 0)) // la de la navegación
+                    VentaContenido(EstadoVenta(), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}))
+                }
+            }
+        }
+        compose.onAllNodesWithText("Sin señal · lo que hagas se guarda en el celular y se sube solo").assertCountEquals(1)
+    }
+
     @Test fun `sin obligatoria, la pantalla de Venta vacia deja escanear`() {
         compose.setContent {
-            TemaCampo { VentaContenido(EstadoVenta(), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = false) }
+            TemaCampo { VentaContenido(EstadoVenta(), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = false) }
         }
         compose.onNodeWithText("Escanear la SIM").assertIsEnabled()
     }
@@ -169,7 +184,7 @@ class InicioScreenTest {
     @Test fun `obligatoria con una SIM ya elegida - se puede terminar (Registrar no depende de la obligatoria)`() {
         val sim = SimEnCopia("8952140000000000201", "PROMOTER_HELD", 1, "De caja", "0.00", null, null, null, null, emptyList(), null)
         compose.setContent {
-            TemaCampo { VentaContenido(EstadoVenta(sim = sim), false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
+            TemaCampo { VentaContenido(EstadoVenta(sim = sim), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}), obligatoria = true) }
         }
         compose.onNodeWithText("8952140000000000201").assertExists()
         compose.onNodeWithText("Escanear la SIM").assertIsNotEnabled()

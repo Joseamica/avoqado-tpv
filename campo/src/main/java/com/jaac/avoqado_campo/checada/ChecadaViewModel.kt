@@ -199,5 +199,5 @@ class ChecadaViewModel @Inject constructor(
     }
 }
 
-private const val AVISO_NO_SIGUE = "La checada quedó guardada · no estamos siguiendo tu ubicación"
+internal const val AVISO_NO_SIGUE = "La checada quedó guardada · no estamos siguiendo tu ubicación"
 private const val ENTRADA_GUARDADA = "Entrada guardada · se sube sola"

@@ -198,4 +198,54 @@ class InicioScreenTest {
         compose.onAllNodesWithText(NO_SE_PUDO_COMPROBAR).assertCountEquals(0)
         compose.onNodeWithText("Vender").assertIsEnabled()
     }
+
+    // Codex D2 r3: con la entrada ya confirmada («Entrada guardada»), si el GPS deja de seguir, «Checar» lo tiene que decir.
+    @Test fun `Checar avisa que el GPS no sigue aunque haya un aviso de entrada guardada`() {
+        compose.setContent {
+            TemaCampo {
+                ChecadaContenido(
+                    EstadoChecada(
+                        entrada = RefEntrada.PorLlave("k"), aviso = "Entrada guardada · se sube sola",
+                        gps = com.jaac.avoqado_campo.gps.ResultadoGps.NoSigue("la ubicación del teléfono está apagada"),
+                    ),
+                    true, {}, {}, {}, {},
+                )
+            }
+        }
+        compose.onNodeWithText("No estamos siguiendo tu ubicación: la ubicación del teléfono está apagada").assertExists()
+    }
+
+    @Test fun `Checar no repite el GPS si el aviso de la entrada ya lo dice`() {
+        val motivo = "no diste permiso de ubicación"
+        compose.setContent {
+            TemaCampo {
+                ChecadaContenido(
+                    EstadoChecada(
+                        entrada = RefEntrada.PorLlave("k"),
+                        aviso = "La checada quedó guardada · no estamos siguiendo tu ubicación: $motivo",
+                        gps = com.jaac.avoqado_campo.gps.ResultadoGps.NoSigue(motivo),
+                    ),
+                    true, {}, {}, {}, {},
+                )
+            }
+        }
+        compose.onAllNodesWithText("No estamos siguiendo tu ubicación: $motivo").assertCountEquals(0)
+    }
+
+    // Pasada de la familia (avisos del GPS en Checar): si cambia el motivo, se dice el de ahora, no el de la checada.
+    @Test fun `Checar dice el motivo actual del GPS si cambio desde la checada`() {
+        compose.setContent {
+            TemaCampo {
+                ChecadaContenido(
+                    EstadoChecada(
+                        entrada = RefEntrada.PorLlave("k"),
+                        aviso = "La checada quedó guardada · no estamos siguiendo tu ubicación: no diste permiso de ubicación",
+                        gps = com.jaac.avoqado_campo.gps.ResultadoGps.NoSigue("la ubicación del teléfono está apagada"),
+                    ),
+                    true, {}, {}, {}, {},
+                )
+            }
+        }
+        compose.onNodeWithText("No estamos siguiendo tu ubicación: la ubicación del teléfono está apagada").assertExists()
+    }
 }

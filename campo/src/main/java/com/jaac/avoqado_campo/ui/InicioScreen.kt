@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.cola.SubidorDeGracia
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.copia.Copia
 import com.jaac.avoqado_campo.copia.MarcaLocal
 import com.jaac.avoqado_campo.gps.Bateria
@@ -66,9 +67,16 @@ class AccionesDeInicio(
 /** El GPS del turno corre o debería correr: sólo entonces el Inicio avisa de él y de la batería (H-A1). */
 internal fun DatosDeInicio.cuidaElGps() = turnoAbierto && gps != ResultadoGps.NoLoUsaLaTienda
 
+/**
+ * La hora del chip «Entraste HH:MM»: sólo la de la entrada tocada en ESTE celular. Si se usó la entrada que ya existía en el
+ * SERVIDOR (`llaveEntrada` en null), la hora local es la del intento, no la de la entrada, y no se muestra (Codex rediseño #4).
+ */
+internal fun horaDeEntrada(t: TurnoLocal?, staffId: String?): Long? =
+    t?.takeIf { it.abierto && it.staffId == staffId && it.llaveEntrada != null }?.abiertoAt
+
 /** Las que cuenta «En tu custodia» de «Mis SIMs»: suyas y aceptadas, sin las que ya se vendieron en el celular. */
-internal fun cuantasEnCustodia(c: Copia?): Int? =
-    c?.sims?.count { it.custodyState == "PROMOTER_HELD" && it.localmente != MarcaLocal.VENDIDA_EN_EL_CELULAR }
+internal fun cuantasEnCustodia(c: Copia?, venueId: String?): Int? =
+    c?.takeIf { it.venueId == venueId }?.sims?.count { it.custodyState == "PROMOTER_HELD" && it.localmente != MarcaLocal.VENDIDA_EN_EL_CELULAR }
 
 @Composable
 fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
@@ -153,7 +161,7 @@ private fun Mosaico(
             if (insignia != null) {
                 Text(
                     "$insignia",
-                    Modifier.align(Alignment.TopEnd).background(ColoresCampo.NaranjaSinRed, CircleShape).padding(horizontal = 8.dp, vertical = 1.dp),
+                    Modifier.align(Alignment.TopEnd).background(ColoresCampo.NaranjaFuerte, CircleShape).padding(horizontal = 8.dp, vertical = 1.dp),
                     color = ColoresCampo.Blanco, fontSize = 12.sp, fontWeight = FontWeight.Bold,
                 )
             }

@@ -44,11 +44,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.jaac.avoqado_campo.ui.ANCHO_MAXIMO
+import com.jaac.avoqado_campo.ui.BandaDeSenal
+import com.jaac.avoqado_campo.ui.LocalBanda
 import com.jaac.avoqado_campo.ui.BotonPrincipal
 import com.jaac.avoqado_campo.ui.BotonSecundario
 import com.jaac.avoqado_campo.ui.PantallaCampo
 import com.jaac.avoqado_campo.ui.Recuadro
 import com.jaac.avoqado_campo.ui.Tono
+import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -70,7 +73,16 @@ fun ConCamara(para: String, onCerrar: () -> Unit, contenido: @Composable () -> U
     var negada by remember { mutableStateOf(false) }
     val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permitida = it; negada = !it }
     LaunchedEffect(Unit) { if (!permitida) pedir.launch(Manifest.permission.CAMERA) }
-    if (permitida) contenido() else PermisoDeCamara(para, negada, { pedir.launch(Manifest.permission.CAMERA) }, onCerrar)
+    val banda = LocalBanda.current
+    when {
+        !permitida -> PermisoDeCamara(para, negada, { pedir.launch(Manifest.permission.CAMERA) }, onCerrar)
+        banda == null -> contenido()
+        // La cámara tapa la pantalla: la banda va en su propia franja arriba (Codex rediseño #1).
+        else -> Column(Modifier.fillMaxSize()) {
+            BandaDeSenal(banda, Modifier.background(ColoresCampo.Fondo).padding(horizontal = 16.dp, vertical = 6.dp))
+            Box(Modifier.weight(1f)) { contenido() }
+        }
+    }
 }
 
 @Composable

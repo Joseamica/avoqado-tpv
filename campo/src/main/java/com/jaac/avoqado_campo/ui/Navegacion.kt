@@ -113,8 +113,8 @@ fun Navegacion(
                             turnoAbierto = t != null && t.abierto && t.staffId == yo.staffId, gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
-                            entradaAt = t?.takeIf { it.abierto && it.staffId == yo.staffId }?.abiertoAt,
-                            enCustodia = cuantasEnCustodia(c), articulo = c?.config?.etiquetaArticulo ?: "SIM",
+                            entradaAt = horaDeEntrada(t, yo.staffId),
+                            enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },

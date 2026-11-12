@@ -55,7 +55,6 @@ import com.jaac.avoqado_campo.ui.Tarjeta
 import com.jaac.avoqado_campo.ui.Tenue
 import com.jaac.avoqado_campo.ui.Tono
 import com.jaac.avoqado_campo.ui.enGrupos
-import com.jaac.avoqado_campo.ui.horaCorta
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
@@ -238,11 +237,8 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
 /** La confirmación honesta: «guardada en el celular», nunca «vendida»; se sube sola y no se repite. */
 @Composable
 private fun VentaGuardada(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean) {
-    // La hora del toque de «Registrar», que es cuando esta pantalla aparece; sobrevive a girar el celular.
-    val hora = rememberSaveable { horaCorta(System.currentTimeMillis()) }
     val detalle = listOfNotNull(
         e.sim?.serialNumber?.takeLast(4)?.let { "${e.config?.etiquetaArticulo ?: "SIM"} …$it" },
-        hora,
         when (e.tipoDePrecio) {
             TipoDePrecio.DE_CAJA -> "${pesos(BigDecimal.ZERO)} de caja"
             null -> null

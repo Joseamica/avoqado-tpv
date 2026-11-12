@@ -17,6 +17,10 @@ object ColoresCampo {
     // Naranja: avisos que no son error. [NaranjaSinRed] es el de «sin señal» (OfflineOrange).
     val Naranja = Color(0xFFF59E0B) // AvoqadoOrange
     val NaranjaSinRed = Color(0xFFE65100) // OfflineOrange
+    // Para TEXTO: el OfflineOrange da 3.3:1 sobre su fondo y lo mínimo es 4.5:1 (Codex rediseño #5). Medidos: 6.4:1 la
+    // tinta sobre el fondo de «sin señal», 5.2:1 el blanco sobre la insignia.
+    val NaranjaTinta = Color(0xFF9A3412)
+    val NaranjaFuerte = Color(0xFFC2410C)
     val AmbarTinta = Color(0xFF92400E) // mockup v2 (.cp-warn)
 
     val Azul = Color(0xFF3B82F6) // AvoqadoBlue

@@ -345,4 +345,35 @@ class InicioScreenTest {
         compose.onNodeWithText("Regresar").performClick()
         assertEquals(1, regresos)
     }
+
+    // Codex rediseño #1: sin red, la cámara y el escáner (pantalla completa) también dicen «Sin señal».
+    @Test fun `sin senal, la camara tambien lo dice`() {
+        org.robolectric.Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication()).grantPermissions(android.Manifest.permission.CAMERA)
+        compose.setContent {
+            TemaCampo {
+                androidx.compose.runtime.CompositionLocalProvider(LocalBanda provides SIN_SENAL) {
+                    com.jaac.avoqado_campo.fotos.ConCamara("para probar", {}) { androidx.compose.material3.Text("vista de la cámara") }
+                }
+            }
+        }
+        compose.onNodeWithText("vista de la cámara").assertExists()
+        compose.onNodeWithText(SIN_SENAL).assertExists()
+    }
+
+    // Codex rediseño #2: con permiso no se sabe si la ubicación está encendida: el chip no afirma «activada».
+    @Test fun `Checar no afirma que la ubicacion esta activada con solo el permiso`() {
+        compose.setContent { TemaCampo { ChecadaContenido(EstadoChecada(), true, {}, {}, {}, {}) } }
+        compose.onAllNodesWithText("Ubicación activada", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("📍 Al checar se guarda tu ubicación").assertExists()
+    }
+
+    // Codex rediseño #4: la confirmación no inventa la hora de la venta (la guardada usa el reloj anclado al SERVIDOR).
+    @Test fun `la confirmacion de venta no muestra una hora`() {
+        val sim = SimEnCopia("8952140000000000201", "PROMOTER_HELD", 1, "De caja", "0.00", null, null, null, null, emptyList(), null)
+        compose.setContent {
+            TemaCampo { VentaContenido(EstadoVenta(guardada = true, sim = sim), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {})) }
+        }
+        // Sin precio elegido el detalle es sólo la SIM; con la hora sería «SIM …0201 · HH:MM».
+        compose.onNodeWithText("SIM …0201").assertExists()
+    }
 }

@@ -110,8 +110,20 @@ class NavegacionTest {
             ),
             ConfigDeSucursal("SIM", "ICCID", true, true, false, false, false, false, true), 0,
         )
-        assertEquals(2, cuantasEnCustodia(c))
-        assertNull("sin copia no se inventa un número", cuantasEnCustodia(null))
+        assertEquals(2, cuantasEnCustodia(c, "v1"))
+        assertNull("sin copia no se inventa un número", cuantasEnCustodia(null, "v1"))
+        // Codex rediseño #3: la copia de otra sucursal (falló la descarga al entrar a esta) no se cuenta.
+        assertNull("copia de otra sucursal", cuantasEnCustodia(c, "v2"))
+    }
+
+    // Codex rediseño #4: «Entraste HH:MM» sólo para la entrada tocada en ESTE celular; si se usó la entrada que ya existía en
+    // el SERVIDOR, su hora no es la del intento local y no se muestra.
+    @Test fun `la hora de entrada solo es la de la entrada tocada aqui`() {
+        val propia = com.jaac.avoqado_campo.cola.TurnoLocal(staffId = "s1", llaveEntrada = "k", timeEntryId = "te1", venueId = "v1", abiertoAt = 1_000L)
+        assertEquals(1_000L, horaDeEntrada(propia, "s1"))
+        assertNull("usó la entrada del SERVIDOR", horaDeEntrada(propia.copy(llaveEntrada = null), "s1"))
+        assertNull("turno de otra persona", horaDeEntrada(propia, "s2"))
+        assertNull("sin turno", horaDeEntrada(null, "s1"))
     }
 
     @Test fun `iniciales, la serie en grupos de 4 y la hora corta de Mexico`() {

@@ -73,7 +73,8 @@ private fun ChipDeUbicacion(e: EstadoChecada, conUbicacion: Boolean) {
         e.buscandoUbicacion -> Recuadro("📍 Buscando tu ubicación…", Tono.AVISO)
         e.avisoUbicacion != null -> Recuadro("📍 ${e.avisoUbicacion}", Tono.AVISO)
         !conUbicacion -> Recuadro("📍 Sin permiso de ubicación: se checa sin ubicación", Tono.AVISO)
-        else -> Recuadro("📍 Ubicación activada · se guarda al checar", Tono.OK)
+        // Con permiso no se sabe si la ubicación del celular está encendida: no se afirma (Codex rediseño #2).
+        else -> Recuadro("📍 Al checar se guarda tu ubicación", Tono.NEUTRO)
     }
 }
 

@@ -159,7 +159,7 @@ fun Tarjeta(modifier: Modifier = Modifier, relleno: PaddingValues = PaddingValue
 enum class Tono(val fondo: Color, val tinta: Color, val borde: Color? = null) {
     OK(C.VerdeClaro, C.VerdeTinta),
     AVISO(C.Naranja.copy(alpha = 0.12f), C.AmbarTinta),
-    SIN_RED(C.NaranjaSinRed.copy(alpha = 0.07f), C.NaranjaSinRed, C.NaranjaSinRed),
+    SIN_RED(C.NaranjaSinRed.copy(alpha = 0.07f), C.NaranjaTinta, C.NaranjaSinRed),
     ERROR(C.RojoClaro, C.RojoTinta),
     INFO(C.AzulClaro, C.AzulTinta),
     NEUTRO(C.Gris100, C.Gris700),

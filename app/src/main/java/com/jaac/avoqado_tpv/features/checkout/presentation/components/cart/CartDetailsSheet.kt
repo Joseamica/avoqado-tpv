@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import com.jaac.avoqado_tpv.features.checkout.presentation.AvisoDescuentoDelCliente
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
 import coil.compose.AsyncImage
@@ -105,6 +106,10 @@ fun CartDetailsSheet(
     referralSection: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
     necesitaInternet: Boolean = false,
+    avisoDescuentoDelCliente: AvisoDescuentoDelCliente? = null,
+    onQuitarDescuentoDelCliente: (() -> Unit)? = null,
+    onPedirAutorizacionDescuento: () -> Unit = {},
+    onUsarDescuentoDelCliente: () -> Unit = {},
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -222,6 +227,15 @@ fun CartDetailsSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            if (avisoDescuentoDelCliente != null) {
+                AvisoDescuentoDelClienteCard(
+                    aviso = avisoDescuentoDelCliente,
+                    onPedirAutorizacion = onPedirAutorizacionDescuento,
+                    onUsarDescuento = onUsarDescuentoDelCliente,
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             if (cartState.isEmpty) {
                 EmptyState()
             } else {
@@ -240,7 +254,7 @@ fun CartDetailsSheet(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                TotalsBreakdown(cartState = cartState)
+                TotalsBreakdown(cartState = cartState, onQuitarDescuentoDelCliente = onQuitarDescuentoDelCliente)
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -360,7 +374,7 @@ private fun ItemsCard(
  * discount row when there's nothing applied so empty rows don't add noise.
  */
 @Composable
-private fun TotalsBreakdown(cartState: CartState) {
+private fun TotalsBreakdown(cartState: CartState, onQuitarDescuentoDelCliente: (() -> Unit)? = null) {
     val hasDiscount = cartState.discountCents > 0
     val hasTax = cartState.taxCents > 0
 
@@ -380,7 +394,15 @@ private fun TotalsBreakdown(cartState: CartState) {
                 cartState.manualDiscountReason != null -> "Descuento (${cartState.manualDiscountReason})"
                 else -> "Descuento"
             }
-            TotalsRow(label = label, amount = "−${cartState.discountDisplay}", emphasize = true)
+            if (cartState.descuentoEsDelCliente && cartState.orderDiscount != null && onQuitarDescuentoDelCliente != null) {
+                LineaDescuentoDelCliente(
+                    nombre = cartState.orderDiscount.name,
+                    monto = "−${cartState.discountDisplay}",
+                    onQuitar = onQuitarDescuentoDelCliente,
+                )
+            } else {
+                TotalsRow(label = label, amount = "−${cartState.discountDisplay}", emphasize = true)
+            }
         }
         if (hasTax) {
             TotalsRow(label = "Impuesto", amount = cartState.taxDisplay)

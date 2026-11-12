@@ -53,4 +53,23 @@ class CadaVezAlFrenteTest {
         app.registro.currentState = Lifecycle.State.RESUMED
         assertEquals(2, veces)
     }
+
+    // Codex D2 r1: en pantalla dividida (Android 8.1/9) la app sigue visible sin foco (STARTED): el latido y la revisión de
+    // versión no deben cortarse por eso; sólo el GPS se revisa al volver al frente.
+    @Test fun `el ciclo de latido y version sigue mientras la app es visible aunque pierda el foco`() {
+        val app = Duenio()
+        var entradas = 0
+        var cortado = false
+        app.cadaVezVisible {
+            entradas++
+            try { kotlinx.coroutines.awaitCancellation() } finally { cortado = true }
+        }
+        app.registro.currentState = Lifecycle.State.RESUMED
+        app.registro.currentState = Lifecycle.State.STARTED // pantalla dividida: tocó la otra app
+        app.registro.currentState = Lifecycle.State.RESUMED
+        assertEquals(1, entradas)
+        assertEquals(false, cortado)
+        app.registro.currentState = Lifecycle.State.CREATED // ya no se ve
+        assertEquals(true, cortado)
+    }
 }

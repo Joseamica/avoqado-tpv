@@ -43,10 +43,10 @@ import java.util.Locale
 
 /**
  * «Vender una SIM»: escanear (o escribir) el código, ver el precio, tomar las evidencias y «Registrar», que guarda en el
- * celular antes de cualquier red. [sinSenal] lo da quien la muestra (Tarea 13); sin señal se vende igual.
+ * celular antes de cualquier red. Sin señal se vende igual: lo dice la banda de la navegación, una sola vez (D2).
  */
 @Composable
-fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, obligatoria: Boolean, onRegresar: () -> Unit) {
+fun VentaScreen(vm: VentaViewModel, obligatoria: Boolean, onRegresar: () -> Unit) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var escaneando by rememberSaveable { mutableStateOf(false) }
     var fotoDe by rememberSaveable { mutableStateOf<Slot?>(null) }
@@ -62,7 +62,7 @@ fun VentaScreen(vm: VentaViewModel, sinSenal: Boolean, obligatoria: Boolean, onR
             )
         }
         else -> VentaContenido(
-            estado, sinSenal,
+            estado,
             AccionesDeVenta(
                 escanear = { escaneando = true }, buscar = vm::alEscanear, foto = { fotoDe = it }, numero = vm::alEscribirNumero,
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
@@ -82,13 +82,10 @@ class AccionesDeVenta(
 private val alto = Modifier.fillMaxWidth().heightIn(min = 48.dp)
 
 @Composable
-fun VentaContenido(e: EstadoVenta, sinSenal: Boolean, a: AccionesDeVenta, obligatoria: Boolean = false) {
+fun VentaContenido(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean = false) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Vender una ${e.config?.etiquetaArticulo ?: "SIM"}", style = MaterialTheme.typography.headlineSmall)
-            if (sinSenal) {
-                Text("Sin señal · lo que hagas se guarda en el celular y se sube solo", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
             if (e.guardada) {
                 Card(Modifier.fillMaxWidth()) {
                     Text(
@@ -192,12 +189,12 @@ private fun VentaPreview() = TemaCampo {
             tipoDePrecio = TipoDePrecio.DE_PROMOTOR, precio = BigDecimal("150.00"), portabilidad = true,
             fotos = mapOf(Slot.VINCULACION to "/x.jpg"),
         ),
-        sinSenal = true, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}),
+        AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}),
     )
 }
 
 @Preview(widthDp = 360, heightDp = 640)
 @Composable
 private fun VentaGuardadaPreview() = TemaCampo {
-    VentaContenido(EstadoVenta(guardada = true), sinSenal = false, AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}))
+    VentaContenido(EstadoVenta(guardada = true), AccionesDeVenta({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}))
 }

@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jaac.avoqado_campo.cola.PiezaDao
@@ -24,7 +25,9 @@ import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.Actualizador
 import com.jaac.avoqado_campo.version.RevisorDeVersion
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,17 +55,16 @@ class MainActivity : ComponentActivity() {
             setContent { TemaCampo { PantallaDetenida(onReintentar = ::reiniciar) } }
             return
         }
-        // Cada vez que la app se ve: reintentar el GPS del turno, y el latido y la versión nueva al abrir y cada 5 min (Latido no
-        // manda más de 1/min; la versión se pregunta cada 30 min como mucho).
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                withContext(Dispatchers.IO) {
-                    intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy) }
-                    while (true) {
-                        intentar("latido") { latido.mandar() }
-                        intentar("versión nueva") { revisor.revisar() }
-                        delay(CINCO_MIN)
-                    }
+        // Cada vez que la app queda al frente (también al cerrar el diálogo de un permiso): reintentar el GPS del turno.
+        cadaVezAlFrente { withContext(Dispatchers.IO) { intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy) } } }
+        // Mientras se ve (aunque pierda el foco en pantalla dividida): el latido y la versión nueva al abrir y cada 5 min
+        // (Latido no manda más de 1/min; la versión se pregunta cada 30 min como mucho).
+        cadaVezVisible {
+            withContext(Dispatchers.IO) {
+                while (true) {
+                    intentar("latido") { latido.mandar() }
+                    intentar("versión nueva") { revisor.revisar() }
+                    delay(CINCO_MIN)
                 }
             }
         }
@@ -93,3 +95,18 @@ class MainActivity : ComponentActivity() {
 
     private companion object { const val CINCO_MIN = 5 * 60_000L }
 }
+
+/**
+ * Corre [bloque] cada vez que la app queda al frente y lo cancela al dejar de estarlo. RESUMED y no STARTED (D2): el diálogo
+ * de un permiso de Android sólo PAUSA la app; con STARTED, devolver la ubicación desde «Checar» no revisaba el GPS y la
+ * pantalla seguía con «no diste permiso» hasta reabrir la app. Sólo el GPS: el latido y la versión van en [cadaVezVisible].
+ */
+internal fun LifecycleOwner.cadaVezAlFrente(bloque: suspend CoroutineScope.() -> Unit): Job =
+    lifecycleScope.launch { repeatOnLifecycle(Lifecycle.State.RESUMED, bloque) }
+
+/**
+ * Corre [bloque] mientras la app se ve (STARTED) y lo cancela al dejar de verse. En pantalla dividida la app sigue visible sin
+ * foco: el latido y la revisión de versión no deben cortarse por eso (Codex D2 r1).
+ */
+internal fun LifecycleOwner.cadaVezVisible(bloque: suspend CoroutineScope.() -> Unit): Job =
+    lifecycleScope.launch { repeatOnLifecycle(Lifecycle.State.STARTED, bloque) }

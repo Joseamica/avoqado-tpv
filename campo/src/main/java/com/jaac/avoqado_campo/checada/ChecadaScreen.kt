@@ -93,7 +93,9 @@ fun ChecadaContenido(
             e.avisoUbicacion?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             e.aviso?.let { Card(Modifier.fillMaxWidth()) { Text(it, Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium) } }
             e.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            (e.gps as? ResultadoGps.NoSigue)?.takeIf { e.entrada != null && e.aviso == null }?.let {
+            // El GPS en vivo se dice siempre que no sigue, salvo que el aviso de la checada diga EXACTAMENTE lo mismo (Codex D2
+            // r3 y la pasada de la familia: tras «Entrada guardada», o si cambió el motivo, Checar dice el de ahora).
+            (e.gps as? ResultadoGps.NoSigue)?.takeIf { e.entrada != null && e.aviso != "$AVISO_NO_SIGUE: ${it.motivo}" }?.let {
                 Text("No estamos siguiendo tu ubicación: ${it.motivo}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             OutlinedButton(regresar, alto, enabled = !e.ocupado) { Text("Regresar") }

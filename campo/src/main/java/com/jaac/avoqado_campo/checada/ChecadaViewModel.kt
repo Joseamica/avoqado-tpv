@@ -63,7 +63,16 @@ class ChecadaViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { dao.turno().collect { t -> _estado.update { it.copy(entrada = refEntrada(t, quienSoy.staffId)) } } }
-        viewModelScope.launch { estadoDelGps.estado.collect { g -> _estado.update { it.copy(gps = g) } } }
+        // Si el GPS empieza a seguir (p. ej., concedió el permiso sin salir de «Checar»), el aviso de la entrada deja de decir
+        // que no sigue (Codex D2 r2): la UI no miente.
+        viewModelScope.launch {
+            estadoDelGps.estado.collect { g ->
+                _estado.update {
+                    val yaSigue = g == ResultadoGps.Siguiendo && it.aviso?.startsWith(AVISO_NO_SIGUE) == true
+                    it.copy(gps = g, aviso = if (yaSigue) ENTRADA_GUARDADA else it.aviso)
+                }
+            }
+        }
     }
 
     fun marcarEntrada() = empezar(TipoChecada.ENTRADA)
@@ -142,8 +151,8 @@ class ChecadaViewModel @Inject constructor(
         val aviso = run {
             val r = despues { if (tipo == TipoChecada.ENTRADA) gps.iniciar() else { gps.detener(); null } }
             despues { Disparador.ahora(context) }
-            (r as? ResultadoGps.NoSigue)?.let { "La checada quedó guardada · no estamos siguiendo tu ubicación: ${it.motivo}" }
-                ?: if (tipo == TipoChecada.ENTRADA) "Entrada guardada · se sube sola" else "Salida guardada · se sube sola"
+            (r as? ResultadoGps.NoSigue)?.let { "$AVISO_NO_SIGUE: ${it.motivo}" }
+                ?: if (tipo == TipoChecada.ENTRADA) ENTRADA_GUARDADA else "Salida guardada · se sube sola"
         }
         _estado.update { it.copy(ocupado = false, aviso = aviso) }
     }
@@ -189,3 +198,6 @@ class ChecadaViewModel @Inject constructor(
         const val SIN_ENTRADA = "Marca tu salida donde marcaste la entrada"
     }
 }
+
+internal const val AVISO_NO_SIGUE = "La checada quedó guardada · no estamos siguiendo tu ubicación"
+private const val ENTRADA_GUARDADA = "Entrada guardada · se sube sola"

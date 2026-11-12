@@ -270,6 +270,17 @@ class ChecadaViewModelTest {
         )
     }
 
+    // Codex D2 r2: entrada sin permiso de ubicación y, sin salir de «Checar», el promotor lo concede: el GPS ya sigue y el
+    // aviso de esa entrada no debe seguir diciendo que no.
+    @Test fun `si el GPS empieza a seguir despues, el aviso de la entrada deja de decir que no sigue`() {
+        respuestaGps = ResultadoGps.NoSigue("no diste permiso de ubicación")
+        vm.marcarEntrada()
+        quieto()
+        estadoDelGps.publicar(ResultadoGps.Siguiendo)
+        val e = runBlocking { withTimeout(5_000) { vm.estado.first { it.gps == ResultadoGps.Siguiendo } } }
+        assertEquals("Entrada guardada · se sube sola", e.aviso)
+    }
+
     @Test fun `H-A1 - si la tienda no usa el seguimiento el texto de la entrada guardada no habla del GPS`() {
         respuestaGps = ResultadoGps.NoLoUsaLaTienda
         vm.marcarEntrada()

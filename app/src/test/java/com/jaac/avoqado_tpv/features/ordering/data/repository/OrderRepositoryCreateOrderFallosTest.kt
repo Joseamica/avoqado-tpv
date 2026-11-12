@@ -114,6 +114,26 @@ class OrderRepositoryCreateOrderFallosTest {
         assertThat(servidor.takeRequest().body.readUtf8()).doesNotContain("autorizacionDelDescuento")
     }
 
+    private val conDescuentoDeCatalogo = pedido.copy(discount = BigDecimal("5.00"), orderDiscountId = "d-10", total = BigDecimal("45.00"))
+    private val GENERICO_400 = "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
+
+    private fun fallaCon(peticion: TpvCreateOrderWithItemsRequest, mensaje: String): ApiException.HttpError {
+        servidor.enqueue(MockResponse().setResponseCode(400).setBody(com.google.gson.JsonObject().apply { addProperty("message", mensaje) }.toString()))
+        return runBlocking { repo.createOrderWithItems("venue-1", peticion) }.exceptionOrNull() as ApiException.HttpError
+    }
+
+    @Test fun `D1 un 400 porque el descuento del cliente cambio deja el aviso del servidor tal cual`() {
+        val aviso = "El descuento «Cliente 10 %» cambió desde que se puso en la cuenta. Vuelve a elegir al cliente para actualizarlo."
+        assertThat(fallaCon(conDescuentoDeCatalogo, aviso).userMessage).isEqualTo(aviso)
+    }
+
+    @Test fun `D1 cualquier otro 400 con descuento de catalogo sigue con el texto de siempre`() {
+        assertThat(fallaCon(conDescuentoDeCatalogo, "Discount \"X\" requires a minimum purchase amount").userMessage).isEqualTo(GENERICO_400)
+        assertThat(fallaCon(conDescuentoDeCatalogo, "Order total cannot be negative").userMessage).isEqualTo(GENERICO_400)
+        // Sin descuento de catálogo, ni el texto del descuento pasa: el 400 es de otra cosa.
+        assertThat(fallaCon(pedido, "El descuento «X» cambió desde que se puso en la cuenta.").userMessage).isEqualTo(GENERICO_400)
+    }
+
     @Test fun `un 400 con cupon conserva la razon del servidor`() {
         servidor.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":"Este cupón ya venció."}"""))
         val e = runBlocking { repo.createOrderWithItems("venue-1", pedido.copy(couponCode = "VERANO")) }.exceptionOrNull() as ApiException.HttpError

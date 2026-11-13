@@ -144,8 +144,14 @@ object AngelPayOutcomeClassifier {
      * (CDCVM), lo trata como wallet —sin tope, `authentication = "con dispositivo movil"`—; el `E608` sólo sale ahora para la
      * tarjeta física. No envía, no escribe `m` y sus excepciones no salen del bloque. El 1.0.21 ya NO está auditado.
      * Acta: `Avoqado/docs/audit/2026-10-23-angelpay-sdk-1022/auditoria-bytecode.md`.
+     *
+     * 🔴 **1.0.23 (12-nov), re-auditado en bytecode contra el 1.0.22:** el orquestador (`b0.v0` → `c0.v0`) y `PaymentActivity`
+     * son IDÉNTICOS tras normalizar los renombres (mismas líneas, `putfield` y `areturn`): la frontera de la regla no se movió.
+     * Lo nuevo no toca el cobro: `originalTerminal` en cancelar/devolver, el modo kiosko (inerte si nunca se llama
+     * `setKioskMode`) y la inicialización movida a un localizador interno. El 1.0.22 ya NO está auditado.
+     * Acta: `Avoqado/docs/audit/2026-11-12-angelpay-sdk-1023/auditoria-bytecode.md`.
      */
-    const val VERSION_SDK_AUDITADA = "1.0.22"
+    const val VERSION_SDK_AUDITADA = "1.0.23"
 
     /**
      * 🔴 La regla del SDK 1.0.19 (diseño `diseno-nexgo-sdk-1.0.19.md` §2.1 + decisiones del founder del 18-sep).

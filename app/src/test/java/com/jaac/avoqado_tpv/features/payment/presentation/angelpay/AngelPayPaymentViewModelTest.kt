@@ -3684,6 +3684,70 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `ruteo - Tarjeta mientras el cambio automatico esta en vuelo no arranca, y si el cambio falla no cobra en la excluida (Codex r3 1)`() = runTest(testDispatcher) {
+        // La cuenta elegida durante el cambio es la del cambio (optimista). Si «Tarjeta» pasara con ella y el cambio fallara,
+        // la cuenta volvería a A —la excluida— a media preparación del cobro.
+        val cambio = CompletableDeferred<Result<Unit>>()
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } coAnswers { cambio.await() }
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 11, regla = soloLaCuentaB())
+        try {
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)   // optimista, todavía sin asentarse
+
+            vm.startCardPayment()
+            runCurrent()
+            verify(exactly = 0) { paymentStateHolder.setCharging(true) }
+            coVerify(exactly = 0) { angelPayAuthRepository.candadoDeSesion }
+
+            cambio.complete(Result.failure(IllegalStateException("sin red")))
+            runCurrent()
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(vm.avisoDeCuenta.value).contains("Restaurant")
+            verify(exactly = 0) { paymentStateHolder.setCharging(true) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - el cambio automatico a otro login de AngelPay falla - regresa al login anterior para que la lista siga sirviendo (Codex r3 2)`() = runTest(testDispatcher) {
+        // switchAccount cierra la sesión antes de entrar a la otra cuenta; si falla, deja AuthError y la lista entera apagada
+        // (también C, que sí serviría). La cajera no tocó nada: la Nexgo regresa al login en el que estaba.
+        val a = angelPayMerchantA.copy(angelpayUserAccountId = "acc-1")
+        val b = angelPayMerchantB.copy(angelpayUserAccountId = "acc-2")
+        val c = angelPayMerchantC.copy(angelpayUserAccountId = "acc-1")
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } returns "acc-1"
+        coEvery { angelPayAuthRepository.switchAccount("acc-2") } coAnswers {
+            authStateFlow.value = AngelPayAuthState.AuthError("credenciales rechazadas", com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AuthErrorKind.OTHER)
+            Result.failure(IllegalStateException("credenciales rechazadas"))
+        }
+        coEvery { angelPayAuthRepository.switchAccount("acc-1") } coAnswers {
+            authStateFlow.value = AngelPayAuthState.Authenticated
+            Result.success(Unit)
+        }
+        val regla = MerchantEligibility(
+            evaluated = true, routingFeatureActive = true, eligibleMerchantAccountIds = setOf("cma-002", "cma-003"),
+            autoSelectMerchantAccountId = "cma-002", fallbackAll = false,
+        )
+        val vm = vmConRegla(listOf(a, b, c), activa = 11, regla = regla)
+        try {
+            coVerify(exactly = 1) { angelPayAuthRepository.switchAccount("acc-2") }
+            coVerify(exactly = 1) { angelPayAuthRepository.switchAccount("acc-1") }
+            assertThat(vm.authState.value).isEqualTo(AngelPayAuthState.Authenticated)
+            assertThat(vm.currentMerchant.value).isEqualTo(a)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(vm.avisoDeCuenta.value).contains("Restaurant")
+            // La lista vuelve a servir: con la sesión quieta, «Tarjeta» y las cuentas no están bloqueadas…
+            assertThat(bloqueoDeMetodosDePago(vm.selectionInProgress.value, vm.inFlightSwitch.value, vm.authState.value).tarjeta).isFalse()
+            // …y no hay un segundo intento automático en esta consulta (la cajera toca C).
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `el gate de staff nulo avisa failed al POS con el motivo`() = runTest(testDispatcher) {
         every { authRepository.getVenueId() } returns "venue-1"
         every { authRepository.getStaffId() } returns null

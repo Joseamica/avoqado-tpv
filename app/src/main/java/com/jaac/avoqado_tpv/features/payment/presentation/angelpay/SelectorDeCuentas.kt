@@ -3,37 +3,58 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility
 
-/** Qué cuentas ofrece «Método de pago» de la Nexgo y si la lista se puede ocultar. */
+/**
+ * Qué cuentas ofrece «Método de pago» de la Nexgo, si la lista se puede ocultar, si la cuenta elegida puede cobrar esta
+ * venta y a cuál debe pasar sola.
+ */
 internal data class SelectorDeCuentas(
     val cuentas: List<MerchantAccount>,
     val ocultarLista: Boolean,
+    /** La cuenta elegida puede cobrar esta venta (sin reglas que filtren, siempre). Con `false`, «Tarjeta» no arranca. */
     val elegidaPermitida: Boolean = true,
+    /** A qué cuenta pasa sola la Nexgo (por `selectMerchant`, el camino del toque); null si no hay nada que cambiar. */
     val cuentaAPasar: MerchantAccount? = null,
 )
 
 /**
- * 🧭 MERCHANT_ROUTING_RULES en la Nexgo (D3, 12-nov).
+ * 🧭 MERCHANT_ROUTING_RULES en la Nexgo (D3, 12/13-nov). Regla del founder (13-nov): **nunca se cobra en una cuenta que la
+ * regla excluye**.
  *
  * - **Qué cuentas:** con reglas que filtran, sólo las permitidas; sin reglas, sin red o si ninguna permitida está cargada,
- *   todas (una regla nunca frena una venta).
- * - **Cuándo se oculta la lista:** sólo si no hay cuentas, o si queda UNA y ya hay una cuenta elegida. Si queda una y no hay
- *   ninguna elegida (varias cuentas en el negocio y la sesión de AngelPay pidiendo elegir), la lista se muestra para que la
- *   cajera la toque: ocultarla dejaba «Tarjeta» apagada sin forma de elegir (Codex r1 #1). La Nexgo no elige sola: cuando
- *   la elegía sin pasar por el SDK fallaba con cuentas que cargan tarde y en el modo app-a-app (Codex r2 #1 y #2); el toque
- *   va por `selectMerchant`, con todos sus candados.
- * - **No cambia:** una cuenta YA elegida que la regla excluye se queda elegida (la Nexgo sólo filtra, decisión del 13-jul).
- *   Es deuda declarada en `docs/audit/2026-11-12-nexgo-ruteo-sin-propina/promesa.md`.
+ *   todas (una regla nunca frena una venta) y nada cambia solo.
+ * - **A cuál pasa sola:** si la elegida no está entre las permitidas (o no hay ninguna), con el criterio de la PAX
+ *   (`proceedToMerchantSelection`): la que la regla marca para preseleccionar y, si no marca ninguna cargada, la primera
+ *   permitida en el orden de la lista. La elegida se compara por `id`: la lista se vuelve a emitir desde la base.
+ * - **Cuándo se oculta la lista:** sólo si no hay cuentas, o si queda UNA y ya es la elegida. Con la elegida excluida o sin
+ *   elegir, la lista se queda a la vista para que, si el cambio automático no se puede, la cajera toque la permitida
+ *   (Codex r1 #1: ocultarla dejaba «Tarjeta» apagada sin salida).
  */
 internal fun selectorDeCuentas(
     todas: List<MerchantAccount>,
     reglas: MerchantEligibility?,
     elegida: MerchantAccount?,
 ): SelectorDeCuentas {
-    val cuentas = if (reglas == null || reglas.shouldShowAll) {
-        todas
+    val permitidas = if (reglas == null || reglas.shouldShowAll) {
+        emptyList()
     } else {
-        todas.filter { reglas.eligibleMerchantAccountIds.contains(it.merchantAccountId) }.ifEmpty { todas }
+        todas.filter { reglas.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
     }
-    val ocultarLista = cuentas.isEmpty() || (cuentas.size == 1 && elegida != null)
-    return SelectorDeCuentas(cuentas = cuentas, ocultarLista = ocultarLista)
+    if (reglas == null || permitidas.isEmpty()) {
+        return SelectorDeCuentas(
+            cuentas = todas,
+            ocultarLista = todas.isEmpty() || (todas.size == 1 && elegida != null),
+        )
+    }
+    val elegidaPermitida = elegida != null && permitidas.any { it.id == elegida.id }
+    val cuentaAPasar = if (elegidaPermitida) {
+        null
+    } else {
+        permitidas.firstOrNull { it.merchantAccountId == reglas.autoSelectMerchantAccountId } ?: permitidas.first()
+    }
+    return SelectorDeCuentas(
+        cuentas = permitidas,
+        ocultarLista = permitidas.size == 1 && elegidaPermitida,
+        elegidaPermitida = elegidaPermitida,
+        cuentaAPasar = cuentaAPasar,
+    )
 }

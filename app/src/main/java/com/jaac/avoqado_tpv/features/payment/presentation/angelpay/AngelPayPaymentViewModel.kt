@@ -222,12 +222,20 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val _currentMerchant = MutableStateFlow<MerchantAccount?>(null)
     val currentMerchant: StateFlow<MerchantAccount?> = _currentMerchant.asStateFlow()
 
-    // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives the selector filter +
-    // "showing all accounts" banner). AngelPay only FILTERS (no auto SDK-session switch on auto-select).
-    // 🧭 D3 (esqueleto para el rojo): aviso de la cuenta permitida.
+    /**
+     * 🧭 D3 (13-nov): aviso en llano de «Método de pago» cuando la cuenta elegida no puede cobrar esta venta (la regla la
+     * excluye) y el cambio automático a la permitida no se pudo o todavía no se hace. La pantalla lo pinta en lugar del
+     * aviso de «mostrando todas las cuentas».
+     */
     private val _avisoDeCuenta = MutableStateFlow<String?>(null)
     val avisoDeCuenta: StateFlow<String?> = _avisoDeCuenta.asStateFlow()
 
+    /** 🧭 D3: la consulta de reglas ([generacionDelRuteo]) para la que ya se intentó el cambio automático (uno por consulta). */
+    private var cambioAutomaticoDeLaGeneracion: Long? = null
+
+    // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives the selector filter +
+    // "showing all accounts" banner). D3 (founder, 13-nov): si la cuenta activa queda excluida, la Nexgo pasa sola a la
+    // permitida por selectMerchant ([revisarCuentaPermitida]) y nunca cobra en la excluida ([startCardPayment]).
     private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
     val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
 
@@ -243,6 +251,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private fun evaluateRoutingForCharge(totalAmount: String) {
         ruteoJob?.cancel()
         val generacion = ++generacionDelRuteo
+        _avisoDeCuenta.value = null   // el aviso era de la consulta anterior
         ruteoJob = viewModelScope.launch {
             val elegibilidad = try {
                 merchantEligibilityRepository.evaluate(
@@ -259,8 +268,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 Timber.d("🧭 [AngelPay Eligibility] Respuesta de una consulta vieja ($generacion ≠ $generacionDelRuteo): se descarta")
                 return@launch
             }
-            // La Nexgo sólo FILTRA (decisión del 13-jul): nunca elige ni cambia la cuenta por su cuenta. Si la única cuenta
-            // permitida no está elegida, la pantalla muestra la lista para que la cajera la toque ([selectorDeCuentas]).
+            // D3 (13-nov): si la cuenta elegida queda excluida, [revisarCuentaPermitida] (que observa este flujo) la cambia.
             _merchantRouting.value = elegibilidad
         }
     }
@@ -271,6 +279,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         ruteoJob = null
         generacionDelRuteo++
         _merchantRouting.value = null
+        _avisoDeCuenta.value = null
+        cambioAutomaticoDeLaGeneracion = null
     }
 
     /**
@@ -1410,6 +1420,17 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
 
+        // 🧭 D3 (founder, 13-nov): con «Método de pago» a la vista, cualquier cambio en la regla, las cuentas, la cuenta
+        // elegida, la sesión de AngelPay o la pantalla vuelve a revisar si la cuenta elegida puede cobrar esta venta; si no,
+        // pasa sola a la permitida ([revisarCuentaPermitida]). Cubre las cuentas que cargan tarde (Codex r2 #1) y el cambio
+        // de un cobro anterior que termina tarde.
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.merge(
+                _merchantRouting, _merchants, _currentMerchant, _selectionInProgress, _state,
+                angelPayAuthRepository.state, angelPayMerchantRepository.inFlightSwitch,
+            ).collect { revisarCuentaPermitida() }
+        }
+
         // 🪙 Subscribe to Socket.IO crypto events for B4Bit webhook callbacks.
         // Same logic as PaymentViewModel — only handle events whose requestId
         // matches our `currentCryptoRequestId`.
@@ -1836,7 +1857,77 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
 
-    fun selectMerchant(merchant: MerchantAccount) {
+    /**
+     * 🧭 D3 (founder, 13-nov: «para que siempre cuadre y sea la mejor experiencia»): si la cuenta elegida no puede cobrar esta
+     * venta (la regla la excluye, o no hay ninguna elegida), la Nexgo pasa sola a la permitida por [selectMerchant] —el mismo
+     * camino del toque, que fija la sesión del SDK también en app-a-app (Codex r2 #2)— con el criterio de la PAX
+     * ([selectorDeCuentas]). Sólo actúa en «Método de pago» con tarjeta disponible, con la sesión quieta (nada en vuelo:
+     * [bloqueoDeMetodosDePago]) y en un estado de la auth que puede fijar el comercio; hace UN intento por consulta de reglas.
+     * Si falla, [cambiarDeCuenta] deja el aviso y la lista con la permitida a la vista; la cajera la toca.
+     */
+    private fun revisarCuentaPermitida() {
+        val estado = _state.value as? AngelPayPaymentState.SelectingMerchant ?: return
+        val selector = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+        if (selector.elegidaPermitida) {
+            _avisoDeCuenta.value = null
+            return
+        }
+        val destino = selector.cuentaAPasar ?: return
+        if (estado.motivoSinTarjeta != null) return   // sólo efectivo: no hay tarjeta que cobrar en ninguna cuenta
+        val auth = angelPayAuthRepository.state.value
+        if (auth !is AngelPayAuthState.SelectingMerchant && auth !is AngelPayAuthState.Authenticated &&
+            auth !is AngelPayAuthState.ConfigMismatchBanner
+        ) return
+        val bloqueo = bloqueoDeMetodosDePago(
+            selectionInProgress = _selectionInProgress.value,
+            inFlightSwitch = angelPayMerchantRepository.inFlightSwitch.value,
+            authState = auth,
+        )
+        if (bloqueo.tarjeta) return   // la sesión se está moviendo: se revisa otra vez cuando se asiente
+        val generacion = generacionDelRuteo
+        if (cambioAutomaticoDeLaGeneracion == generacion) return   // ya se intentó en esta consulta
+        cambioAutomaticoDeLaGeneracion = generacion
+        Timber.i(
+            "🧭 [AngelPay] La regla excluye la cuenta elegida (%s): paso sola a %s",
+            _currentMerchant.value?.displayName ?: "ninguna", destino.displayName,
+        )
+        cambiarDeCuenta(destino, automatico = generacion)
+    }
+
+    /** 🧭 D3: lo que lee la cajera cuando la cuenta elegida no puede cobrar esta venta. */
+    private fun avisoCuentaExcluida(destino: MerchantAccount?, fallo: Boolean): String {
+        val cuenta = destino?.displayName?.let { "«$it»" } ?: "una cuenta permitida"
+        return if (fallo) {
+            "Esta venta se cobra en $cuenta y no se pudo cambiar sola. Tócala en la lista para cobrar con tarjeta."
+        } else {
+            "Esta venta se cobra en $cuenta. Espera a que cambie o tócala en la lista para cobrar con tarjeta."
+        }
+    }
+
+    /**
+     * 🧭 D3: un cambio automático que falló. La cuenta vuelve a la anterior sólo si nadie la movió después (la cajera pudo
+     * tocar otra mientras tanto), y el aviso sólo se pinta si la consulta que lo pidió sigue siendo la del cobro en curso:
+     * la falla de un cobro anterior no es de éste. No se reintenta solo en esta consulta ([cambioAutomaticoDeLaGeneracion]).
+     */
+    private fun cambioAutomaticoFallido(destino: MerchantAccount, anterior: MerchantAccount?, generacion: Long) {
+        _currentMerchant.compareAndSet(destino, anterior)
+        if (generacion == generacionDelRuteo) {
+            _avisoDeCuenta.value = avisoCuentaExcluida(destino, fallo = true)
+            Timber.w("🧭 [AngelPay] No se pudo pasar sola a %s: queda la lista para tocarla", destino.displayName)
+        } else {
+            Timber.i("🧭 [AngelPay] Falló tarde el cambio automático de un cobro anterior: no se pinta en este")
+        }
+    }
+
+    fun selectMerchant(merchant: MerchantAccount) = cambiarDeCuenta(merchant, automatico = null)
+
+    /**
+     * [automatico] = la consulta de reglas que pidió el cambio ([revisarCuentaPermitida]); null = el toque de la cajera. Un
+     * cambio automático que falla NO es un error de la cajera: no pinta Error ni avisa al POS; la pantalla sigue en «Método
+     * de pago», la cuenta vuelve a la anterior y, si la consulta sigue vigente, queda el aviso con la permitida en la lista.
+     * Uno de un cobro anterior que termina tarde no pinta nada en el cobro nuevo.
+     */
+    private fun cambiarDeCuenta(merchant: MerchantAccount, automatico: Long?) {
         // Flip selectionInProgress SYNCHRONOUSLY (before the coroutine launches)
         // so the screen disables Tarjeta/Efectivo/Cripto on the same frame as
         // the merchant tap. Must be set OUTSIDE viewModelScope.launch — once
@@ -1846,6 +1937,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         viewModelScope.launch {
             val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrElse { err ->
                 Timber.e(err, "🔶 [AngelPay] Merchant ${merchant.displayName} has invalid AngelPay id")
+                if (automatico != null) {
+                    // 🧭 D3: el cambio automático no se puede: la cajera elige en la lista; nada de Error ni aviso al POS.
+                    if (automatico == generacionDelRuteo) _avisoDeCuenta.value = avisoCuentaExcluida(merchant, fallo = true)
+                    _selectionInProgress.value = false
+                    return@launch
+                }
                 _state.value = AngelPayPaymentState.Error(
                     message = "Merchant inválido para AngelPay: ${err.message}",
                     canRetry = false,
@@ -1888,6 +1985,22 @@ class AngelPayPaymentViewModel @Inject constructor(
                         switchResult.exceptionOrNull(),
                         "🔶 [AngelPay] switchAccount FAILED; reverting merchant pick",
                     )
+                    if (automatico != null) {
+                        // Codex r3 #2: switchAccount cerró la sesión antes de fallar y la deja en AuthError, que apaga TODA
+                        // la lista (también otra permitida que sí serviría). La cajera no tocó nada: se regresa a la cuenta
+                        // de AngelPay en la que estaba, para que la lista vuelva a funcionar (la excluida no cobra: guarda
+                        // de startCardPayment). Si tampoco se puede, queda como cualquier AuthError (banner y recuperación).
+                        if (currentAccountId != null && currentAccountId != targetAccountId) {
+                            val regreso = angelPayAuthRepository.switchAccount(currentAccountId)
+                            Timber.w(
+                                "🧭 [AngelPay] Cambio automático de cuenta AngelPay falló; regreso a la anterior → %s",
+                                if (regreso.isSuccess) "ok" else "falló",
+                            )
+                        }
+                        cambioAutomaticoFallido(merchant, previousMerchant, automatico)
+                        merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
+                        return@launch
+                    }
                     _currentMerchant.value = previousMerchant
                     val kindSwitch = (angelPayAuthRepository.state.value as? AngelPayAuthState.AuthError)?.kind
                     val delPanelSwitch = kindSwitch == AuthErrorKind.SIN_CREDENCIALES || kindSwitch == AuthErrorKind.CUENTA_NO_EN_CONFIG
@@ -1911,6 +2024,11 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             result.onFailure { err ->
                 Timber.e(err, "🔶 [AngelPay] Merchant selection failed; reverting to $previousMerchant")
+                if (automatico != null) {
+                    cambioAutomaticoFallido(merchant, previousMerchant, automatico)
+                    merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
+                    return@onFailure
+                }
                 _currentMerchant.value = previousMerchant
                 _state.value = AngelPayPaymentState.Error(
                     message = "No se pudo cambiar de merchant: ${err.message ?: "error desconocido"}",
@@ -1925,6 +2043,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
             }
             result.onSuccess {
+                // 🧭 D3: la cuenta ya es la permitida; el aviso de esta consulta sobra (uno viejo ya se limpió al consultar).
+                if (automatico == null || automatico == generacionDelRuteo) _avisoDeCuenta.value = null
                 // 🔌 Circuit breaker: a healthy selection resets this merchant's failure counter.
                 merchantEligibilityRepository.recordChargeSuccess(merchant.merchantAccountId ?: merchant.id)
             }
@@ -1955,6 +2075,29 @@ class AngelPayPaymentViewModel @Inject constructor(
             bloquearPorTurnoSinConfirmar()
             return
         }
+        // 🧭 D3 (founder, 13-nov): nunca se cobra en una cuenta que la regla excluye. Red de seguridad por si «Tarjeta» llega
+        // antes que el cambio automático (carrera, sesión moviéndose): no se toca el SDK, ni el candado, ni el cobro; la
+        // pantalla sigue en «Método de pago» con el aviso y la permitida en la lista. [revisarCuentaPermitida] la cambia en
+        // cuanto la sesión se asiente.
+        val selector = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+        // Codex r3 #1: mientras un cambio de cuenta está en vuelo, la cuenta elegida es la del cambio (optimista); si el cambio
+        // falla vuelve a la anterior, que puede ser la excluida. Con reglas que filtran, «Tarjeta» no arranca hasta que se asiente.
+        val reglasFiltran = _merchantRouting.value?.let { !it.shouldShowAll } == true
+        if (reglasFiltran && _selectionInProgress.value) {
+            Timber.w("🧭 [AngelPay] «Tarjeta» con un cambio de cuenta en vuelo y reglas que filtran: no se arranca el SDK")
+            return
+        }
+        if (!selector.elegidaPermitida) {
+            Timber.w(
+                "🧭 [AngelPay] «Tarjeta» con una cuenta que la regla excluye (%s): no se arranca el SDK",
+                _currentMerchant.value?.displayName ?: "ninguna",
+            )
+            // Si el cambio automático de esta consulta ya falló, su aviso («no se pudo cambiar sola») se queda.
+            if (_avisoDeCuenta.value == null) _avisoDeCuenta.value = avisoCuentaExcluida(selector.cuentaAPasar, fallo = false)
+            revisarCuentaPermitida()
+            return
+        }
+        val estadoAlTocar = _state.value
         viewModelScope.launch {
             // Per spec §4.5b, AngelPay PIN MUST NOT be persisted to SecureStorage —
             // it lives only in `TerminalConfigRepository.cachedAngelPayAuth` (in-memory,
@@ -2001,6 +2144,21 @@ class AngelPayPaymentViewModel @Inject constructor(
                 if (cobroCanceladoPorElPos) {
                     Timber.w("🛑 [AngelPay] El POS canceló este cobro: no se lanza el SDK")
                     paymentStateHolder.setCharging(false)
+                    return@launch
+                }
+                // 🧭 D3 (Codex r3 #1): la cuenta pudo cambiar mientras se esperaba el candado. Se vuelve a revisar la regla
+                // antes de tocar la sesión: nunca se cobra en una cuenta que la regla excluye.
+                val selectorTrasElCandado = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+                if (!selectorTrasElCandado.elegidaPermitida) {
+                    Timber.w("🧭 [AngelPay] Tras el candado la cuenta elegida ya no puede cobrar esta venta: no se lanza el SDK")
+                    if (estadoAlTocar is AngelPayPaymentState.SelectingMerchant &&
+                        _state.value is AngelPayPaymentState.ConectandoAngelPay
+                    ) {
+                        _state.value = estadoAlTocar
+                    }
+                    if (_avisoDeCuenta.value == null) {
+                        _avisoDeCuenta.value = avisoCuentaExcluida(selectorTrasElCandado.cuentaAPasar, fallo = false)
+                    }
                     return@launch
                 }
                 if (_currentMerchant.value?.let { runCatching { it.requireAngelpayMerchantId() }.isSuccess } != true) {
@@ -5709,14 +5867,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         _mensajeDelPos.value = null
         if (pendingAmount > BigDecimal.ZERO) {
             Timber.i("🔁 [AngelPay] Retry → payment-method step (merchant unchanged)")
-            // ROJO TEMPORAL (D3 fila 18): sin volver a evaluar las reglas al reintentar.
-            _state.value = AngelPayPaymentState.SelectingMerchant(
-                subtotal = pendingAmount.toPlainString(),
-                tipAmount = pendingTip.toPlainString(),
-                totalAmount = pendingAmount.add(pendingTip).toPlainString(),
-                rating = pendingRating,
-                motivoSinTarjeta = motivoSinTarjeta(),
-            )
+            // 🧭 D3: navigateToStep vuelve a consultar las reglas con el mismo total (también tras recrearse la pantalla, que
+            // nace sin reglas: la fila restaura importe y propina).
+            navigateToStep(PrePaymentNextStep.SELECT_MERCHANT, pendingAmount.toPlainString())
         } else {
             Timber.w("🔁 [AngelPay] Retry with no cached context → full reset")
             // Task 10 (hermano de la liberación): el reset completo deja `Idle`, que con monto es el cargando de «preparando

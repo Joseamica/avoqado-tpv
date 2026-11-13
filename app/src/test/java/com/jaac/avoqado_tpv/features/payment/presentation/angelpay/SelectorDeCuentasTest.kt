@@ -143,4 +143,30 @@ class SelectorDeCuentasTest {
         assertThat(s.elegidaPermitida).isTrue()
         assertThat(s.cuentaAPasar).isNull()
     }
+
+    @Test
+    fun `la sesion de AngelPay pide elegir comercio - la elegida no cuenta como lista, se pasa a ella y la lista se ve (Codex r4 2)`() {
+        val s = selectorDeCuentas(listOf(cuentaA, cuentaB), reglas("cma-002"), elegida = cuentaB, sesionPideElegir = true)
+
+        assertThat(s.elegidaPermitida).isFalse()
+        assertThat(s.cuentaAPasar).isEqualTo(cuentaB)
+        assertThat(s.ocultarLista).isFalse()
+    }
+
+    @Test
+    fun `la sesion pide elegir y la elegida es una de varias permitidas - se completa con ESA, no con la marcada`() {
+        val s = selectorDeCuentas(
+            listOf(cuentaA, cuentaB, cuentaC), reglas("cma-002", "cma-003", marcada = "cma-002"), elegida = cuentaC, sesionPideElegir = true,
+        )
+
+        assertThat(s.cuentaAPasar).isEqualTo(cuentaC)
+    }
+
+    @Test
+    fun `la sesion pide elegir pero no hay reglas que filtren - nada cambia (como hoy)`() {
+        val s = selectorDeCuentas(listOf(cuentaA, cuentaB), reglas = null, elegida = cuentaA, sesionPideElegir = true)
+
+        assertThat(s.elegidaPermitida).isTrue()
+        assertThat(s.cuentaAPasar).isNull()
+    }
 }

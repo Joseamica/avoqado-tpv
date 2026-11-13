@@ -1867,7 +1867,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     private fun revisarCuentaPermitida() {
         val estado = _state.value as? AngelPayPaymentState.SelectingMerchant ?: return
-        val selector = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+        val selector = selectorActual()
         if (selector.elegidaPermitida) {
             _avisoDeCuenta.value = null
             return
@@ -1893,6 +1893,14 @@ class AngelPayPaymentViewModel @Inject constructor(
         )
         cambiarDeCuenta(destino, automatico = generacion)
     }
+
+    /** 🧭 D3: el selector de esta venta con la regla, las cuentas, la elegida y si la sesión pide elegir comercio. */
+    private fun selectorActual(): SelectorDeCuentas = selectorDeCuentas(
+        todas = _merchants.value,
+        reglas = _merchantRouting.value,
+        elegida = _currentMerchant.value,
+        sesionPideElegir = angelPayAuthRepository.state.value is AngelPayAuthState.SelectingMerchant,
+    )
 
     /** 🧭 D3: lo que lee la cajera cuando la cuenta elegida no puede cobrar esta venta. */
     private fun avisoCuentaExcluida(destino: MerchantAccount?, fallo: Boolean): String {
@@ -2079,7 +2087,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // antes que el cambio automático (carrera, sesión moviéndose): no se toca el SDK, ni el candado, ni el cobro; la
         // pantalla sigue en «Método de pago» con el aviso y la permitida en la lista. [revisarCuentaPermitida] la cambia en
         // cuanto la sesión se asiente.
-        val selector = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+        val selector = selectorActual()
         // Codex r3 #1: mientras un cambio de cuenta está en vuelo, la cuenta elegida es la del cambio (optimista); si el cambio
         // falla vuelve a la anterior, que puede ser la excluida. Con reglas que filtran, «Tarjeta» no arranca hasta que se asiente.
         val reglasFiltran = _merchantRouting.value?.let { !it.shouldShowAll } == true
@@ -2148,7 +2156,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 }
                 // 🧭 D3 (Codex r3 #1): la cuenta pudo cambiar mientras se esperaba el candado. Se vuelve a revisar la regla
                 // antes de tocar la sesión: nunca se cobra en una cuenta que la regla excluye.
-                val selectorTrasElCandado = selectorDeCuentas(_merchants.value, _merchantRouting.value, _currentMerchant.value)
+                val selectorTrasElCandado = selectorActual()
                 if (!selectorTrasElCandado.elegidaPermitida) {
                     Timber.w("🧭 [AngelPay] Tras el candado la cuenta elegida ya no puede cobrar esta venta: no se lanza el SDK")
                     if (estadoAlTocar is AngelPayPaymentState.SelectingMerchant &&

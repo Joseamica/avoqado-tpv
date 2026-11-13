@@ -28,11 +28,16 @@ internal data class SelectorDeCuentas(
  * - **Cuándo se oculta la lista:** sólo si no hay cuentas, o si queda UNA y ya es la elegida. Con la elegida excluida o sin
  *   elegir, la lista se queda a la vista para que, si el cambio automático no se puede, la cajera toque la permitida
  *   (Codex r1 #1: ocultarla dejaba «Tarjeta» apagada sin salida).
+ * - **[sesionPideElegir]** (la sesión de AngelPay espera que se elija comercio): la elegida en pantalla todavía no está fijada
+ *   en la sesión, así que no cuenta como lista para cobrar; si es una permitida, a ella se pasa (completa la elección), y la
+ *   lista se queda a la vista. Sin esto, en app-a-app quedaba una permitida «elegida», la lista oculta y «Tarjeta»
+ *   esperando un comercio que nadie fijaba (Codex r4 #2).
  */
 internal fun selectorDeCuentas(
     todas: List<MerchantAccount>,
     reglas: MerchantEligibility?,
     elegida: MerchantAccount?,
+    sesionPideElegir: Boolean = false,
 ): SelectorDeCuentas {
     val permitidas = if (reglas == null || reglas.shouldShowAll) {
         emptyList()
@@ -45,11 +50,12 @@ internal fun selectorDeCuentas(
             ocultarLista = todas.isEmpty() || (todas.size == 1 && elegida != null),
         )
     }
-    val elegidaPermitida = elegida != null && permitidas.any { it.id == elegida.id }
-    val cuentaAPasar = if (elegidaPermitida) {
-        null
-    } else {
-        permitidas.firstOrNull { it.merchantAccountId == reglas.autoSelectMerchantAccountId } ?: permitidas.first()
+    val elegidaEntreLasPermitidas = elegida?.let { e -> permitidas.firstOrNull { it.id == e.id } }
+    val elegidaPermitida = elegidaEntreLasPermitidas != null && !sesionPideElegir
+    val cuentaAPasar = when {
+        elegidaPermitida -> null
+        elegidaEntreLasPermitidas != null -> elegidaEntreLasPermitidas
+        else -> permitidas.firstOrNull { it.merchantAccountId == reglas.autoSelectMerchantAccountId } ?: permitidas.first()
     }
     return SelectorDeCuentas(
         cuentas = permitidas,

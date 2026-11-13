@@ -633,7 +633,12 @@ fun AngelPayPaymentScreen(
                     val routing = merchantRouting
                     // D3: si la cuenta elegida no puede cobrar esta venta, la lista se queda a la vista con las permitidas (ver
                     // [selectorDeCuentas]) mientras la Nexgo pasa sola a la permitida.
-                    val selector = selectorDeCuentas(todas = merchants, reglas = routing, elegida = currentMerchant)
+                    val selector = selectorDeCuentas(
+                        todas = merchants,
+                        reglas = routing,
+                        elegida = currentMerchant,
+                        sesionPideElegir = authState is AngelPayAuthState.SelectingMerchant,
+                    )
                     val visibleMerchants = selector.cuentas
                     // D3: el aviso de la cuenta permitida manda sobre el de «mostrando todas» (no salen juntos: ése es sin filtro).
                     val routingBanner = avisoDeCuenta ?: if (routing?.showFallbackBanner == true) {

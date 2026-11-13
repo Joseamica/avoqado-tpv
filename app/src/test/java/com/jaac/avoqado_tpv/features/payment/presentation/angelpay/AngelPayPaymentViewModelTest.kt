@@ -3711,6 +3711,25 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `ruteo - la permitida esta elegida en pantalla pero la sesion pide elegir comercio - la Nexgo completa la eleccion (Codex r4 2)`() = runTest(testDispatcher) {
+        // En app-a-app «Tarjeta» no prepara la sesión: con la permitida «elegida», la lista oculta y la sesión esperando que se
+        // elija comercio, la espera vencía a los ~47 s y «Reintentar» repetía lo mismo.
+        authStateFlow.value = AngelPayAuthState.SelectingMerchant(
+            merchants = listOf(MerchantOption(id = 22, name = "Restaurant", afiliationNumber = "1002")),
+            temporaryToken = "TEMP-TOKEN",
+        )
+        coEvery { angelPayAuthRepository.completeMerchantSelection(22, "TEMP-TOKEN") } returns Result.success(Unit)
+        val vm = vmConRegla(listOf(angelPayMerchantB), activa = null, regla = soloLaCuentaB())   // una sola: la pantalla la elige sola
+        try {
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(22, "TEMP-TOKEN") }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `ruteo - el cambio automatico a otro login de AngelPay falla - regresa al login anterior para que la lista siga sirviendo (Codex r3 2)`() = runTest(testDispatcher) {
         // switchAccount cierra la sesión antes de entrar a la otra cuenta; si falla, deja AuthError y la lista entera apagada
         // (también C, que sí serviría). La cajera no tocó nada: la Nexgo regresa al login en el que estaba.

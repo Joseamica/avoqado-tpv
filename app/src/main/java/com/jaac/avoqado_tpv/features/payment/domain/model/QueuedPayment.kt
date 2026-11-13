@@ -230,6 +230,7 @@ data class QueuedPayment(
                 localShiftSessionId = localShiftSessionId,
                 cashDrawerSessionId = cashDrawerSessionId,
                 isOfflineReplay = true,
+                createdAtLocal = createdAt,
                 amount = amount,
                 tip = tip,
                 rating = rating,
@@ -261,6 +262,7 @@ data class QueuedPayment(
                 localShiftSessionId = localShiftSessionId,
                 cashDrawerSessionId = cashDrawerSessionId,
                 isOfflineReplay = true,
+                createdAtLocal = createdAt,
                 orderId = orderId,
                 amount = amount,
                 tip = tip,
@@ -298,6 +300,7 @@ data class QueuedPayment(
                 localShiftSessionId = localShiftSessionId,
                 cashDrawerSessionId = cashDrawerSessionId,
             isOfflineReplay = true,
+            createdAtLocal = createdAt, // Lealtad: la hora de la venta, guardada en la fila ANTES del primer POST
             amount = amount,
             tip = tip,
             rating = rating, // 🆕 Preserve user rating for retry

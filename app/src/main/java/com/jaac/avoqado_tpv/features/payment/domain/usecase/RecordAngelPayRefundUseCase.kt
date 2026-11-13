@@ -1,8 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.domain.usecase
 
 import android.content.Context
-import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.repository.RefundRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -19,16 +17,12 @@ import com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
 import java.text.Normalizer
 import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -132,7 +126,8 @@ class RecordAngelPayRefundUseCase @Inject constructor(
      * @param paymentReference Original payment reference number stored at charge time.
      * @param createdAt Instant when the original payment was created (determines cancel vs refund).
      * @param requestedReason Refund reason from the operator.
-     * @param appContext Application context (needed to access the AngelPay SDK local SQLite DB).
+     * @param appContext Ya no se usa (12-nov, D1): leía la base local del SDK para los reintentos con otras referencias, que se
+     *   quitaron. Se conserva para no tocar a quien llama.
      * @param requestedAmount Amount the operator asked to refund (sale portion, no tip).
      * @param originalAmount Original payment sale amount (no tip).
      * @param alreadyRefundedAmount Amount already refunded on this payment.
@@ -174,7 +169,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             // 📒 CANDADO DE LA LIBRETA (founder, 29-sep-2026): una devolución anterior de ESTE pago salió hacia AngelPay y no
             // se supo en qué quedó —o AngelPay la aprobó y no alcanzó a registrarse—. Otra devolvería dos veces: primero se
             // resuelve ésa. Sólo cerca ESTE pago: las ventas y las devoluciones de otros pagos siguen normales.
-            is DevolucionPendiente.EnLibreta -> return resolverDevolucionAnterior(pendiente.fila, paymentReference, createdAt, ahora)
+            is DevolucionPendiente.EnLibreta -> return resolverDevolucionAnterior(pendiente.fila, paymentReference, createdAt, ahora, originalAmount)
             null -> Unit
         }
 
@@ -233,7 +228,8 @@ class RecordAngelPayRefundUseCase @Inject constructor(
                 "🔶 [AngelPay Direct Refund] Resolving reference=%s reason=%s window=%s..%s",
                 paymentReference, requestedReason.name, startDate, endDate,
             )
-            val target = buscarLaVenta(adapter, paymentReference, startDate, endDate).getOrElse { error ->
+            val target = buscarLaVenta(adapter, paymentReference, startDate, endDate, originalAmount).getOrElse { error ->
+                if (error is VentaNoSegura) return noSalio(error.motivo, error.message.orEmpty())
                 return noSalio("historial", "No se pudo consultar la venta en AngelPay (${error.message ?: "sin detalle"}).")
             } ?: return noSalio("sin_venta", "No se encontró la venta en AngelPay con la referencia $paymentReference.")
             com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkPostOperationsAdapter
@@ -253,17 +249,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
                 }
             }
 
-            val alternativas = referenciasAlternativas(
-                venta = target,
-                sdkCandidates = resolveAngelPaySdkReferenceCandidates(appContext = appContext, transaction = target),
-                historyCandidates = resolveAngelPayHistoryReferenceCandidates(
-                    adapterFactory = postOperationsAdapterFactory,
-                    target = target,
-                    startDate = startDate,
-                    endDate = endDate,
-                    zone = AngelPayCorte.ZONA_MEXICO,
-                ),
-            )
+            // Rediseño D1 (Codex r3 #3–#5, r4 #2): ante «referencia inválida» sólo se reintenta EXACTAMENTE la misma referencia
+            // (normal y manual). Cualquier otra cadena puede ser la referencia literal de OTRA venta.
+            val alternativas = emptyList<String>()
 
             // 🔴 La terminal sólo espera MIENTRAS se habla con AngelPay (unos segundos): un cobro del POS que llegue ahora se
             // rechaza con motivo en vez de arrancarle la pantalla a la devolución, y la sesión de AngelPay no se cambia a media
@@ -454,6 +442,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         paymentReference: String,
         createdAt: Instant,
         ahora: Instant,
+        importe: BigDecimal,
     ): Result<AngelPayRefundApproval> {
         val aprobadaSinRegistrar = anterior.state in setOf(
             com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.STATE_HOST_RESPONDIO,
@@ -474,7 +463,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         }
 
         val (startDate, endDate) = ventanaDelHistorial(createdAt, ahora)
-        val venta = buscarLaVenta(postOperationsAdapterFactory.get(ProcessorType.ANGELPAY), paymentReference, startDate, endDate).getOrNull()
+        val venta = buscarLaVenta(postOperationsAdapterFactory.get(ProcessorType.ANGELPAY), paymentReference, startDate, endDate, importe).getOrNull()
         val referenciaDeLaCancelacion = venta?.postOperationReference?.takeIf { it.isNotBlank() }
         if (venta != null && referenciaDeLaCancelacion != null && isAngelPayApprovedStatus(venta.postOperationStatus)) {
             Timber.w(
@@ -519,17 +508,29 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     /** Días de la consulta al historial de AngelPay, en la hora de México (desfase fijo: el ICU de la N86 es viejo). */
     private fun ventanaDelHistorial(createdAt: Instant, ahora: Instant): Pair<String, String> {
         val formatter = DateTimeFormatter.ISO_LOCAL_DATE
-        val startDate = createdAt.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().minusDays(1).format(formatter)
+        // D1 (Codex r4): al menos 31 días hacia atrás, porque el verificador del SDK (`resolveInDoubtPostOp`) mira los últimos
+        // 30 y «una referencia, una venta» debe ver las mismas ventas que él. La consulta va filtrada por referencia: es chica.
+        val startDate = minOf(
+            createdAt.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().minusDays(1),
+            ahora.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().minusDays(31),
+        ).format(formatter)
         val endDate = ahora.atOffset(AngelPayCorte.ZONA_MEXICO).toLocalDate().plusDays(1).format(formatter)
         return startDate to endDate
     }
 
-    /** La venta en el historial de AngelPay: `success(null)` si no aparece, `failure` si no se pudo consultar. */
+    /** No se puede probar que la venta del historial sea la de ESTE pago: no se toca AngelPay. `motivo` va a la libreta. */
+    private class VentaNoSegura(val motivo: String, message: String) : IllegalStateException(message)
+
+    /**
+     * La venta en el historial de AngelPay: `success(null)` si no aparece, `failure` si no se pudo consultar o si es
+     * [VentaNoSegura].
+     */
     private suspend fun buscarLaVenta(
         adapter: com.jaac.avoqado_tpv.features.payment.domain.processor.PaymentPostOperationsAdapter,
         paymentReference: String,
         startDate: String,
         endDate: String,
+        importe: BigDecimal,
     ): Result<UnifiedTransaction?> {
         val history = try {
             adapter.getTransactionHistory(
@@ -542,43 +543,62 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         }
         val candidates = history.filter { it.reference.equals(paymentReference, ignoreCase = true) }
         Timber.i("🔶 [AngelPay Direct Refund] Candidate count for ref=%s: %s", paymentReference, candidates.size)
-        val target = candidates
-            .sortedWith(
-                compareByDescending<UnifiedTransaction> {
-                    it.operationType?.contains("SALE", ignoreCase = true) == true
-                }.thenByDescending {
-                    isAngelPayApprovedStatus(it.status)
-                }
+        // 🔴 «Una referencia, un renglón» (D1, 12-nov, SDK 1.0.23; rediseño tras Codex r1–r5). Con `originalTerminal`, AngelPay
+        // cancela EXACTAMENTE la venta que se le describe, aunque sea de otra Nexgo del comercio; y si la cancelación queda en
+        // duda, el propio SDK la confirma con el PRIMER renglón de la referencia (`resolveInDoubtPostOp`, bytecode 1.0.22 y
+        // 1.0.23), sin mirar terminal, autorización, folio ni importe. Por eso sólo se devuelve si TODOS los renglones de la
+        // referencia son la misma operación (terminal, autorización y folio), es una venta y es del importe de este pago.
+        // Cualquier otra operación con esa referencia, sea de la terminal que sea, frena: se hace en el portal de AngelPay o
+        // con su soporte. La misma venta repetida en el historial cuenta una vez.
+        val operaciones = candidates.distinctBy { Triple(terminalDe(it), it.authorizationCode.trim(), it.folio.trim()) }
+        if (operaciones.size > 1) {
+            Timber.w(
+                "⚠️ [AngelPay Direct Refund] Referencia con varias operaciones ref=%s operaciones=%s terminales=%s importes=%s tipos=%s",
+                paymentReference, operaciones.size, operaciones.map { it.terminal ?: "-" }, operaciones.map { it.amount },
+                operaciones.map { it.idOperation ?: it.operationType ?: "-" },
             )
-            .firstOrNull()
-        target?.let {
-            Timber.i(
-                // Los textos crudos de fecha/hora y del estado de la post-operación van al log a propósito: su formato real no está
-                // medido y de él dependen el corte por la hora de AngelPay y la confirmación por historial (re-auditoría 29-sep).
-                "🔶 [AngelPay Direct Refund] Selected target ref=%s folio=%s postOpType=%s postOpRef=%s postOpStatus=%s opType=%s status=%s creation=[%s] date=[%s] time=[%s] auth=%s",
-                it.reference, it.folio, it.postOperationType ?: "-", it.postOperationReference ?: "-", it.postOperationStatus ?: "-",
-                it.operationType ?: "-", it.status, it.creationDate, it.date ?: "-", it.time ?: "-", it.authorizationCode,
+            return Result.failure(
+                VentaNoSegura(
+                    "venta_ambigua",
+                    "AngelPay tiene más de una venta u operación con la referencia $paymentReference y no se puede saber cuál es la de " +
+                        "este pago. Hazla desde el portal de AngelPay o con su soporte.",
+                ),
             )
         }
+        val target = operaciones.singleOrNull()?.takeIf { esVenta(it) } ?: return Result.success(null)
+        if (BigDecimal.valueOf(target.amount).compareTo(importe) != 0) {
+            Timber.w("⚠️ [AngelPay Direct Refund] Importe distinto ref=%s angelpay=%s avoqado=%s", paymentReference, target.amount, importe)
+            return Result.failure(
+                VentaNoSegura(
+                    "importe_distinto",
+                    "La venta con la referencia $paymentReference en AngelPay es de ${pesos(BigDecimal.valueOf(target.amount))} y este " +
+                        "pago es de ${pesos(importe)}: no se devuelve para no tocar otra venta. Hazla desde el portal de AngelPay o con su soporte.",
+                ),
+            )
+        }
+        Timber.i(
+            // Los textos crudos de fecha/hora y del estado de la post-operación van al log a propósito: su formato real no está
+            // medido y de él dependen el corte por la hora de AngelPay y la confirmación por historial (re-auditoría 29-sep).
+            "🔶 [AngelPay Direct Refund] Selected target ref=%s folio=%s postOpType=%s postOpRef=%s postOpStatus=%s opType=%s status=%s creation=[%s] date=[%s] time=[%s] auth=%s",
+            target.reference, target.folio, target.postOperationType ?: "-", target.postOperationReference ?: "-", target.postOperationStatus ?: "-",
+            target.operationType ?: "-", target.status, target.creationDate, target.date ?: "-", target.time ?: "-", target.authorizationCode,
+        )
         return Result.success(target)
     }
 
-    /** Las referencias con que se reintenta si AngelPay no reconoce la de la venta (mismo orden que antes del 29-sep). */
-    private fun referenciasAlternativas(
-        venta: UnifiedTransaction,
-        sdkCandidates: List<String>,
-        historyCandidates: List<String>,
-    ): List<String> = distinctCaseInsensitive(
-        buildList {
-            addAll(sdkCandidates)
-            addAll(historyCandidates)
-            venta.folio.takeIf { it.isNotBlank() }?.let(::add)
-            venta.postOperationReference?.takeIf { it.isNotBlank() }?.let(::add)
-            venta.authorizationCode.takeIf { it.isNotBlank() }?.let(::add)
-            venta.postOperationAuthorization?.takeIf { it.isNotBlank() }?.let(::add)
-        }.filterNot { it.equals(venta.reference, ignoreCase = true) }
-            .flatMap(::expandAngelPayReferenceVariants)
-    )
+    private fun terminalDe(tx: UnifiedTransaction): String? = tx.terminal?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Un renglón del historial que es una VENTA, dicho EN POSITIVO (Codex r6 #1): el texto con que
+     * [com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier] confirma un cobro
+     * (`operationType` VENTA o SALE) y, más estricto que él, si trae número, el de venta (`idOperation = 4`, medido en QA el
+     * 26-sep y confirmado por AngelPay). Un check-in,
+     * una reautorización, una cancelación, una devolución o un renglón sin tipo no es una venta que se pueda devolver aquí.
+     */
+    private fun esVenta(tx: UnifiedTransaction): Boolean =
+        tx.operationType?.trim()?.uppercase() in setOf("VENTA", "SALE") && (tx.idOperation == null || tx.idOperation == ID_OPERACION_VENTA)
+
+    private fun pesos(monto: BigDecimal): String = "$" + String.format(java.util.Locale.US, "%,.2f", monto)
 
     /** El contexto de la fila: `originalPaymentId` va escapado porque [PaymentAttemptLedger.devolucionSinResolver] lo busca así. */
     private fun contextoDeLaDevolucion(originalPaymentId: String, paymentReference: String, originalOrderId: String?, tipRefundCents: Int?): String {
@@ -759,6 +779,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     }
 
     companion object {
+        /** `TransactionItem.idOperation` de AngelPay para una venta (catálogo del SDK; medido en QA el 26-sep). */
+        private const val ID_OPERACION_VENTA = 4
+
         /**
          * Texto del candado contra un SEGUNDO reembolso del mismo pago. Distingue lo que puede
          * pasar con la devolución que ya existe (founder, N86, 7-sep-2026): una fila PENDING «se
@@ -823,276 +846,6 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             .uppercase()
     }
 
-    private fun parseAngelPayTransactionDate(
-        creationDate: String,
-        zone: ZoneId,
-    ): LocalDate? {
-        if (creationDate.isBlank()) return null
-
-        return runCatching {
-            Instant.parse(creationDate).atZone(zone).toLocalDate()
-        }.recoverCatching {
-            LocalDate.parse(creationDate.take(10))
-        }.getOrNull()
-    }
-
-    private data class AngelPaySdkReferenceHint(
-        val currentReference: String?,
-        val previousReference: String?,
-        val cancelPreviousReference: String?,
-        val reversePreviousReference: String?,
-        val idOperation: Int?,
-    )
-
-    private suspend fun resolveAngelPaySdkReferenceCandidates(
-        appContext: Context,
-        transaction: UnifiedTransaction,
-    ): List<String> = withContext(Dispatchers.IO) {
-        val dbFile = appContext.getDatabasePath("angelpay_sdk_db")
-        if (!dbFile.exists()) {
-            Timber.w("⚠️ [AngelPay Direct Refund] SDK DB not found at %s", dbFile.absolutePath)
-            return@withContext emptyList()
-        }
-
-        val hint = runCatching {
-            SQLiteDatabase.openDatabase(
-                dbFile.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY,
-            ).use { db ->
-                queryAngelPayHint(db, transaction)
-            }
-        }.onFailure { error ->
-            Timber.w(error, "⚠️ [AngelPay Direct Refund] Failed reading AngelPay SDK DB")
-        }.getOrNull()
-
-        if (hint == null) {
-            Timber.w(
-                "⚠️ [AngelPay Direct Refund] No SDK local row found for ref=%s folio=%s auth=%s",
-                transaction.reference,
-                transaction.folio,
-                transaction.authorizationCode,
-            )
-            return@withContext emptyList()
-        }
-
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] SDK hint current=%s previous=%s cancelPrevious=%s reversePrevious=%s idOperation=%s",
-            hint.currentReference ?: "-",
-            hint.previousReference ?: "-",
-            hint.cancelPreviousReference ?: "-",
-            hint.reversePreviousReference ?: "-",
-            hint.idOperation ?: -1,
-        )
-
-        return@withContext distinctCaseInsensitive(
-            listOfNotNull(
-                hint.currentReference?.takeIf { it.isNotBlank() },
-                hint.previousReference?.takeIf { it.isNotBlank() },
-                hint.cancelPreviousReference?.takeIf { it.isNotBlank() },
-                hint.reversePreviousReference?.takeIf { it.isNotBlank() },
-            )
-        )
-    }
-
-    private fun queryAngelPayHint(
-        db: SQLiteDatabase,
-        transaction: UnifiedTransaction,
-    ): AngelPaySdkReferenceHint? {
-        val lookups = buildList {
-            if (transaction.reference.isNotBlank() && !transaction.folio.isBlank() && !transaction.terminal.isNullOrBlank()) {
-                add(
-                    Triple(
-                        "referenceNumber = ? AND folio = ? AND terminal = ?",
-                        arrayOf(transaction.reference, transaction.folio, transaction.terminal),
-                        "reference+folio+terminal",
-                    )
-                )
-            }
-            if (transaction.reference.isNotBlank() && !transaction.folio.isBlank()) {
-                add(
-                    Triple(
-                        "referenceNumber = ? AND folio = ?",
-                        arrayOf(transaction.reference, transaction.folio),
-                        "reference+folio",
-                    )
-                )
-            }
-            if (transaction.reference.isNotBlank()) {
-                add(
-                    Triple(
-                        "referenceNumber = ?",
-                        arrayOf(transaction.reference),
-                        "reference",
-                    )
-                )
-                add(
-                    Triple(
-                        "referenceNumberAnt = ?",
-                        arrayOf(transaction.reference),
-                        "previousReference",
-                    )
-                )
-            }
-            if (!transaction.folio.isBlank() && !transaction.authorizationCode.isBlank()) {
-                add(
-                    Triple(
-                        "folio = ? AND authorization = ?",
-                        arrayOf(transaction.folio, transaction.authorizationCode),
-                        "folio+authorization",
-                    )
-                )
-            }
-            if (!transaction.authorizationCode.isBlank() && !transaction.terminal.isNullOrBlank()) {
-                add(
-                    Triple(
-                        "authorization = ? AND terminal = ?",
-                        arrayOf(transaction.authorizationCode, transaction.terminal),
-                        "authorization+terminal",
-                    )
-                )
-            }
-        }
-
-        for ((whereClause, args, label) in lookups) {
-            val hint = db.querySingleAngelPayHint(whereClause, args)
-            if (hint != null) {
-                Timber.i(
-                    "🔶 [AngelPay Direct Refund] SDK hint source=%s for ref=%s",
-                    label,
-                    transaction.reference,
-                )
-                return hint
-            }
-        }
-
-        return null
-    }
-
-    private fun SQLiteDatabase.querySingleAngelPayHint(
-        whereClause: String,
-        whereArgs: Array<String>,
-    ): AngelPaySdkReferenceHint? {
-        val sql = """
-            SELECT referenceNumber, referenceNumberAnt, cancelreferenceNumberAnt, reversereferenceNumberAnt, idOperation
-            FROM TransactionEntity
-            WHERE $whereClause
-            ORDER BY creationDate DESC
-            LIMIT 1
-        """.trimIndent()
-
-        rawQuery(sql, whereArgs).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            return AngelPaySdkReferenceHint(
-                currentReference = cursor.getStringOrNull("referenceNumber"),
-                previousReference = cursor.getStringOrNull("referenceNumberAnt"),
-                cancelPreviousReference = cursor.getStringOrNull("cancelreferenceNumberAnt"),
-                reversePreviousReference = cursor.getStringOrNull("reversereferenceNumberAnt"),
-                idOperation = cursor.getIntOrNull("idOperation"),
-            )
-        }
-    }
-
-    private fun Cursor.getStringOrNull(columnName: String): String? {
-        val index = getColumnIndex(columnName)
-        if (index == -1 || isNull(index)) return null
-        return getString(index)
-    }
-
-    private fun Cursor.getIntOrNull(columnName: String): Int? {
-        val index = getColumnIndex(columnName)
-        if (index == -1 || isNull(index)) return null
-        return getInt(index)
-    }
-
-    private fun distinctCaseInsensitive(values: List<String>): List<String> {
-        val seen = linkedSetOf<String>()
-        val result = mutableListOf<String>()
-        for (rawValue in values) {
-            val trimmed = rawValue.trim()
-            if (trimmed.isBlank()) continue
-            val key = trimmed.uppercase()
-            if (seen.add(key)) {
-                result += trimmed
-            }
-        }
-        return result
-    }
-
-    private fun expandAngelPayReferenceVariants(value: String): List<String> {
-        val trimmed = value.trim()
-        if (trimmed.isBlank()) return emptyList()
-
-        val candidates = linkedSetOf(trimmed)
-        val numeric = trimmed.all(Char::isDigit)
-        if (numeric) {
-            val noLeadingZero = trimmed.trimStart('0')
-            if (noLeadingZero.isNotBlank()) candidates += noLeadingZero
-            if (trimmed.length > 12) candidates += trimmed.takeLast(12)
-            if (trimmed.length > 10) candidates += trimmed.takeLast(10)
-        }
-        return candidates.toList()
-    }
-
-    private suspend fun resolveAngelPayHistoryReferenceCandidates(
-        adapterFactory: PostOperationsAdapterFactory,
-        target: UnifiedTransaction,
-        startDate: String,
-        endDate: String,
-        zone: ZoneId,
-    ): List<String> {
-        val adapter = adapterFactory.get(ProcessorType.ANGELPAY)
-        val history = adapter.getTransactionHistory(
-            TransactionHistoryQuery(
-                startDate = startDate,
-                endDate = endDate,
-                terminal = target.terminal?.takeIf { it.isNotBlank() },
-            )
-        ).getOrElse { error ->
-            Timber.w(error, "⚠️ [AngelPay Direct Refund] Failed loading broad history candidates")
-            return emptyList()
-        }
-
-        val targetDate = parseAngelPayTransactionDate(target.creationDate, zone)
-
-        val scored = history
-            .map { candidate ->
-                var score = 0
-                if (candidate.reference.equals(target.reference, ignoreCase = true)) score += 50
-                if (candidate.authorizationCode.isNotBlank() &&
-                    candidate.authorizationCode.equals(target.authorizationCode, ignoreCase = true)
-                ) score += 20
-                if (candidate.folio.isNotBlank() &&
-                    candidate.folio.equals(target.folio, ignoreCase = true)
-                ) score += 12
-                if (kotlin.math.abs(candidate.amount - target.amount) < 0.01) score += 8
-                if (isAngelPayApprovedStatus(candidate.status)) score += 4
-                if ((candidate.operationType ?: "").contains("VENTA", ignoreCase = true) ||
-                    (candidate.operationType ?: "").contains("SALE", ignoreCase = true)
-                ) score += 3
-                if (targetDate != null &&
-                    parseAngelPayTransactionDate(candidate.creationDate, zone) == targetDate
-                ) score += 2
-                candidate to score
-            }
-            .filter { (_, score) -> score >= 8 }
-            .sortedByDescending { (_, score) -> score }
-            .take(25)
-
-        val references = scored.flatMap { (candidate, _) ->
-            listOfNotNull(
-                candidate.reference.takeIf { it.isNotBlank() },
-                candidate.postOperationReference?.takeIf { it.isNotBlank() },
-            )
-        }
-
-        val unique = distinctCaseInsensitive(references)
-        Timber.i(
-            "🔶 [AngelPay Direct Refund] Broad history candidate refs=%s",
-            unique.joinToString(separator = ",").ifBlank { "-" },
-        )
-        return unique
-    }
 }
 
 /**

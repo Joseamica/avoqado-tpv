@@ -111,6 +111,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- AngelPay SDK 1.0.23 trae un administrador de aparato para su modo kiosko (setKioskMode). No usamos el kiosko
+             del SDK (el de la TPV es legacy desde el 2-nov), así que se quita: la TPV no puede quedar como administrador
+             del aparato. En las variantes sin el AAR (PAX) esta línea no hace nada. -->
+        <receiver
+            android:name="com.angelpay.angelpaysdk.internal.kiosk.AngelPayDeviceAdminReceiver"
+            tools:node="remove" />
+
     </application>
 
 </manifest>

@@ -5352,6 +5352,26 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    @Test fun `D2 Codex r3 - un rechazo SIN contexto imprime su ticket sin inventar el importe`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { printerManager.isPrinterAvailable() } returns true   // sabor sandbox: `canPrintReceipt` pregunta a la impresora PAX
+        val importes = mutableListOf<BigDecimal?>()
+        every { angelPayTicketBuilder.buildDeclineTicket(captureNullable(importes), any(), any(), any(), any(), any(), any(), any(), any()) } returns mockk(relaxed = true)
+        // `leerIntento(any())` contesta null (setup): la libreta no devuelve la fila del intento lanzado.
+        val vm = createViewModel(androidx.lifecycle.SavedStateHandle(mapOf("angelpay_intento_lanzado_al_sdk" to "att-sin-fila")))
+        vm.ticketsDeRechazoEnEsteAparato = true   // como en la Nexgo
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500", message = "Transacción rechazada por el gateway"))
+            advanceTimeBy(5_000); runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(timeout = 5_000, exactly = 1) { angelPayTicketBuilder.buildDeclineTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            assertWithMessage("el ticket del rechazo no puede decir «Monto intentado $0.00»: no se sabe el importe")
+                .that(importes.single()).isNull()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `D2 resetPayment olvida la llave del intento lanzado al SDK`() = runTest(testDispatcher) {
         val handle = androidx.lifecycle.SavedStateHandle()
         val vm = createViewModel(handle)

@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -108,6 +109,9 @@ fun AngelPayPaymentScreen(
     externalTipCents: Long? = null,
     externalRating: Int? = null,
     externalSkipReview: Boolean = false,
+    // 🪑 D9 (12-nov): la propina que el mesero escribió en Mesas (centavos). Se cobra sin volver a preguntarla; la
+    // calificación sigue igual. Sólo la pone la costura de Mesas; null o ≤ 0 = el camino de siempre.
+    propinaYaElegidaCents: Long? = null,
     // 📡 POS→TPV terminal arbitration: set only when this charge was initiated by the POS over
     // Socket.IO (source "SOCKET" + the request id the caller long-polls on). Null for a normal
     // device-initiated charge. Passed straight to the VM so the terminal outcome reports back.
@@ -231,6 +235,13 @@ fun AngelPayPaymentScreen(
         recogerSalidaAutomatica(viewModel.salidaAutomatica) { salirComoRegresar() }
     }
 
+    // 🪑 D9: la propina de la mesa se cobra UNA vez por entrada a «Cobrar» (espejo de PaymentScreen): si la pantalla se
+    // recrea después de un cobro exitoso y el auto-arranque vuelve a correr, ya no se reaplica.
+    var propinaDeMesaCobrada by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state is AngelPayPaymentState.Success) propinaDeMesaCobrada = true
+    }
+
     // Auto-start payment when screen opens with amount
     LaunchedEffect(
         initialAmount,
@@ -240,6 +251,7 @@ fun AngelPayPaymentScreen(
         externalTipCents,
         externalRating,
         externalSkipReview,
+        propinaYaElegidaCents,
         soloEfectivo,
         ventaLocalJson,
     ) {
@@ -257,6 +269,7 @@ fun AngelPayPaymentScreen(
                 skipReview = externalSkipReview || skipReview,
                 externalTipCents = externalTipCents,
                 externalRating = externalRating,
+                propinaYaElegidaCents = propinaYaElegidaCents.takeUnless { propinaDeMesaCobrada },
                 soloEfectivo = soloEfectivo,
                 ventaLocalJson = ventaLocalJson,
                 folio = folio,  // 🧾 P4: registrado, el ViewModel acepta el folio y prueba la comanda

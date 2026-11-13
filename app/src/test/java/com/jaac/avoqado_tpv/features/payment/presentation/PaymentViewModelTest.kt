@@ -769,6 +769,157 @@ class PaymentViewModelTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // D9 (12-nov) — la propina que el mesero escribió en «Mesas» se cobra con la tarjeta
+    // sin volver a preguntarla; la calificación sigue igual. Sólo la llave de Mesas la prende.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `D9 propina de la mesa - califica y va al comercio con esa propina, sin pantalla de propina`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT // calificación y propina prendidas
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingRating::class.java)
+
+            viewModel.submitRating("845.50", 5)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("50.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("895.50"))
+            assertThat(state.rating).isEqualTo(5)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa - con la pregunta de propina APAGADA igual se cobra`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = false)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("50.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("895.50"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa - atras desde el comercio regresa a la calificacion, nunca a la propina`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+            viewModel.submitRating("845.50", 4)
+            testDispatcher.scheduler.advanceUntilIdle()
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+
+            assertThat(viewModel.goBackOneStep()).isTrue()
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingRating::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 el siguiente cobro normal vuelve a preguntar la propina`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+            viewModel.resetPayment()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.submitAmount("100.00")
+            viewModel.submitRating("100.00", 5)
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingTip::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 submitAmount sin reset tambien apaga la propina de la mesa`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+
+            viewModel.submitAmount("100.00")
+            viewModel.submitRating("100.00", 5)
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingTip::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa en cero sigue el camino de siempre`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("100.00", propinaCents = 0L)
+            viewModel.submitRating("100.00", 5)
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingTip::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 tras un cobro de mesa, el cobro remoto del POS cobra SU propina, no la de la mesa`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+
+            // Mismo ViewModel, sin resetPayment(): la sesión venía sin TIP_COLLECTION por la propina de la mesa.
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = 5, skipReview = true)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("115.00"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 tras un cobro de mesa, un cobro remoto sin propina no hereda la de la mesa`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountConPropinaYaElegida("845.50", propinaCents = 5_000L)
+
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 0L, rating = 5, skipReview = true)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal.ZERO)
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("100.00"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // C. PAYMENT FLOW
     // ═══════════════════════════════════════════════════════════════════════════
 

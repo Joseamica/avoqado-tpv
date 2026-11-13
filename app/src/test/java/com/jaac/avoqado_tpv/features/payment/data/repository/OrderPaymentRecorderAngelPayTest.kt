@@ -131,4 +131,19 @@ class OrderPaymentRecorderAngelPayTest {
         assertThat(cuerpo["tip"].asInt).isEqualTo(575)
     }
 
+    // Codex r1 #2: en una fila de TARJETA, `createdAt` es la hora en que falló el registro y se encoló, no la del cobro. Sólo el
+    // efectivo manda la hora de la venta; la tarjeta queda fechada a la llegada, como hoy.
+    @Test
+    fun `D5 la cola order AngelPay con TARJETA no manda la hora de la venta`() = runTest {
+        val captured = slot<OrderPaymentRequest>()
+        coEvery { apiService.recordOrderPayment(venueId = any(), orderId = any(), request = capture(captured)) } returns successResponse()
+        val tarjeta = CardDetails(maskedPan = "411111******1111", cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, cardNature = com.jaac.avoqado_tpv.features.payment.domain.model.CardNature.CREDIT)
+        val fila = QueuedPayment.desdeContexto(angelPayOrderContext().copy(idempotencyKey = "k-tarjeta"), null, tarjeta, "067718", "000000067718", null, createdAt = 1_762_900_000_000L)
+
+        recorder.recordPayment(fila.toPaymentContext(), fila.toCardDetails(), "067718", "000000067718").getOrThrow()
+
+        val cuerpo = Gson().toJsonTree(captured.captured).asJsonObject
+        assertThat(cuerpo["isOfflineReplay"].asBoolean).isTrue()
+        assertThat(cuerpo.has("createdAtLocal")).isFalse()
+    }
 }

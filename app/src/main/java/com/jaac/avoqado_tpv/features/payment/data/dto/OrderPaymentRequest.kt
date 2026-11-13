@@ -66,6 +66,11 @@ data class OrderPaymentRequest(
     @SerializedName("isOfflineReplay")
     val isOfflineReplay: Boolean? = null,
 
+    // Lealtad: epoch ms en que esta terminal guardó la venta en su cola. Sólo viaja con isOfflineReplay; el servidor la acota a la
+    // llegada (horaDeLaVenta). Nulo se omite: un servidor viejo nunca lo ve y lo borra su validador.
+    @SerializedName("createdAtLocal")
+    val createdAtLocal: Long? = null,
+
     @SerializedName("paidProductsId")
     val paidProductsId: List<String> = emptyList(),
 

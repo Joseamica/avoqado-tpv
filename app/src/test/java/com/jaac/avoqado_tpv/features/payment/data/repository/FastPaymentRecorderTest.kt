@@ -395,20 +395,20 @@ class FastPaymentRecorderTest {
     }
 
     @Test
-    fun `C4 la cola fast PAX envia turno y replay booleano con centavos intactos`() = runTest {
+    fun `C4 la cola fast PAX envia turno, replay booleano, hora de la venta y centavos intactos`() = runTest {
         val captured = slot<FastPaymentRequest>()
         coEvery { apiService.recordFastPayment(venueId = any(), request = capture(captured)) } returns successResponse()
         val vivo = cashContextWithLeakedMerchantId().copy(shiftId = "shift_789", tip = BigDecimal("5.75"), idempotencyKey = "k-replay")
-        val fila = QueuedPayment.desdeContexto(vivo, null, CardDetails.CASH, "EFECTIVO", "CASH-replay", null)
+        val fila = QueuedPayment.desdeContexto(vivo, null, CardDetails.CASH, "EFECTIVO", "CASH-replay", null, createdAt = 1_762_900_000_000L)
 
         recorder.recordPayment(fila.toPaymentContext(), CardDetails.CASH, "EFECTIVO", "CASH-replay").getOrThrow()
 
-        val esperado = JsonParser.parseString("""{"venueId":"venue_123","amount":10000,"tip":575,"status":"COMPLETED","method":"CASH","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"staff_456","authorizationNumber":"EFECTIVO","referenceNumber":"CASH-replay","maskedPan":"","entryMode":"MANUAL","currency":"MXN","isInternational":false,"idempotencyKey":"k-replay","shiftIdDeLaVenta":"shift_789","isOfflineReplay":true}""")
+        val esperado = JsonParser.parseString("""{"venueId":"venue_123","amount":10000,"tip":575,"status":"COMPLETED","method":"CASH","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"staff_456","authorizationNumber":"EFECTIVO","referenceNumber":"CASH-replay","maskedPan":"","entryMode":"MANUAL","currency":"MXN","isInternational":false,"idempotencyKey":"k-replay","shiftIdDeLaVenta":"shift_789","isOfflineReplay":true,"createdAtLocal":1762900000000}""")
         assertThat(Gson().toJsonTree(captured.captured)).isEqualTo(esperado)
     }
 
     @Test
-    fun `C4 el cobro fast PAX en vivo omite turno de venta y replay en el JSON`() = runTest {
+    fun `C4 el cobro fast PAX en vivo omite turno de venta, replay y hora de la venta en el JSON`() = runTest {
         val captured = slot<FastPaymentRequest>()
         coEvery { apiService.recordFastPayment(venueId = any(), request = capture(captured)) } returns successResponse()
         val vivo = cashContextWithLeakedMerchantId().copy(shiftId = "shift_789", tip = BigDecimal("5.75"), idempotencyKey = "k-replay")
@@ -418,6 +418,7 @@ class FastPaymentRecorderTest {
         val cuerpo = Gson().toJsonTree(captured.captured).asJsonObject
         assertThat(cuerpo.has("shiftIdDeLaVenta")).isFalse()
         assertThat(cuerpo.has("isOfflineReplay")).isFalse()
+        assertThat(cuerpo.has("createdAtLocal")).isFalse()
         assertThat(cuerpo["amount"].asInt).isEqualTo(10000)
         assertThat(cuerpo["tip"].asInt).isEqualTo(575)
     }

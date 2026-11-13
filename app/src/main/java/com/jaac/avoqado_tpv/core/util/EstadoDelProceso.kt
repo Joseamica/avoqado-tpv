@@ -39,7 +39,7 @@ internal object EstadoDelProceso {
  * 🔒 I-1 (revisión de D1/D2, 3-nov): la pantalla del SDK de AngelPay tampoco se restaura en un proceso nuevo.
  *
  * Si `PaymentActivity` estaba DETENIDA al morir el proceso (pantalla apagada u Home esperando tarjeta), Android la recrea con su Intent.
- * Su `onCreate` (AAR 1.0.22) le pasa el estado sólo a `super` y relanza el cobro con `angelpay_req`, sin pasar por la libreta: otro lector
+ * Su `onCreate` (AAR 1.0.23, idéntico al del 1.0.22) le pasa el estado sólo a `super` y relanza el cobro con `angelpay_req`, sin pasar por la libreta: otro lector
  * de la misma solicitud con el intento anterior en duda, y un aprobado que ya no le llega a nadie, porque `MainActivity` arranca como en
  * frío ([EstadoDelProceso]).
  *

@@ -5168,6 +5168,81 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── D2 (12-nov, hz:72be07e6:D2): el resultado del SDK embebido en un ViewModel recreado adopta SU intento ──
+
+    @Test fun `D2 la llave del intento lanzado al SDK sólo se adopta si su fila es de ESTA solicitud - si no, se adopta por la solicitud`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        // La llave guardada apunta a una fila de OTRA solicitud (nunca debería pasar): no se le cuelga este resultado.
+        coEvery { paymentAttemptLedger.leerIntento("att-ajeno") } returns filaDeLaSolicitudConMarca("OTRA", attemptId = "att-ajeno")
+            .copy(state = PaymentAttemptEntity.STATE_AUTORIZANDO, amountCents = 99_900, serverProcessorEvidence = null, serverProcessorEvidenceAt = null)
+        coEvery { paymentAttemptLedger.adoptarCobroDeLaSolicitud("REQ-D2") } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CobroSinResolver("att-propio")
+        coEvery { paymentAttemptLedger.leerIntento("att-propio") } returns filaDeLaSolicitudConMarca("REQ-D2", attemptId = "att-propio")
+            .copy(state = PaymentAttemptEntity.STATE_AUTORIZANDO, serverProcessorEvidence = null, serverProcessorEvidenceAt = null)
+        val ctxSlot = slot<PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-d2", receiptUrl = "https://r/d2", accessKey = "k", amount = BigDecimal("120.50"), tipAmount = BigDecimal("10.00")),
+        )
+        val handle = handleRecreado("REQ-D2").apply { set("angelpay_intento_lanzado_al_sdk", "att-ajeno") }
+        val vm = createViewModel(handle)
+        try {
+            vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
+            withContext(Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
+            }
+            val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
+            assertThat(ctx.idempotencyKey).isEqualTo("att-propio")
+            assertThat(ctx.amount).isEqualTo(BigDecimal("120.50"))
+            assertThat(ctx.tip).isEqualTo(BigDecimal("10.00"))
+            assertThat(ctx.orderId).isEqualTo("o-77")
+            coVerify(exactly = 1) { paymentAttemptLedger.markHostResponded("att-propio", true, any(), "R9", "A9") }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D2 Codex r1 - si la libreta no devuelve el intento lanzado, el aprobado NO se registra desde la RAM vacia ni se le dice al POS que no se cobro`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        // `leerIntento(any())` contesta null (setup): la libreta no devuelve la fila, como con un SQLite que falla.
+        val handle = handleRecreado("REQ-SC").apply { set("angelpay_intento_lanzado_al_sdk", "att-sin-fila") }
+        val vm = createViewModel(handle)
+        try {
+            vm.onAngelPaySdkResult(approvedSdkResult("A7", "R7"))
+            advanceTimeBy(5_000); runCurrent()   // las lecturas se reintentan con pausa antes de rendirse
+
+            val s = vm.state.value as AngelPayPaymentState.Error
+            assertThat(s.canRetry).isFalse()
+            assertThat(s.message).contains("NO lo vuelvas a cobrar")
+            coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }   // nunca $0 con otra llave
+            coVerify(exactly = 3) { paymentAttemptLedger.leerIntento("att-sin-fila") }
+            // El veredicto del banco aterriza en la fila DEL intento (la recuperación lo registra desde ahí, con su llave).
+            coVerify(exactly = 1) { paymentAttemptLedger.markHostResponded("att-sin-fila", true, any(), "R7", "A7") }
+            // Al morir la pantalla (onCleared) no sale ningún «cancelado / no se autorizó nada» sobre dinero que se movió.
+            vm.emitCancelledIfAbandoned()
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            // Codex r2: el aviso del servidor (S5, registrado) de ESE intento no pinta un recibo de $0 sin orden: dice que hay cobro.
+            vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-SC", "att-sin-fila", "pay-s5", 12_050, 1_000, registrado = true))
+            runCurrent()
+            val trasS5 = vm.state.value
+            assertThat(trasS5).isNotInstanceOf(AngelPayPaymentState.Success::class.java)
+            assertThat((trasS5 as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
+            assertThat(trasS5.canRetry).isFalse()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test fun `D2 resetPayment olvida la llave del intento lanzado al SDK`() = runTest(testDispatcher) {
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val vm = createViewModel(handle)
+        try {
+            vm.primeSdkLaunch()
+            assertThat(handle.get<String>("angelpay_intento_lanzado_al_sdk")).isEqualTo(vm.attemptIdForTest())
+            vm.resetPayment()
+            assertThat(handle.get<String>("angelpay_intento_lanzado_al_sdk")).isNull()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     @Test fun `fix5 D5 - sumidero del SDK embebido - un rechazo confirmado sobre un intento restaurado con evidencia pinta contradiccion, no Error con Reintentar`() = runTest(testDispatcher) {
         val vm = vmRecreadoConEvidencia("REQ-RC3")
         try {

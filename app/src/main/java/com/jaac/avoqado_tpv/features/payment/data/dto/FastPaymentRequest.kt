@@ -66,6 +66,11 @@ data class FastPaymentRequest(
     @SerializedName("isOfflineReplay")
     val isOfflineReplay: Boolean? = null,
 
+    // Lealtad: epoch ms en que esta terminal guardó la venta EN EFECTIVO en su cola (antes del primer envío). Sólo viaja con
+    // isOfflineReplay y en efectivo; el servidor la acota a la llegada. Nulo se omite: un servidor viejo lo borra en su validador.
+    @SerializedName("createdAtLocal")
+    val createdAtLocal: Long? = null,
+
     // Datos de Blumon SDK
     @SerializedName("authorizationNumber")
     val authorizationNumber: String?,

@@ -18,6 +18,9 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
@@ -312,24 +315,94 @@ class PaymentSyncWorkerTest {
         coVerify(exactly = 0) { repo.markSynced(any(), any()) }
     }
 
+    // ------------------------------------------------------------------
+    // D7 (12-nov, N86): al volver el WiFi, WorkManager arrancó el worker, éste reclamó las
+    // ventas guardadas y la red «validada» parpadeó: WorkManager lo detuvo a media tanda. La
+    // cancelación dejaba las filas en SYNCING con su candado, y nadie las tocaba hasta que
+    // vencía STALE_CLAIM_MS (15 min): «1/2 pagos pendientes» y «Reintentar» sin efecto.
+    // ------------------------------------------------------------------
+
     @Test
-    fun `CancellationException se repropaga y no toca la fila (la reclama el barrido de stale-claim)`() = runTest {
-        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+    fun `P1 un worker detenido a media tanda suelta lo que no termino, sin contar intento (D7)`() = runTest {
+        // Repositorio REAL: su release() corre en withContext(Dispatchers.IO), que en una
+        // corrutina ya cancelada se niega a correr. Sólo así la prueba exige NonCancellable.
+        val dao = mockk<PendingPaymentDao>(relaxed = true)
+        val repo = PaymentQueueRepositoryImpl(dao)
         val useCase = mockk<RecordPaymentUseCase>()
-        coEvery { repo.claimBatch(any()) } returns listOf(queuedPayment(reference = "ref-6"))
-        coEvery { useCase(any(), any(), any(), any(), true) } throws CancellationException("worker cancelado")
-
-        val worker = buildWorker(repo, useCase)
-
-        var propagated = false
-        try {
-            worker.doWork()
-        } catch (e: CancellationException) {
-            propagated = true
+        val hecha = pendingEntity(reference = "ref-a", id = 101L)
+        val enVuelo = pendingEntity(reference = "ref-b", id = 102L).copy(retryCount = 3)
+        val sinEmpezar = pendingEntity(reference = "ref-c", id = 103L)
+        coEvery { dao.claimBatch(any(), any(), any(), any()) } returns listOf(hecha, enVuelo, sinEmpezar)
+        coEvery { dao.markSynced(hecha.id, any()) } returns 1
+        val envioColgado = CompletableDeferred<Unit>()
+        var envios = 0
+        coEvery { useCase(any(), any(), any(), any(), true) } coAnswers {
+            if (++envios == 1) {
+                Result.success(mockk(relaxed = true))
+            } else {
+                envioColgado.complete(Unit)
+                awaitCancellation()
+            }
         }
 
-        assertThat(propagated).isTrue()
-        coVerify(exactly = 0) { repo.release(any(), any(), any(), any()) }
+        val worker = buildWorker(repo, useCase)
+        val corrida = launch { worker.doWork() }
+        envioColgado.await()
+        corrida.cancel(CancellationException("WorkManager detuvo el worker: la red dejó de estar validada"))
+        corrida.join()
+
+        assertThat(corrida.isCancelled).isTrue()
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any(), true) }
+        coVerify(exactly = 0) { dao.release(hecha.id, any(), any(), any()) }
+        coVerify(exactly = 1) { dao.release(enVuelo.id, "claim-token-batch", 3, any()) }
+        coVerify(exactly = 1) { dao.release(sinEmpezar.id, "claim-token-batch", 0, any()) }
+    }
+
+    @Test
+    fun `P1 una cancelacion justo al reclamar no pierde la lista y suelta toda la tanda (D7, Codex r1)`() = runTest {
+        // Room ya confirmó el reclamo y la cancelación llega antes de que claimBatch() regrese:
+        // un withContext cancelable tiraría la lista y las filas quedarían SYNCING 15 min.
+        val dao = mockk<PendingPaymentDao>(relaxed = true)
+        val repo = PaymentQueueRepositoryImpl(dao)
+        val useCase = mockk<RecordPaymentUseCase>()
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
+        val a = pendingEntity(reference = "ref-a", id = 201L)
+        val b = pendingEntity(reference = "ref-b", id = 202L).copy(retryCount = 1)
+        var corrida: kotlinx.coroutines.Job? = null
+        coEvery { dao.claimBatch(any(), any(), any(), any()) } coAnswers {
+            corrida!!.cancel(CancellationException("WorkManager detuvo el worker al reclamar"))
+            listOf(a, b)
+        }
+
+        val worker = buildWorker(repo, useCase)
+        val job = launch { worker.doWork() } // el TestDispatcher no lo corre antes de la asignación
+        corrida = job
+        job.join()
+
+        assertThat(job.isCancelled).isTrue()
+        coVerify(exactly = 0) { dao.markSynced(any(), any()) }
+        coVerify(exactly = 1) { dao.release(a.id, "claim-token-batch", 0, any()) }
+        coVerify(exactly = 1) { dao.release(b.id, "claim-token-batch", 1, any()) }
+    }
+
+    @Test
+    fun `una excepcion que tumba el worker suelta la tanda y cuenta el intento solo de la fila en curso (D7)`() = runTest {
+        // Un error que escapa de syncPayment (aquí, la libreta revienta en vez de devolver
+        // Result.failure) cae al catch genérico de doWork(): antes dejaba la tanda reclamada.
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val enCurso = queuedPayment(reference = "ref-1", queueId = 1L, retryCount = 2, idempotencyKey = "k-1")
+        val siguiente = queuedPayment(reference = "ref-2", queueId = 2L, retryCount = 5, idempotencyKey = "k-2")
+        coEvery { repo.claimBatch(any()) } returns listOf(enCurso, siguiente)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
+        val ledger = mockk<com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger>(relaxed = true)
+        coEvery { ledger.aplicarVeredictoDelServidor(any()) } throws IllegalStateException("libreta rota")
+
+        val result = buildWorker(repo, useCase, ledger = ledger).doWork()
+
+        assertThat(result).isEqualTo(ListenableWorker.Result.retry())
+        coVerify(exactly = 1) { repo.release(1L, "claim-token-1", 3, any()) }
+        coVerify(exactly = 1) { repo.release(2L, "claim-token-1", 5, any()) }
         coVerify(exactly = 0) { repo.markSynced(any(), any()) }
     }
 

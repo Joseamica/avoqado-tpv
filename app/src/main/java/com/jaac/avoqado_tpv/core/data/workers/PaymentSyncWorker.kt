@@ -171,6 +171,10 @@ class PaymentSyncWorker @AssistedInject constructor(
      * try/catch, unlike its siblings).
      */
     override suspend fun doWork(): Result {
+        // D7: filas que esta pasada reclamó y todavía no resuelve. Si el worker sale antes
+        // (WorkManager lo detiene porque la red «validada» parpadeó al reconectar, o una
+        // excepción lo tumba), se sueltan aquí; antes esperaban STALE_CLAIM_MS (15 min).
+        var sinTerminar: List<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment> = emptyList()
         return try {
             Timber.d("💾 [Payment Sync] Worker started")
 
@@ -180,7 +184,13 @@ class PaymentSyncWorker @AssistedInject constructor(
             var paymentProgress = 0
 
             // Reclamar la tanda: otro worker corriendo en paralelo NO puede tomar estas filas.
-            val batch = paymentQueueRepository.claimBatch(MAX_PAYMENTS_PER_RUN)
+            // NonCancellable: si WorkManager cancela justo cuando Room ya confirmó el reclamo, un
+            // withContext cancelable tira el resultado y nadie sabría qué filas soltar (Codex r1,
+            // hallazgo 1). La cancelación se nota en la siguiente suspensión, con la lista ya guardada.
+            val batch = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                paymentQueueRepository.claimBatch(MAX_PAYMENTS_PER_RUN)
+            }
+            sinTerminar = batch
 
             if (batch.isEmpty()) {
                 // 🔴 Ya NO se hace `return` aquí: los reembolsos se drenan abajo aunque no haya
@@ -194,8 +204,11 @@ class PaymentSyncWorker @AssistedInject constructor(
                 var successCount = 0
                 var failedCount = 0
 
-                for (payment in batch) {
+                for ((i, payment) in batch.withIndex()) {
                     val success = syncPayment(payment)
+                    // Sin suspensión entre el return de syncPayment y esta línea: una
+                    // cancelación nunca deja fuera de la lista una fila sin resolver.
+                    sinTerminar = batch.subList(i + 1, batch.size)
                     if (success) {
                         successCount++
                         paymentProgress++
@@ -252,11 +265,43 @@ class PaymentSyncWorker @AssistedInject constructor(
             // Even if some payments failed, we want the worker to run again in 15 minutes
             Result.success()
         } catch (e: CancellationException) {
-            throw e  // Worker cancelled — don't treat as error
+            // Worker detenido (WorkManager: la red dejó de estar validada, límite de tiempo):
+            // no es un intento fallido, así que no cuenta.
+            soltarSinTerminar(sinTerminar, contarIntentoDeLaPrimera = false)
+            throw e
         } catch (e: Exception) {
-            // Unexpected error (e.g., database crash)
+            // Unexpected error (e.g., database crash). La fila en curso sí cuenta el intento:
+            // si revienta siempre igual, llega a FAILED y la ve una persona en vez de girar.
             Timber.e(e, "💥 [Payment Sync] Worker crashed, will retry")
+            soltarSinTerminar(sinTerminar, contarIntentoDeLaPrimera = true)
             Result.retry()
+        }
+    }
+
+    /**
+     * D7: regresa a PENDING las filas que esta pasada reclamó y no resolvió, para que la
+     * siguiente (WorkManager la vuelve a correr al volver la red) las tome de inmediato.
+     *
+     * Es seguro soltarlas: el worker que las tenía ya no escribe nada más (está saliendo), cada
+     * `release` es compare-and-swap por su token (si ya se marcó o la reclamó otro, 0 filas), y
+     * si el envío en vuelo sí llegó al SERVIDOR, el reenvío lleva la MISMA llave de idempotencia
+     * (`@@unique([venueId, idempotencyKey])` en Payment): es lo mismo que pasaba al vencer
+     * STALE_CLAIM_MS, sólo que sin esperar 15 min. `NonCancellable` porque en una corrutina ya
+     * cancelada el `withContext(Dispatchers.IO)` del repositorio no correría.
+     *
+     * Si el PROCESO muere, nadie llega aquí: esa fila la sigue recuperando el barrido de 15 min.
+     */
+    private suspend fun soltarSinTerminar(
+        filas: List<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>,
+        contarIntentoDeLaPrimera: Boolean,
+    ) {
+        if (filas.isEmpty()) return
+        Timber.w("⏸️ [Payment Sync] El worker salió antes de terminar: se sueltan ${filas.size} ventas para la siguiente pasada")
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            filas.forEachIndexed { i, payment ->
+                val intentos = if (contarIntentoDeLaPrimera && i == 0) payment.retryCount + 1 else payment.retryCount
+                releaseClaim(payment, intentos, "La sincronización se detuvo antes de terminar; se reintenta")
+            }
         }
     }
 
@@ -275,8 +320,9 @@ class PaymentSyncWorker @AssistedInject constructor(
      * Retryable — la fila vuelve a PENDING (claim liberado) y el siguiente disparo
      * (periódico o NetworkType.CONNECTED) reintenta; nunca un loop ni un delay() locales.
      *
-     * `CancellationException` se repropaga sin tocar la fila: el worker cancelado la deja
-     * SYNCING/reclamada, y el barrido de stale-claim (`STALE_CLAIM_MS`) la recupera.
+     * `CancellationException` se repropaga sin tocar la fila aquí: la suelta `doWork()` al
+     * salir ([soltarSinTerminar], D7), sin contarla como intento. Sólo si el proceso muere la
+     * recupera el barrido de stale-claim (`STALE_CLAIM_MS`).
      *
      * @param payment Queued payment to sync
      * @return true si quedó sincronizado (o el backend ya lo tenía), false si no
@@ -340,7 +386,7 @@ class PaymentSyncWorker @AssistedInject constructor(
                 alreadyQueued = true,
             )
         } catch (e: CancellationException) {
-            throw e // Worker cancelado — no tocar la fila, la reclama el barrido de stale-claim
+            throw e // Worker cancelado — no tocar la fila aquí: la suelta doWork() al salir (D7)
         } catch (e: Exception) {
             // Excepción inesperada (no un Result.failure) — se normaliza para pasar por el
             // mismo clasificador que un fallo devuelto normalmente. Ver KDoc arriba.
@@ -623,6 +669,9 @@ class PaymentSyncWorker @AssistedInject constructor(
 
         var successCount = 0
         var failedCount = 0
+        // D7: a diferencia de los cobros, un reembolso detenido a media tanda NO se suelta antes de
+        // su lease (10 min): el SERVIDOR no vuelve a buscar la llave bajo su candado y un reenvío
+        // simultáneo saldría 400 «sin saldo» → FAILED permanente (Codex r1, hallazgo 2).
         for (refund in refunds) {
             val ok = try {
                 syncRefund(refund)

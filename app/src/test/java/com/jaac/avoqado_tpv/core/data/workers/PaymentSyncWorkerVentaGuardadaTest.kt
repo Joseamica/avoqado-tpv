@@ -357,15 +357,31 @@ class PaymentSyncWorkerVentaGuardadaTest {
         coVerify(exactly = 0) { legacy(any(), any(), any(), any(), true) }
     }
 
-    @Test fun `cancelar el worker conserva el claim local para recuperacion sin seguir enviando`() = runTest {
+    // D7: antes la fila se quedaba SYNCING con su candado hasta el barrido de 15 min. Reenviar es
+    // seguro: la orden lleva externalId = la llave (@@unique([venueId, externalId]) en el SERVIDOR)
+    // y el pago la misma idempotencyKey.
+    @Test fun `cancelar el worker suelta la venta guardada sin seguir enviando ni contar intento`() = runTest {
         guardar()
-        coEvery { api.crearOrden("venue-1", any()) } throws CancellationException("worker detenido")
+        val enVuelo = CompletableDeferred<Unit>()
+        coEvery { api.crearOrden("venue-1", any()) } coAnswers {
+            enVuelo.complete(Unit)
+            kotlinx.coroutines.awaitCancellation()
+        }
 
-        val error = try { worker().doWork(); null } catch (e: CancellationException) { e }
+        // Cancelación DE VERDAD del Job (como WorkManager): con Room real, soltar la fila sin
+        // NonCancellable no correría.
+        withContext(Dispatchers.Default) {
+            withTimeout(10_000L) {
+                val corrida = async { worker().doWork() }
+                enVuelo.await()
+                corrida.cancel(CancellationException("WorkManager detuvo el worker"))
+                corrida.join()
+                assertThat(corrida.isCancelled).isTrue()
+            }
+        }
 
-        assertThat(error).isNotNull()
-        assertThat(fila().syncStatus).isEqualTo("SYNCING")
-        assertThat(fila().claimToken).isNotEmpty()
+        assertThat(fila().syncStatus).isEqualTo("PENDING")
+        assertThat(fila().claimToken).isNull()
         assertThat(fila().retryCount).isEqualTo(0)
         assertThat(fila().orderRequestJson).isEqualTo(venta.pedidoJson)
         coVerify(exactly = 0) { api.pagar(any(), any(), any()) }

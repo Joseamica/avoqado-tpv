@@ -136,6 +136,49 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.23 — cancelar o devolver desde otra terminal (12-nov-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.23-fat-release.aar`.
+- SHA-256 `be5018aef3072171ce1f75b87cdba99f9bdd5e13d39bc97e7613a3c6ea900f74`. Es la del portal: «SDK-Angelpay-Nexgo —
+  v1.0,23», 06-nov.
+- El portal lo descarga como `angelpaySDK-v1.0.21 (2).aar`. El nombre miente; `AngelPaySDK.version() == "1.0.23"` no.
+- `AngelPaySdk119ReglaTest` fija el SHA y la versión.
+
+**Qué usamos:** `cancelTransaction()` / `refundTransaction()` aceptan `originalTerminal`.
+- El gateway busca la venta por la terminal que la cobró. Sin ese dato usa el serial del equipo actual, y desde otra Nexgo
+  del mismo comercio contesta **M2AP** («transacción original no localizada»).
+- `AngelPaySdkPostOperationsAdapter` manda el `terminal` del historial (`TransactionItem.terminal`). Nulo o vacío, el SDK
+  vuelve solo al serial actual.
+- Las dos entradas son la devolución remota (`RecordAngelPayRefundUseCase`, que busca la venta sin filtro de terminal) y
+  la pantalla «Transacciones».
+
+**«Una referencia, un renglón» (rediseño tras Codex r1–r5).** Con `originalTerminal`, AngelPay cancela EXACTAMENTE la
+venta que se le describe. Además, si la cancelación queda en duda, el SDK la confirma por su cuenta con
+`resolveInDoubtPostOp`. Esa función toma el primer renglón con la referencia de los últimos 30 días, sin mirar terminal,
+autorización ni importe (bytecode 1.0.22 y 1.0.23). Por eso `RecordAngelPayRefundUseCase.buscarLaVenta`:
+- busca la referencia en un historial de al menos 31 días;
+- sólo devuelve si todos los renglones de esa referencia son UNA operación (terminal, autorización y folio), es una venta
+  (`operationType` VENTA/SALE y, si trae número, `idOperation` 4, igual que `AngelPayChargeVerifier`) y es del importe del
+  pago;
+- si no, no toca AngelPay y deja la libreta en `antes_del_sdk:` con el motivo `venta_ambigua`, `sin_venta` o
+  `importe_distinto`.
+
+Ante «referencia inválida» sólo se reintenta la misma referencia, normal y manual. Se borraron los reintentos con otras
+referencias: base del SDK, historial amplio, folio, autorización y la forma sin ceros.
+
+**Qué NO usamos:** el modo kiosko (`setKioskMode`).
+- El SDK registra unos `ActivityLifecycleCallbacks` que no hacen nada mientras la preferencia `kiosk_mode` siga en `false`.
+- Su `AngelPayDeviceAdminReceiver` se quita en `AndroidManifest.xml` con `tools:node="remove"`, para que la TPV nunca
+  pueda quedar como administrador del aparato.
+
+**Re-auditoría (12-nov, contra el 1.0.22):** tras normalizar los renombres (`b0.*` → `c0.*`), el orquestador de cobro
+`c0.v0` y `PaymentActivity` son idénticos. La regla `decidirSegunElSdk119` sigue encendida con
+`VERSION_SDK_AUDITADA = "1.0.23"`, y `PantallaDelSdkNoSeRestaura` conserva su supuesto sobre `onCreate`.
+- Cambian sólo: post-operaciones (`originalTerminal`), kiosko, la inicialización (movida a un localizador interno
+  `synchronized`) y renombres.
+- Las cadenas de todo el AAR son iguales salvo las del kiosko.
+- Acta: `Avoqado/docs/audit/2026-11-12-angelpay-sdk-1023/`.
+
 ## SDK 1.0.22 — AMEX en wallet sin el tope sin contacto (23-oct-2026)
 
 **El AAR:** `app/libs/angelpaySDK-v1.0.22-fat-release.aar` (SHA-256

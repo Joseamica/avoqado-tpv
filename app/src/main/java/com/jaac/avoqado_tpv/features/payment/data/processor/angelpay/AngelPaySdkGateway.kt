@@ -199,7 +199,7 @@ class AngelPaySdkGateway() {
 
     /**
      * La versión del AAR de AngelPay que está corriendo (`AngelPaySDK.version()`: una constante del binario, no pide
-     * inicializar). Es el candado de la regla del SDK ([AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA], hoy 1.0.21): con otra
+     * inicializar). Es el candado de la regla del SDK ([AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA], hoy 1.0.23): con otra
      * versión —o si no se puede leer— la regla no corre y el cobro se clasifica como siempre.
      */
     fun sdkVersion(): String? = runCatching { AngelPaySDK.version() }.getOrNull()

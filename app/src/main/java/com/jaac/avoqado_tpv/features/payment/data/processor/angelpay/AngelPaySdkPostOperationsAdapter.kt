@@ -79,6 +79,9 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
             isManual = isManual,
             latitude = latitude,
             longitude = longitude,
+            // SDK 1.0.23: AngelPay busca la venta por la terminal que la cobró. Sin esto, desde otra Nexgo del mismo comercio
+            // contesta M2AP («transacción original no localizada»). Nula o vacía, el SDK usa el serial de este equipo.
+            originalTerminal = transaction.terminal,
         ).map { result ->
             PostOperationResult(
                 approved = result.approved,
@@ -110,6 +113,9 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
             isManual = isManual,
             latitude = latitude,
             longitude = longitude,
+            // SDK 1.0.23: AngelPay busca la venta por la terminal que la cobró. Sin esto, desde otra Nexgo del mismo comercio
+            // contesta M2AP («transacción original no localizada»). Nula o vacía, el SDK usa el serial de este equipo.
+            originalTerminal = transaction.terminal,
         ).map { result ->
             PostOperationResult(
                 approved = result.approved,

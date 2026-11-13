@@ -103,20 +103,20 @@ class OrderPaymentRecorderAngelPayTest {
     }
 
     @Test
-    fun `C4 la cola order AngelPay envia turno y replay booleano con centavos intactos`() = runTest {
+    fun `C4 la cola order AngelPay envia turno, replay booleano, hora de la venta y centavos intactos`() = runTest {
         val captured = slot<OrderPaymentRequest>()
         coEvery { apiService.recordOrderPayment(venueId = any(), orderId = any(), request = capture(captured)) } returns successResponse()
         val vivo = angelPayOrderContext().copy(shiftId = "shift_789", tip = BigDecimal("5.75"), idempotencyKey = "k-replay")
-        val fila = QueuedPayment.desdeContexto(vivo, null, CardDetails.CASH, "EFECTIVO", "CASH-replay", null)
+        val fila = QueuedPayment.desdeContexto(vivo, null, CardDetails.CASH, "EFECTIVO", "CASH-replay", null, createdAt = 1_762_900_000_000L)
 
         recorder.recordPayment(fila.toPaymentContext(), CardDetails.CASH, "EFECTIVO", "CASH-replay").getOrThrow()
 
-        val esperado = JsonParser.parseString("""{"venueId":"venue_1","amount":10000,"tip":575,"status":"COMPLETED","method":"CASH","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"staff_1","paidProductsId":[], "authorizationNumber":"EFECTIVO","referenceNumber":"CASH-replay","maskedPan":"","entryMode":"MANUAL","currency":"MXN","isInternational":false,"idempotencyKey":"k-replay","shiftIdDeLaVenta":"shift_789","isOfflineReplay":true}""")
+        val esperado = JsonParser.parseString("""{"venueId":"venue_1","amount":10000,"tip":575,"status":"COMPLETED","method":"CASH","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"staff_1","paidProductsId":[], "authorizationNumber":"EFECTIVO","referenceNumber":"CASH-replay","maskedPan":"","entryMode":"MANUAL","currency":"MXN","isInternational":false,"idempotencyKey":"k-replay","shiftIdDeLaVenta":"shift_789","isOfflineReplay":true,"createdAtLocal":1762900000000}""")
         assertThat(Gson().toJsonTree(captured.captured)).isEqualTo(esperado)
     }
 
     @Test
-    fun `C4 el cobro order AngelPay en vivo omite turno de venta y replay en el JSON`() = runTest {
+    fun `C4 el cobro order AngelPay en vivo omite turno de venta, replay y hora de la venta en el JSON`() = runTest {
         val captured = slot<OrderPaymentRequest>()
         coEvery { apiService.recordOrderPayment(venueId = any(), orderId = any(), request = capture(captured)) } returns successResponse()
         val vivo = angelPayOrderContext().copy(shiftId = "shift_789", tip = BigDecimal("5.75"), idempotencyKey = "k-replay")
@@ -126,8 +126,24 @@ class OrderPaymentRecorderAngelPayTest {
         val cuerpo = Gson().toJsonTree(captured.captured).asJsonObject
         assertThat(cuerpo.has("shiftIdDeLaVenta")).isFalse()
         assertThat(cuerpo.has("isOfflineReplay")).isFalse()
+        assertThat(cuerpo.has("createdAtLocal")).isFalse()
         assertThat(cuerpo["amount"].asInt).isEqualTo(10000)
         assertThat(cuerpo["tip"].asInt).isEqualTo(575)
     }
 
+    // Codex r1 #2: en una fila de TARJETA, `createdAt` es la hora en que falló el registro y se encoló, no la del cobro. Sólo el
+    // efectivo manda la hora de la venta; la tarjeta queda fechada a la llegada, como hoy.
+    @Test
+    fun `D5 la cola order AngelPay con TARJETA no manda la hora de la venta`() = runTest {
+        val captured = slot<OrderPaymentRequest>()
+        coEvery { apiService.recordOrderPayment(venueId = any(), orderId = any(), request = capture(captured)) } returns successResponse()
+        val tarjeta = CardDetails(maskedPan = "411111******1111", cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, cardNature = com.jaac.avoqado_tpv.features.payment.domain.model.CardNature.CREDIT)
+        val fila = QueuedPayment.desdeContexto(angelPayOrderContext().copy(idempotencyKey = "k-tarjeta"), null, tarjeta, "067718", "000000067718", null, createdAt = 1_762_900_000_000L)
+
+        recorder.recordPayment(fila.toPaymentContext(), fila.toCardDetails(), "067718", "000000067718").getOrThrow()
+
+        val cuerpo = Gson().toJsonTree(captured.captured).asJsonObject
+        assertThat(cuerpo["isOfflineReplay"].asBoolean).isTrue()
+        assertThat(cuerpo.has("createdAtLocal")).isFalse()
+    }
 }

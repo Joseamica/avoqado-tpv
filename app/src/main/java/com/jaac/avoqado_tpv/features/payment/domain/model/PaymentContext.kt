@@ -98,6 +98,8 @@ sealed class PaymentContext {
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(), // ICCID(s) from scanned SIMs
         val isOfflineReplay: Boolean = false,
+        /** Epoch ms en que la venta entró a la cola (`QueuedPayment.createdAt`); sólo lo llena el replay. Lealtad: hora de la venta. */
+        val createdAtLocal: Long? = null,
         override val queueClaimToken: String? = null,
         override val shiftMembership: String? = "UNKNOWN",
         override val localShiftSessionId: String? = null,
@@ -156,6 +158,8 @@ sealed class PaymentContext {
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(),
         val isOfflineReplay: Boolean = false,
+        /** Epoch ms en que la venta entró a la cola (`QueuedPayment.createdAt`); sólo lo llena el replay. Lealtad: hora de la venta. */
+        val createdAtLocal: Long? = null,
         override val queueClaimToken: String? = null,
         override val shiftMembership: String? = "UNKNOWN",
         override val localShiftSessionId: String? = null,
@@ -310,6 +314,8 @@ sealed class PaymentContext {
         val isPortabilidad: Boolean = false,
         val serialNumbers: List<String> = emptyList(),
         val isOfflineReplay: Boolean = false,
+        /** Epoch ms en que la venta entró a la cola (`QueuedPayment.createdAt`); sólo lo llena el replay. Lealtad: hora de la venta. */
+        val createdAtLocal: Long? = null,
         override val queueClaimToken: String? = null,
         override val shiftMembership: String? = "UNKNOWN",
         override val localShiftSessionId: String? = null,

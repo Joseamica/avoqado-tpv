@@ -3022,6 +3022,126 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    // ----------------------------------------------------------------------
+    // D9 (12-nov): la propina que el mesero escribió en «Mesas» se cobra sin volver a preguntarla;
+    // la calificación sigue igual. Sólo la prende la llave de Mesas (`propinaYaElegidaCents`).
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `D9 propina de la mesa - califica y va al comercio con esa propina, sin pantalla de propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+
+            vm.selectRatingAndProceed(amount = "845.50", rating = 5)
+            runCurrent()
+
+            val selectingMerchant = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(java.math.BigDecimal(selectingMerchant.tipAmount)).isEqualToIgnoringScale(java.math.BigDecimal("50.00"))
+            assertThat(java.math.BigDecimal(selectingMerchant.totalAmount)).isEqualToIgnoringScale(java.math.BigDecimal("895.50"))
+            assertThat(selectingMerchant.rating).isEqualTo(5)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa - sin calificar tambien va al comercio con esa propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+
+            vm.skipRating(amount = "845.50")
+            runCurrent()
+
+            val selectingMerchant = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(java.math.BigDecimal(selectingMerchant.tipAmount)).isEqualToIgnoringScale(java.math.BigDecimal("50.00"))
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa - con la pregunta de propina APAGADA igual se cobra`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+
+            val selectingMerchant = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(java.math.BigDecimal(selectingMerchant.tipAmount)).isEqualToIgnoringScale(java.math.BigDecimal("50.00"))
+            assertThat(java.math.BigDecimal(selectingMerchant.totalAmount)).isEqualToIgnoringScale(java.math.BigDecimal("895.50"))
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 propina de la mesa - atras desde el comercio regresa a la calificacion, nunca a la propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+            vm.selectRatingAndProceed(amount = "845.50", rating = 5)
+            runCurrent()
+
+            assertThat(vm.goBackOneStep()).isTrue()
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D9 tras resetPayment el siguiente cobro vuelve a preguntar la propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+            vm.resetPayment()
+            runCurrent()
+
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            vm.selectRatingAndProceed(amount = "100.00", rating = 5)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `el gate de staff nulo avisa failed al POS con el motivo`() = runTest(testDispatcher) {
         every { authRepository.getVenueId() } returns "venue-1"

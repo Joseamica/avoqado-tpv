@@ -99,12 +99,16 @@ import java.math.RoundingMode
  * nunca navega ahí directo ni conoce `getPaymentRoute()` — esa traducción
  * vive en `AppNavigation.kt`, el mismo dueño de la costura para
  * `SplitByProductScreen`/`SplitByPersonScreen`.
+ *
+ * D9 (12-nov): la navegación avisa cómo terminó la entrega con los dos avisos que recibe:
+ * `entregado` («Cobrar» ya tiene la solicitud con la propina: la casilla se vacía) o `noSalio`
+ * (la terminal no estaba lista: la casilla conserva la propina). Llama EXACTAMENTE uno.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TableCheckoutScreen(
     onNavigateBack: () -> Unit,
-    onProceedToCardPayment: (CardChargeRequest) -> Unit,
+    onProceedToCardPayment: (request: CardChargeRequest, entregado: () -> Unit, noSalio: () -> Unit) -> Unit,
     onPaymentFinished: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: TableCheckoutViewModel = hiltViewModel(),
@@ -248,7 +252,10 @@ fun TableCheckoutScreen(
         onTipChanged = viewModel::setTip,
         onPayCash = { viewModel.payCash(chargeableAmount) },
         onPayCard = {
-            onProceedToCardPayment(viewModel.buildPaymentPayload(chargeableAmount))
+            // D9: null = ya hay un cobro en curso (efectivo o una tarjeta abriéndose); el toque no hace nada.
+            viewModel.prepararCobroConTarjeta(chargeableAmount)?.let { request ->
+                onProceedToCardPayment(request, viewModel::cobroConTarjetaEntregado, viewModel::cobroConTarjetaNoSalio)
+            }
         },
         onAddDiscountClick = {
             showDiscountSheet = true
@@ -788,7 +795,10 @@ private fun CheckoutBottomBar(
     // cambie, TARJETA + división distinta de "cuenta completa" solo se
     // ofrece en PAX.
     val cardSupportsThisSplit = state.splitType == CheckoutSplitType.FULLPAYMENT || BuildConfig.ENABLE_PAX_SDK
-    val cardEnabled = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
+    // D9: una sola reserva de cobro — con efectivo esperando respuesta o una tarjeta abriéndose, el otro botón espera.
+    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard
+    val cardAvailable = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
+    val cardEnabled = cardAvailable && !cobroEnCurso
     val cardReason = when {
         !state.cardPaymentEnabled -> state.cardPaymentDisabledReason
         !cardSupportsThisSplit -> "División no disponible en este equipo — cobra el total o usa efectivo"
@@ -798,7 +808,7 @@ private fun CheckoutBottomBar(
     // paidProductsId (ver KDoc de TablesRepository.payCash). Hueco de
     // producto documentado, no un olvido.
     val cashSupportsThisSplit = state.splitType != CheckoutSplitType.PERPRODUCT
-    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !state.isProcessingCash
+    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
@@ -824,10 +834,11 @@ private fun CheckoutBottomBar(
                 modifier = Modifier.weight(1f),
             )
             CheckoutChargeButton(
-                label = if (cardEnabled) "Tarjeta" else "Tarjeta no disponible",
-                amountText = if (cardEnabled) moneyDisplay(chargeableAmount) else null,
+                label = if (cardAvailable) "Tarjeta" else "Tarjeta no disponible",
+                amountText = if (cardAvailable) moneyDisplay(chargeableAmount) else null,
                 onClick = onPayCard,
                 enabled = cardEnabled,
+                loading = state.isHandingOffToCard,
                 icon = Icons.Default.CreditCard,
                 modifier = Modifier.weight(1f),
             )

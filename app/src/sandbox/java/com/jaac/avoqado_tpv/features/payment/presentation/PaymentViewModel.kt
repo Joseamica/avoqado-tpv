@@ -493,6 +493,14 @@ class PaymentViewModel @Inject constructor(
     // 📱 SERIALIZED SALE: Skip local order lookup is tracked in PaymentSession.orderContext
     private var isSkipReviewFlow: Boolean = false  // 🧪 Skip rating/tip (test payment / serialized sale)
 
+    /**
+     * 🪑 D9 (12-nov): la propina que el mesero escribió en «Mesas» ("50.00"), o null. Con ella puesta la sesión NO lleva
+     * [PaymentFeature.TIP_COLLECTION] —ningún paso ni el «atrás» llevan a la pantalla de propina— y el paso que salta la
+     * propina la usa en vez de "0.00". La pone sólo [submitAmountConPropinaYaElegida]; cada otra entrada y [resetPayment]
+     * la apagan. La copia `production` de este archivo lleva lo mismo.
+     */
+    private var propinaYaElegida: String? = null
+
     // 📸 PRE-payment verification data stored in PaymentSession.verificationContext
 
     // ⚡ Performance optimization flags (1GB RAM devices)
@@ -1985,7 +1993,8 @@ class PaymentViewModel @Inject constructor(
         if (effectiveKioskMode) features += PaymentFeature.KIOSK
         if (isSerializedFlow) features += PaymentFeature.SERIALIZED_INVENTORY
         if (effectiveSplitContext != null) features += PaymentFeature.SPLIT
-        if (settings.showTipScreen) features += PaymentFeature.TIP_COLLECTION
+        // 🪑 D9: con la propina de la mesa ya elegida no hay pantalla de propina (ni de ida ni de regreso).
+        if (settings.showTipScreen && propinaYaElegida == null) features += PaymentFeature.TIP_COLLECTION
         if (settings.showReviewScreen) features += PaymentFeature.RATING_COLLECTION
         if (settings.showVerificationScreen || effectiveVerificationContext != null) features += PaymentFeature.PRE_VERIFICATION
         if (_isSerializedInventoryActive.value) features += PaymentFeature.PROOF_OF_SALE
@@ -2255,12 +2264,14 @@ class PaymentViewModel @Inject constructor(
             }
             PrePaymentNextStep.VERIFY_PRE_PAYMENT,
             PrePaymentNextStep.SELECT_MERCHANT -> {
-                Timber.d("⏭️ [Payment Flow] Skipping $skipLog (disabled in TPV settings)")
-                updateSessionSnapshot(reason = skipReason, amountOverride = amount, tipOverride = "0.00", ratingOverride = rating)
+                // 🪑 D9: sin pantalla de propina, la de la mesa (si la hay); si no, "0.00" como siempre.
+                val tipAmount = propinaYaElegida ?: "0.00"
+                Timber.d("⏭️ [Payment Flow] Skipping $skipLog (disabled in TPV settings) | tip=$tipAmount")
+                updateSessionSnapshot(reason = skipReason, amountOverride = amount, tipOverride = tipAmount, ratingOverride = rating)
 
                 routeToPreVerificationOrMerchant(
                     subtotal = amount,
-                    tipAmount = "0.00",
+                    tipAmount = tipAmount,
                     rating = rating,
                     settings = settings,
                     source = verificationSource
@@ -2522,6 +2533,45 @@ class PaymentViewModel @Inject constructor(
         equalPartsPayedFor: Int? = null,
         paidProductIds: List<String> = emptyList(),
         skipLocalOrderValidation: Boolean = false
+    ) {
+        propinaYaElegida = null
+        iniciarCobroDelMonto(
+            amount, orderId, orderNumber, splitType, equalPartsPartySize, equalPartsPayedFor, paidProductIds, skipLocalOrderValidation
+        )
+    }
+
+    /**
+     * 🪑 D9 (12-nov): el cobro con tarjeta de una mesa cuya propina ya escribió el mesero. Mismo camino que [submitAmount]
+     * (calificación si está prendida), pero sin pantalla de propina: se cobra [propinaCents]. Con 0 o menos es un
+     * [submitAmount] normal (la terminal la pregunta).
+     */
+    fun submitAmountConPropinaYaElegida(
+        amount: String,
+        propinaCents: Long,
+        orderId: String? = null,
+        orderNumber: String? = null,
+        splitType: String? = null,
+        equalPartsPartySize: Int? = null,
+        equalPartsPayedFor: Int? = null,
+        paidProductIds: List<String> = emptyList(),
+        skipLocalOrderValidation: Boolean = false
+    ) {
+        propinaYaElegida = if (propinaCents > 0L) formatCentsToAmountString(propinaCents) else null
+        Timber.d("🪑 [Payment Flow] Propina de la mesa: ${propinaYaElegida ?: "ninguna"}")
+        iniciarCobroDelMonto(
+            amount, orderId, orderNumber, splitType, equalPartsPartySize, equalPartsPayedFor, paidProductIds, skipLocalOrderValidation
+        )
+    }
+
+    private fun iniciarCobroDelMonto(
+        amount: String,
+        orderId: String?,
+        orderNumber: String?,
+        splitType: String?,
+        equalPartsPartySize: Int?,
+        equalPartsPayedFor: Int?,
+        paidProductIds: List<String>,
+        skipLocalOrderValidation: Boolean
     ) {
         Timber.d("💰 [Payment Flow] Amount entered: $$amount")
         isSkipReviewFlow = false
@@ -2932,6 +2982,7 @@ class PaymentViewModel @Inject constructor(
         skipLocalOrderValidation: Boolean = false
     ) {
         Timber.d("🧪 [Test Payment] Skipping rating/tip, going directly to merchant selection: $$amount")
+        propinaYaElegida = null  // 🪑 D9: sólo el cobro de la mesa la usa
         startPaymentWithResolvedInputs(
             amount = amount,
             tipAmount = "0.00",
@@ -2968,6 +3019,13 @@ class PaymentViewModel @Inject constructor(
         paidProductIds: List<String> = emptyList(),
         skipLocalOrderValidation: Boolean = false
     ) {
+        // 🪑 D9: el cobro remoto conserva sus reglas; la propina de la mesa no aplica aquí. Si este mismo ViewModel venía de
+        // un cobro de mesa sin `resetPayment()`, la sesión todavía no trae TIP_COLLECTION: se vuelve a leer antes de decidir,
+        // o la propina del POS saldría en $0.
+        if (propinaYaElegida != null) {
+            propinaYaElegida = null
+            updateSessionSnapshot(reason = "submitAmountWithExternalInputs-sinPropinaDeMesa")
+        }
         val settings = tpvSettingsRepository.getCurrentSettings()
         val needsRating = shouldShowRatingScreen()
         val needsTip = shouldShowTipScreen()
@@ -7505,6 +7563,7 @@ class PaymentViewModel @Inject constructor(
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
         isSkipReviewFlow = false
+        propinaYaElegida = null  // 🪑 D9: el siguiente cobro vuelve a preguntar la propina
         _flowOrigin.value = PaymentFlowOrigin.FAST
 
         // 📸 «Nuevo Pago»: la pantalla olvida sus ranuras; lo ya encolado se sube solo (no se borra nada).

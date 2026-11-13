@@ -88,7 +88,7 @@ class AngelPayPaymentScreenSalidaTest {
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(
-            """LaunchedEffect\(\s*initialAmount,\s*orderId,\s*orderNumber,\s*skipReview,\s*externalTipCents,\s*externalRating,\s*externalSkipReview,\s*soloEfectivo,\s*ventaLocalJson,\s*\)\s*\{\s*if \(initialAmount != null && state is AngelPayPaymentState\.Idle\) \{""",
+            """LaunchedEffect\(\s*initialAmount,\s*orderId,\s*orderNumber,\s*skipReview,\s*externalTipCents,\s*externalRating,\s*externalSkipReview,\s*propinaYaElegidaCents,\s*soloEfectivo,\s*ventaLocalJson,\s*\)\s*\{\s*if \(initialAmount != null && state is AngelPayPaymentState\.Idle\) \{""",
         )
         assertTrue(
             "El auto-arranque de AngelPayPaymentScreen cambió de llaves o de guarda: `Idle` es el estado inicial legítimo y debe " +

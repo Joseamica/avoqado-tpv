@@ -1,7 +1,5 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
-import android.net.Uri
-
 /**
  * Navigation routes for Avoqado TPV
  *
@@ -298,18 +296,11 @@ sealed class NavRoute(val route: String) {
     data object AngelPayPayment : NavRoute("angelpay_payment")
 
     /**
-     * Unified processor transactions screen.
-     * Supports post-operations (history/cancel/refund/tickets) via processor adapters.
+     * Unified processor transactions screen (superadmin, TOTP). Read-only since D3 (13-nov): history and tickets; cancelling
+     * or refunding goes through Pagos → Reembolso (`RecordAngelPayRefundUseCase`).
      */
-    data object PaymentTransactions : NavRoute("payment_transactions/{processorType}?autoRefundReference={autoRefundReference}") {
-        fun createRoute(processorType: String, autoRefundReference: String? = null): String {
-            val base = "payment_transactions/$processorType"
-            return if (autoRefundReference.isNullOrBlank()) {
-                base
-            } else {
-                "$base?autoRefundReference=${Uri.encode(autoRefundReference)}"
-            }
-        }
+    data object PaymentTransactions : NavRoute("payment_transactions/{processorType}") {
+        fun createRoute(processorType: String): String = "payment_transactions/$processorType"
     }
 
     /**

@@ -456,6 +456,258 @@ class RecordAngelPayRefundUseCaseTest {
     }
 
     @Test
+    fun `P1 la venta cobrada en otra Nexgo llega al SDK con la terminal que la cobro`() = runTest {
+        // D1 (12-nov, SDK 1.0.23): la venta se busca por referencia SIN filtro de terminal, así que puede ser de otra Nexgo
+        // del mismo comercio. El adaptador manda `terminal` como `originalTerminal`; aquí se cuida que nadie la pierda en el
+        // camino (p. ej., armando otra `UnifiedTransaction` en vez de copiar la del historial).
+        val adapter = adapterConLaVenta(venta().copy(terminal = "N860W173233"))
+        val enviada = slot<com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction>()
+        coEvery { adapter.cancelTransaction(capture(enviada), any(), any(), any()) } returns
+            Result.success(respuesta(true, "S000", "APPROVED"))
+
+        devolverTodo()
+
+        assertEquals("N860W173233", enviada.captured.terminal)
+    }
+
+    @Test
+    fun `P1 referencia repetida en dos Nexgo - aunque el importe desempate, no se toca AngelPay`() = runTest {
+        // Codex r1 #1 y r3 #1 (12-nov): con `originalTerminal`, AngelPay cancela EXACTAMENTE la venta que se le manda; y si la
+        // cancelación queda en duda, el propio SDK la confirma buscando por la referencia SIN terminal (`resolveInDoubtPostOp`),
+        // así que podría dar por buena la cancelación de la OTRA venta. Una referencia con dos ventas no se devuelve desde aquí.
+        val llave = llaveAbierta()
+        val otra = venta().copy(terminal = "N860W173233", amount = 500.0, authorizationCode = "111111", folio = "F9")
+        val la = venta().copy(terminal = "N860W173400")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(otra, la))
+
+        val resultado = devolverTodo()
+
+        assertTrue(resultado.exceptionOrNull()!!.message!!.contains("más de una venta"))
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:venta_ambigua") }
+    }
+
+    @Test
+    fun `P1 una sola venta con esa referencia pero de OTRO importe no se devuelve`() = runTest {
+        // Codex r3 #2: la única candidata se mandaba aunque su importe no fuera el del pago.
+        val llave = llaveAbierta()
+        val adapter = adapterConLaVenta(venta().copy(amount = 500.0))
+
+        val resultado = devolverTodo()
+
+        assertTrue(resultado.exceptionOrNull()!!.message!!.contains("es de \$500.00"))
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:importe_distinto") }
+    }
+
+    @Test
+    fun `P1 si con esa referencia solo aparece una cancelacion, no hay venta que devolver`() = runTest {
+        // Codex r3 #2: sin venta reconocida se elegía entre todos los renglones, incluida una cancelación sola.
+        val llave = llaveAbierta()
+        val adapter = adapterConLaVenta(venta().copy(idOperation = 6, operationType = "CANCELACION"))
+
+        devolverTodo()
+
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:sin_venta") }
+    }
+
+    @Test
+    fun `P1 referencia repetida sin desempate - no se adivina, no se toca AngelPay y no se devuelve nada`() = runTest {
+        val llave = llaveAbierta()
+        val una = venta().copy(terminal = "N860W173233", authorizationCode = "111111", folio = "F9")
+        val otra = venta().copy(terminal = "N860W173400")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(una, otra))
+
+        val resultado = devolverTodo()
+
+        assertTrue(resultado.isFailure)
+        assertTrue(resultado.exceptionOrNull()!!.message!!.contains("más de una venta"))
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { adapter.refundTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:venta_ambigua") }
+    }
+
+    @Test
+    fun `P1 la venta con OTRO renglon de su referencia (una cancelacion, aun sin terminal) no se devuelve`() = runTest {
+        // Codex r2 #1 → r5 #1: si la llamada queda en duda, el SDK la confirma con el PRIMER renglón de la referencia
+        // (`resolveInDoubtPostOp`), sin mirar terminal, autorización ni folio. Que coincida la terminal (o que las dos vengan
+        // vacías) no prueba que esa cancelación sea de esta venta: cualquier otra operación con la referencia frena.
+        val llave = llaveAbierta()
+        val cancelacion = venta(postReferencia = "PR-9", postEstado = "APROBADA")
+            .copy(idOperation = 6, operationType = "CANCELACION", authorizationCode = "999999", folio = "F2")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(cancelacion, venta()))
+
+        devolverTodo()
+
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:venta_ambigua") }
+    }
+
+    @Test
+    fun `P1 otra operacion de la MISMA terminal con la misma referencia tambien frena`() = runTest {
+        val llave = llaveAbierta()
+        val a = venta().copy(terminal = "N860W173400")
+        val otra = venta(postReferencia = "PR-9", postEstado = "APROBADA")
+            .copy(terminal = "N860W173400", idOperation = 6, operationType = "CANCELACION", authorizationCode = "111111", folio = "F9")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(otra, a))
+
+        devolverTodo()
+
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:venta_ambigua") }
+    }
+
+    @Test
+    fun `P1 un reintento por referencia invalida nunca usa la referencia de OTRA venta del mismo importe`() = runTest {
+        // Codex r2 #2: el historial amplio puntuaba como «la misma venta» a cualquiera del mismo importe, y el reintento salía
+        // con la referencia de B y la autorización, la tarjeta y la terminal de A.
+        val a = venta().copy(terminal = "N860W173400")
+        val b = venta().copy(terminal = "N860W173400", reference = "000000199999", authorizationCode = "222222", folio = "F7")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(match { it.reference != null }) } returns Result.success(listOf(a))
+        coEvery { adapter.getTransactionHistory(match { it.reference == null }) } returns Result.success(listOf(a, b))
+        val referencias = mutableListOf<String>()
+        coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } coAnswers {
+            referencias += firstArg<com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction>().reference
+            Result.success(respuesta(false, null, "DECLINED", "Referencia invalida"))
+        }
+
+        devolverTodo()
+
+        assertTrue("se intentó: $referencias", referencias.isNotEmpty())
+        assertTrue("salió la referencia de otra venta: $referencias", "000000199999" !in referencias)
+    }
+
+    @Test
+    fun `P1 tras referencia invalida solo se reintenta EXACTAMENTE la misma referencia, normal y manual`() = runTest {
+        // Codex r3 #3–#5 y r4 #2: cualquier otra cadena (de la base del SDK, del historial, el folio, la autorización o la
+        // referencia sin ceros) puede ser la referencia literal de OTRA venta y salir con los datos de ésta.
+        val a = venta().copy(terminal = "N860W173400")
+        val alias = a.copy(reference = "999999")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(match { it.reference != null }) } returns Result.success(listOf(a))
+        coEvery { adapter.getTransactionHistory(match { it.reference == null }) } returns Result.success(listOf(a, alias))
+        val intentos = mutableListOf<Pair<String, Boolean>>()
+        coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } coAnswers {
+            intentos += firstArg<com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction>().reference to arg<Boolean>(3)
+            Result.success(respuesta(false, null, "DECLINED", "Referencia invalida"))
+        }
+
+        devolverTodo()
+
+        assertEquals(listOf("000000188231" to false, "000000188231" to true), intentos)
+    }
+
+    @Test
+    fun `P1 la referencia se busca al menos 31 dias hacia atras, lo mismo que mira el verificador del SDK`() = runTest {
+        // Codex r4: el verificador del SDK (`resolveInDoubtPostOp`) mira los últimos 30 días; si nuestra búsqueda mirara menos,
+        // una venta B de esa referencia fuera de nuestra ventana no frenaría la devolución y el SDK sí la vería.
+        val adapter = adapterConLaVenta()
+        val consulta = slot<com.jaac.avoqado_tpv.features.payment.domain.processor.TransactionHistoryQuery>()
+        coEvery { adapter.getTransactionHistory(capture(consulta)) } returns Result.success(listOf(venta()))
+        coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } returns Result.success(respuesta(true, "S000", "APPROVED"))
+
+        devolverTodo()
+
+        // mismoDia = 2026-07-01 12:00 en México ⇒ 31 días antes: 2026-05-31.
+        assertTrue(consulta.captured.startDate, consulta.captured.startDate <= "2026-05-31")
+    }
+
+    @Test
+    fun `P1 un renglon de OTRA terminal con la misma referencia (aunque sea cancelacion) frena la devolucion`() = runTest {
+        // Codex r4 #1: si la llamada queda en duda, el SDK la confirma con el PRIMER renglón de esa referencia
+        // (`resolveInDoubtPostOp`), sin mirar terminal ni tipo; la cancelación aprobada de B daría por devuelta a A.
+        val llave = llaveAbierta()
+        val cancelacionDeB = venta(postReferencia = "PR-9", postEstado = "APROBADA").copy(
+            terminal = "N860W173233", idOperation = 6, operationType = "CANCELACION", authorizationCode = "111111", folio = "F9",
+        )
+        val a = venta().copy(terminal = "N860W173400")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(cancelacionDeB, a))
+
+        val resultado = devolverTodo()
+
+        assertTrue(resultado.exceptionOrNull()!!.message!!.contains("más de una venta"))
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:venta_ambigua") }
+    }
+
+    @Test
+    fun `P1 una devolucion en duda no se da por aplicada con la cancelacion de OTRA venta de la misma referencia`() = runTest {
+        // Con dos ventas aprobadas con la misma referencia e importe, la que trae la cancelación aplicada puede no ser la de este
+        // pago: no se confirma nada y no se intenta otra.
+        coEvery { ledger.devolucionSinResolver("pay-001") } returns duda("duda-1", "INDETERMINADO")
+        val otraCancelada = venta(postReferencia = "PR-9", postEstado = "APROBADA")
+            .copy(terminal = "N860W173233", authorizationCode = "111111", folio = "F9")
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(otraCancelada, venta()))
+
+        val r = devolverTodo()
+
+        assertEquals(RecordAngelPayRefundUseCase.MENSAJE_DEVOLUCION_EN_DUDA_PREVIA, r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { ledger.markHostResponded("duda-1", any(), any(), any(), any()) }
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 una devolucion en duda no se confirma con la cancelacion de la unica venta si es de OTRO importe`() = runTest {
+        coEvery { ledger.devolucionSinResolver("pay-001") } returns duda("duda-1", "INDETERMINADO")
+        val adapter = adapterConLaVenta(venta(postReferencia = "PR-9", postEstado = "APROBADA").copy(amount = 500.0))
+
+        val r = devolverTodo()
+
+        assertEquals(RecordAngelPayRefundUseCase.MENSAJE_DEVOLUCION_EN_DUDA_PREVIA, r.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { ledger.markHostResponded("duda-1", any(), any(), any(), any()) }
+        coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 una operacion que no se reconoce como VENTA (check-in, reautorizacion, sin tipo) no se devuelve`() = runTest {
+        // Codex r6 #1: «es venta» se decide EN POSITIVO, con la misma regla que ya confirma cobros en el historial
+        // (`AngelPayChargeVerifier`: `operationType` VENTA o SALE; medido en QA con `idOperation = 4`).
+        listOf(
+            venta().copy(operationType = "CHECKIN", idOperation = null),
+            venta().copy(operationType = "RE_AUTORIZACIÓN", idOperation = 11),
+            venta().copy(operationType = null, idOperation = null),
+            venta().copy(operationType = "VENTA", idOperation = 10),
+        ).forEach { renglon ->
+            io.mockk.clearMocks(ledger, answers = false)
+            val llave = llaveAbierta()
+            val adapter = adapterConLaVenta(renglon)
+
+            devolverTodo()
+
+            coVerify(exactly = 0) { adapter.cancelTransaction(any(), any(), any(), any()) }
+            coVerify(exactly = 1) { ledger.markDiscardedBeforeCharge(llave.captured, "antes_del_sdk:sin_venta") }
+        }
+    }
+
+    @Test
+    fun `P2 la misma venta repetida en el historial no cuenta como ambigua`() = runTest {
+        val adapter: PaymentPostOperationsAdapter = mockk(relaxed = true)
+        every { adapterFactory.get(ProcessorType.ANGELPAY) } returns adapter
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(venta(), venta()))
+        coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } returns Result.success(respuesta(true, "S000", "APPROVED"))
+
+        devolverTodo()
+
+        coVerify(exactly = 1) { adapter.cancelTransaction(any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `P1 despues de aprobar no se prueba otra referencia ni otra operacion`() = runTest {
         val adapter = adapterConLaVenta()
         coEvery { adapter.cancelTransaction(any(), any(), any(), any()) } returns Result.success(respuesta(true, "S000", "APPROVED"))

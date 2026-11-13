@@ -1736,25 +1736,42 @@ fun AppNavigation(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
-                onProceedToCardPayment = { request ->
+                onProceedToCardPayment = { request, entregado, noSalio ->
                     tableCheckoutScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Table checkout card payment")) {
-                            return@launch
-                        }
-                        navController.currentBackStackEntry?.savedStateHandle?.apply {
-                            set("initialAmount", request.amount.toPlainString())
-                            set("orderId", request.orderId)
-                            request.orderNumber?.let { set("orderNumber", it) }
-                            set("entryPoint", "tables")
-                            set("splitType", request.splitType.wireValue)
-                            request.equalPartsPartySize?.let { set("equalPartsPartySize", it) }
-                            request.equalPartsPayedFor?.let { set("equalPartsPayedFor", it) }
-                            if (request.paidProductIds.isNotEmpty()) {
-                                set("paidProductIds", request.paidProductIds)
+                        // D9 (Codex r1 #1): la casilla de propina sólo se vacía si «Cobrar» de verdad recibió la
+                        // solicitud. Si la terminal no estaba lista (o algo corta esto), la propina se queda escrita.
+                        var salio = false
+                        try {
+                            if (!awaitPaxPaymentReady(context, initializationManager, "Table checkout card payment")) {
+                                return@launch
                             }
+                            navController.currentBackStackEntry?.savedStateHandle?.apply {
+                                set("initialAmount", request.amount.toPlainString())
+                                set("orderId", request.orderId)
+                                request.orderNumber?.let { set("orderNumber", it) }
+                                set("entryPoint", "tables")
+                                set("splitType", request.splitType.wireValue)
+                                request.equalPartsPartySize?.let { set("equalPartsPartySize", it) }
+                                request.equalPartsPayedFor?.let { set("equalPartsPayedFor", it) }
+                                if (request.paidProductIds.isNotEmpty()) {
+                                    set("paidProductIds", request.paidProductIds)
+                                }
+                                // D9 (12-nov): la propina que escribió el mesero se cobra y «Cobrar» ya no la vuelve a
+                                // preguntar. Llave PROPIA de Mesas: el cobro remoto del POS (`externalTipCents`) no cambia.
+                                val propinaEnCentavos = request.propinaEnCentavos
+                                if (propinaEnCentavos != null) {
+                                    set(CLAVE_PROPINA_YA_ELEGIDA, propinaEnCentavos)
+                                } else {
+                                    remove<Long>(CLAVE_PROPINA_YA_ELEGIDA)
+                                }
+                            }
+                            Timber.d("🪑 [Navigation] Mesas → Cobrar: orden=${request.orderId} monto=${request.amount} propina=${request.tipAmount} split=${request.splitType}")
+                            navController.navigate(getPaymentRoute())
+                            salio = true
+                            entregado()
+                        } finally {
+                            if (!salio) noSalio()
                         }
-                        Timber.d("🪑 [Navigation] Mesas → Cobrar: orden=${request.orderId} monto=${request.amount} split=${request.splitType}")
-                        navController.navigate(getPaymentRoute())
                     }
                 },
                 onPaymentFinished = {
@@ -1977,6 +1994,8 @@ fun AppNavigation(
             val externalTipCents = argumentosDelCobro.get<Long>("externalTipCents")
             val externalRating = argumentosDelCobro.get<Int>("externalRating")
             val externalSkipReview = argumentosDelCobro.get<Boolean>("externalSkipReview") ?: false
+            // 🪑 D9: la propina que el mesero escribió en Mesas (sólo la pone TableCheckout).
+            val propinaYaElegidaCents = argumentosDelCobro.get<Long>(CLAVE_PROPINA_YA_ELEGIDA)
 
             // 🆕 Get order details (if coming from MenuScreen with order)
             val orderId = argumentosDelCobro.get<String>("orderId")
@@ -2069,6 +2088,7 @@ fun AppNavigation(
                 externalTipCents = externalTipCents,
                 externalRating = externalRating,
                 externalSkipReview = externalSkipReview,
+                propinaYaElegidaCents = propinaYaElegidaCents,  // 🪑 D9
                 skipLocalOrderValidation = skipLocalOrderValidation,  // 📱 SERIALIZED SALE: Order exists only on backend
                 isPortabilidad = isPortabilidad,  // 📱 PORTABILIDAD: 1 vs 2 proof-of-sale photos
                 serialNumber = serialNumber,  // 📱 ICCID/serial for receipt
@@ -3109,6 +3129,8 @@ fun AppNavigation(
             val skipReview = argumentosDelCobro.get<Boolean>("skipReview") ?: false
             val externalTipCents = argumentosDelCobro.get<Long>("externalTipCents")
             val externalRating = argumentosDelCobro.get<Int>("externalRating")
+            // 🪑 D9: la propina que el mesero escribió en Mesas (sólo la pone TableCheckout).
+            val propinaYaElegidaCents = argumentosDelCobro.get<Long>(CLAVE_PROPINA_YA_ELEGIDA)
             val externalSkipReview = argumentosDelCobro.get<Boolean>("externalSkipReview") ?: false
             val paymentArgsHandle = lanzadorDelCobro
 
@@ -3133,6 +3155,7 @@ fun AppNavigation(
                 externalTipCents = externalTipCents,
                 externalRating = externalRating,
                 externalSkipReview = externalSkipReview,
+                propinaYaElegidaCents = propinaYaElegidaCents,  // 🪑 D9
                 paymentSource = paymentSource,
                 socketRequestId = socketRequestId,
                 soloEfectivo = soloEfectivo,
@@ -3526,6 +3549,7 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
     handle.remove<Long>("externalTipCents")
     handle.remove<Int>("externalRating")
     handle.remove<Boolean>("externalSkipReview")
+    handle.remove<Long>(CLAVE_PROPINA_YA_ELEGIDA)
     handle.remove<String>("paymentSource")
     handle.remove<String>("socketRequestId")
     handle.remove<String>("socketProcessedByStaffId")
@@ -3558,8 +3582,15 @@ internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String) 
  * Una clave que se lea en esas pantallas y no esté aquí llegaría siempre nula: lo vigila
  * `ArgumentosDelCobroSeLeenUnaVezTest`.
  */
+/**
+ * D9 (12-nov): la propina en centavos que el mesero escribió en «Mesas» (`TableCheckoutScreen`). La pone SÓLO la
+ * costura de Mesas; «Cobrar» la cobra sin volver a preguntarla (la calificación sigue igual). Es distinta de
+ * `externalTipCents` a propósito: el cobro remoto del POS siempre manda propina (aunque sea 0) y sus reglas no cambian.
+ */
+internal const val CLAVE_PROPINA_YA_ELEGIDA = "propinaYaElegidaCents"
+
 internal val CLAVES_DE_COBRO: List<String> = listOf(
-    "initialAmount", "skipReview", "externalTipCents", "externalRating", "externalSkipReview",
+    "initialAmount", "skipReview", "externalTipCents", "externalRating", "externalSkipReview", CLAVE_PROPINA_YA_ELEGIDA,
     "orderId", "orderNumber", "tableId", "entryPoint", "skipLocalOrderValidation",
     "isPortabilidad", "serialNumber", "categoryName",
     "splitType", "equalPartsPartySize", "equalPartsPayedFor", "paidProductIds",

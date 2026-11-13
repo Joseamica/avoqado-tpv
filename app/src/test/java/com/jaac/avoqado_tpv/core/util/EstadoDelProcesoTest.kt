@@ -111,7 +111,7 @@ class EstadoDelProcesoTest {
     // su `onCreate` relanza el cobro con `angelpay_req` sin mirar el estado, y era otro lector de la misma solicitud con el intento
     // anterior en duda, cuyo aprobado ya no le llegaba a nadie.
 
-    /** Hace de la pantalla del SDK: igual que `PaymentActivity.onCreate` (AAR 1.0.22), lee el extra DESPUÉS de `super.onCreate`. */
+    /** Hace de la pantalla del SDK: igual que `PaymentActivity.onCreate` (AAR 1.0.23, idéntica a la del 1.0.22), lee el extra DESPUÉS de `super.onCreate`. */
     class PantallaDelSdkDePrueba : ComponentActivity() {
         var abrioElLector = false
 
@@ -234,13 +234,14 @@ class EstadoDelProcesoTest {
 
     @Test fun `I-1 lo auditado del AAR - subirlo obliga a revisar esta salida otra vez`() {
         // La `PaymentActivity` real no se puede crear aquí (AppCompat pide recursos que estas pruebas no cargan). Lo que el guardia
-        // necesita de ella se comprobó con `javap` en el AAR 1.0.22, cuyo hash fija `AngelPaySdk119ReglaTest`:
+        // necesita de ella se comprobó con `javap` en el AAR 1.0.22, y el 12-nov se re-comprobó que en el 1.0.23 `PaymentActivity` es
+        // idéntica tras normalizar (Avoqado/docs/audit/2026-11-12-angelpay-sdk-1023/); su hash lo fija `AngelPaySdk119ReglaTest`:
         //  - `onCreate` llama primero a `FragmentActivity.onCreate`, y ahí corre el guardia;
         //  - después lee `angelpay_req` del Intent, y sin él (`ifnonnull`) arma «Missing request» y sale por `finishWith`
         //    (`setResult(-1, …)` + `finish()`) sin tocar el lector;
         //  - `onDestroy` sólo toca el hardware dentro de un `runCatching`, así que la pantalla sin armar no tumba la app.
         // 🔴 Si esto cae porque llegó un SDK nuevo: NO cambies el número a ciegas. Vuelve a comprobar esos tres puntos con `javap`.
-        assertThat(AngelPaySDK.version()).isEqualTo("1.0.22")
+        assertThat(AngelPaySDK.version()).isEqualTo("1.0.23")
         assertThat(PaymentActivity::class.java.name).isEqualTo(PantallaDelSdkNoSeRestaura.NOMBRE)
         // Por reflexión: el compañero del AAR está ofuscado y Kotlin no ve la constante.
         assertThat(PaymentActivity::class.java.getField("EXTRA_REQ").get(null)).isEqualTo(PantallaDelSdkNoSeRestaura.EXTRA_DEL_COBRO)

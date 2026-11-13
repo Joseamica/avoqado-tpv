@@ -309,6 +309,8 @@ class OrderPaymentRecorder @Inject constructor(
             staffId = context.staffId,
             shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
             isOfflineReplay = context.isOfflineReplay.takeIf { it },
+            // Sólo efectivo: en una fila de tarjeta `createdAt` es la hora del encolado tras fallar el registro, no la del cobro.
+            createdAtLocal = context.createdAtLocal.takeIf { context.isOfflineReplay && cardDetails.isCash },
 
             // ⭐ SPLIT PAYMENT: Product IDs for PERPRODUCT mode
             paidProductsId = context.paidProductIds,
@@ -375,6 +377,8 @@ class OrderPaymentRecorder @Inject constructor(
             staffId = context.staffId,
             shiftIdDeLaVenta = context.shiftId.takeIf { context.isOfflineReplay },
             isOfflineReplay = context.isOfflineReplay.takeIf { it },
+            // Sólo efectivo: en una fila de tarjeta `createdAt` es la hora del encolado tras fallar el registro, no la del cobro.
+            createdAtLocal = context.createdAtLocal.takeIf { context.isOfflineReplay && cardDetails.isCash },
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
             maskedPan = cardDetails.maskedPan,

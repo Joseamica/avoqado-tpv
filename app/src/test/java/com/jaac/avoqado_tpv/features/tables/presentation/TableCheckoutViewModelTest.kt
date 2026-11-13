@@ -709,4 +709,154 @@ class TableCheckoutViewModelTest {
     }
 
     // endregion
+
+    // region — D9 (12-nov): la propina que escribe el mesero viaja con el cobro con TARJETA, y se cobra UNA vez
+
+    @Test
+    fun d9_la_propina_escrita_viaja_en_la_solicitud_de_TARJETA() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("50.00"))
+
+        val payload = viewModel.buildPaymentPayload(BigDecimal("845.50"))
+
+        assertThat(payload.amount).isEqualTo(BigDecimal("845.50"))
+        assertThat(payload.tipAmount).isEqualTo(BigDecimal("50.00"))
+    }
+
+    @Test
+    fun d9_entregar_el_cobro_a_TARJETA_lleva_la_propina_y_al_abrirse_Cobrar_vacia_la_casilla() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("50.00"))
+
+        val payload = viewModel.prepararCobroConTarjeta(BigDecimal("400.00"))!!
+        assertThat(payload.tipAmount).isEqualTo(BigDecimal("50.00"))
+        assertThat(viewModel.state.value.isHandingOffToCard).isTrue()
+
+        viewModel.cobroConTarjetaEntregado()
+
+        // 🔴 Una propina, un cobro: si la pantalla vieja vuelve a cobrar (otra parte de la cuenta), no la repite.
+        assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal.ZERO)
+        assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("445.50"))!!.tipAmount).isEqualTo(BigDecimal.ZERO)
+    }
+
+    @Test
+    fun d9_si_Cobrar_no_se_abre_la_propina_se_queda_escrita() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("50.00"))
+
+        viewModel.prepararCobroConTarjeta(BigDecimal("845.50"))
+        viewModel.cobroConTarjetaNoSalio()
+
+        assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal("50.00"))
+        assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        // El segundo intento la vuelve a llevar.
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("845.50"))!!.tipAmount).isEqualTo(BigDecimal("50.00"))
+    }
+
+    @Test
+    fun d9_con_efectivo_esperando_respuesta_TARJETA_no_arranca_y_la_propina_no_sale_dos_veces() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("1000.00"), amountLeft = BigDecimal("1000.00")))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } coAnswers { respuesta.await() }
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+
+        viewModel.payCash(BigDecimal("100.00"))
+        assertThat(viewModel.state.value.isProcessingCash).isTrue()
+
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("100.00"))).isNull()
+
+        respuesta.complete(Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false)))
+        assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal.ZERO)
+    }
+
+    @Test
+    fun d9_con_TARJETA_abriendose_el_efectivo_no_cobra() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("1000.00"), amountLeft = BigDecimal("1000.00")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("100.00"))).isNotNull()
+        viewModel.payCash(BigDecimal("100.00"))
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("100.00"))).isNull()
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun d9_sin_propina_escrita_la_solicitud_de_TARJETA_lleva_cero() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+
+        val payload = viewModel.prepararCobroConTarjeta(BigDecimal("150.00"))!!
+
+        assertThat(payload.tipAmount).isEqualTo(BigDecimal.ZERO)
+        assertThat(payload.propinaEnCentavos).isNull()
+    }
+
+    @Test
+    fun d9_la_propina_viaja_en_centavos_redondeada_a_dos_decimales() {
+        fun centavos(propina: String) =
+            CardChargeRequest(orderId = "o", orderNumber = null, amount = BigDecimal("100.00"), tipAmount = BigDecimal(propina)).propinaEnCentavos
+
+        assertThat(centavos("50")).isEqualTo(5_000L)
+        assertThat(centavos("50.00")).isEqualTo(5_000L)
+        assertThat(centavos("12.345")).isEqualTo(1_235L)
+        assertThat(centavos("0.004")).isNull()
+        assertThat(centavos("0")).isNull()
+        assertThat(centavos("-5")).isNull()
+    }
+
+    @Test
+    fun d9_un_cobro_en_EFECTIVO_exitoso_vacia_la_casilla_y_la_siguiente_parte_no_repite_la_propina() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
+
+        viewModel.payCash(BigDecimal("100.00"))
+        assertThat(viewModel.state.value.cashReceipt!!.tipAmount).isEqualTo(BigDecimal("20.00"))
+        assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal.ZERO)
+
+        viewModel.payCash(BigDecimal("50.00"))
+
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("20.00")) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), BigDecimal.ZERO) }
+    }
+
+    @Test
+    fun d9_un_cobro_en_EFECTIVO_rechazado_conserva_la_propina_para_reintentar() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00")) } returns
+            Result.failure(TablesRepository.PayCashRejectedException("El cobro fue rechazado", "INVALID_PAYLOAD"))
+
+        viewModel.payCash(BigDecimal("150.00"))
+
+        assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal("20.00"))
+    }
+
+    // endregion
 }

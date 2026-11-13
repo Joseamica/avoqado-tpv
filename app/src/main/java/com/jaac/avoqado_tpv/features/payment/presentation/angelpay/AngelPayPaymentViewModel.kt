@@ -468,6 +468,20 @@ class AngelPayPaymentViewModel @Inject constructor(
     // riel Blumon. Campo simple a propósito: si el proceso muere, la pantalla vuelve a
     // llamar initPayment con el mismo skipReview y el flag se recompone solo.
     private var isSkipReviewFlow: Boolean = false
+
+    /**
+     * 🪑 D9 (12-nov): la propina ya la escribió el mesero en «Mesas» y viaja en [pendingTip]. Con esto prendido el
+     * flujo se lee con `showTipScreen = false` ([ajustesDelFlujo]): ni de ida, ni tras calificar, ni con «atrás» se llega
+     * a la pantalla de propina; la calificación sigue igual. Campo simple, como [isSkipReviewFlow]: si el proceso muere,
+     * la pantalla vuelve a llamar [initPayment] con la misma llave y se recompone solo.
+     */
+    private var propinaFija: Boolean = false
+
+    /** Los ajustes del venue con lo que ESTE cobro ya trae resuelto (D9: la propina de la mesa). */
+    private fun ajustesDelFlujo(): com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        return if (propinaFija) settings.copy(showTipScreen = false) else settings
+    }
     private var cachedShiftId: String? = null
     /**
      * El turno de este cobro sólo se conoce por la caché: el servidor no contestó en [initPayment].
@@ -1365,6 +1379,8 @@ class AngelPayPaymentViewModel @Inject constructor(
      *   `showVerificationScreen`.
      * @param externalTipCents Tip already chosen by the POS, in cents. Null for terminal-led flows.
      * @param externalRating Rating already chosen by the POS (1-5). Null when it was not provided.
+     * @param propinaYaElegidaCents 🪑 D9: la propina que el mesero escribió en «Mesas», en centavos. > 0 ⇒ se cobra sin
+     *   pantalla de propina (la calificación sigue igual). Sólo la manda la costura de Mesas; null o ≤ 0 = como siempre.
      */
     fun initPayment(
         amount: String,
@@ -1373,6 +1389,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         skipReview: Boolean = false,
         externalTipCents: Long? = null,
         externalRating: Int? = null,
+        propinaYaElegidaCents: Long? = null,
         soloEfectivo: Boolean = false,
         ventaLocalJson: String? = null,
         folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
@@ -1517,7 +1534,9 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             // 3. Cache context
             pendingAmount = amountDecimal
-            pendingTip = externalTipCents
+            // 🪑 D9: la propina de la mesa gana; si no hay, la del POS remoto como siempre.
+            propinaFija = propinaYaElegidaCents != null && propinaYaElegidaCents > 0L
+            pendingTip = (if (propinaFija) propinaYaElegidaCents else externalTipCents)
                 ?.let { BigDecimal.valueOf(it, 2) }
                 ?: BigDecimal.ZERO
             pendingRating = externalRating?.takeIf { it in 1..5 }
@@ -1537,7 +1556,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             // 4. Use PaymentFlowGate to determine first screen.
             // skipReview (serialized SIM sales) suppresses rating/tip but KEEPS
             // pre-payment verification — mirror of Blumon's skipReview semantics.
-            val settings = tpvSettingsRepository.getCurrentSettings()
+            // 🪑 D9: con la propina de la mesa, [ajustesDelFlujo] ya trae la pantalla de propina apagada.
+            val settings = ajustesDelFlujo()
             // ⬅️ Recordarlo para el back: sin esto, [goBackOneStep] usaría la config cruda y
             // retrocedería a las pantallas que esta misma línea acaba de suprimir.
             isSkipReviewFlow = skipReview
@@ -1547,7 +1567,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 settings
             }
             val nextStep = PaymentFlowGate.nextAfterAmount(effectiveSettings)
-            Timber.d("🔶 [AngelPay] FlowGate.nextAfterAmount → $nextStep (skipReview=$skipReview)")
+            Timber.d("🔶 [AngelPay] FlowGate.nextAfterAmount → $nextStep (skipReview=$skipReview, propinaFija=$propinaFija)")
 
             navigateToStep(nextStep, amount)
         }
@@ -1557,7 +1577,7 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     fun selectRatingAndProceed(amount: String, rating: Int) {
         pendingRating = rating
-        val settings = tpvSettingsRepository.getCurrentSettings()
+        val settings = ajustesDelFlujo()  // 🪑 D9: con propina de la mesa, sin pantalla de propina
         val nextStep = PaymentFlowGate.nextAfterRating(settings)
         Timber.d("🔶 [AngelPay] Rating=$rating → FlowGate.nextAfterRating → $nextStep")
         navigateToStep(nextStep, amount)
@@ -1565,7 +1585,7 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     fun skipRating(amount: String) {
         pendingRating = null
-        val settings = tpvSettingsRepository.getCurrentSettings()
+        val settings = ajustesDelFlujo()  // 🪑 D9: con propina de la mesa, sin pantalla de propina
         val nextStep = PaymentFlowGate.nextAfterRating(settings)
         Timber.d("🔶 [AngelPay] Rating skipped → FlowGate.nextAfterRating → $nextStep")
         navigateToStep(nextStep, amount)
@@ -4840,7 +4860,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             return false
         }
 
-        val settings = tpvSettingsRepository.getCurrentSettings()
+        val settings = ajustesDelFlujo()  // 🪑 D9: con propina de la mesa, «atrás» nunca lleva a la pantalla de propina
         val amount = pendingAmount.toPlainString()
 
         when (_state.value) {
@@ -5654,6 +5674,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // ⬅️ Sin esto, un cobro empujado por el POS dejaría el flag encendido y el SIGUIENTE
         // cobro iniciado en la terminal saldría al primer back sin mostrar su wizard.
         isSkipReviewFlow = false
+        propinaFija = false  // 🪑 D9: el siguiente cobro vuelve a preguntar la propina
         // 📸 «Nuevo Pago»: la pantalla olvida sus ranuras; lo ya encolado se sube solo (no se borra nada).
         proofSlots.reset()
         cachedShiftId = null
@@ -5747,6 +5768,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
+                evaluarRuteoDeLaPropinaFija()
             }
             PrePaymentNextStep.SELECT_MERCHANT -> {
                 _state.value = AngelPayPaymentState.SelectingMerchant(
@@ -5756,8 +5778,20 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
+                evaluarRuteoDeLaPropinaFija()
             }
         }
+    }
+
+    /**
+     * 🪑 D9 (Codex r1 #4): las reglas de ruteo de cuentas se evalúan al elegir o saltar la propina
+     * ([selectTipAndProceed]/[skipTip]). Con la propina de la mesa esa pantalla no aparece, así que
+     * se evalúan aquí con el total (cuenta + propina). Sólo en este camino: los demás que saltan la
+     * propina conservan su comportamiento (deuda anotada aparte).
+     */
+    private fun evaluarRuteoDeLaPropinaFija() {
+        if (!propinaFija) return
+        evaluateRoutingForCharge(pendingAmount.add(pendingTip).toPlainString())
     }
 
     companion object {

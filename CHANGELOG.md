@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Mesas · la propina que escribe el mesero se cobra con la tarjeta (D9, 12-nov)**: en «Cobrar la cuenta» de una mesa, la propina de «Propina (opcional)» ya viaja con el cobro con tarjeta (PAX y Nexgo). «Cobrar» califica (si las estrellas están prendidas) y cobra cuenta + propina sin volver a preguntar la propina, aunque el negocio tenga apagada la pregunta de propina. Antes la tarjeta no la recibía: la terminal se la volvía a pedir al cliente (con el 15 % marcado) o, con la pregunta apagada, se perdía sin aviso. Va por una llave propia de Mesas (`propinaYaElegidaCents`): el cobro que manda el POS (`externalTipCents`) y el cobro rápido no cambian. Sin propina escrita, todo queda como antes.
+  - Una propina, un cobro: la casilla se vacía cuando «Cobrar» ya recibió la solicitud o cuando el efectivo se cobró, así que la siguiente parte de una cuenta dividida no la repite. Si la terminal no estaba lista y «Cobrar» no se abrió, la propina se queda escrita (Codex r1 #1).
+  - Una sola reserva de cobro: con efectivo esperando respuesta, «Tarjeta» no arranca, y con una tarjeta abriéndose, el efectivo no cobra; el botón de tarjeta muestra que está cargando (Codex r1 #2).
+  - Nexgo: con la propina de la mesa, las reglas de qué cuenta de cobro usar se evalúan con el total (cuenta + propina), como cuando se elige la propina en pantalla (Codex r1 #4).
+  - Tras un cobro exitoso, si «Cobrar» vuelve a arrancar con los mismos datos (p. ej. «Nueva Orden» mientras se libera la mesa), la propina de la mesa ya no se reaplica; un reintento tras un error sí la conserva (Codex r1 #5).
+  - PAX: si la misma pantalla de «Cobrar» pasa de un cobro de mesa a un cobro remoto del POS sin reiniciarse, vuelve a leer su configuración: el cobro del POS cobra SU propina y nunca hereda la de la mesa.
+
 ---
 
 ## [2.20.0] - 2026-11-13

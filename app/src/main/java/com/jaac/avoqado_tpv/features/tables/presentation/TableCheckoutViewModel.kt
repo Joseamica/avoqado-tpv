@@ -76,7 +76,24 @@ data class CardChargeRequest(
     val equalPartsPartySize: Int? = null,
     val equalPartsPayedFor: Int? = null,
     val paidProductIds: List<String> = emptyList(),
-)
+    /**
+     * D9 (12-nov): la propina que el mesero escribió en «Propina (opcional)», en pesos. Antes no
+     * viajaba y «Cobrar» la volvía a preguntar (o la perdía si la pregunta de propina estaba
+     * apagada). `AppNavigation.kt` la pasa como `propinaYaElegidaCents` cuando es > 0.
+     */
+    val tipAmount: BigDecimal = BigDecimal.ZERO,
+) {
+    /**
+     * La propina en centavos para «Cobrar» (`propinaYaElegidaCents`), redondeada a 2 decimales como
+     * cualquier monto en pesos; `null` si no hay propina (cero o negativa): entonces «Cobrar» la
+     * pregunta como siempre.
+     */
+    val propinaEnCentavos: Long?
+        get() = tipAmount.setScale(2, RoundingMode.HALF_UP)
+            .takeIf { it > BigDecimal.ZERO }
+            ?.movePointRight(2)
+            ?.longValueExact()
+}
 
 /**
  * Resultado a mostrar tras un cobro en EFECTIVO — cierra la asimetría con
@@ -133,6 +150,13 @@ data class TableCheckoutState(
     val isOnline: Boolean = true,
     val isProvisional: Boolean = false,
     val isProcessingCash: Boolean = false,
+    /**
+     * D9 (Codex r1 #2): «Tarjeta» ya se tocó y la navegación está abriendo «Cobrar» (puede esperar a que la PAX esté
+     * lista). Mientras tanto ni efectivo ni otra tarjeta: una sola reserva de cobro, para que la misma propina no
+     * salga en dos pagos. Lo apagan [TableCheckoutViewModel.cobroConTarjetaEntregado] o
+     * [TableCheckoutViewModel.cobroConTarjetaNoSalio].
+     */
+    val isHandingOffToCard: Boolean = false,
 
     /** Restante a cobrar — pesos. Arranca en `TableSession.total` y se refresca con el cheque real al cargar. */
     val remaining: BigDecimal = BigDecimal.ZERO,
@@ -369,7 +393,36 @@ class TableCheckoutViewModel @Inject constructor(
             equalPartsPartySize = if (s.splitType == CheckoutSplitType.EQUALPARTS) s.equalParts else null,
             equalPartsPayedFor = if (s.splitType == CheckoutSplitType.EQUALPARTS) s.equalPartsPayingFor else null,
             paidProductIds = if (s.splitType == CheckoutSplitType.PERPRODUCT) s.selectedItemIds.toList() else emptyList(),
+            tipAmount = s.tipAmount,
         )
+    }
+
+    /**
+     * D9: el botón «Tarjeta». Reserva el cobro y arma la solicitud CON la propina escrita. `null` si ya
+     * hay un cobro en curso (efectivo esperando respuesta, o una tarjeta que se está abriendo): la
+     * misma propina no sale en dos pagos (Codex r1 #2). La navegación avisa después cómo terminó:
+     * [cobroConTarjetaEntregado] o [cobroConTarjetaNoSalio].
+     */
+    fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
+        val s = _state.value
+        if (s.isProcessingCash || s.isHandingOffToCard) return null
+        val request = buildPaymentPayload(amount)
+        _state.update { it.copy(isHandingOffToCard = true) }
+        return request
+    }
+
+    /**
+     * «Cobrar» ya recibió la solicitud: la propina viajó con ella y la casilla se vacía (una propina,
+     * un cobro). Si esta pantalla vuelve a cobrar otra parte de la cuenta (la pila de navegación la
+     * conserva), no la repite.
+     */
+    fun cobroConTarjetaEntregado() {
+        _state.update { it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO) }
+    }
+
+    /** «Cobrar» no se abrió (la terminal no estaba lista): la casilla CONSERVA la propina (Codex r1 #1). */
+    fun cobroConTarjetaNoSalio() {
+        _state.update { it.copy(isHandingOffToCard = false) }
     }
 
     /**
@@ -392,7 +445,8 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(errorMessage = "Ingresa un monto válido") }
             return
         }
-        if (_state.value.isProcessingCash) return
+        // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera.
+        if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se
@@ -416,6 +470,8 @@ class TableCheckoutViewModel @Inject constructor(
                     _state.update {
                         it.copy(
                             isProcessingCash = false,
+                            // D9: la propina ya se cobró con ESTE pago; la siguiente parte de la cuenta no la repite.
+                            tipAmount = BigDecimal.ZERO,
                             notice = if (outcome.queued) {
                                 "Sin conexión — cobro guardado; se sincronizará solo"
                             } else {

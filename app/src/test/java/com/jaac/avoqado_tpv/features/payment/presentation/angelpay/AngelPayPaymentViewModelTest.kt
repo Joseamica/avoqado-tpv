@@ -165,6 +165,17 @@ class AngelPayPaymentViewModelTest {
         externalMerchantId = "22",
     )
 
+    /** 🧭 D3: una tercera cuenta para el criterio de «varias permitidas». */
+    private val angelPayMerchantC = MerchantAccount(
+        id = "merchant_c",
+        merchantAccountId = "cma-003",
+        serialNumber = "N86-003",
+        displayName = "Terraza",
+        environment = MerchantEnvironment.SANDBOX,
+        processorType = ProcessorType.ANGELPAY,
+        externalMerchantId = "33",
+    )
+
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
@@ -3390,53 +3401,285 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
-    @Test
-    fun `ruteo - sin cuenta elegida la Nexgo no elige sola aunque la regla deje una (la cajera la toca en la lista)`() = runTest(testDispatcher) {
-        // Codex r1 #1 / r2 #1-#2: elegirla en memoria fallaba con cuentas que cargan tarde y en app-a-app. La lista se queda a
-        // la vista (selectorDeCuentas) y el toque va por selectMerchant, con todos sus candados.
+    // ----------------------------------------------------------------------
+    // 🧭 D3 · decisión del founder (13-nov): la Nexgo se CAMBIA SOLA a la cuenta permitida (como la PAX) y, si no puede, no
+    // cobra en la excluida. Regla única: nunca se cobra en una cuenta que la regla excluye. El cambio va por el mismo camino
+    // del toque (`selectMerchant`), que fija la sesión del SDK también en app-a-app (Codex r2 #2).
+    // ----------------------------------------------------------------------
+
+    /** Cobro sin pantalla de propina con las cuentas dadas, la activa en la sesión del SDK y una regla. */
+    private fun kotlinx.coroutines.test.TestScope.vmConRegla(
+        cuentas: List<MerchantAccount>,
+        activa: Int?,
+        regla: MerchantEligibility,
+        monto: String = "6000.00",
+    ): AngelPayPaymentViewModel {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
             enableShifts = false, showTipScreen = false, showReviewScreen = false,
         )
-        activeMerchantIdFlow.value = null
-        merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
-        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), mutableListOf()))
-        try {
-            vm.initPayment(amount = "6000.00")
-            runCurrent()
+        activeMerchantIdFlow.value = activa
+        merchantsFlow.value = cuentas
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(regla, mutableListOf()))
+        runCurrent()
+        vm.initPayment(amount = monto)
+        runCurrent()
+        return vm
+    }
 
-            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
-            assertThat(vm.currentMerchant.value).isNull()
-            val selector = selectorDeCuentas(vm.merchants.value, vm.merchantRouting.value, vm.currentMerchant.value)
-            assertThat(selector.cuentas).containsExactly(angelPayMerchantB)
-            assertThat(selector.ocultarLista).isFalse()
+    @Test
+    fun `ruteo - cambio automatico - la cuenta activa EXCLUIDA pasa sola a la permitida por el camino del toque`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 11, regla = soloLaCuentaB())
+        try {
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(vm.avisoDeCuenta.value).isNull()
         } finally {
             vm.viewModelScope.cancel()
         }
     }
 
     @Test
-    fun `ruteo - una cuenta YA elegida no la cambia la regla (la Nexgo sigue sin cambiar de cuenta sola)`() = runTest(testDispatcher) {
-        // Decisión del 13-jul («AngelPay sólo filtra»), sin cambiar en D3: queda anotada como deuda para el founder.
+    fun `ruteo - cambio automatico - sin cuenta elegida (la sesion pide elegir comercio) pasa sola a la permitida`() = runTest(testDispatcher) {
+        authStateFlow.value = AngelPayAuthState.SelectingMerchant(
+            merchants = listOf(MerchantOption(id = 11, name = "Bar", afiliationNumber = "1001"), MerchantOption(id = 22, name = "Restaurant", afiliationNumber = "1002")),
+            temporaryToken = "TEMP-TOKEN",
+        )
+        coEvery { angelPayAuthRepository.completeMerchantSelection(22, "TEMP-TOKEN") } returns Result.success(Unit)
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = null, regla = soloLaCuentaB())
+        try {
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(22, "TEMP-TOKEN") }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - cambio automatico con varias permitidas elige como la PAX - la primera de la lista, o la que la regla marca`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(any()) } returns Result.success(Unit)
+        val sinMarcada = MerchantEligibility(
+            evaluated = true, routingFeatureActive = true, eligibleMerchantAccountIds = setOf("cma-003", "cma-002"),
+            autoSelectMerchantAccountId = null, fallbackAll = false,
+        )
+        val vm1 = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB, angelPayMerchantC), activa = 11, regla = sinMarcada)
+        try {
+            assertThat(vm1.currentMerchant.value).isEqualTo(angelPayMerchantB)   // la primera permitida en el orden de la lista
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+        } finally {
+            vm1.viewModelScope.cancel()
+        }
+        val conMarcada = sinMarcada.copy(autoSelectMerchantAccountId = "cma-003")
+        val vm2 = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB, angelPayMerchantC), activa = 11, regla = conMarcada)
+        try {
+            assertThat(vm2.currentMerchant.value).isEqualTo(angelPayMerchantC)   // la que la regla marca
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(33) }
+        } finally {
+            vm2.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - la cuenta activa ya es una permitida - no se cambia nada`() = runTest(testDispatcher) {
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 22, regla = soloLaCuentaB())
+        try {
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - sin reglas (sin red, la consulta falla o ninguna aplica) no cambia sola ni frena la tarjeta`() = runTest(testDispatcher) {
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 11, regla = MerchantEligibility.disabled())
+        try {
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(any()) }
+            val selector = selectorDeCuentas(vm.merchants.value, vm.merchantRouting.value, vm.currentMerchant.value)
+            assertThat(selector.elegidaPermitida).isTrue()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - el cambio automatico falla - se queda en Metodo de pago con la cuenta anterior, avisa y no lo reintenta solo`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.failure(IllegalStateException("sin red"))
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 11, regla = soloLaCuentaB())
+        try {
+            // No es un error de la cajera: la pantalla NO cambia a Error, sigue en «Método de pago».
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            assertThat(vm.avisoDeCuenta.value).contains("Restaurant")
+            // …y la excluida no puede cobrar: la lista queda a la vista con la permitida para tocarla.
+            val selector = selectorDeCuentas(vm.merchants.value, vm.merchantRouting.value, vm.currentMerchant.value)
+            assertThat(selector.elegidaPermitida).isFalse()
+            assertThat(selector.cuentas).containsExactly(angelPayMerchantB)
+            assertThat(selector.ocultarLista).isFalse()
+
+            // Otra emisión (la lista vuelve a llegar de la base) no dispara otro intento automático en esta consulta.
+            merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
+            runCurrent()
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - Tarjeta con la cuenta excluida no arranca el SDK y, al asentarse la sesion, pasa sola a la permitida`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+        inFlightSwitchFlow.value = 99   // la sesión se está moviendo: el cambio automático espera
+        val vm = vmConRegla(listOf(angelPayMerchantA, angelPayMerchantB), activa = 11, regla = soloLaCuentaB())
+        try {
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(any()) }
+
+            vm.startCardPayment()
+            runCurrent()
+            // Red de seguridad: con la cuenta excluida, «Tarjeta» no toca el SDK ni aparta el cobro.
+            verify(exactly = 0) { paymentStateHolder.setCharging(true) }
+            coVerify(exactly = 0) { angelPayAuthRepository.candadoDeSesion }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(vm.avisoDeCuenta.value).contains("Restaurant")
+
+            inFlightSwitchFlow.value = null   // la sesión se asienta
+            runCurrent()
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+            assertThat(vm.avisoDeCuenta.value).isNull()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - cuentas que cargan tarde - al llegar, pasa sola a la permitida`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+        val vm = vmConRegla(emptyList(), activa = null, regla = soloLaCuentaB())
+        try {
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(any()) }
+
+            merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantB)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - un cambio automatico de un cobro anterior que falla tarde no pinta nada en el cobro nuevo`() = runTest(testDispatcher) {
+        val cambioViejo = CompletableDeferred<Result<Unit>>()
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } coAnswers { cambioViejo.await() }
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
             enableShifts = false, showTipScreen = false, showReviewScreen = false,
         )
-        activeMerchantIdFlow.value = 11 // A activa en la sesión del SDK
+        activeMerchantIdFlow.value = 11
         merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
-        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), mutableListOf()))
+        val reglas = mockk<MerchantEligibilityRepository>(relaxed = true)
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("6000.00")) == 0 }, any(), any()) } returns soloLaCuentaB()
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("100.00")) == 0 }, any(), any()) } returns soloLaCuentaA()
+        val vm = createViewModel(merchantEligibilityRepository = reglas)
         try {
             runCurrent()
-            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            vm.initPayment(amount = "6000.00")   // cobro 1: A excluida → cambio automático a B, en vuelo
+            runCurrent()
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(22) }
 
-            vm.initPayment(amount = "6000.00")
+            vm.resetPayment(); runCurrent()
+            vm.initPayment(amount = "100.00")    // cobro 2: sólo A
             runCurrent()
 
-            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            cambioViejo.complete(Result.failure(IllegalStateException("tarde")))   // el cambio del cobro 1 falla tarde
+            runCurrent()
+
+            val estado = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(java.math.BigDecimal(estado.totalAmount)).isEqualToIgnoringScale(BigDecimal("100.00"))
+            assertThat(vm.avisoDeCuenta.value).isNull()                     // su falla no es del cobro 2
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)  // A sí es la permitida del cobro 2
+            coVerify(exactly = 0) { angelPayMerchantRepository.switchActiveMerchant(11) }
         } finally {
             vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - un cambio automatico de un cobro anterior que llega tarde con exito - el cobro nuevo revisa SU regla y pasa a la suya`() = runTest(testDispatcher) {
+        val cambioViejo = CompletableDeferred<Result<Unit>>()
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } coAnswers { cambioViejo.await() }
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(11) } returns Result.success(Unit)
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        activeMerchantIdFlow.value = 11
+        merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
+        val reglas = mockk<MerchantEligibilityRepository>(relaxed = true)
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("6000.00")) == 0 }, any(), any()) } returns soloLaCuentaB()
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("100.00")) == 0 }, any(), any()) } returns soloLaCuentaA()
+        val vm = createViewModel(merchantEligibilityRepository = reglas)
+        try {
+            runCurrent()
+            vm.initPayment(amount = "6000.00"); runCurrent()
+            vm.resetPayment(); runCurrent()
+            vm.initPayment(amount = "100.00"); runCurrent()
+
+            cambioViejo.complete(Result.success(Unit))   // el cambio del cobro 1 deja la sesión en B (excluida en el cobro 2)
+            runCurrent()
+
+            // El cobro 2 no cobra en B: revisa su propia regla y pasa a A.
+            coVerify(exactly = 1) { angelPayMerchantRepository.switchActiveMerchant(11) }
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - recreada + rechazo + Reintentar vuelve a evaluar con el importe y la propina de la fila (ajeno de D2 r4)`() = runTest(testDispatcher) {
+        // D2 r4: cobro con propina → Android recrea la pantalla → el banco rechaza → «Reintentar». El ViewModel recreado nació
+        // sin reglas; sin volver a evaluar al reintentar, el selector ofrecía TODAS las cuentas.
+        merchantsFlow.value = listOf(angelPayMerchantB)
+        val requestId = "REQ-D3-RECREADA"
+        val fila = filaDeLaSolicitudConMarca(requestId).copy(
+            state = PaymentAttemptEntity.STATE_AUTORIZANDO, serverProcessorEvidence = null, serverProcessorEvidenceAt = null,
+        )
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.adoptarCobroDeLaSolicitud(requestId) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CobroSinResolver("att-rc1")
+        coEvery { paymentAttemptLedger.leerIntento("att-rc1") } returns fila
+        io.mockk.mockkConstructor(parserAngelPay)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Transacción rechazada", "G500", "GATEWAY")
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(handleRecreado(requestId), merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            runCurrent()
+            vm.onAngelPayResult(android.app.Activity.RESULT_OK, null); runCurrent()
+            assertThat((vm.state.value as AngelPayPaymentState.Error).canRetry).isTrue()
+            assertThat(vm.merchantRouting.value).isNull()   // el recreado nació sin reglas
+
+            vm.retryAfterError(); runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("130.50"))   // $120.50 + $10.00 de la fila
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(parserAngelPay)
         }
     }
 

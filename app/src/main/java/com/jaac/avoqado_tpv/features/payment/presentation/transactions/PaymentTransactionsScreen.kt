@@ -40,7 +40,7 @@ import java.util.Locale
  * libreta ni quedaba registrada en Avoqado.
  */
 internal const val MENSAJE_SOLO_CONSULTA =
-    "Aquí sólo se consulta. Para cancelar o devolver una venta, entra a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado."
+    "Aquí sólo se consulta. Para cancelar o devolver una venta, entra con un usuario del negocio a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado."
 
 @Composable
 fun PaymentTransactionsScreen(

@@ -84,7 +84,7 @@ class TransaccionesSoloConsultaTest {
         // Y le dice al superadmin por dónde sí se devuelve (texto escrito aquí, no la constante: así esta prueba compila
         // también contra el código viejo y su rojo es por el defecto, no por una referencia que no existe).
         assertThat(pantalla).contains(
-            "Aquí sólo se consulta. Para cancelar o devolver una venta, entra a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado."
+            "Aquí sólo se consulta. Para cancelar o devolver una venta, entra con un usuario del negocio a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado."
         )
     }
 

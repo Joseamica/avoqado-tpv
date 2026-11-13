@@ -4031,7 +4031,7 @@ class PaymentViewModel @Inject constructor(
                 )
 
                 if (track2Value.isNotEmpty()) {
-                    Timber.i("   ✅ Track2 extracted: ${track2Value.take(16)}... (length: ${track2Value.length})")
+                    Timber.i("   ✅ Track2 extracted (length: ${track2Value.length})") // D64: nunca el número de tarjeta
                 } else {
                     Timber.w("   ⚠️ Track2 not found in EMV tags - this may cause issues")
                 }
@@ -4540,7 +4540,7 @@ class PaymentViewModel @Inject constructor(
             Timber.i("🌐 [$saleType] Sending online authorization to Momentum...")
             Timber.i("💳 [MSI] Sending $saleType with msi=${selectedMsiMonths ?: "DIRECT"}")
             Timber.d("   Amount: $amount")
-            Timber.d("   Track2: ${track2.take(16)}...")
+            Timber.d("   Track2: presente (length: ${track2.length})") // D64: nunca el número de tarjeta
             Timber.d("   Cardholder: $cardHolderName")
             Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
 
@@ -5150,7 +5150,7 @@ class PaymentViewModel @Inject constructor(
 
             Timber.i("🌐 [CancelIcc] Sending REFUND authorization to Momentum...")
             Timber.d("   Amount: $amount")
-            Timber.d("   Track2: ${track2.take(16)}...")
+            Timber.d("   Track2: presente (length: ${track2.length})") // D64: nunca el número de tarjeta
             Timber.d("   Cardholder: $cardHolderName")
             Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
             Timber.d("   OperationID (blumon operation number): $originalOperationNumber")
@@ -5536,7 +5536,7 @@ class PaymentViewModel @Inject constructor(
             val contactlessBrand = if (aidBrand != CardBrand.UNKNOWN) aidBrand else panBrand
 
             if (track2.isNotEmpty()) {
-                Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
+                Timber.i("   ✅ Track2 extracted (length: ${track2.length})") // D64: nunca el número de tarjeta
             } else {
                 Timber.w("   ⚠️ Track2 not found")
             }

@@ -165,7 +165,7 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     /**
      * Initialize Timber logging
      *
-     * - DEBUG: DebugTree (full logcat output)
+     * - DEBUG: ArbolDeDepuracionSinTarjetas (DebugTree con el número de tarjeta tapado)
      * - RELEASE: CrashReportingTree (W/E → Firebase Crashlytics as non-fatal exceptions)
      *
      * This ensures ALL existing Timber.e() calls throughout the codebase
@@ -174,7 +174,8 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
      */
     private fun initializeTimber() {
         if (BuildConfig.DEBUG) {
-            Timber.plant(Timber.DebugTree())
+            // D64: el número de tarjeta sale tapado (6 + 4) en logcat.
+            Timber.plant(com.jaac.avoqado_tpv.core.observability.ArbolDeDepuracionSinTarjetas())
             Timber.d("🚀 Avoqado TPV initialized in DEBUG mode")
         } else {
             Timber.plant(com.jaac.avoqado_tpv.core.observability.CrashReportingTree())

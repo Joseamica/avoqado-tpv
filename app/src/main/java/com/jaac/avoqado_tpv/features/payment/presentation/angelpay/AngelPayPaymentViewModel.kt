@@ -224,6 +224,10 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives the selector filter +
     // "showing all accounts" banner). AngelPay only FILTERS (no auto SDK-session switch on auto-select).
+    // 🧭 D3 (esqueleto para el rojo): aviso de la cuenta permitida.
+    private val _avisoDeCuenta = MutableStateFlow<String?>(null)
+    val avisoDeCuenta: StateFlow<String?> = _avisoDeCuenta.asStateFlow()
+
     private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
     val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
 
@@ -5705,7 +5709,14 @@ class AngelPayPaymentViewModel @Inject constructor(
         _mensajeDelPos.value = null
         if (pendingAmount > BigDecimal.ZERO) {
             Timber.i("🔁 [AngelPay] Retry → payment-method step (merchant unchanged)")
-            navigateToStep(PrePaymentNextStep.SELECT_MERCHANT, pendingAmount.toPlainString())
+            // ROJO TEMPORAL (D3 fila 18): sin volver a evaluar las reglas al reintentar.
+            _state.value = AngelPayPaymentState.SelectingMerchant(
+                subtotal = pendingAmount.toPlainString(),
+                tipAmount = pendingTip.toPlainString(),
+                totalAmount = pendingAmount.add(pendingTip).toPlainString(),
+                rating = pendingRating,
+                motivoSinTarjeta = motivoSinTarjeta(),
+            )
         } else {
             Timber.w("🔁 [AngelPay] Retry with no cached context → full reset")
             // Task 10 (hermano de la liberación): el reset completo deja `Idle`, que con monto es el cargando de «preparando

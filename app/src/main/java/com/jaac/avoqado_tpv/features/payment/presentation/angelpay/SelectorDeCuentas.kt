@@ -4,7 +4,12 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility
 
 /** Qué cuentas ofrece «Método de pago» de la Nexgo y si la lista se puede ocultar. */
-internal data class SelectorDeCuentas(val cuentas: List<MerchantAccount>, val ocultarLista: Boolean)
+internal data class SelectorDeCuentas(
+    val cuentas: List<MerchantAccount>,
+    val ocultarLista: Boolean,
+    val elegidaPermitida: Boolean = true,
+    val cuentaAPasar: MerchantAccount? = null,
+)
 
 /**
  * 🧭 MERCHANT_ROUTING_RULES en la Nexgo (D3, 12-nov).

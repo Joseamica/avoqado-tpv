@@ -630,12 +630,9 @@ fun AngelPayPaymentScreen(
                 is AngelPayPaymentState.SelectingMerchant -> {
                     // 🧭 MERCHANT_ROUTING_RULES: show only eligible accounts (unless show-all) + banner.
                     val routing = merchantRouting
-                    val visibleMerchants = if (routing == null || routing.shouldShowAll) {
-                        merchants
-                    } else {
-                        merchants.filter { routing.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
-                            .ifEmpty { merchants }
-                    }
+                    // D3: si la única cuenta permitida no está elegida, la lista se queda a la vista (ver [selectorDeCuentas]).
+                    val selector = selectorDeCuentas(todas = merchants, reglas = routing, elegida = currentMerchant)
+                    val visibleMerchants = selector.cuentas
                     val routingBanner = if (routing?.showFallbackBanner == true) {
                         "Mostrando todas las cuentas: ninguna regla de cobro aplica a esta venta."
                     } else null
@@ -687,7 +684,8 @@ fun AngelPayPaymentScreen(
                         showCashOption = CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         showCryptoOption = viewModel.showCryptoOption &&
                             CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
-                        hideAccountSelector = visibleMerchants.size <= 1,
+                        hideAccountSelector = selector.ocultarLista,
+                        mostrarListaConUnaCuenta = !selector.ocultarLista,
                         // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
                         routingBannerMessage = routingBanner,
                         // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta y cripto en gris con el motivo). Va

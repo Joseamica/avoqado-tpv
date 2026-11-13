@@ -227,19 +227,46 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
     val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
 
+    /**
+     * 🧭 D3 (12-nov): la consulta de reglas es asíncrona (hasta ~3 s sin red). Cada consulta toma un número y sólo publica
+     * si su número sigue siendo el último: la respuesta tardía de un cobro anterior (o de un total que ya cambió) nunca
+     * pisa la del cobro en curso. [olvidarRuteo] (desde [resetPayment]) sube el número.
+     */
+    private var generacionDelRuteo = 0L
+    private var ruteoJob: Job? = null
+
     /** Evaluate routing rules for a charge of [totalAmount] pesos and publish to [merchantRouting]. */
     private fun evaluateRoutingForCharge(totalAmount: String) {
-        viewModelScope.launch {
-            _merchantRouting.value = runCatching {
+        ruteoJob?.cancel()
+        val generacion = ++generacionDelRuteo
+        ruteoJob = viewModelScope.launch {
+            val elegibilidad = try {
                 merchantEligibilityRepository.evaluate(
                     totalAmount = totalAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO,
                     staffId = authRepository.getStaffId(),
                 )
-            }.getOrElse {
-                Timber.w(it, "🧭 [AngelPay Eligibility] evaluate() threw — fail-open (show all)")
+            } catch (e: Throwable) {
+                // Una consulta CANCELADA (otra más nueva o «Nuevo pago») no publica nada; cualquier otra falla abre (todas).
+                currentCoroutineContext().ensureActive()
+                Timber.w(e, "🧭 [AngelPay Eligibility] evaluate() threw — fail-open (show all)")
                 com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
             }
+            if (generacion != generacionDelRuteo) {
+                Timber.d("🧭 [AngelPay Eligibility] Respuesta de una consulta vieja ($generacion ≠ $generacionDelRuteo): se descarta")
+                return@launch
+            }
+            // La Nexgo sólo FILTRA (decisión del 13-jul): nunca elige ni cambia la cuenta por su cuenta. Si la única cuenta
+            // permitida no está elegida, la pantalla muestra la lista para que la cajera la toque ([selectorDeCuentas]).
+            _merchantRouting.value = elegibilidad
         }
+    }
+
+    /** 🧭 D3: el cobro terminó o se abandonó: la consulta en vuelo ya no es de nadie y la pantalla vuelve a «sin reglas». */
+    private fun olvidarRuteo() {
+        ruteoJob?.cancel()
+        ruteoJob = null
+        generacionDelRuteo++
+        _merchantRouting.value = null
     }
 
     /**
@@ -5708,8 +5735,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         // card button permanently disabled when there's a single merchant (selector hidden).
         _isSendingReceipt.value = false
         _sendReceiptMessage.value = null
-        // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner)
-        _merchantRouting.value = null
+        // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner).
+        // D3: también la consulta en vuelo — si contesta tarde no se pega al siguiente cobro.
+        olvidarRuteo()
         // 📡 Clear socket arbitration source so a stale request id never leaks into the next charge.
         _paymentSource = null
         _socketRequestId = null
@@ -5768,7 +5796,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
-                evaluarRuteoDeLaPropinaFija()
+                evaluarRuteoDelCobro()
             }
             PrePaymentNextStep.SELECT_MERCHANT -> {
                 _state.value = AngelPayPaymentState.SelectingMerchant(
@@ -5778,19 +5806,20 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
-                evaluarRuteoDeLaPropinaFija()
+                evaluarRuteoDelCobro()
             }
         }
     }
 
     /**
-     * 🪑 D9 (Codex r1 #4): las reglas de ruteo de cuentas se evalúan al elegir o saltar la propina
-     * ([selectTipAndProceed]/[skipTip]). Con la propina de la mesa esa pantalla no aparece, así que
-     * se evalúan aquí con el total (cuenta + propina). Sólo en este camino: los demás que saltan la
-     * propina conservan su comportamiento (deuda anotada aparte).
+     * 🧭 D3 (12-nov, hz:72be07e6:D3): TODA entrada a «Método de pago» por aquí consulta las reglas de ruteo de cuentas
+     * (MERCHANT_ROUTING_RULES) con el total que se va a cobrar (cuenta + propina), como la PAX (`proceedToMerchantSelection`).
+     * Antes sólo se consultaban al elegir o saltar la propina ([selectTipAndProceed]/[skipTip]); sin esa pantalla (propina
+     * apagada, venta serializada, cobro del POS) `merchantRouting` quedaba en null y el selector ofrecía TODAS las cuentas,
+     * incluida la que la regla excluía. El cobro del POS no trae cuenta decidida (la terminal la elige), así que la regla
+     * le aplica. Reemplaza el `evaluarRuteoDeLaPropinaFija` de D9: la propina de la mesa es uno de estos caminos.
      */
-    private fun evaluarRuteoDeLaPropinaFija() {
-        if (!propinaFija) return
+    private fun evaluarRuteoDelCobro() {
         evaluateRoutingForCharge(pendingAmount.add(pendingTip).toPlainString())
     }
 

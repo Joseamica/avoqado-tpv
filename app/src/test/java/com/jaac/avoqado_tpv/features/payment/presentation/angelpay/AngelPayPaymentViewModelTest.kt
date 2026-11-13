@@ -46,6 +46,9 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository
+import kotlinx.coroutines.CompletableDeferred
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
@@ -249,6 +252,9 @@ class AngelPayPaymentViewModelTest {
         proofOfSaleRemote: com.jaac.avoqado_tpv.features.verification.data.remote.ProofOfSaleRemote? = null,
         modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository? = null,
         despuesDeCobrarFolio: com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio? = null,
+        // 🧭 D3 (12-nov): las pruebas del ruteo de cuentas inyectan el suyo para verificar con qué total se evalúa.
+        merchantEligibilityRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository =
+            mockk(relaxed = true),
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
@@ -258,7 +264,7 @@ class AngelPayPaymentViewModelTest {
         shiftRepository = shiftRepository,
         authRepository = authRepository,
         merchantRepository = merchantRepository,
-        merchantEligibilityRepository = mockk(relaxed = true),
+        merchantEligibilityRepository = merchantEligibilityRepository,
         secureStorage = secureStorage,
         terminalConfigRepository = terminalConfigRepository,
         intentBuilder = intentBuilder,
@@ -3137,6 +3143,298 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // 🧭 D3 (12-nov, hz:72be07e6:D3): las reglas de ruteo de cuentas (MERCHANT_ROUTING_RULES) se evalúan en TODA entrada a
+    // «Método de pago», no sólo al elegir o saltar la propina. Antes, sin la pantalla de propina (apagada, venta serializada,
+    // cobro del POS), `merchantRouting` quedaba en null y el selector ofrecía TODAS las cuentas, incluida la que la regla excluía.
+    // ----------------------------------------------------------------------
+
+    /** La regla deja sólo la cuenta B (`cma-002`). */
+    private fun soloLaCuentaB() = MerchantEligibility(
+        evaluated = true,
+        routingFeatureActive = true,
+        eligibleMerchantAccountIds = setOf("cma-002"),
+        autoSelectMerchantAccountId = "cma-002",
+        fallbackAll = false,
+    )
+
+    /** La regla deja sólo la cuenta A (`cma-001`). */
+    private fun soloLaCuentaA() = MerchantEligibility(
+        evaluated = true,
+        routingFeatureActive = true,
+        eligibleMerchantAccountIds = setOf("cma-001"),
+        autoSelectMerchantAccountId = "cma-001",
+        fallbackAll = false,
+    )
+
+    /** Reglas que contestan [eligibilidad] y anotan en [totales] con qué total se evaluó cada vez. */
+    private fun reglasQueContestan(eligibilidad: MerchantEligibility, totales: MutableList<BigDecimal>) =
+        mockk<MerchantEligibilityRepository>(relaxed = true) {
+            coEvery { evaluate(capture(totales), any(), any()) } returns eligibilidad
+        }
+
+    @Test
+    fun `ruteo - con la pregunta de propina APAGADA se evaluan las reglas con el total y se filtra el selector`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val reglas = reglasQueContestan(soloLaCuentaB(), totales)
+        val vm = createViewModel(merchantEligibilityRepository = reglas)
+        try {
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("6000.00"))
+            coVerify(exactly = 1) { reglas.evaluate(any(), "s1", any()) }
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - califica con la propina APAGADA y al llegar al selector se evaluan las reglas`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = true,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+            // En la calificación todavía no hay selector: nada que evaluar.
+            assertThat(totales).isEmpty()
+
+            vm.selectRatingAndProceed(amount = "6000.00", rating = 4)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("6000.00"))
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - venta serializada (skipReview) evalua las reglas aunque la propina este prendida`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            vm.initPayment(amount = "1200.00", skipReview = true)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("1200.00"))
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - cobro del POS evalua las reglas con el total que incluye la propina del POS`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            // El POS no manda cuenta: la terminal la elige, así que la regla sí le aplica.
+            vm.setSocketPaymentSource("SOCKET", "REQ-RUTEO")
+            vm.initPayment(amount = "475.00", skipReview = true, externalTipCents = 4_750L, externalRating = 5)
+            runCurrent()
+
+            val selector = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(selector.totalAmount).isEqualTo("522.50")
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("522.50"))
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - propina de la mesa (D9) evalua UNA vez con cuenta mas propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            vm.initPayment(amount = "845.50", orderId = "order_1", propinaYaElegidaCents = 5_000L)
+            runCurrent()
+            vm.selectRatingAndProceed(amount = "845.50", rating = 5)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("895.50"))
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - con la pantalla de propina se sigue evaluando UNA vez con cuenta mas propina`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = false,
+        )
+        val totales = mutableListOf<BigDecimal>()
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), totales))
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+            assertThat(totales).isEmpty()
+
+            vm.selectTipAndProceed(amount = "100.00", rating = null, tipAmount = "15.00")
+            runCurrent()
+
+            assertThat(totales).hasSize(1)
+            assertThat(totales.single()).isEqualToIgnoringScale(BigDecimal("115.00"))
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - una respuesta tardia del cobro anterior no se pega al cobro siguiente`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        val respuestaDelPrimero = CompletableDeferred<MerchantEligibility>()
+        val reglas = mockk<MerchantEligibilityRepository>(relaxed = true)
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("6000.00")) == 0 }, any(), any()) } coAnswers {
+            respuestaDelPrimero.await()
+        }
+        coEvery { reglas.evaluate(match { it.compareTo(BigDecimal("100.00")) == 0 }, any(), any()) } returns soloLaCuentaA()
+        val vm = createViewModel(merchantEligibilityRepository = reglas)
+        try {
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+            // La consulta del primer cobro sigue en el aire.
+            assertThat(vm.merchantRouting.value).isNull()
+
+            vm.resetPayment()
+            runCurrent()
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaA())
+
+            // Llega tarde la del primer cobro: no pisa la del cobro en curso.
+            respuestaDelPrimero.complete(soloLaCuentaB())
+            runCurrent()
+
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaA())
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - tras Nuevo pago la respuesta tardia no deja reglas pegadas`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        val respuestaTardia = CompletableDeferred<MerchantEligibility>()
+        val reglas = mockk<MerchantEligibilityRepository>(relaxed = true)
+        coEvery { reglas.evaluate(any(), any(), any()) } coAnswers { respuestaTardia.await() }
+        val vm = createViewModel(merchantEligibilityRepository = reglas)
+        try {
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+
+            vm.resetPayment()
+            runCurrent()
+            respuestaTardia.complete(soloLaCuentaB())
+            runCurrent()
+
+            // Ni la regla vieja ni un «mostrar todas» inventado: nada, hasta que el próximo cobro consulte.
+            assertThat(vm.merchantRouting.value).isNull()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - sin cuenta elegida la Nexgo no elige sola aunque la regla deje una (la cajera la toca en la lista)`() = runTest(testDispatcher) {
+        // Codex r1 #1 / r2 #1-#2: elegirla en memoria fallaba con cuentas que cargan tarde y en app-a-app. La lista se queda a
+        // la vista (selectorDeCuentas) y el toque va por selectMerchant, con todos sus candados.
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        activeMerchantIdFlow.value = null
+        merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), mutableListOf()))
+        try {
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+
+            assertThat(vm.merchantRouting.value).isEqualTo(soloLaCuentaB())
+            assertThat(vm.currentMerchant.value).isNull()
+            val selector = selectorDeCuentas(vm.merchants.value, vm.merchantRouting.value, vm.currentMerchant.value)
+            assertThat(selector.cuentas).containsExactly(angelPayMerchantB)
+            assertThat(selector.ocultarLista).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `ruteo - una cuenta YA elegida no la cambia la regla (la Nexgo sigue sin cambiar de cuenta sola)`() = runTest(testDispatcher) {
+        // Decisión del 13-jul («AngelPay sólo filtra»), sin cambiar en D3: queda anotada como deuda para el founder.
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = false, showReviewScreen = false,
+        )
+        activeMerchantIdFlow.value = 11 // A activa en la sesión del SDK
+        merchantsFlow.value = listOf(angelPayMerchantA, angelPayMerchantB)
+        val vm = createViewModel(merchantEligibilityRepository = reglasQueContestan(soloLaCuentaB(), mutableListOf()))
+        try {
+            runCurrent()
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
+
+            vm.initPayment(amount = "6000.00")
+            runCurrent()
+
+            assertThat(vm.currentMerchant.value).isEqualTo(angelPayMerchantA)
         } finally {
             vm.viewModelScope.cancel()
         }

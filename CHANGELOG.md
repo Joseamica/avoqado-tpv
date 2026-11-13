@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Superadmin · «Transacciones» sólo consulta (D3, encargo 0292fc)**: la pantalla de reconciliación con el procesador (acceso por TOTP) ya no tiene «Cancelar» ni «Devolver». Antes llamaba directo al SDK de AngelPay sin la libreta, sin el candado de «devolución pendiente» y sin registrar nada en Avoqado: una cancelación hecha ahí no quedaba en Avoqado ni impedía otra por Pagos sobre el mismo pago (Codex r1 #3 de D1; con el SDK 1.0.23 alcanzaba también ventas de otra Nexgo). Ahora dice «Aquí sólo se consulta. Para cancelar o devolver una venta, entra a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado.». Buscar, Imprimir, URL y Email siguen igual. También se quitó la ruta `autoRefundReference`, que devolvía sola la venta al abrir la pantalla y nadie usaba. Prueba: `TransaccionesSoloConsultaTest`.
+
 ---
 
 ## [2.20.0] - 2026-11-13

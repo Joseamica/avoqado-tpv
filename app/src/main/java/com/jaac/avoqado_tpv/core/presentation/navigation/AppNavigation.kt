@@ -3246,11 +3246,6 @@ fun AppNavigation(
             route = NavRoute.PaymentTransactions.route,
             arguments = listOf(
                 navArgument("processorType") { type = NavType.StringType },
-                navArgument("autoRefundReference") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
             )
         ) {
             com.jaac.avoqado_tpv.features.payment.presentation.transactions.PaymentTransactionsScreen(

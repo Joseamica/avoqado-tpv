@@ -29,6 +29,14 @@ data class PaymentTransactionsUiState(
     val message: String? = null,
 )
 
+/**
+ * «Transacciones» del superadmin (acceso por TOTP): consulta el historial del procesador, reimprime y manda el ticket.
+ *
+ * 🔴 SÓLO CONSULTA (D3, encargo 0292fc, 13-nov): antes cancelaba y devolvía llamando directo al adaptador, sin la libreta, sin
+ * el candado de «devolución pendiente» y sin registrar nada en Avoqado (Codex r1 #3 de D1). Devolver dinero va sólo por
+ * Pagos → el pago → Reembolso (`RecordAngelPayRefundUseCase`). No vuelvas a poner aquí una llamada a `cancelTransaction` ni
+ * a `refundTransaction`: lo vigila `TransaccionesSoloConsultaTest`.
+ */
 @HiltViewModel
 class PaymentTransactionsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -38,9 +46,6 @@ class PaymentTransactionsViewModel @Inject constructor(
     private val processorType: ProcessorType = parseProcessorType(
         savedStateHandle.get<String>("processorType")
     )
-    private val autoRefundReference: String? =
-        savedStateHandle.get<String>("autoRefundReference")?.trim()?.takeIf { it.isNotBlank() }
-    private var autoRefundPending: Boolean = autoRefundReference != null
     private val adapter = adapterFactory.get(processorType)
     private val dateFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 
@@ -49,7 +54,6 @@ class PaymentTransactionsViewModel @Inject constructor(
             processorType = processorType,
             startDate = LocalDate.now().format(dateFormatter),
             endDate = LocalDate.now().format(dateFormatter),
-            reference = autoRefundReference.orEmpty(),
         )
     )
     val uiState: StateFlow<PaymentTransactionsUiState> = _uiState.asStateFlow()
@@ -107,26 +111,6 @@ class PaymentTransactionsViewModel @Inject constructor(
                         transactions = items,
                         message = message,
                     )
-
-                    if (autoRefundPending) {
-                        autoRefundPending = false
-                        val target = items.firstOrNull {
-                            it.reference.equals(autoRefundReference, ignoreCase = true)
-                        }
-
-                        if (target == null) {
-                            Timber.w("⚠️ [Tx] Auto-refund target not found for ref=%s", autoRefundReference)
-                            _uiState.value = _uiState.value.copy(
-                                message = "No se encontró la transacción ${autoRefundReference ?: ""}. Verifica filtros."
-                            )
-                        } else {
-                            Timber.i("🔶 [Tx] Auto-refund start ref=%s", target.reference)
-                            _uiState.value = _uiState.value.copy(
-                                message = "Transacción ${target.reference} encontrada. Ejecutando devolución..."
-                            )
-                            refundTransaction(target, autoTriggered = true)
-                        }
-                    }
                 },
                 onFailure = { error ->
                     Timber.e(error, "❌ [Tx] Failed loading history")
@@ -137,25 +121,6 @@ class PaymentTransactionsViewModel @Inject constructor(
                     )
                 }
             )
-        }
-    }
-
-    fun cancelTransaction(transaction: UnifiedTransaction) {
-        executePostOperation("cancelación") {
-            adapter.cancelTransaction(transaction)
-        }
-    }
-
-    fun refundTransaction(transaction: UnifiedTransaction) {
-        refundTransaction(transaction, autoTriggered = false)
-    }
-
-    private fun refundTransaction(
-        transaction: UnifiedTransaction,
-        autoTriggered: Boolean,
-    ) {
-        executePostOperation(name = "devolución", autoTriggered = autoTriggered) {
-            adapter.refundTransaction(transaction)
         }
     }
 
@@ -217,43 +182,6 @@ class PaymentTransactionsViewModel @Inject constructor(
 
     fun clearMessage() {
         _uiState.value = _uiState.value.copy(message = null)
-    }
-
-    private fun executePostOperation(
-        name: String,
-        autoTriggered: Boolean = false,
-        action: suspend () -> Result<com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationResult>,
-    ) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, message = null)
-            val result = action()
-            result.fold(
-                onSuccess = { op ->
-                    val msg = if (op.approved) {
-                        "$name aprobada${op.reference?.let { " (ref: $it)" } ?: ""}"
-                    } else {
-                        "$name rechazada: ${op.message ?: "sin detalle"}"
-                    }
-                    Timber.i(
-                        "🔶 [Tx] %s result approved=%s ref=%s message=%s auto=%s",
-                        name,
-                        op.approved,
-                        op.reference ?: "-",
-                        op.message ?: "-",
-                        autoTriggered,
-                    )
-                    _uiState.value = _uiState.value.copy(isLoading = false, message = msg)
-                    refreshHistory(showSummaryMessage = false)
-                },
-                onFailure = { error ->
-                    Timber.e(error, "❌ [Tx] %s failed auto=%s", name, autoTriggered)
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        message = "Error en $name: ${error.message}",
-                    )
-                }
-            )
-        }
     }
 
     private fun parseProcessorType(raw: String?): ProcessorType {

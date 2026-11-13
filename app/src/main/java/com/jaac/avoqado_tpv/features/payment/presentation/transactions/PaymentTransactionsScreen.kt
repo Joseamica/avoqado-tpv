@@ -35,6 +35,13 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction
 import java.util.Locale
 
+/**
+ * Lo que la pantalla le dice al superadmin: aquí sólo se consulta (D3, 13-nov). Una cancelación hecha aquí no pasaba por la
+ * libreta ni quedaba registrada en Avoqado.
+ */
+internal const val MENSAJE_SOLO_CONSULTA =
+    "Aquí sólo se consulta. Para cancelar o devolver una venta, entra a Pagos, abre el pago y usa Reembolso: así queda registrado en Avoqado."
+
 @Composable
 fun PaymentTransactionsScreen(
     onNavigateBack: () -> Unit,
@@ -61,6 +68,13 @@ fun PaymentTransactionsScreen(
             contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item {
+                Text(
+                    text = MENSAJE_SOLO_CONSULTA,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             item {
                 OutlinedTextField(
                     value = uiState.startDate,
@@ -139,8 +153,6 @@ fun PaymentTransactionsScreen(
                 TransactionCard(
                     transaction = tx,
                     canPrint = uiState.canPrintTickets,
-                    onCancel = { viewModel.cancelTransaction(tx) },
-                    onRefund = { viewModel.refundTransaction(tx) },
                     onPrint = { viewModel.printTicket(tx) },
                     onGetTicketUrl = { viewModel.getTicketUrl(tx) },
                     onSendEmail = {
@@ -200,8 +212,6 @@ fun PaymentTransactionsScreen(
 private fun TransactionCard(
     transaction: UnifiedTransaction,
     canPrint: Boolean,
-    onCancel: () -> Unit,
-    onRefund: () -> Unit,
     onPrint: () -> Unit,
     onSendEmail: () -> Unit,
     onGetTicketUrl: () -> Unit,
@@ -227,20 +237,6 @@ private fun TransactionCard(
             }
 
             Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(
-                    onClick = onCancel,
-                    enabled = transaction.postOperationType.isNullOrBlank(),
-                ) { Text("Cancelar") }
-                OutlinedButton(
-                    onClick = onRefund,
-                    enabled = transaction.postOperationType.isNullOrBlank(),
-                ) { Text("Devolver") }
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),

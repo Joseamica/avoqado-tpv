@@ -459,8 +459,12 @@ class ShiftRepository(
     suspend fun getCurrentShift(venueId: String): Result<Shift?> {
         val local = proyeccionLocalDeCaja(venueId)
         if (local != null && (local.openingStatus != "CONFIRMED" ||
-                (local.localStatus != "OPEN" && local.closeStatus != "CONFIRMED")))
-            return Result.Success(proyectar(local))
+                (local.localStatus != "OPEN" && local.closeStatus != "CONFIRMED"))) {
+            // D65: un cierre que sólo se OBSERVÓ (lo hizo otro aparato) no deja gesto de este aparato pendiente: se vuelve a
+            // preguntar, para ver la caja que el negocio abrió después. Lo demás conserva su proyección sin tocar la red.
+            if (!esCierreRemotoObservado(local)) return Result.Success(proyectar(local))
+            return cajaDelNegocioTrasCierreRemoto(venueId, local)
+        }
         return try {
             Timber.d("🔍 Fetching current shift for venue: $venueId")
 
@@ -535,6 +539,51 @@ class ShiftRepository(
             Timber.e(e, "❌ Network error fetching current shift")
             Result.Error(ApiException.NetworkError(e))
         }
+    }
+
+    /**
+     * D65 (13-nov, PAX): la caja de esta terminal se cerró en OTRO aparato y el negocio abrió otra. Antes, la marca «en revisión»
+     * de ese cierre observado tapaba la caja nueva y la terminal rechazaba ventas («Abre la caja antes de iniciar otra venta»)
+     * hasta que alguien hacía «Abrir nueva caja» → «Usar la caja vinculada». El turno es del negocio: la terminal usa sola la
+     * caja abierta que contesta el servidor, como hacía ese paso manual (sin crear otra caja ni tocar la cerrada).
+     * Sin red, o si el servidor no tiene otra caja abierta, se sigue viendo la cerrada, igual que antes.
+     */
+    private suspend fun cajaDelNegocioTrasCierreRemoto(venueId: String, local: LocalShiftSessionEntity): Result<Shift?> {
+        val remote = try {
+            apiService.getCurrentShift(venueId).takeIf { it.isSuccessful }?.body()?.shift
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+          catch (error: Exception) {
+            Timber.w(error, "D65: no se pudo preguntar por la caja del negocio; se conserva la caja cerrada.")
+            null
+        }
+        if (remote == null || remote.venueId != venueId || remote.status != "OPEN" || remote.id == local.serverShiftId)
+            return Result.Success(proyectar(local))
+        val saved = registrarCajaRemotaConocida(venueId, remote)
+        if (saved is Result.Error) return Result.Success(proyectar(local))
+        val row = saved.getOrThrow()
+        if (row.localStatus != "OPEN" || row.serverShiftId != remote.id) return Result.Success(proyectar(row))
+        val shift = remote.toDomain().copy(localShiftSessionId = row.localSessionId)
+        runCatching { cachedShiftDao.cacheShift(com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(shift, venueId)) }
+            .onFailure { Timber.w(it, "⚠️ Failed to cache shift") }
+        return Result.Success(shift)
+    }
+
+    /** D65: el único escritor es [observarCierreRemoto]: CLOSED + REVIEW sin gesto de cierre de este aparato. */
+    private fun esCierreRemotoObservado(row: LocalShiftSessionEntity) =
+        row.localStatus == "CLOSED" && row.closeOperationId == null && row.closeStatus == "REVIEW" &&
+            row.openingStatus == "CONFIRMED" && row.serverShiftId != null && row.openingDisposition != "ADOPTED"
+
+    /**
+     * D65: antes de rechazar un cobro (remoto) por «no hay caja abierta», se pregunta una vez al servidor, con tope, si el
+     * negocio ya tiene una. Sin red o sin respuesta a tiempo no cambia nada: el cobro se rechaza como antes.
+     */
+    suspend fun consultarCajaDelNegocioSiNoHayAbierta(venueId: String, topeMs: Long = 5_000L) {
+        try {
+            if (database.localShiftSessionDao().abierta(venueId) != null) return
+            if (secureStorage.contains("enable_shifts") && !secureStorage.getBoolean("enable_shifts", true)) return
+            kotlinx.coroutines.withTimeoutOrNull(topeMs) { getCurrentShift(venueId) }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+          catch (error: Exception) { Timber.w(error, "D65: no se pudo consultar la caja del negocio antes de admitir el cobro.") }
     }
 
     private suspend fun observarCierreRemoto(original: LocalShiftSessionEntity, status: String,
@@ -900,12 +949,16 @@ class ShiftRepository(
         val authority = autoridadLocal(venueId, "shifts:read")
         check(remote.venueId == venueId && remote.id.isNotBlank() && remote.status == "OPEN") { "No se recibió una caja abierta de esta sucursal." }
         val cash = remote.startingCash.toBigDecimalOrNull()?.let(::canonicalCashCount) ?: error("Falta el fondo de la caja remota.")
-        database.withTransaction {
+        var usaLaCajaNueva = false
+        val saved = database.withTransaction {
             verificarAutoridad(authority, "shifts:read")
             val dao = database.localShiftSessionDao()
             val current = dao.abierta(venueId) ?: dao.ultima(venueId)
+            // D65: el REVIEW de un cierre sólo observado no es un gesto de este aparato pendiente: no tapa la caja nueva.
+            val cierreObservado = current != null && esCierreRemotoObservado(current)
             if (current != null && (current.localStatus == "OPEN" || current.serverShiftId == remote.id ||
-                    current.openingStatus in listOf("PENDING", "SYNCING", "REVIEW") || current.closeStatus in listOf("PENDING", "SYNCING", "REVIEW"))) {
+                    current.openingStatus in listOf("PENDING", "SYNCING", "REVIEW") ||
+                    current.closeStatus in listOf("PENDING", "SYNCING") || (current.closeStatus == "REVIEW" && !cierreObservado))) {
                 verificarAutoridad(authority, "shifts:read")
                 return@withTransaction current
             }
@@ -916,8 +969,12 @@ class ShiftRepository(
                 localStatus = "OPEN", openingEvidenceJson = localGson.toJson(remote), createdAt = now, updatedAt = now)
             dao.insertar(row)
             verificarAutoridad(authority, "shifts:read")
+            usaLaCajaNueva = cierreObservado
             row
         }
+        // D65: Inicio, Caja y el kiosco se enteran de que ya hay caja sin esperar a que alguien reabra la pantalla.
+        if (usaLaCajaNueva) _shiftChanges.tryEmit(Unit)
+        saved
     }
 
     /** T2 entrega el resultado de la MISMA petición; GET parcial no puede inventar el fondo aplicado. */

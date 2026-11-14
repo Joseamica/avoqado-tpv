@@ -155,6 +155,8 @@ class RemotePaymentInbox(
      * preguntaba a la Caja. 🔴 Sólo lo que sigue sin reclamar admite este «no»: una reclamada puede tener el lector abierto.
      */
     suspend fun reclamarParaVenue(requestId: String, venueId: String): RemotePaymentAdmission = try {
+        // D65: si esta terminal no tiene caja abierta, se pregunta una vez (con tope) si el negocio ya abrió una en otro aparato.
+        shiftRepository.consultarCajaDelNegocioSiNoHayAbierta(venueId)
         val reclamada = shiftRepository.guardarNuevaObligacionDeCaja(venueId) { belonging ->
             dao.claimWithBelonging(requestId, venueId, belonging.kind, belonging.localSessionId,
                 belonging.cashDrawerSessionId, System.currentTimeMillis()) == 1

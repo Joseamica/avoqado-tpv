@@ -193,7 +193,24 @@ class SyncOutboxSecuenciaTrasReinstalarTest {
         assertThat(fila(primero).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
         assertThat(fila(primero).seq).isEqualTo(1L)
         assertThat(fila(segundo).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
-        assertThat(acks).containsExactly("$segundo:ACKED", "$primero:REJECTED")
+        // El rechazo se guarda ANTES que lo que entra después (Codex r3): si el proceso muere en medio, nunca queda lo
+        // nuevo aplicado y lo viejo en espera para renumerarse.
+        assertThat(acks).containsExactly("$primero:REJECTED", "$segundo:ACKED").inOrder()
+    }
+
+    @Test
+    fun `si la cola no cupo en un solo envio no se renumera lo que se mando`() = runTest {
+        // Residuo declarado: con más de 50 en espera, algo de la cola pudo estar ya en el servidor y su respuesta vendría
+        // en otro envío. Las 50 primeras se rechazan como hoy; la que sigue sí cabe sola y entra con número nuevo.
+        servidorQueYaVio(1000)
+        val ids = (1..51).map { encola(SyncIntentTypes.ADD_ITEMS) }
+
+        outbox.replayNow(VENUE)
+
+        assertThat(enviados.first().intents).hasSize(50)
+        assertThat(ids.take(50).map { fila(it).status }.distinct()).containsExactly(SyncIntentEntity.STATUS_REJECTED)
+        assertThat(fila(ids[50]).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
+        assertThat(fila(ids[50]).seq).isEqualTo(1001L)
     }
 
     @Test

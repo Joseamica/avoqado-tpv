@@ -11,15 +11,8 @@
         -->
         <!-- C2: id de instalación y contador de capturas son de ESTA terminal (ver backup_rules.xml). -->
         <exclude domain="sharedpref" path="proof_capture.xml"/>
-        <!-- D6: la base local es de ESTA terminal y de ESTE momento (ver backup_rules.xml). -->
-        <exclude domain="database" path="avoqado_database"/>
-        <exclude domain="database" path="avoqado_database-wal"/>
-        <exclude domain="database" path="avoqado_database-shm"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="proof_capture.xml"/>
-        <exclude domain="database" path="avoqado_database"/>
-        <exclude domain="database" path="avoqado_database-wal"/>
-        <exclude domain="database" path="avoqado_database-shm"/>
     </device-transfer>
 </data-extraction-rules>

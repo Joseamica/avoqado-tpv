@@ -231,6 +231,17 @@ class SyncOutbox @Inject constructor(
      * `CancellationException` se repropaga sin tocar nada — el batch se queda
      * como estaba, listo para el próximo trigger.
      *
+     * D6 (14-nov): tras reinstalar la app (o borrar sus datos, o regresar a una versión anterior, que borra la base), la
+     * cola vuelve a contar desde 1 y el server rechaza por número (`STALE_DEVICE_SEQUENCE`, con `details.latestSeq`,
+     * antes de aplicar nada). Si `latestSeq` es MAYOR que cualquier número de esta base, ese número es de otra base (la
+     * instalación vieja): todo lo que esta base mandó se rechazó sin aplicarse ni apartarse. Sólo entonces, y sólo si
+     * el envío llevó toda la cola en espera y nada de esta respuesta entró antes del rechazo, la cola en espera se
+     * renumera arriba de `latestSeq`, en el mismo orden, y se reenvía en esta misma pasada (a lo más una vez por
+     * pasada). Si algo entra después de un rechazo así, el rechazo se guarda primero (Codex r3). Si no (algo de esta base pudo entrar:
+     * Codex r1, `docs/audit/2026-11-14-secuencia-tras-reinstalar/`), el rechazo queda como antes: reenviarlo ejecutaría
+     * una operación vieja después de una nueva, o rompería la recuperación de una reserva (el server la retoma sólo con
+     * su número original).
+     *
      * @param onAck invocado por cada ack YA persistido (Task 5,
      *   `TableSyncCoordinator`) — recibe el [SyncIntentEntity] original (para
      *   su `type`) y el [SyncIntentAck] del wire. Se llama en el MISMO orden
@@ -264,7 +275,12 @@ class SyncOutbox @Inject constructor(
         canEmit: () -> Boolean,
     ): ReplayProgress = replayMutex.withLock {
         var resolved = 0
+        // D6: la cola se renumera por un rechazo de número a lo más UNA vez por pasada. Si el servidor vuelve a rechazar
+        // por número (otra instalación con el mismo serial sigue adelante), se queda rechazado como antes: sin hot-loop.
+        var yaRenumerada = false
+        var otraVuelta: Boolean
         do {
+            otraVuelta = !singleBatch
             if (!canEmit()) return@withLock ReplayProgress(resolved, false)
             val batch = dao.pendingBatchForVenue(venueId, BATCH_SIZE)
             if (batch.isEmpty()) return@withLock ReplayProgress(resolved, false)
@@ -297,10 +313,51 @@ class SyncOutbox @Inject constructor(
             } ?: return@withLock ReplayProgress(resolved, false)
 
             var next = 0
+            // D6: rechazos por número que se renumeran en vez de guardarse, y si esta respuesta los deja renumerar.
+            val porNumero = mutableListOf<Pair<Int, SyncIntentAck>>()
+            var piso: Long? = null
+            var renumerable: Boolean? = null
+            var entraronEnEstaRespuesta = 0
+            // D6 (Codex r3): sólo si este envío llevó TODA la cola en espera (el lote no se llenó ni se cortó esperando el
+            // mapa de la caja): así, si algo de la cola ya estaba en el servidor, su respuesta viene en ESTA misma respuesta.
+            val todaLaCola = !waitingForMapping && batch.size < BATCH_SIZE
             for (ack in response.data) {
                 // Sólo el siguiente id solicitado: no aplicar ACK ajeno, duplicado o fuera de FIFO.
                 val intent = ready.getOrNull(next)
                 if (intent == null || ack.id != intent.id) return@withLock ReplayProgress(resolved, false)
+                val ultimoDelServidor = if (yaRenumerada) null else ack.latestSeqDelRechazoDeNumero(intent.seq)
+                if (ultimoDelServidor != null) {
+                    // D6: sólo si el servidor vio un número MAYOR que todos los de esta base (es de la instalación vieja)
+                    // y nada de esta respuesta entró antes: entonces nada de esta base se aplicó ni se apartó.
+                    if (renumerable == null) {
+                        renumerable = todaLaCola && entraronEnEstaRespuesta == 0 &&
+                            ultimoDelServidor > (dao.maxSeq(venueId) ?: 0L)
+                    }
+                    if (renumerable == true) {
+                        // Rechaza por número ANTES de reservar: no aplicó nada. Se queda en espera sin avisar a nadie, y
+                        // abajo se renumera y se reenvía.
+                        porNumero += next to ack
+                        piso = maxOf(piso ?: ultimoDelServidor, ultimoDelServidor)
+                        next++
+                        continue
+                    }
+                }
+                if (porNumero.isNotEmpty()) {
+                    // Algo de esta base entra DESPUÉS de un rechazo por número (sólo con otra instalación del mismo serial
+                    // a la vez): reenviar lo rechazado lo ejecutaría tarde. Se guarda como el rechazo que es, y ANTES que
+                    // lo que entra, en orden: si el proceso muere en medio, nunca queda lo nuevo aplicado y lo viejo en
+                    // espera (Codex r3).
+                    for ((indice, rechazo) in porNumero) {
+                        if (!applyAckChecked(rechazo.id, rechazo.status, rechazo.errorCode, rechazo.message, null)) {
+                            return@withLock ReplayProgress(resolved, false)
+                        }
+                        resolved++
+                        onAck(batch[indice], rechazo)
+                    }
+                    porNumero.clear()
+                    piso = null
+                    renumerable = false
+                }
                 val persisted = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) })
                 if (ack.isRetry) {
                     onAck(batch[next], ack)
@@ -308,14 +365,33 @@ class SyncOutbox @Inject constructor(
                 }
                 if (!persisted) return@withLock ReplayProgress(resolved, false)
                 resolved++
+                entraronEnEstaRespuesta++
                 onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
                 next++
+            }
+            if (piso != null && porNumero.isNotEmpty()) {
+                // Si la base no deja renumerar, todo sigue en espera con su número viejo: la próxima pasada lo vuelve a
+                // intentar. `replay` nunca lanza salvo cancelación (ver KDoc de [replayNow]).
+                val renumeradas = try {
+                    dao.renumerarPendientesSobre(venueId, piso)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                  catch (error: Exception) {
+                    Timber.e(error, "❌ [Tables] No se pudo renumerar la cola sobre seq=%d — queda en espera (venue=%s)", piso, venueId)
+                    return@withLock ReplayProgress(resolved, false)
+                }
+                yaRenumerada = true
+                Timber.w(
+                    "🔢 [Tables] El servidor ya vio hasta seq=%d de este aparato, más que toda esta base (¿se reinstaló?): %d en espera renumeradas arriba, se reenvían (venue=%s)",
+                    piso, renumeradas, venueId,
+                )
+                otraVuelta = true
+                continue
             }
             // Sin ACK de todo el prefijo no volver a consultar el mismo PENDING en un hot-loop.
             if (next != ready.size || waitingForMapping) return@withLock ReplayProgress(resolved, false)
             if (singleBatch) return@withLock ReplayProgress(resolved,
                 batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
-        } while (!singleBatch)
+        } while (otraVuelta)
         ReplayProgress(resolved, false)
     }
 

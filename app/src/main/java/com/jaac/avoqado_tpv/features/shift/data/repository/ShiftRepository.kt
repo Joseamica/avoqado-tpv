@@ -575,14 +575,34 @@ class ShiftRepository(
 
     /**
      * D65: antes de reclamar un cobro de la tablet se confirma una vez con el servidor, con tope, cuál es la caja del negocio.
-     * Si la caja local ya se cerró en otro aparato y hay otra abierta, el cobro nace en la nueva (Codex r1 #1: con la vieja
-     * todavía OPEN aquí, el cobro quedaba ligado a ella y fallaba al empezar la tarjeta). Es la misma consulta que ya hace
-     * cada cobro al empezar; sólo se adelanta al reclamo. Sin red o sin respuesta a tiempo no cambia nada.
+     * - Sin caja abierta aquí: la consulta de siempre ([getCurrentShift]), que ya sabe usar la caja nueva tras un cierre observado.
+     * - Con caja abierta aquí (Codex r1 #1: el cobro quedaba ligado a ella aunque el servidor ya la hubiera cerrado): sólo se
+     *   cambia de caja si el servidor tiene OTRA abierta Y dice que la de aquí está CERRADA. Un «cerrándose» (CLOSING) no se
+     *   observa desde aquí: ese cierre puede deshacerse y la caja volver a OPEN (Codex r2 #2).
+     * Quien llama no la usa con la terminal ocupada (Codex r2 #1). Sin red o sin respuesta a tiempo no cambia nada.
      */
     suspend fun consultarCajaDelNegocio(venueId: String, topeMs: Long = 5_000L) {
         try {
             if (secureStorage.contains("enable_shifts") && !secureStorage.getBoolean("enable_shifts", true)) return
-            kotlinx.coroutines.withTimeoutOrNull(topeMs) { getCurrentShift(venueId) }
+            val local = database.localShiftSessionDao().abierta(venueId)
+            if (local == null) {
+                kotlinx.coroutines.withTimeoutOrNull(topeMs) { getCurrentShift(venueId) }
+                return
+            }
+            val vieja = local.serverShiftId
+            if (local.openingStatus != "CONFIRMED" || local.closeOperationId != null || vieja == null) return
+            kotlinx.coroutines.withTimeoutOrNull(topeMs) {
+                val authority = autoridadLocal(venueId, "shifts:read")
+                val remote = apiService.getCurrentShift(venueId).takeIf { it.isSuccessful }?.body()?.shift
+                verificarAutoridad(authority, "shifts:read")
+                if (remote == null || remote.venueId != venueId || remote.status != "OPEN" || remote.id == vieja) return@withTimeoutOrNull
+                val known = apiService.getKnownShiftState(venueId, vieja).takeIf { it.isSuccessful }?.body()
+                verificarAutoridad(authority, "shifts:read")
+                if (known?.id != vieja || known.venueId != venueId || known.status != "CLOSED") return@withTimeoutOrNull
+                observarCierreRemoto(local, "CLOSED", authority)
+                registrarCajaRemotaConocida(venueId, remote)
+                Unit
+            }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
           catch (error: Exception) { Timber.w(error, "D65: no se pudo consultar la caja del negocio antes de admitir el cobro.") }
     }

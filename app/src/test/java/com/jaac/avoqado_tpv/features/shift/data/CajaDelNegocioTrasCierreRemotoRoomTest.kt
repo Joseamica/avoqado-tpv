@@ -236,9 +236,20 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
     }
 
+    /** Codex r2 #2: un cierre que apenas empieza (CLOSING) puede deshacerse; desde el cobro no se marca la caja como cerrada. */
+    @Test fun `un cierre que apenas empieza no se observa desde el cobro de la tablet`() = runTest {
+        val a = cajaViejaCerradaEnOtroAparato(status = "CLOSING")
+        actual(caja(nueva))
+
+        repo.consultarCajaDelNegocio(venue)
+
+        assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(1)
+    }
+
     @Test fun `la bandeja pregunta por la caja del negocio antes de reclamar el cobro`() = runTest {
         val shifts = legacyShiftBoundaryFixture()
-        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, laTerminalRechazariaUnaVentaNueva = { false })
 
         bandeja.reclamarParaVenue("req-1", venue)
 
@@ -246,5 +257,15 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
             shifts.consultarCajaDelNegocio(venue, any())
             shifts.guardarNuevaObligacionDeCaja<Any?>(venue, any(), any(), any())
         }
+    }
+
+    /** Codex r2 #1: con un cobro en curso no se toca la red (un 401 ahí podría sacar de pantalla al cobro activo). */
+    @Test fun `con la terminal ocupada la bandeja no pregunta nada al servidor`() = runTest {
+        val shifts = legacyShiftBoundaryFixture()
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), shifts, laTerminalRechazariaUnaVentaNueva = { true })
+
+        bandeja.reclamarParaVenue("req-1", venue)
+
+        coVerify(exactly = 0) { shifts.consultarCajaDelNegocio(any(), any()) }
     }
 }

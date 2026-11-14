@@ -574,12 +574,13 @@ class ShiftRepository(
             row.openingStatus == "CONFIRMED" && row.serverShiftId != null && row.openingDisposition != "ADOPTED"
 
     /**
-     * D65: antes de rechazar un cobro (remoto) por «no hay caja abierta», se pregunta una vez al servidor, con tope, si el
-     * negocio ya tiene una. Sin red o sin respuesta a tiempo no cambia nada: el cobro se rechaza como antes.
+     * D65: antes de reclamar un cobro de la tablet se confirma una vez con el servidor, con tope, cuál es la caja del negocio.
+     * Si la caja local ya se cerró en otro aparato y hay otra abierta, el cobro nace en la nueva (Codex r1 #1: con la vieja
+     * todavía OPEN aquí, el cobro quedaba ligado a ella y fallaba al empezar la tarjeta). Es la misma consulta que ya hace
+     * cada cobro al empezar; sólo se adelanta al reclamo. Sin red o sin respuesta a tiempo no cambia nada.
      */
-    suspend fun consultarCajaDelNegocioSiNoHayAbierta(venueId: String, topeMs: Long = 5_000L) {
+    suspend fun consultarCajaDelNegocio(venueId: String, topeMs: Long = 5_000L) {
         try {
-            if (database.localShiftSessionDao().abierta(venueId) != null) return
             if (secureStorage.contains("enable_shifts") && !secureStorage.getBoolean("enable_shifts", true)) return
             kotlinx.coroutines.withTimeoutOrNull(topeMs) { getCurrentShift(venueId) }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -955,7 +956,9 @@ class ShiftRepository(
             val dao = database.localShiftSessionDao()
             val current = dao.abierta(venueId) ?: dao.ultima(venueId)
             // D65: el REVIEW de un cierre sólo observado no es un gesto de este aparato pendiente: no tapa la caja nueva.
-            val cierreObservado = current != null && esCierreRemotoObservado(current)
+            // Pero una caja que este aparato ya conoció nunca se vuelve a abrir aquí por una respuesta atrasada (Codex r1 #2).
+            val cierreObservado = current != null && esCierreRemotoObservado(current) &&
+                dao.porServidor(venueId, remote.id) == null
             if (current != null && (current.localStatus == "OPEN" || current.serverShiftId == remote.id ||
                     current.openingStatus in listOf("PENDING", "SYNCING", "REVIEW") ||
                     current.closeStatus in listOf("PENDING", "SYNCING") || (current.closeStatus == "REVIEW" && !cierreObservado))) {

@@ -176,20 +176,64 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         repo.getCurrentShift(venue)
         actual(caja(nueva))
 
-        repo.consultarCajaDelNegocioSiNoHayAbierta(venue)
+        repo.consultarCajaDelNegocio(venue)
 
         assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
     }
 
-    @Test fun `con caja abierta o con Caja apagada no se pregunta nada al servidor`() = runTest {
-        repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
-        repo.consultarCajaDelNegocioSiNoHayAbierta(venue)
-        coVerify(exactly = 0) { api.getCurrentShift(any()) }
+    /** Codex r1 #1: la terminal no había refrescado y todavía creía abierta la vieja cuando llegó el cobro de la tablet. */
+    @Test fun `con la caja vieja todavia abierta aqui el cobro de la tablet nace en la caja nueva`() = runTest {
+        val a = cajaViejaCerradaEnOtroAparato()
+        actual(caja(nueva))
 
-        db.clearAllTables()
+        repo.consultarCajaDelNegocio(venue)
+        val belonging = repo.guardarNuevaObligacionDeCaja(venue) { it }
+
+        assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
+        assertThat(belonging.serverShiftId).isEqualTo(nueva)
+        assertThat(belonging.localSessionId).isEqualTo(db.localShiftSessionDao().abierta(venue)!!.localSessionId)
+    }
+
+    @Test fun `con la misma caja abierta en los dos lados no cambia nada`() = runTest {
+        val a = repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
+        actual(caja(vieja))
+
+        repo.consultarCajaDelNegocio(venue)
+
+        assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(1)
+        coVerify(exactly = 0) { api.getKnownShiftState(any(), any()) }
+    }
+
+    @Test fun `sin red la consulta previa no cambia nada y con Caja apagada no se pregunta`() = runTest {
+        val a = repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
+        coEvery { api.getCurrentShift(venue) } throws IOException("sin red")
+        repo.consultarCajaDelNegocio(venue)
+        assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
+
         mode = false
-        repo.consultarCajaDelNegocioSiNoHayAbierta(venue)
-        coVerify(exactly = 0) { api.getCurrentShift(any()) }
+        actual(caja(nueva))
+        repo.consultarCajaDelNegocio(venue)
+        coVerify(exactly = 1) { api.getCurrentShift(any()) }
+    }
+
+    /** Codex r1 #2: una respuesta atrasada con una caja que ESTE aparato ya vio cerrarse no la vuelve a abrir. */
+    @Test fun `una respuesta atrasada no revive una caja que este aparato ya vio cerrada`() = runTest {
+        val a = cajaViejaCerradaEnOtroAparato()
+        actual(caja(nueva))
+        repo.getCurrentShift(venue)
+        val b = db.localShiftSessionDao().abierta(venue)!!
+        coEvery { api.getKnownShiftState(venue, nueva) } returns Response.success(KnownShiftState(nueva, venue, "CLOSED"))
+        actual(null)
+        repo.getCurrentShift(venue)
+        assertThat(db.localShiftSessionDao().leer(venue, b.localSessionId)!!.closeStatus).isEqualTo("REVIEW")
+
+        val tardia = repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
+
+        assertThat(tardia.localSessionId).isEqualTo(b.localSessionId)
+        assertThat(db.localShiftSessionDao().abierta(venue)).isNull()
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(2)
+        assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
     }
 
     @Test fun `la bandeja pregunta por la caja del negocio antes de reclamar el cobro`() = runTest {
@@ -199,7 +243,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         bandeja.reclamarParaVenue("req-1", venue)
 
         coVerifyOrder {
-            shifts.consultarCajaDelNegocioSiNoHayAbierta(venue, any())
+            shifts.consultarCajaDelNegocio(venue, any())
             shifts.guardarNuevaObligacionDeCaja<Any?>(venue, any(), any(), any())
         }
     }

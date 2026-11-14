@@ -76,6 +76,12 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         "totalCardPayments":"0","totalVoucherPayments":"0","totalOtherPayments":"0","totalProductsSold":0,
         "cashDrawerSessionId":"$drawer"} """, ShiftDto::class.java)
 
+    /**
+     * Con reloj REAL: `consultarCajaDelNegocio` tiene un tope de 5 s (`withTimeoutOrNull`) y, en el reloj virtual de `runTest`,
+     * ese tope se cumple al instante mientras Room trabaja en otro hilo (falló así en el CI, 14-nov).
+     */
+    private suspend fun consultar() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { repo.consultarCajaDelNegocio(venue) }
+
     private fun actual(shift: ShiftDto?) = coEvery { api.getCurrentShift(venue) } returns Response.success(CurrentShiftResponse(shift))
 
     /** La terminal ya usaba la caja vieja y la D3 la cerró. */
@@ -176,7 +182,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         repo.getCurrentShift(venue)
         actual(caja(nueva))
 
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
 
         assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
     }
@@ -186,7 +192,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         val a = cajaViejaCerradaEnOtroAparato()
         actual(caja(nueva))
 
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
         val belonging = repo.guardarNuevaObligacionDeCaja(venue) { it }
 
         assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
@@ -198,7 +204,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         val a = repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
         actual(caja(vieja))
 
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
 
         assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
         assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(1)
@@ -208,12 +214,12 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
     @Test fun `sin red la consulta previa no cambia nada y con Caja apagada no se pregunta`() = runTest {
         val a = repo.registrarCajaRemotaConocida(venue, caja(vieja)).getOrThrow()
         coEvery { api.getCurrentShift(venue) } throws IOException("sin red")
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
         assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
 
         mode = false
         actual(caja(nueva))
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
         coVerify(exactly = 1) { api.getCurrentShift(any()) }
     }
 
@@ -243,7 +249,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         every { storage.getToken() } answers { tokenActual }
         coEvery { api.getCurrentShift(venue) } answers { tokenActual = "token-renovado"; Response.success(CurrentShiftResponse(caja(nueva))) }
 
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
 
         assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
     }
@@ -253,7 +259,7 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         val a = cajaViejaCerradaEnOtroAparato(status = "CLOSING")
         actual(caja(nueva))
 
-        repo.consultarCajaDelNegocio(venue)
+        consultar()
 
         assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
         assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(1)

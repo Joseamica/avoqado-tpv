@@ -8,7 +8,10 @@ import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.shift.data.dto.CurrentShiftResponse
 import com.jaac.avoqado_tpv.features.shift.data.dto.KnownShiftState
@@ -252,6 +255,45 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         consultar()
 
         assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
+    }
+
+    /**
+     * Codex r3 #2 (Mac, 14-nov), de punta a punta por la bandeja: la renovación del token (401 → sesión renovada → GET
+     * reintentado) puede caer en CUALQUIERA de los dos GET de la consulta previa. En los dos casos el cobro de la tablet se
+     * reclama en la caja nueva B, no en la vieja A.
+     */
+    private suspend fun cobroDeLaTabletTrasRenovarLaSesion(renuevaEnElEstadoDeLaVieja: Boolean) {
+        val a = cajaViejaCerradaEnOtroAparato()
+        var tokenActual = "token"
+        every { storage.getToken() } answers { tokenActual }
+        coEvery { api.getCurrentShift(venue) } answers {
+            if (!renuevaEnElEstadoDeLaVieja) tokenActual = "token-renovado"
+            Response.success(CurrentShiftResponse(caja(nueva)))
+        }
+        coEvery { api.getKnownShiftState(venue, vieja) } answers {
+            if (renuevaEnElEstadoDeLaVieja) tokenActual = "token-renovado"
+            Response.success(KnownShiftState(vieja, venue, "CLOSED"))
+        }
+        db.remotePaymentRequestDao().insert(RemotePaymentRequestEntity.from(SocketEvent.TerminalPaymentRequest(
+            requestId = "req-d65", amountCents = 10000, tipCents = 0, rating = null, skipReview = true, orderId = null,
+            processedByStaffId = "mesero", senderDeviceName = "D3", venueId = venue, timestamp = "2026-11-14T18:00:00Z")))
+        val bandeja = RemotePaymentInbox(db.remotePaymentRequestDao(), repo, laTerminalRechazariaUnaVentaNueva = { false })
+
+        val admision = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { bandeja.reclamarParaVenue("req-d65", venue) }
+
+        assertThat(admision).isEqualTo(RemotePaymentAdmission.READY)
+        assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
+        val b = db.localShiftSessionDao().abierta(venue)!!
+        assertThat(b.serverShiftId).isEqualTo(nueva)
+        assertThat(db.remotePaymentRequestDao().getById("req-d65")!!.localShiftSessionId).isEqualTo(b.localSessionId)
+    }
+
+    @Test fun `P1 la sesion renovada en el GET de la caja actual no deja el cobro de la tablet en la caja vieja`() = runTest {
+        cobroDeLaTabletTrasRenovarLaSesion(renuevaEnElEstadoDeLaVieja = false)
+    }
+
+    @Test fun `P1 la sesion renovada en el GET del estado de la caja vieja no deja el cobro de la tablet en la caja vieja`() = runTest {
+        cobroDeLaTabletTrasRenovarLaSesion(renuevaEnElEstadoDeLaVieja = true)
     }
 
     /** Codex r2 #2: un cierre que apenas empieza (CLOSING) puede deshacerse; desde el cobro no se marca la caja como cerrada. */

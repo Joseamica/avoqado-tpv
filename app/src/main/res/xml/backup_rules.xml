@@ -12,4 +12,10 @@
 -->
     <!-- C2: el id de instalación y el contador de capturas son de ESTA terminal; restaurados en otra harían que el servidor descarte capturas buenas como viejas. -->
     <exclude domain="sharedpref" path="proof_capture.xml"/>
+    <!-- D6 (Codex r2): la base local (colas de Mesas y de pagos, caja, libreta) es de ESTA terminal y de ESTE momento. Una copia
+         vieja restaurada traería operaciones que el servidor ya rechazó por número y que la cola renumeraría, ejecutándolas
+         después de otras más nuevas. Al reinstalar, la base empieza vacía, como en una terminal nueva. -->
+    <exclude domain="database" path="avoqado_database"/>
+    <exclude domain="database" path="avoqado_database-wal"/>
+    <exclude domain="database" path="avoqado_database-shm"/>
 </full-backup-content>

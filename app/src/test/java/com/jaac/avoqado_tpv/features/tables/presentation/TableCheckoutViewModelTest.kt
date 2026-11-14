@@ -175,6 +175,27 @@ class TableCheckoutViewModelTest {
         coVerify(exactly = 0) { repository.clearTable(any(), any()) }
     }
 
+    @Test
+    fun un_efectivo_rechazado_por_numero_le_dice_a_la_cajera_que_no_se_cobro_y_donde_verlo() = runTest {
+        // D6: el texto del servidor («La secuencia del dispositivo ya fue utilizada…») no le dice nada a la cajera.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+            Result.failure(TablesRepository.PayCashRejectedException(
+                "La secuencia del dispositivo ya fue utilizada. Requiere revisión antes de repetir la operación.",
+                "STALE_DEVICE_SEQUENCE",
+            ))
+
+        viewModel.payCash(BigDecimal("150.00"))
+
+        assertThat(viewModel.state.value.error).isEqualTo(
+            "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas.",
+        )
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+    }
+
     // endregion
 
     // region — 🧾 recibo de EFECTIVO: cierra la asimetría con TARJETA (propina ya

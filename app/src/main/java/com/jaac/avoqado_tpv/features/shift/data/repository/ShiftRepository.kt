@@ -592,9 +592,10 @@ class ShiftRepository(
             val vieja = local.serverShiftId
             if (local.openingStatus != "CONFIRMED" || local.closeOperationId != null || vieja == null) return
             kotlinx.coroutines.withTimeoutOrNull(topeMs) {
-                val authority = autoridadLocal(venueId, "shifts:read")
                 val remote = apiService.getCurrentShift(venueId).takeIf { it.isSuccessful }?.body()?.shift
-                verificarAutoridad(authority, "shifts:read")
+                // La autoridad se captura DESPUÉS del primer GET, como en [getCurrentShift]: si ese GET renovó el token
+                // (401 → sesión renovada), no se descarta una respuesta buena (Codex r3 #2). Las escrituras la vuelven a revisar.
+                val authority = autoridadLocal(venueId, "shifts:read")
                 if (remote == null || remote.venueId != venueId || remote.status != "OPEN" || remote.id == vieja) return@withTimeoutOrNull
                 val known = apiService.getKnownShiftState(venueId, vieja).takeIf { it.isSuccessful }?.body()
                 verificarAutoridad(authority, "shifts:read")

@@ -236,6 +236,18 @@ class CajaDelNegocioTrasCierreRemotoRoomTest {
         assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.localStatus).isEqualTo("CLOSED")
     }
 
+    /** Codex r3 #2: si el primer GET renovó la sesión (otro token), su respuesta sigue valiendo para pasar a la caja nueva. */
+    @Test fun `una renovacion de sesion durante la consulta previa no deja el cobro en la caja vieja`() = runTest {
+        cajaViejaCerradaEnOtroAparato()
+        var tokenActual = "token"
+        every { storage.getToken() } answers { tokenActual }
+        coEvery { api.getCurrentShift(venue) } answers { tokenActual = "token-renovado"; Response.success(CurrentShiftResponse(caja(nueva))) }
+
+        repo.consultarCajaDelNegocio(venue)
+
+        assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
+    }
+
     /** Codex r2 #2: un cierre que apenas empieza (CLOSING) puede deshacerse; desde el cobro no se marca la caja como cerrada. */
     @Test fun `un cierre que apenas empieza no se observa desde el cobro de la tablet`() = runTest {
         val a = cajaViejaCerradaEnOtroAparato(status = "CLOSING")

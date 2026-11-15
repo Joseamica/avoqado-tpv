@@ -76,16 +76,16 @@ class TableSession @Inject constructor() {
          * nombra, así que cuenta como «de esta cuenta» al preguntarle a la cola.
          */
         val idLocal: String? = null,
+        /**
+         * D8: [total] es un saldo que la terminal puede cobrar. Lo vuelve cierto una lectura del SERVIDOR que se tomó
+         * ([cuentaDelServidor]) o abrir la cuenta vacía sin red ([open]). Lo vuelve falso cualquier cambio que esta terminal
+         * no sabe calcular ([saldoPorConfirmar]: separar, unir, cortesía, descuento, cargo, comensales). Sin él, [total] es 0,
+         * nada se le suma y el cobro espera a la siguiente lectura (Codex r2 #2, r3 #1). «Ver cuenta» y «Abrir mesa» nacen sin él.
+         */
+        val saldoConfirmado: Boolean = false,
     ) {
         /** D8: los ids con que la cola puede nombrar esta cuenta. */
         val idsDeLaCuenta: Set<String> get() = setOfNotNull(orderId, idLocal)
-
-        /**
-         * D8: [total] es un saldo que la terminal puede cobrar: salió de una lectura tomada del SERVIDOR, o la cuenta nació
-         * vacía en esta terminal sin red ([open]) y [total] es lo que se le mandó. Si no (una cuenta que sólo se vio en el
-         * plano), [total] es 0 y el cobro espera a que una lectura se tome (Codex r2 #2: nunca el total bruto del plano).
-         */
-        val saldoConfirmado: Boolean get() = cuenta != null || idLocal != null
 
         val label: String get() = "Mesa ${tableNumber ?: tableId}" + (areaName?.let { " · $it" } ?: "")
     }
@@ -96,6 +96,10 @@ class TableSession @Inject constructor() {
     val active: StateFlow<Active?> = _active.asStateFlow()
 
     private val _epoch = AtomicLong()
+
+    // D8: todo lo que escribe la sesión corre en el hilo principal (pantallas y `TableSyncCoordinator.handleAck`, que salta a
+    // `Dispatchers.Main.immediate`). Por eso no lleva candados: uno alrededor de `_active.value = …` despertaría a quien la
+    // escucha DENTRO del candado, y una prueba con Room se quedó trabada así (15-nov).
 
     /**
      * D8: sube con cada cambio LOCAL del saldo (una ronda, un cobro) y con cada sesión que arranca, se abre o se limpia. Una
@@ -114,6 +118,17 @@ class TableSession @Inject constructor() {
     private var cambiosEnVuelo = 0
 
     /**
+     * D8 (Codex r3 #3): sube cada vez que la cola sube o rechaza algo (ACK o REJECTED, nunca RETRY). El cobro con el saldo por
+     * confirmar lo escucha para volver a leer la cuenta en cuanto lo que esperaba ya subió, sin que el cajero salga y entre.
+     */
+    private val _sincronizaciones = MutableStateFlow(0L)
+    val sincronizaciones: StateFlow<Long> = _sincronizaciones.asStateFlow()
+
+    fun algoSeSincronizo() {
+        _sincronizaciones.value = _sincronizaciones.value + 1
+    }
+
+    /**
      * Sube cada vez que alguien ARRANCA, abre o limpia una sesión (no al promoverla ni al refrescar su versión o total). Una
      * operación que espera a la red la captura al empezar: si al volver cambió, el mesero ya entró a otra cuenta —o a la
      * misma otra vez— y la respuesta tardía no debe reemplazarla (Codex r3/r4: comparar el orderId no basta).
@@ -123,7 +138,6 @@ class TableSession @Inject constructor() {
     fun current(): Active? = _active.value
 
     /** Arranca la sesión directo con un [Active] ya completo (camino ONLINE feliz — id real desde el inicio). */
-    @Synchronized
     fun start(session: Active) {
         _epoch.incrementAndGet()
         _marcaDeSaldo.incrementAndGet()
@@ -136,7 +150,6 @@ class TableSession @Inject constructor() {
      * respuesta del server. [localOrderId] se promueve al id real cuando
      * llega el ack de OPEN_TABLE ([promoteProvisional]).
      */
-    @Synchronized
     fun open(
         tableId: String,
         localOrderId: String,
@@ -154,11 +167,11 @@ class TableSession @Inject constructor() {
             mode = mode,
             isProvisional = true,
             idLocal = localOrderId,
+            saldoConfirmado = true, // una cuenta que nace aquí sin red está vacía: su saldo es lo que se le mande
         )
     }
 
     /** Refresca la `version` (CAS) tras una ronda/ack exitosos. */
-    @Synchronized
     fun updateVersion(version: Int) {
         _active.value = _active.value?.copy(version = version)
     }
@@ -168,7 +181,6 @@ class TableSession @Inject constructor() {
      * ser el restante — cualquier re-siembra del carrito cobra lo que
      * realmente se debe, no el total original.
      */
-    @Synchronized
     fun updateTotal(total: BigDecimal) {
         _marcaDeSaldo.incrementAndGet()
         _active.value = _active.value?.copy(total = total)
@@ -179,16 +191,30 @@ class TableSession @Inject constructor() {
      * cuenta de la sesión y nada local cambió el saldo desde que se pidió: entonces el saldo es lo que falta según el SERVIDOR
      * y lo por sincronizar vuelve a cero (la lectura ya trae las rondas que la cola alcanzó a mandar). Devuelve si la tomó.
      */
-    @Synchronized
     fun cuentaDelServidor(orderId: String, detail: OrderDetail, marca: Long): Boolean {
         val actual = _active.value ?: return false
         if (actual.orderId != orderId || marca != _marcaDeSaldo.get() || cambiosEnVuelo > 0) return false
-        _active.value = actual.copy(total = detail.amountLeft ?: detail.total, cuenta = detail, porSincronizar = BigDecimal.ZERO)
+        _active.value = actual.copy(
+            total = detail.amountLeft ?: detail.total,
+            cuenta = detail,
+            porSincronizar = BigDecimal.ZERO,
+            saldoConfirmado = true,
+        )
         return true
     }
 
+    /**
+     * D8 (Codex r3 #2): esta terminal cambió la cuenta de una forma cuyo efecto en el saldo no sabe calcular (separar, unir,
+     * cortesía, descuento, cargo por servicio, comensales; con red o encolado). El saldo deja de ser cobrable hasta la siguiente
+     * lectura tomada, y una lectura pedida antes del cambio ya no se toma (la marca sube). El desglose se queda para verse.
+     */
+    fun saldoPorConfirmar() {
+        val actual = _active.value ?: return
+        _marcaDeSaldo.incrementAndGet()
+        _active.value = actual.copy(total = BigDecimal.ZERO, porSincronizar = BigDecimal.ZERO, saldoConfirmado = false)
+    }
+
     /** D8: sale una ronda o un cobro en efectivo. Hasta [terminarCambioDeSaldo], ninguna lectura del SERVIDOR se toma. */
-    @Synchronized
     fun empezarCambioDeSaldo() {
         _marcaDeSaldo.incrementAndGet()
         cambiosEnVuelo++
@@ -200,20 +226,20 @@ class TableSession @Inject constructor() {
      * cuenta real: sin red, el cobro incluye el postre que el mesero acaba de mandar y no se queda corto; con red, la recarga
      * que sigue lo reemplaza. Si la sesión ya es otra cuenta, sólo cierra el cambio.
      */
-    @Synchronized
     fun terminarCambioDeSaldo(orderId: String, montoQueYaSeDebe: BigDecimal?) {
         _marcaDeSaldo.incrementAndGet()
         if (cambiosEnVuelo > 0) cambiosEnVuelo--
         if (montoQueYaSeDebe == null) return
         val actual = _active.value ?: return
         if (orderId !in actual.idsDeLaCuenta) return
+        // Codex r3 #1: sobre un saldo que no se conoce, sumar la ronda daría un número cobrable pero incompleto.
+        if (!actual.saldoConfirmado) return
         _active.value = actual.copy(
             total = actual.total + montoQueYaSeDebe,
             porSincronizar = actual.porSincronizar + montoQueYaSeDebe,
         )
     }
 
-    @Synchronized
     fun clear() {
         _epoch.incrementAndGet()
         _marcaDeSaldo.incrementAndGet()
@@ -226,7 +252,6 @@ class TableSession @Inject constructor() {
      * si la sesión activa ya es otra (se cerró o se abrió otra mesa mientras
      * el intent viajaba) — mismo guard que `avoqado-android`.
      */
-    @Synchronized
     fun promoteProvisional(localOrderId: String, orderId: String, orderNumber: String?, version: Int) {
         val session = _active.value ?: return
         if (session.orderId != localOrderId) return

@@ -379,6 +379,7 @@ private fun TableCheckoutScreenContent(
                             remaining = state.remaining,
                             porSincronizar = state.porSincronizar,
                             isOnline = state.isOnline,
+                            saldoPorConfirmar = state.saldoPorConfirmar,
                             isRemovingDiscount = isRemovingDiscount,
                             onRemoveDiscount = onRemoveDiscount,
                             isRemovingServiceCharge = isRemovingServiceCharge,
@@ -499,6 +500,7 @@ private fun CheckSummaryCard(
     remaining: BigDecimal,
     porSincronizar: BigDecimal = BigDecimal.ZERO,
     isOnline: Boolean = true,
+    saldoPorConfirmar: Boolean = false,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
     isRemovingServiceCharge: Boolean = false,
@@ -587,7 +589,17 @@ private fun CheckSummaryCard(
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.Space2))
-            SummaryRow(label = "Restante", amount = remaining, emphasized = true)
+            if (saldoPorConfirmar) {
+                // D8: la terminal no sabe cuánto se debe; «Restante $0.00» diría que ya no se debe nada.
+                Text(
+                    text = SALDO_POR_SINCRONIZAR,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.avoqadoColors.offlineOrange,
+                )
+            } else {
+                SummaryRow(label = "Restante", amount = remaining, emphasized = true)
+            }
         }
     }
 }

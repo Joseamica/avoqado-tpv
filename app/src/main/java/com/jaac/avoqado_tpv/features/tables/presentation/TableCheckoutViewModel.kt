@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -165,6 +166,11 @@ data class TableCheckoutState(
      * [remaining]; la pantalla las enseña en su renglón para que el desglose cuadre con lo que se cobra.
      */
     val porSincronizar: BigDecimal = BigDecimal.ZERO,
+    /**
+     * D8: la terminal no sabe cuánto se debe (la cuenta cambió de una forma que no sabe calcular, o nunca se tomó una lectura).
+     * [remaining] queda en 0, nada se cobra y la pantalla dice que el restante se sabrá al sincronizar.
+     */
+    val saldoPorConfirmar: Boolean = false,
     /** La mesa ya se liberó (el restante llegó a cero) — ver [TableCheckoutViewModel.onPaymentCompleted]. */
     val tableReleased: Boolean = false,
 ) {
@@ -263,11 +269,13 @@ class TableCheckoutViewModel @Inject constructor(
         // D8: arranca con lo que la terminal ya sabe de la cuenta (la pantalla de la mesa la cargó): sin red, el desglose de la
         // última vez y su restante, nunca «$0.00». Con red, `loadCheck()` lo refresca enseguida.
         val sesion = tableSession.current()
+        val confirmado = sesion?.saldoConfirmado == true
         _state.update {
             it.copy(
                 check = sesion?.cuenta,
-                remaining = sesion?.total ?: BigDecimal.ZERO,
-                porSincronizar = sesion?.porSincronizar ?: BigDecimal.ZERO,
+                remaining = if (confirmado) sesion!!.total else BigDecimal.ZERO,
+                porSincronizar = if (confirmado) sesion!!.porSincronizar else BigDecimal.ZERO,
+                saldoPorConfirmar = sesion != null && !confirmado,
                 isProvisional = sesion?.isProvisional ?: false,
                 isOnline = networkMonitor.isConnected(),
             )
@@ -275,6 +283,12 @@ class TableCheckoutViewModel @Inject constructor(
         loadCheck()
         viewModelScope.launch {
             networkMonitor.networkStateFlow.collect { info -> onConnectivityChanged(info.isConnected) }
+        }
+        // D8 (Codex r3 #3): con el saldo por confirmar, en cuanto la cola sube o rechaza algo se vuelve a leer la cuenta.
+        viewModelScope.launch {
+            tableSession.sincronizaciones.drop(1).collect {
+                if (_state.value.saldoPorConfirmar && !_state.value.isLoading) loadCheck()
+            }
         }
     }
 
@@ -322,6 +336,7 @@ class TableCheckoutViewModel @Inject constructor(
                                 check = detail,
                                 remaining = freshRemaining,
                                 porSincronizar = BigDecimal.ZERO,
+                                saldoPorConfirmar = false,
                                 errorMessage = null,
                             )
                         }
@@ -330,14 +345,15 @@ class TableCheckoutViewModel @Inject constructor(
                         // restante de esta pantalla es el bueno. Si no había desglose, éste sirve para verlo; el monto no se
                         // toca. Se pide otra vez UNA sola, por si el replay ya alcanzó.
                         Timber.i("🪑 [TableCheckout] la cuenta no se tomó (pendientes=%s); se conserva el restante local", quedanPendientes)
-                        val sinSaldoConfirmado = tableSession.current()?.saldoConfirmado == false
+                        val confirmado = tableSession.current()?.saldoConfirmado == true
                         _state.update {
                             it.copy(
                                 isLoading = false,
                                 check = it.check ?: detail,
                                 // Codex r2 #2: sin saldo confirmado el restante sigue en $0 (no se cobra con un número que la
-                                // terminal no sabe) y se dice por qué, sin tono de error.
-                                notice = if (sinSaldoConfirmado && quedanPendientes) SALDO_POR_SINCRONIZAR else it.notice,
+                                // terminal no sabe) y la pantalla dice por qué, sin tono de error.
+                                remaining = if (confirmado) it.remaining else BigDecimal.ZERO,
+                                saldoPorConfirmar = !confirmado,
                             )
                         }
                         if (!reintento) cargarCuenta(reintento = true)
@@ -360,7 +376,20 @@ class TableCheckoutViewModel @Inject constructor(
     }
 
     fun onConnectivityChanged(online: Boolean) {
+        val volvio = online && !_state.value.isOnline
         _state.update { it.copy(isOnline = online) }
+        // D8 (Codex r3 #3): al volver la red, si el saldo está por confirmar, se lee otra vez sin que el cajero haga nada.
+        if (volvio && _state.value.saldoPorConfirmar && !_state.value.isLoading) loadCheck()
+    }
+
+    /**
+     * D8 (Codex r3 #2): esta pantalla cambió la cuenta (descuento, cargo por servicio) y la terminal no sabe calcular cuánto
+     * cambió lo que se debe: el saldo queda por confirmar hasta la siguiente lectura tomada; con red, se pide enseguida.
+     */
+    private fun cuentaCambiada(encolado: Boolean) {
+        tableSession.saldoPorConfirmar()
+        _state.update { it.copy(remaining = BigDecimal.ZERO, porSincronizar = BigDecimal.ZERO, saldoPorConfirmar = true) }
+        if (!encolado) loadCheck()
     }
 
     fun selectSplitType(type: CheckoutSplitType) {
@@ -701,7 +730,7 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isApplyingDiscount.value = false
@@ -736,7 +765,7 @@ class TableCheckoutViewModel @Inject constructor(
                 onSuccess = {
                     _isRemovingDiscount.value = false
                     _state.update { it.copy(notice = "Descuento quitado") }
-                    loadCheck()
+                    cuentaCambiada(encolado = false)
                 },
                 onFailure = { e ->
                     _isRemovingDiscount.value = false
@@ -822,7 +851,7 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isApplyingServiceCharge.value = false
@@ -859,7 +888,7 @@ class TableCheckoutViewModel @Inject constructor(
                 onSuccess = {
                     _isRemovingServiceCharge.value = false
                     _state.update { it.copy(notice = "Cargo por servicio quitado") }
-                    loadCheck()
+                    cuentaCambiada(encolado = false)
                 },
                 onFailure = { e ->
                     _isRemovingServiceCharge.value = false
@@ -880,8 +909,7 @@ class TableCheckoutViewModel @Inject constructor(
 }
 
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
-internal const val SALDO_POR_SINCRONIZAR =
-    "Esta cuenta tiene cambios de esta terminal que aún no suben: el restante se sabrá al sincronizar."
+internal const val SALDO_POR_SINCRONIZAR = "Restante: se sabrá al sincronizar la cuenta. Mientras, no se puede cobrar."
 
 internal const val RECHAZO_POR_NUMERO =
     "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas."

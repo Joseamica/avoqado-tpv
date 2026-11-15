@@ -270,6 +270,15 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D8 (Codex r3 #2): esta terminal cambió la cuenta y no sabe calcular cuánto cambió lo que se debe (separar, unir, cortesía,
+     * comensales). El saldo queda por confirmar hasta la siguiente lectura tomada; con red, se pide enseguida.
+     */
+    private fun cuentaCambiada(encolado: Boolean) {
+        tableSession.saldoPorConfirmar()
+        if (!encolado) loadCheck()
+    }
+
     private fun totalDe(lines: List<PendingRoundCart.Line>): BigDecimal =
         lines.fold(BigDecimal.ZERO) { acc, line -> acc + line.lineTotal }
 
@@ -500,7 +509,7 @@ class TableOrderViewModel @Inject constructor(
                     } else {
                         "Cuenta separada" + (outcome.createdOrderNumber?.let { " — nueva cuenta $it" } ?: "")
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isSplitting.value = false
@@ -579,7 +588,7 @@ class TableOrderViewModel @Inject constructor(
                         } else {
                             "Cortesía aplicada"
                         }
-                        if (!outcome.queued) loadCheck()
+                        cuentaCambiada(encolado = outcome.queued)
                     },
                     onFailure = { e ->
                         if (e is CancellationException) throw e
@@ -590,7 +599,7 @@ class TableOrderViewModel @Inject constructor(
                             is BackendHttpException -> e.message
                             else -> "No se pudo aplicar la cortesía"
                         }
-                        if (e is TablesRepository.NoConfirmadaException) loadCheck()
+                        if (e is TablesRepository.NoConfirmadaException) cuentaCambiada(encolado = false)
                     },
                 )
             } catch (e: Exception) {
@@ -812,7 +821,7 @@ class TableOrderViewModel @Inject constructor(
                     } else {
                         "Cuenta de Mesa ${source.number} fusionada" + (outcome.mergedOrderNumber?.let { " ($it)" } ?: "")
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isMerging.value = false
@@ -986,7 +995,7 @@ class TableOrderViewModel @Inject constructor(
                     } else {
                         "Cuenta dividida por puesto" + (outcome.createdCount?.let { " — $it cuenta(s) nueva(s)" } ?: "")
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isSplittingBySeat.value = false
@@ -1018,7 +1027,7 @@ class TableOrderViewModel @Inject constructor(
                     } else {
                         "Detalles actualizados"
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaCambiada(encolado = outcome.queued)
                 },
                 onFailure = { e ->
                     _isUpdatingDetails.value = false

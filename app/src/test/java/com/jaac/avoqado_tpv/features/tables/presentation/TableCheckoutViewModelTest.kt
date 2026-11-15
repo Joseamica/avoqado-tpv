@@ -141,7 +141,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun sin_red_el_cobro_en_efectivo_si_funciona() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -161,7 +161,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun un_cobro_en_efectivo_rechazado_marca_error_y_NO_mueve_el_restante() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -179,7 +179,7 @@ class TableCheckoutViewModelTest {
     @Test
     fun un_efectivo_rechazado_por_numero_le_dice_a_la_cajera_que_no_se_cobro_y_donde_verlo() = runTest {
         // D6: el texto del servidor («La secuencia del dispositivo ya fue utilizada…») no le dice nada a la cajera.
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -205,7 +205,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun un_cobro_en_efectivo_exitoso_arma_cashReceipt_con_monto_propina_y_total() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -243,7 +243,7 @@ class TableCheckoutViewModelTest {
      */
     @Test
     fun la_propina_tecleada_SIEMPRE_viaja_al_payCash_de_EFECTIVO() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         val viewModel = createViewModel()
@@ -262,7 +262,7 @@ class TableCheckoutViewModelTest {
     /** Gate central del founder: solo el pago que SALDA la cuenta invita a calificar. */
     @Test
     fun isSettlingPayment_true_cuando_el_monto_paga_el_restante_completo() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -284,7 +284,7 @@ class TableCheckoutViewModelTest {
      */
     @Test
     fun isSettlingPayment_false_en_un_pago_PARCIAL_de_una_cuenta_dividida() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         val viewModel = createViewModel()
@@ -302,7 +302,7 @@ class TableCheckoutViewModelTest {
         // "Receipt: on every payment" incluye el camino offline — sin URL
         // digital todavía (el server no lo generó), pero la confirmación de
         // recibo SÍ aparece; nunca se queda en silencio como antes del fix.
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -320,7 +320,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun consumeCashReceipt_limpia_el_recibo_del_estado() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -353,7 +353,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun un_pago_parcial_regresa_al_cobro_con_el_restante() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         val viewModel = createViewModel()
@@ -367,7 +367,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun al_llegar_a_cero_la_mesa_se_libera_sola() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
@@ -385,7 +385,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun un_pago_de_MAS_del_restante_nunca_deja_el_restante_en_negativo() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("50.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("50.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("50.00"), amountLeft = BigDecimal("50.00")))
         coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
@@ -406,7 +406,7 @@ class TableCheckoutViewModelTest {
         // 0.10 + 0.20 + 0.05 = 0.35 exacto en BigDecimal. En Double da
         // 0.35000000000000003 (verificado — el mismo caso ya probado en
         // PendingRoundCartTest de la Task 7).
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("0.35")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("0.35"), saldoConfirmado = true))
         val check = OrderDetail(
             id = "orden-1",
             total = BigDecimal("0.35"),
@@ -434,7 +434,7 @@ class TableCheckoutViewModelTest {
      */
     @Test
     fun chargeableAmount_por_articulo_al_deseleccionar_uno_recalcula_exacto() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("0.35")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("0.35"), saldoConfirmado = true))
         val check = OrderDetail(
             id = "orden-1",
             total = BigDecimal("0.35"),
@@ -458,7 +458,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun chargeableAmount_nunca_excede_el_restante_sin_importar_el_monto_tecleado() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         val viewModel = createViewModel()
@@ -523,7 +523,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun applyDiscount_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.applyDiscount(venueId, "orden-1", "d1") } returns
@@ -539,7 +539,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun applyDiscount_rechazado_marca_errorMessage() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.applyDiscount(venueId, "orden-1", "d1") } returns
@@ -559,7 +559,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun removeDiscount_exitoso_avisa_y_recarga_el_cheque() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
@@ -580,7 +580,7 @@ class TableCheckoutViewModelTest {
         // Regla dura del gap: quitar un descuento NUNCA se encola — un
         // fallo de red debe decir "necesita conexión", no un genérico que
         // sugiera que se guardó para después (no se guardó nada).
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
@@ -595,7 +595,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun removeDiscount_rechazado_marca_errorMessage() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
@@ -629,7 +629,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun applyServiceCharge_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -645,7 +645,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun applyServiceCharge_exitoso_online_recarga_la_cuenta() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -660,7 +660,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun applyServiceCharge_rechazado_por_duplicado_marca_errorMessage() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -681,7 +681,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun removeServiceCharge_exitoso_avisa_y_recarga_el_cheque() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
         coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -703,7 +703,7 @@ class TableCheckoutViewModelTest {
         // Regla dura del gap: quitar un cargo por servicio NUNCA se encola —
         // un fallo de red debe decir "necesita conexión", no un genérico que
         // sugiera que se guardó para después (no se guardó nada).
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
         coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -718,7 +718,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun removeServiceCharge_rechazado_marca_errorMessage() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
         coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
@@ -736,7 +736,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_la_propina_escrita_viaja_en_la_solicitud_de_TARJETA() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
         val viewModel = createViewModel()
@@ -750,7 +750,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_entregar_el_cobro_a_TARJETA_lleva_la_propina_y_al_abrirse_Cobrar_vacia_la_casilla() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
         val viewModel = createViewModel()
@@ -770,7 +770,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_si_Cobrar_no_se_abre_la_propina_se_queda_escrita() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("845.50"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("845.50"), amountLeft = BigDecimal("845.50")))
         val viewModel = createViewModel()
@@ -787,7 +787,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_con_efectivo_esperando_respuesta_TARJETA_no_arranca_y_la_propina_no_sale_dos_veces() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("1000.00"), amountLeft = BigDecimal("1000.00")))
         val respuesta = kotlinx.coroutines.CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
@@ -806,7 +806,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_con_TARJETA_abriendose_el_efectivo_no_cobra() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("1000.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("1000.00"), amountLeft = BigDecimal("1000.00")))
         val viewModel = createViewModel()
@@ -821,7 +821,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_sin_propina_escrita_la_solicitud_de_TARJETA_lleva_cero() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
@@ -847,7 +847,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_un_cobro_en_EFECTIVO_exitoso_vacia_la_casilla_y_la_siguiente_parte_no_repite_la_propina() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         val viewModel = createViewModel()
@@ -867,7 +867,7 @@ class TableCheckoutViewModelTest {
 
     @Test
     fun d9_un_cobro_en_EFECTIVO_rechazado_conserva_la_propina_para_reintentar() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00"), saldoConfirmado = true))
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()

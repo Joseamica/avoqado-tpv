@@ -243,7 +243,7 @@ class TableSessionTest {
 
     @Test
     fun una_ronda_suma_al_saldo_y_a_lo_por_sincronizar() {
-        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00")))
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00"), saldoConfirmado = true))
 
         session.empezarCambioDeSaldo()
         session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
@@ -280,7 +280,7 @@ class TableSessionTest {
 
     @Test
     fun la_ronda_de_otra_mesa_no_se_suma() {
-        session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2"))
+        session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2", saldoConfirmado = true))
         session.empezarCambioDeSaldo()
         session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
 
@@ -302,4 +302,31 @@ class TableSessionTest {
     }
 
     // endregion
+
+    @Test
+    fun un_cambio_que_no_se_sabe_calcular_deja_el_saldo_por_confirmar_hasta_la_siguiente_lectura() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        session.cuentaDelServidor("orden-1", cuenta, session.marcaDeSaldo())
+        val marcaVieja = session.marcaDeSaldo()
+
+        session.saldoPorConfirmar() // p. ej. separar
+
+        assertThat(session.current()!!.saldoConfirmado).isFalse()
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("0")
+        assertThat(session.current()!!.cuenta).isEqualTo(cuenta) // el desglose se queda para verse
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, marcaVieja)).isFalse() // la pedida antes, no
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("0") // nada se suma a lo que no se conoce
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, session.marcaDeSaldo())).isTrue()
+        assertThat(session.current()!!.saldoConfirmado).isTrue()
+    }
+
+    @Test
+    fun abrir_sin_red_nace_con_saldo_confirmado_y_ver_cuenta_no() {
+        session.open(tableId = "mesa-1", localOrderId = "local-1")
+        assertThat(session.current()!!.saldoConfirmado).isTrue()
+        session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2", total = BigDecimal("100.00")))
+        assertThat(session.current()!!.saldoConfirmado).isFalse()
+    }
 }

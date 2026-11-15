@@ -325,7 +325,80 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
         // Ni $100 (el bruto) ni $40 (la lectura que no trae el cobro pendiente): no se sabe, así que no se cobra y se dice.
         assertThat(cobro.state.value.remaining).isEqualToIgnoringScale("0")
         assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0")
-        assertThat(cobro.state.value.notice).isEqualTo(SALDO_POR_SINCRONIZAR)
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
         assertThat(cobro.state.value.check?.amountLeft).isEqualToIgnoringScale("40.00") // el desglose sí se ve
+
+        // Codex r3 #3: en cuanto la cola sube lo pendiente, el cobro vuelve a leer solo y ya se puede cobrar.
+        coEvery { tableSyncCoordinator.hayPendientesDe(venueId, setOf(orden)) } returns false
+        coEvery { repository.getOrder(venueId, orden) } returns Result.success(
+            cuentaDe25.copy(total = BigDecimal("100.00"), paidAmount = BigDecimal("70.00"), amountLeft = BigDecimal("30.00")),
+        )
+        tableSession.algoSeSincronizo()
+
+        assertThat(cobro.state.value.saldoPorConfirmar).isFalse()
+        assertThat(cobro.state.value.remaining).isEqualToIgnoringScale("30.00")
+    }
+
+    @Test
+    fun codex_r3_1_una_ronda_sobre_un_saldo_que_no_se_conoce_no_lo_vuelve_cobrable() = runTest {
+        // «Ver cuenta» de una mesa con $25: la primera lectura tarda y el mesero manda $15 mientras tanto.
+        tableSession.start(TableSession.Active(tableId = "mesa-12", orderId = orden))
+        val primera = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, orden) } coAnswers { primera.await() }
+        val mesa = pantallaDeLaMesa()
+        val rondaEnCamino = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.addItems(venueId, orden, any(), any()) } coAnswers { rondaEnCamino.await() }
+        pendingCart.addSimple(productId = "prod-2", name = "Postre", unitPrice = BigDecimal("15.00"))
+        mesa.sendRound()
+        primera.complete(Result.success(cuentaDe25)) // llega con la ronda en camino: se ve, pero no se toma
+        sinRed() // y la recarga de después de la ronda ya no llega
+        rondaEnCamino.complete(Result.success(OrderDetail(id = orden, version = 3)))
+
+        // Se deben $40; la terminal no lo sabe. Nunca $15 como si fuera toda la cuenta.
+        assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
+        assertThat(tableSession.current()!!.total).isEqualToIgnoringScale("0")
+        val cobro = pantallaDeCobro()
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0")
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
+    }
+
+    @Test
+    fun codex_r3_2_una_lectura_de_antes_de_separar_no_deshace_el_saldo_de_despues() = runTest {
+        abrirMesa()
+        val mesa = pantallaDeLaMesa() // $25
+        // Ronda de $15 con red: su recarga ($40) tarda.
+        val recargaDeLaRonda = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, orden) } coAnswers { recargaDeLaRonda.await() }
+        coEvery { repository.addItems(venueId, orden, any(), any()) } returns Result.success(OrderDetail(id = orden, version = 3))
+        pendingCart.addSimple(productId = "prod-2", name = "Postre", unitPrice = BigDecimal("15.00"))
+        mesa.sendRound()
+        // Mientras, el mesero separa el artículo de $25: la recarga de la separación llega primero, con $15.
+        coEvery { repository.splitOrder(venueId, orden, any()) } returns
+            Result.success(TablesRepository.SplitOutcome(queued = false, createdOrderId = "orden-2", createdOrderNumber = "A-2", sourceVersion = 5))
+        coEvery { repository.getOrder(venueId, orden) } returns
+            Result.success(cuentaDe25.copy(version = 5, total = BigDecimal("15.00"), amountLeft = BigDecimal("15.00")))
+        mesa.splitOrder(setOf("item-1"))
+        assertThat(tableSession.current()!!.total).isEqualToIgnoringScale("15.00")
+
+        // Ahora llega la recarga vieja de la ronda, con $40.
+        recargaDeLaRonda.complete(Result.success(cuentaDe25.copy(version = 3, total = BigDecimal("40.00"), amountLeft = BigDecimal("40.00"))))
+
+        assertThat(tableSession.current()!!.total).isEqualToIgnoringScale("15.00") // sin el arreglo: $40
+    }
+
+    @Test
+    fun separar_sin_poder_releer_deja_el_saldo_por_confirmar_y_no_se_cobra_el_de_antes() = runTest {
+        abrirMesa()
+        val mesa = pantallaDeLaMesa() // $25
+        coEvery { repository.splitOrder(venueId, orden, any()) } returns
+            Result.success(TablesRepository.SplitOutcome(queued = false, createdOrderId = "orden-2", createdOrderNumber = "A-2", sourceVersion = 5))
+        sinRed() // separó con red, pero la recarga ya no llega
+
+        mesa.splitOrder(setOf("item-1"))
+        val cobro = pantallaDeCobro()
+
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0") // nunca los $25 de antes de separar
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
+        assertThat(cobro.state.value.check).isEqualTo(cuentaDe25) // el desglose de la última vez sí se ve
     }
 }

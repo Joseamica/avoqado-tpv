@@ -102,6 +102,16 @@ interface SyncIntentDao {
     )
     suspend fun aperturasConfirmadasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
 
+    /**
+     * D86 (Codex r1 #2): aperturas (OPEN_TABLE) confirmadas cuyo RESULTADO menciona [texto] — el id real de una cuenta —, para
+     * saber con qué id local la abrió esta terminal aunque la sesión ya no lo recuerde («Ver cuenta» desde el plano).
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND result_json IS NOT NULL AND instr(result_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasConResultado(venueId: String, texto: String): List<SyncIntentEntity>
+
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
 

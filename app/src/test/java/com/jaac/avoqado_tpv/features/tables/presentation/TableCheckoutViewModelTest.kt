@@ -77,6 +77,7 @@ class TableCheckoutViewModelTest {
         coEvery { tableSyncCoordinator.replay(any()) } returns Unit
         coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
     }
 
     @After
@@ -1016,6 +1017,96 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.isProvisional).isFalse()
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("80.00"))
         coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    // endregion
+
+    // region — D86 · Codex r1: lo propio sin subir contra lo que sabe el SERVIDOR
+
+    private fun aperturaConfirmadaD86() = filaD86(
+        "abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}""",
+        estado = SyncIntentEntity.STATUS_ACKED, result = """{"localOrderId":"local-1","orderId":"orden-1","orderNumber":"ORD-1","version":3}""",
+    )
+
+    @Test
+    fun D86_r1_2_tras_volver_por_ver_cuenta_el_cobro_propio_sin_subir_se_encuentra_por_la_cola() = runTest {
+        // La sesión de «Ver cuenta» ya no recuerda el id local: la cola sí (su apertura confirmada).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { syncOutbox.aperturasConfirmadasConResultado(venueId, "orden-1") } returns listOf(aperturaConfirmadaD86())
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":4000,"tipCents":0}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        viewModel.payCash(BigDecimal("100.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun D86_r1_3_si_lo_propio_estaba_pendiente_ANTES_de_leer_la_lectura_no_sirve_para_cobrar() = runTest {
+        // Pendiente antes del GET y ya subido después: la lectura pudo ser de antes de que subiera.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returnsMany listOf(
+            listOf(filaD86("c1", SyncIntentTypes.PAY_CASH, """{"orderId":"orden-1","amountCents":4000,"tipCents":0}""")),
+            emptyList(),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+    }
+
+    @Test
+    fun D86_r1_4_cuando_lo_propio_sube_la_cuenta_se_desbloquea_sola() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returns
+            listOf(filaD86("c1", SyncIntentTypes.PAY_CASH, """{"orderId":"orden-1","amountCents":4000,"tipCents":0}"""))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
+        val viewModel = createViewModel()
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returns emptyList()
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+    }
+
+    @Test
+    fun D86_r1_1_la_promocion_durante_un_abono_no_lo_da_por_saldado() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val saldo = SaldoDeMesaSinRed(syncOutbox)
+        saldo.libreta.anotarRonda("local-1", "r1", BigDecimal("100.00"))
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}"""),
+        )
+        every { tableSyncCoordinator.onAck(any(), any(), any(), any(), any()) } returns Unit
+        // Mientras el abono de $40 espera, otro camino confirma la apertura.
+        coEvery { repository.payCash(venueId, "local-1", true, BigDecimal("40.00"), any(), any()) } coAnswers {
+            tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 3)
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = "ORD-1", queued = false))
+        }
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
+        val viewModel = createViewModel(saldo)
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
+
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        viewModel.setCustomAmountInput("40")
+        viewModel.payCash(viewModel.chargeableAmount())
+
+        coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.tableReleased).isFalse()
+        assertThat(viewModel.state.value.isProvisional).isFalse()
+        // Al terminar el abono se lee la cuenta del SERVIDOR: lo que falta es lo que él dice.
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
     }
 
     // endregion

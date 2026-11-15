@@ -102,6 +102,18 @@ internal fun pendienteDeSubirEn(cuentas: Collection<String>, filas: List<SyncInt
     }
 }
 
+/**
+ * D86 (Codex r1 #2): los ids locales con que ESTA terminal abrió sin red la cuenta [orderId], leídos de las aperturas
+ * confirmadas de la cola (payload `localOrderId`, resultado `orderId`). No dependen de la sesión en memoria.
+ */
+internal fun idsLocalesDe(orderId: String, filas: List<SyncIntentEntity>): List<String> =
+    filas.asSequence()
+        .filter { it.type == SyncIntentTypes.OPEN_TABLE && it.status == SyncIntentEntity.STATUS_ACKED }
+        .filter { fila -> fila.resultJson?.let(::parsear)?.asJsonObject?.get("orderId")?.takeIf { it.isJsonPrimitive }?.asString == orderId }
+        .mapNotNull { fila -> parsear(fila.payloadJson)?.asJsonObject?.get("localOrderId")?.takeIf { it.isJsonPrimitive }?.asString }
+        .distinct()
+        .toList()
+
 /** D86: la apertura sin red de una cuenta ya confirmada por el SERVIDOR (lo que trae su ACK). */
 data class AperturaConfirmada(val orderId: String, val orderNumber: String?, val version: Int?)
 
@@ -165,7 +177,13 @@ class SaldoDeMesaSinRed @Inject constructor(private val syncOutbox: SyncOutbox) 
     suspend fun aperturaConfirmada(venueId: String, cuenta: String): AperturaConfirmada? =
         aperturaConfirmadaDe(cuenta, syncOutbox.aperturasConfirmadasQueMencionan(venueId, cuenta))
 
-    /** D86 (Codex r0 #1): ¿esta terminal tiene algo sin subir de esta cuenta del SERVIDOR? Ver [pendienteDeSubir]. */
-    suspend fun pendienteDeSubir(venueId: String, cuentas: List<String>): String? =
-        pendienteDeSubirEn(cuentas, cuentas.flatMap { syncOutbox.vivasQueMencionan(venueId, it) }.distinctBy { it.id })
+    /**
+     * D86 (Codex r0 #1, r1 #2): ¿esta terminal tiene algo sin subir de la cuenta del SERVIDOR [orderId]? Busca con el id real,
+     * con [otrosIds] (p. ej. el local de la sesión) y con los ids locales que la cola recuerda de su apertura sin red.
+     * Ver [pendienteDeSubirEn].
+     */
+    suspend fun pendienteDeSubir(venueId: String, orderId: String, otrosIds: List<String> = emptyList()): String? {
+        val cuentas = (listOf(orderId) + otrosIds + idsLocalesDe(orderId, syncOutbox.aperturasConfirmadasConResultado(venueId, orderId))).distinct()
+        return pendienteDeSubirEn(cuentas, cuentas.flatMap { syncOutbox.vivasQueMencionan(venueId, it) }.distinctBy { it.id })
+    }
 }

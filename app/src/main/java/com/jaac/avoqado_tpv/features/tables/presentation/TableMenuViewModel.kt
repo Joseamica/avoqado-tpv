@@ -2,10 +2,9 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
-import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
+import com.jaac.avoqado_tpv.core.data.local.ProductoGuardado
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
-import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.tables.domain.model.MenuModifier
 import com.jaac.avoqado_tpv.features.tables.domain.model.MenuModifierGroup
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
@@ -59,8 +58,8 @@ class TableMenuViewModel @Inject constructor(
     val tableSession: TableSession,
     val pendingCart: PendingRoundCart,
     private val deviceInfoManager: DeviceInfoManager,
-    /** D86: el catálogo que la terminal ya guarda (`CatalogoGuardado`), para pedir sin red. */
-    private val productDao: ProductDao,
+    /** D86: el catálogo que la terminal ya guarda, para pedir sin red. */
+    private val catalogoGuardado: CatalogoGuardado,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TableMenuUiState())
@@ -102,7 +101,7 @@ class TableMenuViewModel @Inject constructor(
                     if (e is CancellationException) throw e
                     // D86: sin red y sin catálogo en memoria, se pide del catálogo que la terminal ya guarda.
                     if (e is IOException && _uiState.value.products.isEmpty()) {
-                        val guardado = catalogoGuardado(vId)
+                        val guardado = leerCatalogoGuardado(vId)
                         if (guardado.isNotEmpty()) {
                             val familias = reglasDeMesas.familiasDe(guardado)
                             _uiState.update { current ->
@@ -144,23 +143,22 @@ class TableMenuViewModel @Inject constructor(
     }
 
     /** Las filas del catálogo guardado de la última lectura (para armar sus categorías). */
-    private var productosGuardados: List<Product> = emptyList()
+    private var productosGuardados: List<ProductoGuardado> = emptyList()
 
     /**
      * D86 (Codex r0 #3): sólo lo que se puede vender — `available` (activo y con existencia; el guardado no separa las dos) y de
      * una categoría activa. Lo inactivo nunca aparece: Mesas no lo deshabilita en la cuadrícula, sólo no lo muestra.
      */
-    private suspend fun catalogoGuardado(venueId: String): List<MenuProduct> {
-        val filas = try {
+    private suspend fun leerCatalogoGuardado(venueId: String): List<MenuProduct> {
+        productosGuardados = try {
             // Room: las consultas `suspend` ya corren fuera del hilo principal.
-            productDao.getAvailableProducts(venueId).map { it.toDomain() }
+            catalogoGuardado.disponibles(venueId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Timber.w(e, "⚠️ [TableMenu] No se pudo leer el catálogo guardado")
             emptyList()
         }
-        productosGuardados = filas.filter { it.available && it.categoryIsActive }
         return productosGuardados.map { it.aMenuDeMesas() }
     }
 
@@ -195,28 +193,22 @@ class TableMenuViewModel @Inject constructor(
 internal const val AVISO_CATALOGO_GUARDADO = "Sin conexión: menú guardado en la terminal. La ronda se guarda y se sube sola."
 
 /** D86: un producto del catálogo guardado (el de «Cobrar» rápido) visto como producto de Mesas. */
-internal fun Product.aMenuDeMesas(): MenuProduct = MenuProduct(
+internal fun ProductoGuardado.aMenuDeMesas(): MenuProduct = MenuProduct(
     id = id,
-    name = name,
-    price = price,
-    categoryId = categoryId,
-    imageUrl = imageUrl,
-    color = categoryColor,
+    name = nombre,
+    price = precio,
+    categoryId = categoriaId,
+    imageUrl = imagenUrl,
+    color = categoriaColor,
     active = true,
-    modifierGroups = modifierGroups.sortedBy { it.displayOrder }.map { grupo ->
-        MenuModifierGroup(
-            id = grupo.id,
-            name = grupo.name,
-            type = grupo.type.name,
-            required = grupo.required,
-            modifiers = grupo.modifiers.sortedBy { it.displayOrder }.map { MenuModifier(id = it.id, name = it.name, price = it.priceAdjustment) },
-        )
+    modifierGroups = grupos.map { g ->
+        MenuModifierGroup(id = g.id, name = g.nombre, type = g.tipo, required = g.obligatorio, modifiers = g.extras.map { MenuModifier(it.id, it.nombre, it.precio) })
     },
     familia = familia,
 )
 
 /** D86: las categorías del catálogo guardado, en el orden en que llegaron (sin duplicados). */
-internal fun categoriasDe(guardados: List<Product>): List<MenuCategory> =
-    guardados.distinctBy { it.categoryId }.mapIndexed { indice, p ->
-        MenuCategory(id = p.categoryId, name = p.categoryName, displayOrder = indice, color = p.categoryColor, active = true)
+internal fun categoriasDe(guardados: List<ProductoGuardado>): List<MenuCategory> =
+    guardados.distinctBy { it.categoriaId }.mapIndexed { indice, p ->
+        MenuCategory(id = p.categoriaId, name = p.categoriaNombre, displayOrder = indice, color = p.categoriaColor, active = true)
     }

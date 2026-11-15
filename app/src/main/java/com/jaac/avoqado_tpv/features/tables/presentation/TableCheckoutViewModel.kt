@@ -315,8 +315,8 @@ class TableCheckoutViewModel @Inject constructor(
             networkMonitor.networkStateFlow.collect { info ->
                 val volvio = info.isConnected && !_state.value.isOnline
                 onConnectivityChanged(info.isConnected)
-                // D86: volvió la red sin cuenta leída (mesa del SERVIDOR): se lee sola.
-                if (volvio && !_state.value.isProvisional && _state.value.check == null) loadCheck()
+                // D86: volvió la red sin cuenta leída, o con algo propio sin subir (mesa del SERVIDOR): se lee sola.
+                if (volvio && !_state.value.isProvisional && (_state.value.check == null || _state.value.pendienteSinSubir != null)) loadCheck()
             }
         }
         viewModelScope.launch {
@@ -328,8 +328,8 @@ class TableCheckoutViewModel @Inject constructor(
                 val promovida = previa != null && previa.isProvisional && ahora != null && !ahora.isProvisional && previa.tableId == ahora.tableId
                 antes = ahora
                 if (promovida && _state.value.isProvisional) {
-                    _state.update { it.copy(isProvisional = false, saldoSinRed = null, remaining = BigDecimal.ZERO, isLoading = true) }
-                    loadCheck()
+                    // D86 (Codex r1 #1): con un cobro en curso no se toca el saldo: se aplica al terminar ese cobro.
+                    if (_state.value.isProcessingCash) promocionPendiente = true else aplicarPromocion()
                 }
             }
         }
@@ -362,29 +362,30 @@ class TableCheckoutViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [TableCheckout] replay() del outbox falló antes de cargar la cuenta")
             }
 
+            // D86 (Codex r0 #1, r1 #3): lo que esta terminal todavía no sube de esta cuenta no está en el saldo que lee el
+            // SERVIDOR. Se revisa ANTES y DESPUÉS de leer: si no había nada propio pendiente antes, todo lo propio ya confirmado
+            // está en esa lectura; si algo propio estaba pendiente en cualquiera de los dos momentos, la lectura no se usa
+            // para cobrar (ni efectivo ni tarjeta) y se vuelve a leer sola hasta que suba.
+            val pendienteAntes = pendienteDeSubirSeguro(vId, session)
             val leida = repository.getOrder(vId, session.orderId)
-            // D86 (Codex r0 #1): lo que esta terminal todavía no sube de esta cuenta (con su id real o el local con que se abrió
-            // sin red) no está en el saldo que acaba de leer: con un cobro propio sin subir se cobraría de más.
-            val pendiente = if (leida.isSuccess) {
-                try {
-                    saldoDeMesaSinRed.pendienteDeSubir(vId, listOfNotNull(session.orderId, session.localOrderId))
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [TableCheckout] No se pudo revisar la cola de esta cuenta")
-                    SALDO_NO_RECUPERADO
-                }
-            } else {
-                null
-            }
+            val pendiente = if (leida.isSuccess) pendienteAntes ?: pendienteDeSubirSeguro(vId, session) else null
             leida.fold(
                 onSuccess = { detail ->
+                    if (_state.value.isProcessingCash) {
+                        // D86 (Codex r1 #1): un cobro en efectivo está en curso: su saldo de partida no se cambia a media
+                        // operación. Esta lectura se tira y se vuelve a leer al terminar ese cobro.
+                        releerAlTerminarElCobro = true
+                        _state.update { it.copy(isLoading = false) }
+                        return@fold
+                    }
                     tableSession.updateVersion(detail.version)
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
                         it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null, pendienteSinSubir = pendiente)
                     }
+                    // D86 (Codex r1 #4): con algo propio sin subir, se vuelve a leer sola hasta que suba (no se queda trabada).
+                    if (pendiente != null) programarRelectura() else relectura?.cancel()
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
@@ -425,6 +426,60 @@ class TableCheckoutViewModel @Inject constructor(
             tableSession.updateTotal(restante)
             _state.update { it.copy(saldoSinRed = saldo, remaining = restante) }
         }
+    }
+
+    /** D86 (Codex r1 #1): la sesión se promovió durante un cobro en efectivo: se aplica al terminarlo. */
+    private var promocionPendiente = false
+
+    /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
+    private var releerAlTerminarElCobro = false
+
+    /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
+    private var relectura: kotlinx.coroutines.Job? = null
+
+    /** La cuenta ya existe en el SERVIDOR (ACK de OPEN_TABLE): desde aquí manda su cheque, no el saldo sin red. */
+    private fun aplicarPromocion() {
+        promocionPendiente = false
+        _state.update { it.copy(isProvisional = false, saldoSinRed = null, remaining = BigDecimal.ZERO, isLoading = true) }
+        loadCheck()
+    }
+
+    /** Al terminar un cobro en efectivo: lo que se pospuso durante él (Codex r1 #1). */
+    private fun alTerminarElCobro() {
+        if (tableSession.current() == null) {
+            promocionPendiente = false
+            releerAlTerminarElCobro = false
+            return
+        }
+        when {
+            promocionPendiente -> {
+                releerAlTerminarElCobro = false
+                aplicarPromocion()
+            }
+            releerAlTerminarElCobro -> {
+                releerAlTerminarElCobro = false
+                loadCheck()
+            }
+        }
+    }
+
+    private fun programarRelectura() {
+        if (relectura?.isActive == true) return
+        relectura = viewModelScope.launch {
+            kotlinx.coroutines.delay(RELECTURA_MS)
+            relectura = null
+            if (_state.value.pendienteSinSubir != null && !_state.value.isProcessingCash) loadCheck()
+        }
+    }
+
+    /** [SaldoDeMesaSinRed.pendienteDeSubir] sin lanzar: si la cola no se puede leer, cuenta como «no se sabe» (en gris). */
+    private suspend fun pendienteDeSubirSeguro(venueId: String, session: TableSession.Active): String? = try {
+        saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableCheckout] No se pudo revisar la cola de esta cuenta")
+        SALDO_NO_RECUPERADO
     }
 
     /** D86 (Codex r0 #2): `true` si la apertura sin red de [session] ya está confirmada en la cola y se promovió la sesión. */
@@ -632,6 +687,7 @@ class TableCheckoutViewModel @Inject constructor(
                             }
                         }
                     }
+                    alTerminarElCobro()
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
@@ -645,6 +701,7 @@ class TableCheckoutViewModel @Inject constructor(
                             } ?: "No se pudo registrar el cobro",
                         )
                     }
+                    alTerminarElCobro()
                 },
             )
         }
@@ -967,3 +1024,6 @@ class TableCheckoutViewModel @Inject constructor(
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
 internal const val RECHAZO_POR_NUMERO =
     "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas."
+
+/** D86 (Codex r1 #4): cada cuánto se vuelve a leer una cuenta con algo propio sin subir. */
+internal const val RELECTURA_MS = 5_000L

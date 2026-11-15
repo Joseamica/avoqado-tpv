@@ -422,6 +422,10 @@ class SyncOutbox @Inject constructor(
     suspend fun aperturasConfirmadasQueMencionan(venueId: String, cuenta: String): List<SyncIntentEntity> =
         withContext(Dispatchers.IO) { dao.aperturasConfirmadasQueMencionan(venueId, cuenta) }
 
+    /** D86 (Codex r1 #2): las aperturas confirmadas cuyo resultado menciona [orderId] (el id real). */
+    suspend fun aperturasConfirmadasConResultado(venueId: String, orderId: String): List<SyncIntentEntity> =
+        withContext(Dispatchers.IO) { dao.aperturasConfirmadasConResultado(venueId, orderId) }
+
     /** El mesero/gerente descartó un rechazo tras resolverlo a mano. */
     suspend fun dismissRejected(venueId: String, id: String) {
         dao.dismiss(id, venueId)

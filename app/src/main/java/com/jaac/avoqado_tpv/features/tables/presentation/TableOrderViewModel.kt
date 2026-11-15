@@ -213,8 +213,6 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val vId = venueId ?: return
-        // La época de ESTA lectura: un «Mover mesa» confirmado mientras tanto la invalida para corregir la mesa.
-        val epocaDeLaLectura = tableSession.epoch
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -236,11 +234,6 @@ class TableOrderViewModel @Inject constructor(
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
-                    // La mesa la dice el SERVIDOR (D85, Codex r2 #1): si se abrió desde un plano atrasado y la cuenta ya está
-                    // en otra mesa, la sesión pasa a la mesa real. Un «Mover mesa» propio confirmado tras lanzar la lectura
-                    // sube la época y ésta ya no corrige (Codex r3 #1); uno en vuelo manda al confirmarse, y si se rechaza
-                    // la corrección se queda (Codex r4).
-                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName, epocaDeLaLectura) }
                     // El replay pudo haber confirmado rondas que estaban en
                     // "Por sincronizar" — el cheque fresco ya las incluye.
                     _queuedLines.value = emptyList()
@@ -622,18 +615,14 @@ class TableOrderViewModel @Inject constructor(
         if (_isMoving.value) return
 
         _isMoving.value = true
-        // La época de ESTA sesión: si el mesero salió o entró a otra cuenta mientras se movía (clear/start la suben), la
-        // respuesta no la toca. Promover el id local o corregir la mesa con lo que dice el SERVIDOR (`corregirMesa`) NO la
-        // suben: siguen siendo esta cuenta, y el movimiento confirmado manda sobre ellas (Codex r4, D85).
-        val epocaDelMove = tableSession.epoch
         viewModelScope.launch {
             repository.moveOrder(vId, session.orderId, session.isProvisional, target.id).fold(
                 onSuccess = { outcome ->
                     _isMoving.value = false
                     // Sobre la sesión VIGENTE, no sobre la copia de antes de esperar: si el ack de OPEN_TABLE la promovió
                     // mientras tanto, la copia la regresaba al id local (y el carrito, ya del id real, se vaciaba). Si ya
-                    // no es esta sesión (se salió o se entró a otra), no se resucita.
-                    tableSession.current()?.takeIf { tableSession.epoch == epocaDelMove }?.let { actual ->
+                    // no es esta mesa (se salió), no se resucita.
+                    tableSession.current()?.takeIf { it.tableId == session.tableId }?.let { actual ->
                         tableSession.start(
                             actual.copy(
                                 tableId = target.id,

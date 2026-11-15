@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import com.jaac.avoqado_tpv.features.tables.data.CAMBIOS_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
@@ -1107,6 +1108,87 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.isProvisional).isFalse()
         // Al terminar el abono se lee la cuenta del SERVIDOR: lo que falta es lo que él dice.
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+    }
+
+    // endregion
+
+    // region — D86 · Codex r2: el saldo se valida al cobrar y una lectura vieja no lo pisa
+
+    @Test
+    fun D86_r2_1_una_lectura_que_salio_antes_de_un_cobro_no_vuelve_a_ofrecer_lo_cobrado() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        val lenta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            when (lecturas) {
+                1 -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+                2 -> { lenta.await(); Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00"))) }
+                else -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
+            }
+        }
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = null, queued = false))
+        val viewModel = createViewModel()
+
+        viewModel.loadCheck() // sale con el saldo de antes del cobro y tarda
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        viewModel.setCustomAmountInput("40")
+        viewModel.payCash(viewModel.chargeableAmount())
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+
+        lenta.complete(Unit) // llega la lectura vieja ($100)
+
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+    }
+
+    @Test
+    fun D86_r2_2_una_apertura_rechazada_despues_de_pintar_el_saldo_no_deja_cobrar() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val saldo = SaldoDeMesaSinRed(syncOutbox)
+        saldo.libreta.anotarRonda("local-1", "r1", BigDecimal("100.00"))
+        val ronda = filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}""")
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns
+            listOf(filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""), ronda)
+        val viewModel = createViewModel(saldo)
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
+
+        // El SERVIDOR rechaza la apertura (p. ej. la mesa estaba reservada) y la red se vuelve a ir.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}""", estado = SyncIntentEntity.STATUS_REJECTED),
+            ronda,
+        )
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.errorMessage).isEqualTo(CAMBIOS_SIN_SINCRONIZAR)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CAMBIOS_SIN_SINCRONIZAR)
+        assertThat(viewModel.state.value.isProcessingCash).isFalse()
+    }
+
+    @Test
+    fun D86_r2_3_una_lectura_fallida_no_detiene_el_desbloqueo() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returns
+            listOf(filaD86("c1", SyncIntentTypes.PAY_CASH, """{"orderId":"orden-1","amountCents":4000,"tipCents":0}"""))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
+        val viewModel = createViewModel()
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+
+        // El cobro sube, pero la siguiente lectura falla una vez.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returns emptyList()
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 500, message = "error")),
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00"))),
+        )
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
     }
 
     // endregion

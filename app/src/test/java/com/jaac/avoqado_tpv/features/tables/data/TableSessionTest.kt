@@ -198,7 +198,7 @@ class TableSessionTest {
         session.start(TableSession.Active(tableId = "m8", tableNumber = "M8", areaName = "Barra", orderId = "b", version = 2))
         val epoca = session.epoch
 
-        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9")
+        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9", epocaDeLaLectura = epoca)
 
         val actual = session.current()!!
         assertThat(actual.tableId).isEqualTo("m9")
@@ -212,15 +212,28 @@ class TableSessionTest {
     @Test
     fun D85_corregirMesa_no_toca_otra_cuenta_ni_una_provisional_ni_la_misma_mesa() {
         session.start(TableSession.Active(tableId = "m8", tableNumber = "M8", areaName = "Barra", orderId = "a"))
-        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9")
+        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9", epocaDeLaLectura = session.epoch)
         assertThat(session.current()?.tableId).isEqualTo("m8")
 
-        session.corregirMesa(orderId = "a", tableId = "m8", tableName = "Mesa M8")
+        session.corregirMesa(orderId = "a", tableId = "m8", tableName = "Mesa M8", epocaDeLaLectura = session.epoch)
         assertThat(session.current()?.areaName).isEqualTo("Barra")
 
         session.open(tableId = "m8", localOrderId = "local-1")
-        session.corregirMesa(orderId = "local-1", tableId = "m9", tableName = "Mesa M9")
+        session.corregirMesa(orderId = "local-1", tableId = "m9", tableName = "Mesa M9", epocaDeLaLectura = session.epoch)
         assertThat(session.current()?.tableId).isEqualTo("m8")
+    }
+
+    @Test
+    fun D85_una_lectura_vieja_no_deshace_un_mover_mesa_que_se_confirmo_mientras_tanto() {
+        // Codex r3 #1: se lanza el getOrder de B con la sesión en M8; el cajero mueve B a M9 (start sube la época); llega la
+        // lectura vieja diciendo M8. No debe regresar la sesión a M8.
+        session.start(TableSession.Active(tableId = "m8", orderId = "b"))
+        val epocaDeLaLectura = session.epoch
+        session.start(TableSession.Active(tableId = "m9", tableNumber = "M9", orderId = "b"))
+
+        session.corregirMesa(orderId = "b", tableId = "m8", tableName = "Mesa M8", epocaDeLaLectura = epocaDeLaLectura)
+
+        assertThat(session.current()?.tableId).isEqualTo("m9")
     }
 
     // endregion

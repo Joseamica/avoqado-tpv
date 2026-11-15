@@ -129,6 +129,23 @@ class TableOrderViewModelTest {
         assertThat(tableSession.current()?.tableNumber).isEqualTo("M9")
     }
 
+    @Test
+    fun D85_una_lectura_que_llega_despues_de_mover_mesa_no_regresa_la_sesion_a_la_mesa_vieja() = runTest {
+        // Codex r3 #1: el getOrder de B sale con la sesión en M8; el cajero mueve B a M9 y se confirma; después llega la
+        // lectura vieja (M8). La sesión se queda en M9.
+        tableSession.start(TableSession.Active(tableId = "m8", tableNumber = "M8", orderId = "b", version = 3))
+        val lectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "b") } coAnswers { lectura.await() }
+        coEvery { repository.moveOrder(venueId, "b", false, "m9") } returns
+            Result.success(TablesRepository.MoveOutcome(queued = false, targetTableId = "m9", version = 4))
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(DiningTable(id = "m9", number = "M9", status = "AVAILABLE"))
+        lectura.complete(Result.success(OrderDetail(id = "b", version = 3, tableId = "m8", tableName = "Mesa M8")))
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("m9")
+    }
+
     // endregion
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error

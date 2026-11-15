@@ -213,6 +213,8 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val vId = venueId ?: return
+        // La época de ESTA lectura: un «Mover mesa» confirmado mientras tanto la invalida para corregir la mesa.
+        val epocaDeLaLectura = tableSession.epoch
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -235,8 +237,11 @@ class TableOrderViewModel @Inject constructor(
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
                     // La mesa la dice el SERVIDOR (D85, Codex r2 #1): si se abrió desde un plano atrasado y la cuenta ya está
-                    // en otra mesa, la sesión pasa a la mesa real.
-                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName) }
+                    // en otra mesa, la sesión pasa a la mesa real. Nunca con un «Mover mesa» propio en curso o ya
+                    // confirmado tras lanzar la lectura: ése manda (Codex r3 #1).
+                    if (!_isMoving.value) {
+                        detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName, epocaDeLaLectura) }
+                    }
                     // El replay pudo haber confirmado rondas que estaban en
                     // "Por sincronizar" — el cheque fresco ya las incluye.
                     _queuedLines.value = emptyList()

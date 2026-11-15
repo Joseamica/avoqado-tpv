@@ -284,6 +284,7 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(isLoading = false, errorMessage = "No hay venue configurado en este terminal") }
             return
         }
+        val epocaDeLaLectura = tableSession.epoch
         viewModelScope.launch {
             _state.update { it.copy(isLoading = it.check == null) }
             try {
@@ -297,8 +298,9 @@ class TableCheckoutViewModel @Inject constructor(
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
                     tableSession.updateVersion(detail.version)
-                    // La mesa la dice el SERVIDOR (D85, Codex r2 #1): «Liberar mesa» tras el cobro va a la mesa real.
-                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName) }
+                    // La mesa la dice el SERVIDOR (D85, Codex r2 #1): «Liberar mesa» tras el cobro va a la mesa real. Sólo si
+                    // la sesión no se arrancó de nuevo mientras se leía (Codex r3 #1).
+                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName, epocaDeLaLectura) }
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {

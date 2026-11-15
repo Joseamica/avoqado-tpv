@@ -10,6 +10,8 @@ import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizac
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
@@ -64,6 +66,8 @@ class TableOrderViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val networkMonitor: NetworkMonitor,
     private val autorizacionDeGerente: AutorizacionDeGerente,
+    /** D86: el saldo sin red de una cuenta que esta terminal abrió sin red (rondas propias menos efectivo propio). */
+    private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
 ) : ViewModel() {
     /** La hora que se le enseña al mesero es la del negocio, no el desfase que trae el servidor. */
     val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
@@ -196,11 +200,71 @@ class TableOrderViewModel @Inject constructor(
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
 
+    /**
+     * D86: el saldo de una cuenta que ESTA terminal abrió sin red (`null` si la sesión no es provisional). Es el único número
+     * con el que «Pagar» de una mesa provisional se pinta; en gris trae su razón. Ver [SaldoDeMesaSinRed].
+     */
+    private val _saldoSinRed = MutableStateFlow<SaldoSinRed?>(null)
+    val saldoSinRed: StateFlow<SaldoSinRed?> = _saldoSinRed.asStateFlow()
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
-        loadCheck()
         viewModelScope.launch {
-            networkMonitor.networkStateFlow.collect { info -> _isOnline.value = info.isConnected }
+            // D86: al volver la red, la cuenta se relee sola (antes «Por sincronizar» se quedaba hasta otra acción).
+            var conectadaAntes = networkMonitor.isConnected()
+            networkMonitor.networkStateFlow.collect { info ->
+                _isOnline.value = info.isConnected
+                if (info.isConnected && !conectadaAntes) loadCheck()
+                conectadaAntes = info.isConnected
+            }
+        }
+        viewModelScope.launch {
+            // D86: el ACK de OPEN_TABLE promueve la sesión (mismo epoch): la cuenta ya existe en el SERVIDOR y se lee sola;
+            // mientras siga provisional, cualquier cambio de la sesión (p. ej. un cobro en «Cobrar») recalcula su saldo.
+            var antes = tableSession.current()
+            tableSession.active.collect { ahora ->
+                val previa = antes
+                val promovida = previa != null && previa.isProvisional && ahora != null && !ahora.isProvisional && previa.tableId == ahora.tableId
+                antes = ahora
+                if (promovida) {
+                    _saldoSinRed.value = null
+                    loadCheck()
+                } else if (ahora?.isProvisional == true) {
+                    recalcularSaldoSinRed()
+                }
+            }
+        }
+        // D86: después de los colectores: si la carga promueve la sesión en el acto (apertura ya confirmada), alguien la ve.
+        loadCheck()
+    }
+
+    /** D86: recalcula [saldoSinRed] de la cola y la libreta. Sólo para una sesión provisional; si no, `null`. */
+    fun recalcularSaldoSinRed() {
+        val session = tableSession.current()
+        val vId = venueId
+        if (session == null || !session.isProvisional || vId == null) {
+            _saldoSinRed.value = null
+            return
+        }
+        viewModelScope.launch {
+            val saldo = try {
+                // D86 (Codex r0 #2): si el ACK de la apertura llegó por otro camino (p. ej. el cobro en efectivo reprodujo la
+                // cola), la cola en disco lo guardó: se promueve aquí y la pantalla lee la cuenta del SERVIDOR.
+                val apertura = saldoDeMesaSinRed.aperturaConfirmada(vId, session.orderId)
+                if (apertura != null) {
+                    tableSyncCoordinator.onAck(SyncIntentTypes.OPEN_TABLE, session.orderId, apertura.orderId, apertura.orderNumber, apertura.version)
+                    return@launch
+                }
+                saldoDeMesaSinRed.saldo(vId, session.orderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [TableOrder] No se pudo leer la cola para el saldo sin red")
+                SaldoSinRed.EnGris(com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO)
+            }
+            // Sólo si la sesión sigue siendo esa misma cuenta provisional.
+            val actual = tableSession.current()
+            if (actual != null && actual.orderId == session.orderId && actual.isProvisional) _saldoSinRed.value = saldo
         }
     }
 
@@ -210,6 +274,7 @@ class TableOrderViewModel @Inject constructor(
         pendingCart.ensureOrder(session.orderId)
         if (session.isProvisional) {
             _check.value = null
+            recalcularSaldoSinRed()
             return
         }
         val vId = venueId ?: return
@@ -309,7 +374,15 @@ class TableOrderViewModel @Inject constructor(
                     // offline) — jamás se intenta el PATCH online, que necesita un
                     // orderId real. Ver TableSession.buildAddItemsPayload.
                     val payload = tableSession.buildAddItemsPayload(items)
-                    syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    val intentId = syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    // D86: la cola no trae precios; el valor de la ronda al mandarla se anota aparte, por id del intent, para
+                    // que «Pagar» de esta mesa abierta sin red sepa cuánto cobrar (ver SaldoDeMesaSinRed).
+                    saldoDeMesaSinRed.libreta.anotarRonda(
+                        session.orderId,
+                        intentId,
+                        lines.fold(java.math.BigDecimal.ZERO) { total, line -> total + line.lineTotal },
+                    )
+                    recalcularSaldoSinRed()
                     _queuedLines.value = _queuedLines.value + lines
                     pendingCart.removeSent(lines) // lo agregado durante el envío se queda
                     _isSending.value = false

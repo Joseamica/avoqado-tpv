@@ -59,6 +59,11 @@ class TableSession @Inject constructor() {
          * [com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator]).
          */
         val isProvisional: Boolean = false,
+        /**
+         * D86: el UUID local con el que se abrió sin red, conservado al promoverla. Lo que esta terminal encoló ANTES del ACK
+         * nombra la cuenta por ese id (`localOrderId`), no por el real: sin él no se ve el efectivo propio todavía sin subir.
+         */
+        val localOrderId: String? = null,
     ) {
         val label: String get() = "Mesa ${tableNumber ?: tableId}" + (areaName?.let { " · $it" } ?: "")
     }
@@ -142,6 +147,7 @@ class TableSession @Inject constructor() {
             orderNumber = orderNumber ?: session.orderNumber,
             version = version,
             isProvisional = false,
+            localOrderId = localOrderId,
         )
     }
 

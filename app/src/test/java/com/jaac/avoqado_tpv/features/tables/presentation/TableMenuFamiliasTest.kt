@@ -275,6 +275,7 @@ class TableMenuFamiliasTest {
         tableSession = TableSession(),
         pendingCart = pendingCart,
         deviceInfoManager = deviceInfoManager,
+        productDao = io.mockk.mockk<com.jaac.avoqado_tpv.core.data.local.dao.ProductDao>().also { io.mockk.coEvery { it.getAvailableProducts(any()) } returns emptyList() },
     )
 
     private fun servidorResponde(vararg productos: MenuProduct) {

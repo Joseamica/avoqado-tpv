@@ -1,9 +1,17 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
+import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
+import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
+import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
+import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
+import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
@@ -51,6 +59,7 @@ class TableCheckoutViewModelTest {
     private val tableSyncCoordinator = mockk<TableSyncCoordinator>()
     private val networkMonitor = mockk<NetworkMonitor>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
+    private val syncOutbox = mockk<SyncOutbox>()
     private lateinit var tableSession: TableSession
 
     private val venueId = "venue-1"
@@ -66,6 +75,8 @@ class TableCheckoutViewModelTest {
         every { networkMonitor.isConnected() } returns true
         every { networkMonitor.networkStateFlow } returns emptyFlow()
         coEvery { tableSyncCoordinator.replay(any()) } returns Unit
+        coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
     }
 
     @After
@@ -73,12 +84,13 @@ class TableCheckoutViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): TableCheckoutViewModel = TableCheckoutViewModel(
+    private fun createViewModel(saldo: SaldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox)): TableCheckoutViewModel = TableCheckoutViewModel(
         repository = repository,
         tableSession = tableSession,
         tableSyncCoordinator = tableSyncCoordinator,
         networkMonitor = networkMonitor,
         deviceInfoManager = deviceInfoManager,
+        saldoDeMesaSinRed = saldo,
     )
 
     // region — el cobro con TARJETA apunta a la orden EXISTENTE, nunca crea una nueva
@@ -130,7 +142,7 @@ class TableCheckoutViewModelTest {
 
         viewModel.buildPaymentPayload(BigDecimal("150.00"))
 
-        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
     }
 
@@ -145,7 +157,7 @@ class TableCheckoutViewModelTest {
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
         viewModel.onConnectivityChanged(online = false)
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
         // El monto paga el restante COMPLETO — onPaymentCompleted libera la
         // mesa sola, así que releaseTable() sí llama clearTable.
@@ -153,7 +165,7 @@ class TableCheckoutViewModelTest {
 
         viewModel.payCash(BigDecimal("150.00"))
 
-        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
         assertThat(viewModel.state.value.error).isNull()
         assertThat(viewModel.state.value.notice).contains("Sin conexión")
     }
@@ -164,7 +176,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.failure(TablesRepository.PayCashRejectedException("El cobro fue rechazado", "INVALID_PAYLOAD"))
 
         viewModel.payCash(BigDecimal("150.00"))
@@ -182,7 +194,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.failure(TablesRepository.PayCashRejectedException(
                 "La secuencia del dispositivo ya fue utilizada. Requiere revisión antes de repetir la operación.",
                 "STALE_DEVICE_SEQUENCE",
@@ -209,7 +221,7 @@ class TableCheckoutViewModelTest {
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00")) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00"), any()) } returns
             Result.success(
                 TablesRepository.PayCashOutcome(
                     paymentId = "pay-1",
@@ -247,7 +259,7 @@ class TableCheckoutViewModelTest {
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("15.50"))
-        coEvery { repository.payCash(any(), any(), any(), any(), any()) } returns
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
         // El monto paga el restante COMPLETO — onPaymentCompleted libera la
         // mesa sola, así que releaseTable() sí llama clearTable.
@@ -255,7 +267,7 @@ class TableCheckoutViewModelTest {
 
         viewModel.payCash(BigDecimal("100.00"))
 
-        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("15.50")) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("15.50"), any()) }
     }
 
     /** Gate central del founder: solo el pago que SALDA la cuenta invita a calificar. */
@@ -265,7 +277,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
         coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
 
@@ -287,7 +299,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
 
         viewModel.payCash(BigDecimal("50.00")) // 1 de 4 partes de $200
@@ -305,7 +317,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
         coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
 
@@ -323,7 +335,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
         coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
         viewModel.payCash(BigDecimal("150.00"))
@@ -803,7 +815,7 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("1000.00"), amountLeft = BigDecimal("1000.00")))
         val respuesta = kotlinx.coroutines.CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
-        coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } coAnswers { respuesta.await() }
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } coAnswers { respuesta.await() }
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
 
@@ -828,7 +840,7 @@ class TableCheckoutViewModelTest {
         viewModel.payCash(BigDecimal("100.00"))
         assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("100.00"))).isNull()
 
-        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -864,7 +876,7 @@ class TableCheckoutViewModelTest {
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
-        coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
 
         viewModel.payCash(BigDecimal("100.00"))
@@ -873,8 +885,8 @@ class TableCheckoutViewModelTest {
 
         viewModel.payCash(BigDecimal("50.00"))
 
-        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("20.00")) }
-        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), BigDecimal.ZERO) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("20.00"), any()) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), BigDecimal.ZERO, any()) }
     }
 
     @Test
@@ -884,12 +896,126 @@ class TableCheckoutViewModelTest {
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00")) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00"), any()) } returns
             Result.failure(TablesRepository.PayCashRejectedException("El cobro fue rechazado", "INVALID_PAYLOAD"))
 
         viewModel.payCash(BigDecimal("150.00"))
 
         assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal("20.00"))
+    }
+
+    // endregion
+
+    // region — D86: «Cobrar» sin red nunca cobra con un número que no es el de la cuenta
+
+    private fun filaD86(id: String, tipo: String, payload: String, estado: String = SyncIntentEntity.STATUS_PENDING, result: String? = null) =
+        SyncIntentEntity(id = id, venueId = venueId, seq = id.hashCode().toLong(), type = tipo, payloadJson = payload, status = estado, resultJson = result)
+
+    @Test
+    fun D86_mesa_del_servidor_sin_cuenta_y_sin_red_no_cobra_con_el_total_del_plano() = runTest {
+        // «Ver cuenta» arranca la sesión con el TOTAL del plano (no el saldo): sin red, eso no se cobra.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        every { networkMonitor.isConnected() } returns false
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(IOException("sin red"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(SIN_CUENTA_SIN_RED)
+        viewModel.payCash(BigDecimal("150.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.errorMessage).isEqualTo(SIN_CUENTA_SIN_RED)
+    }
+
+    @Test
+    fun D86_mesa_abierta_sin_red_aqui_cobra_sus_rondas_menos_su_efectivo() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val saldo = SaldoDeMesaSinRed(syncOutbox)
+        saldo.libreta.anotarRonda("local-1", "r1", BigDecimal("65.00"))
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}"""),
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":2000,"tipCents":0}"""),
+        )
+        coEvery { repository.payCash(venueId, "local-1", true, BigDecimal("45.00"), any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+        coEvery { repository.clearTable(any(), any(), any(), any()) } returns Result.success(Unit)
+        val viewModel = createViewModel(saldo)
+
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("45.00"))
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.state.value.avisoSinRed).isEqualTo(COBRO_CON_LO_DE_ESTA_TERMINAL)
+        viewModel.payCash(BigDecimal("45.00"))
+
+        // La provisional no manda saldo esperado (como ANDROID) y libera nombrando su cuenta local (D79).
+        coVerify(exactly = 1) { repository.payCash(venueId, "local-1", true, BigDecimal("45.00"), any(), null) }
+        coVerify(exactly = 1) { repository.clearTable(venueId, "mesa-1", "local-1", true) }
+    }
+
+    @Test
+    fun D86_mesa_abierta_sin_red_sin_saldo_seguro_queda_en_gris() = runTest {
+        // La app se reinició: la ronda sigue en la cola pero su valor (en memoria) ya no.
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}"""),
+        )
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(SALDO_NO_RECUPERADO)
+        assertThat(viewModel.state.value.remaining.signum()).isEqualTo(0)
+    }
+
+    @Test
+    fun D86_el_efectivo_de_una_cuenta_del_servidor_lleva_el_saldo_esperado() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("120.00")))
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("50.00"))
+
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), any(), BigDecimal("120.00")) }
+    }
+
+    @Test
+    fun D86_un_cobro_propio_sin_subir_bloquea_efectivo_y_tarjeta_tras_leer_la_cuenta() = runTest {
+        // Se abrió sin red, se cobró una parte sin red, la apertura ya subió pero el cobro todavía no: el SERVIDOR no lo cuenta.
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":4000,"tipCents":0}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+    }
+
+    @Test
+    fun D86_la_apertura_confirmada_por_otro_camino_promueve_y_lee_la_cuenta_del_servidor() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.aperturasConfirmadasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86(
+                "abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}""",
+                estado = SyncIntentEntity.STATUS_ACKED, result = """{"localOrderId":"local-1","orderId":"orden-1","orderNumber":"ORD-1","version":3}""",
+            ),
+        )
+        every { tableSyncCoordinator.onAck(SyncIntentTypes.OPEN_TABLE, "local-1", "orden-1", "ORD-1", 3) } answers {
+            tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 3)
+        }
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("80.00"), amountLeft = BigDecimal("80.00")))
+        val viewModel = createViewModel()
+
+        assertThat(tableSession.current()?.isProvisional).isFalse()
+        assertThat(viewModel.state.value.isProvisional).isFalse()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("80.00"))
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
     }
 
     // endregion

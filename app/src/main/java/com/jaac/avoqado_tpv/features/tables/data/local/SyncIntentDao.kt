@@ -84,6 +84,24 @@ interface SyncIntentDao {
     }
 
     /** Cuarentena: rechazos de negocio permanentes, visibles hasta que el mesero/gerente los descarte. */
+    /**
+     * D86: las filas vivas (PENDING o REJECTED) cuyo payload MENCIONA [texto] — p. ej. el id local de una cuenta abierta sin
+     * red. Es sólo un filtro grueso para no leer toda la cola: quien llama revisa el JSON y se queda con las que de verdad
+     * nombran esa cuenta.
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND status IN ('PENDING', 'REJECTED') " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq ASC",
+    )
+    suspend fun vivasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
+    /** D86: aperturas (OPEN_TABLE) ya confirmadas cuyo payload menciona [texto] — el id local de una cuenta abierta sin red. */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
 

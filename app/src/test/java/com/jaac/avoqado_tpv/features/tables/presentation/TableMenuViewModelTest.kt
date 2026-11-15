@@ -54,6 +54,7 @@ class TableMenuViewModelTest {
         tableSession = tableSession,
         pendingCart = pendingCart,
         deviceInfoManager = deviceInfoManager,
+        productDao = io.mockk.mockk<com.jaac.avoqado_tpv.core.data.local.dao.ProductDao>().also { io.mockk.coEvery { it.getAvailableProducts(any()) } returns emptyList() },
     )
 
     @Test
@@ -131,4 +132,45 @@ class TableMenuViewModelTest {
         assertThat(pendingCart.lines.value).hasSize(1)
         assertThat(pendingCart.lines.value.first().productId).isEqualTo("p1")
     }
+
+    // region — D86: sin red, el menú guardado en la terminal
+
+    private fun guardado(id: String, available: Boolean = true, categoriaActiva: Boolean = true) =
+        com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity(
+            productId = id, venueId = "venue-1", name = "Producto $id", sku = "sku-$id", price = "45.00",
+            categoryId = "cat-1", categoryName = "Bebidas", description = null, emoji = "", imageUrl = null,
+            available = available, displayOrder = 0, trackInventory = false, inventoryMethod = null, availableQuantity = null,
+            modifierGroupsJson = "[]", categoryIsActive = categoriaActiva, cachedAt = 0L,
+        )
+
+    @Test
+    fun D86_sin_red_y_sin_menu_en_memoria_usa_el_guardado_sólo_con_lo_disponible() = runTest {
+        val dao = mockk<com.jaac.avoqado_tpv.core.data.local.dao.ProductDao>()
+        coEvery { dao.getAvailableProducts("venue-1") } returns listOf(guardado("p1"), guardado("p2", categoriaActiva = false))
+        coEvery { repository.getProducts(any()) } returns Result.failure(IOException("sin red"))
+        coEvery { repository.getCategories(any()) } returns Result.failure(IOException("sin red"))
+        every { deviceInfoManager.getVenueId() } returns "venue-1"
+
+        val vm = TableMenuViewModel(repository = repository, tableSession = tableSession, pendingCart = pendingCart, deviceInfoManager = deviceInfoManager, productDao = dao)
+
+        val estado = vm.uiState.value
+        assertThat(estado.products.map { it.id }).containsExactly("p1")
+        assertThat(estado.products.single().price).isEqualTo(BigDecimal("45.00"))
+        assertThat(estado.categories.map { it.name }).containsExactly("Bebidas")
+        assertThat(estado.avisoCatalogo).isEqualTo(AVISO_CATALOGO_GUARDADO)
+        assertThat(estado.errorMessage).isNull()
+    }
+
+    @Test
+    fun D86_sin_red_y_sin_menu_guardado_lo_dice() = runTest {
+        coEvery { repository.getProducts(any()) } returns Result.failure(IOException("sin red"))
+        coEvery { repository.getCategories(any()) } returns Result.failure(IOException("sin red"))
+
+        val vm = createViewModel()
+
+        assertThat(vm.uiState.value.products).isEmpty()
+        assertThat(vm.uiState.value.errorMessage).contains("sin menú guardado")
+    }
+
+    // endregion
 }

@@ -5,8 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
+import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
+import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
@@ -158,8 +164,21 @@ data class TableCheckoutState(
      */
     val isHandingOffToCard: Boolean = false,
 
-    /** Restante a cobrar — pesos. Arranca en `TableSession.total` y se refresca con el cheque real al cargar. */
+    /**
+     * Restante a cobrar — pesos. Mesa del SERVIDOR: arranca en `TableSession.total` (sólo para pintar mientras carga) y manda
+     * el cheque real al cargar. Mesa abierta sin red aquí: su saldo sin red (D86).
+     */
     val remaining: BigDecimal = BigDecimal.ZERO,
+    /**
+     * D86: saldo sin red de una mesa que ESTA terminal abrió sin red (`null` mientras se calcula o si no es provisional).
+     * Conocido = se cobra con él; en gris = el efectivo espera con su razón.
+     */
+    val saldoSinRed: SaldoSinRed? = null,
+    /**
+     * D86 (Codex r0 #1): esta terminal tiene algo sin subir de esta cuenta del SERVIDOR (un cobro, una ronda…): el saldo leído
+     * no lo cuenta. Mientras no sea `null`, ni efectivo ni tarjeta.
+     */
+    val pendienteSinSubir: String? = null,
     /** La mesa ya se liberó (el restante llegó a cero) — ver [TableCheckoutViewModel.onPaymentCompleted]. */
     val tableReleased: Boolean = false,
 ) {
@@ -170,17 +189,43 @@ data class TableCheckoutState(
      * las dos condiciones es negociable — ver
      * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §5.
      */
-    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional
+    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional && pendienteSinSubir == null
 
     val cardPaymentDisabledReason: String?
         get() = when {
             isProvisional -> "La mesa aún no se sincroniza"
             !isOnline -> "Necesita conexión"
+            pendienteSinSubir != null -> pendienteSinSubir
             else -> null
         }
 
     /** La cuenta sigue abierta salvo que ya se haya liberado la mesa — nunca un estado de error. */
     val checkStaysOpen: Boolean get() = !tableReleased
+
+    /**
+     * D86: por qué el EFECTIVO no se puede cobrar todavía; `null` = se puede. Antes, sin cuenta leída, «Cobrar» cobraba (o
+     * enseñaba en $0) con `TableSession.total`, que es 0 en una mesa abierta con «Abrir mesa» y el TOTAL del plano (no el
+     * saldo) en una abierta con «Ver cuenta».
+     * - Mesa abierta sin red AQUÍ: sólo con su saldo sin red conocido (rondas propias menos efectivo propio).
+     * - Mesa del SERVIDOR: sólo con la cuenta leída (si «Cobrar» la leyó con red y luego se fue, sigue cobrando como hoy).
+     *   Sin ella y sin red, en gris: el piloto `MESAS_SIN_RED` (cobrar con la foto) todavía no está en la TPV.
+     */
+    val efectivoBloqueadoPor: String?
+        get() = when {
+            isProvisional -> when (val saldo = saldoSinRed) {
+                null -> "Calculando lo que debe la mesa…"
+                is SaldoSinRed.EnGris -> saldo.motivo
+                is SaldoSinRed.Conocido -> null
+            }
+            check != null -> pendienteSinSubir
+            isLoading -> "Cargando la cuenta…"
+            !isOnline -> SIN_CUENTA_SIN_RED
+            else -> "No se pudo cargar la cuenta: toca Reintentar."
+        }
+
+    /** D86: aviso de «Cobrar» en una mesa abierta sin red aquí (se cobra con lo que esta terminal le mandó). */
+    val avisoSinRed: String?
+        get() = if (isProvisional && saldoSinRed is SaldoSinRed.Conocido) COBRO_CON_LO_DE_ESTA_TERMINAL else null
 
     val error: String? get() = errorMessage
 }
@@ -239,6 +284,8 @@ class TableCheckoutViewModel @Inject constructor(
     private val tableSyncCoordinator: TableSyncCoordinator,
     private val networkMonitor: NetworkMonitor,
     private val deviceInfoManager: DeviceInfoManager,
+    /** D86: saldo sin red de una mesa que esta terminal abrió sin red. */
+    private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TableCheckoutState())
@@ -255,17 +302,39 @@ class TableCheckoutViewModel @Inject constructor(
                 tableSession.start(session.copy(mode = TableSession.Mode.PAYING))
             }
         }
+        val provisional = tableSession.current()?.isProvisional ?: false
         _state.update {
             it.copy(
-                remaining = tableSession.current()?.total ?: BigDecimal.ZERO,
-                isProvisional = tableSession.current()?.isProvisional ?: false,
+                // D86: una mesa abierta sin red aquí NUNCA arranca con `TableSession.total` (0 o un total viejo): espera su saldo.
+                remaining = if (provisional) BigDecimal.ZERO else tableSession.current()?.total ?: BigDecimal.ZERO,
+                isProvisional = provisional,
                 isOnline = networkMonitor.isConnected(),
             )
         }
-        loadCheck()
         viewModelScope.launch {
-            networkMonitor.networkStateFlow.collect { info -> onConnectivityChanged(info.isConnected) }
+            networkMonitor.networkStateFlow.collect { info ->
+                val volvio = info.isConnected && !_state.value.isOnline
+                onConnectivityChanged(info.isConnected)
+                // D86: volvió la red sin cuenta leída (mesa del SERVIDOR): se lee sola.
+                if (volvio && !_state.value.isProvisional && _state.value.check == null) loadCheck()
+            }
         }
+        viewModelScope.launch {
+            // D86: el ACK de OPEN_TABLE promueve la sesión a media pantalla: la cuenta ya existe en el SERVIDOR y desde ahí manda
+            // su cheque (con el efectivo propio ya sumado, porque la cola sube en orden), no el saldo sin red.
+            var antes = tableSession.current()
+            tableSession.active.collect { ahora ->
+                val previa = antes
+                val promovida = previa != null && previa.isProvisional && ahora != null && !ahora.isProvisional && previa.tableId == ahora.tableId
+                antes = ahora
+                if (promovida && _state.value.isProvisional) {
+                    _state.update { it.copy(isProvisional = false, saldoSinRed = null, remaining = BigDecimal.ZERO, isLoading = true) }
+                    loadCheck()
+                }
+            }
+        }
+        // D86: después de los colectores: si la carga promueve la sesión en el acto (apertura ya confirmada), alguien la ve.
+        loadCheck()
     }
 
     /** Carga (o recarga) el cheque desde el server — mismo criterio que `TableOrderViewModel.loadCheck`. */
@@ -274,8 +343,9 @@ class TableCheckoutViewModel @Inject constructor(
         if (session.isProvisional) {
             // La orden aún no existe en el server — nada que cargar todavía.
             // cardPaymentEnabled ya queda en false por isProvisional; EFECTIVO
-            // sigue disponible (PAY_CASH resuelve por localOrderId).
+            // sigue disponible (PAY_CASH resuelve por localOrderId) con el saldo sin red (D86).
             _state.update { it.copy(isLoading = false) }
+            calcularSaldoSinRed(session)
             return
         }
         val vId = venueId ?: run {
@@ -292,13 +362,28 @@ class TableCheckoutViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [TableCheckout] replay() del outbox falló antes de cargar la cuenta")
             }
 
-            repository.getOrder(vId, session.orderId).fold(
+            val leida = repository.getOrder(vId, session.orderId)
+            // D86 (Codex r0 #1): lo que esta terminal todavía no sube de esta cuenta (con su id real o el local con que se abrió
+            // sin red) no está en el saldo que acaba de leer: con un cobro propio sin subir se cobraría de más.
+            val pendiente = if (leida.isSuccess) {
+                try {
+                    saldoDeMesaSinRed.pendienteDeSubir(vId, listOfNotNull(session.orderId, session.localOrderId))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [TableCheckout] No se pudo revisar la cola de esta cuenta")
+                    SALDO_NO_RECUPERADO
+                }
+            } else {
+                null
+            }
+            leida.fold(
                 onSuccess = { detail ->
                     tableSession.updateVersion(detail.version)
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
-                        it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null)
+                        it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null, pendienteSinSubir = pendiente)
                     }
                 },
                 onFailure = { e ->
@@ -315,6 +400,38 @@ class TableCheckoutViewModel @Inject constructor(
                 },
             )
         }
+    }
+
+    /**
+     * D86: el saldo de la mesa abierta sin red aquí, de la cola y la libreta ([SaldoDeMesaSinRed]). Conocido = se cobra con él;
+     * en gris = el efectivo espera con su razón. Sólo se aplica si la sesión sigue siendo esa misma cuenta provisional.
+     */
+    private fun calcularSaldoSinRed(session: TableSession.Active) {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            val saldo = try {
+                // D86 (Codex r0 #2): la apertura ya confirmada por otro camino promueve la sesión (y el colector relee la cuenta).
+                if (promoverSiYaSeConfirmo(vId, session)) return@launch
+                saldoDeMesaSinRed.saldo(vId, session.orderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [TableCheckout] No se pudo leer la cola para el saldo sin red")
+                SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
+            }
+            val actual = tableSession.current()
+            if (actual == null || actual.orderId != session.orderId || !actual.isProvisional || !_state.value.isProvisional) return@launch
+            val restante = (saldo as? SaldoSinRed.Conocido)?.porPagar ?: BigDecimal.ZERO
+            tableSession.updateTotal(restante)
+            _state.update { it.copy(saldoSinRed = saldo, remaining = restante) }
+        }
+    }
+
+    /** D86 (Codex r0 #2): `true` si la apertura sin red de [session] ya está confirmada en la cola y se promovió la sesión. */
+    private suspend fun promoverSiYaSeConfirmo(venueId: String, session: TableSession.Active): Boolean {
+        val apertura = saldoDeMesaSinRed.aperturaConfirmada(venueId, session.orderId) ?: return false
+        tableSyncCoordinator.onAck(SyncIntentTypes.OPEN_TABLE, session.orderId, apertura.orderId, apertura.orderNumber, apertura.version)
+        return true
     }
 
     fun onConnectivityChanged(online: Boolean) {
@@ -445,6 +562,11 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(errorMessage = "Ingresa un monto válido") }
             return
         }
+        // D86: sin cuenta leída (o sin saldo sin red seguro) no se cobra con un número que no es el de la cuenta.
+        _state.value.efectivoBloqueadoPor?.let { motivo ->
+            _state.update { it.copy(errorMessage = motivo) }
+            return
+        }
         // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera.
         if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
 
@@ -465,6 +587,8 @@ class TableCheckoutViewModel @Inject constructor(
                 isProvisional = session.isProvisional,
                 amount = amount,
                 tip = tipAtChargeTime,
+                // D86: lo que esta pantalla creía que debía la cuenta antes del cobro (rastro en el SERVIDOR si no cuadra).
+                saldoEsperado = if (session.isProvisional) null else remainingBeforeThisPayment,
             ).fold(
                 onSuccess = { outcome ->
                     _state.update {
@@ -494,6 +618,20 @@ class TableCheckoutViewModel @Inject constructor(
                         )
                     }
                     onPaymentCompleted(amount)
+                    // D86 (Codex r0 #2): reproducir la cola para este cobro pudo confirmar la apertura sin avisar a la sesión. Va
+                    // DESPUÉS de descontar el cobro: así la liberación (si saldó) ya tomó su cuenta local y el restante de un
+                    // cobro parcial lo vuelve a leer el SERVIDOR.
+                    if (session.isProvisional) {
+                        viewModelScope.launch {
+                            try {
+                                promoverSiYaSeConfirmo(vId, session)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Timber.w(e, "⚠️ [TableCheckout] No se pudo revisar la apertura tras el cobro")
+                            }
+                        }
+                    }
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e

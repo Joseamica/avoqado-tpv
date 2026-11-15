@@ -1,5 +1,9 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import com.jaac.avoqado_tpv.core.util.NetworkType
+import com.jaac.avoqado_tpv.core.util.NetworkInfo
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
+import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
@@ -9,6 +13,7 @@ import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizac
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
@@ -74,6 +79,7 @@ class TableOrderViewModelTest {
     private val autorizacion = mockk<AutorizacionDeGerente>()
     private lateinit var tableSession: TableSession
     private lateinit var pendingCart: PendingRoundCart
+    private lateinit var saldoDeMesaSinRed: SaldoDeMesaSinRed
     private lateinit var ownershipFlow: MutableStateFlow<TablesRepository.TableOwnership>
 
     private val venueId = "venue-1"
@@ -95,6 +101,9 @@ class TableOrderViewModelTest {
         every { networkMonitor.isConnected() } returns true
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
         every { networkMonitor.networkStateFlow } returns emptyFlow()
+        coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
+        saldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox)
     }
 
     @After
@@ -112,6 +121,7 @@ class TableOrderViewModelTest {
         secureStorage = secureStorage,
         networkMonitor = networkMonitor,
         autorizacionDeGerente = autorizacion,
+        saldoDeMesaSinRed = saldoDeMesaSinRed,
     )
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error
@@ -1460,6 +1470,59 @@ class TableOrderViewModelTest {
 
         assertThat(aplicando).containsExactly(false)
         assertThat(viewModel.error.value).isEqualTo(textoNegada)
+    }
+
+    // endregion
+
+    // region — D86: la pantalla de la mesa se pone al día sola y «Pagar» de una mesa abierta sin red
+
+    @Test
+    fun D86_mesa_abierta_sin_red_enseña_pagar_con_lo_que_le_mandó_esta_terminal() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            SyncIntentEntity(id = "abrir", venueId = venueId, seq = 1, type = SyncIntentTypes.OPEN_TABLE, payloadJson = """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}"""),
+        )
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        viewModel.sendRound()
+
+        val saldo = viewModel.saldoSinRed.value
+        assertThat(saldo).isInstanceOf(SaldoSinRed.Conocido::class.java)
+        assertThat((saldo as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("90.00"))
+        assertThat(checkoutButtonVisible(readOnlyForPayment = false, isProvisional = true, checkTotal = null, saldoProvisional = saldo.porPagar)).isTrue()
+    }
+
+    @Test
+    fun D86_al_confirmarse_la_apertura_la_pantalla_lee_la_cuenta_sola() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", total = BigDecimal("20.00")))
+        val viewModel = createViewModel()
+        coVerify(exactly = 0) { repository.getOrder(any(), any()) }
+
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.check.value?.total).isEqualTo(BigDecimal("20.00"))
+        assertThat(viewModel.saldoSinRed.value).isNull()
+    }
+
+    @Test
+    fun D86_al_volver_la_red_la_pantalla_lee_la_cuenta_sola() = runTest {
+        val red = MutableStateFlow(NetworkInfo(type = NetworkType.WIFI, isMetered = false, isConnected = false, signalStrength = null))
+        every { networkMonitor.isConnected() } returns false
+        every { networkMonitor.networkStateFlow } returns red
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        createViewModel()
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+
+        red.value = red.value.copy(isConnected = true)
+
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
     }
 
     // endregion

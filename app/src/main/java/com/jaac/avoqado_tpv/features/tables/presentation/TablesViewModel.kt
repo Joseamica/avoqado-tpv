@@ -432,10 +432,13 @@ class TablesViewModel @Inject constructor(
      *
      * La mesa se lee del plano VIGENTE (por id), no de la copia que traía la hoja al abrirse (Codex r1 #1): si mientras
      * la hoja estaba abierta otro aparato movió esa cuenta a otra mesa, no se abre bajo ésta; y la versión y el total
-     * son los últimos que llegaron. Sin plano cargado, la copia de la hoja.
+     * son los últimos que llegaron. Si la mesa ya no está en el plano (p. ej. una archivada que sólo se veía por esa
+     * cuenta, Codex r2 #1), no se abre nada. Sólo sin plano cargado se usa la copia de la hoja. Si aun así el plano iba
+     * atrasado, la pantalla de la cuenta corrige la mesa con la que dice el SERVIDOR (`TableSession.corregirMesa`).
      */
     fun viewExistingCheck(table: DiningTable, check: OpenCheckSummary?, onReady: () -> Unit) {
-        val vigente = _uiState.value.tables.firstOrNull { it.id == table.id } ?: table
+        val plano = _uiState.value.tables
+        val vigente = if (plano.isEmpty()) table else plano.firstOrNull { it.id == table.id } ?: return
         val order = if (check == null) {
             vigente.primaryCheck
         } else {

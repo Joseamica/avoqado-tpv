@@ -13,11 +13,13 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -295,6 +297,8 @@ class TableCheckoutViewModel @Inject constructor(
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
                     tableSession.updateVersion(detail.version)
+                    // La mesa la dice el SERVIDOR (D85, Codex r2 #1): «Liberar mesa» tras el cobro va a la mesa real.
+                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName) }
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
@@ -531,19 +535,27 @@ class TableCheckoutViewModel @Inject constructor(
     private fun releaseTable() {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        // Lo que llega tarde sólo toca la MISMA sesión que se cobró (start/open/clear suben la época).
+        val epocaDelCobro = tableSession.epoch
         viewModelScope.launch {
-            repository.clearTable(vId, session.tableId, session.orderId, session.isProvisional).fold(
-                onSuccess = {
-                    tableSession.clear()
-                },
-                onFailure = { e ->
-                    // El server rechaza si queda saldo (p.ej. la propina de un cargo con
-                    // tarjeta aún no se refleja) — no es un error para el mesero, es el
-                    // server protegiendo contra liberar una mesa que en realidad debe.
-                    Timber.w(e, "⚠️ [TableCheckout] clearTable no liberó la mesa todavía (venue=%s, table=%s)", vId, session.tableId)
-                    if (e is BackendHttpException && e.statusCode in 400..499) soltarSesionSiSuCuentaYaNoDebe(vId, session)
-                },
-            )
+            // Termina aunque el cajero cierre el recibo y la pantalla se vaya (Codex r2 #2, D85): antes, cerrar el recibo
+            // rápido cancelaba la liberación y dejaba la sesión pegada a una cuenta ya pagada.
+            withContext(NonCancellable) {
+                repository.clearTable(vId, session.tableId, session.orderId, session.isProvisional).fold(
+                    onSuccess = {
+                        if (tableSession.epoch == epocaDelCobro) tableSession.clear()
+                    },
+                    onFailure = { e ->
+                        // El server rechaza si queda saldo (p.ej. la propina de un cargo con
+                        // tarjeta aún no se refleja) — no es un error para el mesero, es el
+                        // server protegiendo contra liberar una mesa que en realidad debe.
+                        Timber.w(e, "⚠️ [TableCheckout] clearTable no liberó la mesa todavía (venue=%s, table=%s)", vId, session.tableId)
+                        if (e is BackendHttpException && e.statusCode in 400..499) {
+                            soltarSesionSiSuCuentaYaNoDebe(vId, session, epocaDelCobro)
+                        }
+                    },
+                )
+            }
         }
     }
 
@@ -554,11 +566,11 @@ class TableCheckoutViewModel @Inject constructor(
      * SERVIDOR, que manda: si su cuenta todavía debe (p. ej. la propina de una tarjeta aún no se refleja) o no se puede
      * preguntar, la sesión se queda como antes. Sólo suelta la MISMA sesión que se cobró.
      */
-    private suspend fun soltarSesionSiSuCuentaYaNoDebe(vId: String, session: TableSession.Active) {
+    private suspend fun soltarSesionSiSuCuentaYaNoDebe(vId: String, session: TableSession.Active, epocaDelCobro: Long) {
         val detalle = repository.getOrder(vId, session.orderId).getOrNull() ?: return
         val yaNoDebe = detalle.paymentStatus == "PAID" || detalle.status == "COMPLETED"
         if (!yaNoDebe) return
-        if (tableSession.current()?.orderId != session.orderId) return
+        if (tableSession.epoch != epocaDelCobro || tableSession.current()?.orderId != session.orderId) return
         Timber.i("🪑 [TableCheckout] %s ya no debe; la mesa sigue con otra cuenta — se suelta la sesión", session.orderId)
         tableSession.clear()
     }

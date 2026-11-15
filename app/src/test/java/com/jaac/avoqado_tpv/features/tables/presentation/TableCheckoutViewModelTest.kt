@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
@@ -16,8 +17,10 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -420,6 +423,49 @@ class TableCheckoutViewModelTest {
         viewModel.onPaymentCompleted(BigDecimal("100.00"))
 
         assertThat(tableSession.current()?.orderId).isEqualTo("orden-1")
+    }
+
+    @Test
+    fun D85_cerrar_el_recibo_antes_de_que_conteste_no_deja_la_sesion_pegada_a_la_cuenta_pagada() = runTest {
+        // Codex r2 #2: la pregunta por la cuenta tarda y el cajero cierra el recibo (la pantalla se va y su scope se
+        // cancela). La liberación termina igual.
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        val respuesta = CompletableDeferred<Result<OrderDetail>>()
+        var llamadas = 0
+        coEvery { repository.getOrder(venueId, "b") } coAnswers {
+            llamadas++
+            if (llamadas == 1) {
+                Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00")))
+            } else {
+                respuesta.await()
+            }
+        }
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+        viewModel.viewModelScope.cancel()
+        respuesta.complete(Result.success(OrderDetail(id = "b", status = "COMPLETED", paymentStatus = "PAID")))
+
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_una_liberacion_que_llega_tarde_no_borra_la_sesion_de_otra_mesa_que_ya_abrio_el_mesero() = runTest {
+        // La liberación ya no muere con la pantalla: si contesta tarde y el mesero ya entró a otra mesa, no la toca.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("50.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("50.00"), amountLeft = BigDecimal("50.00")))
+        val servidor = CompletableDeferred<Result<Unit>>()
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } coAnswers { servidor.await() }
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("50.00"))
+        tableSession.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2"))
+        servidor.complete(Result.success(Unit))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-2")
     }
 
     @Test

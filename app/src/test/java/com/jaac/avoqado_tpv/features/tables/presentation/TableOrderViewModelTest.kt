@@ -114,6 +114,23 @@ class TableOrderViewModelTest {
         autorizacionDeGerente = autorizacion,
     )
 
+    // region — D85 (Codex r2 #1): la mesa de la sesión la dice el SERVIDOR
+
+    @Test
+    fun D85_al_cargar_la_cuenta_la_sesion_pasa_a_la_mesa_que_dice_el_servidor() = runTest {
+        // Se abrió B desde un plano atrasado bajo M8, pero otro aparato ya la había movido a M9.
+        tableSession.start(TableSession.Active(tableId = "m8", tableNumber = "M8", orderId = "b", version = 3))
+        coEvery { repository.getOrder(venueId, "b") } returns
+            Result.success(OrderDetail(id = "b", version = 3, tableId = "m9", tableName = "Mesa M9"))
+
+        createViewModel()
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("m9")
+        assertThat(tableSession.current()?.tableNumber).isEqualTo("M9")
+    }
+
+    // endregion
+
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error
 
     @Test

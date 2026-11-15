@@ -191,6 +191,40 @@ class TableSessionTest {
         assertThat(payload.has("localOrderId")).isFalse()
     }
 
+    // region — corregirMesa: la mesa la dice el SERVIDOR (D85, Codex r2 #1)
+
+    @Test
+    fun D85_corregirMesa_pasa_la_sesion_a_la_mesa_real_sin_cambiar_la_cuenta_ni_la_epoca() {
+        session.start(TableSession.Active(tableId = "m8", tableNumber = "M8", areaName = "Barra", orderId = "b", version = 2))
+        val epoca = session.epoch
+
+        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9")
+
+        val actual = session.current()!!
+        assertThat(actual.tableId).isEqualTo("m9")
+        assertThat(actual.tableNumber).isEqualTo("M9")
+        assertThat(actual.areaName).isNull()
+        assertThat(actual.orderId).isEqualTo("b")
+        assertThat(actual.version).isEqualTo(2)
+        assertThat(session.epoch).isEqualTo(epoca)
+    }
+
+    @Test
+    fun D85_corregirMesa_no_toca_otra_cuenta_ni_una_provisional_ni_la_misma_mesa() {
+        session.start(TableSession.Active(tableId = "m8", tableNumber = "M8", areaName = "Barra", orderId = "a"))
+        session.corregirMesa(orderId = "b", tableId = "m9", tableName = "Mesa M9")
+        assertThat(session.current()?.tableId).isEqualTo("m8")
+
+        session.corregirMesa(orderId = "a", tableId = "m8", tableName = "Mesa M8")
+        assertThat(session.current()?.areaName).isEqualTo("Barra")
+
+        session.open(tableId = "m8", localOrderId = "local-1")
+        session.corregirMesa(orderId = "local-1", tableId = "m9", tableName = "Mesa M9")
+        assertThat(session.current()?.tableId).isEqualTo("m8")
+    }
+
+    // endregion
+
     @Test(expected = IllegalStateException::class)
     fun buildAddItemsPayload_sin_sesion_activa_truena_en_vez_de_mandar_un_payload_invalido() {
         session.buildAddItemsPayload(emptyList())

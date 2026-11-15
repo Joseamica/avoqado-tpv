@@ -129,6 +129,24 @@ class TableSession @Inject constructor() {
     }
 
     /**
+     * El SERVIDOR dice que la cuenta de la sesión está en OTRA mesa (D85, Codex r2 #1): se abrió desde un plano atrasado
+     * mientras otro aparato la movía. Se corrige la mesa de la sesión para que «Liberar mesa» y el cobro vayan a la
+     * mesa real. No-op si la sesión ya es otra cuenta, si sigue provisional o si la mesa ya es ésa. No sube [epoch]:
+     * sigue siendo la misma cuenta.
+     *
+     * @param tableName el «Mesa {number}» que arma el SERVIDOR en `getOrder`.
+     */
+    fun corregirMesa(orderId: String, tableId: String, tableName: String?) {
+        val session = _active.value ?: return
+        if (session.orderId != orderId || session.isProvisional || session.tableId == tableId) return
+        _active.value = session.copy(
+            tableId = tableId,
+            tableNumber = tableName?.removePrefix("Mesa ")?.trim()?.takeIf { it.isNotEmpty() },
+            areaName = null,
+        )
+    }
+
+    /**
      * Offline-first: el ack de OPEN_TABLE llegó — intercambia el UUID local
      * por el id real del server y la sesión deja de ser provisional. No-op
      * si la sesión activa ya es otra (se cerró o se abrió otra mesa mientras

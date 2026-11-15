@@ -138,8 +138,15 @@ fun TablesScreen(
     }
 
     // La hoja pinta la mesa del plano VIGENTE (Codex r1 #1, D85): si la cola sube mientras está abierta y el SERVIDOR deja
-    // aparte la cuenta de la terminal, aparece ahí mismo sin cerrarla y abrirla otra vez.
-    selectedTable?.let { copia -> uiState.tables.firstOrNull { it.id == copia.id } ?: copia }?.let { table ->
+    // aparte la cuenta de la terminal, aparece ahí mismo sin cerrarla y abrirla otra vez. Si la mesa sale del plano (una
+    // archivada que sólo se veía por una cuenta que se movió, Codex r2 #1), la hoja se cierra: no se revive la copia.
+    val mesaDeLaHoja = selectedTable?.let { copia ->
+        if (uiState.tables.isEmpty()) copia else uiState.tables.firstOrNull { it.id == copia.id }
+    }
+    LaunchedEffect(selectedTable, mesaDeLaHoja) {
+        if (selectedTable != null && mesaDeLaHoja == null) selectedTable = null
+    }
+    mesaDeLaHoja?.let { table ->
         TableSheet(
             table = table,
             isMySession = table.id == uiState.activeSessionTableId,

@@ -556,6 +556,24 @@ class TablesViewModelTest {
     }
 
     @Test
+    fun D85_ver_cuenta_de_una_mesa_que_ya_no_esta_en_el_plano_no_hace_nada() = runTest {
+        // Codex r2 #1: una mesa archivada sólo se veía por su cuenta B; B se movió y el plano ya no trae la mesa. La hoja
+        // vieja no debe revivirla.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val copiaDeLaHoja = table(id = "archivada", number = "M20").copy(openOrders = listOf(b))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(table(id = "m9", number = "M9").copy(openOrders = listOf(b))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
     fun D85_ver_cuenta_toma_la_version_vigente_de_la_cuenta_del_plano() = runTest {
         // La hoja vieja traía B en versión 1; el plano ya la trae en 3 (alguien agregó una ronda). La sesión arranca con la
         // del plano vigente.

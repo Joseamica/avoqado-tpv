@@ -234,6 +234,9 @@ class TableOrderViewModel @Inject constructor(
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
+                    // La mesa la dice el SERVIDOR (D85, Codex r2 #1): si se abrió desde un plano atrasado y la cuenta ya está
+                    // en otra mesa, la sesión pasa a la mesa real.
+                    detail.tableId?.let { tableSession.corregirMesa(detail.id, it, detail.tableName) }
                     // El replay pudo haber confirmado rondas que estaban en
                     // "Por sincronizar" — el cheque fresco ya las incluye.
                     _queuedLines.value = emptyList()

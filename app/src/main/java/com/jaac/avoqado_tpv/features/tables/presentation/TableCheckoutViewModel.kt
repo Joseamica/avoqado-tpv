@@ -500,8 +500,11 @@ class TableCheckoutViewModel @Inject constructor(
                     _state.update {
                         it.copy(
                             isProcessingCash = false,
-                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.message
-                                ?: "No se pudo registrar el cobro",
+                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
+                                // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
+                                // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
+                                if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
+                            } ?: "No se pudo registrar el cobro",
                         )
                     }
                 },
@@ -529,7 +532,7 @@ class TableCheckoutViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
-            repository.clearTable(vId, session.tableId).fold(
+            repository.clearTable(vId, session.tableId, session.orderId, session.isProvisional).fold(
                 onSuccess = {
                     tableSession.clear()
                 },
@@ -822,3 +825,7 @@ class TableCheckoutViewModel @Inject constructor(
         }
     }
 }
+
+/** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
+internal const val RECHAZO_POR_NUMERO =
+    "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas."

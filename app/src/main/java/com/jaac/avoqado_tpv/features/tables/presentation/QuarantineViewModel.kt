@@ -204,7 +204,8 @@ fun labelFor(type: String): String = when (type) {
  */
 fun resolutionHintFor(errorCode: String?, type: String): String = when (errorCode) {
     "TABLE_OWNED_BY_OTHER" -> "Otro mesero ya tenía esta mesa abierta. Revisa con él antes de repetir la acción."
-    "STALE_DEVICE_SEQUENCE" -> "Otro dispositivo ya mandó una acción más reciente sobre esta cuenta. Revisa el estado actual antes de repetir."
+    // D6: la terminal ya reintenta sola con un número nuevo; si llega aquí, otra instalación con el mismo serial sigue adelante.
+    "STALE_DEVICE_SEQUENCE" -> "El servidor no aceptó la numeración de esta terminal (¿se reinstaló la app?). No se aplicó: revisa la cuenta antes de repetir."
     "ACTOR_MISMATCH" -> "La cuenta cambió de dueño antes de sincronizar. Revisa quién la atiende ahora."
     "PERMISSION_DENIED" -> "Tu usuario no tiene permiso para esta acción — pide a un gerente que la haga."
     "ORDER_NOT_FOUND" -> "La cuenta ya no existe (probablemente ya se cerró). No requiere ninguna acción."

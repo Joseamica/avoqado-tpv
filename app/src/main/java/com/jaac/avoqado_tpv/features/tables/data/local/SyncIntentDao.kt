@@ -53,6 +53,36 @@ interface SyncIntentDao {
     @Query("SELECT EXISTS(SELECT 1 FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING')")
     suspend fun hasPendingForVenue(venueId: String): Boolean
 
+    @Query("UPDATE sync_intents SET seq = :seq WHERE venue_id = :venueId AND id = :id AND status = 'PENDING'")
+    suspend fun cambiarSeqPendiente(venueId: String, id: String, seq: Long): Int
+
+    /**
+     * D6: el SERVIDOR rechazó por número (`STALE_DEVICE_SEQUENCE`) porque ya vio [piso] de este aparato, MÁS ALTO que
+     * cualquier número de esta base: la base se reinstaló o se borró y volvió a contar desde 1. Quien llama lo comprueba
+     * ([com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox]); sólo así ninguna fila de esta base llegó a entrar
+     * ni a quedar apartada en el servidor, y cambiarles el número no rompe una recuperación (el servidor retoma una
+     * reserva sólo con su número original) ni reordena nada.
+     *
+     * Mueve TODO lo que sigue en espera arriba del piso y de cualquier fila de la base, en el mismo orden. Una sola
+     * transacción: si el proceso muere, o queda como estaba o queda renumerado. Los números nuevos son mayores que todos
+     * los de la base, así que ningún paso choca con el índice único. Las filas resueltas no se tocan (y una que dejó de
+     * estar en espera a media transacción, tampoco).
+     *
+     * @return cuántas se renumeraron.
+     */
+    @Transaction
+    suspend fun renumerarPendientesSobre(venueId: String, piso: Long): Int {
+        var siguiente = maxOf(piso, maxSeq(venueId) ?: 0L) + 1
+        var renumeradas = 0
+        pendingForVenue(venueId).forEach { fila ->
+            if (cambiarSeqPendiente(venueId, fila.id, siguiente) == 1) {
+                siguiente++
+                renumeradas++
+            }
+        }
+        return renumeradas
+    }
+
     /** Cuarentena: rechazos de negocio permanentes, visibles hasta que el mesero/gerente los descarte. */
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>

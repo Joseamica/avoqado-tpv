@@ -891,6 +891,8 @@ class TableCheckoutViewModelTest {
     private fun cobroEnEfectivoOk() {
         coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
+        // Saldar la cuenta libera la mesa (onPaymentCompleted → releaseTable → clearTable) — Codex r2 #2.
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
     }
 
     @Test
@@ -970,6 +972,56 @@ class TableCheckoutViewModelTest {
         viewModel.alVolverAlFrente()
         assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+    }
+
+    @Test
+    fun p1_una_lectura_que_empieza_con_Cobrar_abierto_no_confirma_el_saldo() = runTest {
+        // Codex r2: «Quitar descuento» (o un cargo) relee la cuenta; si esa lectura empieza DESPUÉS de entregar la
+        // tarjeta pero ANTES de que cobre, trae el saldo de antes del abono. No debe apagar el bloqueo.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+        viewModel.loadCheck() // con «Cobrar» abierto: la tarjeta aún no cobra, el servidor dice $200
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        assertThat(viewModel.state.value.revisandoSaldo).isFalse()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+
+        // La tarjeta cobró $50; al volver la pantalla relee y ahora sí confirma.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+    }
+
+    @Test
+    fun p1_una_lectura_de_cuando_Cobrar_estaba_abierto_que_llega_tarde_no_pisa_el_saldo_confirmado() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        // Con «Cobrar» abierto sale una lectura (p. ej. tras «Quitar descuento») que se queda en vuelo con $200.
+        val lecturaDeEnMedio = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturaDeEnMedio.await() }
+        viewModel.loadCheck()
+
+        // La tarjeta cobra $50; la pantalla vuelve y su lectura confirma $150.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+
+        lecturaDeEnMedio.complete(cuenta("200.00")) // llega tarde
+
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
     }
 
     @Test

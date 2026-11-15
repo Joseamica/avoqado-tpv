@@ -2188,7 +2188,7 @@ fun AppNavigation(
                             val venueId = secureStorage.getVenueId()
                             val session = tableSession.current()
                             if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId)
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
                                     .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
                             }
                             tableSession.clear()
@@ -3220,7 +3220,7 @@ fun AppNavigation(
                             val venueId = secureStorage.getVenueId()
                             val session = tableSession.current()
                             if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId)
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
                                     .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
                             }
                             tableSession.clear()

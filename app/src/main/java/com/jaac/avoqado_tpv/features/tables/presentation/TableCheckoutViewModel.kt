@@ -532,7 +532,7 @@ class TableCheckoutViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
-            repository.clearTable(vId, session.tableId).fold(
+            repository.clearTable(vId, session.tableId, session.orderId, session.isProvisional).fold(
                 onSuccess = {
                     tableSession.clear()
                 },

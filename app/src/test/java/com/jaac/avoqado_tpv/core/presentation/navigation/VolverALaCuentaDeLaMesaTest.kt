@@ -38,12 +38,14 @@ class VolverALaCuentaDeLaMesaTest {
         val navegador = NavegadorDePrueba()
         nav.navigatorProvider.addNavigator(navegador)
         val grafo = NavGraph(nav.navigatorProvider.getNavigator(NavGraphNavigator::class.java))
-        listOf(NavRoute.Home, NavRoute.Tables, NavRoute.TableOrder, NavRoute.TableCheckout, NavRoute.Payment)
+        // Sin `NavRoute.Home`: si es la PRIMERA ruta que se toca en el proceso, el companion de NavRoute (que lee
+        // `Home.route`) se inicializa con `Home` todavía en null y truena (ExceptionInInitializerError, CI del PR #52).
+        // La pila empieza en el plano de mesas, que es lo que importa aquí.
+        listOf(NavRoute.Tables, NavRoute.TableOrder, NavRoute.TableCheckout, NavRoute.Payment)
             .forEach { ruta -> grafo.addDestination(navegador.createDestination().apply { route = ruta.route }) }
-        grafo.setStartDestination(NavRoute.Home.route)
+        grafo.setStartDestination(NavRoute.Tables.route)
         nav.graph = grafo
-        // El camino real: Inicio → Mesas → cuenta de la mesa → «Cobrar mesa» → «Cobrar» (tarjeta).
-        nav.navigate(NavRoute.Tables.route)
+        // El camino real: Mesas → cuenta de la mesa → «Cobrar mesa» → «Cobrar» (tarjeta).
         nav.navigate(NavRoute.TableOrder.route)
         nav.navigate(NavRoute.TableCheckout.route)
         nav.navigate(NavRoute.Payment.route)

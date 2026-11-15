@@ -157,6 +157,16 @@ data class TableCheckoutState(
      * [TableCheckoutViewModel.cobroConTarjetaNoSalio].
      */
     val isHandingOffToCard: Boolean = false,
+    /**
+     * D9 (encargo 49276c, 15-nov): esta pantalla ya le ENTREGÓ un cobro con tarjeta a «Cobrar» y todavía no ha vuelto a
+     * leer la cuenta del servidor. Mientras sea `true`, [remaining] puede ser el de ANTES de la tarjeta (esta pantalla
+     * sigue viva en la pila y, sin esto, no se recargaba al volver): ni efectivo ni otra tarjeta hasta que una lectura
+     * que EMPEZÓ después de esa entrega lo confirme. Lo prende [TableCheckoutViewModel.cobroConTarjetaEntregado] y lo
+     * apaga [TableCheckoutViewModel.loadCheck] al recibir esa lectura.
+     */
+    val saldoPorConfirmar: Boolean = false,
+    /** D9: la lectura que confirma el saldo tras la tarjeta va en camino (el aviso dice «Revisando…»). */
+    val revisandoSaldo: Boolean = false,
 
     /** Restante a cobrar — pesos. Arranca en `TableSession.total` y se refresca con el cheque real al cargar. */
     val remaining: BigDecimal = BigDecimal.ZERO,
@@ -181,6 +191,14 @@ data class TableCheckoutState(
 
     /** La cuenta sigue abierta salvo que ya se haya liberado la mesa — nunca un estado de error. */
     val checkStaysOpen: Boolean get() = !tableReleased
+
+    /** D9: por qué los dos botones esperan tras un cobro con tarjeta; `null` si no esperan por eso. */
+    val avisoDeSaldoPorConfirmar: String?
+        get() = when {
+            !saldoPorConfirmar -> null
+            revisandoSaldo -> "Revisando cuánto queda por pagar después de la tarjeta…"
+            else -> "No se pudo confirmar cuánto queda por pagar después de la tarjeta. Revisa la conexión y toca Reintentar."
+        }
 
     val error: String? get() = errorMessage
 }
@@ -246,6 +264,12 @@ class TableCheckoutViewModel @Inject constructor(
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
 
+    /**
+     * D9 (encargo 49276c): cuenta las entregas a «Cobrar». Una lectura de la cuenta sólo vale si empezó DESPUÉS de la
+     * última entrega (la misma marca al empezar y al terminar): una que salió antes trae el saldo de antes de la tarjeta.
+     */
+    private var entregasATarjeta = 0L
+
     init {
         // Entrar a checkout marca la sesión como PAYING (el carrito de
         // TableOrderScreen deja de escribir contra ella mientras se cobra) —
@@ -282,8 +306,9 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(isLoading = false, errorMessage = "No hay venue configurado en este terminal") }
             return
         }
+        val marcaDeEntrega = entregasATarjeta
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = it.check == null) }
+            _state.update { it.copy(isLoading = it.check == null, revisandoSaldo = it.saldoPorConfirmar) }
             try {
                 tableSyncCoordinator.replay(vId)
             } catch (e: CancellationException) {
@@ -294,22 +319,38 @@ class TableCheckoutViewModel @Inject constructor(
 
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
+                    if (marcaDeEntrega != entregasATarjeta) {
+                        // D9: salió antes de que se entregara una tarjeta — su saldo puede ser el de antes del
+                        // abono. No se aplica; la lectura que manda la pantalla al volver al frente sí vale.
+                        _state.update { it.copy(isLoading = false) }
+                        return@fold
+                    }
                     tableSession.updateVersion(detail.version)
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
-                        it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null)
+                        it.copy(
+                            isLoading = false,
+                            check = detail,
+                            remaining = freshRemaining,
+                            errorMessage = null,
+                            saldoPorConfirmar = false,
+                            revisandoSaldo = false,
+                        )
                     }
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
                     _state.update { current ->
+                        // D9: tras una tarjeta, el aviso pasa de «Revisando…» a «No se pudo confirmar…» y los botones
+                        // siguen esperando (sólo si es la lectura vigente; una vieja no toca el aviso).
+                        val revisando = if (marcaDeEntrega == entregasATarjeta) false else current.revisandoSaldo
                         // Offline-first de lectura: si ya había un cheque cargado, se
                         // sigue mostrando — nunca se tapa una pantalla que funcionaba.
                         if (current.check != null) {
-                            current.copy(isLoading = false)
+                            current.copy(isLoading = false, revisandoSaldo = revisando)
                         } else {
-                            current.copy(isLoading = false, errorMessage = "No se pudo cargar la cuenta")
+                            current.copy(isLoading = false, revisandoSaldo = revisando, errorMessage = "No se pudo cargar la cuenta")
                         }
                     }
                 },
@@ -405,7 +446,7 @@ class TableCheckoutViewModel @Inject constructor(
      */
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
-        if (s.isProcessingCash || s.isHandingOffToCard) return null
+        if (s.isProcessingCash || s.isHandingOffToCard || s.saldoPorConfirmar) return null
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }
         return request
@@ -417,7 +458,19 @@ class TableCheckoutViewModel @Inject constructor(
      * conserva), no la repite.
      */
     fun cobroConTarjetaEntregado() {
-        _state.update { it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO) }
+        // D9 (encargo 49276c): desde aquí el saldo de esta pantalla puede ser el de ANTES de la tarjeta.
+        entregasATarjeta++
+        _state.update {
+            it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO, saldoPorConfirmar = true, revisandoSaldo = false)
+        }
+    }
+
+    /**
+     * D9 (encargo 49276c): la pantalla volvió a quedar al frente (p. ej. con el «atrás» del sistema desde «Aprobado»,
+     * que no pasa por «Continuar pagando»). Si entregó una tarjeta, relee la cuenta antes de dejar cobrar otra vez.
+     */
+    fun alVolverAlFrente() {
+        if (_state.value.saldoPorConfirmar) loadCheck()
     }
 
     /** «Cobrar» no se abrió (la terminal no estaba lista): la casilla CONSERVA la propina (Codex r1 #1). */
@@ -447,6 +500,8 @@ class TableCheckoutViewModel @Inject constructor(
         }
         // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera.
         if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
+        // D9 (encargo 49276c): tras entregar una tarjeta, el saldo de aquí puede ser el de antes: no se cobra hasta releerlo.
+        if (_state.value.saldoPorConfirmar) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se

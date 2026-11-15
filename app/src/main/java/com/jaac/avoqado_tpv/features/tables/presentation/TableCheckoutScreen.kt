@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.Intent
 import com.jaac.avoqado_tpv.BuildConfig
@@ -115,6 +116,13 @@ fun TableCheckoutScreen(
 ) {
     val session by viewModel.tableSession.active.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // D9 (encargo 49276c): al volver al frente tras entregar una tarjeta (p. ej. «atrás» del sistema desde «Aprobado»),
+    // relee la cuenta: esta pantalla sigue viva en la pila y su saldo puede ser el de ANTES de la tarjeta.
+    LifecycleResumeEffect(Unit) {
+        viewModel.alVolverAlFrente()
+        onPauseOrDispose { }
+    }
 
     // Fase 1 (2026-08-03) — APPLY_DISCOUNT.
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
@@ -341,6 +349,7 @@ private fun TableCheckoutScreenContent(
                 state = state,
                 onPayCash = onPayCash,
                 onPayCard = onPayCard,
+                onRetryLoad = onRetryLoad,
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -784,6 +793,7 @@ private fun CheckoutBottomBar(
     state: TableCheckoutState,
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
+    onRetryLoad: () -> Unit = {},
 ) {
     // 🔴 Contrato verificado, no asumido (Task 8): la pantalla de pago con
     // tarjeta de Nexgo (`AngelPayPaymentScreen`) NO expone `splitType` /
@@ -796,7 +806,8 @@ private fun CheckoutBottomBar(
     // ofrece en PAX.
     val cardSupportsThisSplit = state.splitType == CheckoutSplitType.FULLPAYMENT || BuildConfig.ENABLE_PAX_SDK
     // D9: una sola reserva de cobro — con efectivo esperando respuesta o una tarjeta abriéndose, el otro botón espera.
-    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard
+    // D9 (encargo 49276c): tras entregar una tarjeta, los dos esperan a que se relea la cuenta.
+    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard || state.saldoPorConfirmar
     val cardAvailable = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
     val cardEnabled = cardAvailable && !cobroEnCurso
     val cardReason = when {
@@ -812,6 +823,22 @@ private fun CheckoutBottomBar(
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
+        state.avisoDeSaldoPorConfirmar?.let { aviso ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = aviso,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!state.revisandoSaldo) {
+                    TextButton(onClick = onRetryLoad) { Text("Reintentar") }
+                }
+            }
+        }
         if (cardReason != null) {
             Text(
                 text = cardReason,

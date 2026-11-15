@@ -764,6 +764,8 @@ class TableCheckoutViewModelTest {
         // 🔴 Una propina, un cobro: si la pantalla vieja vuelve a cobrar (otra parte de la cuenta), no la repite.
         assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal.ZERO)
         assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        // Encargo 49276c: antes de otro cobro, la pantalla vieja relee la cuenta al volver al frente.
+        viewModel.alVolverAlFrente()
         assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("445.50"))!!.tipAmount).isEqualTo(BigDecimal.ZERO)
     }
 
@@ -877,6 +879,109 @@ class TableCheckoutViewModelTest {
         viewModel.payCash(BigDecimal("150.00"))
 
         assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal("20.00"))
+    }
+
+    // endregion
+
+    // region — D9 · encargo 49276c: tras entregar una TARJETA, la «Cobrar mesa» vieja no cobra con el saldo de antes
+
+    private fun cuenta(porPagar: String) =
+        Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal(porPagar)))
+
+    private fun cobroEnEfectivoOk() {
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
+    }
+
+    @Test
+    fun p1_tras_entregar_TARJETA_el_efectivo_espera_a_releer_la_cuenta_y_cobra_lo_que_de_verdad_queda() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        viewModel.setCustomAmountInput("50")
+        viewModel.prepararCobroConTarjeta(viewModel.chargeableAmount())!!
+        viewModel.cobroConTarjetaEntregado()
+        // La tarjeta pagó $50 en «Cobrar»; el mesero regresa con el «atrás» del sistema desde «Aprobado».
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.selectSplitType(CheckoutSplitType.FULLPAYMENT)
+
+        // Antes de releer: la pantalla todavía cree que se deben $200 y NO deja cobrar.
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        viewModel.payCash(viewModel.chargeableAmount())
+        assertThat(viewModel.prepararCobroConTarjeta(viewModel.chargeableAmount())).isNull()
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+
+        viewModel.alVolverAlFrente()
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.state.value.avisoDeSaldoPorConfirmar).isNull()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+        viewModel.payCash(viewModel.chargeableAmount())
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) }
+        coVerify(exactly = 0) { repository.payCash(venueId, "orden-1", false, BigDecimal("200.00"), any()) }
+    }
+
+    @Test
+    fun p1_si_no_se_puede_releer_tras_la_TARJETA_los_botones_siguen_esperando_y_lo_dice() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("200.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(IOException("sin red"))
+        viewModel.alVolverAlFrente()
+
+        val estado = viewModel.state.value
+        assertThat(estado.saldoPorConfirmar).isTrue()
+        assertThat(estado.revisandoSaldo).isFalse()
+        assertThat(estado.avisoDeSaldoPorConfirmar).contains("No se pudo confirmar cuánto queda")
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+
+        // «Reintentar» con la red de vuelta: la tarjeta saldó todo, ya no queda nada que cobrar.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("0.00")
+        viewModel.loadCheck()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal.ZERO)
+    }
+
+    @Test
+    fun p1_una_lectura_que_salio_antes_de_la_TARJETA_no_confirma_el_saldo() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        val lecturaVieja = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturaVieja.await() }
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel() // su lectura inicial queda en vuelo
+
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+        lecturaVieja.complete(cuenta("200.00")) // llega tarde, con el saldo de antes de la tarjeta
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any()) }
+
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+    }
+
+    @Test
+    fun volver_al_frente_sin_haber_entregado_TARJETA_no_relee() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        val viewModel = createViewModel()
+
+        viewModel.alVolverAlFrente()
+
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
     }
 
     // endregion

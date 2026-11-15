@@ -541,9 +541,26 @@ class TableCheckoutViewModel @Inject constructor(
                     // tarjeta aún no se refleja) — no es un error para el mesero, es el
                     // server protegiendo contra liberar una mesa que en realidad debe.
                     Timber.w(e, "⚠️ [TableCheckout] clearTable no liberó la mesa todavía (venue=%s, table=%s)", vId, session.tableId)
+                    if (e is BackendHttpException && e.statusCode in 400..499) soltarSesionSiSuCuentaYaNoDebe(vId, session)
                 },
             )
         }
+    }
+
+    /**
+     * La mesa tiene OTRA cuenta que debe (D85: la que la terminal abrió sin red queda aparte junto a la de otro mesero)
+     * y el SERVIDOR no libera la mesa entera. Si ESTA cuenta ya no debe, la sesión se suelta: quedaba pegada a una
+     * cuenta pagada («Tu mesa», total $0) aunque la mesa sólo siguiera ocupada por la otra (Codex r1 #2). Se pregunta al
+     * SERVIDOR, que manda: si su cuenta todavía debe (p. ej. la propina de una tarjeta aún no se refleja) o no se puede
+     * preguntar, la sesión se queda como antes. Sólo suelta la MISMA sesión que se cobró.
+     */
+    private suspend fun soltarSesionSiSuCuentaYaNoDebe(vId: String, session: TableSession.Active) {
+        val detalle = repository.getOrder(vId, session.orderId).getOrNull() ?: return
+        val yaNoDebe = detalle.paymentStatus == "PAID" || detalle.status == "COMPLETED"
+        if (!yaNoDebe) return
+        if (tableSession.current()?.orderId != session.orderId) return
+        Timber.i("🪑 [TableCheckout] %s ya no debe; la mesa sigue con otra cuenta — se suelta la sesión", session.orderId)
+        tableSession.clear()
     }
 
     fun consumeNotice() {

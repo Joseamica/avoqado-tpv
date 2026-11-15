@@ -536,6 +536,46 @@ class TablesViewModelTest {
     }
 
     @Test
+    fun D85_ver_cuenta_lee_la_mesa_del_plano_vigente_no_la_copia_que_tenia_la_hoja() = runTest {
+        // Codex r1 #1: la hoja se abrió cuando M8 tenía la cuenta B; otro aparato la movió a otra mesa y el plano se
+        // refrescó. Tocar B en la hoja vieja no debe abrir B bajo M8.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val a = OpenCheckSummary(id = "a", orderNumber = "ORD-A", total = BigDecimal("30.00"))
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(a, b))
+        val mesaVigente = table(id = "m8", number = "M8").copy(openOrders = listOf(a))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(mesaVigente))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_toma_la_version_vigente_de_la_cuenta_del_plano() = runTest {
+        // La hoja vieja traía B en versión 1; el plano ya la trae en 3 (alguien agregó una ronda). La sesión arranca con la
+        // del plano vigente.
+        val bVieja = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"), version = 1)
+        val bVigente = bVieja.copy(total = BigDecimal("35.00"), version = 3)
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(bVieja))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(listOf(table(id = "m8", number = "M8").copy(openOrders = listOf(bVigente))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.viewExistingCheck(copiaDeLaHoja, bVieja) {}
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("b")
+        assertThat(tableSession.current()?.version).isEqualTo(3)
+        assertThat(tableSession.current()?.total).isEqualTo(BigDecimal("35.00"))
+    }
+
+    @Test
     fun ver_cuenta_es_un_no_op_si_la_mesa_no_tiene_ninguna_cuenta_abierta() {
         val libre = table(id = "libre", status = "AVAILABLE")
         val vm = createViewModel()

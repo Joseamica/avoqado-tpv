@@ -137,7 +137,9 @@ fun TablesScreen(
         )
     }
 
-    selectedTable?.let { table ->
+    // La hoja pinta la mesa del plano VIGENTE (Codex r1 #1, D85): si la cola sube mientras está abierta y el SERVIDOR deja
+    // aparte la cuenta de la terminal, aparece ahí mismo sin cerrarla y abrirla otra vez.
+    selectedTable?.let { copia -> uiState.tables.firstOrNull { it.id == copia.id } ?: copia }?.let { table ->
         TableSheet(
             table = table,
             isMySession = table.id == uiState.activeSessionTableId,

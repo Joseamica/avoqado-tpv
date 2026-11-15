@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
@@ -380,6 +381,61 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.remaining.compareTo(BigDecimal.ZERO)).isEqualTo(0)
         assertThat(viewModel.state.value.tableReleased).isTrue()
         coVerify(exactly = 1) { repository.clearTable(venueId, "mesa-1", "orden-1", false) }
+    }
+
+    @Test
+    fun D85_cobrar_una_cuenta_de_la_mesa_mientras_otra_debe_suelta_su_sesion_y_deja_la_mesa_ocupada() = runTest {
+        // Codex r1 #2: M8 tiene la cuenta B (de la terminal, $20) y la A (de otro mesero, $30). Se cobra B completa: el
+        // SERVIDOR no libera la mesa porque A debe (400). B ya no debe, así que la sesión se suelta: no queda «Tu mesa»
+        // pegada a una cuenta pagada. La mesa sigue ocupada por A (no se reintenta ni se encola nada).
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(
+            Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00"))),
+            Result.success(OrderDetail(id = "b", status = "COMPLETED", paymentStatus = "PAID", total = BigDecimal("20.00"))),
+        )
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+
+        assertThat(viewModel.state.value.tableReleased).isTrue()
+        assertThat(tableSession.current()).isNull()
+        coVerify(exactly = 1) { repository.clearTable(venueId, "m8", "b", false) }
+    }
+
+    @Test
+    fun D85_si_el_servidor_dice_que_SU_cuenta_todavia_debe_la_sesion_se_queda() = runTest {
+        // El caso que ya protegía el rechazo: la propina de una tarjeta todavía no se refleja y el SERVIDOR ve la cuenta
+        // con saldo. La sesión se queda para poder volver a ella.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00"))),
+            Result.success(OrderDetail(id = "orden-1", status = "PENDING", paymentStatus = "PARTIAL", total = BigDecimal("100.00"))),
+        )
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-1"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("100.00"))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-1")
+    }
+
+    @Test
+    fun D85_si_no_se_puede_preguntar_por_la_cuenta_la_sesion_se_queda() = runTest {
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(
+            Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00"))),
+            Result.failure(java.io.IOException("sin red")),
+        )
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("b")
     }
 
     @Test

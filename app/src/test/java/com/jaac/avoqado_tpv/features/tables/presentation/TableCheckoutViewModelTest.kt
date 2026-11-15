@@ -1192,4 +1192,33 @@ class TableCheckoutViewModelTest {
     }
 
     // endregion
+
+    // region — D86 · Codex r3: la primera lectura que tarda sí se aplica
+
+    @Test
+    fun D86_r3_la_primera_lectura_que_tarda_se_aplica_y_una_mas_vieja_no_pisa_a_la_nueva() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        val primera = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val segunda = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            if (lecturas == 1) {
+                primera.await(); Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+            } else {
+                segunda.await(); Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("70.00")))
+            }
+        }
+        val viewModel = createViewModel() // el constructor termina con la primera lectura todavía en camino
+
+        primera.complete(Unit)
+        assertThat(viewModel.state.value.check).isNotNull()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
+
+        viewModel.loadCheck() // la nueva
+        segunda.complete(Unit)
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("70.00"))
+    }
+
+    // endregion
 }

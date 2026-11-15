@@ -294,6 +294,22 @@ class TableCheckoutViewModel @Inject constructor(
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
 
+    // D86 (Codex r3): estos campos van ANTES de `init`: Kotlin inicializa en el orden del texto, y `init` ya lanza la primera
+    // lectura; declarados después, se reiniciaban a media lectura y la primera respuesta se tiraba («Cargando cuenta…» sin fin).
+    /** D86 (Codex r2 #1): cuántas lecturas de la cuenta y cuántos cobros en efectivo han empezado (para tirar lecturas viejas). */
+    private var lecturasIniciadas = 0L
+    private var cobrosIniciados = 0L
+
+    /** D86 (Codex r1 #1): la sesión se promovió durante un cobro en efectivo: se aplica al terminarlo. */
+    private var promocionPendiente = false
+
+    /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
+    private var releerAlTerminarElCobro = false
+
+    /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
+    private var relectura: kotlinx.coroutines.Job? = null
+
+
     init {
         // Entrar a checkout marca la sesión como PAYING (el carrito de
         // TableOrderScreen deja de escribir contra ella mientras se cobra) —
@@ -447,19 +463,6 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(saldoSinRed = saldo, remaining = restante) }
         }
     }
-
-    /** D86 (Codex r2 #1): cuántas lecturas de la cuenta y cuántos cobros en efectivo han empezado (para tirar lecturas viejas). */
-    private var lecturasIniciadas = 0L
-    private var cobrosIniciados = 0L
-
-    /** D86 (Codex r1 #1): la sesión se promovió durante un cobro en efectivo: se aplica al terminarlo. */
-    private var promocionPendiente = false
-
-    /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
-    private var releerAlTerminarElCobro = false
-
-    /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
-    private var relectura: kotlinx.coroutines.Job? = null
 
     /** La cuenta ya existe en el SERVIDOR (ACK de OPEN_TABLE): desde aquí manda su cheque, no el saldo sin red. */
     private fun aplicarPromocion() {

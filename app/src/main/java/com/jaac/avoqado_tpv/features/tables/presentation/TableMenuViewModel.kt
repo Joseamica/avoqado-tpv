@@ -101,7 +101,8 @@ class TableMenuViewModel @Inject constructor(
                     if (e is CancellationException) throw e
                     // D86: sin red y sin catálogo en memoria, se pide del catálogo que la terminal ya guarda.
                     if (e is IOException && _uiState.value.products.isEmpty()) {
-                        val guardado = leerCatalogoGuardado(vId)
+                        val guardados = leerCatalogoGuardado(vId)
+                        val guardado = guardados.map { it.aMenuDeMesas() }
                         if (guardado.isNotEmpty()) {
                             val familias = reglasDeMesas.familiasDe(guardado)
                             _uiState.update { current ->
@@ -109,7 +110,7 @@ class TableMenuViewModel @Inject constructor(
                                     isLoading = false,
                                     products = guardado,
                                     familias = familias,
-                                    categories = categoriasDe(productosGuardados),
+                                    categories = categoriasDe(guardados),
                                     errorMessage = null,
                                     avisoCatalogo = AVISO_CATALOGO_GUARDADO,
                                 )
@@ -142,24 +143,18 @@ class TableMenuViewModel @Inject constructor(
         }
     }
 
-    /** Las filas del catálogo guardado de la última lectura (para armar sus categorías). */
-    private var productosGuardados: List<ProductoGuardado> = emptyList()
-
     /**
      * D86 (Codex r0 #3): sólo lo que se puede vender — `available` (activo y con existencia; el guardado no separa las dos) y de
      * una categoría activa. Lo inactivo nunca aparece: Mesas no lo deshabilita en la cuadrícula, sólo no lo muestra.
      */
-    private suspend fun leerCatalogoGuardado(venueId: String): List<MenuProduct> {
-        productosGuardados = try {
-            // Room: las consultas `suspend` ya corren fuera del hilo principal.
-            catalogoGuardado.disponibles(venueId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Timber.w(e, "⚠️ [TableMenu] No se pudo leer el catálogo guardado")
-            emptyList()
-        }
-        return productosGuardados.map { it.aMenuDeMesas() }
+    private suspend fun leerCatalogoGuardado(venueId: String): List<ProductoGuardado> = try {
+        // Room: las consultas `suspend` ya corren fuera del hilo principal.
+        catalogoGuardado.disponibles(venueId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableMenu] No se pudo leer el catálogo guardado")
+        emptyList()
     }
 
     fun selectCategory(categoryId: String?) {

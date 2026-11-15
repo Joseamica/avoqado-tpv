@@ -171,6 +171,11 @@ data class TableCheckoutState(
      * [remaining] queda en 0, nada se cobra y la pantalla dice que el restante se sabrá al sincronizar.
      */
     val saldoPorConfirmar: Boolean = false,
+    /**
+     * D8 (Codex r4 #1): se está poniendo o quitando un descuento o un cargo. Mientras, ni efectivo ni tarjeta; y mientras un
+     * cobro va en camino, ningún descuento ni cargo: una sola operación de dinero a la vez en esta pantalla.
+     */
+    val ajusteEnCurso: Boolean = false,
     /** La mesa ya se liberó (el restante llegó a cero) — ver [TableCheckoutViewModel.onPaymentCompleted]. */
     val tableReleased: Boolean = false,
 ) {
@@ -382,6 +387,14 @@ class TableCheckoutViewModel @Inject constructor(
         if (volvio && _state.value.saldoPorConfirmar && !_state.value.isLoading) loadCheck()
     }
 
+    private fun cobroEnCurso(): Boolean = _state.value.isProcessingCash || _state.value.isHandingOffToCard
+
+    private fun reflejarAjuste() {
+        val enCurso = _isApplyingDiscount.value || _isRemovingDiscount.value ||
+            _isApplyingServiceCharge.value || _isRemovingServiceCharge.value
+        _state.update { it.copy(ajusteEnCurso = enCurso) }
+    }
+
     /**
      * D8 (Codex r3 #2): esta pantalla cambió la cuenta (descuento, cargo por servicio) y la terminal no sabe calcular cuánto
      * cambió lo que se debe: el saldo queda por confirmar hasta la siguiente lectura tomada; con red, se pide enseguida.
@@ -476,7 +489,7 @@ class TableCheckoutViewModel @Inject constructor(
      */
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
-        if (s.isProcessingCash || s.isHandingOffToCard) return null
+        if (s.isProcessingCash || s.isHandingOffToCard || s.ajusteEnCurso) return null
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }
         return request
@@ -516,8 +529,8 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(errorMessage = "Ingresa un monto válido") }
             return
         }
-        // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera.
-        if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
+        // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera. D8: y con un ajuste en camino también.
+        if (_state.value.isProcessingCash || _state.value.isHandingOffToCard || _state.value.ajusteEnCurso) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se
@@ -603,6 +616,12 @@ class TableCheckoutViewModel @Inject constructor(
      */
     fun onPaymentCompleted(amount: BigDecimal) {
         val current = _state.value
+        if (current.saldoPorConfirmar) {
+            // D8 (Codex r4 #1): con el saldo por confirmar, $0 quiere decir «no sé», no «ya no debe»: nunca se libera la mesa
+            // con eso. Se vuelve a leer la cuenta (el abono ya va en la cola) y ella dirá lo que queda.
+            loadCheck()
+            return
+        }
         val newRemaining = (current.remaining - amount).let { if (it < BigDecimal.ZERO) BigDecimal.ZERO else it }
         val released = newRemaining <= BigDecimal.ZERO
         _state.update { it.copy(remaining = newRemaining, tableReleased = released) }
@@ -714,13 +733,16 @@ class TableCheckoutViewModel @Inject constructor(
     fun applyDiscount(discountId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        if (_isApplyingDiscount.value) return
+        if (_isApplyingDiscount.value || cobroEnCurso()) return
 
         _isApplyingDiscount.value = true
+
+        reflejarAjuste()
         viewModelScope.launch {
             repository.applyDiscount(vId, session.orderId, discountId).fold(
                 onSuccess = { outcome ->
                     _isApplyingDiscount.value = false
+                    reflejarAjuste()
                     _state.update {
                         it.copy(
                             notice = if (outcome.queued) {
@@ -734,6 +756,7 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     _isApplyingDiscount.value = false
+                    reflejarAjuste()
                     if (e is CancellationException) throw e
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el descuento") }
                 },
@@ -757,18 +780,22 @@ class TableCheckoutViewModel @Inject constructor(
     fun removeDiscount(orderDiscountId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        if (_isRemovingDiscount.value) return
+        if (_isRemovingDiscount.value || cobroEnCurso()) return
 
         _isRemovingDiscount.value = true
+
+        reflejarAjuste()
         viewModelScope.launch {
             repository.removeDiscount(vId, session.orderId, orderDiscountId).fold(
                 onSuccess = {
                     _isRemovingDiscount.value = false
+                    reflejarAjuste()
                     _state.update { it.copy(notice = "Descuento quitado") }
                     cuentaCambiada(encolado = false)
                 },
                 onFailure = { e ->
                     _isRemovingDiscount.value = false
+                    reflejarAjuste()
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(
@@ -835,13 +862,16 @@ class TableCheckoutViewModel @Inject constructor(
     fun applyServiceCharge(serviceChargeId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        if (_isApplyingServiceCharge.value) return
+        if (_isApplyingServiceCharge.value || cobroEnCurso()) return
 
         _isApplyingServiceCharge.value = true
+
+        reflejarAjuste()
         viewModelScope.launch {
             repository.applyServiceCharge(vId, session.orderId, serviceChargeId).fold(
                 onSuccess = { outcome ->
                     _isApplyingServiceCharge.value = false
+                    reflejarAjuste()
                     _state.update {
                         it.copy(
                             notice = if (outcome.queued) {
@@ -855,6 +885,7 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     _isApplyingServiceCharge.value = false
+                    reflejarAjuste()
                     if (e is CancellationException) throw e
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el cargo por servicio") }
                 },
@@ -880,18 +911,22 @@ class TableCheckoutViewModel @Inject constructor(
     fun removeServiceCharge(orderServiceChargeId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        if (_isRemovingServiceCharge.value) return
+        if (_isRemovingServiceCharge.value || cobroEnCurso()) return
 
         _isRemovingServiceCharge.value = true
+
+        reflejarAjuste()
         viewModelScope.launch {
             repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId).fold(
                 onSuccess = {
                     _isRemovingServiceCharge.value = false
+                    reflejarAjuste()
                     _state.update { it.copy(notice = "Cargo por servicio quitado") }
                     cuentaCambiada(encolado = false)
                 },
                 onFailure = { e ->
                     _isRemovingServiceCharge.value = false
+                    reflejarAjuste()
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(

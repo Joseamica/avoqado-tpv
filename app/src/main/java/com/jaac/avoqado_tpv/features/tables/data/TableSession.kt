@@ -234,6 +234,12 @@ class TableSession @Inject constructor() {
         if (orderId !in actual.idsDeLaCuenta) return
         // Codex r3 #1: sobre un saldo que no se conoce, sumar la ronda daría un número cobrable pero incompleto.
         if (!actual.saldoConfirmado) return
+        // Codex r4 #2: con un descuento o un cargo por servicio en la cuenta (pueden ser porcentajes), el SERVIDOR los recalcula
+        // sobre lo nuevo y la ronda no sube el saldo exactamente por su precio: queda por confirmar, no se adivina.
+        if (actual.cuenta?.tieneAjustes() == true) {
+            _active.value = actual.copy(total = BigDecimal.ZERO, porSincronizar = BigDecimal.ZERO, saldoConfirmado = false)
+            return
+        }
         _active.value = actual.copy(
             total = actual.total + montoQueYaSeDebe,
             porSincronizar = actual.porSincronizar + montoQueYaSeDebe,
@@ -290,3 +296,7 @@ class TableSession @Inject constructor() {
         }
     }
 }
+
+/** D8 (Codex r4 #2): la cuenta trae descuentos o cargos por servicio, que el SERVIDOR recalcula cuando cambia lo que se pidió. */
+internal fun OrderDetail.tieneAjustes(): Boolean =
+    orderDiscounts.isNotEmpty() || discountAmount.signum() != 0 || serviceCharges.isNotEmpty() || serviceChargeAmount.signum() != 0

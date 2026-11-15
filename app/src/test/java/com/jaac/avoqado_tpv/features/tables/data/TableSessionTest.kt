@@ -329,4 +329,15 @@ class TableSessionTest {
         session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2", total = BigDecimal("100.00")))
         assertThat(session.current()!!.saldoConfirmado).isFalse()
     }
+
+    @Test
+    fun una_ronda_sobre_una_cuenta_con_ajustes_no_se_adivina() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        session.cuentaDelServidor("orden-1", cuenta.copy(serviceChargeAmount = BigDecimal("2.50")), session.marcaDeSaldo())
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+
+        assertThat(session.current()!!.saldoConfirmado).isFalse()
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("0")
+    }
 }

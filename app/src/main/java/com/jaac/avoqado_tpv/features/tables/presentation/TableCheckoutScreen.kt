@@ -324,6 +324,7 @@ private fun TableCheckoutScreenContent(
     onRemoveServiceCharge: (String) -> Unit = {},
 ) {
     val check = state.check
+    val cobroEnCamino = state.isProcessingCash || state.isHandingOffToCard
 
     Scaffold(
         modifier = modifier,
@@ -380,9 +381,10 @@ private fun TableCheckoutScreenContent(
                             porSincronizar = state.porSincronizar,
                             isOnline = state.isOnline,
                             saldoPorConfirmar = state.saldoPorConfirmar,
-                            isRemovingDiscount = isRemovingDiscount,
+                            // D8: con un cobro en camino no se quita nada (una sola operación de dinero a la vez).
+                            isRemovingDiscount = isRemovingDiscount || cobroEnCamino,
                             onRemoveDiscount = onRemoveDiscount,
-                            isRemovingServiceCharge = isRemovingServiceCharge,
+                            isRemovingServiceCharge = isRemovingServiceCharge || cobroEnCamino,
                             onRemoveServiceCharge = onRemoveServiceCharge,
                         )
                     }
@@ -398,6 +400,7 @@ private fun TableCheckoutScreenContent(
                             AvoqadoSecondaryButton(
                                 text = "+ Agregar descuento",
                                 onClick = onAddDiscountClick,
+                                enabled = !cobroEnCamino,
                                 fullWidth = true,
                             )
                         }
@@ -410,6 +413,7 @@ private fun TableCheckoutScreenContent(
                             AvoqadoSecondaryButton(
                                 text = "+ Agregar cargo por servicio",
                                 onClick = onAddServiceChargeClick,
+                                enabled = !cobroEnCamino,
                                 fullWidth = true,
                             )
                         }
@@ -827,7 +831,7 @@ private fun CheckoutBottomBar(
     // ofrece en PAX.
     val cardSupportsThisSplit = state.splitType == CheckoutSplitType.FULLPAYMENT || BuildConfig.ENABLE_PAX_SDK
     // D9: una sola reserva de cobro — con efectivo esperando respuesta o una tarjeta abriéndose, el otro botón espera.
-    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard
+    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard || state.ajusteEnCurso
     val cardAvailable = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
     val cardEnabled = cardAvailable && !cobroEnCurso
     val cardReason = when {

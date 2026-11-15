@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
+import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDiscountLine
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -400,5 +401,67 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
         assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0") // nunca los $25 de antes de separar
         assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
         assertThat(cobro.state.value.check).isEqualTo(cuentaDe25) // el desglose de la última vez sí se ve
+    }
+
+    @Test
+    fun codex_r4_1_con_un_cobro_en_camino_no_se_quita_un_descuento_y_con_un_ajuste_en_camino_no_se_cobra() = runTest {
+        abrirMesa()
+        coEvery { repository.getOrder(venueId, orden) } returns Result.success(
+            cuentaDe25.copy(
+                total = BigDecimal("90.00"),
+                discountAmount = BigDecimal("10.00"),
+                amountLeft = BigDecimal("90.00"),
+                orderDiscounts = listOf(OrderDiscountLine(id = "desc-1", name = "Cortesía", amount = BigDecimal("10.00"))),
+            ),
+        )
+        pantallaDeLaMesa()
+        val cobroEnCamino = CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } coAnswers { cobroEnCamino.await() }
+        coEvery { repository.removeDiscount(any(), any(), any()) } returns
+            Result.success(TablesRepository.DiscountOutcome(queued = false, amount = null, newOrderTotal = null))
+        val cobro = pantallaDeCobro()
+        cobro.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        cobro.setCustomAmountInput("10")
+        cobro.payCash(cobro.chargeableAmount()) // abono de $10, en camino
+
+        cobro.removeDiscount("desc-1") // el mesero toca «Quitar» mientras: no sale
+        coVerify(exactly = 0) { repository.removeDiscount(any(), any(), any()) }
+
+        cobroEnCamino.complete(Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = "A", queued = false)))
+        assertThat(cobro.state.value.remaining).isEqualToIgnoringScale("80.00")
+        assertThat(cobro.state.value.tableReleased).isFalse()
+
+        // Y al revés: con el «Quitar» en camino, el efectivo no sale.
+        val quitarEnCamino = CompletableDeferred<Result<TablesRepository.DiscountOutcome>>()
+        coEvery { repository.removeDiscount(any(), any(), any()) } coAnswers { quitarEnCamino.await() }
+        cobro.removeDiscount("desc-1")
+        assertThat(cobro.state.value.ajusteEnCurso).isTrue()
+        cobro.payCash(BigDecimal("10.00"))
+        coVerify(exactly = 1) { repository.payCash(any(), any(), any(), any(), any(), any()) } // sólo el primero
+        quitarEnCamino.complete(Result.success(TablesRepository.DiscountOutcome(queued = false, amount = null, newOrderTotal = null)))
+        assertThat(cobro.state.value.ajusteEnCurso).isFalse()
+    }
+
+    @Test
+    fun codex_r4_2_una_ronda_sobre_una_cuenta_con_cargo_o_descuento_deja_el_saldo_por_confirmar() = runTest {
+        abrirMesa()
+        // $100 de productos + 10 % de cargo por servicio = $110 confirmados.
+        coEvery { repository.getOrder(venueId, orden) } returns Result.success(
+            cuentaDe25.copy(subtotal = BigDecimal("100.00"), serviceChargeAmount = BigDecimal("10.00"), total = BigDecimal("110.00"), amountLeft = BigDecimal("110.00")),
+        )
+        val mesa = pantallaDeLaMesa()
+        sinRed()
+        coEvery { repository.addItems(venueId, orden, any(), any()) } returns Result.success(
+            OrderDetail(id = orden, items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-2", quantity = 1))),
+        )
+        pendingCart.addSimple(productId = "prod-2", name = "Otra ronda", unitPrice = BigDecimal("100.00"))
+
+        mesa.sendRound()
+        val cobro = pantallaDeCobro()
+
+        // El SERVIDOR cobrará $220 (el cargo se recalcula); la terminal no lo sabe: ni $210 ni nada, por confirmar.
+        assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0")
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
     }
 }

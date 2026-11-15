@@ -9,15 +9,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -38,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -45,6 +52,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
+import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
 
 /**
  * Mesa sheet (Plan C, Task 6/7, design spec §6.2 step 4) — comensales →
@@ -62,7 +70,7 @@ fun TableSheet(
     isMySession: Boolean,
     onDismiss: () -> Unit,
     onOpenTable: (covers: Int) -> Unit = {},
-    onViewCheck: () -> Unit = {},
+    onViewCheck: (OpenCheckSummary?) -> Unit = {},
     isOpening: Boolean = false,
     openError: String? = null,
     modifier: Modifier = Modifier,
@@ -227,7 +235,15 @@ private fun AvailableTableContent(
 }
 
 @Composable
-private fun OccupiedTableContent(table: DiningTable, onViewCheck: () -> Unit) {
+private fun OccupiedTableContent(table: DiningTable, onViewCheck: (OpenCheckSummary?) -> Unit) {
+    // Varias cuentas (D85): la que la terminal abrió sin red queda APARTE junto a la de otro mesero (SERVIDOR
+    // D51/D71). Antes la hoja sólo enseñaba la principal y la otra, con consumo y sin pagar, no se podía cobrar desde
+    // la TPV. Ahora cada una tiene su renglón y su «Ver cuenta», como el selector de cuentas de ANDROID.
+    val cuentas = table.openChecks
+    if (cuentas.size > 1) {
+        MultipleChecksContent(table = table, cuentas = cuentas, onViewCheck = onViewCheck)
+        return
+    }
     // primaryCheck, NO currentOrder directo: con el puntero desincronizado
     // (p.ej. tras cobrar una parte de un cheque dividido) la mesa se ve
     // ocupada igual y "Ver cuenta" tiene que poder llegar a lo que falta por
@@ -273,11 +289,103 @@ private fun OccupiedTableContent(table: DiningTable, onViewCheck: () -> Unit) {
 
     Spacer(Modifier.height(Spacing.Space4))
     Button(
-        onClick = onViewCheck,
+        onClick = { onViewCheck(order) },
         enabled = order != null,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text("Ver cuenta")
+    }
+}
+
+/** La mesa con más de una cuenta abierta: un aviso con lo que debe la mesa entera y un renglón tocable por cuenta. */
+@Composable
+private fun MultipleChecksContent(
+    table: DiningTable,
+    cuentas: List<OpenCheckSummary>,
+    onViewCheck: (OpenCheckSummary?) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "${cuentas.size} cuentas abiertas",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = table.openChecksTotalDisplay,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+    Text(
+        text = "Elige cuál quieres ver o cobrar.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(Spacing.Space3))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 360.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(Spacing.Space2),
+    ) {
+        cuentas.forEach { cuenta ->
+            CheckRow(cuenta = cuenta, onClick = { onViewCheck(cuenta) })
+        }
+    }
+}
+
+@Composable
+private fun CheckRow(cuenta: OpenCheckSummary, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.Space3, vertical = Spacing.Space2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = cuenta.name?.takeIf { it.isNotBlank() } ?: "Cuenta ${cuenta.orderNumber}".trim(),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${cuenta.itemCount} producto${if (cuenta.itemCount == 1) "" else "s"}" +
+                        (cuenta.waiterName?.takeIf { it.isNotBlank() }?.let { " · Atiende: $it" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.width(Spacing.Space2))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = cuenta.totalDisplay,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Ver cuenta",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
     }
 }
 
@@ -353,6 +461,47 @@ private fun TableSheetOccupiedPreview() {
                 ),
             ),
             isMySession = true,
+            onDismiss = {},
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "Mesa con dos cuentas (D85) — PAX A910S")
+@Composable
+private fun TableSheetDosCuentasPreview() {
+    AvoqadoTheme {
+        TableSheet(
+            table = DiningTable(
+                id = "m8",
+                number = "M8",
+                capacity = 6,
+                areaName = "Barra",
+                status = "OCCUPIED",
+                currentOrder = com.jaac.avoqado_tpv.features.tables.domain.model.TableOrder(
+                    id = "de-maria",
+                    orderNumber = "ORD-1794768167459",
+                    total = java.math.BigDecimal("30.00"),
+                    itemCount = 1,
+                ),
+                openOrders = listOf(
+                    OpenCheckSummary(
+                        id = "de-la-terminal",
+                        orderNumber = "ORD-1794768183221",
+                        total = java.math.BigDecimal("20.00"),
+                        itemCount = 1,
+                        waiterName = "Carlos Cajero",
+                    ),
+                    OpenCheckSummary(
+                        id = "de-maria",
+                        orderNumber = "ORD-1794768167459",
+                        total = java.math.BigDecimal("30.00"),
+                        itemCount = 1,
+                        waiterName = "María González",
+                    ),
+                ),
+            ),
+            isMySession = false,
             onDismiss = {},
         )
     }

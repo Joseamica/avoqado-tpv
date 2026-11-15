@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
+import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -421,7 +422,20 @@ class TablesViewModel @Inject constructor(
      * el detalle completo al entrar.
      */
     fun viewExistingCheck(table: DiningTable, onReady: () -> Unit) {
-        val order = table.primaryCheck ?: return
+        viewExistingCheck(table, check = null, onReady = onReady)
+    }
+
+    /**
+     * "Ver cuenta" de UNA cuenta concreta de la mesa (D85): una mesa puede tener varias (la que la terminal abrió sin
+     * red queda aparte junto a la de otro mesero, D51/D71) y la hoja de la mesa ofrece cada una. Sin [check], la
+     * principal. Una cuenta que ya no está entre las de la mesa no arranca nada.
+     */
+    fun viewExistingCheck(table: DiningTable, check: OpenCheckSummary?, onReady: () -> Unit) {
+        val order = if (check == null) {
+            table.primaryCheck
+        } else {
+            table.openChecks.firstOrNull { it.id == check.id }
+        } ?: return
         tableSession.start(
             TableSession.Active(
                 tableId = table.id,

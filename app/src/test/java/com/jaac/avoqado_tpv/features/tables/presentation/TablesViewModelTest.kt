@@ -495,6 +495,47 @@ class TablesViewModelTest {
     }
 
     @Test
+    fun D85_ver_cuenta_de_la_segunda_cuenta_de_la_mesa_arranca_la_sesion_con_ESA_cuenta() {
+        // La mesa tiene la cuenta de María (principal) y la que la terminal abrió sin red (aparte, D51/D71). El cajero
+        // toca la de la terminal en la hoja de la mesa: la sesión debe ser ésa, no la principal.
+        val deMaria = OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"), version = 2)
+        val deLaTerminal = OpenCheckSummary(id = "de-la-terminal", orderNumber = "ORD-2", total = BigDecimal("20.00"), version = 4)
+        val mesa = table(id = "m8", number = "M8").copy(
+            currentOrder = TableOrder(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00")),
+            openOrders = listOf(deLaTerminal, deMaria),
+        )
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, deLaTerminal) { readyCalled = true }
+
+        assertThat(readyCalled).isTrue()
+        val session = tableSession.current()
+        assertThat(session?.tableId).isEqualTo("m8")
+        assertThat(session?.orderId).isEqualTo("de-la-terminal")
+        assertThat(session?.orderNumber).isEqualTo("ORD-2")
+        assertThat(session?.total).isEqualTo(BigDecimal("20.00"))
+        assertThat(session?.version).isEqualTo(4)
+    }
+
+    @Test
+    fun D85_ver_cuenta_con_una_cuenta_que_ya_no_esta_en_la_mesa_no_hace_nada() {
+        // La hoja quedó abierta con una lista vieja y el plano se refrescó sin esa cuenta: no se arranca una sesión sobre
+        // una cuenta que la mesa ya no tiene.
+        val mesa = table(id = "m8", number = "M8").copy(
+            openOrders = listOf(OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"))),
+        )
+        val ajena = OpenCheckSummary(id = "otra", orderNumber = "ORD-9", total = BigDecimal("5.00"))
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, ajena) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
     fun ver_cuenta_es_un_no_op_si_la_mesa_no_tiene_ninguna_cuenta_abierta() {
         val libre = table(id = "libre", status = "AVAILABLE")
         val vm = createViewModel()

@@ -150,8 +150,8 @@ fun TablesScreen(
                     onNavigateToTableOrder()
                 }
             },
-            onViewCheck = {
-                viewModel.viewExistingCheck(table) {
+            onViewCheck = { cuenta ->
+                viewModel.viewExistingCheck(table, cuenta) {
                     selectedTable = null
                     onNavigateToTableOrder()
                 }
@@ -561,12 +561,15 @@ private fun TableChip(
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
             )
-            // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck.
+            // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck. Con más de una cuenta
+            // (la que la terminal abrió sin red queda aparte, D85), «N cuentas», como en ANDROID: el total de una sola
+            // escondía la otra.
             val primaryCheck = table.primaryCheck
-            val caption = if (status == TableDisplayStatus.OCCUPIED && primaryCheck != null) {
-                primaryCheck.totalDisplay
-            } else {
-                "${table.capacity}p"
+            val cuentas = table.openChecks.size
+            val caption = when {
+                status == TableDisplayStatus.OCCUPIED && cuentas > 1 -> "$cuentas cuentas"
+                status == TableDisplayStatus.OCCUPIED && primaryCheck != null -> primaryCheck.totalDisplay
+                else -> "${table.capacity}p"
             }
             Text(
                 text = caption,
@@ -645,8 +648,12 @@ private fun TableListView(
 @Composable
 private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -> Unit) {
     val status = table.displayStatus()
-    // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck.
+    // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck. Con varias cuentas (D85), la
+    // fila dice cuántas y suma lo que debe la mesa entera.
     val primaryCheck = table.primaryCheck
+    val cuentas = table.openChecks
+    val varias = cuentas.size > 1
+    val productos = cuentas.sumOf { it.itemCount }
 
     Card(
         onClick = onClick,
@@ -701,7 +708,15 @@ private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    primaryCheck?.let { order ->
+                    if (varias) {
+                        Text(
+                            text = " · ${cuentas.size} cuentas · $productos producto${if (productos == 1) "" else "s"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else primaryCheck?.let { order ->
                         Text(
                             text = " · ${order.itemCount} producto${if (order.itemCount == 1) "" else "s"}",
                             style = MaterialTheme.typography.bodySmall,
@@ -719,7 +734,13 @@ private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                primaryCheck?.let { order ->
+                if (varias) {
+                    Text(
+                        text = table.openChecksTotalDisplay,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                } else primaryCheck?.let { order ->
                     Text(
                         text = order.totalDisplay,
                         style = MaterialTheme.typography.titleMedium,

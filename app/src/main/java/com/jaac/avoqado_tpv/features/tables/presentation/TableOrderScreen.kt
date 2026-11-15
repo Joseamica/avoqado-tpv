@@ -511,7 +511,8 @@ private fun TableOrderScreenContent(
                 sendTakingLong = sendTakingLong,
                 readOnly = readOnly,
                 canCheckout = canCheckout,
-                checkTotal = checkTotal,
+                // D8: lo que el cobro va a cobrar (lo que falta, más lo mandado sin red), no el total bruto de la cuenta.
+                porCobrar = session.total,
                 onAddProducts = onAddProducts,
                 onSendRound = onSendRound,
                 onNavigateToCheckout = onNavigateToCheckout,
@@ -873,7 +874,7 @@ private fun TableOrderBottomBar(
     sendTakingLong: Boolean,
     readOnly: Boolean,
     canCheckout: Boolean,
-    checkTotal: BigDecimal?,
+    porCobrar: BigDecimal,
     onAddProducts: () -> Unit,
     onSendRound: () -> Unit,
     onNavigateToCheckout: () -> Unit,
@@ -940,7 +941,7 @@ private fun TableOrderBottomBar(
                     .padding(horizontal = Spacing.Space4, vertical = Spacing.Space2),
             ) {
                 com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton(
-                    text = "Pagar · ${moneyDisplay(checkTotal ?: BigDecimal.ZERO)}",
+                    text = "Pagar · ${moneyDisplay(porCobrar)}",
                     onClick = onNavigateToCheckout,
                     enabled = pendingCount == 0 && !isSending,
                     fullWidth = true,

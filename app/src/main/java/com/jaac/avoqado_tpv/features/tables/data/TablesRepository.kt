@@ -569,6 +569,12 @@ class TablesRepository @Inject constructor(
         isProvisional: Boolean,
         amount: BigDecimal,
         tip: BigDecimal = BigDecimal.ZERO,
+        /**
+         * D8: lo que la terminal creía que debía la cuenta ANTES de este cobro (null = no se manda). El SERVIDOR sólo lo usa
+         * como rastro: si al aplicarlo tiene otro saldo deja `COBRO_SIN_RED_CON_DIFERENCIA` en la bitácora; nunca cambia ni
+         * rechaza el cobro (`applyPayCash`, `expectedBalanceBeforeCents`, ya en producción). Igual que ANDROID.
+         */
+        saldoEsperado: BigDecimal? = null,
     ): Result<PayCashOutcome> {
         val intentId = UUID.randomUUID().toString()
         val payload = JsonObject().apply {
@@ -576,6 +582,7 @@ class TablesRepository @Inject constructor(
             addProperty("amountCents", amount.toCents())
             addProperty("tipCents", tip.toCents())
             addProperty("method", "CASH")
+            saldoEsperado?.takeIf { it.signum() >= 0 }?.let { addProperty("expectedBalanceBeforeCents", it.toCents()) }
         }
         syncOutbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, payload, id = intentId)
 

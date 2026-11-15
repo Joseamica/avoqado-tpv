@@ -197,4 +197,109 @@ class TableSessionTest {
     }
 
     // endregion
+
+    // region — D8: lo que la terminal sabe de la cuenta (para cobrar sin red)
+
+    private val cuenta = com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail(
+        id = "orden-1",
+        total = BigDecimal("30.00"),
+        paidAmount = BigDecimal("5.00"),
+        amountLeft = BigDecimal("25.00"),
+    )
+
+    @Test
+    fun la_cuenta_del_servidor_deja_como_saldo_lo_que_falta_y_borra_lo_por_sincronizar() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+        val marca = session.marcaDeSaldo()
+
+        val tomada = session.cuentaDelServidor("orden-1", cuenta, marca)
+
+        assertThat(tomada).isTrue()
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("25.00")
+        assertThat(session.current()!!.cuenta).isEqualTo(cuenta)
+        assertThat(session.current()!!.porSincronizar).isEqualToIgnoringScale("0")
+    }
+
+    @Test
+    fun una_cuenta_pedida_antes_de_un_cambio_local_no_se_toma() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00")))
+        val marca = session.marcaDeSaldo()
+        session.updateTotal(BigDecimal("15.00")) // un abono de $10 mientras la lectura viajaba
+
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, marca)).isFalse()
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("15.00")
+        assertThat(session.current()!!.cuenta).isNull()
+    }
+
+    @Test
+    fun la_cuenta_de_otra_orden_no_se_toma() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-2"))
+
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, session.marcaDeSaldo())).isFalse()
+        assertThat(session.current()!!.cuenta).isNull()
+    }
+
+    @Test
+    fun una_ronda_suma_al_saldo_y_a_lo_por_sincronizar() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00")))
+
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("4.50"))
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", null) // ésta no salió: no se debe
+
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("44.50")
+        assertThat(session.current()!!.porSincronizar).isEqualToIgnoringScale("19.50")
+    }
+
+    @Test
+    fun con_una_ronda_en_camino_no_se_toma_ninguna_lectura() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00")))
+        session.empezarCambioDeSaldo()
+        val marca = session.marcaDeSaldo() // la lectura sale DESPUÉS de que salió la ronda
+
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, marca)).isFalse()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+        assertThat(session.cuentaDelServidor("orden-1", cuenta, session.marcaDeSaldo())).isTrue()
+    }
+
+    @Test
+    fun la_ronda_de_una_mesa_abierta_sin_red_se_suma_aunque_ya_se_haya_promovido() {
+        session.open(tableId = "mesa-1", localOrderId = "local-1")
+        session.empezarCambioDeSaldo()
+        session.promoteProvisional(localOrderId = "local-1", orderId = "orden-real", orderNumber = "A-1", version = 2)
+        session.terminarCambioDeSaldo("local-1", BigDecimal("15.00"))
+
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("15.00")
+        assertThat(session.current()!!.idsDeLaCuenta).containsExactly("orden-real", "local-1")
+    }
+
+    @Test
+    fun la_ronda_de_otra_mesa_no_se_suma() {
+        session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2"))
+        session.empezarCambioDeSaldo()
+        session.terminarCambioDeSaldo("orden-1", BigDecimal("15.00"))
+
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("0")
+    }
+
+    @Test
+    fun cambiar_de_modo_conserva_la_cuenta_y_otra_mesa_empieza_de_cero() {
+        session.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        session.cuentaDelServidor("orden-1", cuenta, session.marcaDeSaldo())
+
+        session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+        assertThat(session.current()!!.cuenta).isEqualTo(cuenta)
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("25.00")
+
+        session.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-9"))
+        assertThat(session.current()!!.cuenta).isNull()
+        assertThat(session.current()!!.total).isEqualToIgnoringScale("0")
+    }
+
+    // endregion
 }

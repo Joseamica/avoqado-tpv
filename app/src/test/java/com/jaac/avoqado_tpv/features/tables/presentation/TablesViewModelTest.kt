@@ -490,7 +490,10 @@ class TablesViewModelTest {
         assertThat(readyCalled).isTrue()
         val session = tableSession.current()
         assertThat(session?.orderId).isEqualTo("viva")
-        assertThat(session?.total).isEqualTo(BigDecimal("144.00"))
+        // D8 (Codex r2 #2): el total del plano es BRUTO (no descuenta abonos) y ya no se siembra como saldo cobrable; el
+        // saldo lo pone la primera lectura de la cuenta que se tome.
+        assertThat(session?.total).isEqualToIgnoringScale(BigDecimal.ZERO)
+        assertThat(session?.saldoConfirmado).isFalse()
         assertThat(session?.version).isEqualTo(5)
     }
 

@@ -160,6 +160,11 @@ data class TableCheckoutState(
 
     /** Restante a cobrar — pesos. Arranca en `TableSession.total` y se refresca con el cheque real al cargar. */
     val remaining: BigDecimal = BigDecimal.ZERO,
+    /**
+     * D8: rondas mandadas después del último desglose del SERVIDOR que todavía no confirma (sin red). Ya van dentro de
+     * [remaining]; la pantalla las enseña en su renglón para que el desglose cuadre con lo que se cobra.
+     */
+    val porSincronizar: BigDecimal = BigDecimal.ZERO,
     /** La mesa ya se liberó (el restante llegó a cero) — ver [TableCheckoutViewModel.onPaymentCompleted]. */
     val tableReleased: Boolean = false,
 ) {
@@ -255,10 +260,15 @@ class TableCheckoutViewModel @Inject constructor(
                 tableSession.start(session.copy(mode = TableSession.Mode.PAYING))
             }
         }
+        // D8: arranca con lo que la terminal ya sabe de la cuenta (la pantalla de la mesa la cargó): sin red, el desglose de la
+        // última vez y su restante, nunca «$0.00». Con red, `loadCheck()` lo refresca enseguida.
+        val sesion = tableSession.current()
         _state.update {
             it.copy(
-                remaining = tableSession.current()?.total ?: BigDecimal.ZERO,
-                isProvisional = tableSession.current()?.isProvisional ?: false,
+                check = sesion?.cuenta,
+                remaining = sesion?.total ?: BigDecimal.ZERO,
+                porSincronizar = sesion?.porSincronizar ?: BigDecimal.ZERO,
+                isProvisional = sesion?.isProvisional ?: false,
                 isOnline = networkMonitor.isConnected(),
             )
         }
@@ -269,7 +279,9 @@ class TableCheckoutViewModel @Inject constructor(
     }
 
     /** Carga (o recarga) el cheque desde el server — mismo criterio que `TableOrderViewModel.loadCheck`. */
-    fun loadCheck() {
+    fun loadCheck() = cargarCuenta(reintento = false)
+
+    private fun cargarCuenta(reintento: Boolean) {
         val session = tableSession.current() ?: return
         if (session.isProvisional) {
             // La orden aún no existe en el server — nada que cargar todavía.
@@ -282,6 +294,9 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(isLoading = false, errorMessage = "No hay venue configurado en este terminal") }
             return
         }
+        // D8: capturada ANTES de salir a la red. Un cobro que se registre mientras viaja la lectura la deja vieja: tomarla
+        // regresaría el saldo de antes del abono y se podría cobrar dos veces lo mismo.
+        val marca = tableSession.marcaDeSaldo()
         viewModelScope.launch {
             _state.update { it.copy(isLoading = it.check == null) }
             try {
@@ -292,13 +307,40 @@ class TableCheckoutViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [TableCheckout] replay() del outbox falló antes de cargar la cuenta")
             }
 
+            // D8: lo que la cola todavía no sube de esta cuenta (una ronda o un cobro sin red) no viene en la lectura (Codex r1
+            // #2): con algo pendiente, la lectura no reemplaza lo que la terminal sabe.
+            val pendientesAntes = tableSyncCoordinator.hayPendientesDe(vId, session.idsDeLaCuenta)
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
                     tableSession.updateVersion(detail.version)
-                    val freshRemaining = detail.amountLeft ?: detail.total
-                    tableSession.updateTotal(freshRemaining)
-                    _state.update {
-                        it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null)
+                    val quedanPendientes = pendientesAntes || tableSyncCoordinator.hayPendientesDe(vId, session.idsDeLaCuenta)
+                    if (!quedanPendientes && tableSession.cuentaDelServidor(session.orderId, detail, marca)) {
+                        val freshRemaining = tableSession.current()?.total ?: (detail.amountLeft ?: detail.total)
+                        _state.update {
+                            it.copy(
+                                isLoading = false,
+                                check = detail,
+                                remaining = freshRemaining,
+                                porSincronizar = BigDecimal.ZERO,
+                                errorMessage = null,
+                            )
+                        }
+                    } else {
+                        // Llegó vieja (algo se cobró o se mandó mientras viajaba) o le falta lo que la cola no ha subido: el
+                        // restante de esta pantalla es el bueno. Si no había desglose, éste sirve para verlo; el monto no se
+                        // toca. Se pide otra vez UNA sola, por si el replay ya alcanzó.
+                        Timber.i("🪑 [TableCheckout] la cuenta no se tomó (pendientes=%s); se conserva el restante local", quedanPendientes)
+                        val sinSaldoConfirmado = tableSession.current()?.saldoConfirmado == false
+                        _state.update {
+                            it.copy(
+                                isLoading = false,
+                                check = it.check ?: detail,
+                                // Codex r2 #2: sin saldo confirmado el restante sigue en $0 (no se cobra con un número que la
+                                // terminal no sabe) y se dice por qué, sin tono de error.
+                                notice = if (sinSaldoConfirmado && quedanPendientes) SALDO_POR_SINCRONIZAR else it.notice,
+                            )
+                        }
+                        if (!reintento) cargarCuenta(reintento = true)
                     }
                 },
                 onFailure = { e ->
@@ -456,59 +498,70 @@ class TableCheckoutViewModel @Inject constructor(
         val remainingBeforeThisPayment = _state.value.remaining
         val tipAtChargeTime = _state.value.tipAmount
         val willSettle = amount >= remainingBeforeThisPayment
+        // D8: lo que la terminal creía que se debía, para que el SERVIDOR deje rastro si al llegar tiene otro saldo (otro
+        // aparato cobró, un descuento sin red). Sólo con la cuenta ya creada allá, igual que ANDROID.
+        val saldoEsperado = remainingBeforeThisPayment.takeUnless { session.isProvisional }
 
         _state.update { it.copy(isProcessingCash = true, errorMessage = null) }
         viewModelScope.launch {
-            repository.payCash(
-                venueId = vId,
-                orderId = session.orderId,
-                isProvisional = session.isProvisional,
-                amount = amount,
-                tip = tipAtChargeTime,
-            ).fold(
-                onSuccess = { outcome ->
-                    _state.update {
-                        it.copy(
-                            isProcessingCash = false,
-                            // D9: la propina ya se cobró con ESTE pago; la siguiente parte de la cuenta no la repite.
-                            tipAmount = BigDecimal.ZERO,
-                            notice = if (outcome.queued) {
-                                "Sin conexión — cobro guardado; se sincronizará solo"
-                            } else {
-                                "Cobro registrado"
-                            },
-                            // 🧾 Receipt: on EVERY cash payment (queued or not) — closes
-                            // the asymmetry with TARJETA (which already ends on
-                            // "Cobrar"'s success screen with a receipt). See KDoc of
-                            // [CashReceiptSummary].
-                            cashReceipt = CashReceiptSummary(
-                                amount = amount,
-                                tipAmount = tipAtChargeTime,
-                                totalAmount = amount + tipAtChargeTime,
-                                orderNumber = outcome.orderNumber ?: session.orderNumber,
-                                receiptUrl = outcome.receiptUrl,
-                                autofacturaAvailable = outcome.autofacturaAvailable,
-                                queued = outcome.queued,
-                                isSettlingPayment = willSettle,
-                            ),
-                        )
-                    }
-                    onPaymentCompleted(amount)
-                },
-                onFailure = { e ->
-                    if (e is CancellationException) throw e
-                    _state.update {
-                        it.copy(
-                            isProcessingCash = false,
-                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
-                                // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
-                                // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
-                                if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
-                            } ?: "No se pudo registrar el cobro",
-                        )
-                    }
-                },
-            )
+            // D8 (Codex r2 #1): mientras el cobro va en camino, ninguna lectura de la cuenta se toma (podría traer ya el abono
+            // y luego [onPaymentCompleted] lo restaría otra vez). Dentro de la corrutina: si arranca, el `finally` lo cierra.
+            tableSession.empezarCambioDeSaldo()
+            try {
+                repository.payCash(
+                    venueId = vId,
+                    orderId = session.orderId,
+                    isProvisional = session.isProvisional,
+                    amount = amount,
+                    tip = tipAtChargeTime,
+                    saldoEsperado = saldoEsperado,
+                ).fold(
+                    onSuccess = { outcome ->
+                        _state.update {
+                            it.copy(
+                                isProcessingCash = false,
+                                // D9: la propina ya se cobró con ESTE pago; la siguiente parte de la cuenta no la repite.
+                                tipAmount = BigDecimal.ZERO,
+                                notice = if (outcome.queued) {
+                                    "Sin conexión — cobro guardado; se sincronizará solo"
+                                } else {
+                                    "Cobro registrado"
+                                },
+                                // 🧾 Receipt: on EVERY cash payment (queued or not) — closes
+                                // the asymmetry with TARJETA (which already ends on
+                                // "Cobrar"'s success screen with a receipt). See KDoc of
+                                // [CashReceiptSummary].
+                                cashReceipt = CashReceiptSummary(
+                                    amount = amount,
+                                    tipAmount = tipAtChargeTime,
+                                    totalAmount = amount + tipAtChargeTime,
+                                    orderNumber = outcome.orderNumber ?: session.orderNumber,
+                                    receiptUrl = outcome.receiptUrl,
+                                    autofacturaAvailable = outcome.autofacturaAvailable,
+                                    queued = outcome.queued,
+                                    isSettlingPayment = willSettle,
+                                ),
+                            )
+                        }
+                        onPaymentCompleted(amount)
+                    },
+                    onFailure = { e ->
+                        if (e is CancellationException) throw e
+                        _state.update {
+                            it.copy(
+                                isProcessingCash = false,
+                                errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
+                                    // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
+                                    // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
+                                    if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
+                                } ?: "No se pudo registrar el cobro",
+                            )
+                        }
+                    },
+                )
+            } finally {
+                tableSession.terminarCambioDeSaldo(session.orderId, null)
+            }
         }
     }
 
@@ -827,5 +880,8 @@ class TableCheckoutViewModel @Inject constructor(
 }
 
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
+internal const val SALDO_POR_SINCRONIZAR =
+    "Esta cuenta tiene cambios de esta terminal que aún no suben: el restante se sabrá al sincronizar."
+
 internal const val RECHAZO_POR_NUMERO =
     "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas."

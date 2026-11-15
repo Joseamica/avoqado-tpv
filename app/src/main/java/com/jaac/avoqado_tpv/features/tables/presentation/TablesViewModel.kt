@@ -430,7 +430,8 @@ class TablesViewModel @Inject constructor(
                 orderId = order.id,
                 orderNumber = order.orderNumber,
                 version = order.version,
-                total = order.total,
+                // D8 (Codex r2 #2): sin `total`. El del plano es el total BRUTO (no descuenta abonos): no es un saldo que se
+                // pueda cobrar. El saldo lo pone la primera lectura de la cuenta que se tome (TableSession.saldoConfirmado).
             ),
         )
         onReady()

@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.IOException
+import java.math.BigDecimal
 import javax.inject.Inject
 
 /**
@@ -213,6 +214,8 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val vId = venueId ?: return
+        // D8: capturada ANTES de salir a la red — una ronda o un cobro que pase mientras viaja la lectura la deja vieja.
+        val marca = tableSession.marcaDeSaldo()
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -229,14 +232,21 @@ class TableOrderViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
             }
 
+            // D8: lo que la cola todavía no sube de esta cuenta no viene en la lectura (Codex r1 #2).
+            val pendientesAntes = tableSyncCoordinator.hayPendientesDe(vId, session.idsDeLaCuenta)
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
+                    val quedanPendientes = pendientesAntes || tableSyncCoordinator.hayPendientesDe(vId, session.idsDeLaCuenta)
+                    // D8: la cuenta que ve el mesero es la que el cobro necesita si se cae la red antes de «Pagar». Sólo si
+                    // la lectura trae todo lo de esta terminal y nada cambió mientras viajaba.
+                    if (!quedanPendientes) tableSession.cuentaDelServidor(session.orderId, detail, marca)
                     // El replay pudo haber confirmado rondas que estaban en
-                    // "Por sincronizar" — el cheque fresco ya las incluye.
-                    _queuedLines.value = emptyList()
+                    // "Por sincronizar" — el cheque fresco ya las incluye. D8: sólo si ya no queda nada de esta cuenta en
+                    // la cola; si quedó, siguen sin estar en la cuenta y se siguen viendo.
+                    if (!quedanPendientes) _queuedLines.value = emptyList()
                 },
                 onFailure = { e ->
                     // 🔴 Sin red NO es un error — es el estado normal de un
@@ -259,6 +269,9 @@ class TableOrderViewModel @Inject constructor(
             _isLoadingCheck.value = false
         }
     }
+
+    private fun totalDe(lines: List<PendingRoundCart.Line>): BigDecimal =
+        lines.fold(BigDecimal.ZERO) { acc, line -> acc + line.lineTotal }
 
     private fun isNetworkError(e: Throwable): Boolean = when (e) {
         is IOException -> true
@@ -292,6 +305,16 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val items = pendingCart.toAddItemsRequests()
+        // D8: desde aquí hasta que conteste, ninguna lectura de la cuenta se toma (Codex r1 #1); al cerrar, la ronda se suma al
+        // saldo si quedó mandada o encolada. Se cierra UNA vez, pase lo que pase (el `finally` de abajo).
+        val montoDeLaRonda = totalDe(lines)
+        var rondaCerrada = false
+        val cerrarRonda = { seDebe: Boolean ->
+            if (!rondaCerrada) {
+                rondaCerrada = true
+                tableSession.terminarCambioDeSaldo(session.orderId, montoDeLaRonda.takeIf { seDebe })
+            }
+        }
 
         _isSending.value = true
         // Puramente de presentación — ver KDoc de [_sendTakingLong]. Vive en
@@ -303,6 +326,9 @@ class TableOrderViewModel @Inject constructor(
             _sendTakingLong.value = true
         }
         viewModelScope.launch {
+            // Dentro de la corrutina y antes del `try`: si nunca arranca no queda un envío abierto para siempre, y si arranca,
+            // el `finally` lo cierra.
+            tableSession.empezarCambioDeSaldo()
             try {
                 if (session.isProvisional) {
                     // La orden de esta mesa AÚN no existe en el server (se abrió
@@ -310,6 +336,7 @@ class TableOrderViewModel @Inject constructor(
                     // orderId real. Ver TableSession.buildAddItemsPayload.
                     val payload = tableSession.buildAddItemsPayload(items)
                     syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    cerrarRonda(true)
                     _queuedLines.value = _queuedLines.value + lines
                     pendingCart.removeSent(lines) // lo agregado durante el envío se queda
                     _isSending.value = false
@@ -320,6 +347,9 @@ class TableOrderViewModel @Inject constructor(
                 repository.addItems(vId, session.orderId, items, session.version).fold(
                     onSuccess = { detail ->
                         tableSession.updateVersion(detail.version)
+                        // D8: con red o encolada, la ronda ya se debe. Con red, el `loadCheck()` de abajo trae la cuenta
+                        // real (el PATCH no trae `amount_left`) y la reemplaza; sin red, el cobro la incluye.
+                        cerrarRonda(true)
                         val queuedOffline = TablesRepository.wasQueuedOffline(detail)
                         if (queuedOffline) {
                             // Ronda encolada por TablesRepository (sin red) — se ve
@@ -334,6 +364,7 @@ class TableOrderViewModel @Inject constructor(
                         if (!queuedOffline) loadCheck()
                     },
                     onFailure = { e ->
+                        cerrarRonda(false)
                         _isSending.value = false
                         if (e is BackendHttpException && e.statusCode == 409) {
                             // VERSION_CONFLICT — otro dispositivo cambió la cuenta.
@@ -347,6 +378,7 @@ class TableOrderViewModel @Inject constructor(
                     },
                 )
             } finally {
+                cerrarRonda(false) // no-op si ya se cerró arriba
                 // SIEMPRE se apaga junto con el fin del envío — éxito, encolado
                 // o error — nunca se queda pegada en pantalla.
                 reassuranceJob.cancel()

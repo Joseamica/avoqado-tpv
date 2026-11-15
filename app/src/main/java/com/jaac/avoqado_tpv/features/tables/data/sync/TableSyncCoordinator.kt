@@ -51,6 +51,9 @@ class TableSyncCoordinator @Inject constructor(
         outbox.replayNow(venueId) { intent, ack -> handleAck(intent, ack) }
     }
 
+    /** D8: ver [SyncOutbox.hayPendientesDe]. */
+    suspend fun hayPendientesDe(venueId: String, cuentas: Set<String>): Boolean = outbox.hayPendientesDe(venueId, cuentas)
+
     /** Recuperación productiva: el mismo callback, con el presupuesto de un lote del outbox. */
     suspend fun replayCurrentVenueBatch(): SyncOutbox.ReplayProgress =
         outbox.replayCurrentVenueBatch { intent, ack -> handleAck(intent, ack) }

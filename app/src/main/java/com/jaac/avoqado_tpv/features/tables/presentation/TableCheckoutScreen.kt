@@ -377,6 +377,8 @@ private fun TableCheckoutScreenContent(
                         CheckSummaryCard(
                             check = check,
                             remaining = state.remaining,
+                            porSincronizar = state.porSincronizar,
+                            isOnline = state.isOnline,
                             isRemovingDiscount = isRemovingDiscount,
                             onRemoveDiscount = onRemoveDiscount,
                             isRemovingServiceCharge = isRemovingServiceCharge,
@@ -495,6 +497,8 @@ private fun TableCheckoutScreenContent(
 private fun CheckSummaryCard(
     check: OrderDetail?,
     remaining: BigDecimal,
+    porSincronizar: BigDecimal = BigDecimal.ZERO,
+    isOnline: Boolean = true,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
     isRemovingServiceCharge: Boolean = false,
@@ -512,6 +516,16 @@ private fun CheckSummaryCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 return@Column
+            }
+
+            // D8: sin red el desglose es el de la última vez que la terminal vio la cuenta. Se dice, sin tono de error.
+            if (!isOnline) {
+                Text(
+                    text = "Sin conexión — cuenta de la última vez que se sincronizó.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.avoqadoColors.offlineOrange,
+                    modifier = Modifier.padding(bottom = Spacing.Space2),
+                )
             }
 
             SummaryRow(label = "Subtotal", amount = check.subtotal)
@@ -565,6 +579,11 @@ private fun CheckSummaryCard(
 
             if (check.paidAmount > BigDecimal.ZERO) {
                 SummaryRow(label = "Ya pagado", amount = -check.paidAmount, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            // D8: rondas mandadas sin red después de este desglose; ya van en «Restante», así el desglose cuadra.
+            if (porSincronizar > BigDecimal.ZERO) {
+                SummaryRow(label = "Por sincronizar", amount = porSincronizar, color = MaterialTheme.avoqadoColors.offlineOrange)
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.Space2))

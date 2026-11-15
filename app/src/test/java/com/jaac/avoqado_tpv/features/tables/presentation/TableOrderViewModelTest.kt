@@ -90,6 +90,7 @@ class TableOrderViewModelTest {
         every { deviceInfoManager.getVenueId() } returns venueId
         every { repository.ownership } returns ownershipFlow
         coEvery { tableSyncCoordinator.replay(any()) } returns Unit
+        coEvery { tableSyncCoordinator.hayPendientesDe(any(), any()) } returns false
         coEvery { syncOutbox.enqueue(any(), any(), any(), any()) } returns "intent-id"
         every { secureStorage.getStaffId() } returns "staff-1"
         every { networkMonitor.isConnected() } returns true

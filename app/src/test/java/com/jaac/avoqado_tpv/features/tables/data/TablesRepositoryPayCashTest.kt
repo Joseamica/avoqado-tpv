@@ -308,6 +308,33 @@ class TablesRepositoryPayCashTest {
 
     // endregion
 
+    // region — D8: lo que la terminal creía que se debía viaja con el cobro (sólo rastro en el SERVIDOR)
+
+    @Test
+    fun el_saldo_esperado_viaja_en_centavos_cuando_se_conoce() = runTest {
+        val payloadSlot = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, capture(payloadSlot), any()) } returns "intent-1"
+        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+
+        repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("10.00"), saldoEsperado = BigDecimal("25.50"))
+
+        assertThat(payloadSlot.captured.get("expectedBalanceBeforeCents").asInt).isEqualTo(2550)
+        assertThat(payloadSlot.captured.get("amountCents").asInt).isEqualTo(1000)
+    }
+
+    @Test
+    fun sin_saldo_esperado_el_payload_queda_como_antes() = runTest {
+        val payloadSlot = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, capture(payloadSlot), any()) } returns "intent-1"
+        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+
+        repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("10.00"))
+
+        assertThat(payloadSlot.captured.has("expectedBalanceBeforeCents")).isFalse()
+    }
+
+    // endregion
+
     private fun jsonOf(vararg pairs: Pair<String, Any>): JsonObject =
         JsonParser.parseString("{${pairs.joinToString(",") { (k, v) -> "\"$k\":\"$v\"" }}}").asJsonObject
 }

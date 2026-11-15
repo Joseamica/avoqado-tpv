@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data.sync
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
@@ -139,6 +140,16 @@ class SyncOutbox @Inject constructor(
      * (p.ej. un replay concurrente lo ganó de mano) — [dao]'s `discardPending`
      * está acotado a `status = 'PENDING'`, así que nunca borra un ACKED/REJECTED.
      */
+    /**
+     * D8: ¿queda en la cola algo PENDIENTE que nombre alguna de [cuentas] (su `orderId`, su id local o cualquier otro campo de
+     * primer nivel)? Si sí, una lectura de esa cuenta en el SERVIDOR no trae todo lo que esta terminal ya hizo (una ronda o un
+     * cobro sin red que el replay no alcanzó a subir), y no puede reemplazar lo que la terminal sabe del saldo.
+     */
+    suspend fun hayPendientesDe(venueId: String, cuentas: Set<String>): Boolean {
+        if (cuentas.isEmpty()) return false
+        return dao.pendingForVenue(venueId).any { it.mueveElSaldoDe(cuentas) }
+    }
+
     suspend fun discardPending(id: String) {
         withContext(NonCancellable + Dispatchers.IO) {
             dao.discardPending(id)
@@ -434,4 +445,26 @@ class SyncOutbox @Inject constructor(
          */
         const val STATUS_RETRY = "RETRY"
     }
+}
+
+/**
+ * D8 (Codex r2 #2): tipos de la cola que no cambian lo que se debe de una cuenta. Uno pendiente no frena las lecturas (cambiar
+ * de mesero o de mesa no puede dejar al cajero con un saldo viejo). Todos los demás sí, también uno nuevo que esta versión no
+ * conozca. `UPDATE_DETAILS` sí cuenta: los comensales pueden poner o quitar un cargo por servicio automático.
+ */
+internal val TIPOS_QUE_NO_MUEVEN_EL_SALDO = setOf(
+    SyncIntentTypes.OPEN_TABLE,
+    SyncIntentTypes.MOVE_ORDER,
+    SyncIntentTypes.ASSIGN_ORDER,
+    SyncIntentTypes.CLEAR_TABLE,
+)
+
+/** D8: este intent puede cambiar el saldo de alguna de [cuentas] (la nombra en un campo de primer nivel). */
+internal fun SyncIntentEntity.mueveElSaldoDe(cuentas: Set<String>): Boolean {
+    if (type in TIPOS_QUE_NO_MUEVEN_EL_SALDO) return false
+    return runCatching {
+        JsonParser.parseString(payloadJson).asJsonObject.entrySet().any { (_, valor) ->
+            valor.isJsonPrimitive && valor.asJsonPrimitive.isString && valor.asString in cuentas
+        }
+    }.getOrDefault(false)
 }

@@ -146,6 +146,44 @@ class TableOrderViewModelTest {
         assertThat(tableSession.current()?.tableId).isEqualTo("m9")
     }
 
+    @Test
+    fun D85_la_lectura_corrige_durante_un_mover_mesa_y_el_movimiento_confirmado_manda() = runTest {
+        // Codex r4: B se abrió bajo M8 (plano atrasado) pero está en M9; el cajero la mueve a M10. La lectura llega a
+        // media mudanza diciendo M9 y luego se confirma el movimiento: la sesión termina en M10.
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", version = 3))
+        val lectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "b") } coAnswers { lectura.await() }
+        val servidor = CompletableDeferred<Result<TablesRepository.MoveOutcome>>()
+        coEvery { repository.moveOrder(venueId, "b", false, "m10") } coAnswers { servidor.await() }
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(DiningTable(id = "m10", number = "M10", status = "AVAILABLE"))
+        lectura.complete(Result.success(OrderDetail(id = "b", version = 3, tableId = "m9", tableName = "Mesa M9")))
+        assertThat(tableSession.current()?.tableId).isEqualTo("m9")
+        servidor.complete(Result.success(TablesRepository.MoveOutcome(queued = false, targetTableId = "m10", version = 4)))
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("m10")
+        assertThat(tableSession.current()?.version).isEqualTo(4)
+    }
+
+    @Test
+    fun D85_si_el_mover_mesa_se_rechaza_la_correccion_del_servidor_se_queda() = runTest {
+        // Codex r4: mismo caso, pero M10 ya está ocupada y el movimiento se rechaza: la sesión queda en la mesa real (M9),
+        // no en la del plano atrasado (M8). Así «Liberar mesa» sin red no encola M8.
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", version = 3))
+        val lectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "b") } coAnswers { lectura.await() }
+        val servidor = CompletableDeferred<Result<TablesRepository.MoveOutcome>>()
+        coEvery { repository.moveOrder(venueId, "b", false, "m10") } coAnswers { servidor.await() }
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(DiningTable(id = "m10", number = "M10", status = "AVAILABLE"))
+        lectura.complete(Result.success(OrderDetail(id = "b", version = 3, tableId = "m9", tableName = "Mesa M9")))
+        servidor.complete(Result.failure(TablesRepository.MoveOrderRejectedException("La mesa M10 ya tiene una cuenta abierta", "BUSINESS_RULE")))
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("m9")
+    }
+
     // endregion
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error

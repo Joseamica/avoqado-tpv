@@ -484,17 +484,23 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
-                    // D86 (Codex r2 #3): una cuenta bloqueada por algo propio sin subir se sigue releyendo aunque una lectura falle.
-                    if (miLectura == lecturasIniciadas && _state.value.pendienteSinSubir != null) programarRelectura()
                     _state.update { current ->
                         // Offline-first de lectura: si ya había un cheque cargado, se
                         // sigue mostrando — nunca se tapa una pantalla que funcionaba.
                         if (current.check != null) {
                             current.copy(isLoading = false)
                         } else {
-                            current.copy(isLoading = false, errorMessage = "No se pudo cargar la cuenta")
+                            // D90 (PAX, 16-nov, caso 6 del D86): sin cuenta y con un cobro propio sin subir, la pantalla dice ESO
+                            // (no sólo «no se pudo cargar») y se relee sola hasta que suba. El efectivo ya espera por la cuenta.
+                            current.copy(
+                                isLoading = false,
+                                errorMessage = "No se pudo cargar la cuenta",
+                                pendienteSinSubir = pendienteAntes ?: current.pendienteSinSubir,
+                            )
                         }
                     }
+                    // D86 (Codex r2 #3): una cuenta bloqueada por algo propio sin subir se sigue releyendo aunque una lectura falle.
+                    if (miLectura == lecturasIniciadas && _state.value.pendienteSinSubir != null) programarRelectura()
                 },
             )
         }
@@ -744,8 +750,9 @@ class TableCheckoutViewModel @Inject constructor(
      */
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
-        if (s.isProcessingCash || s.isHandingOffToCard) return null
-        // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes.
+        // D90: se revalida al tocar, no sólo al pintar el botón (un toque que llegó en el cuadro anterior a la gris).
+        if (s.isProcessingCash || s.isHandingOffToCard || !s.cardPaymentEnabled) return null
+        // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes (ya va en lo de arriba).
         if (s.pendienteSinSubir != null || s.cambiosEnCamino > 0) return null
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }

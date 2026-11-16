@@ -1080,6 +1080,37 @@ class TableCheckoutViewModelTest {
         SyncIntentEntity(id = id, venueId = venueId, seq = id.hashCode().toLong(), type = tipo, payloadJson = payload, status = estado, resultJson = result)
 
     @Test
+    fun D90_sin_cuenta_leida_tocar_tarjeta_no_entrega_un_cobro() = runTest {
+        // D90: se revalida al tocar, no sólo al pintar el botón.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("118.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(BackendHttpException(500, "falla"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("118.00"))).isNull()
+        assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D90_con_un_cobro_propio_sin_subir_y_la_lectura_fallida_la_tarjeta_dice_por_que() = runTest {
+        // D90 (PAX, 16-nov, caso 6 del D86): $20 en efectivo propio sin subir y la lectura de la cuenta falla. La tarjeta salía
+        // habilitada con $58 y el aviso de cobro sin sincronizar nunca salía.
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":2000,"tipCents":0}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(BackendHttpException(500, "falla"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.check).isNull()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNotNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
     fun D86_mesa_del_servidor_sin_cuenta_y_sin_red_no_cobra_con_el_total_del_plano() = runTest {
         // «Ver cuenta» arranca la sesión con el TOTAL del plano (no el saldo): sin red, eso no se cobra.
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))

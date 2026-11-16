@@ -376,10 +376,11 @@ class TableCheckoutViewModel @Inject constructor(
                 // deja en gris) o la cuenta del SERVIDOR que esperaba a que algo propio subiera.
                 saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
                     val actual = tableSession.current() ?: return@collect
+                    // r8: sin condiciones y sin reproducir la cola (ver `cargar`).
                     if (actual.isProvisional && _state.value.isProvisional) {
                         calcularSaldoSinRed(actual)
-                    } else if (!_state.value.isProvisional && (_state.value.pendienteSinSubir != null || _state.value.check == null)) {
-                        loadCheck()
+                    } else if (!_state.value.isProvisional) {
+                        cargar(reproducir = false)
                     }
                 }
             }
@@ -389,7 +390,10 @@ class TableCheckoutViewModel @Inject constructor(
     }
 
     /** Carga (o recarga) el cheque desde el server — mismo criterio que `TableOrderViewModel.loadCheck`. */
-    fun loadCheck() {
+    fun loadCheck() = cargar(reproducir = true)
+
+    /** D86 (Codex r8 R1): con [reproducir] en `false` sólo lee, sin reproducir la cola (la del aviso de la cola). */
+    private fun cargar(reproducir: Boolean) {
         val session = tableSession.current() ?: return
         if (session.isProvisional) {
             // La orden aún no existe en el server — nada que cargar todavía.
@@ -410,12 +414,14 @@ class TableCheckoutViewModel @Inject constructor(
             val miLectura = ++lecturasIniciadas
             val cobrosAlSalir = cobrosIniciados
             _state.update { it.copy(isLoading = it.check == null) }
-            try {
-                tableSyncCoordinator.replay(vId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [TableCheckout] replay() del outbox falló antes de cargar la cuenta")
+            if (reproducir) {
+                try {
+                    tableSyncCoordinator.replay(vId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [TableCheckout] replay() del outbox falló antes de cargar la cuenta")
+                }
             }
 
             // D86 (Codex r0 #1, r1 #3): lo que esta terminal todavía no sube de esta cuenta no está en el saldo que lee el

@@ -254,13 +254,11 @@ class TableOrderViewModel @Inject constructor(
             viewModelScope.launch {
                 // D86 (Codex r7 H2–H4): cada cambio de la cola (un ACK, un rechazo, una ronda que sube, también del trabajador)
                 // vuelve a calcular: el saldo sin red de una mesa provisional, o la cuenta si algo propio estaba sin subir.
+                // r8 H2: sin condiciones (una lectura vieja pudo apagar las banderas antes de que llegara el aviso), y r8 R1:
+                // sin reproducir la cola (si no, la escritura del replay vuelve a avisar sin fin).
                 saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
                     val actual = tableSession.current() ?: return@collect
-                    if (actual.isProvisional) {
-                        recalcularSaldoSinRed()
-                    } else if (_queuedLines.value.isNotEmpty() || habiaPendienteSinSubir) {
-                        loadCheck()
-                    }
+                    if (actual.isProvisional) recalcularSaldoSinRed() else cargar(reproducir = false)
                 }
             }
         }
@@ -302,7 +300,14 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /** Carga (o recarga) el cheque desde el server. Sesión provisional = nada que cargar todavía. */
-    fun loadCheck() {
+    fun loadCheck() = cargar(reproducir = true)
+
+    /**
+     * D86 (Codex r8 R1): con [reproducir] en `false` sólo lee (sin reproducir la cola). Es la que usa el aviso de la cola: el
+     * replay escribe la cola (p. ej. la referencia del turno en cada intento) y, con él, el aviso volvería a disparar la lectura
+     * sin fin. La cola ya la reproduce el trabajador; aquí sólo se lee lo que cambió.
+     */
+    private fun cargar(reproducir: Boolean) {
         val session = tableSession.current() ?: return
         pendingCart.ensureOrder(session.orderId)
         if (session.isProvisional) {
@@ -320,12 +325,14 @@ class TableOrderViewModel @Inject constructor(
             // vea las rondas que se mandaron sin red. Nunca lanza salvo
             // CancellationException — se blinda igual (mismo patrón que
             // TablesViewModel.loadTables).
-            try {
-                tableSyncCoordinator.replay(vId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
+            if (reproducir) {
+                try {
+                    tableSyncCoordinator.replay(vId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
+                }
             }
 
             // D86 (Codex r5 #2, r6 #2): «Por sincronizar» se va sólo si esta terminal no tenía nada sin subir de esta cuenta

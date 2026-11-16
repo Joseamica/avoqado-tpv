@@ -11,12 +11,31 @@ import javax.inject.Singleton
 
 /** Replays saved approvals only. No processor authorization is reachable from this class. */
 @Singleton
-class LedgerApprovalRecovery @Inject constructor(
+class LedgerApprovalRecovery(
     private val dao: PaymentAttemptDao,
     private val fast: FastPaymentRecorder,
     private val order: OrderPaymentRecorder,
+    /**
+     * 🔴 D3 (encargo 9308a7): ¿hay sesión para registrar? Sin ella cada pasada terminaba en un 401 que gastaba uno de los
+     * CINCO intentos (`verify_attempts < 5`) de un cobro ya aprobado: unas cuantas reconexiones con la terminal sin sesión
+     * y la venta quedaba fuera de la recuperación para siempre. Sin sesión no se reclama ninguna fila: esperan intactas a
+     * que alguien entre (el login vuelve a pedir la pasada).
+     */
+    private val haySesion: () -> Boolean = { true },
 ) {
+    /** Hilt cablea la sesión REAL. Constructor secundario a propósito (mismo patrón que [PaymentAttemptLedger]). */
+    @Inject constructor(
+        dao: PaymentAttemptDao,
+        fast: FastPaymentRecorder,
+        order: OrderPaymentRecorder,
+        secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    ) : this(dao, fast, order, { secureStorage.isAuthenticated() })
+
     suspend fun recover(venueId: String, now: Long): Int {
+        if (!haySesion()) {
+            Timber.i("📒 [LedgerApproval] sin sesión: las aprobaciones esperan a que alguien entre (no se gasta ningún intento)")
+            return 0
+        }
         var recovered = 0
         // Let a live SDK/recorder finish first; page size is capped by the DAO.
         val rows = dao.getApprovalRecoveryCandidates(venueId, now - 120_000L, now)

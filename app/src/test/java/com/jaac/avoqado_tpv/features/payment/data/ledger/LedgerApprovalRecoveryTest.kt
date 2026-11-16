@@ -113,6 +113,25 @@ class LedgerApprovalRecoveryTest {
     }
 
     @Test
+    fun `P1 sin sesion no se reclama ninguna aprobacion ni se gasta un intento, y al volver la sesion se registra`() = runTest {
+        // D3 (encargo 9308a7): sin sesión cada pasada terminaba en 401 y gastaba uno de los 5 intentos del cobro aprobado.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt)
+        var sesion = false
+        val recuperacion = LedgerApprovalRecovery(dao, fast, order, haySesion = { sesion })
+
+        assertEquals(0, recuperacion.recover("venue", 1000000))
+        coVerify(exactly = 0) { dao.getApprovalRecoveryCandidates(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.claimRecovery(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
+
+        sesion = true
+        assertEquals(1, recuperacion.recover("venue", 1000000))
+        coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+    }
+
+    @Test
     fun `another worker lease and queue handoff prevent second registration`() = runTest {
         coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved, approved.copy(state = "ENTREGADA_A_COLA"))
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 0

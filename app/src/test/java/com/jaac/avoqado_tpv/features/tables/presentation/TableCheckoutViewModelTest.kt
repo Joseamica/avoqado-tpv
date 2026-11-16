@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
@@ -1097,17 +1098,18 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns
             Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
         val viewModel = createViewModel(saldo)
-        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
+        assertWithMessage("saldo sin red antes del abono").that(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
 
         viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
         viewModel.setCustomAmountInput("40")
         viewModel.payCash(viewModel.chargeableAmount())
 
+        coVerify(exactly = 1) { repository.payCash(venueId, "local-1", true, BigDecimal("40.00"), any(), any()) }
         coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
-        assertThat(viewModel.state.value.tableReleased).isFalse()
-        assertThat(viewModel.state.value.isProvisional).isFalse()
+        assertWithMessage("el abono parcial no libera la mesa").that(viewModel.state.value.tableReleased).isFalse()
+        assertWithMessage("tras el abono manda la cuenta del SERVIDOR").that(viewModel.state.value.isProvisional).isFalse()
         // Al terminar el abono se lee la cuenta del SERVIDOR: lo que falta es lo que él dice.
-        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+        assertWithMessage("lo que falta es lo del SERVIDOR").that(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
     }
 
     // endregion
@@ -1135,10 +1137,12 @@ class TableCheckoutViewModelTest {
         viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
         viewModel.setCustomAmountInput("40")
         viewModel.payCash(viewModel.chargeableAmount())
-        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
+        // Leer y cobrar van en fila (r5): el cobro espera a que termine la lectura en curso.
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
 
-        lenta.complete(Unit) // llega la lectura vieja ($100)
+        lenta.complete(Unit) // llega la lectura vieja ($100): se tira, cobra, y se vuelve a leer
 
+        coVerify(exactly = 1) { repository.payCash(any(), any(), any(), any(), any(), any()) }
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("60.00"))
     }
 

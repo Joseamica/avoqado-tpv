@@ -102,4 +102,37 @@ class SaldoDeMesaSinRedTest {
         assertThat(libreta.rondasDe(cuenta)).isEmpty()
         assertThat(libreta.rondasDe("otra")).containsExactly("r2", BigDecimal("10.00"))
     }
+
+    @Test
+    fun un_cobro_propio_rechazado_deja_la_mesa_por_revisar() {
+        val rechazado = fila(SyncIntentTypes.PAY_CASH, """{"localOrderId":"$cuenta","amountCents":4000}""", estado = SyncIntentEntity.STATUS_REJECTED)
+        val saldo = saldoDeCuentaProvisional(cuenta, listOf(apertura(), ronda("r1"), rechazado), mapOf("r1" to BigDecimal("100.00")))
+        assertThat(saldo).isEqualTo(SaldoSinRed.EnGris(MESA_COBRO_POR_REVISAR))
+    }
+
+    @Test
+    fun en_una_cuenta_del_servidor_lo_propio_sin_subir_y_el_cobro_rechazado_bloquean() {
+        val ronda = fila(SyncIntentTypes.ADD_ITEMS, """{"orderId":"orden-1","items":[]}""")
+        val cobro = fila(SyncIntentTypes.PAY_CASH, """{"localOrderId":"$cuenta","amountCents":4000}""")
+        val cobroRechazado = cobro.copy(status = SyncIntentEntity.STATUS_REJECTED)
+        val rondaRechazada = ronda.copy(status = SyncIntentEntity.STATUS_REJECTED)
+        val cuentas = listOf("orden-1", cuenta)
+
+        assertThat(pendienteDeSubirEn(cuentas, emptyList())).isNull()
+        assertThat(pendienteDeSubirEn(cuentas, listOf(ronda))).isEqualTo(CAMBIOS_SIN_SINCRONIZAR)
+        assertThat(pendienteDeSubirEn(cuentas, listOf(ronda, cobro))).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        assertThat(pendienteDeSubirEn(cuentas, listOf(cobroRechazado))).isEqualTo(MESA_COBRO_POR_REVISAR)
+        // Un rechazo que no es cobro ya no va a llegar: el SERVIDOR manda.
+        assertThat(pendienteDeSubirEn(cuentas, listOf(rondaRechazada))).isNull()
+        // De otra cuenta no cuenta.
+        assertThat(pendienteDeSubirEn(listOf("orden-2"), listOf(ronda, cobroRechazado))).isNull()
+    }
+
+    @Test
+    fun los_ids_locales_de_una_cuenta_salen_de_su_apertura_confirmada() {
+        val confirmada = apertura().copy(status = SyncIntentEntity.STATUS_ACKED, resultJson = """{"localOrderId":"$cuenta","orderId":"orden-1"}""")
+        val otra = fila(SyncIntentTypes.OPEN_TABLE, """{"localOrderId":"local-9"}""", estado = SyncIntentEntity.STATUS_ACKED).copy(resultJson = """{"orderId":"orden-9"}""")
+        assertThat(idsLocalesDe("orden-1", listOf(confirmada, otra))).containsExactly(cuenta)
+        assertThat(aperturaConfirmadaDe(cuenta, listOf(confirmada, otra))?.orderId).isEqualTo("orden-1")
+    }
 }

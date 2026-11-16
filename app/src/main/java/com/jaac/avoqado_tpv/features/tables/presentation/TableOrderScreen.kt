@@ -274,6 +274,7 @@ fun TableOrderScreen(
         onAddProducts = onAddProducts,
         onSendRound = viewModel::sendRound,
         onRetryLoad = viewModel::loadCheck,
+        onActualizar = viewModel::actualizarCuenta,
         onNavigateToCheckout = onNavigateToCheckout,
         onSplitClick = { showSplitSheet = true },
         onCompClick = { showCompSheet = true },
@@ -431,6 +432,8 @@ private fun TableOrderScreenContent(
     onSendRound: () -> Unit,
     onRetryLoad: () -> Unit,
     onNavigateToCheckout: () -> Unit,
+    /** D86 (Codex r6 #3): vuelve a leer la cuenta cuando hay rondas «Por sincronizar» de una mesa del SERVIDOR. */
+    onActualizar: () -> Unit = {},
     onSplitClick: () -> Unit = {},
     onCompClick: () -> Unit = {},
     onMoveClick: () -> Unit = {},
@@ -566,7 +569,15 @@ private fun TableOrderScreenContent(
                     }
 
                     if (queuedLines.isNotEmpty()) {
-                        item(key = "queued-header") { SectionHeader("Por sincronizar") }
+                        item(key = "queued-header") {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.weight(1f)) { SectionHeader("Por sincronizar") }
+                                // D86: la pantalla se relee sola; si se agotan las relecturas automáticas, se puede a mano.
+                                if (!session.isProvisional) {
+                                    androidx.compose.material3.TextButton(onClick = onActualizar) { Text("Actualizar") }
+                                }
+                            }
+                        }
                         items(queuedLines, key = { "queued-${it.lineId}" }) { line ->
                             QueuedLineRow(line = line)
                         }

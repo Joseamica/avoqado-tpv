@@ -214,6 +214,9 @@ class TableOrderViewModel @Inject constructor(
     private var relecturaDeLaMesa: kotlinx.coroutines.Job? = null
     private var relecturasDeLaMesa = 0
 
+    /** D86 (Codex r6 #2): sólo la lectura más nueva de la cuenta decide si «Por sincronizar» se va. Antes de `init`. */
+    private var cargasDeLaMesa = 0L
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
         viewModelScope.launch {
@@ -291,6 +294,7 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val vId = venueId ?: return
+        val miCarga = ++cargasDeLaMesa
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -307,21 +311,20 @@ class TableOrderViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
             }
 
-            repository.getOrder(vId, session.orderId).fold(
+            // D86 (Codex r5 #2, r6 #2): «Por sincronizar» se va sólo si esta terminal no tenía nada sin subir de esta cuenta
+            // ANTES de leer (así la lectura ya trae todo lo propio) ni lo tiene después. Si no, se conserva y se relee sola.
+            val pendienteAntes = pendienteDeLaMesa(vId, session)
+            val leida = repository.getOrder(vId, session.orderId)
+            if (miCarga != cargasDeLaMesa) {
+                // Salió otra lectura después de ésta: la nueva manda.
+                return@launch
+            }
+            leida.fold(
                 onSuccess = { detail ->
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
-                    // D86 (Codex r5 #2): «Por sincronizar» se va sólo si esta terminal ya no tiene nada sin subir de esta cuenta
-                    // (la apertura pudo confirmarse antes que su ronda). Si queda algo, se conserva y se vuelve a leer sola.
-                    val pendiente = try {
-                        saldoDeMesaSinRed.pendienteDeSubir(vId, session.orderId, listOfNotNull(session.localOrderId))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Timber.w(e, "⚠️ [TableOrder] No se pudo revisar la cola de esta cuenta")
-                        com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
-                    }
+                    val pendiente = pendienteAntes ?: pendienteDeLaMesa(vId, session)
                     if (pendiente == null) {
                         // El replay pudo haber confirmado rondas que estaban en
                         // "Por sincronizar" — el cheque fresco ya las incluye.
@@ -348,10 +351,27 @@ class TableOrderViewModel @Inject constructor(
                     if (_check.value == null) {
                         _checkLoadFailed.value = true
                     }
+                    // D86 (Codex r6 #3): con rondas «Por sincronizar», una lectura fallida no detiene la relectura.
+                    if (_queuedLines.value.isNotEmpty()) programarRelecturaDeLaMesa()
                 },
             )
             _isLoadingCheck.value = false
         }
+    }
+
+    /** D86 (Codex r6 #3): «Actualizar» de «Por sincronizar»: vuelve a leer y rearma las relecturas automáticas. */
+    fun actualizarCuenta() {
+        relecturasDeLaMesa = 0
+        loadCheck()
+    }
+
+    private suspend fun pendienteDeLaMesa(venueId: String, session: TableSession.Active): String? = try {
+        saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableOrder] No se pudo revisar la cola de esta cuenta")
+        com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
     }
 
     private fun programarRelecturaDeLaMesa() {

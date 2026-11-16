@@ -30,6 +30,13 @@ internal const val SIN_CUENTA_SIN_RED = "Sin conexión: esta mesa se cobra cuand
  */
 internal const val MESA_COBRO_SIN_SINCRONIZAR = "Esta mesa tiene un cobro sin sincronizar: cóbrala cuando se sincronice."
 
+/**
+ * D86 (Codex r6 #1, como el D45 de ANDROID): un cobro en efectivo de esta terminal para esta cuenta fue RECHAZADO por el
+ * SERVIDOR: el dinero está en el cajón pero la cuenta no lo cuenta. Hasta que un gerente lo resuelva, no se cobra otra vez.
+ */
+internal const val MESA_COBRO_POR_REVISAR =
+    "Esta mesa tiene un cobro por revisar: un gerente lo resuelve en «Acciones rechazadas» antes de cobrarla otra vez."
+
 /** D86: aviso de «Cobrar» en una mesa que esta terminal abrió sin red. */
 internal const val COBRO_CON_LO_DE_ESTA_TERMINAL =
     "Sin conexión: se cobra con lo que esta terminal le mandó a la mesa; se sube solo al volver la conexión."
@@ -61,6 +68,9 @@ internal fun saldoDeCuentaProvisional(cuenta: String, filas: List<SyncIntentEnti
     val deLaCuenta = filas.mapNotNull { fila -> parsear(fila.payloadJson)?.takeIf { nombra(it, cuenta) }?.let { fila to it } }
     val enCamino = deLaCuenta.filter { (fila, _) -> fila.status == SyncIntentEntity.STATUS_PENDING }
     val permitidos = setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH)
+    if (deLaCuenta.any { (fila, _) -> fila.status == SyncIntentEntity.STATUS_REJECTED && fila.type == SyncIntentTypes.PAY_CASH }) {
+        return SaldoSinRed.EnGris(MESA_COBRO_POR_REVISAR)
+    }
     if (deLaCuenta.any { (fila, _) -> fila.status != SyncIntentEntity.STATUS_PENDING || fila.type !in permitidos }) {
         return SaldoSinRed.EnGris(CAMBIOS_SIN_SINCRONIZAR)
     }
@@ -87,17 +97,17 @@ internal fun saldoDeCuentaProvisional(cuenta: String, filas: List<SyncIntentEnti
 /**
  * D86 (Codex r0 #1): una cuenta del SERVIDOR que esta terminal todavía tiene cosas sin subir (con su id real o, si se abrió sin
  * red, con su id local [cuentas]). El saldo que acaba de leer el SERVIDOR no las cuenta: un cobro propio sin subir haría
- * cobrar de más y una ronda propia sin subir, de menos. Sólo PENDING: un rechazo ya no va a llegar y el SERVIDOR manda.
- * `null` = nada propio sin subir.
+ * cobrar de más y una ronda propia sin subir, de menos. De los rechazos sólo cuenta el de un COBRO (r6 #1): el de otra cosa
+ * ya no va a llegar y el SERVIDOR manda. `null` = nada propio sin subir.
  */
 internal fun pendienteDeSubirEn(cuentas: Collection<String>, filas: List<SyncIntentEntity>): String? {
-    val propias = filas.filter { fila ->
-        fila.status == SyncIntentEntity.STATUS_PENDING &&
-            parsear(fila.payloadJson)?.let { payload -> cuentas.any { nombra(payload, it) } } == true
-    }
+    val propias = filas.filter { fila -> parsear(fila.payloadJson)?.let { payload -> cuentas.any { nombra(payload, it) } } == true }
+    val pendientes = propias.filter { it.status == SyncIntentEntity.STATUS_PENDING }
     return when {
-        propias.isEmpty() -> null
-        propias.any { it.type == SyncIntentTypes.PAY_CASH } -> MESA_COBRO_SIN_SINCRONIZAR
+        // D86 (Codex r6 #1): un cobro propio rechazado (sin resolver) sigue siendo dinero en el cajón que la cuenta no cuenta.
+        propias.any { it.status == SyncIntentEntity.STATUS_REJECTED && it.type == SyncIntentTypes.PAY_CASH } -> MESA_COBRO_POR_REVISAR
+        pendientes.isEmpty() -> null
+        pendientes.any { it.type == SyncIntentTypes.PAY_CASH } -> MESA_COBRO_SIN_SINCRONIZAR
         else -> CAMBIOS_SIN_SINCRONIZAR
     }
 }

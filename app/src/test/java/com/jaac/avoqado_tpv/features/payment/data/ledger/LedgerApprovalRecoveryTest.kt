@@ -162,6 +162,27 @@ class LedgerApprovalRecoveryTest {
     }
 
     @Test
+    fun `P1 una aprobacion saltada por reciente agenda otra pasada para cuando cumpla su espera`() = runTest {
+        // Codex r4 (D3): la pasada absorbida por KEEP corre antes de los 2 min de la fila y la salta; sin seguimiento,
+        // la siguiente era la reconexión o la de 6 h.
+        val now = 1_000_000L
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(
+            approved.copy(attemptId = "vieja", createdAt = now - 500_000L),     // ésta la toma esta misma pasada
+            approved.copy(attemptId = "reciente", createdAt = now - 90_000L),   // le faltan 30 s
+            approved.copy(attemptId = "nueva", createdAt = now - 10_000L),      // le faltan 110 s: la agenda la siguiente
+        )
+        assertEquals(30_000L + 15_000L, LedgerApprovalRecovery.faltaParaLaSiguienteReciente(dao, "venue", now))
+    }
+
+    @Test
+    fun `sin aprobaciones recientes no se agenda nada`() = runTest {
+        val now = 1_000_000L
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns
+            listOf(approved.copy(createdAt = now - 500_000L))
+        assertEquals(null, LedgerApprovalRecovery.faltaParaLaSiguienteReciente(dao, "venue", now))
+    }
+
+    @Test
     fun `another worker lease and queue handoff prevent second registration`() = runTest {
         coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved, approved.copy(state = "ENTREGADA_A_COLA"))
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 0

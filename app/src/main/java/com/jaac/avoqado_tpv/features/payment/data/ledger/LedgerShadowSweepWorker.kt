@@ -53,6 +53,11 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
             secureStorage.getVenueId()?.let { venueId ->
                 unknownRecovery.recover(venueId, System.currentTimeMillis())
                 approvalRecovery.recover(venueId, System.currentTimeMillis())
+                // Codex r4 (D3): una aprobación que esta pasada saltó por reciente se agenda para cuando cumpla su espera.
+                runCatching {
+                    LedgerApprovalRecovery.faltaParaLaSiguienteReciente(paymentAttemptDao, venueId, System.currentTimeMillis())
+                        ?.let { LedgerSweepScheduler.runApprovalFollowUp(applicationContext, it) }
+                }.onFailure { if (it is CancellationException) throw it; Timber.w(it, "📒 [LedgerSweep] no se agendó la pasada de seguimiento") }
                 // Checkpoint 2 · N3: lo barato y de Avoqado va en su propio worker con RED; este barrido sigue offline.
                 LedgerSweepScheduler.runServerRecoveryNow(applicationContext)
             }

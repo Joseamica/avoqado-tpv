@@ -107,6 +107,21 @@ class LedgerApprovalRecovery(
         return recovered
     }
 
+    /**
+     * Codex r4–r5 (D3, encargo 9308a7): ¿cuándo hace falta OTRA pasada? Se pregunta al terminar [recover]. Cuenta toda
+     * aprobación que sigue candidata sin lease: la que se saltó por reciente, la que cumplió sus 2 min DURANTE la pasada y la
+     * que no cupo en la página de 50. Lo que esta pasada ya intentó quedó con lease y no cuenta (no hay vuelta sin fin; su
+     * reintento sigue el backoff de siempre). Devuelve en cuántos ms, o null si no hace falta o si no se puede registrar
+     * ahora (sin sesión o sin red no se sondea: entrar y reconectar vuelven a pedir la pasada).
+     */
+    suspend fun cuandoHaceFaltaOtraPasada(venueId: String, now: Long): Long? {
+        if (!puedeRegistrar()) return null
+        val siguiente = dao.getApprovalRecoveryCandidates(venueId, Long.MAX_VALUE, now)
+            .filter { it.venueId == venueId }
+            .minOfOrNull { it.createdAt } ?: return null
+        return (siguiente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
+    }
+
     private suspend fun restoreContext(row: PaymentAttemptEntity): PaymentContext? {
         val gson = Gson()
         val operation = row.operationId?.toIntOrNull()
@@ -146,20 +161,7 @@ class LedgerApprovalRecovery(
 
         /** La espera que [recover] le da a un SDK o registro vivo antes de tomar una fila (`now - ESPERA_MS`). */
         const val ESPERA_MS = 120_000L
-        private const val MARGEN_MS = 15_000L
+        const val MARGEN_MS = 15_000L
 
-        /**
-         * Codex r4 (D3, encargo 9308a7): ¿cuánto falta para que la aprobación pendiente MÁS ANTIGUA de las que esta pasada
-         * saltó por recientes cumpla su espera? Null si no hay ninguna. Quien barre agenda otra pasada para entonces, y esa
-         * pasada hace lo mismo con las que sigan: ninguna aprobación espera a la reconexión o a las 6 h por haber llegado
-         * justo después de una pasada.
-         */
-        suspend fun faltaParaLaSiguienteReciente(dao: PaymentAttemptDao, venueId: String, now: Long): Long? {
-            val corte = now - ESPERA_MS
-            val reciente = dao.getApprovalRecoveryCandidates(venueId, Long.MAX_VALUE, now)
-                .filter { it.venueId == venueId && it.createdAt >= corte }
-                .minOfOrNull { it.createdAt } ?: return null
-            return (reciente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
-        }
     }
 }

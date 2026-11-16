@@ -162,24 +162,32 @@ class LedgerApprovalRecoveryTest {
     }
 
     @Test
-    fun `P1 una aprobacion saltada por reciente agenda otra pasada para cuando cumpla su espera`() = runTest {
-        // Codex r4 (D3): la pasada absorbida por KEEP corre antes de los 2 min de la fila y la salta; sin seguimiento,
-        // la siguiente era la reconexión o la de 6 h.
+    fun `P1 lo que sigue pendiente tras la pasada agenda otra para cuando la mas antigua se pueda tomar`() = runTest {
+        // Codex r4–r5 (D3): la pasada absorbida por KEEP corre antes de los 2 min de la fila; una fila cumple sus 2 min
+        // DURANTE la pasada; la 51 no cabe en la página. Sin seguimiento, las tres esperaban la reconexión o las 6 h.
         val now = 1_000_000L
         coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(
-            approved.copy(attemptId = "vieja", createdAt = now - 500_000L),     // ésta la toma esta misma pasada
             approved.copy(attemptId = "reciente", createdAt = now - 90_000L),   // le faltan 30 s
             approved.copy(attemptId = "nueva", createdAt = now - 10_000L),      // le faltan 110 s: la agenda la siguiente
         )
-        assertEquals(30_000L + 15_000L, LedgerApprovalRecovery.faltaParaLaSiguienteReciente(dao, "venue", now))
+        assertEquals(30_000L + 15_000L, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
+
+        // Una que ya se puede tomar (envejeció durante la pasada o no cupo en la página): enseguida, sólo con el margen.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(
+            approved.copy(attemptId = "la-51", createdAt = now - 500_000L),
+            approved.copy(attemptId = "nueva", createdAt = now - 10_000L),
+        )
+        assertEquals(15_000L, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
     }
 
     @Test
-    fun `sin aprobaciones recientes no se agenda nada`() = runTest {
+    fun `sin pendientes, o sin sesion o red, no se agenda otra pasada`() = runTest {
         val now = 1_000_000L
-        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns
-            listOf(approved.copy(createdAt = now - 500_000L))
-        assertEquals(null, LedgerApprovalRecovery.faltaParaLaSiguienteReciente(dao, "venue", now))
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns emptyList()
+        assertEquals(null, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
+        // Sin sesión o sin red no se sondea (no hay vuelta cada 2 min con la terminal sin sesión): entrar y reconectar la piden.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(approved.copy(createdAt = now - 10_000L))
+        assertEquals(null, LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { false }).cuandoHaceFaltaOtraPasada("venue", now))
     }
 
     @Test

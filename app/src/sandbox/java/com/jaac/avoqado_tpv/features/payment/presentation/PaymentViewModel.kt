@@ -8382,10 +8382,17 @@ class PaymentViewModel @Inject constructor(
                             entryMode = cardDetails.entryMode.name
                         )
                     }
-                    // Codex r3: se pide la pasada de la recuperación YA (sale en ~2 min, cuando la fila cumple su espera). Con
-                    // el token vivo pero sin personal o sin negocio en memoria, registra sin esperar al siguiente login o a las
-                    // 6 h; sin sesión o sin red no gasta nada y la vuelven a pedir entrar y reconectar. KEEP: no se apila.
-                    runCatching { com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler.runOnceNow(appContext) }
+                    // Codex r3–r5: se pide la pasada de la recuperación para cuando la fila cumpla su espera (2 min). Con el
+                    // token vivo pero sin personal o sin negocio en memoria, registra sin esperar al siguiente login o a las 6 h;
+                    // sin sesión o sin red no gasta nada y la vuelven a pedir entrar y reconectar. Por el carril de seguimiento
+                    // (APPEND), no por `runOnceNow` (KEEP): una pasada en curso absorbía la petición sin haber visto la fila.
+                    runCatching {
+                        com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler.runApprovalFollowUp(
+                            appContext,
+                            com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.ESPERA_MS +
+                                com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.MARGEN_MS
+                        )
+                    }
                     buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
                     return@launch
                 }

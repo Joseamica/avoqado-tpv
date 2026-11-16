@@ -75,6 +75,8 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
@@ -243,7 +245,7 @@ fun TableCheckoutScreen(
             viewModel.onExit()
             onNavigateBack()
         },
-        onRetryLoad = viewModel::loadCheck,
+        onRetryLoad = viewModel::reintentar,
         onSelectSplitType = viewModel::selectSplitType,
         onCustomAmountChanged = viewModel::setCustomAmountInput,
         onEqualPartsChanged = viewModel::setEqualParts,
@@ -330,7 +332,12 @@ private fun TableCheckoutScreenContent(
         topBar = {
             AvoqadoTopBar(
                 title = "Cobrar · ${session.label}",
-                subtitle = "Restante ${moneyDisplay(state.remaining)}",
+                // D86: sin cuenta ni saldo seguro no se enseña un «Restante $0.00» que no es cierto.
+                subtitle = if (state.check == null && state.efectivoBloqueadoPor != null) {
+                    "Restante: sin conexión"
+                } else {
+                    "Restante ${moneyDisplay(state.remaining)}"
+                },
                 onNavigationClick = onNavigateBack,
             )
         },
@@ -341,6 +348,7 @@ private fun TableCheckoutScreenContent(
                 state = state,
                 onPayCash = onPayCash,
                 onPayCard = onPayCard,
+                onRetryLoad = onRetryLoad,
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -377,6 +385,7 @@ private fun TableCheckoutScreenContent(
                         CheckSummaryCard(
                             check = check,
                             remaining = state.remaining,
+                            sinCuenta = state.avisoSinRed ?: state.efectivoBloqueadoPor ?: SIN_CUENTA_SIN_RED,
                             isRemovingDiscount = isRemovingDiscount,
                             onRemoveDiscount = onRemoveDiscount,
                             isRemovingServiceCharge = isRemovingServiceCharge,
@@ -495,6 +504,8 @@ private fun TableCheckoutScreenContent(
 private fun CheckSummaryCard(
     check: OrderDetail?,
     remaining: BigDecimal,
+    /** D86: qué decir cuando no hay cheque del SERVIDOR (mesa abierta sin red aquí, o sin red y sin cuenta leída). */
+    sinCuenta: String = SIN_CUENTA_SIN_RED,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
     isRemovingServiceCharge: Boolean = false,
@@ -506,11 +517,16 @@ private fun CheckSummaryCard(
     ) {
         Column(modifier = Modifier.padding(Spacing.Space4)) {
             if (check == null) {
+                // D86: antes decía «abierta local» aunque la mesa fuera del SERVIDOR. Ahora dice lo que de verdad pasa.
                 Text(
-                    text = "Sin conexión — abierta local; el desglose llega cuando la mesa se sincronice.",
+                    text = sinCuenta,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (sinCuenta == COBRO_CON_LO_DE_ESTA_TERMINAL) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.Space2))
+                    SummaryRow(label = "Restante", amount = remaining, emphasized = true)
+                }
                 return@Column
             }
 
@@ -784,6 +800,7 @@ private fun CheckoutBottomBar(
     state: TableCheckoutState,
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
+    onRetryLoad: () -> Unit = {},
 ) {
     // 🔴 Contrato verificado, no asumido (Task 8): la pantalla de pago con
     // tarjeta de Nexgo (`AngelPayPaymentScreen`) NO expone `splitType` /
@@ -808,10 +825,29 @@ private fun CheckoutBottomBar(
     // paidProductsId (ver KDoc de TablesRepository.payCash). Hueco de
     // producto documentado, no un olvido.
     val cashSupportsThisSplit = state.splitType != CheckoutSplitType.PERPRODUCT
-    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso
+    // D86: sin cuenta leída ni saldo sin red seguro, el efectivo espera con su razón (nunca cobra con un número que no es el de la cuenta).
+    val efectivoBloqueadoPor = state.efectivoBloqueadoPor
+    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso && efectivoBloqueadoPor == null
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
+        if (efectivoBloqueadoPor != null && !state.isLoading) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = efectivoBloqueadoPor,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
+                if (state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)) {
+                    TextButton(onClick = onRetryLoad) { Text("Reintentar") }
+                }
+            }
+        }
         if (cardReason != null) {
             Text(
                 text = cardReason,

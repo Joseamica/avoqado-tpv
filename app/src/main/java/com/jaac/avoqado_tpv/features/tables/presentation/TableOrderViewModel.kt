@@ -10,6 +10,8 @@ import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizac
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
@@ -64,6 +66,8 @@ class TableOrderViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val networkMonitor: NetworkMonitor,
     private val autorizacionDeGerente: AutorizacionDeGerente,
+    /** D86: el saldo sin red de una cuenta que esta terminal abrió sin red (rondas propias menos efectivo propio). */
+    private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
 ) : ViewModel() {
     /** La hora que se le enseña al mesero es la del negocio, no el desfase que trae el servidor. */
     val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
@@ -196,23 +200,123 @@ class TableOrderViewModel @Inject constructor(
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
 
+    /**
+     * D86: el saldo de una cuenta que ESTA terminal abrió sin red (`null` si la sesión no es provisional). Es el único número
+     * con el que «Pagar» de una mesa provisional se pinta; en gris trae su razón. Ver [SaldoDeMesaSinRed].
+     */
+    private val _saldoSinRed = MutableStateFlow<SaldoSinRed?>(null)
+    val saldoSinRed: StateFlow<SaldoSinRed?> = _saldoSinRed.asStateFlow()
+
+    /** D86 (Codex r4): sólo el cálculo más nuevo del saldo sin red se aplica (uno viejo puede llegar después). Antes de `init`. */
+    private var calculosDeSaldo = 0L
+
+    /** D86 (Codex r5 #2): relectura de la cuenta mientras una ronda propia no sube (con tope). Antes de `init`. */
+    private var relecturaDeLaMesa: kotlinx.coroutines.Job? = null
+    private var relecturasDeLaMesa = 0
+
+    /** D86 (Codex r6 #2): sólo la lectura más nueva de la cuenta decide si «Por sincronizar» se va. Antes de `init`. */
+    private var cargasDeLaMesa = 0L
+
+    /** D86 (Codex r7 H4): la última lectura vio algo propio sin subir de esta cuenta (aunque «Por sincronizar» esté vacío). */
+    private var habiaPendienteSinSubir = false
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
-        loadCheck()
         viewModelScope.launch {
-            networkMonitor.networkStateFlow.collect { info -> _isOnline.value = info.isConnected }
+            // D86: al volver la red, la cuenta se relee sola (antes «Por sincronizar» se quedaba hasta otra acción).
+            var conectadaAntes = networkMonitor.isConnected()
+            networkMonitor.networkStateFlow.collect { info ->
+                _isOnline.value = info.isConnected
+                if (info.isConnected && !conectadaAntes) {
+                    relecturasDeLaMesa = 0
+                    loadCheck()
+                }
+                conectadaAntes = info.isConnected
+            }
+        }
+        viewModelScope.launch {
+            // D86: el ACK de OPEN_TABLE promueve la sesión (mismo epoch): la cuenta ya existe en el SERVIDOR y se lee sola;
+            // mientras siga provisional, cualquier cambio de la sesión (p. ej. un cobro en «Cobrar») recalcula su saldo.
+            var antes = tableSession.current()
+            tableSession.active.collect { ahora ->
+                val previa = antes
+                val promovida = previa != null && previa.isProvisional && ahora != null && !ahora.isProvisional && previa.tableId == ahora.tableId
+                antes = ahora
+                if (promovida) {
+                    _saldoSinRed.value = null
+                    loadCheck()
+                } else if (ahora?.isProvisional == true) {
+                    recalcularSaldoSinRed()
+                }
+            }
+        }
+        venueId?.let { vId ->
+            viewModelScope.launch {
+                // D86 (Codex r7 H2–H4): cada cambio de la cola (un ACK, un rechazo, una ronda que sube, también del trabajador)
+                // vuelve a calcular: el saldo sin red de una mesa provisional, o la cuenta si algo propio estaba sin subir.
+                // r8 H2: sin condiciones (una lectura vieja pudo apagar las banderas antes de que llegara el aviso), y r8 R1:
+                // sin reproducir la cola (si no, la escritura del replay vuelve a avisar sin fin).
+                saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
+                    val actual = tableSession.current() ?: return@collect
+                    if (actual.isProvisional) recalcularSaldoSinRed() else cargar(reproducir = false)
+                }
+            }
+        }
+        // D86: después de los colectores: si la carga promueve la sesión en el acto (apertura ya confirmada), alguien la ve.
+        loadCheck()
+    }
+
+    /** D86: recalcula [saldoSinRed] de la cola y la libreta. Sólo para una sesión provisional; si no, `null`. */
+    fun recalcularSaldoSinRed() {
+        val session = tableSession.current()
+        val vId = venueId
+        if (session == null || !session.isProvisional || vId == null) {
+            _saldoSinRed.value = null
+            return
+        }
+        val miCalculo = ++calculosDeSaldo
+        viewModelScope.launch {
+            val saldo = try {
+                // D86 (Codex r0 #2): si el ACK de la apertura llegó por otro camino (p. ej. el cobro en efectivo reprodujo la
+                // cola), la cola en disco lo guardó: se promueve aquí y la pantalla lee la cuenta del SERVIDOR.
+                val apertura = saldoDeMesaSinRed.aperturaConfirmada(vId, session.orderId)
+                if (apertura != null) {
+                    tableSyncCoordinator.onAck(SyncIntentTypes.OPEN_TABLE, session.orderId, apertura.orderId, apertura.orderNumber, apertura.version)
+                    return@launch
+                }
+                saldoDeMesaSinRed.saldo(vId, session.orderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [TableOrder] No se pudo leer la cola para el saldo sin red")
+                SaldoSinRed.EnGris(com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO)
+            }
+            // Sólo si la sesión sigue siendo esa misma cuenta provisional.
+            val actual = tableSession.current()
+            if (miCalculo == calculosDeSaldo && actual != null && actual.orderId == session.orderId && actual.isProvisional) {
+                _saldoSinRed.value = saldo
+            }
         }
     }
 
     /** Carga (o recarga) el cheque desde el server. Sesión provisional = nada que cargar todavía. */
-    fun loadCheck() {
+    fun loadCheck() = cargar(reproducir = true)
+
+    /**
+     * D86 (Codex r8 R1): con [reproducir] en `false` sólo lee (sin reproducir la cola). Es la que usa el aviso de la cola: el
+     * replay escribe la cola (p. ej. la referencia del turno en cada intento) y, con él, el aviso volvería a disparar la lectura
+     * sin fin. La cola ya la reproduce el trabajador; aquí sólo se lee lo que cambió.
+     */
+    private fun cargar(reproducir: Boolean) {
         val session = tableSession.current() ?: return
         pendingCart.ensureOrder(session.orderId)
         if (session.isProvisional) {
             _check.value = null
+            recalcularSaldoSinRed()
             return
         }
         val vId = venueId ?: return
+        val miCarga = ++cargasDeLaMesa
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -221,22 +325,42 @@ class TableOrderViewModel @Inject constructor(
             // vea las rondas que se mandaron sin red. Nunca lanza salvo
             // CancellationException — se blinda igual (mismo patrón que
             // TablesViewModel.loadTables).
-            try {
-                tableSyncCoordinator.replay(vId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
+            if (reproducir) {
+                try {
+                    tableSyncCoordinator.replay(vId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [TableOrder] replay() del outbox falló antes de cargar la cuenta")
+                }
             }
 
-            repository.getOrder(vId, session.orderId).fold(
+            // D86 (Codex r5 #2, r6 #2): «Por sincronizar» se va sólo si esta terminal no tenía nada sin subir de esta cuenta
+            // ANTES de leer (así la lectura ya trae todo lo propio) ni lo tiene después. Si no, se conserva y se relee sola.
+            val pendienteAntes = pendienteDeLaMesa(vId, session)
+            val leida = repository.getOrder(vId, session.orderId)
+            if (miCarga != cargasDeLaMesa) {
+                // Salió otra lectura después de ésta: la nueva manda.
+                return@launch
+            }
+            leida.fold(
                 onSuccess = { detail ->
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
-                    // El replay pudo haber confirmado rondas que estaban en
-                    // "Por sincronizar" — el cheque fresco ya las incluye.
-                    _queuedLines.value = emptyList()
+                    val pendiente = pendienteAntes ?: pendienteDeLaMesa(vId, session)
+                    // D86 (Codex r7 H2): si mientras se revisaba la cola salió otra lectura, ésa decide.
+                    if (miCarga != cargasDeLaMesa) return@fold
+                    habiaPendienteSinSubir = pendiente != null
+                    if (pendiente == null) {
+                        // El replay pudo haber confirmado rondas que estaban en
+                        // "Por sincronizar" — el cheque fresco ya las incluye.
+                        _queuedLines.value = emptyList()
+                        relecturaDeLaMesa?.cancel()
+                        relecturasDeLaMesa = 0
+                    } else {
+                        programarRelecturaDeLaMesa()
+                    }
                 },
                 onFailure = { e ->
                     // 🔴 Sin red NO es un error — es el estado normal de un
@@ -254,9 +378,36 @@ class TableOrderViewModel @Inject constructor(
                     if (_check.value == null) {
                         _checkLoadFailed.value = true
                     }
+                    // D86 (Codex r6 #3, r7 H4): con algo propio sin subir, una lectura fallida no detiene la relectura.
+                    if (_queuedLines.value.isNotEmpty() || habiaPendienteSinSubir) programarRelecturaDeLaMesa()
                 },
             )
             _isLoadingCheck.value = false
+        }
+    }
+
+    /** D86 (Codex r6 #3): «Actualizar» de «Por sincronizar»: vuelve a leer y rearma las relecturas automáticas. */
+    fun actualizarCuenta() {
+        relecturasDeLaMesa = 0
+        loadCheck()
+    }
+
+    private suspend fun pendienteDeLaMesa(venueId: String, session: TableSession.Active): String? = try {
+        saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableOrder] No se pudo revisar la cola de esta cuenta")
+        com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
+    }
+
+    private fun programarRelecturaDeLaMesa() {
+        if (relecturaDeLaMesa?.isActive == true || relecturasDeLaMesa >= MAX_RELECTURAS) return
+        relecturasDeLaMesa++
+        relecturaDeLaMesa = viewModelScope.launch {
+            kotlinx.coroutines.delay(RELECTURA_MS)
+            relecturaDeLaMesa = null
+            loadCheck()
         }
     }
 
@@ -309,7 +460,15 @@ class TableOrderViewModel @Inject constructor(
                     // offline) — jamás se intenta el PATCH online, que necesita un
                     // orderId real. Ver TableSession.buildAddItemsPayload.
                     val payload = tableSession.buildAddItemsPayload(items)
-                    syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    val intentId = syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    // D86: la cola no trae precios; el valor de la ronda al mandarla se anota aparte, por id del intent, para
+                    // que «Pagar» de esta mesa abierta sin red sepa cuánto cobrar (ver SaldoDeMesaSinRed).
+                    saldoDeMesaSinRed.libreta.anotarRonda(
+                        session.orderId,
+                        intentId,
+                        lines.fold(java.math.BigDecimal.ZERO) { total, line -> total + line.lineTotal },
+                    )
+                    recalcularSaldoSinRed()
                     _queuedLines.value = _queuedLines.value + lines
                     pendingCart.removeSent(lines) // lo agregado durante el envío se queda
                     _isSending.value = false

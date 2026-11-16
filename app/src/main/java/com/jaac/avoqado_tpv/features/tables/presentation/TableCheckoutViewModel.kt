@@ -399,6 +399,17 @@ class TableCheckoutViewModel @Inject constructor(
 
     private fun cobroEnCurso(): Boolean = _state.value.isProcessingCash || _state.value.isHandingOffToCard
 
+    /**
+     * D8 (Codex r9): un monto que ya no corresponde al saldo de ahora (por confirmar, o mayor que lo que falta) no se cobra; se
+     * avisa para que el cajero vea el restante nuevo y vuelva a tocar.
+     */
+    private fun montoYaNoVale(amount: BigDecimal): Boolean {
+        val s = _state.value
+        if (!s.saldoPorConfirmar && amount <= s.remaining) return false
+        _state.update { it.copy(notice = LA_CUENTA_CAMBIO) }
+        return true
+    }
+
     private fun reflejarAjuste() {
         val enCurso = _isApplyingDiscount.value || _isRemovingDiscount.value ||
             _isApplyingServiceCharge.value || _isRemovingServiceCharge.value
@@ -500,6 +511,7 @@ class TableCheckoutViewModel @Inject constructor(
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
         if (s.isProcessingCash || s.isHandingOffToCard || s.ajusteEnCurso) return null
+        if (montoYaNoVale(amount)) return null // D8 (Codex r9): igual que el efectivo
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }
         return request
@@ -541,6 +553,9 @@ class TableCheckoutViewModel @Inject constructor(
         }
         // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera. D8: y con un ajuste en camino también.
         if (_state.value.isProcessingCash || _state.value.isHandingOffToCard || _state.value.ajusteEnCurso) return
+        // D8 (Codex r9): el toque pudo traer un monto que la pantalla mostraba antes de que el saldo cambiara (la cola lo dejó
+        // por confirmar, o la relectura lo bajó): se revisa contra el saldo de AHORA, antes de encolar nada.
+        if (montoYaNoVale(amount)) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se
@@ -992,6 +1007,8 @@ class TableCheckoutViewModel @Inject constructor(
 
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
 private const val NO_SE_PUDO_CARGAR = "No se pudo cargar la cuenta"
+
+internal const val LA_CUENTA_CAMBIO = "La cuenta cambió: revisa el restante y vuelve a cobrar."
 
 internal const val SALDO_POR_SINCRONIZAR = "Restante: se sabrá al sincronizar la cuenta. Mientras, no se puede cobrar."
 

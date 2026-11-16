@@ -534,5 +534,12 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
 
         assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
         assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0") // ya no los $40
+
+        // Codex r9: el toque que la pantalla ya traía con los $40 (antes de redibujarse) tampoco cobra.
+        cobroGuardadoSinRed()
+        cobro.payCash(BigDecimal("40.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(cobro.state.value.notice).isEqualTo(LA_CUENTA_CAMBIO)
+        assertThat(cobro.prepararCobroConTarjeta(BigDecimal("40.00"))).isNull()
     }
 }

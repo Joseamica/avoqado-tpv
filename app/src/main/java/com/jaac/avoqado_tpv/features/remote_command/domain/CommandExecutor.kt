@@ -163,6 +163,19 @@ class CommandExecutor @Inject constructor(
             if (unresolved) return@withLock CommandResult(
                 com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Hay pagos o devoluciones pendientes de resolver")
+            // D4 (encargo dd4185): bajar de versión borra la base entera (`fallbackToDestructiveMigrationOnDowngrade`), y con
+            // ella el efectivo y las rondas de Mesas hechas sin red y las cajas que no han subido. Mismo candado, mismo
+            // criterio: si no se puede leer, no se borra.
+            val sinSubir = try {
+                val db = databaseProvider.get()
+                db.syncIntentDao().contarSinSubirEnElAparato() > 0 || db.localShiftSessionDao().contarSinSubirEnElAparato() > 0
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                true
+            }
+            if (sinSubir) return@withLock CommandResult(
+                com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
+                "Hay ventas de mesas o cortes de caja sin subir")
         }
         if (!CommandExecutionWindow.tryBeginCommand()) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")

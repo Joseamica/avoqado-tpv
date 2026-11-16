@@ -380,10 +380,12 @@ class TableOrderViewModel @Inject constructor(
                             // El carrito NO se pierde: el mesero puede reintentar
                             // tras ver la cuenta actualizada.
                             _notice.value = "La cuenta cambió en otro dispositivo — se actualizó, revisa antes de reenviar"
-                            loadCheck()
                         } else {
                             _error.value = (e as? BackendHttpException)?.message ?: "No se pudo enviar la ronda"
                         }
+                        // D8 (Codex r6 #1): la ronda no quedó confirmada (o la cuenta cambió en otro aparato): saldo por
+                        // confirmar y se relee.
+                        cuentaCambiada(encolado = false)
                     },
                 )
             } finally {
@@ -515,6 +517,9 @@ class TableOrderViewModel @Inject constructor(
                     _isSplitting.value = false
                     if (e is CancellationException) throw e
                     _error.value = (e as? BackendHttpException)?.message ?: "No se pudo separar la cuenta"
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                 },
             )
         }
@@ -599,7 +604,9 @@ class TableOrderViewModel @Inject constructor(
                             is BackendHttpException -> e.message
                             else -> "No se pudo aplicar la cortesía"
                         }
-                        if (e is TablesRepository.NoConfirmadaException) cuentaCambiada(encolado = false)
+                        // D8 (Codex r6 #1): con cualquier error la terminal no sabe si la cortesía quedó (antes sólo con «no
+                        // confirmada»): saldo por confirmar y se relee.
+                        cuentaCambiada(encolado = false)
                     },
                 )
             } catch (e: Exception) {
@@ -827,6 +834,9 @@ class TableOrderViewModel @Inject constructor(
                     _isMerging.value = false
                     if (e is CancellationException) throw e
                     _error.value = (e as? BackendHttpException)?.message ?: "No se pudo fusionar la cuenta"
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                 },
             )
         }
@@ -1001,6 +1011,9 @@ class TableOrderViewModel @Inject constructor(
                     _isSplittingBySeat.value = false
                     if (e is CancellationException) throw e
                     _error.value = (e as? BackendHttpException)?.message ?: "No se pudo dividir por puesto"
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                 },
             )
         }
@@ -1033,6 +1046,9 @@ class TableOrderViewModel @Inject constructor(
                     _isUpdatingDetails.value = false
                     if (e is CancellationException) throw e
                     _error.value = (e as? TablesRepository.UpdateDetailsRejectedException)?.message ?: "No se pudieron actualizar los detalles"
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                 },
             )
         }

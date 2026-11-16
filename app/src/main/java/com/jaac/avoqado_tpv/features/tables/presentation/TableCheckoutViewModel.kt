@@ -342,7 +342,9 @@ class TableCheckoutViewModel @Inject constructor(
                                 remaining = freshRemaining,
                                 porSincronizar = BigDecimal.ZERO,
                                 saldoPorConfirmar = false,
-                                errorMessage = null,
+                                // D8: la relectura sólo borra su propio aviso; el de un descuento o un cargo que falló (que la
+                                // provocó, Codex r6 #1) se queda para que el cajero sepa por qué.
+                                errorMessage = it.errorMessage.takeUnless { m -> m == NO_SE_PUDO_CARGAR },
                             )
                         }
                     } else {
@@ -372,7 +374,7 @@ class TableCheckoutViewModel @Inject constructor(
                         if (current.check != null) {
                             current.copy(isLoading = false)
                         } else {
-                            current.copy(isLoading = false, errorMessage = "No se pudo cargar la cuenta")
+                            current.copy(isLoading = false, errorMessage = NO_SE_PUDO_CARGAR)
                         }
                     }
                 },
@@ -758,6 +760,9 @@ class TableCheckoutViewModel @Inject constructor(
                     _isApplyingDiscount.value = false
                     reflejarAjuste()
                     if (e is CancellationException) throw e
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el descuento") }
                 },
             )
@@ -797,6 +802,9 @@ class TableCheckoutViewModel @Inject constructor(
                     _isRemovingDiscount.value = false
                     reflejarAjuste()
                     if (e is CancellationException) throw e
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                     _state.update {
                         it.copy(
                             errorMessage = when (e) {
@@ -887,6 +895,9 @@ class TableCheckoutViewModel @Inject constructor(
                     _isApplyingServiceCharge.value = false
                     reflejarAjuste()
                     if (e is CancellationException) throw e
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el cargo por servicio") }
                 },
             )
@@ -928,6 +939,9 @@ class TableCheckoutViewModel @Inject constructor(
                     _isRemovingServiceCharge.value = false
                     reflejarAjuste()
                     if (e is CancellationException) throw e
+                    // D8 (Codex r6 #1): falló, y la terminal no sabe si el SERVIDOR alcanzó a aplicarlo (p. ej. se perdió la respuesta): el saldo
+                    // queda por confirmar y se relee; nunca se cobra con el de antes.
+                    cuentaCambiada(encolado = false)
                     _state.update {
                         it.copy(
                             errorMessage = when (e) {
@@ -944,6 +958,8 @@ class TableCheckoutViewModel @Inject constructor(
 }
 
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
+private const val NO_SE_PUDO_CARGAR = "No se pudo cargar la cuenta"
+
 internal const val SALDO_POR_SINCRONIZAR = "Restante: se sabrá al sincronizar la cuenta. Mientras, no se puede cobrar."
 
 internal const val RECHAZO_POR_NUMERO =

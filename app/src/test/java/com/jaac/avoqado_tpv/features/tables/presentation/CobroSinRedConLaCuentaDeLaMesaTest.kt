@@ -487,4 +487,30 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
         assertThat(otraVez.chargeableAmount()).isEqualToIgnoringScale("0")
         assertThat(otraVez.state.value.saldoPorConfirmar).isTrue()
     }
+
+    @Test
+    fun codex_r6_1_si_quitar_un_descuento_falla_no_se_sabe_si_quedo_y_no_se_cobra_el_saldo_de_antes() = runTest {
+        abrirMesa()
+        coEvery { repository.getOrder(venueId, orden) } returns Result.success(
+            cuentaDe25.copy(
+                total = BigDecimal("90.00"),
+                discountAmount = BigDecimal("10.00"),
+                amountLeft = BigDecimal("90.00"),
+                orderDiscounts = listOf(OrderDiscountLine(id = "desc-1", name = "Cortesía", amount = BigDecimal("10.00"))),
+            ),
+        )
+        pantallaDeLaMesa()
+        val cobro = pantallaDeCobro()
+        // El SERVIDOR quitó el descuento ($100), pero la respuesta se perdió: el repositorio lo reporta como «necesita conexión».
+        coEvery { repository.removeDiscount(any(), any(), any()) } returns
+            Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException())
+        sinRed()
+
+        cobro.removeDiscount("desc-1")
+
+        // Ni los $90 de antes ni nada: por confirmar hasta releer.
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0")
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
+        assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
+    }
 }

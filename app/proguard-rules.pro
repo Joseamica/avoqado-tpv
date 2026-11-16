@@ -32,6 +32,13 @@
 -keepnames class com.example.clean_lib_services.**
 -dontwarn com.example.clean_lib_services.**
 
+# D74 (14-nov): lib_services viene compilada como depuración (BuildConfig.DEBUG = true, también la -PROD). Con eso
+# HttpClientKt.getHttpClientInstance registra en logcat cada cuerpo de red (tarjeta y contraseña del aparato) y acepta
+# cualquier certificado. En release se lee como false y R8 quita ese bloque entero.
+-assumevalues class com.example.clean_lib_services.BuildConfig {
+    public static final boolean DEBUG return false;
+}
+
 # PAX SDK modules - complete exclusion
 -keep,allowoptimization class com.paxsz.** { *; }
 -keep,allowoptimization class com.neptune.** { *; }

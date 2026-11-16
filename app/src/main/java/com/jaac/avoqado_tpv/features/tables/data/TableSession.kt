@@ -214,6 +214,18 @@ class TableSession @Inject constructor() {
         _active.value = actual.copy(total = BigDecimal.ZERO, porSincronizar = BigDecimal.ZERO, saldoConfirmado = false)
     }
 
+    /**
+     * D8 (Codex r5): corre [cambio], algo que cambia lo que se debe (una ronda, un cobro, un descuento, separar…). Si se cancela a
+     * medias —la pantalla se fue, p. ej. «Atrás» con el abono en camino—, la terminal ya no sabe si se aplicó: el saldo queda por
+     * confirmar y nadie vuelve a ofrecer el de antes. La cancelación sigue su camino.
+     */
+    suspend inline fun <T> siSeCancelaQuedaPorConfirmar(cambio: () -> T): T = try {
+        cambio()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        saldoPorConfirmar()
+        throw e
+    }
+
     /** D8: sale una ronda o un cobro en efectivo. Hasta [terminarCambioDeSaldo], ninguna lectura del SERVIDOR se toma. */
     fun empezarCambioDeSaldo() {
         _marcaDeSaldo.incrementAndGet()

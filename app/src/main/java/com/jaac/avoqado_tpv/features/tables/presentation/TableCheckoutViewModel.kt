@@ -550,14 +550,14 @@ class TableCheckoutViewModel @Inject constructor(
             // y luego [onPaymentCompleted] lo restaría otra vez). Dentro de la corrutina: si arranca, el `finally` lo cierra.
             tableSession.empezarCambioDeSaldo()
             try {
-                repository.payCash(
+                tableSession.siSeCancelaQuedaPorConfirmar { repository.payCash(
                     venueId = vId,
                     orderId = session.orderId,
                     isProvisional = session.isProvisional,
                     amount = amount,
                     tip = tipAtChargeTime,
                     saldoEsperado = saldoEsperado,
-                ).fold(
+                ) }.fold(
                     onSuccess = { outcome ->
                         _state.update {
                             it.copy(
@@ -739,7 +739,7 @@ class TableCheckoutViewModel @Inject constructor(
 
         reflejarAjuste()
         viewModelScope.launch {
-            repository.applyDiscount(vId, session.orderId, discountId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.applyDiscount(vId, session.orderId, discountId) }.fold(
                 onSuccess = { outcome ->
                     _isApplyingDiscount.value = false
                     reflejarAjuste()
@@ -786,7 +786,7 @@ class TableCheckoutViewModel @Inject constructor(
 
         reflejarAjuste()
         viewModelScope.launch {
-            repository.removeDiscount(vId, session.orderId, orderDiscountId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.removeDiscount(vId, session.orderId, orderDiscountId) }.fold(
                 onSuccess = {
                     _isRemovingDiscount.value = false
                     reflejarAjuste()
@@ -868,7 +868,7 @@ class TableCheckoutViewModel @Inject constructor(
 
         reflejarAjuste()
         viewModelScope.launch {
-            repository.applyServiceCharge(vId, session.orderId, serviceChargeId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.applyServiceCharge(vId, session.orderId, serviceChargeId) }.fold(
                 onSuccess = { outcome ->
                     _isApplyingServiceCharge.value = false
                     reflejarAjuste()
@@ -917,7 +917,7 @@ class TableCheckoutViewModel @Inject constructor(
 
         reflejarAjuste()
         viewModelScope.launch {
-            repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId) }.fold(
                 onSuccess = {
                     _isRemovingServiceCharge.value = false
                     reflejarAjuste()

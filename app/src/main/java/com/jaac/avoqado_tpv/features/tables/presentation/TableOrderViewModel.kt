@@ -344,7 +344,7 @@ class TableOrderViewModel @Inject constructor(
                     // offline) — jamás se intenta el PATCH online, que necesita un
                     // orderId real. Ver TableSession.buildAddItemsPayload.
                     val payload = tableSession.buildAddItemsPayload(items)
-                    syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    tableSession.siSeCancelaQuedaPorConfirmar { syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload) }
                     cerrarRonda(true)
                     _queuedLines.value = _queuedLines.value + lines
                     pendingCart.removeSent(lines) // lo agregado durante el envío se queda
@@ -353,7 +353,7 @@ class TableOrderViewModel @Inject constructor(
                     return@launch
                 }
 
-                repository.addItems(vId, session.orderId, items, session.version).fold(
+                tableSession.siSeCancelaQuedaPorConfirmar { repository.addItems(vId, session.orderId, items, session.version) }.fold(
                     onSuccess = { detail ->
                         tableSession.updateVersion(detail.version)
                         // D8: con red o encolada, la ronda ya se debe. Con red, el `loadCheck()` de abajo trae la cuenta
@@ -501,7 +501,7 @@ class TableOrderViewModel @Inject constructor(
 
         _isSplitting.value = true
         viewModelScope.launch {
-            repository.splitOrder(vId, session.orderId, itemIds.toList()).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.splitOrder(vId, session.orderId, itemIds.toList()) }.fold(
                 onSuccess = { outcome ->
                     _isSplitting.value = false
                     _notice.value = if (outcome.queued) {
@@ -571,7 +571,7 @@ class TableOrderViewModel @Inject constructor(
                     } else {
                         r
                     }
-                var resultado = revisar(repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token), token)
+                var resultado = revisar(tableSession.siSeCancelaQuedaPorConfirmar { repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token) }, token)
                 // La lista de permisos local pudo estar vieja: un 403 por cortesía sin PIN pide el PIN y reintenta UNA vez.
                 val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
                 if (token == null && e403?.required == "orders:comp") {
@@ -579,7 +579,7 @@ class TableOrderViewModel @Inject constructor(
                     if (forzada is Autorizacion.Cancelada) return@launch
                     if (forzada is Autorizacion.Negada) { _error.value = forzada.texto; return@launch }
                     token = (forzada as? Autorizacion.ConPin)?.token
-                    resultado = revisar(repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token), token)
+                    resultado = revisar(tableSession.siSeCancelaQuedaPorConfirmar { repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId, token) }, token)
                 }
                 resultado.fold(
                     onSuccess = { outcome ->
@@ -813,7 +813,7 @@ class TableOrderViewModel @Inject constructor(
 
         _isMerging.value = true
         viewModelScope.launch {
-            repository.mergeOrders(vId, session.orderId, sourceOrderId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.mergeOrders(vId, session.orderId, sourceOrderId) }.fold(
                 onSuccess = { outcome ->
                     _isMerging.value = false
                     _notice.value = if (outcome.queued) {
@@ -987,7 +987,7 @@ class TableOrderViewModel @Inject constructor(
 
         _isSplittingBySeat.value = true
         viewModelScope.launch {
-            repository.splitOrderBySeat(vId, session.orderId).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.splitOrderBySeat(vId, session.orderId) }.fold(
                 onSuccess = { outcome ->
                     _isSplittingBySeat.value = false
                     _notice.value = if (outcome.queued) {
@@ -1019,7 +1019,7 @@ class TableOrderViewModel @Inject constructor(
 
         _isUpdatingDetails.value = true
         viewModelScope.launch {
-            repository.updateOrderDetails(vId, session.orderId, session.isProvisional, name, covers).fold(
+            tableSession.siSeCancelaQuedaPorConfirmar { repository.updateOrderDetails(vId, session.orderId, session.isProvisional, name, covers) }.fold(
                 onSuccess = { outcome ->
                     _isUpdatingDetails.value = false
                     _notice.value = if (outcome.queued) {

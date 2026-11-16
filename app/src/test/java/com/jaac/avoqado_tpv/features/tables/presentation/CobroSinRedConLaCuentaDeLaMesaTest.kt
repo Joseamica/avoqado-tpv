@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
@@ -21,6 +22,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -463,5 +465,26 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
         assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
         assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0")
         assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
+    }
+
+    @Test
+    fun codex_r5_salir_con_el_abono_en_camino_deja_el_saldo_por_confirmar_y_no_se_ofrece_el_de_antes() = runTest {
+        abrirMesa()
+        pantallaDeLaMesa() // $25 confirmados
+        val cobroEnCamino = CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } coAnswers { cobroEnCamino.await() }
+        val cobro = pantallaDeCobro()
+        cobro.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        cobro.setCustomAmountInput("10")
+        cobro.payCash(cobro.chargeableAmount()) // el abono de $10 ya va en la cola, su respuesta tarda…
+
+        cobro.viewModelScope.cancel() // …y el mesero toca «Atrás»: la pantalla se destruye
+        sinRed()
+        val otraVez = pantallaDeCobro() // vuelve a «Pagar»
+
+        // Nunca los $25 de antes del abono: no se sabe, así que no se cobra hasta sincronizar.
+        assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
+        assertThat(otraVez.chargeableAmount()).isEqualToIgnoringScale("0")
+        assertThat(otraVez.state.value.saldoPorConfirmar).isTrue()
     }
 }

@@ -200,6 +200,24 @@ class CommandExecutorTest {
         coVerify(exactly = 0) { mockAvoqadoUpdateRepository.getSpecificVersion(any()) }
     }
 
+    @Test fun `P1 si la base no abre bajar de version se rechaza y no se queda esperando`() = runTest {
+        // La base no abre: falla cualquier acceso, también el del candado de pagos (que la dejaría esperando).
+        every { mockDatabase.syncIntentDao() } throws IllegalStateException("no abre")
+        every { mockDatabase.pendingPaymentDao() } throws IllegalStateException("no abre")
+        val result = commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-no-abre"))
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
+        assertThat(result.message).isEqualTo(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+    }
+
+    @Test fun `P1 pedir actualizar a una version anterior con mesas sin subir se rechaza al llegar`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        val command = createCommand(TpvCommandType.REQUEST_UPDATE, payload = mapOf("versionCode" to BuildConfig.VERSION_CODE - 1))
+        val result = commandExecutor.execute(command)
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
+        assertThat(result.message).isEqualTo(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+        coVerify(exactly = 0) { mockUpdateRequestManager.handleUpdateRequest(any(), any()) }
+    }
+
     @Test fun `bajar de version con la base al dia sigue como antes`() = runTest {
         sinVersionEnElServidor()
         commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-limpia"))

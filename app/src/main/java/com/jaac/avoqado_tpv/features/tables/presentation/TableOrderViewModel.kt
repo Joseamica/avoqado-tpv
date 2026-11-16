@@ -207,6 +207,9 @@ class TableOrderViewModel @Inject constructor(
     private val _saldoSinRed = MutableStateFlow<SaldoSinRed?>(null)
     val saldoSinRed: StateFlow<SaldoSinRed?> = _saldoSinRed.asStateFlow()
 
+    /** D86 (Codex r4): sólo el cálculo más nuevo del saldo sin red se aplica (uno viejo puede llegar después). Antes de `init`. */
+    private var calculosDeSaldo = 0L
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
         viewModelScope.launch {
@@ -246,6 +249,7 @@ class TableOrderViewModel @Inject constructor(
             _saldoSinRed.value = null
             return
         }
+        val miCalculo = ++calculosDeSaldo
         viewModelScope.launch {
             val saldo = try {
                 // D86 (Codex r0 #2): si el ACK de la apertura llegó por otro camino (p. ej. el cobro en efectivo reprodujo la
@@ -264,7 +268,9 @@ class TableOrderViewModel @Inject constructor(
             }
             // Sólo si la sesión sigue siendo esa misma cuenta provisional.
             val actual = tableSession.current()
-            if (actual != null && actual.orderId == session.orderId && actual.isProvisional) _saldoSinRed.value = saldo
+            if (miCalculo == calculosDeSaldo && actual != null && actual.orderId == session.orderId && actual.isProvisional) {
+                _saldoSinRed.value = saldo
+            }
         }
     }
 

@@ -309,6 +309,9 @@ class TableCheckoutViewModel @Inject constructor(
     /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
     private var relectura: kotlinx.coroutines.Job? = null
 
+    /** D86 (Codex r4): sólo el cálculo más nuevo del saldo sin red se aplica. */
+    private var calculosDeSaldo = 0L
+
     /** D86: relecturas automáticas seguidas sin desbloquearse; con el tope, espera «Reintentar» o a que vuelva la red. */
     private var relecturasSeguidas = 0
 
@@ -450,6 +453,7 @@ class TableCheckoutViewModel @Inject constructor(
     private fun calcularSaldoSinRed(session: TableSession.Active) {
         val vId = venueId ?: return
         val cobrosAlSalir = cobrosIniciados
+        val miCalculo = ++calculosDeSaldo
         viewModelScope.launch {
             val saldo = try {
                 // D86 (Codex r0 #2): la apertura ya confirmada por otro camino promueve la sesión (y el colector relee la cuenta).
@@ -465,7 +469,7 @@ class TableCheckoutViewModel @Inject constructor(
             if (actual == null || actual.orderId != session.orderId || !actual.isProvisional || !_state.value.isProvisional) return@launch
             // D86 (Codex r2 #1): un cobro empezó mientras se calculaba: este saldo puede ser de antes de él (el cobro lo vuelve a
             // revisar al cobrar y [onPaymentCompleted] descuenta lo suyo).
-            if (_state.value.isProcessingCash || cobrosIniciados != cobrosAlSalir) return@launch
+            if (_state.value.isProcessingCash || cobrosIniciados != cobrosAlSalir || miCalculo != calculosDeSaldo) return@launch
             val restante = (saldo as? SaldoSinRed.Conocido)?.porPagar ?: BigDecimal.ZERO
             tableSession.updateTotal(restante)
             _state.update { it.copy(saldoSinRed = saldo, remaining = restante) }

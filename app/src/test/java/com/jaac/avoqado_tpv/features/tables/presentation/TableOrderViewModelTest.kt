@@ -1526,4 +1526,27 @@ class TableOrderViewModelTest {
     }
 
     // endregion
+
+    @Test
+    fun D86_r4_un_calculo_viejo_del_saldo_que_llega_tarde_no_esconde_pagar() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val apertura = SyncIntentEntity(id = "abrir", venueId = venueId, seq = 1, type = SyncIntentTypes.OPEN_TABLE, payloadJson = """{"tableId":"mesa-1","localOrderId":"local-1"}""")
+        val ronda = SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}""")
+        val vieja = CompletableDeferred<Unit>()
+        var consultas = 0
+        // La primera consulta (antes de la ronda) tarda y llega al final, sin la ronda.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } coAnswers {
+            consultas++
+            if (consultas == 1) { vieja.await(); listOf(apertura) } else listOf(apertura, ronda)
+        }
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat((viewModel.saldoSinRed.value as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("100.00"))
+
+        vieja.complete(Unit)
+
+        assertThat((viewModel.saldoSinRed.value as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("100.00"))
+    }
 }

@@ -93,8 +93,9 @@ class CommandExecutorTest {
         coEvery { mockDatabase.pendingRefundDao().getPendingCount() } returns 0
         coEvery { mockDatabase.pendingRefundDao().getFailedCount() } returns 0
         coEvery { mockDatabase.paymentAttemptDao().countUnresolvedCharges() } returns 0
-        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 0
-        coEvery { mockDatabase.localShiftSessionDao().contarSinSubirEnElAparato() } returns 0
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 0
+        coEvery { mockDatabase.localShiftSessionDao().contarSinSubir(any()) } returns 0
+        every { mockSecureStorage.getVenueId() } returns "venue-activo"
         CommandExecutionWindow.setForeground(true)
         CommandExecutionWindow.setRoute("home")
         val persisted = mutableMapOf<String, String>()
@@ -175,7 +176,7 @@ class CommandExecutorTest {
         TpvCommandType.REMOTE_ACTIVATE)
 
     @Test fun `P1 instalar otra version espera mientras haya ventas de mesas sin subir`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 1
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 1
         comandosQueBorranOReinician.forEach { type ->
             val result = commandExecutor.execute(createCommand(type).copy(commandId = "d4-${type.name}"))
             assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
@@ -186,20 +187,39 @@ class CommandExecutorTest {
     }
 
     @Test fun `P1 instalar otra version espera mientras haya una caja local sin subir`() = runTest {
-        coEvery { mockDatabase.localShiftSessionDao().contarSinSubirEnElAparato() } returns 1
+        coEvery { mockDatabase.localShiftSessionDao().contarSinSubir("venue-activo") } returns 1
         val result = commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION))
         assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
         assertThat(result.message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
     }
 
     @Test fun `P1 si no se puede leer la cola de mesas el comando espera`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } throws IllegalStateException("disco")
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } throws IllegalStateException("disco")
         assertThat(commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION)).status)
             .isEqualTo(TpvCommandResultStatus.DEFERRED)
     }
 
+    @Test fun `P1 el mismo comando pasa en cuanto la cola de mesas subio`() = runTest {
+        commandExecutor.stopProcess = {}
+        val command = createCommand(TpvCommandType.FACTORY_RESET).copy(commandId = "d4-reintento")
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 1
+        assertThat(commandExecutor.execute(command).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+        verify(exactly = 0) { mockSecureStorage.clearAll() }
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 0
+        assertThat(commandExecutor.execute(command).status).isNotEqualTo(TpvCommandResultStatus.DEFERRED)
+        verify(exactly = 1) { mockSecureStorage.clearAll() }
+    }
+
+    @Test fun `sin sucursal activa no hay cola que suba y el candado nuevo no frena`() = runTest {
+        commandExecutor.stopProcess = {}
+        every { mockSecureStorage.getVenueId() } returns null
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 5
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET)).status)
+            .isNotEqualTo(TpvCommandResultStatus.DEFERRED)
+    }
+
     @Test fun `una cola de mesas pendiente no frena un comando que no borra ni reinicia`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 3
+        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 3
         assertThat(commandExecutor.execute(createCommand(TpvCommandType.LOCK)).status).isEqualTo(TpvCommandResultStatus.SUCCESS)
     }
 

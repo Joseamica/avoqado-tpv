@@ -19,7 +19,8 @@ class UpdateRequestManagerTest {
     private val repo = mockk<AvoqadoUpdateRepository>(relaxed = true)
     private val installer = mockk<ApkInstaller>(relaxed = true)
     private val db = mockk<AvoqadoDatabase>(relaxed = true)
-    private val manager = UpdateRequestManager(repo, installer, mockk<ObservabilityManager>(relaxed = true), mockk<Context>(relaxed = true), Provider { db })
+    private val secureStorage = mockk<com.jaac.avoqado_tpv.core.data.local.SecureStorage>(relaxed = true)
+    private val manager = UpdateRequestManager(repo, installer, mockk<ObservabilityManager>(relaxed = true), mockk<Context>(relaxed = true), Provider { db }, secureStorage)
     @After fun cleanup() { CommandExecutionWindow.setExecuting(false); CommandExecutionWindow.setForeground(false); CommandExecutionWindow.setRoute(null) }
     @Test fun `accepting an old update dialog on a payment route cannot download or install`() = runTest {
         val update = mockk<AvoqadoUpdateInfo>(relaxed = true)
@@ -48,5 +49,25 @@ class UpdateRequestManagerTest {
         manager.acceptUpdate()
         assertThat(CommandExecutionWindow.executing.value).isFalse()
         assertThat(manager.updateRequestState.value).isInstanceOf(UpdateRequestState.Error::class.java)
+    }
+    @Test fun `P1 aceptar una version anterior con mesas sin subir no descarga ni instala`() = runTest {
+        coEvery { repo.getSpecificVersion(41) } returns UpdateCheckResult.UpdateAvailable(mockk(relaxed = true))
+        coEvery { db.pendingPaymentDao().getPendingCount() } returns 0
+        coEvery { db.pendingPaymentDao().getFailedCount() } returns 0
+        coEvery { db.pendingRefundDao().getPendingCount() } returns 0
+        coEvery { db.pendingRefundDao().getFailedCount() } returns 0
+        coEvery { db.paymentAttemptDao().countUnresolvedCharges() } returns 0
+        every { secureStorage.getVenueId() } returns "venue-activo"
+        coEvery { db.syncIntentDao().contarSinSubir("venue-activo") } returns 1
+        coEvery { db.localShiftSessionDao().contarSinSubir(any()) } returns 0
+        CommandExecutionWindow.setForeground(true); CommandExecutionWindow.setRoute("home")
+        manager.handleUpdateRequest("c3", versionCode = 41)
+        manager.acceptUpdate()
+        coVerify(exactly = 0) { repo.downloadApk(any(), any()) }
+        coVerify(exactly = 0) { installer.install(any()) }
+        val state = manager.updateRequestState.value
+        assertThat(state).isInstanceOf(UpdateRequestState.Error::class.java)
+        assertThat((state as UpdateRequestState.Error).message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
+        assertThat(CommandExecutionWindow.executing.value).isFalse()
     }
 }

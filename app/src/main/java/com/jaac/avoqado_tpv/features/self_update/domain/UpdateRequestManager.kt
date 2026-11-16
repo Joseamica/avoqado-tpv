@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.self_update.domain
 
+import com.jaac.avoqado_tpv.features.remote_command.domain.hayMesasOCajasSinSubir
 import android.content.Context
 import android.os.Build
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
@@ -48,7 +49,9 @@ class UpdateRequestManager @Inject constructor(
     private val apkInstaller: ApkInstaller,
     private val observability: ObservabilityManager,
     @ApplicationContext private val context: Context,
-    private val databaseProvider: Provider<AvoqadoDatabase>
+    private val databaseProvider: Provider<AvoqadoDatabase>,
+    // D4 (encargo dd4185): la sucursal activa, para no instalar encima de Mesas o Caja sin subir.
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
 ) {
     companion object {
         private const val TAG = "UpdateRequestManager"
@@ -155,6 +158,12 @@ class UpdateRequestManager @Inject constructor(
             db.pendingRefundDao().getPendingCount() > 0 || db.pendingRefundDao().getFailedCount() > 0 ||
             db.paymentAttemptDao().countUnresolvedCharges() > 0) {
             _updateRequestState.value = UpdateRequestState.Error("Hay pagos o devoluciones pendientes de resolver")
+            return
+        }
+        // D4 (encargo dd4185): el diálogo puede traer una versión ANTERIOR (`versionCode` del comando), que borra la base.
+        if (db.hayMesasOCajasSinSubir(secureStorage.getVenueId())) {
+            _updateRequestState.value = UpdateRequestState.Error(
+                com.jaac.avoqado_tpv.features.remote_command.domain.MENSAJE_MESAS_O_CAJAS_SIN_SUBIR)
             return
         }
         Timber.i("📥 [$TAG] User accepted update - starting download")

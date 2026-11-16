@@ -4171,16 +4171,36 @@ class PaymentViewModel @Inject constructor(
                     paymentPhaseTracker.enterPhase(PaymentSdkPhase.COMPLETE_EMV_TRANS)
                     val completeResult = completeEmvTransUseCase.run(completeParams)
                     paymentPhaseTracker.exitPhase(PaymentSdkPhase.COMPLETE_EMV_TRANS, if (completeResult.isRight) PhaseOutcome.OK else PhaseOutcome.FAILED)
-                    // 🔒 B1: `CompleteEmvTrans` REGRESÓ (con éxito o con error): aquí termina TODA la interacción de este
-                    // intento con el SDK. El registro que falte es dinero y lo decide el servidor.
-                    marcarFinDelSdk(preparationAttemptId)
 
                     if (completeResult.isLeft) {
                         val error = completeResult.leftValue()
                         Timber.e("❌ [PHASE 5] Complete failed: $error")
-                        _state.value = PaymentState.Error("Error finalizando transacción: $error")
+                        // 🔴 D5 (encargo 533d77, opción C): el banco APROBÓ y la tarjeta rechazó el cierre. No se sabe si Blumon TPV
+                        // revierte el cargo: ni «Reintentar» (cobro doble si no revierte) ni «cobrado» que la recuperación registre
+                        // sola (venta sin cobro si revierte). Va a la duda que ya existe. Primero la libreta y DESPUÉS el fin del SDK:
+                        // si el proceso muere entre los dos, la fila ya está en duda y no aprobada.
+                        // Sólo VENTAS: una devolución (`kind = REFUND`) sigue como estaba.
+                        val esVenta = sessionSnapshot.mode != PaymentMode.REFUND
+                        val desenlace = if (!esVenta) null
+                            else preparationAttemptId?.let { paymentAttemptLedger.markChipRechazoTrasAprobacion(it) }
+                                ?: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR
+                        // 🔒 B1: `CompleteEmvTrans` REGRESÓ con error: aquí termina TODA la interacción de este intento con el SDK.
+                        marcarFinDelSdk(preparationAttemptId)
+                        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                            "CompleteEmvTrans falló tras APROBADA (${error.javaClass.simpleName}) — $desenlace"
+                        )
+                        if (sessionSnapshot.paymentAttemptId != preparationAttemptId) return@launch
+                        // En duda también si no se pudo escribir (Codex r1 #2): la recuperación no la registra en este proceso. Sólo
+                        // con evidencia de cobro del SERVIDOR la pantalla conserva «Cobrado. Sincronización pendiente».
+                        if (esVenta && desenlace != com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.ChipRechazo.HAY_EVIDENCIA) {
+                            authorizationApproved = false
+                        }
+                        showUnresolvedAuthorization()
                         return@launch
                     }
+                    // 🔒 B1: `CompleteEmvTrans` REGRESÓ con éxito: aquí termina TODA la interacción de este intento con el SDK.
+                    // El registro que falte es dinero y lo decide el servidor.
+                    marcarFinDelSdk(preparationAttemptId)
 
                     Timber.i("✅ [PHASE 5] EMV completion SUCCESS!")
                 } else {

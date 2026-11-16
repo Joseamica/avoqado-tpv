@@ -23,6 +23,13 @@ class LedgerApprovalRecovery(
      * ANTES DE CADA FILA: un 401 con refresco fallido borra la sesión a media pasada (Codex r1 #1).
      */
     private val puedeRegistrar: () -> Boolean = { true },
+    /**
+     * 🔴 D5 (encargo 533d77, Codex r1 #1): el token de ESTE proceso. Con él, el reclamo no toma una venta de la PAX cuyo SDK
+     * puede seguir dentro (el cierre EMV pendiente). null = el reclamo de siempre (pruebas viejas).
+     */
+    private val tokenDelProceso: () -> String? = { null },
+    /** D5 (Codex r1 #2): una venta cuyo chip rechazó tras aprobar y cuya duda no se pudo escribir no se registra sola. */
+    private val retenidaPorChipRechazo: suspend (String) -> Boolean = { false },
 ) {
     /** Hilt cablea la sesión y la red REALES. Constructor secundario a propósito (mismo patrón que [PaymentAttemptLedger]). */
     @Inject constructor(
@@ -31,7 +38,11 @@ class LedgerApprovalRecovery(
         order: OrderPaymentRecorder,
         secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
         networkMonitor: com.jaac.avoqado_tpv.core.util.NetworkMonitor,
-    ) : this(dao, fast, order, { secureStorage.isAuthenticated() && networkMonitor.isConnected() })
+        ledger: PaymentAttemptLedger,
+    ) : this(
+        dao, fast, order, { secureStorage.isAuthenticated() && networkMonitor.isConnected() },
+        { ledger.tokenDelProceso() }, { ledger.retenidaPorChipRechazo(it) },
+    )
 
     suspend fun recover(venueId: String, now: Long): Int {
         if (!puedeRegistrar()) {
@@ -50,10 +61,17 @@ class LedgerApprovalRecovery(
                 (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
                 row.verifyAttempts >= 5) continue
             try {
+                if (retenidaPorChipRechazo(row.attemptId)) {
+                    Timber.w("📒 [LedgerApproval] el chip rechazó tras aprobar y la duda no quedó escrita: no se registra sola | attemptId=%s", row.attemptId)
+                    continue
+                }
                 val waitMs = 120_000L * (1L shl row.verifyAttempts.coerceIn(0, 4))
                 val acquiredAt = maxOf(now, System.currentTimeMillis())
                 val ownedLease = acquiredAt + maxOf(waitMs, 300_000L)
-                if (dao.claimRecovery(row.attemptId, venueId, acquiredAt, ownedLease) != 1) continue
+                val token = tokenDelProceso()
+                val reclamada = if (token != null) dao.claimRecoveryConElSdkFuera(row.attemptId, venueId, acquiredAt, ownedLease, token)
+                    else dao.claimRecovery(row.attemptId, venueId, acquiredAt, ownedLease)
+                if (reclamada != 1) continue
                 val context = restoreContext(row) ?: continue
                 val card = CardDetails(
                     maskedPan = row.maskedPan.orEmpty(),

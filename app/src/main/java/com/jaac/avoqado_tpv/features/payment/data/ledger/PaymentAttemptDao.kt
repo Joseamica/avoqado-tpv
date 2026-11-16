@@ -325,6 +325,21 @@ interface PaymentAttemptDao {
     suspend fun claimRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
 
     /**
+     * 🔴 D5 (encargo 533d77, Codex r1 #1): el MISMO reclamo, pero nunca sobre una venta de la PAX cuyo SDK puede seguir dentro de
+     * ESTE proceso ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]: `HOST_RESPONDIO` sin `sdk_returned_at`, el cierre EMV pendiente).
+     * Con un chip lento, la fila pasaba de 2 min mientras `CompleteEmvTrans` seguía corriendo; la recuperación la reclamaba, el
+     * chip rechazaba, la pantalla la dejaba en duda y la recuperación registraba igual, con el contexto que ya tenía en memoria.
+     * La condición va DENTRO del UPDATE: la pantalla deja la fila en duda ANTES de marcar el fin del SDK, así que no hay un
+     * instante en que la recuperación pueda reclamarla. Sólo Blumon: la Nexgo no marca así su fin del SDK.
+     */
+    @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
+        WHERE attempt_id = :attemptId AND venue_id = :venueId
+        AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
+        AND (lease_until IS NULL OR lease_until < :now)
+        AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""")
+    suspend fun claimRecoveryConElSdkFuera(attemptId: String, venueId: String, now: Long, leaseUntil: Long, processToken: String): Int
+
+    /**
      * 🔴 `last_error` CONSERVA la marca de cuarentena si ya la traía. La recuperación admite
      * `HOST_RESPONDIO` por ANTIGÜEDAD y, si el registro falla, escribía «Cobrado; registro
      * pendiente» encima — borrando la única señal de que nadie acreditó el final del SDK, y
@@ -490,6 +505,29 @@ interface PaymentAttemptDao {
                  AND server_outcome IS NULL))"""
     )
     suspend fun casWithError(attemptId: String, expectedStates: List<String>, newState: String, now: Long, error: String?): Int
+
+    /**
+     * 🔴 D5 (encargo 533d77, opción C, 16-nov): el banco APROBÓ esta venta de la PAX y después la tarjeta rechazó el cierre
+     * (`CompleteEmvTrans`). No se sabe si Blumon TPV revierte el cargo, así que la fila deja de decir «el banco aprobó = dinero»:
+     * HOST_RESPONDIO → INDETERMINADO, `host_approved` a NULL y la marca [PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION].
+     * Desde ahí es una duda como las demás —la recuperación de aprobaciones ya no la registra sola; la cierran la evidencia del
+     * servidor o la declaración de una persona— pero con dinero en juego: la marca cerca su venta ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]).
+     * No toca `operation_id`, `reference_number` ni `auth_code`: lo que dijo el banco se conserva para conciliar con su portal.
+     *
+     * Todo DENTRO del UPDATE: sólo una VENTA de la PAX, no heredada, aprobada por el host y SIN nada del servidor (veredicto,
+     * evidencia, veto ni Payment): con evidencia de cobro, quitar la aprobación sería perder información.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET state = 'INDETERMINADO', state_version = state_version + 1, updated_at = :now,
+               host_approved = NULL, last_error = 'chip_rechazo_tras_aprobacion'
+           WHERE attempt_id = :attemptId AND legacy_shadow = 0 AND kind = 'SALE' AND processor = 'BLUMON'
+             -- Codex r1 #2: también si la escritura de «el banco aprobó» falló y la fila se quedó en AUTORIZANDO.
+             AND ((state = 'HOST_RESPONDIO' AND host_approved = 1) OR (state = 'AUTORIZANDO' AND host_approved IS NULL))
+             AND server_outcome IS NULL AND server_processor_evidence IS NOT 'APPROVED'
+             AND server_veto IS NULL AND server_payment_id IS NULL"""
+    )
+    suspend fun casChipRechazoTrasAprobacion(attemptId: String, now: Long): Int
 
     /**
      * 🔴 «Ya revisé la terminal: no se cobró» para un cobro **LOCAL** (21-sep-2026, decisión del founder:

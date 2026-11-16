@@ -14,7 +14,9 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.features.tables.data.DineroDeTarjetaDeLaCuenta
 import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
+import com.jaac.avoqado_tpv.features.tables.data.TARJETA_REGISTRANDOSE
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
@@ -67,6 +69,7 @@ class TableCheckoutViewModelTest {
     private val networkMonitor = mockk<NetworkMonitor>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val syncOutbox = mockk<SyncOutbox>()
+    private val dineroDeTarjeta = mockk<DineroDeTarjetaDeLaCuenta>()
     private val cambiosDeLaCola = kotlinx.coroutines.flow.MutableStateFlow(0)
     private lateinit var tableSession: TableSession
 
@@ -87,6 +90,7 @@ class TableCheckoutViewModelTest {
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
+        coEvery { dineroDeTarjeta.motivo(any(), any()) } returns null
     }
 
     @After
@@ -101,6 +105,7 @@ class TableCheckoutViewModelTest {
         networkMonitor = networkMonitor,
         deviceInfoManager = deviceInfoManager,
         saldoDeMesaSinRed = saldo,
+        dineroDeTarjeta = dineroDeTarjeta,
     )
 
     // region — el cobro con TARJETA apunta a la orden EXISTENTE, nunca crea una nueva
@@ -1159,6 +1164,51 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
         assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+    }
+
+    // Codex r1 de la unión (16-nov): la PAX enseña «Aprobado» ANTES de registrar el cobro en el SERVIDOR. Si el cajero vuelve
+    // con «atrás» mientras registra, la cuenta que lee el SERVIDOR todavía no descuenta la tarjeta.
+    @Test
+    fun d9_tarjeta_aprobada_que_todavia_se_registra_no_deja_cobrar_el_saldo_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        // «Aprobado» y «atrás» mientras el registro de la tarjeta sigue en camino: el SERVIDOR todavía dice $200.
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } returns TARJETA_REGISTRANDOSE
+        viewModel.alVolverAlFrente()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(TARJETA_REGISTRANDOSE)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        // La tarjeta ya se registró: la relectura sola trae lo que de verdad falta y se cobra eso.
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } returns null
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+        viewModel.payCash(BigDecimal("150.00"))
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
+    }
+
+    @Test
+    fun d9_si_no_se_puede_revisar_la_tarjeta_de_la_cuenta_no_se_cobra() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } throws IllegalStateException("libreta ilegible")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(SALDO_NO_RECUPERADO)
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test

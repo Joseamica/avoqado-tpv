@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
 import com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA
+import com.jaac.avoqado_tpv.features.tables.data.DineroDeTarjetaDeLaCuenta
 import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
 import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
@@ -312,6 +313,8 @@ class TableCheckoutViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     /** D86: saldo sin red de una mesa que esta terminal abrió sin red. */
     private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
+    /** D9 (Codex r1 de la unión): dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma. */
+    private val dineroDeTarjeta: DineroDeTarjetaDeLaCuenta,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TableCheckoutState())
@@ -674,6 +677,9 @@ class TableCheckoutViewModel @Inject constructor(
     /** [SaldoDeMesaSinRed.pendienteDeSubir] sin lanzar: si la cola no se puede leer, cuenta como «no se sabe» (en gris). */
     private suspend fun pendienteDeSubirSeguro(venueId: String, session: TableSession.Active): String? = try {
         saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
+            // D9 (Codex r1 de la unión): una tarjeta de esta cuenta aprobada que el SERVIDOR todavía no tiene (la PAX enseña
+            // «Aprobado» antes de registrarla) tampoco está en la cuenta leída: ni efectivo ni otra tarjeta hasta que suba.
+            ?: dineroDeTarjeta.motivo(venueId, session.orderId)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

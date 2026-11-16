@@ -3,12 +3,14 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
 import com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA
+import com.jaac.avoqado_tpv.features.tables.data.DineroDeTarjetaDeLaCuenta
 import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
 import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
@@ -159,6 +161,12 @@ data class TableCheckoutState(
     val tipAmount: BigDecimal = BigDecimal.ZERO,
 
     val isOnline: Boolean = true,
+    /**
+     * D90 (PAX, 16-nov): `false` mientras el letrero «Sin conexión a internet» está puesto ([ConnectionStateManager]). Al volver
+     * la red, el aparato avisa (→ [isOnline]) ~2 s antes de que la comprobación de conexión quite el letrero: la tarjeta espera
+     * al letrero para no verse habilitada debajo de él.
+     */
+    val letreroConInternet: Boolean = true,
     val isProvisional: Boolean = false,
     val isProcessingCash: Boolean = false,
     /**
@@ -168,6 +176,16 @@ data class TableCheckoutState(
      * [TableCheckoutViewModel.cobroConTarjetaNoSalio].
      */
     val isHandingOffToCard: Boolean = false,
+    /**
+     * D9 (encargo 49276c, 15-nov): esta pantalla ya le ENTREGÓ un cobro con tarjeta a «Cobrar» y todavía no ha vuelto a
+     * leer la cuenta del servidor. Mientras sea `true`, [remaining] puede ser el de ANTES de la tarjeta (esta pantalla
+     * sigue viva en la pila y, sin esto, no se recargaba al volver): ni efectivo ni otra tarjeta hasta que una lectura
+     * que EMPEZÓ después de esa entrega lo confirme. Lo prende [TableCheckoutViewModel.cobroConTarjetaEntregado] y lo
+     * apaga [TableCheckoutViewModel.loadCheck] al recibir esa lectura.
+     */
+    val saldoPorConfirmar: Boolean = false,
+    /** D9: la lectura que confirma el saldo tras la tarjeta va en camino (el aviso dice «Revisando…»). */
+    val revisandoSaldo: Boolean = false,
 
     /**
      * Restante a cobrar — pesos. Mesa del SERVIDOR: arranca en `TableSession.total` (sólo para pintar mientras carga) y manda
@@ -196,19 +214,32 @@ data class TableCheckoutState(
      * las dos condiciones es negociable — ver
      * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §5.
      */
-    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional && pendienteSinSubir == null && cambiosEnCamino == 0
+    val cardPaymentEnabled: Boolean get() = cardPaymentDisabledReason == null
 
+    /**
+     * D90 (PAX, 16-nov): además, sin la cuenta leída la tarjeta espera. En «Cargando cuenta…» se veía habilitada, y con
+     * [remaining] = `TableSession.total` (el TOTAL del plano, no lo que falta): un toque ahí podía cobrar de más.
+     */
     val cardPaymentDisabledReason: String?
         get() = when {
             isProvisional -> "La mesa aún no se sincroniza"
-            !isOnline -> "Necesita conexión"
+            !isOnline || !letreroConInternet -> "Necesita conexión"
             pendienteSinSubir != null -> pendienteSinSubir
             cambiosEnCamino > 0 -> CUENTA_SE_ACTUALIZA
+            check == null -> if (isLoading) "Cargando la cuenta…" else "No se pudo cargar la cuenta"
             else -> null
         }
 
     /** La cuenta sigue abierta salvo que ya se haya liberado la mesa — nunca un estado de error. */
     val checkStaysOpen: Boolean get() = !tableReleased
+
+    /** D9: por qué los dos botones esperan tras un cobro con tarjeta; `null` si no esperan por eso. */
+    val avisoDeSaldoPorConfirmar: String?
+        get() = when {
+            !saldoPorConfirmar -> null
+            revisandoSaldo -> "Revisando cuánto queda por pagar después de la tarjeta…"
+            else -> "No se pudo confirmar cuánto queda por pagar después de la tarjeta. Revisa la conexión y toca Reintentar."
+        }
 
     /**
      * D86: por qué el EFECTIVO no se puede cobrar todavía; `null` = se puede. Antes, sin cuenta leída, «Cobrar» cobraba (o
@@ -294,12 +325,30 @@ class TableCheckoutViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     /** D86: saldo sin red de una mesa que esta terminal abrió sin red. */
     private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
+    /** D90: el estado que pinta el letrero «Sin conexión a internet». */
+    private val connectionStateManager: ConnectionStateManager,
+    /** D9 (Codex r1 de la unión): dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma. */
+    private val dineroDeTarjeta: DineroDeTarjetaDeLaCuenta,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TableCheckoutState())
     val state: StateFlow<TableCheckoutState> = _state.asStateFlow()
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
+
+    /**
+     * D9 (encargo 49276c): sube al entregar una tarjeta a «Cobrar» y otra vez cuando la pantalla vuelve al frente tras
+     * esa entrega. Una lectura de la cuenta sólo se aplica si la marca no cambió entre que salió y que llegó: una que
+     * salió antes de la entrega, o mientras «Cobrar» seguía abierto y llega ya de vuelta, trae un saldo viejo (Codex r2).
+     */
+    private var marcaDeSaldo = 0L
+
+    /**
+     * D9 (encargo 49276c, Codex r2): la pantalla ya volvió al frente después de la última entrega a «Cobrar». Sólo una
+     * lectura que EMPEZÓ con esto en `true` confirma el saldo: una que empieza mientras «Cobrar» sigue abierto (p. ej. la
+     * que sigue a «Quitar descuento») llega antes de que la tarjeta cobre y su saldo ya no vale al volver.
+     */
+    private var alFrenteDesdeLaEntrega = true
 
     /**
      * D86 (Codex r5): una sola fila para leer la cuenta, calcular el saldo sin red y cobrar en efectivo. Así una lectura nunca
@@ -346,6 +395,11 @@ class TableCheckoutViewModel @Inject constructor(
                 isProvisional = provisional,
                 isOnline = networkMonitor.isConnected(),
             )
+        }
+        viewModelScope.launch {
+            connectionStateManager.connectionState.collect { conexion ->
+                _state.update { it.copy(letreroConInternet = conexion.hasInternet) }
+            }
         }
         viewModelScope.launch {
             networkMonitor.networkStateFlow.collect { info ->
@@ -412,7 +466,12 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(isLoading = false, errorMessage = "No hay venue configurado en este terminal") }
             return
         }
+        val marcaDeEntrega = marcaDeSaldo
+        val confirmaElSaldo = alFrenteDesdeLaEntrega
         viewModelScope.launch {
+            // D9 (encargo 49276c): tras una tarjeta, la lectura que sale con la pantalla ya de vuelta dice «Revisando…» desde
+            // que se pide, aunque espere turno en la fila detrás de otra lectura (D86); no «No se pudo confirmar».
+            if (confirmaElSaldo) _state.update { it.copy(revisandoSaldo = it.revisandoSaldo || it.saldoPorConfirmar) }
             // D86 (Codex r5): leer la cuenta, calcular el saldo y cobrar van EN FILA, nunca a la vez.
             fila.withLock {
             // D86 (Codex r2 #1): sólo la lectura más nueva, y sólo si ningún cobro empezó mientras viajaba, cambia el saldo.
@@ -442,6 +501,12 @@ class TableCheckoutViewModel @Inject constructor(
                         // D86 (Codex r2 #1): salió otra lectura después de ésta: la nueva manda.
                         return@fold
                     }
+                    if (marcaDeEntrega != marcaDeSaldo) {
+                        // D9: salió antes de entregar una tarjeta, o mientras «Cobrar» seguía abierto — su saldo puede
+                        // ser el de antes del abono. No se aplica; la lectura de la pantalla ya de vuelta sí vale.
+                        _state.update { it.copy(isLoading = false) }
+                        return@fold
+                    }
                     if (_state.value.isProcessingCash || cobrosIniciados != cobrosAlSalir) {
                         // D86 (Codex r1 #1, r2 #1): un cobro en efectivo empezó mientras esta lectura viajaba: su saldo puede ser
                         // de ANTES de ese cobro. Se tira y se vuelve a leer al terminar el cobro (o ya, si ya terminó).
@@ -453,7 +518,16 @@ class TableCheckoutViewModel @Inject constructor(
                     val freshRemaining = detail.amountLeft ?: detail.total
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
-                        it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null, pendienteSinSubir = pendiente)
+                        it.copy(
+                            isLoading = false,
+                            check = detail,
+                            remaining = freshRemaining,
+                            errorMessage = null,
+                            pendienteSinSubir = pendiente,
+                            // D9: sólo una lectura que empezó con la pantalla ya de vuelta confirma (Codex r2).
+                            saldoPorConfirmar = it.saldoPorConfirmar && !confirmaElSaldo,
+                            revisandoSaldo = if (confirmaElSaldo) false else it.revisandoSaldo,
+                        )
                     }
                     // D86 (Codex r1 #4): con algo propio sin subir, se vuelve a leer sola hasta que suba (no se queda trabada).
                     if (pendiente != null) {
@@ -465,17 +539,29 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
-                    // D86 (Codex r2 #3): una cuenta bloqueada por algo propio sin subir se sigue releyendo aunque una lectura falle.
-                    if (miLectura == lecturasIniciadas && _state.value.pendienteSinSubir != null) programarRelectura()
                     _state.update { current ->
+                        // D9: tras una tarjeta, el aviso pasa de «Revisando…» a «No se pudo confirmar…» y los botones
+                        // siguen esperando (sólo si es la lectura vigente; una vieja, o una que ya relevó otra más nueva, no
+                        // toca el aviso).
+                        val vigente = miLectura == lecturasIniciadas && marcaDeEntrega == marcaDeSaldo && confirmaElSaldo
+                        val revisando = if (vigente) false else current.revisandoSaldo
                         // Offline-first de lectura: si ya había un cheque cargado, se
                         // sigue mostrando — nunca se tapa una pantalla que funcionaba.
                         if (current.check != null) {
-                            current.copy(isLoading = false)
+                            current.copy(isLoading = false, revisandoSaldo = revisando)
                         } else {
-                            current.copy(isLoading = false, errorMessage = "No se pudo cargar la cuenta")
+                            // D90 (PAX, 16-nov, caso 6 del D86): sin cuenta y con un cobro propio sin subir, la pantalla dice ESO
+                            // (no sólo «no se pudo cargar») y se relee sola hasta que suba. El efectivo ya espera por la cuenta.
+                            current.copy(
+                                isLoading = false,
+                                revisandoSaldo = revisando,
+                                errorMessage = "No se pudo cargar la cuenta",
+                                pendienteSinSubir = pendienteAntes ?: current.pendienteSinSubir,
+                            )
                         }
                     }
+                    // D86 (Codex r2 #3): una cuenta bloqueada por algo propio sin subir se sigue releyendo aunque una lectura falle.
+                    if (miLectura == lecturasIniciadas && _state.value.pendienteSinSubir != null) programarRelectura()
                 },
             )
         }
@@ -617,6 +703,9 @@ class TableCheckoutViewModel @Inject constructor(
     /** [SaldoDeMesaSinRed.pendienteDeSubir] sin lanzar: si la cola no se puede leer, cuenta como «no se sabe» (en gris). */
     private suspend fun pendienteDeSubirSeguro(venueId: String, session: TableSession.Active): String? = try {
         saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
+            // D9 (Codex r1 de la unión): una tarjeta de esta cuenta aprobada que el SERVIDOR todavía no tiene (la PAX enseña
+            // «Aprobado» antes de registrarla) tampoco está en la cuenta leída: ni efectivo ni otra tarjeta hasta que suba.
+            ?: dineroDeTarjeta.motivo(venueId, session.orderId)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -725,8 +814,10 @@ class TableCheckoutViewModel @Inject constructor(
      */
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
-        if (s.isProcessingCash || s.isHandingOffToCard) return null
-        // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes.
+        // D90: se revalida al tocar, no sólo al pintar el botón (un toque que llegó en el cuadro anterior a la gris).
+        // D9 (encargo 49276c): tras entregar una tarjeta, no sale otra con el saldo de antes de releer.
+        if (s.isProcessingCash || s.isHandingOffToCard || s.saldoPorConfirmar || !s.cardPaymentEnabled) return null
+        // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes (ya va en lo de arriba).
         if (s.pendienteSinSubir != null || s.cambiosEnCamino > 0) return null
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }
@@ -739,7 +830,25 @@ class TableCheckoutViewModel @Inject constructor(
      * conserva), no la repite.
      */
     fun cobroConTarjetaEntregado() {
-        _state.update { it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO) }
+        // D9 (encargo 49276c): desde aquí el saldo de esta pantalla puede ser el de ANTES de la tarjeta.
+        marcaDeSaldo++
+        alFrenteDesdeLaEntrega = false
+        _state.update {
+            it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO, saldoPorConfirmar = true, revisandoSaldo = false)
+        }
+    }
+
+    /**
+     * D9 (encargo 49276c): la pantalla volvió a quedar al frente (p. ej. con el «atrás» del sistema desde «Aprobado»,
+     * que no pasa por «Continuar pagando»). Si entregó una tarjeta, relee la cuenta antes de dejar cobrar otra vez.
+     */
+    fun alVolverAlFrente() {
+        if (!alFrenteDesdeLaEntrega) {
+            // Primera vez al frente tras la entrega: lo que salió mientras «Cobrar» estaba abierto ya no vale.
+            marcaDeSaldo++
+            alFrenteDesdeLaEntrega = true
+        }
+        if (_state.value.saldoPorConfirmar) loadCheck()
     }
 
     /** «Cobrar» no se abrió (la terminal no estaba lista): la casilla CONSERVA la propina (Codex r1 #1). */
@@ -774,6 +883,8 @@ class TableCheckoutViewModel @Inject constructor(
         }
         // D9: una sola reserva de cobro — con una tarjeta abriéndose, el efectivo espera.
         if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
+        // D9 (encargo 49276c): tras entregar una tarjeta, el saldo de aquí puede ser el de antes: no se cobra hasta releerlo.
+        if (_state.value.saldoPorConfirmar) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se

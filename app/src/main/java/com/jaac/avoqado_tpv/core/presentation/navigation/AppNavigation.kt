@@ -2293,10 +2293,10 @@ fun AppNavigation(
                         // context (never cleared mid-checkout), so no args needed. A
                         // partial card payment leaves the check open — TableOrderScreen's
                         // own loadCheck() re-fetches the fresh remaining balance.
+                        // D9 (encargo 49276c): también quita la cuenta y el «Cobrar mesa» VIEJOS de la pila; si no,
+                        // «atrás» caía en el cobro viejo con el saldo de antes de la tarjeta (ver su KDoc).
                         Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
-                        navController.navigate(NavRoute.TableOrder.route) {
-                            popUpTo(NavRoute.Payment.route) { inclusive = true }
-                        }
+                        navController.volverALaCuentaDeLaMesa()
                     } else {
                         Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
                         navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {

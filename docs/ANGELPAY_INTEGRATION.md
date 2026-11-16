@@ -358,7 +358,8 @@ pegado al envío al host (EMV y banda). Con eso el propio proveedor pone la fron
 | `false` con cualquier campo que sólo escribe el host (o `status = APPROVED`) | incierto + 🚨 `AngelPaySdkContradiccion` |
 | `false` con tarjeta leída, salvo `E608` | incierto |
 | `E608` (límite sin contacto) con nuestra referencia | como hoy: rechazo con «Reintentar» en la misma venta (inserta el chip) |
-| `true` | como hoy. ⬜ Pendiente (§2.2 4a): un `G500`/`N400` sin respuesta del host sigue contando como rechazo |
+| `true` + `G500` SIN ningún campo del host (AAR 1.0.23: el error de red que su traductor no reconoce, `o.n`, la respuesta ilegible, `o.h`, o una respuesta leída que no trae nada —p. ej. «Solicitud rechazada» por banda, costo aceptado—) | **incierto** (D2, 16-nov): no es un veredicto del banco; verificador y ventana del servidor, nunca «Reintentar» |
+| `true` (todo lo demás) | como hoy: un rechazo con CUALQUIER dato del banco sigue con «Reintentar», y el `N400` también (el binario 1.0.23 sólo lo produce antes de que el banco procese) |
 | aprobado | como hoy — registra la venta (con `false` además grita 🚨) |
 
 Con «no se cobró» la LIBRETA va primero (`PaymentAttemptLedger.markSinAutorizacion`: `AUTORIZANDO → DESCARTADA`
@@ -409,8 +410,9 @@ bandeja sólo lo escribe si ningún intento de ESA solicitud quedó fuera de PRE
 1. **Qué ve el cajero sin red.** El «no se cobró» acreditado por el SDK se clasifica LOCALMENTE (resultado del SDK +
    Room), así que la pantalla de la terminal es la misma con o sin red. Un POS desconectado **no se entera al
    instante**: su final queda en la bandeja y le llega al servidor cuando vuelve la red. Con `attempted = true` manda la
-   tabla de hoy (decisión 4a): un rechazo del catálogo (`G500`, `N400`…) sigue siendo rechazo con «Reintentar» aunque el
-   host no haya contestado (⬜ lo pendiente de 4a), y un código sin veredicto (`U101`, `N402`, `G502`, `G505`, `I999`)
+   tabla de hoy: un rechazo del catálogo con respuesta del banco sigue siendo rechazo con «Reintentar» (y el `N400`, que
+   el binario sólo produce antes de que el banco procese), salvo un `G500` sin ningún dato del banco, que desde el 16-nov
+   (D2) es INCIERTO; un código sin veredicto (`U101`, `N402`, `G502`, `G505`, `I999`)
    sigue INCIERTO (verificador y ventana del servidor, sin «Reintentar»). El cobro con tarjeta en sí es online-only a
    propósito.
 2. **Qué se pierde si el proceso muere.** Antes del resultado del SDK: la fila queda AUTORIZANDO = incierto, como hoy.

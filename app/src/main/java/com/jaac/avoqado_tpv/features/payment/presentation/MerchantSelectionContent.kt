@@ -79,6 +79,9 @@ fun MerchantSelectionContent(
     enableMsiPromotions: Boolean = false,
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
     routingBannerMessage: String? = null,  // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
+    // 🧭 D3 (Nexgo, 12-nov): con UNA cuenta que todavía no está elegida, se muestra la lista (una tarjeta) para que la cajera
+    // la toque; si no, la vista simple deja «Tarjeta» apagada sin forma de elegir. Por default false: la PAX queda igual.
+    mostrarListaConUnaCuenta: Boolean = false,
     // T26: el efectivo puede tener su propio bloqueo (AngelPay: la auth en fondo no lo apaga).
     // Por default es el mismo que el de la tarjeta → Blumon y el kiosco quedan idénticos.
     cashSwitchingLoading: Boolean = merchantSwitchingLoading,
@@ -153,7 +156,8 @@ fun MerchantSelectionContent(
 
                     // 🥝 KIOSK: When hideAccountSelector=true, show simplified UI (no merchant list)
                     // This is used in kiosk mode when admin has pre-configured a default merchant
-                    val showSimplifiedView = merchants.size <= 1 || hideAccountSelector || motivoSinTarjeta != null
+                    val showSimplifiedView = (merchants.size <= 1 && !(mostrarListaConUnaCuenta && merchants.size == 1)) ||
+                        hideAccountSelector || motivoSinTarjeta != null
 
                     if (showSimplifiedView) {
                         // ✅ SINGLE MERCHANT: Modern fintech-style payment card
@@ -973,6 +977,38 @@ private fun MerchantSelectionThreeMerchantsPreview() {
             onSelectMerchant = {},
             onStartPayment = {},
             onStartCashPayment = {}
+        )
+    }
+}
+
+/** 🧭 D3 (Nexgo): la regla dejó una sola cuenta y todavía no hay ninguna elegida → se ve la lista para tocarla. */
+@Preview(
+    showBackground = true, backgroundColor = 0xFF1C1C1C, widthDp = 360, heightDp = 640,
+    name = "Nexgo: una cuenta permitida sin elegir",
+)
+@Composable
+private fun MerchantSelectionUnaCuentaSinElegirPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        MerchantSelectionContent(
+            subtotalAmount = "6000.00",
+            totalAmount = "6000.00",
+            tipAmount = "0",
+            rating = null,
+            merchants = listOf(
+                MerchantAccount(
+                    id = "2",
+                    serialNumber = "N86-002",
+                    posId = "22",
+                    displayName = "Cuenta B (tickets grandes)",
+                    environment = MerchantEnvironment.PRODUCTION
+                )
+            ),
+            currentMerchant = null,
+            merchantSwitchingLoading = false,
+            onSelectMerchant = {},
+            onStartPayment = {},
+            onStartCashPayment = {},
+            mostrarListaConUnaCuenta = true,
         )
     }
 }

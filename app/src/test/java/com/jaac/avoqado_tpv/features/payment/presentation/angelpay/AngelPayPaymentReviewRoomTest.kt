@@ -452,6 +452,234 @@ class AngelPayPaymentReviewRoomTest {
         Unit
     }
 
+    // ── D2 (12-nov, tarjeta hz:72be07e6:D2): el resultado del SDK EMBEBIDO que llega a un ViewModel recreado ─────────────
+    // Android destruye la actividad principal mientras la pantalla de cobro del SDK de AngelPay está al frente (proceso vivo):
+    // el ViewModel nuevo nace del MISMO SavedStateHandle pero con la RAM vacía (importe, propina, orden, intento). El registro
+    // de resultados entrega el resultado pendiente en la PRIMERA composición (DisposableEffect del launcher), antes de que el
+    // auto-arranque de la pantalla llame a `initPayment`. Antes de D2, `onAngelPaySdkResult` no adoptaba nada: registraba el
+    // aprobado con CEROS, sin orden y con una llave NUEVA, y la fila de la libreta se quedaba AUTORIZANDO (la recuperación la
+    // registraba después OTRA vez, con la llave del intento: dos Payment para un solo cargo).
+
+    /** Un aprobado del SDK embebido con NUESTRA referencia, como lo devuelve el AAR. */
+    private fun aprobadoDelSdk(intento: String, cobradoCents: Long): PaymentResult = mockk(relaxed = true) {
+        every { approved } returns true
+        every { authCode } returns "AUTH-D2"
+        every { reference } returns "REF-D2"
+        every { integratorReference } returns intento
+        every { amount } returns cobradoCents
+        every { cardBin } returns null
+        every { callResult } returns null
+    }
+
+    @Test
+    fun `D2 un aprobado del SDK que llega a un ViewModel recreado ANTES del auto-arranque se registra con lo de la fila - cobro iniciado en la terminal`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined) // Reloj real: ver la primera prueba de esta clase.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val contextos = mutableListOf<PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(contextos), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-d2", receiptUrl = "https://r/d2", accessKey = "k", amount = BigDecimal("150.00"), tipAmount = BigDecimal("22.50")),
+        )
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            // El cobro LOCAL: la pantalla fija el vínculo con (null, null), arranca y el cajero elige la propina en el asistente.
+            original.setSocketPaymentSource(null, null)
+            original.initPayment("150.00", orderId = "o-loc", orderNumber = "12")
+            original.selectTipAndProceed("150.00", rating = null, tipAmount = "22.50")
+            kotlinx.coroutines.withTimeout(10_000) { original.state.first { it is AngelPayPaymentState.SelectingMerchant } }
+            val intento = original.attemptIdForTest()!!
+            assertThat(original.openLedgerAttemptAndMarkAuthorizing(intento)).isTrue()
+            original.launchSdkRequest(mockk(relaxed = true), usedQaTipFallback = false)
+            original.onIntentLaunched()
+            // Android destruye la actividad con el SDK enfrente: el ViewModel muere con su RAM; sobreviven el handle y la libreta.
+            original.viewModelScope.cancel()
+            val restaurado = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
+            recreado = createViewModel(restaurado)
+
+            // 1) El resultado pendiente llega PRIMERO (DisposableEffect del launcher en la primera composición)…
+            recreado!!.onAngelPaySdkResult(aprobadoDelSdk(intento, cobradoCents = 17_250))
+            // 2) …y luego el auto-arranque de la pantalla, con los argumentos de un cobro local (sin propina: se eligió en el
+            //    asistente). Se llama sin condición: es el peor caso, una pantalla que todavía leyera `Idle`.
+            recreado!!.setSocketPaymentSource(null, null)
+            recreado!!.initPayment("150.00", orderId = "o-loc", orderNumber = "12")
+
+            val final = kotlinx.coroutines.withTimeout(15_000) {
+                recreado!!.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Queued }
+            }
+            com.google.common.truth.Truth.assertWithMessage("estado=%s fila=%s", final, db.paymentAttemptDao().getById(intento))
+                .that(final).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            assertThat(contextos).hasSize(1)
+            val ctx = contextos.single() as PaymentContext.AngelPayPayment
+            assertThat(ctx.amount).isEqualTo(BigDecimal("150.00"))
+            assertThat(ctx.tip).isEqualTo(BigDecimal("22.50"))
+            assertThat(ctx.orderId).isEqualTo("o-loc")
+            assertThat(ctx.idempotencyKey).isEqualTo(intento)   // la llave del intento que viajó al SDK, nunca una nueva
+            assertThat(ctx.terminalPaymentRequestId).isNull()
+            val exito = final as AngelPayPaymentState.Success
+            assertThat(exito.amount).isEqualTo("150.00")
+            assertThat(exito.tipAmount).isEqualTo("22.50")
+            // La fila deja AUTORIZANDO: el veredicto del banco quedó en la libreta y la recuperación ya no lo registra otra vez.
+            assertThat(db.paymentAttemptDao().getById(intento)!!.state).isNotEqualTo("AUTORIZANDO")
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    @Test
+    fun `D2 un aprobado del SDK que llega a un ViewModel recreado se registra con lo de la fila - cobro que manda el POS`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined) // Reloj real: ver la primera prueba de esta clase.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val contextos = mutableListOf<PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(contextos), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-d2p", receiptUrl = "https://r/d2p", accessKey = "k", amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00")),
+        )
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.setSocketPaymentSource("SOCKET", "req-d2")
+            original.initPayment("100.00", orderId = "o-d2", orderNumber = "D2", skipReview = true, externalTipCents = 1_000)
+            // Con un cobro del POS `initPayment` lee la libreta (Room, hilo real) antes de fijar el intento: se espera el paso.
+            kotlinx.coroutines.withTimeout(10_000) { original.state.first { it is AngelPayPaymentState.SelectingMerchant } }
+            val intento = original.attemptIdForTest()!!
+            assertThat(original.openLedgerAttemptAndMarkAuthorizing(intento)).isTrue()
+            original.launchSdkRequest(mockk(relaxed = true), usedQaTipFallback = false)
+            original.onIntentLaunched()
+            original.viewModelScope.cancel()
+            val restaurado = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
+            recreado = createViewModel(restaurado)
+
+            recreado!!.onAngelPaySdkResult(aprobadoDelSdk(intento, cobradoCents = 11_000))
+            recreado!!.setSocketPaymentSource("SOCKET", "req-d2")
+            recreado!!.initPayment("100.00", orderId = "o-d2", orderNumber = "D2", skipReview = true, externalTipCents = 1_000)
+
+            val final = kotlinx.coroutines.withTimeout(15_000) {
+                recreado!!.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Queued }
+            }
+            com.google.common.truth.Truth.assertWithMessage("estado=%s fila=%s", final, db.paymentAttemptDao().getById(intento))
+                .that(final).isInstanceOf(AngelPayPaymentState.Success::class.java)
+            assertThat(contextos).hasSize(1)
+            val ctx = contextos.single() as PaymentContext.AngelPayPayment
+            assertThat(ctx.amount).isEqualTo(BigDecimal("100.00"))
+            assertThat(ctx.tip).isEqualTo(BigDecimal("10.00"))
+            assertThat(ctx.orderId).isEqualTo("o-d2")
+            assertThat(ctx.idempotencyKey).isEqualTo(intento)
+            assertThat(ctx.terminalPaymentRequestId).isEqualTo("req-d2")
+            assertThat(db.paymentAttemptDao().getById(intento)!!.state).isNotEqualTo("AUTORIZANDO")
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    // ── D2 · Codex r3: la adopción recupera el dinero, pero también las REGLAS DEL RECORRIDO que ponía `initPayment` ──────────
+    // (que el cobro se salta la reseña/propina, y la propina fija de la mesa de D9). Recreada la pantalla, `initPayment` queda
+    // apartado mientras se registra el resultado; sin restaurarlas, tras un rechazo «Reintentar» y «Atrás» volvían a preguntar
+    // la propina de un cobro que nunca la preguntó.
+
+    /** Un rechazo confirmado del banco (G500) con NUESTRA referencia. */
+    private fun rechazoDelSdk(intento: String): PaymentResult = mockk(relaxed = true) {
+        every { approved } returns false
+        every { status } returns PaymentResult.Status.DECLINED
+        every { integratorReference } returns intento
+        every { message } returns "Transacción rechazada por el gateway"
+        every { callResult } returns callResultDelSdk(com.angelpay.angelpaysdk.models.AppErrorCatalog.Code.G500)
+    }
+
+    /** Lanza el SDK desde [original], lo «mata» y devuelve el ViewModel recreado del mismo SavedStateHandle. */
+    private suspend fun recrearConElSdkAlFrente(original: AngelPayPaymentViewModel, handle: androidx.lifecycle.SavedStateHandle): Pair<AngelPayPaymentViewModel, String> {
+        kotlinx.coroutines.withTimeout(10_000) { original.state.first { it is AngelPayPaymentState.SelectingMerchant } }
+        val intento = original.attemptIdForTest()!!
+        assertThat(original.openLedgerAttemptAndMarkAuthorizing(intento)).isTrue()
+        original.launchSdkRequest(mockk(relaxed = true), usedQaTipFallback = false)
+        original.onIntentLaunched()
+        original.viewModelScope.cancel()
+        return createViewModel(androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })) to intento
+    }
+
+    @Test
+    fun `D2 r3 cobro del POS que se salta la propina - tras recrear, rechazo, Reintentar y Atras NO vuelve a preguntar la propina`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined) // Reloj real: ver la primera prueba de esta clase.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        // El negocio SÍ pregunta propina; este cobro del POS (skipReview) se la salta.
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.setSocketPaymentSource("SOCKET", "req-r3-skip")
+            original.initPayment("100.00", orderId = "o-r3", orderNumber = "R3", skipReview = true, externalTipCents = 1_000)
+            val (vm, intento) = recrearConElSdkAlFrente(original, handle)
+            recreado = vm
+            vm.onAngelPaySdkResult(rechazoDelSdk(intento))
+            vm.setSocketPaymentSource("SOCKET", "req-r3-skip")
+            vm.initPayment("100.00", orderId = "o-r3", orderNumber = "R3", skipReview = true, externalTipCents = 1_000)   // peor caso
+            val rechazo = kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } } as AngelPayPaymentState.Error
+            assertThat(rechazo.canRetry).isTrue()
+
+            vm.retryAfterError()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+            val siguioEnElAsistente = vm.goBackOneStep()
+            com.google.common.truth.Truth.assertWithMessage("estado tras Atrás=%s", vm.state.value)
+                .that(vm.state.value).isNotInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+            assertThat(siguioEnElAsistente).isFalse()   // atrás = salir: este cobro nunca mostró el asistente
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    @Test
+    fun `D2 r3 mesa con la propina del mesero (D9) - tras recrear, rechazo, Reintentar y Atras NO vuelve a preguntar la propina`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined) // Reloj real: ver la primera prueba de esta clase.
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.setSocketPaymentSource(null, null)
+            original.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
+            val (vm, intento) = recrearConElSdkAlFrente(original, handle)
+            recreado = vm
+            vm.onAngelPaySdkResult(rechazoDelSdk(intento))
+            vm.setSocketPaymentSource(null, null)
+            vm.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)   // peor caso
+            val rechazo = kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } } as AngelPayPaymentState.Error
+            assertThat(rechazo.canRetry).isTrue()
+
+            vm.retryAfterError()
+            val metodo = vm.state.value as AngelPayPaymentState.SelectingMerchant
+            assertThat(metodo.tipAmount).isEqualTo("20.00")       // la propina de la mesa, de la fila
+            assertThat(metodo.totalAmount).isEqualTo("170.00")
+            val siguioEnElAsistente = vm.goBackOneStep()
+            com.google.common.truth.Truth.assertWithMessage("estado tras Atrás=%s", vm.state.value)
+                .that(vm.state.value).isNotInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+            assertThat(siguioEnElAsistente).isFalse()
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
     @Test
     fun `review parsed contradictory issuer and timeout callback never emits processor decline proof`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("offline")

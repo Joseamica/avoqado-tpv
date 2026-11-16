@@ -222,24 +222,65 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val _currentMerchant = MutableStateFlow<MerchantAccount?>(null)
     val currentMerchant: StateFlow<MerchantAccount?> = _currentMerchant.asStateFlow()
 
+    /**
+     * 🧭 D3 (13-nov): aviso en llano de «Método de pago» cuando la cuenta elegida no puede cobrar esta venta (la regla la
+     * excluye) y el cambio automático a la permitida no se pudo o todavía no se hace. La pantalla lo pinta en lugar del
+     * aviso de «mostrando todas las cuentas».
+     */
+    private val _avisoDeCuenta = MutableStateFlow<String?>(null)
+    val avisoDeCuenta: StateFlow<String?> = _avisoDeCuenta.asStateFlow()
+
+    /** 🧭 D3: la consulta de reglas ([generacionDelRuteo]) para la que ya se intentó el cambio automático (uno por consulta). */
+    private var cambioAutomaticoDeLaGeneracion: Long? = null
+
     // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives the selector filter +
-    // "showing all accounts" banner). AngelPay only FILTERS (no auto SDK-session switch on auto-select).
+    // "showing all accounts" banner). D3 (founder, 13-nov): si la cuenta activa queda excluida, la Nexgo pasa sola a la
+    // permitida por selectMerchant ([revisarCuentaPermitida]) y nunca cobra en la excluida ([startCardPayment]).
     private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
     val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
 
+    /**
+     * 🧭 D3 (12-nov): la consulta de reglas es asíncrona (hasta ~3 s sin red). Cada consulta toma un número y sólo publica
+     * si su número sigue siendo el último: la respuesta tardía de un cobro anterior (o de un total que ya cambió) nunca
+     * pisa la del cobro en curso. [olvidarRuteo] (desde [resetPayment]) sube el número.
+     */
+    private var generacionDelRuteo = 0L
+    private var ruteoJob: Job? = null
+
     /** Evaluate routing rules for a charge of [totalAmount] pesos and publish to [merchantRouting]. */
     private fun evaluateRoutingForCharge(totalAmount: String) {
-        viewModelScope.launch {
-            _merchantRouting.value = runCatching {
+        ruteoJob?.cancel()
+        val generacion = ++generacionDelRuteo
+        _avisoDeCuenta.value = null   // el aviso era de la consulta anterior
+        ruteoJob = viewModelScope.launch {
+            val elegibilidad = try {
                 merchantEligibilityRepository.evaluate(
                     totalAmount = totalAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO,
                     staffId = authRepository.getStaffId(),
                 )
-            }.getOrElse {
-                Timber.w(it, "🧭 [AngelPay Eligibility] evaluate() threw — fail-open (show all)")
+            } catch (e: Throwable) {
+                // Una consulta CANCELADA (otra más nueva o «Nuevo pago») no publica nada; cualquier otra falla abre (todas).
+                currentCoroutineContext().ensureActive()
+                Timber.w(e, "🧭 [AngelPay Eligibility] evaluate() threw — fail-open (show all)")
                 com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
             }
+            if (generacion != generacionDelRuteo) {
+                Timber.d("🧭 [AngelPay Eligibility] Respuesta de una consulta vieja ($generacion ≠ $generacionDelRuteo): se descarta")
+                return@launch
+            }
+            // D3 (13-nov): si la cuenta elegida queda excluida, [revisarCuentaPermitida] (que observa este flujo) la cambia.
+            _merchantRouting.value = elegibilidad
         }
+    }
+
+    /** 🧭 D3: el cobro terminó o se abandonó: la consulta en vuelo ya no es de nadie y la pantalla vuelve a «sin reglas». */
+    private fun olvidarRuteo() {
+        ruteoJob?.cancel()
+        ruteoJob = null
+        generacionDelRuteo++
+        _merchantRouting.value = null
+        _avisoDeCuenta.value = null
+        cambioAutomaticoDeLaGeneracion = null
     }
 
     /**
@@ -276,6 +317,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         serialNumber: String?,
         isPortabilidad: Boolean,
     ) {
+        // 🔴 D2: lo llama el auto-arranque, igual que [initPayment]: con el resultado de un ViewModel recreado en curso, los
+        // seriales salen de la fila del intento.
+        if (registrandoResultadoTrasRecrear) return
         pendingSerialNumbers = listOfNotNull(serialNumber)
         pendingIsPortabilidad = isPortabilidad
     }
@@ -465,17 +509,24 @@ class AngelPayPaymentViewModel @Inject constructor(
     // sin esto lee la config CRUDA del venue y mete al operador a Propina y Calificación,
     // dejando al POS colgado mientras sale de un wizard que no existió (caso real N86
     // 2026-08-10: 34 s hasta que llegó la cancelación). Espejo de `isSkipReviewFlow` del
-    // riel Blumon. Campo simple a propósito: si el proceso muere, la pantalla vuelve a
-    // llamar initPayment con el mismo skipReview y el flag se recompone solo.
-    private var isSkipReviewFlow: Boolean = false
+    // riel Blumon.
+    // 🔴 D2 (Codex r3): vive en el SavedStateHandle. Antes era «campo simple: la pantalla vuelve a llamar initPayment y se
+    // recompone solo», pero un ViewModel recreado con el SDK al frente registra el resultado de su intento y aparta el
+    // auto-arranque ([registrandoResultadoTrasRecrear]); sin esto, tras un rechazo «Reintentar» y «Atrás» volvían a preguntar
+    // la propina de un cobro del POS que nunca la preguntó. Lo pone [initPayment]; lo limpia [resetPayment].
+    private var isSkipReviewFlow: Boolean
+        get() = savedStateHandle[KEY_FLUJO_SIN_ASISTENTE] ?: false
+        set(value) { savedStateHandle[KEY_FLUJO_SIN_ASISTENTE] = value }
 
     /**
      * 🪑 D9 (12-nov): la propina ya la escribió el mesero en «Mesas» y viaja en [pendingTip]. Con esto prendido el
      * flujo se lee con `showTipScreen = false` ([ajustesDelFlujo]): ni de ida, ni tras calificar, ni con «atrás» se llega
-     * a la pantalla de propina; la calificación sigue igual. Campo simple, como [isSkipReviewFlow]: si el proceso muere,
-     * la pantalla vuelve a llamar [initPayment] con la misma llave y se recompone solo.
+     * a la pantalla de propina; la calificación sigue igual. En el SavedStateHandle, como [isSkipReviewFlow] (D2, Codex r3): un
+     * ViewModel recreado con el SDK al frente no vuelve a pasar por [initPayment] y la conserva así. Lo limpia [resetPayment].
      */
-    private var propinaFija: Boolean = false
+    private var propinaFija: Boolean
+        get() = savedStateHandle[KEY_PROPINA_FIJA] ?: false
+        set(value) { savedStateHandle[KEY_PROPINA_FIJA] = value }
 
     /** Los ajustes del venue con lo que ESTE cobro ya trae resuelto (D9: la propina de la mesa). */
     private fun ajustesDelFlujo(): com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings {
@@ -587,6 +638,37 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var entradaOriginalRemota: Boolean
         get() = savedStateHandle[KEY_ENTRADA_REMOTA] ?: false
         set(value) { savedStateHandle[KEY_ENTRADA_REMOTA] = value }
+
+    /**
+     * 🔴 D2 (12-nov, tarjeta `hz:72be07e6:D2`): el intento que ESTA pantalla le entregó al SDK embebido ([launchSdkRequest]).
+     *
+     * La pantalla de cobro del SDK es otra Activity: con ella al frente, Android puede destruir la principal (proceso vivo) y el
+     * ViewModel nuevo nace con la RAM vacía —importe, propina, orden, intento—. El resultado del SDK le llega en la PRIMERA
+     * composición, antes del auto-arranque de la pantalla. El cobro del POS encontraba su fila por la solicitud; el LOCAL no tenía
+     * con qué, y el aprobado se registraba con ceros, sin orden y con una llave NUEVA (la fila se quedaba AUTORIZANDO y la
+     * recuperación lo registraba otra vez después). Con esta llave se adopta por identidad ([adoptarIntentoDelSdkSiSeRecreo]).
+     * Sólo sirve con el proceso vivo: uno nuevo no restaura esta pantalla (`EstadoDelProceso`). La borran [resetPayment] y
+     * [retryAfterError].
+     */
+    private var intentoLanzadoAlSdk: String?
+        get() = savedStateHandle[KEY_INTENTO_LANZADO]
+        set(value) { savedStateHandle[KEY_INTENTO_LANZADO] = value }
+
+    /**
+     * 🔴 D2: un ViewModel recreado está registrando el resultado del SDK de SU intento. Mientras tanto [initPayment] (el
+     * auto-arranque de la pantalla, que corre DESPUÉS de que llega el resultado) no hace nada: pisaría el importe y la propina
+     * con los argumentos de la pantalla —un cobro local trae la propina del asistente, no de los argumentos—, abriría OTRO
+     * intento y pintaría «Método de pago» encima del registro.
+     */
+    private var registrandoResultadoTrasRecrear = false
+
+    /**
+     * 🔴 D2 (Codex r1-r3): un ViewModel recreado adoptó el resultado del SDK SIN el contexto de su intento (la libreta no devolvió
+     * su fila): importe, propina y orden siguen vacíos y NO son cifras. Con esto encendido no se registra desde la RAM ([onAngelPaySdkResult]),
+     * S5 no pinta un recibo ([manejarConfirmacionDelServidor]), el ticket de rechazo omite el importe ([imprimirTicketDeRechazo]) y la
+     * telemetría no reporta $0. Se limpia en [resetPayment] y [retryAfterError].
+     */
+    private var contextoDelIntentoDesconocido = false
 
     /**
      * 🔒 D6 (2-nov, «ninguna duda de cobro sin salida»): ¿este cobro conserva la identidad con la que nació? La libreta acepta
@@ -1338,6 +1420,17 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
 
+        // 🧭 D3 (founder, 13-nov): con «Método de pago» a la vista, cualquier cambio en la regla, las cuentas, la cuenta
+        // elegida, la sesión de AngelPay o la pantalla vuelve a revisar si la cuenta elegida puede cobrar esta venta; si no,
+        // pasa sola a la permitida ([revisarCuentaPermitida]). Cubre las cuentas que cargan tarde (Codex r2 #1) y el cambio
+        // de un cobro anterior que termina tarde.
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.merge(
+                _merchantRouting, _merchants, _currentMerchant, _selectionInProgress, _state,
+                angelPayAuthRepository.state, angelPayMerchantRepository.inFlightSwitch,
+            ).collect { revisarCuentaPermitida() }
+        }
+
         // 🪙 Subscribe to Socket.IO crypto events for B4Bit webhook callbacks.
         // Same logic as PaymentViewModel — only handle events whose requestId
         // matches our `currentCryptoRequestId`.
@@ -1394,6 +1487,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         ventaLocalJson: String? = null,
         folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,
     ) {
+        // 🔴 D2: el resultado del SDK de un ViewModel recreado manda; este arranque no lo pisa ([registrandoResultadoTrasRecrear]).
+        if (registrandoResultadoTrasRecrear) {
+            Timber.w("📒 [AngelPay SDK] initPayment ignorado: el ViewModel recreado está registrando el resultado del SDK de su intento")
+            return
+        }
         pendingFolio = folio
         // D6: un $0 que manda el POS sigue rechazado (abajo); uno de la terminal va en sólo efectivo.
         ventaEnCero = ventaLocalJson == null && _paymentSource != CobroRemotoDelPos.FUENTE_SOCKET &&
@@ -1759,7 +1857,85 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
         }
 
-    fun selectMerchant(merchant: MerchantAccount) {
+    /**
+     * 🧭 D3 (founder, 13-nov: «para que siempre cuadre y sea la mejor experiencia»): si la cuenta elegida no puede cobrar esta
+     * venta (la regla la excluye, o no hay ninguna elegida), la Nexgo pasa sola a la permitida por [selectMerchant] —el mismo
+     * camino del toque, que fija la sesión del SDK también en app-a-app (Codex r2 #2)— con el criterio de la PAX
+     * ([selectorDeCuentas]). Sólo actúa en «Método de pago» con tarjeta disponible, con la sesión quieta (nada en vuelo:
+     * [bloqueoDeMetodosDePago]) y en un estado de la auth que puede fijar el comercio; hace UN intento por consulta de reglas.
+     * Si falla, [cambiarDeCuenta] deja el aviso y la lista con la permitida a la vista; la cajera la toca.
+     */
+    private fun revisarCuentaPermitida() {
+        val estado = _state.value as? AngelPayPaymentState.SelectingMerchant ?: return
+        val selector = selectorActual()
+        if (selector.elegidaPermitida) {
+            _avisoDeCuenta.value = null
+            return
+        }
+        val destino = selector.cuentaAPasar ?: return
+        if (estado.motivoSinTarjeta != null) return   // sólo efectivo: no hay tarjeta que cobrar en ninguna cuenta
+        val auth = angelPayAuthRepository.state.value
+        if (auth !is AngelPayAuthState.SelectingMerchant && auth !is AngelPayAuthState.Authenticated &&
+            auth !is AngelPayAuthState.ConfigMismatchBanner
+        ) return
+        val bloqueo = bloqueoDeMetodosDePago(
+            selectionInProgress = _selectionInProgress.value,
+            inFlightSwitch = angelPayMerchantRepository.inFlightSwitch.value,
+            authState = auth,
+        )
+        if (bloqueo.tarjeta) return   // la sesión se está moviendo: se revisa otra vez cuando se asiente
+        val generacion = generacionDelRuteo
+        if (cambioAutomaticoDeLaGeneracion == generacion) return   // ya se intentó en esta consulta
+        cambioAutomaticoDeLaGeneracion = generacion
+        Timber.i(
+            "🧭 [AngelPay] La regla excluye la cuenta elegida (%s): paso sola a %s",
+            _currentMerchant.value?.displayName ?: "ninguna", destino.displayName,
+        )
+        cambiarDeCuenta(destino, automatico = generacion)
+    }
+
+    /** 🧭 D3: el selector de esta venta con la regla, las cuentas, la elegida y si la sesión pide elegir comercio. */
+    private fun selectorActual(): SelectorDeCuentas = selectorDeCuentas(
+        todas = _merchants.value,
+        reglas = _merchantRouting.value,
+        elegida = _currentMerchant.value,
+        sesionPideElegir = angelPayAuthRepository.state.value is AngelPayAuthState.SelectingMerchant,
+    )
+
+    /** 🧭 D3: lo que lee la cajera cuando la cuenta elegida no puede cobrar esta venta. */
+    private fun avisoCuentaExcluida(destino: MerchantAccount?, fallo: Boolean): String {
+        val cuenta = destino?.displayName?.let { "«$it»" } ?: "una cuenta permitida"
+        return if (fallo) {
+            "Esta venta se cobra en $cuenta y no se pudo cambiar sola. Tócala en la lista para cobrar con tarjeta."
+        } else {
+            "Esta venta se cobra en $cuenta. Espera a que cambie o tócala en la lista para cobrar con tarjeta."
+        }
+    }
+
+    /**
+     * 🧭 D3: un cambio automático que falló. La cuenta vuelve a la anterior sólo si nadie la movió después (la cajera pudo
+     * tocar otra mientras tanto), y el aviso sólo se pinta si la consulta que lo pidió sigue siendo la del cobro en curso:
+     * la falla de un cobro anterior no es de éste. No se reintenta solo en esta consulta ([cambioAutomaticoDeLaGeneracion]).
+     */
+    private fun cambioAutomaticoFallido(destino: MerchantAccount, anterior: MerchantAccount?, generacion: Long) {
+        _currentMerchant.compareAndSet(destino, anterior)
+        if (generacion == generacionDelRuteo) {
+            _avisoDeCuenta.value = avisoCuentaExcluida(destino, fallo = true)
+            Timber.w("🧭 [AngelPay] No se pudo pasar sola a %s: queda la lista para tocarla", destino.displayName)
+        } else {
+            Timber.i("🧭 [AngelPay] Falló tarde el cambio automático de un cobro anterior: no se pinta en este")
+        }
+    }
+
+    fun selectMerchant(merchant: MerchantAccount) = cambiarDeCuenta(merchant, automatico = null)
+
+    /**
+     * [automatico] = la consulta de reglas que pidió el cambio ([revisarCuentaPermitida]); null = el toque de la cajera. Un
+     * cambio automático que falla NO es un error de la cajera: no pinta Error ni avisa al POS; la pantalla sigue en «Método
+     * de pago», la cuenta vuelve a la anterior y, si la consulta sigue vigente, queda el aviso con la permitida en la lista.
+     * Uno de un cobro anterior que termina tarde no pinta nada en el cobro nuevo.
+     */
+    private fun cambiarDeCuenta(merchant: MerchantAccount, automatico: Long?) {
         // Flip selectionInProgress SYNCHRONOUSLY (before the coroutine launches)
         // so the screen disables Tarjeta/Efectivo/Cripto on the same frame as
         // the merchant tap. Must be set OUTSIDE viewModelScope.launch — once
@@ -1769,6 +1945,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         viewModelScope.launch {
             val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrElse { err ->
                 Timber.e(err, "🔶 [AngelPay] Merchant ${merchant.displayName} has invalid AngelPay id")
+                if (automatico != null) {
+                    // 🧭 D3: el cambio automático no se puede: la cajera elige en la lista; nada de Error ni aviso al POS.
+                    if (automatico == generacionDelRuteo) _avisoDeCuenta.value = avisoCuentaExcluida(merchant, fallo = true)
+                    _selectionInProgress.value = false
+                    return@launch
+                }
                 _state.value = AngelPayPaymentState.Error(
                     message = "Merchant inválido para AngelPay: ${err.message}",
                     canRetry = false,
@@ -1811,6 +1993,22 @@ class AngelPayPaymentViewModel @Inject constructor(
                         switchResult.exceptionOrNull(),
                         "🔶 [AngelPay] switchAccount FAILED; reverting merchant pick",
                     )
+                    if (automatico != null) {
+                        // Codex r3 #2: switchAccount cerró la sesión antes de fallar y la deja en AuthError, que apaga TODA
+                        // la lista (también otra permitida que sí serviría). La cajera no tocó nada: se regresa a la cuenta
+                        // de AngelPay en la que estaba, para que la lista vuelva a funcionar (la excluida no cobra: guarda
+                        // de startCardPayment). Si tampoco se puede, queda como cualquier AuthError (banner y recuperación).
+                        if (currentAccountId != null && currentAccountId != targetAccountId) {
+                            val regreso = angelPayAuthRepository.switchAccount(currentAccountId)
+                            Timber.w(
+                                "🧭 [AngelPay] Cambio automático de cuenta AngelPay falló; regreso a la anterior → %s",
+                                if (regreso.isSuccess) "ok" else "falló",
+                            )
+                        }
+                        cambioAutomaticoFallido(merchant, previousMerchant, automatico)
+                        merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
+                        return@launch
+                    }
                     _currentMerchant.value = previousMerchant
                     val kindSwitch = (angelPayAuthRepository.state.value as? AngelPayAuthState.AuthError)?.kind
                     val delPanelSwitch = kindSwitch == AuthErrorKind.SIN_CREDENCIALES || kindSwitch == AuthErrorKind.CUENTA_NO_EN_CONFIG
@@ -1834,6 +2032,11 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             result.onFailure { err ->
                 Timber.e(err, "🔶 [AngelPay] Merchant selection failed; reverting to $previousMerchant")
+                if (automatico != null) {
+                    cambioAutomaticoFallido(merchant, previousMerchant, automatico)
+                    merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
+                    return@onFailure
+                }
                 _currentMerchant.value = previousMerchant
                 _state.value = AngelPayPaymentState.Error(
                     message = "No se pudo cambiar de merchant: ${err.message ?: "error desconocido"}",
@@ -1848,6 +2051,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
             }
             result.onSuccess {
+                // 🧭 D3: la cuenta ya es la permitida; el aviso de esta consulta sobra (uno viejo ya se limpió al consultar).
+                if (automatico == null || automatico == generacionDelRuteo) _avisoDeCuenta.value = null
                 // 🔌 Circuit breaker: a healthy selection resets this merchant's failure counter.
                 merchantEligibilityRepository.recordChargeSuccess(merchant.merchantAccountId ?: merchant.id)
             }
@@ -1878,6 +2083,29 @@ class AngelPayPaymentViewModel @Inject constructor(
             bloquearPorTurnoSinConfirmar()
             return
         }
+        // 🧭 D3 (founder, 13-nov): nunca se cobra en una cuenta que la regla excluye. Red de seguridad por si «Tarjeta» llega
+        // antes que el cambio automático (carrera, sesión moviéndose): no se toca el SDK, ni el candado, ni el cobro; la
+        // pantalla sigue en «Método de pago» con el aviso y la permitida en la lista. [revisarCuentaPermitida] la cambia en
+        // cuanto la sesión se asiente.
+        val selector = selectorActual()
+        // Codex r3 #1: mientras un cambio de cuenta está en vuelo, la cuenta elegida es la del cambio (optimista); si el cambio
+        // falla vuelve a la anterior, que puede ser la excluida. Con reglas que filtran, «Tarjeta» no arranca hasta que se asiente.
+        val reglasFiltran = _merchantRouting.value?.let { !it.shouldShowAll } == true
+        if (reglasFiltran && _selectionInProgress.value) {
+            Timber.w("🧭 [AngelPay] «Tarjeta» con un cambio de cuenta en vuelo y reglas que filtran: no se arranca el SDK")
+            return
+        }
+        if (!selector.elegidaPermitida) {
+            Timber.w(
+                "🧭 [AngelPay] «Tarjeta» con una cuenta que la regla excluye (%s): no se arranca el SDK",
+                _currentMerchant.value?.displayName ?: "ninguna",
+            )
+            // Si el cambio automático de esta consulta ya falló, su aviso («no se pudo cambiar sola») se queda.
+            if (_avisoDeCuenta.value == null) _avisoDeCuenta.value = avisoCuentaExcluida(selector.cuentaAPasar, fallo = false)
+            revisarCuentaPermitida()
+            return
+        }
+        val estadoAlTocar = _state.value
         viewModelScope.launch {
             // Per spec §4.5b, AngelPay PIN MUST NOT be persisted to SecureStorage —
             // it lives only in `TerminalConfigRepository.cachedAngelPayAuth` (in-memory,
@@ -1924,6 +2152,21 @@ class AngelPayPaymentViewModel @Inject constructor(
                 if (cobroCanceladoPorElPos) {
                     Timber.w("🛑 [AngelPay] El POS canceló este cobro: no se lanza el SDK")
                     paymentStateHolder.setCharging(false)
+                    return@launch
+                }
+                // 🧭 D3 (Codex r3 #1): la cuenta pudo cambiar mientras se esperaba el candado. Se vuelve a revisar la regla
+                // antes de tocar la sesión: nunca se cobra en una cuenta que la regla excluye.
+                val selectorTrasElCandado = selectorActual()
+                if (!selectorTrasElCandado.elegidaPermitida) {
+                    Timber.w("🧭 [AngelPay] Tras el candado la cuenta elegida ya no puede cobrar esta venta: no se lanza el SDK")
+                    if (estadoAlTocar is AngelPayPaymentState.SelectingMerchant &&
+                        _state.value is AngelPayPaymentState.ConectandoAngelPay
+                    ) {
+                        _state.value = estadoAlTocar
+                    }
+                    if (_avisoDeCuenta.value == null) {
+                        _avisoDeCuenta.value = avisoCuentaExcluida(selectorTrasElCandado.cuentaAPasar, fallo = false)
+                    }
                     return@launch
                 }
                 if (_currentMerchant.value?.let { runCatching { it.requireAngelpayMerchantId() }.isSuccess } != true) {
@@ -2460,7 +2703,11 @@ class AngelPayPaymentViewModel @Inject constructor(
     ) {
         lastSdkLaunchRequest = request
         lastSdkLaunchUsedTipFallback = usedQaTipFallback
-        prepareExternalLaunch(ensurePaymentAttemptId())
+        val intento = ensurePaymentAttemptId()
+        // 🔴 D2: ANTES de publicar el lanzamiento (la pantalla lanza al ver el estado): si Android destruye la pantalla con el
+        // SDK al frente, el ViewModel nuevo sabe de qué intento es el resultado que regresa.
+        intentoLanzadoAlSdk = intento
+        prepareExternalLaunch(intento)
         _state.value = AngelPayPaymentState.LaunchingAngelPaySdk(
             request = request,
             amount = pendingAmount.toPlainString(),
@@ -2807,26 +3054,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             // obligación pendiente cerca su venta en vez de apagar el aparato pueden convivir
             // varias, y «el más reciente» le colgaría a esta solicitud el desenlace de otra cuenta.
             _socketRequestId?.let { solicitud ->
-              if (currentPaymentAttemptId == null) {
-                paymentAttemptLedger.adoptarCobroDeLaSolicitud(solicitud)?.attemptId?.let { pendiente ->
-                    Timber.w("📒 [AngelPay] ViewModel recreado: se adopta el intento pendiente %s", pendiente)
-                    currentPaymentAttemptId = pendiente
-                    authorizationWasLaunched = true
-                    ledgerOpenedAttemptId = pendiente
-                    val filaAdoptada = paymentAttemptLedger.leerIntento(pendiente)
-                    // 🔴 Codex r9 (P2-5): el CONTEXTO de ese intento (cuenta de cobro, venta, importe), no el del cobro que esta
-                    // pantalla preparaba. Sin la fila, ninguna cuenta: nunca la que el cajero eligió para otro cobro.
-                    intentoRestaurado = pendiente
-                    cuentaDelIntentoRestaurado = null
-                    filaAdoptada?.let(::restaurarContextoDesdeLaFila)
-                    // Fix 4 (Codex, D3d): la evidencia positiva del servidor vive en la FILA; el veto en RAM murió con el VM anterior.
-                    // Se carga ANTES de procesar el callback: un rechazo del SDK no ofrece «Reintentar» sobre dinero ya acreditado.
-                    if (filaAdoptada?.let(::tieneEvidenciaDurableSinPromover) == true) {
-                        Timber.w("📒 [AngelPay] la fila %s trae evidencia de dinero del servidor: veto restaurado", pendiente)
-                        vetoDeDineroDelIntento = pendiente
-                    }
-                }
-              }
+              if (currentPaymentAttemptId == null) adoptarIntentoDeLaSolicitud(solicitud)
             }
             if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
@@ -3010,6 +3238,143 @@ class AngelPayPaymentViewModel @Inject constructor(
         attemptId?.let { paymentAttemptLedger.marcarSdkRegreso(it) }
     }
 
+    /**
+     * 🔴 Adopción por la SOLICITUD del POS: la fila sin resolver que lleva ESTA `terminalPaymentRequestId`, nunca «el último
+     * pendiente» (pueden convivir varios). Es el camino de [onAngelPayResult] desde el 2026-09-12, movido aquí sin cambiar su
+     * orden para que [onAngelPaySdkResult] use el mismo (D2).
+     */
+    /** Devuelve null si no adoptó nada; si adoptó, si trajo el contexto de la fila. */
+    private suspend fun adoptarIntentoDeLaSolicitud(solicitud: String): Boolean? =
+        paymentAttemptLedger.adoptarCobroDeLaSolicitud(solicitud)?.attemptId?.let { pendiente ->
+            Timber.w("📒 [AngelPay] ViewModel recreado: se adopta el intento pendiente %s", pendiente)
+            fijarIntentoAdoptado(pendiente)
+            restaurarIntentoAdoptado(pendiente, paymentAttemptLedger.leerIntento(pendiente))
+        }
+
+    /** La adopción, paso 1: el ViewModel recreado toma como suyo el intento de la libreta (antes de leer su fila). */
+    private fun fijarIntentoAdoptado(pendiente: String) {
+        currentPaymentAttemptId = pendiente
+        authorizationWasLaunched = true
+        ledgerOpenedAttemptId = pendiente
+    }
+
+    /**
+     * La adopción, paso 2: el CONTEXTO de ese intento y, si la fila trae evidencia de dinero del servidor, su veto. Devuelve si
+     * hubo fila (sin ella el importe, la propina y la orden siguen vacíos: quien llama no registra desde ahí, D2).
+     */
+    private fun restaurarIntentoAdoptado(pendiente: String, filaAdoptada: PaymentAttemptEntity?): Boolean {
+        // 🔴 Codex r9 (P2-5): el CONTEXTO de ese intento (cuenta de cobro, venta, importe), no el del cobro que esta
+        // pantalla preparaba. Sin la fila, ninguna cuenta: nunca la que el cajero eligió para otro cobro.
+        intentoRestaurado = pendiente
+        cuentaDelIntentoRestaurado = null
+        filaAdoptada?.let(::restaurarContextoDesdeLaFila)
+        // Fix 4 (Codex, D3d): la evidencia positiva del servidor vive en la FILA; el veto en RAM murió con el VM anterior.
+        // Se carga ANTES de procesar el callback: un rechazo del SDK no ofrece «Reintentar» sobre dinero ya acreditado.
+        if (filaAdoptada?.let(::tieneEvidenciaDurableSinPromover) == true) {
+            Timber.w("📒 [AngelPay] la fila %s trae evidencia de dinero del servidor: veto restaurado", pendiente)
+            vetoDeDineroDelIntento = pendiente
+        }
+        return filaAdoptada != null
+    }
+
+    /** D2: lo que logró la adopción de un ViewModel recreado ([adoptarIntentoDelSdkSiSeRecreo]). */
+    private enum class AdopcionTrasRecrear {
+        /** No se sabe de ningún intento (ni llave ni fila de la solicitud): el resultado sigue como antes de D2. */
+        NADA,
+        /** El intento y su contexto salieron de la libreta. */
+        CON_CONTEXTO,
+        /** Hubo un intento lanzado, pero su contexto no se pudo leer: NADA se registra desde la RAM vacía (Codex r1, P1). */
+        SIN_CONTEXTO,
+    }
+
+    /** D2 (Codex r1, P1): una lectura de la libreta que falla de paso (SQLite ocupado) se reintenta antes de rendirse. */
+    private suspend fun leerIntentoLanzado(attemptId: String): PaymentAttemptEntity? {
+        repeat(LECTURAS_DEL_INTENTO_LANZADO) { vez ->
+            paymentAttemptLedger.leerIntento(attemptId)?.let { return it }
+            if (vez < LECTURAS_DEL_INTENTO_LANZADO - 1) delay(MS_ENTRE_LECTURAS_DEL_INTENTO)
+        }
+        return null
+    }
+
+    /**
+     * 🔴 D2 (12-nov, tarjeta `hz:72be07e6:D2`): el resultado del SDK embebido llegó a un ViewModel que NO tiene intento — Android
+     * destruyó la pantalla con el SDK al frente y éste nació de nuevo con la RAM vacía. Se adopta el intento DUEÑO del resultado,
+     * por identidad y nunca «el último pendiente»:
+     *  1. el que ESTA pantalla le entregó al SDK ([intentoLanzadoAlSdk]), si su fila existe y es de esta misma solicitud (la
+     *     del POS, o ninguna en un cobro local). Si la libreta no contesta (tras reintentar), se adopta el intento SIN contexto;
+     *  2. si su fila es de OTRA solicitud, en un cobro del POS, el de la solicitud ([adoptarIntentoDeLaSolicitud]), como el
+     *     camino app-a-app;
+     *  3. sin llave, en un cobro del POS, también el de la solicitud.
+     * Sin nada que adoptar ni llave, el resultado sigue como antes (no se inventa un intento).
+     */
+    private suspend fun adoptarIntentoDelSdkSiSeRecreo(): AdopcionTrasRecrear {
+        val solicitud = _socketRequestId
+        val lanzado = intentoLanzadoAlSdk
+        if (lanzado != null) {
+            val fila = leerIntentoLanzado(lanzado)
+            if (fila == null) {
+                // La llave la guardó ESTA pantalla al lanzar: el intento es éste aunque la libreta no conteste. Se adopta para que
+                // su veredicto aterrice en SU fila, pero sin contexto no se registra nada desde aquí.
+                Timber.e("📒🚨 [AngelPay SDK] ViewModel recreado: la libreta no devolvió el intento lanzado %s — se adopta SIN contexto", lanzado)
+                fijarIntentoAdoptado(lanzado)
+                restaurarIntentoAdoptado(lanzado, null)
+                return AdopcionTrasRecrear.SIN_CONTEXTO
+            }
+            if (fila.terminalPaymentRequestId == solicitud) {
+                Timber.w("📒 [AngelPay SDK] ViewModel recreado: se adopta el intento que esta pantalla lanzó al SDK %s", lanzado)
+                fijarIntentoAdoptado(lanzado)
+                restaurarIntentoAdoptado(lanzado, fila)
+                return AdopcionTrasRecrear.CON_CONTEXTO
+            }
+            Timber.e(
+                "📒🚨 [AngelPay SDK] ViewModel recreado: el intento lanzado %s es de otra solicitud (%s, no %s) — no se adopta por llave",
+                lanzado, fila.terminalPaymentRequestId, solicitud,
+            )
+        }
+        return when (solicitud?.let { adoptarIntentoDeLaSolicitud(it) }) {
+            true -> AdopcionTrasRecrear.CON_CONTEXTO
+            false -> AdopcionTrasRecrear.SIN_CONTEXTO
+            // Había un intento lanzado y el resultado no se pudo atar a él: tampoco se registra desde la RAM vacía.
+            null -> if (lanzado != null) AdopcionTrasRecrear.SIN_CONTEXTO else AdopcionTrasRecrear.NADA
+        }
+    }
+
+    /**
+     * 🔴 D2 (Codex r1, P1): el ViewModel recreado sabe que hubo un intento lanzado, pero la libreta no le dio su contexto (importe,
+     * propina, orden, cuenta). Registrar desde la RAM vacía mandaría $0, sin orden y con otra llave, y luego la recuperación lo
+     * registraría otra vez: NO se registra nada aquí. El veredicto ya quedó en la fila del intento si la libreta escribe
+     * (`markHostResponded` / `markIndeterminate`, arriba), y la recuperación registra desde ahí con su llave; si ni eso, el aviso
+     * del banco (webhook) llega al servidor. La pantalla no ofrece volver a cobrar ni dice «no se cobró».
+     */
+    private fun mostrarResultadoSinContexto(result: PaymentResult) {
+        // El SDK regresó un resultado: sí se lanzó. Sin esto la red de `onCleared` le diría al POS «no se autorizó nada».
+        authorizationWasLaunched = true
+        confirmedNegativeOutcome = false
+        confirmedNegativeEvidence = null
+        Timber.e(
+            "🚨 [AngelPay SDK] resultado (aprobado=%s) de un ViewModel recreado SIN el contexto de su intento %s — no se registra desde la RAM",
+            result.approved, currentPaymentAttemptId,
+        )
+        observability.logError(
+            tag = "AngelPayResultadoSinContexto",
+            message = "Resultado del SDK sin el contexto de su intento tras recrear la pantalla: no se registra desde la terminal",
+            error = null,
+            metadata = mapOf(
+                "attemptId" to (currentPaymentAttemptId ?: "none"),
+                "approved" to result.approved,
+                "sdkCode" to (result.callResult?.code ?: "none"),
+            ),
+        )
+        _state.value = AngelPayPaymentState.Error(
+            message = if (result.approved) {
+                "El pago con tarjeta se aprobó, pero la terminal no pudo leer los datos del cobro. NO lo vuelvas a cobrar: Avoqado lo registra solo."
+            } else {
+                "La terminal no pudo confirmar el resultado ni leer los datos del cobro. NO lo vuelvas a cobrar: Avoqado lo concilia."
+            },
+            canRetry = false,
+        )
+    }
+
     fun onAngelPaySdkResult(result: PaymentResult) {
         viewModelScope.launch {
           // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
@@ -3018,12 +3383,26 @@ class AngelPayPaymentViewModel @Inject constructor(
           // 📊 Task 6 — set ONLY on a terminal outcome (never on the session-expiry
           // relaunch below, which is deliberately not a resolved attempt).
           var authAttemptOutcomeCode: String? = null
+          // 🔴 D2: un ViewModel recreado (sin intento, en Idle) recibe aquí el resultado de su intento ANTES del auto-arranque de
+          // la pantalla. Desde ya —sin suspender— dice «Validando…» y aparta [initPayment] hasta que este resultado se resuelva:
+          // adoptar el intento lee la libreta, y en esa espera el arranque pisaría el contexto que viene de la fila.
+          val recreado = currentPaymentAttemptId == null && _state.value is AngelPayPaymentState.Idle
+          if (recreado) {
+              registrandoResultadoTrasRecrear = true
+              _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
+          }
           try {
+            // 🔴 D2: RECUPERACIÓN antes de consumir nada, igual que [onAngelPayResult]: el intento, el importe, la propina, la orden
+            // y la cuenta de cobro del resultado salen de la libreta, nunca de una RAM que nació vacía.
+            if (currentPaymentAttemptId == null && adoptarIntentoDelSdkSiSeRecreo() == AdopcionTrasRecrear.SIN_CONTEXTO) {
+                contextoDelIntentoDesconocido = true
+            }
+            val sinContexto = contextoDelIntentoDesconocido
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
             // 🔒 B1: el intento DUEÑO de este resultado, fijado al recibirlo: el regreso del SDK se marca sobre ÉL.
             val intentoDelResultado = currentPaymentAttemptId
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}, montoCobrado=${result.amount}")
-            verificarMontoCobrado(result)
+            if (!contextoDelIntentoDesconocido) verificarMontoCobrado(result)   // D2: sin contexto, compararía contra $0 inventado
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
 
             confirmedNegativeOutcome = false
@@ -3130,7 +3509,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 authAttemptOutcomeCode = result.callResult?.code ?: "INDETERMINADO"
                 // 🔒 B1: el SDK regresó SIN veredicto y no se relanza (la verificación pregunta al historial, no cobra).
                 marcarFinDelSdk(intentoDelResultado)
-                manejarDesenlaceIncierto(result)
+                // 🔴 D2: sin el contexto del intento, la verificación registraría un «Cobrado» con la RAM vacía: lo hace la libreta.
+                if (sinContexto) mostrarResultadoSinContexto(result) else manejarDesenlaceIncierto(result)
                 clearChargingOnTerminal()
                 return@launch
             }
@@ -3141,7 +3521,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                 authAttemptOutcomeCode = result.callResult?.code ?: "SUCCESS"
                 // 🔒 B1: aprobado — termina la interacción con el SDK; lo que sigue es registrar (dinero: lo decide el servidor).
                 marcarFinDelSdk(intentoDelResultado)
-                recordCardPayment(result)
+                // 🔴 D2: sin el contexto del intento se registraría $0 con otra llave: el aprobado ya quedó en SU fila, la registra
+                // la recuperación con su llave.
+                if (sinContexto) mostrarResultadoSinContexto(result) else recordCardPayment(result)
             } else {
                 val sessionExpiryShape = when {
                     AngelPayErrorMapper.isAuthError(result.callResult?.code) -> "D308"
@@ -3240,6 +3622,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
           } finally {
+            if (recreado) registrandoResultadoTrasRecrear = false
             // Cubre éxito, declinación, la relanzada por expiración de sesión y el
             // registro subsecuente. Un observador que no se apaga es una fuga.
             stopAuthorizationWatchdog()
@@ -4354,6 +4737,13 @@ class AngelPayPaymentViewModel @Inject constructor(
         cancelarCierrePorAbandono()
         clearChargingOnTerminal()
         liberacionMostrada = false   // fix 1 · Minor #4b: el dinero desmintió la liberación; un S5 tardío sin transición no toca este Success
+        if (contextoDelIntentoDesconocido) {   // `event.attemptId == currentPaymentAttemptId` ya se exigió arriba
+            // 🔴 D2 (Codex r2): este intento se adoptó SIN su contexto (la libreta no contestó tras recrear la pantalla). El Success
+            // de abajo saldría con $0 y sin orden, y «Imprimir» sacaría ese recibo: el dinero ya está en el servidor y se dice sin cifras.
+            Timber.w("📣 [AngelPay] payment_confirmed para %s, adoptado sin contexto: sin recibo, se dice que hay cobro", event.attemptId)
+            mostrarContradiccion()
+            return
+        }
         _state.value = AngelPayPaymentState.Success(
             authCode = "", // el webhook no trae la autorización del SDK; el REST propio la rellena si la app registra después
             amount = pendingAmount.toPlainString(),
@@ -4521,7 +4911,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 "category" to (category ?: "unknown"),
                 "sdkMessage" to (sdkMessage ?: "unknown"),
                 "displayMessage" to displayMessage,
-                "amount" to pendingAmount.toPlainString(),
+                "amount" to (if (contextoDelIntentoDesconocido) "desconocido" else pendingAmount.toPlainString()),
             ),
         )
     }
@@ -4998,17 +5388,22 @@ class AngelPayPaymentViewModel @Inject constructor(
      * estados EMV y se atenderá aparte — ahí el archivo tiene la advertencia de que 8
      * funcionalidades comparten el mismo flujo.
      */
+    /** Sólo la Nexgo imprime el ticket de rechazo. Variable para que las pruebas (sabor sandbox = PAX) lo puedan ejercitar. */
+    @VisibleForTesting internal var ticketsDeRechazoEnEsteAparato: Boolean = !BuildConfig.ENABLE_PAX_SDK
+
     private fun imprimirTicketDeRechazo(motivo: String?, codigoSdk: String?) {
-        if (BuildConfig.ENABLE_PAX_SDK) return
+        if (!ticketsDeRechazoEnEsteAparato) return
         if (!canPrintReceipt) {
             Timber.i("🔶 [AngelPay] Ticket de rechazo omitido: la terminal no tiene impresora")
             return
         }
+        // 🔴 D2 (Codex r3): sin el contexto del intento no se sabe cuánto se intentó: la línea se omite, nunca «$0.00».
+        val importe = pendingAmount.takeUnless { contextoDelIntentoDesconocido }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val venueZone = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
                 val ticket = angelPayTicketBuilder.buildDeclineTicket(
-                    amount = pendingAmount ?: java.math.BigDecimal.ZERO,
+                    amount = importe,
                     reason = motivo,
                     sdkCode = codigoSdk,
                     venueName = secureStorage.getVenueName(),
@@ -5465,6 +5860,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
         // A deliberate retry after a definitive refusal is a NEW processor attempt.
         currentPaymentAttemptId = null
+        intentoLanzadoAlSdk = null   // 🔴 D2: el intento rechazado ya no es dueño de ningún resultado
+        contextoDelIntentoDesconocido = false
         ledgerOpenedAttemptId = null
         consumedResultAttemptId = null
         linkAutorizado = null
@@ -5478,6 +5875,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         _mensajeDelPos.value = null
         if (pendingAmount > BigDecimal.ZERO) {
             Timber.i("🔁 [AngelPay] Retry → payment-method step (merchant unchanged)")
+            // 🧭 D3: navigateToStep vuelve a consultar las reglas con el mismo total (también tras recrearse la pantalla, que
+            // nace sin reglas: la fila restaura importe y propina).
             navigateToStep(PrePaymentNextStep.SELECT_MERCHANT, pendingAmount.toPlainString())
         } else {
             Timber.w("🔁 [AngelPay] Retry with no cached context → full reset")
@@ -5682,6 +6081,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         cachedVenueId = null
         cachedStaffId = null
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
+        intentoLanzadoAlSdk = null     // 🔴 D2: un resultado rezagado nunca adopta el intento de un cobro que ya se cerró
+        contextoDelIntentoDesconocido = false
         // Ventana de confirmación (Task 7): la espera al servidor, la declaración en vuelo y el veto de dinero son de ESTE
         // intento. Van aquí, después de las guardas de salida, para que un reset RECHAZADO (contradicción retenida) conserve el veto.
         esperaAlServidorJob?.cancel(); esperaAlServidorJob = null
@@ -5708,8 +6109,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         // card button permanently disabled when there's a single merchant (selector hidden).
         _isSendingReceipt.value = false
         _sendReceiptMessage.value = null
-        // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner)
-        _merchantRouting.value = null
+        // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner).
+        // D3: también la consulta en vuelo — si contesta tarde no se pega al siguiente cobro.
+        olvidarRuteo()
         // 📡 Clear socket arbitration source so a stale request id never leaks into the next charge.
         _paymentSource = null
         _socketRequestId = null
@@ -5768,7 +6170,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
-                evaluarRuteoDeLaPropinaFija()
+                evaluarRuteoDelCobro()
             }
             PrePaymentNextStep.SELECT_MERCHANT -> {
                 _state.value = AngelPayPaymentState.SelectingMerchant(
@@ -5778,19 +6180,20 @@ class AngelPayPaymentViewModel @Inject constructor(
                     rating = pendingRating,
                     motivoSinTarjeta = motivoSinTarjeta(),
                 )
-                evaluarRuteoDeLaPropinaFija()
+                evaluarRuteoDelCobro()
             }
         }
     }
 
     /**
-     * 🪑 D9 (Codex r1 #4): las reglas de ruteo de cuentas se evalúan al elegir o saltar la propina
-     * ([selectTipAndProceed]/[skipTip]). Con la propina de la mesa esa pantalla no aparece, así que
-     * se evalúan aquí con el total (cuenta + propina). Sólo en este camino: los demás que saltan la
-     * propina conservan su comportamiento (deuda anotada aparte).
+     * 🧭 D3 (12-nov, hz:72be07e6:D3): TODA entrada a «Método de pago» por aquí consulta las reglas de ruteo de cuentas
+     * (MERCHANT_ROUTING_RULES) con el total que se va a cobrar (cuenta + propina), como la PAX (`proceedToMerchantSelection`).
+     * Antes sólo se consultaban al elegir o saltar la propina ([selectTipAndProceed]/[skipTip]); sin esa pantalla (propina
+     * apagada, venta serializada, cobro del POS) `merchantRouting` quedaba en null y el selector ofrecía TODAS las cuentas,
+     * incluida la que la regla excluía. El cobro del POS no trae cuenta decidida (la terminal la elige), así que la regla
+     * le aplica. Reemplaza el `evaluarRuteoDeLaPropinaFija` de D9: la propina de la mesa es uno de estos caminos.
      */
-    private fun evaluarRuteoDeLaPropinaFija() {
-        if (!propinaFija) return
+    private fun evaluarRuteoDelCobro() {
         evaluateRoutingForCharge(pendingAmount.add(pendingTip).toPlainString())
     }
 
@@ -5847,6 +6250,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         private const val KEY_SOLICITUD_VINCULADA = "angelpay_socket_bound_request_id"
         private const val KEY_ENTRADA_REMOTA = "angelpay_socket_remote_entry"
         private const val KEY_FOLIO = "angelpay_folio_del_cobro"
+        private const val KEY_INTENTO_LANZADO = "angelpay_intento_lanzado_al_sdk"   // D2: ver [intentoLanzadoAlSdk]
+        private const val KEY_FLUJO_SIN_ASISTENTE = "angelpay_flujo_sin_asistente"     // D2 r3: ver [isSkipReviewFlow]
+        private const val KEY_PROPINA_FIJA = "angelpay_propina_fija"                   // D2 r3: ver [propinaFija]
+        /** D2 (Codex r1): lecturas de la fila del intento lanzado antes de rendirse, y la pausa entre ellas. */
+        private const val LECTURAS_DEL_INTENTO_LANZADO = 3
+        private const val MS_ENTRE_LECTURAS_DEL_INTENTO = 300L
 
         /**
          * Nexgo terminal models that ship with a built-in thermal

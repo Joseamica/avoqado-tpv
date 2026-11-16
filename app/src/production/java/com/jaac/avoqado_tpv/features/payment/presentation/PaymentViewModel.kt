@@ -1009,9 +1009,6 @@ class PaymentViewModel @Inject constructor(
         )
     }
 
-    /** D3: el motivo que queda en la libreta (`last_error`) para un cobro aprobado sin sesión para registrarlo. */
-    private val motivoCobroSinSesion = "Cobrado sin sesión; se registra al volver a entrar"
-
     // ═══════════════════════════════════════════════════════════════════════════════════════
     // 💸 REEMBOLSOS — los estados honestos, la telemetría y el desenlace de la cola
     // (Fase 1, Tasks 5-6, 2026-09-03). Espejo de buildPendingSyncState / buildRecordingLostState
@@ -7590,10 +7587,11 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("   → hasAuth: $hasAuth | staffId: ${if (hasStaffId) "✓" else "✗"} | venueId: ${if (hasVenueId) "✓" else "✗"}")
                     Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=${getAmountForFlow()}")
                     // 🔴 D3 (encargo 9308a7, 16-nov): antes era un `return` mudo (sin cola ni aviso). El banco YA aprobó y el chip ya
-                    // cerró: es dinero. Se deja en la libreta como «cobrado, registro pendiente» (REGISTRO_FALLIDO, igual que un
-                    // registro que falla por red): eso avisa a la recuperación en el acto, cerca la venta y la recuperación lo
-                    // registra con el contexto CONGELADO antes de la tarjeta (el personal y la caja de ese momento, nunca los de
-                    // quien entre después) en cuanto vuelve a haber sesión. La misma llave: el servidor nunca lo duplica.
+                    // cerró: es dinero. Se deja en la libreta como AUTORIZADO, con la tarjeta: cerca la venta y la recuperación de
+                    // aprobaciones lo toma aunque `host_approved` no se haya podido escribir (Codex r1 #3: REGISTRO_FALLIDO sin
+                    // esa bandera dejaba de ser candidato). Lo registra con el contexto CONGELADO antes de la tarjeta (el personal y
+                    // la caja de ese momento, nunca los de quien entre después) cuando vuelve a haber sesión y red: entrar y
+                    // reconectar piden la pasada. La misma llave: el servidor nunca lo duplica.
                     attemptIdDelCobro?.let { attemptId ->
                         paymentAttemptLedger.markAuthorized(
                             attemptId = attemptId,
@@ -7601,7 +7599,6 @@ class PaymentViewModel @Inject constructor(
                             cardBrand = cardDetails.cardBrand.name,
                             entryMode = cardDetails.entryMode.name
                         )
-                        paymentAttemptLedger.markRecordFailed(attemptId, motivoCobroSinSesion)
                     }
                     buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
                     return@launch

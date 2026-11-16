@@ -119,7 +119,7 @@ class LedgerApprovalRecoveryTest {
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
         coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt)
         var sesion = false
-        val recuperacion = LedgerApprovalRecovery(dao, fast, order, haySesion = { sesion })
+        val recuperacion = LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { sesion })
 
         assertEquals(0, recuperacion.recover("venue", 1000000))
         coVerify(exactly = 0) { dao.getApprovalRecoveryCandidates(any(), any(), any()) }
@@ -128,6 +128,36 @@ class LedgerApprovalRecoveryTest {
 
         sesion = true
         assertEquals(1, recuperacion.recover("venue", 1000000))
+        coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+    }
+
+    @Test
+    fun `P1 si la sesion o la red se van a media pasada, las demas aprobaciones no se reclaman`() = runTest {
+        // Codex r1 #1: un 401 con refresco fallido borra la sesión DURANTE la pasada; antes sólo se miraba al empezar.
+        val segunda = approved.copy(attemptId = "attempt-2")
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved, segunda)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        var sesion = true
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } answers {
+            sesion = false
+            Result.failure(java.io.IOException("401: la sesión se cerró"))
+        }
+        assertEquals(0, LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { sesion }).recover("venue", 1000000))
+        coVerify(exactly = 1) { dao.claimRecovery("attempt", "venue", any(), any()) }
+        coVerify(exactly = 0) { dao.claimRecovery("attempt-2", any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 un cobro sin sesion en AUTORIZADO se recupera aunque host_approved no se haya escrito`() = runTest {
+        // Codex r1 #3: el camino sin sesión deja AUTORIZADO (con la tarjeta); markHostResponded pudo fallar antes.
+        val sinBandera = approved.copy(state = "AUTORIZADO", hostApproved = null, maskedPan = "****1111", cardBrand = "VISA", entryMode = "CHIP")
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(sinBandera)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        val tarjetas = mutableListOf<CardDetails>()
+        coEvery { fast.recordPayment(any(), capture(tarjetas), "AUTH", "REF") } returns Result.success(receipt)
+        assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
+        assertEquals("****1111", tarjetas.single().maskedPan)
+        assertEquals(CardBrand.VISA, tarjetas.single().cardBrand)
         coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
     }
 

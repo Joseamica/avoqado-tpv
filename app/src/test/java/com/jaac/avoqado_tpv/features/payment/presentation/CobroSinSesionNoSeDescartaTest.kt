@@ -40,7 +40,9 @@ class CobroSinSesionNoSeDescartaTest {
             val rama = entre(funcion, "if (!hasAuth || !hasStaffId || !hasVenueId) {", "return@launch", nombre)
             assertFalse("[$nombre] la rama sin sesión sigue siendo un TODO mudo", rama.contains("TODO"))
             assertTrue("[$nombre] la rama sin sesión no deja los datos de la tarjeta en la libreta", rama.contains("paymentAttemptLedger.markAuthorized("))
-            assertTrue("[$nombre] la rama sin sesión no avisa a la recuperación (REGISTRO_FALLIDO)", rama.contains("paymentAttemptLedger.markRecordFailed("))
+            // AUTORIZADO, no REGISTRO_FALLIDO: éste exige `host_approved = 1` para ser candidato, y esa escritura pudo fallar
+            // (Codex r1 #3). AUTORIZADO lo toma la recuperación siempre.
+            assertFalse("[$nombre] la rama sin sesión pasa a REGISTRO_FALLIDO (deja de ser recuperable sin host_approved)", rama.contains("markRecordFailed("))
             assertTrue("[$nombre] la rama sin sesión no le dice al cajero que NO vuelva a cobrar", rama.contains("buildPendingLoginState("))
             // Nunca se registra con la sesión de quien entre DESPUÉS: el registro lo hace la recuperación con el contexto congelado.
             assertFalse("[$nombre] la rama sin sesión arma un contexto con la sesión viva", rama.contains("buildFastPaymentContext(") || rama.contains("buildOrderPaymentContext("))

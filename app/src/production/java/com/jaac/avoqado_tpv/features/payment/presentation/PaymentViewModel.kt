@@ -3026,6 +3026,22 @@ class PaymentViewModel @Inject constructor(
 
         if (missingRating || missingTip) {
             Timber.w("⚠️ [External Payment] Missing rating/tip for enabled screens - falling back to on-device flow")
+            // 💵 D10 (Codex r2): falta sólo la calificación y la pantalla de propina está apagada → se califica aquí y se cobra
+            // la propina del POS (mismo camino que la propina de Mesas, D9). Con submitAmount salía en $0 tras calificar.
+            if (!missingTip && !needsTip && tipCents != null && tipCents > 0L) {
+                submitAmountConPropinaYaElegida(
+                    amount = amount,
+                    propinaCents = tipCents,
+                    orderId = orderId,
+                    orderNumber = orderNumber,
+                    splitType = splitType,
+                    equalPartsPartySize = equalPartsPartySize,
+                    equalPartsPayedFor = equalPartsPayedFor,
+                    paidProductIds = paidProductIds,
+                    skipLocalOrderValidation = skipLocalOrderValidation
+                )
+                return
+            }
             submitAmount(
                 amount = amount,
                 orderId = orderId,

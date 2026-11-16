@@ -1018,6 +1018,44 @@ class PaymentViewModelTest {
         }
     }
 
+    @Test
+    fun `D10 el POS manda la propina sin calificacion - la terminal califica y cobra la propina del POS`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingRating::class.java)
+
+            viewModel.submitRating("100.00", 5)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("115.00"))
+            assertThat(state.rating).isEqualTo(5)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D10 el POS manda la propina sin calificacion con la pantalla de propina PRENDIDA - la terminal sigue preguntando`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = true)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
+            viewModel.submitRating("100.00", 5)
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingTip::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // C. PAYMENT FLOW
     // ═══════════════════════════════════════════════════════════════════════════

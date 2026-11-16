@@ -919,6 +919,82 @@ class PaymentViewModelTest {
         }
     }
 
+    // D10 (16-nov): con la «Pantalla de Propina» apagada, la propina que manda el POS se cobraba en $0.
+    // Apagar la pantalla sólo salta la PREGUNTA; el monto que ya eligió el cliente en el POS se cobra igual.
+
+    @Test
+    fun `D10 cobro del POS con la pantalla de propina APAGADA cobra la propina que mando el POS`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = false)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("115.00"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D10 cobro del POS con la pantalla de propina APAGADA y calificacion prendida tambien cobra la propina`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = 4, skipReview = false)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+            state as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("115.00"))
+            assertThat(state.rating).isEqualTo(4)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D10 cobro del POS sin propina con la pantalla de propina APAGADA sigue en cero`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = false)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = null, rating = null, skipReview = true)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal.ZERO)
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("100.00"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D10 cobro del POS con la pantalla de propina PRENDIDA cobra la propina del POS sin volver a preguntar`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = true)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value as PaymentState.SelectingMerchant
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+            assertThat(BigDecimal(state.totalAmount)).isEqualToIgnoringScale(BigDecimal("115.00"))
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // C. PAYMENT FLOW
     // ═══════════════════════════════════════════════════════════════════════════

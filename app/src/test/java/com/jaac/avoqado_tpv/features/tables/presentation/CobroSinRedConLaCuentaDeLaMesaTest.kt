@@ -513,4 +513,26 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
         assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
         assertThat(tableSession.current()!!.saldoConfirmado).isFalse()
     }
+
+    @Test
+    fun codex_r8_1_si_la_cola_deja_el_saldo_por_confirmar_el_cobro_abierto_deja_de_ofrecer_el_de_antes() = runTest {
+        abrirMesa()
+        val mesa = pantallaDeLaMesa() // $25
+        sinRed()
+        coEvery { repository.addItems(venueId, orden, any(), any()) } returns Result.success(
+            OrderDetail(id = orden, items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-2", quantity = 1))),
+        )
+        pendingCart.addSimple(productId = "prod-2", name = "Postre", unitPrice = BigDecimal("15.00"))
+        mesa.sendRound()
+        val cobro = pantallaDeCobro()
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("40.00")
+
+        // Vuelve la red y el worker sube la ronda: el SERVIDOR la rechaza. La cola deja la sesión por confirmar y avisa
+        // (lo que hace `SyncOutbox.reaccionarAlSaldo`; probado con la cola real en SyncOutboxRechazoMueveElSaldoTest).
+        tableSession.saldoPorConfirmar()
+        tableSession.algoSeSincronizo()
+
+        assertThat(cobro.state.value.saldoPorConfirmar).isTrue()
+        assertThat(cobro.chargeableAmount()).isEqualToIgnoringScale("0") // ya no los $40
+    }
 }

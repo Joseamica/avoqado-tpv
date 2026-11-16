@@ -158,7 +158,8 @@ class SyncOutbox @Inject constructor(
      */
     private suspend fun reaccionarAlSaldo(intent: SyncIntentEntity, ack: SyncIntentAck) {
         val sesion = tableSession ?: return
-        withContext(Dispatchers.Main.immediate) {
+        // NonCancellable: corre aunque el replay ya esté cancelado (p. ej. WorkManager lo corta esperando al hilo principal).
+        withContext(NonCancellable + Dispatchers.Main.immediate) {
             if (ack.isRejected) {
                 sesion.current()?.let { actual -> if (intent.mueveElSaldoDe(actual.idsDeLaCuenta)) sesion.saldoPorConfirmar() }
             }
@@ -307,8 +308,13 @@ class SyncOutbox @Inject constructor(
         canEmit: () -> Boolean,
     ): ReplayProgress = replayMutex.withLock {
         val onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { intent, ack ->
-            onAckDelLlamador(intent, ack)
-            if (!ack.isRetry) reaccionarAlSaldo(intent, ack)
+            // D8 (Codex r8 #2): la respuesta ya quedó guardada; aunque el que llama se cancele (o truene) en su aviso, la
+            // sesión se entera igual. Si no, el siguiente replay ya no la vuelve a ver (sólo busca PENDING).
+            try {
+                onAckDelLlamador(intent, ack)
+            } finally {
+                if (!ack.isRetry) reaccionarAlSaldo(intent, ack)
+            }
         }
         var resolved = 0
         // D6: la cola se renumera por un rechazo de número a lo más UNA vez por pasada. Si el servidor vuelve a rechazar

@@ -292,6 +292,12 @@ class TableCheckoutViewModel @Inject constructor(
         // D8 (Codex r3 #3): con el saldo por confirmar, en cuanto la cola sube o rechaza algo se vuelve a leer la cuenta.
         viewModelScope.launch {
             tableSession.sincronizaciones.drop(1).collect {
+                // Codex r8 #1: la cola pudo dejar la sesión por confirmar (una ronda rechazada al sincronizar); este cobro
+                // abierto deja de ofrecer el número de antes en ese mismo momento.
+                val sesion = tableSession.current()
+                if (sesion != null && !sesion.saldoConfirmado && !_state.value.saldoPorConfirmar) {
+                    _state.update { it.copy(remaining = BigDecimal.ZERO, porSincronizar = BigDecimal.ZERO, saldoPorConfirmar = true) }
+                }
                 if (_state.value.saldoPorConfirmar && !_state.value.isLoading) loadCheck()
             }
         }

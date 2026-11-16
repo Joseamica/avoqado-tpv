@@ -113,6 +113,19 @@ class SyncOutboxRechazoMueveElSaldoTest {
         assertThat(session.current()!!.total).isEqualToIgnoringScale("40.00")
     }
 
+    @Test
+    fun `aunque el aviso del que llama se cancele, la sesion se entera del rechazo ya guardado`() = runTest {
+        cuentaConRondaSinRed()
+        servidorQue("REJECTED", errorCode = "PERMISSION_DENIED")
+
+        runCatching {
+            outbox.replayNow(VENUE) { _, _ -> throw kotlinx.coroutines.CancellationException("el worker se fue") }
+        }
+
+        assertThat(dao.allForVenue(VENUE).single().status).isEqualTo("REJECTED") // el rechazo ya está guardado
+        assertThat(session.current()!!.saldoConfirmado).isFalse() // y la sesión se enteró igual
+    }
+
     private companion object {
         const val VENUE = "venue-1"
         const val ORDEN = "orden-1"

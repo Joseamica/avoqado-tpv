@@ -184,6 +184,8 @@ data class TableCheckoutState(
      * no lo cuenta. Mientras no sea `null`, ni efectivo ni tarjeta.
      */
     val pendienteSinSubir: String? = null,
+    /** D92: descuentos o cargos que van en camino al SERVIDOR: mientras no sea 0, ni efectivo ni tarjeta (la cuenta va a cambiar). */
+    val cambiosEnCamino: Int = 0,
     /** La mesa ya se liberó (el restante llegó a cero) — ver [TableCheckoutViewModel.onPaymentCompleted]. */
     val tableReleased: Boolean = false,
 ) {
@@ -194,13 +196,14 @@ data class TableCheckoutState(
      * las dos condiciones es negociable — ver
      * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §5.
      */
-    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional && pendienteSinSubir == null
+    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional && pendienteSinSubir == null && cambiosEnCamino == 0
 
     val cardPaymentDisabledReason: String?
         get() = when {
             isProvisional -> "La mesa aún no se sincroniza"
             !isOnline -> "Necesita conexión"
             pendienteSinSubir != null -> pendienteSinSubir
+            cambiosEnCamino > 0 -> CUENTA_SE_ACTUALIZA
             else -> null
         }
 
@@ -222,7 +225,7 @@ data class TableCheckoutState(
                 is SaldoSinRed.EnGris -> saldo.motivo
                 is SaldoSinRed.Conocido -> null
             }
-            check != null -> pendienteSinSubir
+            check != null -> pendienteSinSubir ?: CUENTA_SE_ACTUALIZA.takeIf { cambiosEnCamino > 0 }
             isLoading -> "Cargando la cuenta…"
             !isOnline -> SIN_CUENTA_SIN_RED
             else -> "No se pudo cargar la cuenta: toca Reintentar."
@@ -538,6 +541,27 @@ class TableCheckoutViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D92: se mandó un cambio de dinero a esta cuenta (descuento o cargo) y pudo aplicarse en el SERVIDOR aunque la respuesta
+     * no llegara: la cuenta en pantalla ya no es de fiar. Ni efectivo ni tarjeta hasta que una lectura que salga DESPUÉS lo
+     * confirme; las que ya viajaban se descartan. [releerYa] en éxito; tras un fallo, a los [RELECTURA_MS] (deja ver el aviso).
+     * También tras un «no» del SERVIDOR (Codex r1 P1): puede ser el reenvío automático de OkHttp de un cambio que sí pasó
+     * («ese descuento ya no está»).
+     */
+    private fun cuentaPorConfirmar(releerYa: Boolean) {
+        lecturasIniciadas++
+        relecturasSeguidas = 0
+        _state.update { it.copy(pendienteSinSubir = it.pendienteSinSubir ?: CUENTA_POR_CONFIRMAR) }
+        if (releerYa) loadCheck() else programarRelectura()
+    }
+
+    /** D92: un descuento o cargo sale al SERVIDOR / ya regresó: mientras va en camino, ni efectivo ni tarjeta. */
+    private fun empiezaUnCambio() = _state.update { it.copy(cambiosEnCamino = it.cambiosEnCamino + 1) }
+    private fun terminaUnCambio() = _state.update { it.copy(cambiosEnCamino = (it.cambiosEnCamino - 1).coerceAtLeast(0)) }
+
+    /** D92: con un cobro en curso no se cambia la cuenta (el cobro ya salió con el importe de antes). */
+    private fun cobroEnCurso(): Boolean = _state.value.isProcessingCash || _state.value.isHandingOffToCard
+
     private fun programarRelectura() {
         if (relectura?.isActive == true) return
         if (relecturasSeguidas >= MAX_RELECTURAS) return
@@ -702,6 +726,8 @@ class TableCheckoutViewModel @Inject constructor(
     fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
         val s = _state.value
         if (s.isProcessingCash || s.isHandingOffToCard) return null
+        // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes.
+        if (s.pendienteSinSubir != null || s.cambiosEnCamino > 0) return null
         val request = buildPaymentPayload(amount)
         _state.update { it.copy(isHandingOffToCard = true) }
         return request
@@ -988,13 +1014,16 @@ class TableCheckoutViewModel @Inject constructor(
     fun applyDiscount(discountId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        if (cobroEnCurso()) return // D92
         if (_isApplyingDiscount.value) return
 
         _isApplyingDiscount.value = true
+        empiezaUnCambio()
         viewModelScope.launch {
             repository.applyDiscount(vId, session.orderId, discountId).fold(
                 onSuccess = { outcome ->
                     _isApplyingDiscount.value = false
+                    terminaUnCambio()
                     _state.update {
                         it.copy(
                             notice = if (outcome.queued) {
@@ -1004,12 +1033,14 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaPorConfirmar(releerYa = !outcome.queued)
                 },
                 onFailure = { e ->
                     _isApplyingDiscount.value = false
+                    terminaUnCambio()
                     if (e is CancellationException) throw e
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el descuento") }
+                    cuentaPorConfirmar(releerYa = false)
                 },
             )
         }
@@ -1031,18 +1062,22 @@ class TableCheckoutViewModel @Inject constructor(
     fun removeDiscount(orderDiscountId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        if (cobroEnCurso()) return // D92
         if (_isRemovingDiscount.value) return
 
         _isRemovingDiscount.value = true
+        empiezaUnCambio()
         viewModelScope.launch {
             repository.removeDiscount(vId, session.orderId, orderDiscountId).fold(
                 onSuccess = {
                     _isRemovingDiscount.value = false
+                    terminaUnCambio()
                     _state.update { it.copy(notice = "Descuento quitado") }
-                    loadCheck()
+                    cuentaPorConfirmar(releerYa = true)
                 },
                 onFailure = { e ->
                     _isRemovingDiscount.value = false
+                    terminaUnCambio()
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(
@@ -1053,6 +1088,7 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
+                    cuentaPorConfirmar(releerYa = false)
                 },
             )
         }
@@ -1109,13 +1145,16 @@ class TableCheckoutViewModel @Inject constructor(
     fun applyServiceCharge(serviceChargeId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        if (cobroEnCurso()) return // D92
         if (_isApplyingServiceCharge.value) return
 
         _isApplyingServiceCharge.value = true
+        empiezaUnCambio()
         viewModelScope.launch {
             repository.applyServiceCharge(vId, session.orderId, serviceChargeId).fold(
                 onSuccess = { outcome ->
                     _isApplyingServiceCharge.value = false
+                    terminaUnCambio()
                     _state.update {
                         it.copy(
                             notice = if (outcome.queued) {
@@ -1125,12 +1164,14 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
-                    if (!outcome.queued) loadCheck()
+                    cuentaPorConfirmar(releerYa = !outcome.queued)
                 },
                 onFailure = { e ->
                     _isApplyingServiceCharge.value = false
+                    terminaUnCambio()
                     if (e is CancellationException) throw e
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el cargo por servicio") }
+                    cuentaPorConfirmar(releerYa = false)
                 },
             )
         }
@@ -1154,18 +1195,22 @@ class TableCheckoutViewModel @Inject constructor(
     fun removeServiceCharge(orderServiceChargeId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        if (cobroEnCurso()) return // D92
         if (_isRemovingServiceCharge.value) return
 
         _isRemovingServiceCharge.value = true
+        empiezaUnCambio()
         viewModelScope.launch {
             repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId).fold(
                 onSuccess = {
                     _isRemovingServiceCharge.value = false
+                    terminaUnCambio()
                     _state.update { it.copy(notice = "Cargo por servicio quitado") }
-                    loadCheck()
+                    cuentaPorConfirmar(releerYa = true)
                 },
                 onFailure = { e ->
                     _isRemovingServiceCharge.value = false
+                    terminaUnCambio()
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(
@@ -1176,6 +1221,7 @@ class TableCheckoutViewModel @Inject constructor(
                             },
                         )
                     }
+                    cuentaPorConfirmar(releerYa = false)
                 },
             )
         }
@@ -1185,6 +1231,10 @@ class TableCheckoutViewModel @Inject constructor(
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
 internal const val RECHAZO_POR_NUMERO =
     "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas."
+
+/** D92: se mandó un cambio de dinero (descuento o cargo) y la cuenta todavía no se vuelve a leer: no se cobra con la de antes. */
+internal const val CUENTA_POR_CONFIRMAR =
+    "Falta confirmar el último cambio de esta cuenta: se cobra en cuanto la terminal la vuelva a leer."
 
 /** D86 (Codex r1 #4): cada cuánto se vuelve a leer una cuenta con algo propio sin subir. */
 internal const val RELECTURA_MS = 5_000L

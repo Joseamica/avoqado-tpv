@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.tables.data.CAMBIOS_SIN_SINCRONIZAR
+import com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
@@ -1382,4 +1383,183 @@ class TableCheckoutViewModelTest {
 
         assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CAMBIOS_SIN_SINCRONIZAR)
     }
+
+    // region — D92: un cambio de dinero desde «Cobrar» sin confirmar nunca deja cobrar con la cuenta de antes
+
+    private fun cuentaD92(restante: String) = Result.success(
+        OrderDetail(id = "orden-1", total = BigDecimal(restante), amountLeft = BigDecimal(restante)),
+    )
+
+    @Test
+    fun D92_quitar_descuento_sin_respuesta_y_sin_red_no_cobra_con_la_cuenta_de_antes() = runTest {
+        // El DELETE llegó al SERVIDOR (ya debe $100) pero la respuesta se perdió y la red se cayó: la cuenta en pantalla
+        // ($90, con el descuento) ya no es la de verdad. Ni efectivo ni tarjeta hasta leerla otra vez.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("90.00"), Result.failure(IOException("sin red")))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException())
+        val viewModel = createViewModel()
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+
+        viewModel.removeDiscount("d1")
+        viewModel.onConnectivityChanged(false)
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        viewModel.payCash(BigDecimal("90.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun D92_una_lectura_nueva_libera_el_cobro_con_la_cuenta_de_verdad() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("90.00"), cuentaD92("100.00"))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException())
+        val viewModel = createViewModel()
+        viewModel.removeDiscount("d1")
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+
+        viewModel.reintentar()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("100.00"))
+    }
+
+    @Test
+    fun D92_quitar_descuento_con_exito_y_la_relectura_falla_no_cobra_con_la_cuenta_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("90.00"), Result.failure(IOException("sin red")))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.success(TablesRepository.DiscountOutcome(queued = false, amount = BigDecimal("10.00"), newOrderTotal = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+    }
+
+    @Test
+    fun D92_la_lectura_que_ya_viajaba_antes_del_cambio_no_lo_libera() = runTest {
+        // Una lectura salió ANTES de quitar el descuento y regresa DESPUÉS con la cuenta vieja: no cuenta como confirmación.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        val vieja = CompletableDeferred<Result<OrderDetail>>()
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            when (++lecturas) {
+                1 -> cuentaD92("90.00")
+                2 -> vieja.await()
+                else -> Result.failure(IOException("sin red"))
+            }
+        }
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException())
+        val viewModel = createViewModel()
+        viewModel.reintentar() // la lectura 2 queda viajando
+
+        viewModel.removeDiscount("d1")
+        vieja.complete(cuentaD92("90.00"))
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        // Y se vuelve a leer sola (sin red, sigue en gris).
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(lecturas).isEqualTo(3)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+    }
+
+    @Test
+    fun D92_quitar_cargo_por_servicio_sin_respuesta_no_cobra_con_la_cuenta_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("110.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("110.00"), Result.failure(IOException("sin red")))
+        coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.failure(TablesRepository.RemoveServiceChargeRequiresConnectionException())
+        val viewModel = createViewModel()
+
+        viewModel.removeServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+    }
+
+    @Test
+    fun D92_aplicar_descuento_con_exito_y_la_relectura_falla_no_cobra_con_la_cuenta_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("100.00"), Result.failure(IOException("sin red")))
+        coEvery { repository.applyDiscount(venueId, "orden-1", "d1") } returns
+            Result.success(TablesRepository.DiscountOutcome(queued = false, amount = BigDecimal("10.00"), newOrderTotal = BigDecimal("90.00")))
+        val viewModel = createViewModel()
+
+        viewModel.applyDiscount("d1")
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+    }
+
+    @Test
+    fun D92_aplicar_cargo_con_exito_y_la_relectura_falla_no_cobra_con_la_cuenta_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaD92("100.00"), Result.failure(IOException("sin red")))
+        coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.success(TablesRepository.ServiceChargeOutcome(queued = false, total = BigDecimal("110.00"), serviceChargeAmount = BigDecimal("10.00")))
+        val viewModel = createViewModel()
+
+        viewModel.applyServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+    }
+
+    @Test
+    fun D92_un_rechazo_del_servidor_tambien_se_confirma_releyendo() = runTest {
+        // Codex r1 P1: el «no» puede ser el reenvío automático de un DELETE que sí pasó («ese descuento ya no está»).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD92("100.00")
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "No se puede quitar un descuento de una orden pagada"))
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("orden pagada")
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+    }
+
+    @Test
+    fun D92_con_un_descuento_en_camino_no_se_cobra_ni_en_efectivo_ni_con_tarjeta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD92("90.00")
+        val enCamino = CompletableDeferred<Result<TablesRepository.DiscountOutcome>>()
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } coAnswers { enCamino.await() }
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+        // Codex r1 P2: los botones se ven en gris con su razón mientras va en camino, no sólo se niegan por dentro.
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_SE_ACTUALIZA)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo(CUENTA_SE_ACTUALIZA)
+        viewModel.payCash(BigDecimal("90.00"))
+        val tarjeta = viewModel.prepararCobroConTarjeta(BigDecimal("90.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(tarjeta).isNull()
+        enCamino.complete(Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException()))
+    }
+
+    @Test
+    fun D92_con_un_cobro_en_efectivo_en_curso_no_se_quita_el_descuento() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("90.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD92("90.00")
+        val cobro = CompletableDeferred<Result<TablesRepository.PayCashOutcome>>()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("10.00"), any(), any()) } coAnswers { cobro.await() }
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("10.00"))
+        viewModel.removeDiscount("d1")
+
+        coVerify(exactly = 0) { repository.removeDiscount(any(), any(), any()) }
+        cobro.complete(Result.failure(IOException("fin de la prueba")))
+    }
+
+    // endregion
 }

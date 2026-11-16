@@ -48,6 +48,7 @@ class CobroSinSesionNoSeDescartaTest {
             // (Codex r1 #3). AUTORIZADO lo toma la recuperación siempre.
             assertFalse("[$nombre] la rama sin sesión pasa a REGISTRO_FALLIDO (deja de ser recuperable sin host_approved)", rama.contains("markRecordFailed("))
             assertTrue("[$nombre] la rama sin sesión no le dice al cajero que NO vuelva a cobrar", rama.contains("buildPendingLoginState("))
+            assertTrue("[$nombre] la rama sin sesión no pide la pasada de la recuperación (Codex r3)", rama.contains("LedgerSweepScheduler.runOnceNow("))
             // Nunca se registra con la sesión de quien entre DESPUÉS: el registro lo hace la recuperación con el contexto congelado.
             assertFalse("[$nombre] la rama sin sesión arma un contexto con la sesión viva", rama.contains("buildFastPaymentContext(") || rama.contains("buildOrderPaymentContext("))
             assertFalse("[$nombre] la rama sin sesión llama al registro sin token", rama.contains("recordPaymentUseCase("))

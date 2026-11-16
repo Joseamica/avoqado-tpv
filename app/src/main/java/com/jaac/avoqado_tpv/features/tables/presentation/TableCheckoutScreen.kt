@@ -245,7 +245,7 @@ fun TableCheckoutScreen(
             viewModel.onExit()
             onNavigateBack()
         },
-        onRetryLoad = viewModel::loadCheck,
+        onRetryLoad = viewModel::reintentar,
         onSelectSplitType = viewModel::selectSplitType,
         onCustomAmountChanged = viewModel::setCustomAmountInput,
         onEqualPartsChanged = viewModel::setEqualParts,
@@ -348,6 +348,7 @@ private fun TableCheckoutScreenContent(
                 state = state,
                 onPayCash = onPayCash,
                 onPayCard = onPayCard,
+                onRetryLoad = onRetryLoad,
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -799,6 +800,7 @@ private fun CheckoutBottomBar(
     state: TableCheckoutState,
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
+    onRetryLoad: () -> Unit = {},
 ) {
     // 🔴 Contrato verificado, no asumido (Task 8): la pantalla de pago con
     // tarjeta de Nexgo (`AngelPayPaymentScreen`) NO expone `splitType` /
@@ -830,12 +832,21 @@ private fun CheckoutBottomBar(
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
         if (efectivoBloqueadoPor != null && !state.isLoading) {
-            Text(
-                text = efectivoBloqueadoPor,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = efectivoBloqueadoPor,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
+                if (state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)) {
+                    TextButton(onClick = onRetryLoad) { Text("Reintentar") }
+                }
+            }
         }
         if (cardReason != null) {
             Text(

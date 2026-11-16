@@ -309,6 +309,9 @@ class TableCheckoutViewModel @Inject constructor(
     /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
     private var relectura: kotlinx.coroutines.Job? = null
 
+    /** D86: relecturas automáticas seguidas sin desbloquearse; con el tope, espera «Reintentar» o a que vuelva la red. */
+    private var relecturasSeguidas = 0
+
 
     init {
         // Entrar a checkout marca la sesión como PAYING (el carrito de
@@ -338,7 +341,7 @@ class TableCheckoutViewModel @Inject constructor(
                 if (_state.value.isProvisional) {
                     tableSession.current()?.takeIf { it.isProvisional }?.let { calcularSaldoSinRed(it) }
                 } else if (volvio && (_state.value.check == null || _state.value.pendienteSinSubir != null)) {
-                    loadCheck()
+                    reintentar()
                 }
             }
         }
@@ -415,7 +418,12 @@ class TableCheckoutViewModel @Inject constructor(
                         it.copy(isLoading = false, check = detail, remaining = freshRemaining, errorMessage = null, pendienteSinSubir = pendiente)
                     }
                     // D86 (Codex r1 #4): con algo propio sin subir, se vuelve a leer sola hasta que suba (no se queda trabada).
-                    if (pendiente != null) programarRelectura() else relectura?.cancel()
+                    if (pendiente != null) {
+                        programarRelectura()
+                    } else {
+                        relectura?.cancel()
+                        relecturasSeguidas = 0
+                    }
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
@@ -492,6 +500,8 @@ class TableCheckoutViewModel @Inject constructor(
 
     private fun programarRelectura() {
         if (relectura?.isActive == true) return
+        if (relecturasSeguidas >= MAX_RELECTURAS) return
+        relecturasSeguidas++
         relectura = viewModelScope.launch {
             kotlinx.coroutines.delay(RELECTURA_MS)
             relectura = null
@@ -552,6 +562,12 @@ class TableCheckoutViewModel @Inject constructor(
         val apertura = saldoDeMesaSinRed.aperturaConfirmada(venueId, session.orderId) ?: return false
         tableSyncCoordinator.onAck(SyncIntentTypes.OPEN_TABLE, session.orderId, apertura.orderId, apertura.orderNumber, apertura.version)
         return true
+    }
+
+    /** D86: «Reintentar» de la pantalla: vuelve a leer y rearma las relecturas automáticas. */
+    fun reintentar() {
+        relecturasSeguidas = 0
+        loadCheck()
     }
 
     fun onConnectivityChanged(online: Boolean) {
@@ -1101,6 +1117,9 @@ internal const val RECHAZO_POR_NUMERO =
 
 /** D86 (Codex r1 #4): cada cuánto se vuelve a leer una cuenta con algo propio sin subir. */
 internal const val RELECTURA_MS = 5_000L
+
+/** D86: tope de relecturas automáticas seguidas (2 min); después, «Reintentar» o la vuelta de la red. */
+internal const val MAX_RELECTURAS = 24
 
 /** Pesos con dos decimales y signo, para los avisos (`$45.00`). */
 private fun moneyEnTexto(monto: BigDecimal): String = "$" + monto.setScale(2, RoundingMode.HALF_UP).toPlainString()

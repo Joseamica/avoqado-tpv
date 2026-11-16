@@ -58,11 +58,9 @@ class Task7LegacyCacheUiRoomTest {
     private fun vm(): ShiftViewModel {
         val events = mockk<ConnectionEventManager>(relaxed = true)
         every { events.connectionRestoredEvents } returns MutableSharedFlow()
-        val connectivity = mockk<ConnectivityObserver>(relaxed = true)
-        every { connectivity.observe() } returns MutableSharedFlow()
         val permissions = mockk<PermissionsRepository>(relaxed = true)
         coEvery { permissions.hasPermission(any()) } returns true
-        return ShiftViewModel(repo, storage, events, db.cachedShiftDao(), connectivity, permissions, refunds).also(vms::add)
+        return ShiftViewModel(repo, storage, events, db.cachedShiftDao(), com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), permissions, refunds).also(vms::add)
     }
     @After fun cleanup() { vms.forEach { it.viewModelScope.cancel() }; db.close(); context.deleteDatabase("task7-legacy-ui"); unmockkAll() }
     private suspend fun cash(key: String) {

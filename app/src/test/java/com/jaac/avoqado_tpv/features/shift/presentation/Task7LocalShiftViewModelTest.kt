@@ -9,8 +9,6 @@ import com.jaac.avoqado_tpv.core.data.local.entity.LocalShiftSessionEntity
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
-import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
-import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
@@ -34,11 +32,9 @@ class Task7LocalShiftViewModelTest {
     private val storage = mockk<SecureStorage>(relaxed = true)
     private val events = mockk<ConnectionEventManager>(relaxed = true)
     private val cache = mockk<CachedShiftDao>(relaxed = true)
-    private val connectivity = mockk<ConnectivityObserver>(relaxed = true)
     private val permissions = mockk<PermissionsRepository>(relaxed = true)
     private val refunds = mockk<RefundQueueRepository>(relaxed = true)
     private val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 10)
-    private val network = MutableSharedFlow<NetworkStatus>(extraBufferCapacity = 10)
     private val vms = mutableListOf<ShiftViewModel>()
     private val row = LocalShiftSessionEntity("clocal00000000000000000001", "venue", "LOCAL", openingStatus = "PENDING",
         originalOpenedAt = "2026-10-28T10:00:00Z", startingCash = "50.00", openedByStaffId = "staff",
@@ -54,7 +50,6 @@ class Task7LocalShiftViewModelTest {
         every { storage.isShiftSystemEnabled() } returns true
         every { repo.shiftChanges } returns changes
         every { events.connectionRestoredEvents } returns MutableSharedFlow()
-        every { connectivity.observe() } returns network
         coEvery { permissions.hasPermission(any()) } returns true
         coEvery { repo.leerCajaLocal("venue") } returns com.jaac.avoqado_tpv.features.shift.data.repository.CajaLocalSnapshot(
             shift, row, LocalShiftSummary(BigDecimal("50.00"), null, "OPEN", "PENDING", "NONE", null))
@@ -67,7 +62,7 @@ class Task7LocalShiftViewModelTest {
         coEvery { repo.pagosQueBloqueanCierre("venue", any()) } returns PaginaPagosDelCierre(0, emptyList(), 0)
     }
     @After fun cleanup() { vms.forEach { it.viewModelScope.cancel() }; unmockkAll() }
-    private fun vm() = ShiftViewModel(repo, storage, events, cache, connectivity, permissions, refunds).also(vms::add)
+    private fun vm() = ShiftViewModel(repo, storage, events, cache, com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), permissions, refunds).also(vms::add)
 
     @Test fun `empty local storage and network failure allow a local opening without claiming remote absence`() = runTest {
         coEvery { repo.leerCajaLocal("venue") } returns null

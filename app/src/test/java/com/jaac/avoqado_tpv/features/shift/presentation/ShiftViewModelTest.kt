@@ -8,8 +8,6 @@ import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent
-import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
-import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
@@ -63,13 +61,13 @@ class ShiftViewModelTest {
     private lateinit var secureStorage: SecureStorage
     private lateinit var connectionEventManager: ConnectionEventManager
     private lateinit var cachedShiftDao: CachedShiftDao
-    private lateinit var connectivityObserver: ConnectivityObserver
     private lateinit var permissionsRepository: PermissionsRepository
     private lateinit var refundQueueRepository: RefundQueueRepository
+    /** El MISMO estado que pinta el aviso rojo («Sin conexión al servidor»): lo escribe el latido. */
+    private lateinit var connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 
     // Flows we control
     private val fakeConnectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>()
-    private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
     private val fakeShiftChanges = MutableSharedFlow<Unit>()
 
     private val testShift = Shift(
@@ -99,9 +97,9 @@ class ShiftViewModelTest {
         secureStorage = mockk(relaxed = true)
         connectionEventManager = mockk(relaxed = true)
         cachedShiftDao = mockk(relaxed = true)
-        connectivityObserver = mockk(relaxed = true)
         permissionsRepository = mockk(relaxed = true)
         refundQueueRepository = mockk(relaxed = true)
+        connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager()
         // Default: la cola de reembolsos no bloquea nada (Fase 2).
         coEvery { refundQueueRepository.blockingForVenue(any()) } returns emptyList()
         coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns
@@ -113,7 +111,6 @@ class ShiftViewModelTest {
         every { secureStorage.isShiftSystemEnabled() } returns true
         every { secureStorage.isCashReconciliationEnabled() } returns false
         every { connectionEventManager.connectionRestoredEvents } returns fakeConnectionRestoredEvents
-        every { connectivityObserver.observe() } returns fakeNetworkStatus
         every { shiftRepository.shiftChanges } returns fakeShiftChanges
 
         // Default permissions: all allowed.
@@ -142,7 +139,7 @@ class ShiftViewModelTest {
             secureStorage = secureStorage,
             connectionEventManager = connectionEventManager,
             cachedShiftDao = cachedShiftDao,
-            connectivityObserver = connectivityObserver,
+            connectionStateManager = connectionStateManager,
             permissionsRepository = permissionsRepository,
             refundQueueRepository = refundQueueRepository
         )
@@ -658,15 +655,15 @@ class ShiftViewModelTest {
         // Initially online
         assertThat(viewModel.isOffline.value).isFalse()
 
-        // When: network lost
-        fakeNetworkStatus.emit(NetworkStatus.Unavailable)
+        // When: network lost (el latido lo confirma tras su gracia)
+        connectionStateManager.setInternetConnected(false)
         advanceUntilIdle()
 
         // Then
         assertThat(viewModel.isOffline.value).isTrue()
 
-        // When: network restored
-        fakeNetworkStatus.emit(NetworkStatus.Available)
+        // When: network restored (el latido contesta)
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 100)
         advanceUntilIdle()
 
         // Then
@@ -827,18 +824,20 @@ class ShiftViewModelTest {
     }
 
     @Test
-    fun `P1 que el WiFi diga Disponible no borra el sin conexion si el servidor no contesto`() = runTest {
+    fun `P1 un latido que contesta no borra el sin conexion si la caja sigue sin contestar`() = runTest {
         coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
         coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
             com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
         val viewModel = createViewModel()
         advanceUntilIdle()
 
-        fakeNetworkStatus.emit(NetworkStatus.Available)
+        // El latido contesta y la caja se vuelve a pedir, pero sigue sin respuesta: ESA respuesta decide.
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 100)
         advanceUntilIdle()
 
         assertThat(viewModel.isOffline.value).isTrue()
         assertThat(viewModel.cachedShiftInfo.value?.isOpen).isTrue()
+        coVerify(atLeast = 2) { shiftRepository.getCurrentShift("venue-123") }
     }
 
     @Test
@@ -903,6 +902,70 @@ class ShiftViewModelTest {
 
         assertThat(viewModel.isOffline.value).isFalse()
         assertThat(viewModel.cachedShiftInfo.value).isNull()
+    }
+
+    // ── D13 (PAX, 16-nov-2026): el recuadro de la caja se quedaba en «Sin conexión» con la red de vuelta ──────────────────
+    // El latido ya daba server=true y el aviso rojo se había quitado, pero el recuadro del Inicio seguía en «Caja abierta ·
+    // Sin conexión · guardado en este aparato» hasta salir y volver. Logcat de la PAX (09:44:57 y 09:49:56): Android avisó
+    // «Network LOST» de una red vieja ~10 s después de volver; el ConnectionViewModel lo absorbió en su gracia de 3 s («Network
+    // recovered during grace period») y el recuadro, que escuchaba ese aviso crudo, nunca recibió el «Available» siguiente.
+
+    @Test
+    fun `P1 D13 el recuadro vuelve a con conexion en cuanto el latido da server=true, sin reanudar la pantalla`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        // Se va el WiFi: el latido lo confirma tras su gracia de 3 s.
+        connectionStateManager.setInternetConnected(false)
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        // Vuelve: el latido contesta (server=true). El «Network LOST» de la red vieja que Android manda ~10 s después
+        // ya no llega aquí: el ConnectionViewModel lo absorbe en su gracia y el latido sigue en server=true.
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 236)
+        advanceUntilIdle()
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 295)
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isFalse()
+        // La caja ya había contestado: cada latido NO la vuelve a pedir (sin ráfaga de lecturas).
+        coVerify(exactly = 1) { shiftRepository.getCurrentShift("venue-123") }
+    }
+
+    @Test
+    fun `P1 D13 nunca dice con conexion mientras el latido no lo confirma`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        connectionStateManager.setInternetConnected(false)
+        advanceUntilIdle()
+        // Android ya puede ver el WiFi, pero mientras el latido no contesta el recuadro sigue en «Sin conexión».
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        // Hay internet pero el servidor no contesta (aviso rojo «Sin conexión al servidor»).
+        connectionStateManager.updateState(hasInternet = true, hasServer = false)
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+    }
+
+    @Test
+    fun `P1 D13 si la caja no contesto, el latido que contesta la vuelve a preguntar y ella decide`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        coEvery { cachedShiftDao.getCachedShift("venue-123") } returns
+            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(testShift, "venue-123")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        // Un latido que contesta, sin «Connection restored» (fue un parpadeo bajo el umbral) y sin reanudar.
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isFalse()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.tables.data.CAMBIOS_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
@@ -25,8 +27,10 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -397,6 +401,104 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.remaining.compareTo(BigDecimal.ZERO)).isEqualTo(0)
         assertThat(viewModel.state.value.tableReleased).isTrue()
         coVerify(exactly = 1) { repository.clearTable(venueId, "mesa-1", "orden-1", false) }
+    }
+
+    @Test
+    fun D85_cobrar_una_cuenta_de_la_mesa_mientras_otra_debe_suelta_su_sesion_y_deja_la_mesa_ocupada() = runTest {
+        // Codex r1 #2: M8 tiene la cuenta B (de la terminal, $20) y la A (de otro mesero, $30). Se cobra B completa: el
+        // SERVIDOR no libera la mesa porque A debe (400). B ya no debe, así que la sesión se suelta: no queda «Tu mesa»
+        // pegada a una cuenta pagada. La mesa sigue ocupada por A (no se reintenta ni se encola nada).
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(
+            Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00"))),
+            Result.success(OrderDetail(id = "b", status = "COMPLETED", paymentStatus = "PAID", total = BigDecimal("20.00"))),
+        )
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+
+        assertThat(viewModel.state.value.tableReleased).isTrue()
+        assertThat(tableSession.current()).isNull()
+        coVerify(exactly = 1) { repository.clearTable(venueId, "m8", "b", false) }
+    }
+
+    @Test
+    fun D85_si_el_servidor_dice_que_SU_cuenta_todavia_debe_la_sesion_se_queda() = runTest {
+        // El caso que ya protegía el rechazo: la propina de una tarjeta todavía no se refleja y el SERVIDOR ve la cuenta
+        // con saldo. La sesión se queda para poder volver a ella.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00"))),
+            Result.success(OrderDetail(id = "orden-1", status = "PENDING", paymentStatus = "PARTIAL", total = BigDecimal("100.00"))),
+        )
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-1"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("100.00"))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-1")
+    }
+
+    @Test
+    fun D85_cerrar_el_recibo_antes_de_que_conteste_no_deja_la_sesion_pegada_a_la_cuenta_pagada() = runTest {
+        // Codex r2 #2: la pregunta por la cuenta tarda y el cajero cierra el recibo (la pantalla se va y su scope se
+        // cancela). La liberación termina igual.
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        val respuesta = CompletableDeferred<Result<OrderDetail>>()
+        var llamadas = 0
+        coEvery { repository.getOrder(venueId, "b") } coAnswers {
+            llamadas++
+            if (llamadas == 1) {
+                Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00")))
+            } else {
+                respuesta.await()
+            }
+        }
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+        viewModel.viewModelScope.cancel()
+        respuesta.complete(Result.success(OrderDetail(id = "b", status = "COMPLETED", paymentStatus = "PAID")))
+
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_una_liberacion_que_llega_tarde_no_borra_la_sesion_de_otra_mesa_que_ya_abrio_el_mesero() = runTest {
+        // La liberación ya no muere con la pantalla: si contesta tarde y el mesero ya entró a otra mesa, no la toca.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("50.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("50.00"), amountLeft = BigDecimal("50.00")))
+        val servidor = CompletableDeferred<Result<Unit>>()
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } coAnswers { servidor.await() }
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("50.00"))
+        tableSession.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2"))
+        servidor.complete(Result.success(Unit))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-2")
+    }
+
+    @Test
+    fun D85_si_no_se_puede_preguntar_por_la_cuenta_la_sesion_se_queda() = runTest {
+        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
+        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(
+            Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00"))),
+            Result.failure(java.io.IOException("sin red")),
+        )
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        val viewModel = createViewModel()
+
+        viewModel.onPaymentCompleted(BigDecimal("20.00"))
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("b")
     }
 
     @Test

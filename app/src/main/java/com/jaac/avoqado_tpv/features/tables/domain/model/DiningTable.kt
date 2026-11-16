@@ -88,6 +88,26 @@ data class DiningTable(
         } ?: openOrders.firstOrNull()
 
     /**
+     * TODAS las cuentas vivas de la mesa, con [primaryCheck] primero y las demás en el orden del SERVIDOR (por
+     * antigüedad). Es lo que pintan el plano, la lista y la hoja de la mesa (D85, 15-nov): cuando la terminal abrió la
+     * mesa sin red y otro mesero la abrió en línea mientras tanto, el SERVIDOR deja la cuenta de la terminal APARTE en
+     * la misma mesa (D51/D71). Leyendo sólo [primaryCheck], esa cuenta —con consumo y sin pagar— no se veía ni se podía
+     * cobrar desde la TPV. Con un servidor viejo sin `openOrders`, es sólo [primaryCheck].
+     */
+    val openChecks: List<OpenCheckSummary>
+        get() {
+            val principal = primaryCheck ?: return emptyList()
+            return listOf(principal) + openOrders.filter { it.id != principal.id }
+        }
+
+    /** Lo que debe la mesa entera: la suma de [openChecks] (pesos, `BigDecimal`). */
+    val openChecksTotal: BigDecimal
+        get() = openChecks.fold(BigDecimal.ZERO) { acc, c -> acc + c.total }
+
+    val openChecksTotalDisplay: String
+        get() = "$${openChecksTotal.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
+
+    /**
      * La CUENTA manda, no `status` — `status` solo sigue mandando para
      * RESERVED, la única ocupación legítima sin cuenta abierta. Mirror EXACTO
      * de `avoqado-android`/`avoqado-ios` `DiningTable` (2026-07-28) — no

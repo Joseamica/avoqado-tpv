@@ -11,16 +11,41 @@ import javax.inject.Singleton
 
 /** Replays saved approvals only. No processor authorization is reachable from this class. */
 @Singleton
-class LedgerApprovalRecovery @Inject constructor(
+class LedgerApprovalRecovery(
     private val dao: PaymentAttemptDao,
     private val fast: FastPaymentRecorder,
     private val order: OrderPaymentRecorder,
+    /**
+     * 🔴 D3 (encargo 9308a7): ¿se puede registrar AHORA (sesión y red)? Sin sesión cada pasada terminaba en un 401, y sin
+     * red en un error de transporte; los dos gastaban uno de los CINCO intentos (`verify_attempts < 5`, que sube al
+     * reclamar) de un cobro ya aprobado, y tras cinco la venta quedaba fuera de la recuperación para siempre. Sin sesión o
+     * sin red no se reclama ninguna fila: esperan intactas (entrar y reconectar vuelven a pedir la pasada). Se pregunta
+     * ANTES DE CADA FILA: un 401 con refresco fallido borra la sesión a media pasada (Codex r1 #1).
+     */
+    private val puedeRegistrar: () -> Boolean = { true },
 ) {
+    /** Hilt cablea la sesión y la red REALES. Constructor secundario a propósito (mismo patrón que [PaymentAttemptLedger]). */
+    @Inject constructor(
+        dao: PaymentAttemptDao,
+        fast: FastPaymentRecorder,
+        order: OrderPaymentRecorder,
+        secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+        networkMonitor: com.jaac.avoqado_tpv.core.util.NetworkMonitor,
+    ) : this(dao, fast, order, { secureStorage.isAuthenticated() && networkMonitor.isConnected() })
+
     suspend fun recover(venueId: String, now: Long): Int {
+        if (!puedeRegistrar()) {
+            Timber.i("📒 [LedgerApproval] sin sesión o sin red: las aprobaciones esperan (no se gasta ningún intento)")
+            return 0
+        }
         var recovered = 0
         // Let a live SDK/recorder finish first; page size is capped by the DAO.
-        val rows = dao.getApprovalRecoveryCandidates(venueId, now - 120_000L, now)
+        val rows = dao.getApprovalRecoveryCandidates(venueId, now - ESPERA_MS, now)
         for (row in rows) {
+            if (!puedeRegistrar()) {
+                Timber.i("📒 [LedgerApproval] se fue la sesión o la red a media pasada: las demás aprobaciones esperan")
+                break
+            }
             if (row.venueId != venueId || row.state !in RECOVERABLE ||
                 (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
                 row.verifyAttempts >= 5) continue
@@ -82,6 +107,21 @@ class LedgerApprovalRecovery @Inject constructor(
         return recovered
     }
 
+    /**
+     * Codex r4–r5 (D3, encargo 9308a7): ¿cuándo hace falta OTRA pasada? Se pregunta al terminar [recover]. Cuenta toda
+     * aprobación que sigue candidata sin lease: la que se saltó por reciente, la que cumplió sus 2 min DURANTE la pasada y la
+     * que no cupo en la página de 50. Lo que esta pasada ya intentó quedó con lease y no cuenta (no hay vuelta sin fin; su
+     * reintento sigue el backoff de siempre). Devuelve en cuántos ms, o null si no hace falta o si no se puede registrar
+     * ahora (sin sesión o sin red no se sondea: entrar y reconectar vuelven a pedir la pasada).
+     */
+    suspend fun cuandoHaceFaltaOtraPasada(venueId: String, now: Long): Long? {
+        if (!puedeRegistrar()) return null
+        val siguiente = dao.getApprovalRecoveryCandidates(venueId, Long.MAX_VALUE, now)
+            .filter { it.venueId == venueId }
+            .minOfOrNull { it.createdAt } ?: return null
+        return (siguiente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
+    }
+
     private suspend fun restoreContext(row: PaymentAttemptEntity): PaymentContext? {
         val gson = Gson()
         val operation = row.operationId?.toIntOrNull()
@@ -118,5 +158,10 @@ class LedgerApprovalRecovery @Inject constructor(
     companion object {
         val RECOVERABLE = listOf(PaymentAttemptEntity.STATE_HOST_RESPONDIO,
             PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO)
+
+        /** La espera que [recover] le da a un SDK o registro vivo antes de tomar una fila (`now - ESPERA_MS`). */
+        const val ESPERA_MS = 120_000L
+        const val MARGEN_MS = 15_000L
+
     }
 }

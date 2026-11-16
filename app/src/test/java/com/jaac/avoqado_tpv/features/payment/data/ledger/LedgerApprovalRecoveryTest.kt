@@ -113,6 +113,84 @@ class LedgerApprovalRecoveryTest {
     }
 
     @Test
+    fun `P1 sin sesion no se reclama ninguna aprobacion ni se gasta un intento, y al volver la sesion se registra`() = runTest {
+        // D3 (encargo 9308a7): sin sesión cada pasada terminaba en 401 y gastaba uno de los 5 intentos del cobro aprobado.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt)
+        var sesion = false
+        val recuperacion = LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { sesion })
+
+        assertEquals(0, recuperacion.recover("venue", 1000000))
+        coVerify(exactly = 0) { dao.getApprovalRecoveryCandidates(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.claimRecovery(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
+
+        sesion = true
+        assertEquals(1, recuperacion.recover("venue", 1000000))
+        coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+    }
+
+    @Test
+    fun `P1 si la sesion o la red se van a media pasada, las demas aprobaciones no se reclaman`() = runTest {
+        // Codex r1 #1: un 401 con refresco fallido borra la sesión DURANTE la pasada; antes sólo se miraba al empezar.
+        val segunda = approved.copy(attemptId = "attempt-2")
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved, segunda)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        var sesion = true
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } answers {
+            sesion = false
+            Result.failure(java.io.IOException("401: la sesión se cerró"))
+        }
+        assertEquals(0, LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { sesion }).recover("venue", 1000000))
+        coVerify(exactly = 1) { dao.claimRecovery("attempt", "venue", any(), any()) }
+        coVerify(exactly = 0) { dao.claimRecovery("attempt-2", any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 un cobro sin sesion en AUTORIZADO se recupera aunque host_approved no se haya escrito`() = runTest {
+        // Codex r1 #3: el camino sin sesión deja AUTORIZADO (con la tarjeta); markHostResponded pudo fallar antes.
+        val sinBandera = approved.copy(state = "AUTORIZADO", hostApproved = null, maskedPan = "****1111", cardBrand = "VISA", entryMode = "CHIP")
+        coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(sinBandera)
+        coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 1
+        val tarjetas = mutableListOf<CardDetails>()
+        coEvery { fast.recordPayment(any(), capture(tarjetas), "AUTH", "REF") } returns Result.success(receipt)
+        assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
+        assertEquals("****1111", tarjetas.single().maskedPan)
+        assertEquals(CardBrand.VISA, tarjetas.single().cardBrand)
+        coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
+    }
+
+    @Test
+    fun `P1 lo que sigue pendiente tras la pasada agenda otra para cuando la mas antigua se pueda tomar`() = runTest {
+        // Codex r4–r5 (D3): la pasada absorbida por KEEP corre antes de los 2 min de la fila; una fila cumple sus 2 min
+        // DURANTE la pasada; la 51 no cabe en la página. Sin seguimiento, las tres esperaban la reconexión o las 6 h.
+        val now = 1_000_000L
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(
+            approved.copy(attemptId = "reciente", createdAt = now - 90_000L),   // le faltan 30 s
+            approved.copy(attemptId = "nueva", createdAt = now - 10_000L),      // le faltan 110 s: la agenda la siguiente
+        )
+        assertEquals(30_000L + 15_000L, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
+
+        // Una que ya se puede tomar (envejeció durante la pasada o no cupo en la página): enseguida, sólo con el margen.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(
+            approved.copy(attemptId = "la-51", createdAt = now - 500_000L),
+            approved.copy(attemptId = "nueva", createdAt = now - 10_000L),
+        )
+        assertEquals(15_000L, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
+    }
+
+    @Test
+    fun `sin pendientes, o sin sesion o red, no se agenda otra pasada`() = runTest {
+        val now = 1_000_000L
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns emptyList()
+        assertEquals(null, LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", now))
+        // Sin sesión o sin red no se sondea (no hay vuelta cada 2 min con la terminal sin sesión): entrar y reconectar la piden.
+        coEvery { dao.getApprovalRecoveryCandidates("venue", Long.MAX_VALUE, now) } returns listOf(approved.copy(createdAt = now - 10_000L))
+        assertEquals(null, LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { false }).cuandoHaceFaltaOtraPasada("venue", now))
+    }
+
+    @Test
     fun `another worker lease and queue handoff prevent second registration`() = runTest {
         coEvery { dao.getApprovalRecoveryCandidates("venue", any(), any()) } returns listOf(approved, approved.copy(state = "ENTREGADA_A_COLA"))
         coEvery { dao.claimRecovery(any(), any(), any(), any()) } returns 0

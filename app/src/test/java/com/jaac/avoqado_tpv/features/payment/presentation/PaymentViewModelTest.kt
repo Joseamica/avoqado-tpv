@@ -2101,6 +2101,31 @@ class PaymentViewModelTest {
     }
 
     @Test
+    fun `buildPendingLoginState dice que SI se cobro, que se registra al volver a entrar y que no se vuelva a cobrar`() = runTest {
+        // D3 (encargo 9308a7): el banco aprobó y la sesión se cerró antes de registrar.
+        val viewModel = createViewModel()
+        try {
+            val currentSuccess = PaymentState.Success(authCode = "F628CL", amount = "25.00", tipAmount = "0", orderId = "order-1")
+
+            val pendiente = viewModel.buildPendingLoginState(currentSuccess, "873257481453")
+
+            assertThat(pendiente).isNotNull()
+            assertThat(pendiente!!.pendingSyncMessage).contains("SÍ se hizo")
+            assertThat(pendiente.pendingSyncMessage).contains("vuelva a entrar")
+            assertThat(pendiente.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            assertThat(pendiente.pendingSyncMessage).contains("873257481453")
+            assertThat(pendiente.referenceNumber).isEqualTo("873257481453")
+            assertThat(pendiente.recordingLostMessage).isNull()
+            assertThat(pendiente.authCode).isEqualTo("F628CL")
+            assertThat(pendiente.orderId).isEqualTo("order-1")
+            // Una pantalla que ya no es el éxito no se toca.
+            assertThat(viewModel.buildPendingLoginState(PaymentState.Cancelled, "873257481453")).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `buildPendingSyncState updates the reference when called again on an already-queued Success`() = runTest {
         val viewModel = createViewModel()
         try {

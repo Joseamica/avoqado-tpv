@@ -41,6 +41,9 @@ class ChipRechazaTrasAprobacionFuenteTest {
             val finDelSdk = rama.indexOf("marcarFinDelSdk(preparationAttemptId)")
             assertTrue("[$nombre] la libreta no pasa el intento a la duda", libreta >= 0)
             assertTrue("[$nombre] el fin del SDK se marca ANTES de dejar la fila en duda", finDelSdk > libreta)
+            // Codex r3: sin la duda escrita, el fin del SDK no se marca (la recuperación no puede reclamar la fila).
+            assertTrue("[$nombre] el fin del SDK se marca aunque la duda no se haya escrito",
+                rama.contains("if (desenlace != com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR) {\n                            marcarFinDelSdk(preparationAttemptId)"))
             assertTrue("[$nombre] la pantalla no queda en la duda que ya existe", rama.contains("showUnresolvedAuthorization()"))
             // Codex r1 #2: también si la duda no se pudo escribir; sólo la evidencia del servidor conserva «Cobrado».
             val baja = rama.indexOf("authorizationApproved = false")

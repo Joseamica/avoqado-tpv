@@ -4199,7 +4199,11 @@ class PaymentViewModel @Inject constructor(
                             else preparationAttemptId?.let { paymentAttemptLedger.markChipRechazoTrasAprobacion(it) }
                                 ?: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR
                         // 🔒 B1: `CompleteEmvTrans` REGRESÓ con error: aquí termina TODA la interacción de este intento con el SDK.
-                        marcarFinDelSdk(preparationAttemptId)
+                        // Codex r3: si la duda NO se pudo escribir, el fin del SDK tampoco se marca todavía: la fila sigue contando como
+                        // cobro corriendo y la recuperación no la reclama (dentro de su UPDATE). La libreta lo marca al escribir la duda.
+                        if (desenlace != com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR) {
+                            marcarFinDelSdk(preparationAttemptId)
+                        }
                         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
                             "CompleteEmvTrans falló tras APROBADA (${error.javaClass.simpleName}) — $desenlace"
                         )

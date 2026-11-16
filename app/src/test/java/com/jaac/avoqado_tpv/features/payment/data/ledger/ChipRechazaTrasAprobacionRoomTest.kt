@@ -253,26 +253,36 @@ class ChipRechazaTrasAprobacionRoomTest {
         assertEquals(1, dao.claimRecoveryConElSdkFuera("a1", venue, ahora, ahora + 300_000, nuevo.tokenDelProceso()))
     }
 
-    @Test fun `P1 Codex r1-2 la duda que no se pudo escribir no se registra sola y se reintenta en cada pasada`() = runTest {
+    /** Room falla al escribir la duda (como un disco lleno): un trigger aborta cualquier paso a INDETERMINADO. */
+    private fun fallaEscribirLaDuda() = db.openHelper.writableDatabase.execSQL(
+        "CREATE TRIGGER falla_duda BEFORE UPDATE OF state ON payment_attempts WHEN NEW.state = 'INDETERMINADO' " +
+            "BEGIN SELECT RAISE(ABORT, 'disco lleno'); END")
+    private fun vuelveLaEscritura() = db.openHelper.writableDatabase.execSQL("DROP TRIGGER falla_duda")
+
+    @Test fun `P1 Codex r1-2 y r3 la duda que no se pudo escribir no la registra la recuperacion, y al escribirla se marca el fin del SDK`() = runTest {
         val libreta = proceso()
         aprobadoPorElBanco(libreta)
-        // La fila está en un estado que la transición no acepta (simula que la escritura no se pudo hacer): SIN_ESCRIBIR.
-        assertEquals(1, dao.marcarSdkRegreso("a1", System.currentTimeMillis()))
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
+        fallaEscribirLaDuda()
         assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
-        assertTrue("la recuperación la deja en paz", libreta.retenidaPorChipRechazo("a1"))
+        // La pantalla no marca el fin del SDK (fuente): la fila sigue HOST_RESPONDIO aprobada y «corriendo» en este proceso.
+        assertEquals(PaymentAttemptEntity.STATE_HOST_RESPONDIO, dao.getById("a1")?.state)
+        assertNull(dao.getById("a1")?.sdkReturnedAt)
 
-        // Cuando la escritura vuelve a ser posible, la pasada de la recuperación la escribe y la fila queda en duda.
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'HOST_RESPONDIO' WHERE attempt_id = 'a1'")
-        assertTrue(libreta.retenidaPorChipRechazo("a1"))
+        // Una pasada REAL de la recuperación, ya pasados sus 2 minutos: no reclama ni registra (la condición va en su UPDATE).
+        val fast = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder>()
+        val order = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder>()
+        val recuperacion = LedgerApprovalRecovery(dao, fast, order, { true }, { libreta.tokenDelProceso() })
+        assertEquals(0, recuperacion.recover(venue, System.currentTimeMillis() + 600_000))
+        io.mockk.coVerify(exactly = 0) { order.recordPayment(any(), any(), any(), any()) }
+        assertEquals(PaymentAttemptEntity.STATE_HOST_RESPONDIO, dao.getById("a1")?.state)
+
+        // Vuelve la escritura: el reintento (al consultar, o en la puerta) escribe la duda y el fin del SDK, que sí ocurrió.
+        vuelveLaEscritura()
+        libreta.reintentarChipRechazo("a1")
         assertEquals(PaymentAttemptEntity.STATE_INDETERMINADO, dao.getById("a1")?.state)
-        assertFalse("ya escrita, deja de estar en memoria", libreta.retenidaPorChipRechazo("a1"))
-    }
-
-    @Test fun `P1 Codex r1-2 una fila que no es de esta duda no queda retenida`() = runTest {
-        val libreta = proceso()
-        aprobadoPorElBanco(libreta)
-        assertFalse(libreta.retenidaPorChipRechazo("a1"))
+        assertNotNull(dao.getById("a1")?.sdkReturnedAt)
+        assertFalse(libreta.chipRechazoPendienteDeEscribir("a1"))
+        assertTrue(dao.getApprovalRecoveryCandidates(venue, Long.MAX_VALUE, System.currentTimeMillis()).isEmpty())
     }
 
     // ── Codex r2 ────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -291,17 +301,18 @@ class ChipRechazaTrasAprobacionRoomTest {
         val libreta = proceso()
         aprobadoPorElBanco(libreta)
         // Doble fallo: la aprobación no quedó escrita (AUTORIZANDO) y tampoco la duda.
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
-        assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
         db.openHelper.writableDatabase.execSQL(
             "UPDATE payment_attempts SET state = 'AUTORIZANDO', host_approved = NULL WHERE attempt_id = 'a1'")
-        libreta.marcarSdkRegreso("a1")
+        fallaEscribirLaDuda()
+        assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+        vuelveLaEscritura()
 
-        // La siguiente venta pasa por la puerta: la duda se escribe y el aparato queda libre.
+        // La siguiente venta pasa por la puerta: la duda se escribe, se marca el fin del SDK y el aparato queda libre.
         assertTrue("la terminal cobra la siguiente venta",
             libreta.openAttempt("siguiente", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}"))
         assertEquals(PaymentAttemptEntity.STATE_INDETERMINADO, dao.getById("a1")?.state)
         assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, dao.getById("a1")?.lastError)
+        assertNotNull(dao.getById("a1")?.sdkReturnedAt)
         assertFalse(libreta.chipRechazoPendienteDeEscribir("a1"))
     }
 
@@ -325,8 +336,11 @@ class ChipRechazaTrasAprobacionRoomTest {
         assertEquals("aprobada sin la duda: evidencia de cobro, como siempre",
             BlumonAttemptResolver.State.MONEY_EVIDENCE, resolver.current(venue, "a1").state)
 
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
+        fallaEscribirLaDuda()
         assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
-        assertEquals(BlumonAttemptResolver.State.PENDING, resolver.current(venue, "a1").state)
+        val lectura = resolver.current(venue, "a1")
+        assertEquals(BlumonAttemptResolver.State.PENDING, lectura.state)
+        // Codex r3 #2: con el motivo, para que la pantalla no ofrezca «no presentó tarjeta» en un cobro del POS.
+        assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, lectura.row?.lastError)
     }
 }

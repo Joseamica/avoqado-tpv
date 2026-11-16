@@ -58,7 +58,7 @@ class BlumonAttemptResolver @Inject constructor(
         if (scopedRow(venueId, attemptId, procesadores) == null) return Result(State.UNAVAILABLE)
         // D5 (533d77, Codex r2 #3): si la duda «el chip rechazó tras aprobar» no se pudo escribir, se reintenta aquí (es local:
         // también sin red) antes de consultar.
-        ledger.retenidaPorChipRechazo(attemptId)
+        ledger.reintentarChipRechazo(attemptId)
         val reading = try {
             recovery.recoverOne(venueId, attemptId, System.currentTimeMillis(), false)
         } catch (cancelled: CancellationException) {
@@ -199,8 +199,10 @@ class BlumonAttemptResolver @Inject constructor(
             attemptId in unsavedMoney -> State.MONEY_EVIDENCE
             // D5 (Codex r2 #3): el banco aprobó y el chip rechazó el cierre, pero la duda no se pudo escribir: la fila todavía dice
             // «aprobada». No es evidencia de cobro: es la misma duda. Las declaraciones siguen exigiendo INDETERMINADO en su CAS.
+            // Codex r3 #2: con el MOTIVO, para que la pantalla diga lo que pasó y no ofrezca «no presentó tarjeta» (copia sólo para mostrar).
             ledger.chipRechazoPendienteDeEscribir(attemptId) && row.serverProcessorEvidence == null &&
-                row.serverOutcome == null && row.serverPaymentId == null -> State.PENDING
+                row.serverOutcome == null && row.serverPaymentId == null ->
+                return Result(State.PENDING, row.copy(lastError = PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION))
             row.hostApproved == true || row.serverProcessorEvidence == "APPROVED" || row.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO -> State.MONEY_EVIDENCE
             // RELEASED_NO_EVIDENCE sólo lo tiene la Nexgo (su CAS lo exige): la pantalla de la PAX no cambia.
             row.state == PaymentAttemptEntity.STATE_DESCARTADA &&

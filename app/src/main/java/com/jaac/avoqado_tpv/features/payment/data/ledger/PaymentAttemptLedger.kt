@@ -701,7 +701,7 @@ class PaymentAttemptLedger(
         // D5 (533d77, Codex r2 #1): la duda «el chip rechazó tras aprobar» que no se pudo escribir se reintenta aquí, antes de cada
         // decisión (reservar, autorizar, declarar), con o sin red. No frena nada: su venta ya está cercada (HOST_RESPONDIO/AUTORIZANDO).
         for (attemptId in chipRechazoSinEscribir.toList()) {
-            if (escribirChipRechazoBajoCandado(attemptId) != ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.remove(attemptId)
+            if (escribirChipRechazoBajoCandado(attemptId) != ChipRechazo.SIN_ESCRIBIR) soltarChipRechazoEscrito(attemptId)
         }
         for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) {
             try {
@@ -789,13 +789,16 @@ class PaymentAttemptLedger(
         /** El servidor ya tiene evidencia de cobro (escrita o sin escribir): la fila conserva la aprobación. */
         HAY_EVIDENCIA,
         /**
-         * No se pudo escribir (Room falló o la fila estaba en otro estado). La fila puede seguir aprobada: hasta que la duda se
-         * escriba, la recuperación no la registra en este proceso ([retenidaPorChipRechazo]) y la pantalla dice que está en duda.
+         * No se pudo escribir (Room falló o la fila estaba en otro estado). La fila puede seguir aprobada: la pantalla NO marca el
+         * fin del SDK, así que la recuperación no la reclama en este proceso, y la duda se reintenta en la puerta y al consultar.
          */
         SIN_ESCRIBIR,
     }
 
-    /** Codex r1 #2: los intentos cuya duda no se pudo escribir. En memoria: mueren con el proceso (residual declarado). */
+    /**
+     * Codex r1 #2: los intentos cuya duda no se pudo escribir, para reintentarla. NO es lo que protege del registro automático (eso
+     * lo hace la falta de `sdk_returned_at`, dentro del UPDATE del reclamo). En memoria: mueren con el proceso (residual declarado).
+     */
     private val chipRechazoSinEscribir: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** El token de ESTE proceso, para que la recuperación no reclame una venta cuyo SDK sigue aquí dentro (Codex r1 #1). */
@@ -821,8 +824,20 @@ class PaymentAttemptLedger(
             Timber.e(error, "📒 [Libreta] markChipRechazoTrasAprobacion failed — la duda no quedó escrita | attemptId=%s", attemptId)
             ChipRechazo.SIN_ESCRIBIR
         }
-        if (desenlace == ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.add(attemptId) else chipRechazoSinEscribir.remove(attemptId)
+        if (desenlace == ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.add(attemptId) else soltarChipRechazoEscrito(attemptId)
         return desenlace
+    }
+
+    /**
+     * Codex r3 (rediseño de la familia «duda no escrita»): mientras la duda no esté escrita, la pantalla NO marca el fin del SDK
+     * (`sdk_returned_at`), así que la fila cuenta como cobro corriendo de ESTE proceso: el reclamo de la recuperación no la toma
+     * (condición dentro de su UPDATE, [PaymentAttemptDao.claimRecoveryConElSdkFuera]) y no hay carrera con ninguna memoria. En
+     * cuanto la duda queda escrita (o el servidor tiene evidencia), se marca el fin del SDK, que SÍ ocurrió: la pantalla sólo
+     * anota aquí intentos cuyo `CompleteEmvTrans` ya regresó.
+     */
+    private suspend fun soltarChipRechazoEscrito(attemptId: String) {
+        if (!chipRechazoSinEscribir.remove(attemptId)) return
+        marcarSdkRegreso(attemptId)
     }
 
     /** Se llama SÓLO con [candadoDeEvidencia] tomado (el `Mutex` no es reentrante). Nunca lanza. */
@@ -850,13 +865,9 @@ class PaymentAttemptLedger(
         ChipRechazo.SIN_ESCRIBIR
     }
 
-    /**
-     * Codex r1 #2 / r2: ¿la recuperación debe dejar en paz esta fila? Sí mientras su duda no se haya podido escribir en este
-     * proceso; antes de contestar, vuelve a intentar escribirla. Si el servidor ya tiene evidencia de cobro, deja de retenerla.
-     */
-    suspend fun retenidaPorChipRechazo(attemptId: String): Boolean {
-        if (attemptId !in chipRechazoSinEscribir) return false
-        return markChipRechazoTrasAprobacion(attemptId) != ChipRechazo.HAY_EVIDENCIA
+    /** Reintenta escribir la duda de este intento si quedó pendiente (la pantalla, al consultar; también sin red). Nunca lanza. */
+    suspend fun reintentarChipRechazo(attemptId: String) {
+        if (attemptId in chipRechazoSinEscribir) markChipRechazoTrasAprobacion(attemptId)
     }
 
     /** Codex r2 #3: la duda de este intento no se pudo escribir — la pantalla la trata como duda, no como «evidencia de cobro». */

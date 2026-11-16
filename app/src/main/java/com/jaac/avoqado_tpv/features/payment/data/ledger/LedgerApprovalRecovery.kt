@@ -28,8 +28,6 @@ class LedgerApprovalRecovery(
      * puede seguir dentro (el cierre EMV pendiente). null = el reclamo de siempre (pruebas viejas).
      */
     private val tokenDelProceso: () -> String? = { null },
-    /** D5 (Codex r1 #2): una venta cuyo chip rechazó tras aprobar y cuya duda no se pudo escribir no se registra sola. */
-    private val retenidaPorChipRechazo: suspend (String) -> Boolean = { false },
 ) {
     /** Hilt cablea la sesión y la red REALES. Constructor secundario a propósito (mismo patrón que [PaymentAttemptLedger]). */
     @Inject constructor(
@@ -41,7 +39,7 @@ class LedgerApprovalRecovery(
         ledger: PaymentAttemptLedger,
     ) : this(
         dao, fast, order, { secureStorage.isAuthenticated() && networkMonitor.isConnected() },
-        { ledger.tokenDelProceso() }, { ledger.retenidaPorChipRechazo(it) },
+        { ledger.tokenDelProceso() },
     )
 
     suspend fun recover(venueId: String, now: Long): Int {
@@ -61,10 +59,6 @@ class LedgerApprovalRecovery(
                 (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
                 row.verifyAttempts >= 5) continue
             try {
-                if (retenidaPorChipRechazo(row.attemptId)) {
-                    Timber.w("📒 [LedgerApproval] el chip rechazó tras aprobar y la duda no quedó escrita: no se registra sola | attemptId=%s", row.attemptId)
-                    continue
-                }
                 val waitMs = 120_000L * (1L shl row.verifyAttempts.coerceIn(0, 4))
                 val acquiredAt = maxOf(now, System.currentTimeMillis())
                 val ownedLease = acquiredAt + maxOf(waitMs, 300_000L)

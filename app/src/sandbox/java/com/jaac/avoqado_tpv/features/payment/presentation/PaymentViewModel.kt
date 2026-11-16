@@ -3050,7 +3050,10 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("🔵 [External Payment] Using external inputs | amount=$amount | tipCents=$tipCents | rating=$rating | skipReview=$skipReview")
 
-        val resolvedTip = if (needsTip && tipCents != null) formatCentsToAmountString(tipCents) else "0.00"
+        // 💵 D10 (16-nov): la propina que manda el POS se cobra SIEMPRE que venga. Apagar la «Pantalla de Propina» sólo
+        // salta la pregunta en la terminal; antes también tiraba el monto y la PAX cobraba sólo el subtotal (desde 2.7.1).
+        // La Nexgo ya la conservaba (`pendingTip`).
+        val resolvedTip = if (tipCents != null && tipCents > 0L) formatCentsToAmountString(tipCents) else "0.00"
         val resolvedRating = if (needsRating) rating else null
 
         startPaymentWithResolvedInputs(

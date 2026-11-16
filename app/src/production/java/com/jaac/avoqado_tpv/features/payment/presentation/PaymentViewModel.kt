@@ -3026,6 +3026,22 @@ class PaymentViewModel @Inject constructor(
 
         if (missingRating || missingTip) {
             Timber.w("⚠️ [External Payment] Missing rating/tip for enabled screens - falling back to on-device flow")
+            // 💵 D10 (Codex r2): falta sólo la calificación y la pantalla de propina está apagada → se califica aquí y se cobra
+            // la propina del POS (mismo camino que la propina de Mesas, D9). Con submitAmount salía en $0 tras calificar.
+            if (!missingTip && !needsTip && tipCents != null && tipCents > 0L) {
+                submitAmountConPropinaYaElegida(
+                    amount = amount,
+                    propinaCents = tipCents,
+                    orderId = orderId,
+                    orderNumber = orderNumber,
+                    splitType = splitType,
+                    equalPartsPartySize = equalPartsPartySize,
+                    equalPartsPayedFor = equalPartsPayedFor,
+                    paidProductIds = paidProductIds,
+                    skipLocalOrderValidation = skipLocalOrderValidation
+                )
+                return
+            }
             submitAmount(
                 amount = amount,
                 orderId = orderId,
@@ -3041,7 +3057,10 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("🔵 [External Payment] Using external inputs | amount=$amount | tipCents=$tipCents | rating=$rating | skipReview=$skipReview")
 
-        val resolvedTip = if (needsTip && tipCents != null) formatCentsToAmountString(tipCents) else "0.00"
+        // 💵 D10 (16-nov): la propina que manda el POS se cobra SIEMPRE que venga. Apagar la «Pantalla de Propina» sólo
+        // salta la pregunta en la terminal; antes también tiraba el monto y la PAX cobraba sólo el subtotal (desde 2.7.1).
+        // La Nexgo ya la conservaba (`pendingTip`).
+        val resolvedTip = if (tipCents != null && tipCents > 0L) formatCentsToAmountString(tipCents) else "0.00"
         val resolvedRating = if (needsRating) rating else null
 
         startPaymentWithResolvedInputs(

@@ -513,9 +513,10 @@ fun PaymentScreen(
                             },
                             // 📸 PRE-payment specific: Back button and conditional skip
                             canSkip = currentState.canSkip(),
-                            onNavigateBack = {
-                                viewModel.goBackFromPrePaymentVerification()
-                            }
+                            // 💵 D10 (Codex r1): «← Volver» hace lo mismo que la flecha y el botón físico. En un cobro que
+                            // ya trae sus datos (el del POS, con su propina) sale del cobro antes de leer la tarjeta; ir
+                            // directo a la calificación cobraba después la propina del POS en $0.
+                            onNavigateBack = flechaAtras
                         )
                     }
                 }

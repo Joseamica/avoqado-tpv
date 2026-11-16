@@ -928,6 +928,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = false)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
             testDispatcher.scheduler.advanceUntilIdle()
 
@@ -947,6 +948,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = 4, skipReview = false)
             testDispatcher.scheduler.advanceUntilIdle()
 
@@ -967,6 +969,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = false)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = null, rating = null, skipReview = true)
             testDispatcher.scheduler.advanceUntilIdle()
 
@@ -984,6 +987,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = false, showTipScreen = true)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
             testDispatcher.scheduler.advanceUntilIdle()
 
@@ -1001,6 +1005,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false, showVerificationScreen = true)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = 4, skipReview = false)
             testDispatcher.scheduler.advanceUntilIdle()
 
@@ -1024,6 +1029,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
             assertThat(viewModel.state.value).isInstanceOf(PaymentState.CollectingRating::class.java)
 
@@ -1047,6 +1053,7 @@ class PaymentViewModelTest {
             TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = true)
         val viewModel = createViewModel()
         try {
+            viewModel.setKioskPaymentMode(false)  // como PaymentScreen al entrar: la sesión lee los ajustes de la terminal
             viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = null, skipReview = false)
             viewModel.submitRating("100.00", 5)
 

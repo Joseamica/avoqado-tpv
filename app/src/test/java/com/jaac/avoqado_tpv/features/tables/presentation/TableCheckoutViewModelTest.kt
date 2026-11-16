@@ -1093,7 +1093,8 @@ class TableCheckoutViewModelTest {
         )
         every { tableSyncCoordinator.onAck(any(), any(), any(), any(), any()) } returns Unit
         // Mientras el abono de $40 espera, otro camino confirma la apertura.
-        coEvery { repository.payCash(venueId, "local-1", true, BigDecimal("40.00"), any(), any()) } coAnswers {
+        // «Monto personalizado» da `40` (escala 0): se compara por valor, no por escala.
+        coEvery { repository.payCash(venueId, "local-1", true, match { it.compareTo(BigDecimal("40")) == 0 }, any(), any()) } coAnswers {
             tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 3)
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = "ORD-1", queued = false))
         }
@@ -1106,7 +1107,7 @@ class TableCheckoutViewModelTest {
         viewModel.setCustomAmountInput("40")
         viewModel.payCash(viewModel.chargeableAmount())
 
-        coVerify(exactly = 1) { repository.payCash(venueId, "local-1", true, BigDecimal("40.00"), any(), any()) }
+        coVerify(exactly = 1) { repository.payCash(venueId, "local-1", true, match { it.compareTo(BigDecimal("40")) == 0 }, any(), any()) }
         coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
         assertWithMessage("el abono parcial no libera la mesa").that(viewModel.state.value.tableReleased).isFalse()
         assertWithMessage("tras el abono manda la cuenta del SERVIDOR").that(viewModel.state.value.isProvisional).isFalse()

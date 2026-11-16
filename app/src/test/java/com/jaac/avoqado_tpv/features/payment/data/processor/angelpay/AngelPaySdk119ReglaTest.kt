@@ -351,6 +351,19 @@ class AngelPaySdk119ReglaTest {
     }
 
     @Test
+    fun `P1 D2 costo aceptado - una respuesta LEIDA que no trae nada (banda) tambien queda en duda`() {
+        // Codex r1 (16-nov), reproducido con el AAR: `{"request_status":false,"http_code":400,"mensaje":"Solicitud rechazada"}`
+        // en una venta por banda (la petición no lleva `CardInformation`) sale por el camino de RESPUESTA de `b.c` (217–431)
+        // con los 12 campos del host en null y el mensaje del gateway. No se distingue del error de red y nada acredita que el
+        // dinero no se movió: duda, que sólo cuesta espera.
+        val respuestaVaciaPorBanda = delErrorTrasEnviar(mensaje = "Solicitud rechazada").copy(
+            cardEntryMode = "banda", aid = null, arqc = null, applicationLabel = null, tvr = null, tsi = null, authentication = null,
+        )
+        assertThat(comoHoy(respuestaVaciaPorBanda)).isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)
+        assertThat(decidir(respuestaVaciaPorBanda)).isEqualTo(DecisionDelSdk.INCIERTO)
+    }
+
+    @Test
     fun `P1 D2 sin nada del banco la duda no depende de la referencia`() {
         // No hay veredicto que correlacionar: sin referencia, o con la de otro intento, sigue sin ser un rechazo.
         assertThat(decidir(delErrorTrasEnviar(referencia = null))).isEqualTo(DecisionDelSdk.INCIERTO)

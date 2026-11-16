@@ -358,7 +358,7 @@ pegado al envío al host (EMV y banda). Con eso el propio proveedor pone la fron
 | `false` con cualquier campo que sólo escribe el host (o `status = APPROVED`) | incierto + 🚨 `AngelPaySdkContradiccion` |
 | `false` con tarjeta leída, salvo `E608` | incierto |
 | `E608` (límite sin contacto) con nuestra referencia | como hoy: rechazo con «Reintentar» en la misma venta (inserta el chip) |
-| `true` + `G500` SIN ningún campo del host (AAR 1.0.23: el error de red que su traductor no reconoce, `o.n`, o la respuesta ilegible, `o.h`) | **incierto** (D2, 16-nov): no es un veredicto del banco; verificador y ventana del servidor, nunca «Reintentar» |
+| `true` + `G500` SIN ningún campo del host (AAR 1.0.23: el error de red que su traductor no reconoce, `o.n`, la respuesta ilegible, `o.h`, o una respuesta leída que no trae nada —p. ej. «Solicitud rechazada» por banda, costo aceptado—) | **incierto** (D2, 16-nov): no es un veredicto del banco; verificador y ventana del servidor, nunca «Reintentar» |
 | `true` (todo lo demás) | como hoy: un rechazo con CUALQUIER dato del banco sigue con «Reintentar», y el `N400` también (el binario 1.0.23 sólo lo produce antes de que el banco procese) |
 | aprobado | como hoy — registra la venta (con `false` además grita 🚨) |
 

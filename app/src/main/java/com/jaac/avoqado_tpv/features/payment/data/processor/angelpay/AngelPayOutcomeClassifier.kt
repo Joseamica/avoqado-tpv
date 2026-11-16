@@ -172,6 +172,12 @@ object AngelPayOutcomeClassifier {
      *        para un error que el traductor no reconoce (`o.n`: IOException, SocketException, «unexpected end of stream») o
      *        una respuesta ilegible (`o.h`) — sin pasar por `verify_in_doubt`. Eso no es un veredicto del banco: duda, nunca
      *        «Reintentar». No depende de la referencia (no hay veredicto que correlacionar).
+     *        ⚠️ Costo aceptado (Codex r1, 16-nov, reproducido con el AAR): una respuesta del gateway que SÍ se leyó pero no
+     *        trae nada (p. ej. `{"request_status":false,"http_code":400,"mensaje":"Solicitud rechazada"}` en una venta por
+     *        BANDA, cuya petición no lleva `CardInformation` y por eso tampoco `cardLast4`) también cae aquí. No es
+     *        distinguible del error de red por el resultado, y ningún campo del banco acredita que el dinero no se movió:
+     *        queda en duda (la resuelve el aviso del banco, el verificador o la ventana del servidor). Sólo cuesta espera,
+     *        nunca un cobro doble.
      *     Lo demás sigue como hoy, a propósito: un rechazo con CUALQUIER dato del banco, y el `N400` (el binario sólo lo
      *     produce antes de que el banco procese: no hubo conexión, falló el saludo seguro o 429; `o.k`). Esto cierra el
      *     pendiente §2.2 4a del 18-sep para el G500; evidencia en
@@ -254,7 +260,8 @@ object AngelPayOutcomeClassifier {
      * `G500` («Transaccion rechazada por el gateway»): en el AAR 1.0.23 es el cajón de sastre del armador de resultados
      * (`c0.v0.a(b.d, Boolean, String)`, bytecode 0–146): además del rechazo real —que trae la respuesta del gateway—, cae
      * ahí un error que el traductor no reconoce (`o.n`) o una respuesta ilegible (`o.h`), con TODOS los campos del host en
-     * null (`b.c` 437–558). Ver el paso 3a de [decidirSegunElSdk119].
+     * null (`b.c` 437–558) — y también una respuesta leída que no trae ningún dato (venta por banda). Ver el paso 3a de
+     * [decidirSegunElSdk119].
      */
     private const val CODIGO_RECHAZO_DEL_GATEWAY = "G500"
 

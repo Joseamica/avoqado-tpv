@@ -217,6 +217,9 @@ class TableOrderViewModel @Inject constructor(
     /** D86 (Codex r6 #2): sólo la lectura más nueva de la cuenta decide si «Por sincronizar» se va. Antes de `init`. */
     private var cargasDeLaMesa = 0L
 
+    /** D86 (Codex r7 H4): la última lectura vio algo propio sin subir de esta cuenta (aunque «Por sincronizar» esté vacío). */
+    private var habiaPendienteSinSubir = false
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
         viewModelScope.launch {
@@ -244,6 +247,20 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                 } else if (ahora?.isProvisional == true) {
                     recalcularSaldoSinRed()
+                }
+            }
+        }
+        venueId?.let { vId ->
+            viewModelScope.launch {
+                // D86 (Codex r7 H2–H4): cada cambio de la cola (un ACK, un rechazo, una ronda que sube, también del trabajador)
+                // vuelve a calcular: el saldo sin red de una mesa provisional, o la cuenta si algo propio estaba sin subir.
+                saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
+                    val actual = tableSession.current() ?: return@collect
+                    if (actual.isProvisional) {
+                        recalcularSaldoSinRed()
+                    } else if (_queuedLines.value.isNotEmpty() || habiaPendienteSinSubir) {
+                        loadCheck()
+                    }
                 }
             }
         }
@@ -325,6 +342,9 @@ class TableOrderViewModel @Inject constructor(
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
                     val pendiente = pendienteAntes ?: pendienteDeLaMesa(vId, session)
+                    // D86 (Codex r7 H2): si mientras se revisaba la cola salió otra lectura, ésa decide.
+                    if (miCarga != cargasDeLaMesa) return@fold
+                    habiaPendienteSinSubir = pendiente != null
                     if (pendiente == null) {
                         // El replay pudo haber confirmado rondas que estaban en
                         // "Por sincronizar" — el cheque fresco ya las incluye.
@@ -351,8 +371,8 @@ class TableOrderViewModel @Inject constructor(
                     if (_check.value == null) {
                         _checkLoadFailed.value = true
                     }
-                    // D86 (Codex r6 #3): con rondas «Por sincronizar», una lectura fallida no detiene la relectura.
-                    if (_queuedLines.value.isNotEmpty()) programarRelecturaDeLaMesa()
+                    // D86 (Codex r6 #3, r7 H4): con algo propio sin subir, una lectura fallida no detiene la relectura.
+                    if (_queuedLines.value.isNotEmpty() || habiaPendienteSinSubir) programarRelecturaDeLaMesa()
                 },
             )
             _isLoadingCheck.value = false

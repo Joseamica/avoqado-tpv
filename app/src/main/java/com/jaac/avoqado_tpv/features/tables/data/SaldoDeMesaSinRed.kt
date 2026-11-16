@@ -5,6 +5,9 @@ import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.concurrent.ConcurrentHashMap
@@ -40,6 +43,9 @@ internal const val MESA_COBRO_POR_REVISAR =
 /** D86: aviso de «Cobrar» en una mesa que esta terminal abrió sin red. */
 internal const val COBRO_CON_LO_DE_ESTA_TERMINAL =
     "Sin conexión: se cobra con lo que esta terminal le mandó a la mesa; se sube solo al volver la conexión."
+
+/** D86: cuánta calma espera el aviso de la cola antes de que las pantallas recalculen (un replay escribe muchas filas). */
+internal const val CALMA_DE_LA_COLA_MS = 500L
 
 /** D86: el saldo de una cuenta que esta terminal abrió sin red. */
 sealed interface SaldoSinRed {
@@ -176,6 +182,14 @@ class SaldoDeMesaSinRed @Inject constructor(private val syncOutbox: SyncOutbox) 
     }
 
     val libreta = Libreta()
+
+    /**
+     * D86 (Codex r7 H2–H4): avisa cuando la cola de [venueId] cambió (sin el valor inicial), con medio segundo de calma
+     * para que un replay de muchas filas sea un solo aviso. Las pantallas lo usan para recalcular solas.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    fun cambiosDeLaCola(venueId: String): kotlinx.coroutines.flow.Flow<Unit> =
+        syncOutbox.observarCambios(venueId).drop(1).map { }.debounce(CALMA_DE_LA_COLA_MS)
 
     suspend fun saldo(venueId: String, cuenta: String): SaldoSinRed =
         saldoDeCuentaProvisional(cuenta, syncOutbox.vivasQueMencionan(venueId, cuenta), libreta.rondasDe(cuenta))

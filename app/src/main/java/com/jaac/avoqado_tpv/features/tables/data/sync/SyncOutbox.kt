@@ -422,6 +422,9 @@ class SyncOutbox @Inject constructor(
     suspend fun aperturasConfirmadasQueMencionan(venueId: String, cuenta: String): List<SyncIntentEntity> =
         withContext(Dispatchers.IO) { dao.aperturasConfirmadasQueMencionan(venueId, cuenta) }
 
+    /** D86 (Codex r7): un aviso por cada escritura de la cola de [venueId] (ver [SyncIntentDao.observarCambios]). */
+    fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.observarCambios(venueId)
+
     /** D86 (Codex r1 #2): las aperturas confirmadas cuyo resultado menciona [orderId] (el id real). */
     suspend fun aperturasConfirmadasConResultado(venueId: String, orderId: String): List<SyncIntentEntity> =
         withContext(Dispatchers.IO) { dao.aperturasConfirmadasConResultado(venueId, orderId) }

@@ -95,6 +95,14 @@ interface SyncIntentDao {
     )
     suspend fun vivasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
 
+    /**
+     * D86 (Codex r7 H2–H4): emite cada vez que alguien escribe la cola de Mesas (encolar, ACK, rechazo, descarte, desde
+     * cualquier camino: la pantalla, el cobro o el trabajador). Room vuelve a correr la consulta en cada escritura de la
+     * tabla; el número da igual, importa el aviso.
+     */
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE venue_id = :venueId")
+    fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+
     /** D86: aperturas (OPEN_TABLE) ya confirmadas cuyo payload menciona [texto] — el id local de una cuenta abierta sin red. */
     @Query(
         "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +

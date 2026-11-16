@@ -80,6 +80,7 @@ class TableOrderViewModelTest {
     private lateinit var tableSession: TableSession
     private lateinit var pendingCart: PendingRoundCart
     private lateinit var saldoDeMesaSinRed: SaldoDeMesaSinRed
+    private val cambiosDeLaCola = MutableStateFlow(0)
     private lateinit var ownershipFlow: MutableStateFlow<TablesRepository.TableOwnership>
 
     private val venueId = "venue-1"
@@ -104,6 +105,7 @@ class TableOrderViewModelTest {
         coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
+        every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
         saldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox)
     }
 
@@ -1574,5 +1576,28 @@ class TableOrderViewModelTest {
         testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
         testDispatcher.scheduler.runCurrent()
         assertThat(viewModel.queuedLines.value).isEmpty()
+    }
+
+    @Test
+    fun D86_r7_H2_cuando_la_ronda_sube_por_otro_camino_la_pantalla_se_relee_sola() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        // La ronda se encola sin red y aparece «Por sincronizar».
+        coEvery { repository.addItems(venueId, "orden-1", any(), any()) } returns
+            Result.success(OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-1", quantity = 1))))
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // El trabajador la sube: la cola cambia y, tras la calma, la pantalla relee sola.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), items = listOf(OrderDetailItem(id = "i1", productId = "prod-1", quantity = 1, total = BigDecimal("100.00")))))
+        cambiosDeLaCola.value = 1
+        testDispatcher.scheduler.advanceTimeBy(com.jaac.avoqado_tpv.features.tables.data.CALMA_DE_LA_COLA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.queuedLines.value).isEmpty()
+        assertThat(viewModel.check.value?.total).isEqualTo(BigDecimal("100.00"))
     }
 }

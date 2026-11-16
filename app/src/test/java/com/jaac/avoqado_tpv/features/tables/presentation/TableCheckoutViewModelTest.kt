@@ -62,6 +62,7 @@ class TableCheckoutViewModelTest {
     private val networkMonitor = mockk<NetworkMonitor>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val syncOutbox = mockk<SyncOutbox>()
+    private val cambiosDeLaCola = kotlinx.coroutines.flow.MutableStateFlow(0)
     private lateinit var tableSession: TableSession
 
     private val venueId = "venue-1"
@@ -80,6 +81,7 @@ class TableCheckoutViewModelTest {
         coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
+        every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
     }
 
     @After
@@ -1254,5 +1256,27 @@ class TableCheckoutViewModelTest {
 
         assertThat(lecturas).isEqualTo(2)
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("70.00"))
+    }
+
+    @Test
+    fun D86_r7_H3_un_rechazo_de_la_apertura_vuelve_gris_el_efectivo_sin_tocar_nada() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val saldo = SaldoDeMesaSinRed(syncOutbox)
+        saldo.libreta.anotarRonda("local-1", "r1", BigDecimal("100.00"))
+        val ronda = filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}""")
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns
+            listOf(filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""), ronda)
+        val viewModel = createViewModel(saldo)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}""", estado = SyncIntentEntity.STATUS_REJECTED),
+            ronda,
+        )
+        cambiosDeLaCola.value = 1
+        testDispatcher.scheduler.advanceTimeBy(com.jaac.avoqado_tpv.features.tables.data.CALMA_DE_LA_COLA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CAMBIOS_SIN_SINCRONIZAR)
     }
 }

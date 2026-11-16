@@ -370,6 +370,20 @@ class TableCheckoutViewModel @Inject constructor(
                 }
             }
         }
+        venueId?.let { vId ->
+            viewModelScope.launch {
+                // D86 (Codex r7 H3): cada cambio de la cola recalcula: el saldo sin red de una mesa provisional (un rechazo la
+                // deja en gris) o la cuenta del SERVIDOR que esperaba a que algo propio subiera.
+                saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
+                    val actual = tableSession.current() ?: return@collect
+                    if (actual.isProvisional && _state.value.isProvisional) {
+                        calcularSaldoSinRed(actual)
+                    } else if (!_state.value.isProvisional && (_state.value.pendienteSinSubir != null || _state.value.check == null)) {
+                        loadCheck()
+                    }
+                }
+            }
+        }
         // D86: después de los colectores: si la carga promueve la sesión en el acto (apertura ya confirmada), alguien la ve.
         loadCheck()
     }

@@ -69,6 +69,9 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     lateinit var controlDeWifi: com.jaac.avoqado_tpv.core.util.ControlDeWifi
 
     override fun onCreate() {
+        // D74: en release, lo que Blumon y PAX imprimen con System.out (Track2, llaves) no llega a logcat.
+        if (!BuildConfig.DEBUG) com.jaac.avoqado_tpv.core.observability.callarSalidaEstandar()
+
         // ⚠️ CRITICAL: Prepare Blumon's `AppManager.dal` BEFORE super.onCreate().
         // super.onCreate() triggers Hilt's `hiltInternalInject()` which eagerly
         // resolves the Singleton graph. Some of those singletons (e.g.

@@ -999,6 +999,24 @@ class PaymentViewModel @Inject constructor(
         )
     }
 
+    /**
+     * 🔴 D3 (encargo 9308a7): el banco aprobó, pero la sesión se cerró antes de registrar. Se dice tal cual: SÍ se cobró,
+     * quedó en este equipo y se registra al volver a entrar. Ámbar como [buildPendingSyncState], nunca rojo: no falló.
+     */
+    @VisibleForTesting
+    internal fun buildPendingLoginState(
+        current: PaymentState,
+        referenceNumber: String
+    ): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            pendingSyncMessage = "El cobro con tarjeta SÍ se hizo. Se cerró la sesión antes de registrarlo en Avoqado: " +
+                "quedó guardado en este equipo y se registrará solo cuando alguien vuelva a entrar con su PIN. " +
+                "NO vuelvas a cobrar. Referencia: $referenceNumber"
+        )
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════════════
     // 💸 REEMBOLSOS — los estados honestos, la telemetría y el desenlace de la cola
     // (Fase 1, Tasks 5-6, 2026-09-03). Espejo de buildPendingSyncState / buildRecordingLostState
@@ -4039,7 +4057,7 @@ class PaymentViewModel @Inject constructor(
                 )
 
                 if (track2Value.isNotEmpty()) {
-                    Timber.i("   ✅ Track2 extracted: ${track2Value.take(16)}... (length: ${track2Value.length})")
+                    Timber.i("   ✅ Track2 extracted (length: ${track2Value.length})") // D64: nunca el número de tarjeta
                 } else {
                     Timber.w("   ⚠️ Track2 not found in EMV tags - this may cause issues")
                 }
@@ -5306,7 +5324,7 @@ class PaymentViewModel @Inject constructor(
             Timber.i("🌐 [$saleType] Sending online authorization to Momentum...")
             Timber.i("💳 [MSI] Sending $saleType with msi=${selectedMsiMonths ?: "DIRECT"}")
             Timber.d("   Amount: $amount")
-            Timber.d("   Track2: ${track2.take(16)}...")
+            Timber.d("   Track2: presente (length: ${track2.length})") // D64: nunca el número de tarjeta
             Timber.d("   Cardholder: $cardHolderName")
             Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
 
@@ -5941,7 +5959,7 @@ class PaymentViewModel @Inject constructor(
 
             Timber.i("🌐 [CancelIcc] Sending REFUND authorization to Momentum...")
             Timber.d("   Amount: $amount")
-            Timber.d("   Track2: ${track2.take(16)}...")
+            Timber.d("   Track2: presente (length: ${track2.length})") // D64: nunca el número de tarjeta
             Timber.d("   Cardholder: $cardHolderName")
             Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
             Timber.d("   OperationID (blumon operation number): $originalOperationNumber")
@@ -6322,7 +6340,7 @@ class PaymentViewModel @Inject constructor(
             val contactlessBrand = if (aidBrand != CardBrand.UNKNOWN) aidBrand else panBrand
 
             if (track2.isNotEmpty()) {
-                Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
+                Timber.i("   ✅ Track2 extracted (length: ${track2.length})") // D64: nunca el número de tarjeta
             } else {
                 Timber.w("   ⚠️ Track2 not found")
             }
@@ -8268,6 +8286,9 @@ class PaymentViewModel @Inject constructor(
         // that when the collector does wake up on Success it sees `recordingInFlight == true` and
         // leaves the flags to our `finally`, instead of declaring the terminal free mid-record.
         recordingInFlight = true
+        // 🔴 D3 (encargo 9308a7): la llave del intento se toma AQUÍ, al mismo tiempo que el éxito. Un cierre de sesión a media
+        // espera vacía la sesión, y sin esta llave el cobro aprobado no se podría señalar en la libreta.
+        val attemptIdDelCobro = sessionSnapshot.paymentAttemptId
         // 🔒 R89: ATOMIC = arranca aunque la pantalla se vaya antes de que la corrutina empiece (se lanza de IO a Main). Sin esto
         // el cuerpo no corría, su `finally` tampoco, y la ventana del dinero —que onCleared ya no cierra con un registro
         // pendiente (R86)— se quedaba abierta; además el dinero aprobado ni siquiera intentaba registrarse.
@@ -8303,25 +8324,8 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.d("💾 [Backend Recording] Starting payment record | auth=$authorizationNumber | ref=$referenceNumber")
 
-                // ⚠️ CRITICAL: Validate authentication before backend recording
-                // Payment already succeeded with Blumon SDK, so we don't block the user
-                // But backend recording requires auth token + staffId
-                val hasAuth = authRepository.isAuthenticated()
-                val hasStaffId = currentStaffId.isNotBlank()
-                val hasVenueId = currentVenueId.isNotBlank()
-
-                if (!hasAuth || !hasStaffId || !hasVenueId) {
-                    Timber.w("⚠️ [Backend Recording] SKIPPED - Missing authentication context")
-                    Timber.w("   → hasAuth: $hasAuth | staffId: ${if (hasStaffId) "✓" else "✗"} | venueId: ${if (hasVenueId) "✓" else "✗"}")
-                    Timber.w("   → Payment succeeded with Blumon, but backend sync requires login")
-                    Timber.w("   → SOLUTION: User must log in with PIN before processing payments")
-                    Timber.w("   → TODO: Queue payment for offline sync when user logs in")
-                    Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=${getAmountForFlow()}")
-                    // Payment still shows success to user (Blumon approved it)
-                    return@launch
-                }
-
                 // 1. Extract card details from Blumon SDK response (includes real card brand from binInformation)
+                // (Antes de mirar la sesión: el camino sin sesión también los deja en la libreta.)
                 val cardDetails = if (saleData != null) {
                     extractCardDetailsFromBlumonResponse(
                         saleData = saleData,
@@ -8341,6 +8345,57 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 Timber.d("💾 [Backend Recording] Card details: brand=${cardDetails.cardBrand} | masked=${cardDetails.maskedPan} | entry=${cardDetails.entryMode}")
+
+                // ⚠️ CRITICAL: Validate authentication before backend recording
+                // Payment already succeeded with Blumon SDK, so we don't block the user
+                // But backend recording requires auth token + staffId
+                val hasAuth = authRepository.isAuthenticated()
+                val hasStaffId = currentStaffId.isNotBlank()
+                val hasVenueId = currentVenueId.isNotBlank()
+
+                if (!hasAuth || !hasStaffId || !hasVenueId) {
+                    Timber.w("⚠️ [Backend Recording] Sin sesión al registrar: el cobro aprobado queda en la libreta hasta que alguien entre")
+                    Timber.w("   → hasAuth: $hasAuth | staffId: ${if (hasStaffId) "✓" else "✗"} | venueId: ${if (hasVenueId) "✓" else "✗"}")
+                    Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=${getAmountForFlow()}")
+                    // 🔴 D3 (encargo 9308a7, 16-nov): antes era un `return` mudo (sin cola ni aviso). El banco YA aprobó y el chip ya
+                    // cerró: es dinero. Se deja en la libreta como AUTORIZADO, con la tarjeta: cerca la venta y la recuperación de
+                    // aprobaciones lo toma aunque `host_approved` no se haya podido escribir (Codex r1 #3: REGISTRO_FALLIDO sin
+                    // esa bandera dejaba de ser candidato). Lo registra con el contexto CONGELADO antes de la tarjeta (el personal y
+                    // la caja de ese momento, nunca los de quien entre después) cuando vuelve a haber sesión y red: entrar y
+                    // reconectar piden la pasada. La misma llave: el servidor nunca lo duplica.
+                    attemptIdDelCobro?.let { attemptId ->
+                        // Codex r2: la marca «el banco aprobó» (`host_approved = 1`) tiene que quedar durable ANTES de AUTORIZADO.
+                        // Si su escritura falló al contestar el banco (se ignora su resultado), un primer registro fallido de la
+                        // recuperación dejaba la fila en REGISTRO_FALLIDO sin la marca, y esa consulta ya no la vuelve a tomar.
+                        // Repetirla es inocuo: si ya quedó en HOST_RESPONDIO el CAS no cambia nada.
+                        paymentAttemptLedger.markHostResponded(
+                            attemptId = attemptId,
+                            approved = true,
+                            operationId = blumonOperationNumber?.toString(),
+                            referenceNumber = referenceNumber,
+                            authCode = authorizationNumber
+                        )
+                        paymentAttemptLedger.markAuthorized(
+                            attemptId = attemptId,
+                            maskedPan = cardDetails.maskedPan,
+                            cardBrand = cardDetails.cardBrand.name,
+                            entryMode = cardDetails.entryMode.name
+                        )
+                    }
+                    // Codex r3–r5: se pide la pasada de la recuperación para cuando la fila cumpla su espera (2 min). Con el
+                    // token vivo pero sin personal o sin negocio en memoria, registra sin esperar al siguiente login o a las 6 h;
+                    // sin sesión o sin red no gasta nada y la vuelven a pedir entrar y reconectar. Por el carril de seguimiento
+                    // (APPEND), no por `runOnceNow` (KEEP): una pasada en curso absorbía la petición sin haber visto la fila.
+                    runCatching {
+                        com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler.runApprovalFollowUp(
+                            appContext,
+                            com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.ESPERA_MS +
+                                com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.MARGEN_MS
+                        )
+                    }
+                    buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
+                    return@launch
+                }
 
                 // 2. Build payment context
                 // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING: Use merchant account ID (primary)

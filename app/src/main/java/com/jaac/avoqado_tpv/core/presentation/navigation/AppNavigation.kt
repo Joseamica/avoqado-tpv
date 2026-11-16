@@ -2188,7 +2188,7 @@ fun AppNavigation(
                             val venueId = secureStorage.getVenueId()
                             val session = tableSession.current()
                             if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId)
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
                                     .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
                             }
                             tableSession.clear()
@@ -2293,10 +2293,10 @@ fun AppNavigation(
                         // context (never cleared mid-checkout), so no args needed. A
                         // partial card payment leaves the check open — TableOrderScreen's
                         // own loadCheck() re-fetches the fresh remaining balance.
+                        // D9 (encargo 49276c): también quita la cuenta y el «Cobrar mesa» VIEJOS de la pila; si no,
+                        // «atrás» caía en el cobro viejo con el saldo de antes de la tarjeta (ver su KDoc).
                         Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
-                        navController.navigate(NavRoute.TableOrder.route) {
-                            popUpTo(NavRoute.Payment.route) { inclusive = true }
-                        }
+                        navController.volverALaCuentaDeLaMesa()
                     } else {
                         Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
                         navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {
@@ -3220,7 +3220,7 @@ fun AppNavigation(
                             val venueId = secureStorage.getVenueId()
                             val session = tableSession.current()
                             if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId)
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
                                     .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
                             }
                             tableSession.clear()
@@ -3269,11 +3269,6 @@ fun AppNavigation(
             route = NavRoute.PaymentTransactions.route,
             arguments = listOf(
                 navArgument("processorType") { type = NavType.StringType },
-                navArgument("autoRefundReference") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
             )
         ) {
             com.jaac.avoqado_tpv.features.payment.presentation.transactions.PaymentTransactionsScreen(

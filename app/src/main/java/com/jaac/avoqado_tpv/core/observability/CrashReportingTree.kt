@@ -29,20 +29,26 @@ class CrashReportingTree : timber.log.Timber.Tree() {
         }
 
         // Add as breadcrumb (helps trace events leading to a crash/error)
-        crashlytics.log("${priorityLabel(priority)}/$tag: $message")
+        crashlytics.log(migaja(priority, tag, message))
 
         // Record non-fatal exception for ERROR level
         if (priority >= Log.ERROR) {
-            val exception = t ?: NonFatalException("[$tag] $message")
+            val exception = t ?: NonFatalException("[$tag] ${TapaNumeroDeTarjeta.tapar(message)}")
             crashlytics.recordException(exception)
         }
     }
 
-    private fun priorityLabel(priority: Int): String = when (priority) {
-        Log.WARN -> "W"
-        Log.ERROR -> "E"
-        Log.ASSERT -> "A"
-        else -> "?"
+    companion object {
+        /** La miga que va a Crashlytics, con el número de tarjeta tapado (6 + 4). D64. */
+        fun migaja(priority: Int, tag: String?, message: String): String =
+            "${priorityLabel(priority)}/$tag: ${TapaNumeroDeTarjeta.tapar(message)}"
+
+        private fun priorityLabel(priority: Int): String = when (priority) {
+            Log.WARN -> "W"
+            Log.ERROR -> "E"
+            Log.ASSERT -> "A"
+            else -> "?"
+        }
     }
 
     /**

@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.TableOrder
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
@@ -399,11 +400,172 @@ class TablesViewModelTest {
         val vm = createViewModel()
         vm.initialize(ScreenProfile.RegularPortrait)
 
-        socketEvents.emit(SocketEvent.Connected)
+        socketEvents.emit(SocketEvent.Disconnected)
         advanceTimeBy(1000)
 
         coVerify(exactly = 1) { repository.getTables(venueId) } // solo la carga inicial
     }
+
+    @Test
+    fun al_reconectar_el_socket_el_plano_se_vuelve_a_pedir_con_la_cola_reproducida_antes() = runTest {
+        // D88 (PAX, 16-nov): la cola sin red subió la apertura de M5 mientras el socket estaba caído; su aviso se perdió y el
+        // plano siguió con M5 libre (ofrecía «Abrir mesa» sobre una mesa con cuenta) hasta salir y volver a entrar a Mesas.
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(table(id = "m5")))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(m5ConCuenta()))
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801)
+
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        coVerifyOrder {
+            coordinator.replay(venueId)
+            repository.getTables(venueId)
+            coordinator.replay(venueId)
+            repository.getTables(venueId)
+        }
+    }
+
+    @Test
+    fun una_carga_vieja_del_plano_que_termina_despues_no_pisa_a_la_mas_nueva() = runTest {
+        // D88 (Codex r1 #1): el mesero refresca (carga A, que tarda) y en eso se reconecta el socket (carga B, ya con M5
+        // ocupada). Si A terminaba al último, volvía a pintar M5 libre y a ofrecer «Abrir mesa».
+        val viejo = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> viejo.await()
+                else -> Result.success(listOf(m5ConCuenta()))
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga A: se queda esperando
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801) // carga B: M5 ocupada
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+
+        viejo.complete(Result.success(listOf(table(id = "m5"))))
+
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun con_cargas_encimadas_la_que_termina_pinta_aunque_otra_mas_nueva_siga_en_camino() = runTest {
+        // D88 (Codex r2 #1): avisos seguidos con cargas lentas (cada una termina después de que empezó la siguiente). Exigir «la
+        // última que empezó» las tiraba todas y el plano no se movía. La más nueva que TERMINA pinta.
+        val segunda = CompletableDeferred<Result<List<DiningTable>>>()
+        val tercera = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> segunda.await()
+                else -> tercera.await()
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga 2
+        vm.refresh() // carga 3, empieza antes de que termine la 2
+        segunda.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+
+        tercera.complete(Result.success(listOf(table(id = "m5"))))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun un_fallo_mas_nuevo_no_hace_tirar_un_exito_que_llega_despues() = runTest {
+        // D88 (Codex r3 #1): la carga 2 (buena, lenta) sigue en camino y la 3 falla sin red. Un fallo no es un plano pintado:
+        // cuando llega la 2, pinta.
+        val lenta = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> lenta.await()
+                else -> Result.failure(java.io.IOException("sin red"))
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga 2
+        vm.refresh() // carga 3: falla
+        assertThat(vm.uiState.value.isOffline).isTrue()
+
+        lenta.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isOffline).isFalse()
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun en_arranque_en_frio_un_fallo_mas_nuevo_no_tapa_el_unico_plano_que_llego() = runTest {
+        // D88 (Codex r3 #1): la carga inicial tarda; un aviso dispara otra que falla (sin plano: error). Al llegar la inicial,
+        // el plano se ve y el error se va.
+        val inicial = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            if (++llamadas == 1) inicial.await() else Result.failure(java.io.IOException("sin red"))
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801)
+        assertThat(vm.uiState.value.errorMessage).isNotNull()
+
+        inicial.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.errorMessage).isNull()
+        assertThat(vm.uiState.value.isLoading).isFalse()
+    }
+
+    @Test
+    fun la_carga_que_empezo_antes_pero_pidio_el_plano_despues_si_pinta() = runTest {
+        // D88 (Codex r4): A (refresco a mano) se queda esperando la cuarentena; B (reconexión) empieza después, se le adelanta y
+        // pinta M5 libre; luego A PIDE el plano y ya trae M5 con cuenta. El orden que cuenta es el de la petición, no el de inicio.
+        val cuarentenaDeA = CompletableDeferred<Unit>()
+        var lecturasDeCuarentena = 0
+        coEvery { syncOutbox.rejectedIntents(venueId) } coAnswers {
+            if (++lecturasDeCuarentena == 2) cuarentenaDeA.await()
+            emptyList()
+        }
+        var peticiones = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            if (++peticiones <= 2) Result.success(listOf(table(id = "m5"))) else Result.success(listOf(m5ConCuenta()))
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait) // petición 1
+
+        vm.refresh() // A: espera la cuarentena
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801) // B: petición 2, M5 libre, pinta
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+
+        cuarentenaDeA.complete(Unit) // A: petición 3, M5 con cuenta
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    private fun m5ConCuenta() = table(id = "m5", status = "OCCUPIED").copy(
+        currentOrder = TableOrder(id = "orden-m5", orderNumber = "ORD-5", total = BigDecimal("49.00")),
+    )
 
     // endregion
 
@@ -492,6 +654,105 @@ class TablesViewModelTest {
         assertThat(session?.orderId).isEqualTo("viva")
         assertThat(session?.total).isEqualTo(BigDecimal("144.00"))
         assertThat(session?.version).isEqualTo(5)
+    }
+
+    @Test
+    fun D85_ver_cuenta_de_la_segunda_cuenta_de_la_mesa_arranca_la_sesion_con_ESA_cuenta() {
+        // La mesa tiene la cuenta de María (principal) y la que la terminal abrió sin red (aparte, D51/D71). El cajero
+        // toca la de la terminal en la hoja de la mesa: la sesión debe ser ésa, no la principal.
+        val deMaria = OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"), version = 2)
+        val deLaTerminal = OpenCheckSummary(id = "de-la-terminal", orderNumber = "ORD-2", total = BigDecimal("20.00"), version = 4)
+        val mesa = table(id = "m8", number = "M8").copy(
+            currentOrder = TableOrder(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00")),
+            openOrders = listOf(deLaTerminal, deMaria),
+        )
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, deLaTerminal) { readyCalled = true }
+
+        assertThat(readyCalled).isTrue()
+        val session = tableSession.current()
+        assertThat(session?.tableId).isEqualTo("m8")
+        assertThat(session?.orderId).isEqualTo("de-la-terminal")
+        assertThat(session?.orderNumber).isEqualTo("ORD-2")
+        assertThat(session?.total).isEqualTo(BigDecimal("20.00"))
+        assertThat(session?.version).isEqualTo(4)
+    }
+
+    @Test
+    fun D85_ver_cuenta_con_una_cuenta_que_ya_no_esta_en_la_mesa_no_hace_nada() {
+        // La hoja quedó abierta con una lista vieja y el plano se refrescó sin esa cuenta: no se arranca una sesión sobre
+        // una cuenta que la mesa ya no tiene.
+        val mesa = table(id = "m8", number = "M8").copy(
+            openOrders = listOf(OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"))),
+        )
+        val ajena = OpenCheckSummary(id = "otra", orderNumber = "ORD-9", total = BigDecimal("5.00"))
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, ajena) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_lee_la_mesa_del_plano_vigente_no_la_copia_que_tenia_la_hoja() = runTest {
+        // Codex r1 #1: la hoja se abrió cuando M8 tenía la cuenta B; otro aparato la movió a otra mesa y el plano se
+        // refrescó. Tocar B en la hoja vieja no debe abrir B bajo M8.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val a = OpenCheckSummary(id = "a", orderNumber = "ORD-A", total = BigDecimal("30.00"))
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(a, b))
+        val mesaVigente = table(id = "m8", number = "M8").copy(openOrders = listOf(a))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(mesaVigente))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_de_una_mesa_que_ya_no_esta_en_el_plano_no_hace_nada() = runTest {
+        // Codex r2 #1: una mesa archivada sólo se veía por su cuenta B; B se movió y el plano ya no trae la mesa. La hoja
+        // vieja no debe revivirla.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val copiaDeLaHoja = table(id = "archivada", number = "M20").copy(openOrders = listOf(b))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(table(id = "m9", number = "M9").copy(openOrders = listOf(b))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_toma_la_version_vigente_de_la_cuenta_del_plano() = runTest {
+        // La hoja vieja traía B en versión 1; el plano ya la trae en 3 (alguien agregó una ronda). La sesión arranca con la
+        // del plano vigente.
+        val bVieja = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"), version = 1)
+        val bVigente = bVieja.copy(total = BigDecimal("35.00"), version = 3)
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(bVieja))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(listOf(table(id = "m8", number = "M8").copy(openOrders = listOf(bVigente))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.viewExistingCheck(copiaDeLaHoja, bVieja) {}
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("b")
+        assertThat(tableSession.current()?.version).isEqualTo(3)
+        assertThat(tableSession.current()?.total).isEqualTo(BigDecimal("35.00"))
     }
 
     @Test

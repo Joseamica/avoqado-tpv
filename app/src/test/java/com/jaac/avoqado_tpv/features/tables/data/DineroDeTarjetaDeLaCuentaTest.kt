@@ -3,7 +3,6 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
-import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -17,10 +16,9 @@ import org.junit.Test
  */
 class DineroDeTarjetaDeLaCuentaTest {
 
-    private val cobroEnCurso = PaymentStateHolder()
     private val cola = mockk<PendingPaymentDao>()
     private val libreta = mockk<PaymentAttemptLedger>()
-    private val dinero = DineroDeTarjetaDeLaCuenta(cobroEnCurso, cola, libreta)
+    private val dinero = DineroDeTarjetaDeLaCuenta(cola, libreta)
 
     @Before
     fun setUp() {
@@ -35,9 +33,14 @@ class DineroDeTarjetaDeLaCuentaTest {
     }
 
     @Test
-    fun una_tarjeta_que_todavia_se_registra_en_esta_terminal_frena() = runTest {
-        cobroEnCurso.setCharging(true)
-        assertThat(dinero.motivo("venue-1", "orden-1")).isEqualTo(TARJETA_REGISTRANDOSE)
+    fun lo_de_tarjeta_de_OTRA_cuenta_no_frena_esta() = runTest {
+        // Codex r2: la tarjeta de la mesa A registrándose (libreta) o subiendo (cola) no frena el efectivo de la mesa B.
+        coEvery { libreta.hayDineroEnJuegoDeLaVenta("orden-A") } returns true
+        coEvery { cola.hayCobroSubiendose("venue-1", "orden-A") } returns true
+        coEvery { cola.hayCobroSinRegistrar("venue-1", "orden-A") } returns true
+
+        assertThat(dinero.motivo("venue-1", "orden-B")).isNull()
+        assertThat(dinero.motivo("venue-1", "orden-A")).isNotNull()
     }
 
     @Test

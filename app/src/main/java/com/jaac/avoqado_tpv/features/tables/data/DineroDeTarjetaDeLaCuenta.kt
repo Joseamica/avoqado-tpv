@@ -2,7 +2,6 @@ package com.jaac.avoqado_tpv.features.tables.data
 
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
-import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,22 +23,23 @@ internal const val TARJETA_SIN_REGISTRAR =
  * «Aprobado» ANTES de registrar el cobro (lo registra en segundo plano), así que «atrás» desde «Aprobado» puede volver a la
  * «Cobrar mesa» con la cuenta de antes de la tarjeta.
  *
- * Son las MISMAS fuentes que ya usa la tienda híbrida para no cobrar dos veces un folio (R89,
+ * Usa las fuentes POR CUENTA que ya usa la tienda híbrida para no cobrar dos veces un folio (R89,
  * `PorPagarViewModel.dineroSinConfirmar`):
- *  - un cobro con tarjeta corriendo o registrándose en esta terminal ([PaymentStateHolder.isCharging]);
- *  - la cola de la terminal: rechazado sin revisar, o todavía subiendo (el mismo predicado que frena el cierre de caja);
- *  - la libreta (PAX y Nexgo): un cobro aprobado y sin registrar, aunque ya no tenga fila en la cola.
+ *  - la libreta (PAX y Nexgo): un cobro de ESA cuenta corriendo, aprobado y sin registrar (HOST_RESPONDIO, AUTORIZADO,
+ *    REGISTRO_FALLIDO…). Cubre el tramo de «Aprobado» a «registrado» de la PAX: la libreta ya está en HOST_RESPONDIO cuando
+ *    se enseña «Aprobado» y guarda el `orderId` de la mesa en su contexto;
+ *  - la cola de la terminal: un cobro de ESA cuenta rechazado sin revisar, o todavía subiendo (si el registro falló, ahí queda).
+ * 🔴 NO usa `PaymentStateHolder.isCharging()` (Codex r2): es de toda la terminal, así que la tarjeta de la mesa A (o una
+ * devolución de AngelPay) frenaba el efectivo de la mesa B diciendo «la tarjeta de esta cuenta».
  *
  * `null` = nada. Un fallo de lectura SE LANZA: quien pregunta para no cobrar de más falla cerrado.
  */
 @Singleton
 class DineroDeTarjetaDeLaCuenta @Inject constructor(
-    private val cobroEnCurso: PaymentStateHolder,
     private val cola: PendingPaymentDao,
     private val libreta: PaymentAttemptLedger,
 ) {
     suspend fun motivo(venueId: String, orderId: String): String? = when {
-        cobroEnCurso.isCharging() -> TARJETA_REGISTRANDOSE
         cola.hayCobroSinRegistrar(venueId, orderId) -> TARJETA_SIN_REGISTRAR
         cola.hayCobroSubiendose(venueId, orderId) -> TARJETA_SUBIENDOSE
         libreta.hayDineroEnJuegoDeLaVenta(orderId) -> TARJETA_REGISTRANDOSE

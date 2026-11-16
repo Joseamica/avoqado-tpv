@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
@@ -159,6 +160,12 @@ data class TableCheckoutState(
     val tipAmount: BigDecimal = BigDecimal.ZERO,
 
     val isOnline: Boolean = true,
+    /**
+     * D90 (PAX, 16-nov): `false` mientras el letrero «Sin conexión a internet» está puesto ([ConnectionStateManager]). Al volver
+     * la red, el aparato avisa (→ [isOnline]) ~2 s antes de que la comprobación de conexión quite el letrero: la tarjeta espera
+     * al letrero para no verse habilitada debajo de él.
+     */
+    val letreroConInternet: Boolean = true,
     val isProvisional: Boolean = false,
     val isProcessingCash: Boolean = false,
     /**
@@ -196,14 +203,19 @@ data class TableCheckoutState(
      * las dos condiciones es negociable — ver
      * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §5.
      */
-    val cardPaymentEnabled: Boolean get() = isOnline && !isProvisional && pendienteSinSubir == null && cambiosEnCamino == 0
+    val cardPaymentEnabled: Boolean get() = cardPaymentDisabledReason == null
 
+    /**
+     * D90 (PAX, 16-nov): además, sin la cuenta leída la tarjeta espera. En «Cargando cuenta…» se veía habilitada, y con
+     * [remaining] = `TableSession.total` (el TOTAL del plano, no lo que falta): un toque ahí podía cobrar de más.
+     */
     val cardPaymentDisabledReason: String?
         get() = when {
             isProvisional -> "La mesa aún no se sincroniza"
-            !isOnline -> "Necesita conexión"
+            !isOnline || !letreroConInternet -> "Necesita conexión"
             pendienteSinSubir != null -> pendienteSinSubir
             cambiosEnCamino > 0 -> CUENTA_SE_ACTUALIZA
+            check == null -> if (isLoading) "Cargando la cuenta…" else "No se pudo cargar la cuenta"
             else -> null
         }
 
@@ -294,6 +306,8 @@ class TableCheckoutViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     /** D86: saldo sin red de una mesa que esta terminal abrió sin red. */
     private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
+    /** D90: el estado que pinta el letrero «Sin conexión a internet». */
+    private val connectionStateManager: ConnectionStateManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TableCheckoutState())
@@ -346,6 +360,11 @@ class TableCheckoutViewModel @Inject constructor(
                 isProvisional = provisional,
                 isOnline = networkMonitor.isConnected(),
             )
+        }
+        viewModelScope.launch {
+            connectionStateManager.connectionState.collect { conexion ->
+                _state.update { it.copy(letreroConInternet = conexion.hasInternet) }
+            }
         }
         viewModelScope.launch {
             networkMonitor.networkStateFlow.collect { info ->

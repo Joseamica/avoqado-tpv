@@ -93,6 +93,8 @@ class CommandExecutorTest {
         coEvery { mockDatabase.pendingRefundDao().getPendingCount() } returns 0
         coEvery { mockDatabase.pendingRefundDao().getFailedCount() } returns 0
         coEvery { mockDatabase.paymentAttemptDao().countUnresolvedCharges() } returns 0
+        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 0
+        coEvery { mockDatabase.localShiftSessionDao().contarSinSubirEnElAparato() } returns 0
         CommandExecutionWindow.setForeground(true)
         CommandExecutionWindow.setRoute("home")
         val persisted = mutableMapOf<String, String>()
@@ -165,6 +167,40 @@ class CommandExecutorTest {
         coEvery { mockDatabase.pendingPaymentDao().getPendingCount() } returns 1
         assertThat(commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET)).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
         verify(exactly = 0) { mockSecureStorage.clearAll() }
+    }
+
+    // D4 (encargo dd4185): bajar de versión borra la base. Lo que va a borrar sin haber subido frena los mismos comandos.
+    private val comandosQueBorranOReinician = listOf(TpvCommandType.INSTALL_VERSION, TpvCommandType.REQUEST_UPDATE,
+        TpvCommandType.FORCE_UPDATE, TpvCommandType.FACTORY_RESET, TpvCommandType.RESTART, TpvCommandType.SHUTDOWN,
+        TpvCommandType.REMOTE_ACTIVATE)
+
+    @Test fun `P1 instalar otra version espera mientras haya ventas de mesas sin subir`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 1
+        comandosQueBorranOReinician.forEach { type ->
+            val result = commandExecutor.execute(createCommand(type).copy(commandId = "d4-${type.name}"))
+            assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+            assertThat(result.message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
+        }
+        coVerify(exactly = 0) { mockAvoqadoUpdateRepository.getSpecificVersion(any()) }
+        verify(exactly = 0) { mockSecureStorage.clearAll() }
+    }
+
+    @Test fun `P1 instalar otra version espera mientras haya una caja local sin subir`() = runTest {
+        coEvery { mockDatabase.localShiftSessionDao().contarSinSubirEnElAparato() } returns 1
+        val result = commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION))
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+        assertThat(result.message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
+    }
+
+    @Test fun `P1 si no se puede leer la cola de mesas el comando espera`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } throws IllegalStateException("disco")
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION)).status)
+            .isEqualTo(TpvCommandResultStatus.DEFERRED)
+    }
+
+    @Test fun `una cola de mesas pendiente no frena un comando que no borra ni reinicia`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarSinSubirEnElAparato() } returns 3
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.LOCK)).status).isEqualTo(TpvCommandResultStatus.SUCCESS)
     }
 
     // ========================================

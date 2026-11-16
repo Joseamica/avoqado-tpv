@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
+import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -421,12 +422,34 @@ class TablesViewModel @Inject constructor(
      * el detalle completo al entrar.
      */
     fun viewExistingCheck(table: DiningTable, onReady: () -> Unit) {
-        val order = table.primaryCheck ?: return
+        viewExistingCheck(table, check = null, onReady = onReady)
+    }
+
+    /**
+     * "Ver cuenta" de UNA cuenta concreta de la mesa (D85): una mesa puede tener varias (la que la terminal abrió sin
+     * red queda aparte junto a la de otro mesero, D51/D71) y la hoja de la mesa ofrece cada una. Sin [check], la
+     * principal. Una cuenta que ya no está entre las de la mesa no arranca nada.
+     *
+     * La mesa se lee del plano VIGENTE (por id), no de la copia que traía la hoja al abrirse (Codex r1 #1): si mientras
+     * la hoja estaba abierta otro aparato movió esa cuenta a otra mesa, no se abre bajo ésta; y la versión y el total
+     * son los últimos que llegaron. Si la mesa ya no está en el plano (p. ej. una archivada que sólo se veía por esa
+     * cuenta, Codex r2 #1), no se abre nada. Sólo sin plano cargado se usa la copia de la hoja. Un plano todavía
+     * atrasado (el movimiento de otro aparato aún no llega) queda como antes de D85: es deuda aparte (Codex r5;
+     * `docs/audit/deuda-encontrada.md`, 15-nov).
+     */
+    fun viewExistingCheck(table: DiningTable, check: OpenCheckSummary?, onReady: () -> Unit) {
+        val plano = _uiState.value.tables
+        val vigente = if (plano.isEmpty()) table else plano.firstOrNull { it.id == table.id } ?: return
+        val order = if (check == null) {
+            vigente.primaryCheck
+        } else {
+            vigente.openChecks.firstOrNull { it.id == check.id }
+        } ?: return
         tableSession.start(
             TableSession.Active(
-                tableId = table.id,
-                tableNumber = table.number,
-                areaName = table.areaName,
+                tableId = vigente.id,
+                tableNumber = vigente.number,
+                areaName = vigente.areaName,
                 orderId = order.id,
                 orderNumber = order.orderNumber,
                 version = order.version,

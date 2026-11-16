@@ -130,7 +130,7 @@ class CobroSinRedConLaCuentaDeLaMesaTest {
     private fun cobroGuardadoSinRed() {
         coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
             Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
-        coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+        coEvery { repository.clearTable(any(), any(), any(), any()) } returns Result.success(Unit)
     }
 
     @Test

@@ -290,6 +290,42 @@ class TablesRepositoryPayCashTest {
     }
 
     @Test
+    fun D79_clearTable_sin_red_nombra_la_cuenta_real_que_solto() = runTest {
+        coEvery { api.clearTable(venueId, "mesa-1") } throws IOException("sin red")
+        val payload = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CLEAR_TABLE, capture(payload), any()) } returns "intent-3"
+
+        repo.clearTable(venueId, "mesa-1", orderId = "orden-real-1", isProvisional = false)
+
+        assertThat(payload.captured.get("tableId").asString).isEqualTo("mesa-1")
+        assertThat(payload.captured.get("orderId").asString).isEqualTo("orden-real-1")
+        assertThat(payload.captured.has("localOrderId")).isFalse()
+    }
+
+    @Test
+    fun D79_clearTable_sin_red_con_cuenta_provisional_la_nombra_como_localOrderId() = runTest {
+        coEvery { api.clearTable(venueId, "mesa-1") } throws IOException("sin red")
+        val payload = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CLEAR_TABLE, capture(payload), any()) } returns "intent-4"
+
+        repo.clearTable(venueId, "mesa-1", orderId = "local-uuid-9", isProvisional = true)
+
+        assertThat(payload.captured.get("localOrderId").asString).isEqualTo("local-uuid-9")
+        assertThat(payload.captured.has("orderId")).isFalse()
+    }
+
+    @Test
+    fun D79_clearTable_sin_cuenta_manda_solo_la_mesa_como_antes() = runTest {
+        coEvery { api.clearTable(venueId, "mesa-1") } throws IOException("sin red")
+        val payload = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CLEAR_TABLE, capture(payload), any()) } returns "intent-5"
+
+        repo.clearTable(venueId, "mesa-1")
+
+        assertThat(payload.captured.keySet()).containsExactly("tableId")
+    }
+
+    @Test
     fun clearTable_rechazo_de_negocio_NUNCA_se_encola_se_propaga() = runTest {
         // "Cuenta sin pagar" — el server rechaza liberar la mesa (400/409), no
         // es infraestructura transitoria. Disfrazarlo de éxito encolado

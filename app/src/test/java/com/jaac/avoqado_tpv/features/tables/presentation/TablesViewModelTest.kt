@@ -498,6 +498,108 @@ class TablesViewModelTest {
     }
 
     @Test
+    fun D85_ver_cuenta_de_la_segunda_cuenta_de_la_mesa_arranca_la_sesion_con_ESA_cuenta() {
+        // La mesa tiene la cuenta de María (principal) y la que la terminal abrió sin red (aparte, D51/D71). El cajero
+        // toca la de la terminal en la hoja de la mesa: la sesión debe ser ésa, no la principal.
+        val deMaria = OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"), version = 2)
+        val deLaTerminal = OpenCheckSummary(id = "de-la-terminal", orderNumber = "ORD-2", total = BigDecimal("20.00"), version = 4)
+        val mesa = table(id = "m8", number = "M8").copy(
+            currentOrder = TableOrder(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00")),
+            openOrders = listOf(deLaTerminal, deMaria),
+        )
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, deLaTerminal) { readyCalled = true }
+
+        assertThat(readyCalled).isTrue()
+        val session = tableSession.current()
+        assertThat(session?.tableId).isEqualTo("m8")
+        assertThat(session?.orderId).isEqualTo("de-la-terminal")
+        assertThat(session?.orderNumber).isEqualTo("ORD-2")
+        // D8: el total del plano es bruto (no descuenta abonos) y ya no se siembra como saldo; lo pone la primera lectura.
+        assertThat(session?.total).isEqualToIgnoringScale(BigDecimal.ZERO)
+        assertThat(session?.saldoConfirmado).isFalse()
+        assertThat(session?.version).isEqualTo(4)
+    }
+
+    @Test
+    fun D85_ver_cuenta_con_una_cuenta_que_ya_no_esta_en_la_mesa_no_hace_nada() {
+        // La hoja quedó abierta con una lista vieja y el plano se refrescó sin esa cuenta: no se arranca una sesión sobre
+        // una cuenta que la mesa ya no tiene.
+        val mesa = table(id = "m8", number = "M8").copy(
+            openOrders = listOf(OpenCheckSummary(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"))),
+        )
+        val ajena = OpenCheckSummary(id = "otra", orderNumber = "ORD-9", total = BigDecimal("5.00"))
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa, ajena) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_lee_la_mesa_del_plano_vigente_no_la_copia_que_tenia_la_hoja() = runTest {
+        // Codex r1 #1: la hoja se abrió cuando M8 tenía la cuenta B; otro aparato la movió a otra mesa y el plano se
+        // refrescó. Tocar B en la hoja vieja no debe abrir B bajo M8.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val a = OpenCheckSummary(id = "a", orderNumber = "ORD-A", total = BigDecimal("30.00"))
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(a, b))
+        val mesaVigente = table(id = "m8", number = "M8").copy(openOrders = listOf(a))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(mesaVigente))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_de_una_mesa_que_ya_no_esta_en_el_plano_no_hace_nada() = runTest {
+        // Codex r2 #1: una mesa archivada sólo se veía por su cuenta B; B se movió y el plano ya no trae la mesa. La hoja
+        // vieja no debe revivirla.
+        val b = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"))
+        val copiaDeLaHoja = table(id = "archivada", number = "M20").copy(openOrders = listOf(b))
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(table(id = "m9", number = "M9").copy(openOrders = listOf(b))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        var readyCalled = false
+
+        vm.viewExistingCheck(copiaDeLaHoja, b) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun D85_ver_cuenta_toma_la_version_vigente_de_la_cuenta_del_plano() = runTest {
+        // La hoja vieja traía B en versión 1; el plano ya la trae en 3 (alguien agregó una ronda). La sesión arranca con la
+        // del plano vigente.
+        val bVieja = OpenCheckSummary(id = "b", orderNumber = "ORD-B", total = BigDecimal("20.00"), version = 1)
+        val bVigente = bVieja.copy(total = BigDecimal("35.00"), version = 3)
+        val copiaDeLaHoja = table(id = "m8", number = "M8").copy(openOrders = listOf(bVieja))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(listOf(table(id = "m8", number = "M8").copy(openOrders = listOf(bVigente))))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.viewExistingCheck(copiaDeLaHoja, bVieja) {}
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("b")
+        assertThat(tableSession.current()?.version).isEqualTo(3)
+        // D8: el saldo no sale del plano (es bruto); lo pone la primera lectura de la cuenta.
+        assertThat(tableSession.current()?.saldoConfirmado).isFalse()
+    }
+
+    @Test
     fun ver_cuenta_es_un_no_op_si_la_mesa_no_tiene_ninguna_cuenta_abierta() {
         val libre = table(id = "libre", status = "AVAILABLE")
         val vm = createViewModel()

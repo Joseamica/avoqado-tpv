@@ -61,8 +61,6 @@ class TableSyncCoordinator @Inject constructor(
     // El worker llega desde Default. Carrito, sesión y versión comparten el dueño de UI;
     // el ACK ya es durable y dentro de esta unidad no hay I/O ni suspensión entre guardas/escrituras.
     private suspend fun handleAck(intent: SyncIntentEntity, ack: SyncIntentAck) = withContext(Dispatchers.Main.immediate) {
-        // D8: lo que estaba pendiente ya se resolvió; el cobro con el saldo por confirmar vuelve a leer la cuenta.
-        if (ack.isAcked || ack.isRejected) tableSession.algoSeSincronizo()
         when {
             ack.isAcked -> handleAcked(intent, ack)
 

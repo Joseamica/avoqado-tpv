@@ -76,6 +76,13 @@ class SyncOutbox @Inject constructor(
     private val secureStorage: SecureStorage,
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
+    /**
+     * D8 (Codex r7): la sesión de mesa, para que TODA respuesta terminal de la cola —venga del replay del coordinador o del
+     * que hace el repositorio al cobrar, al cambiar comensales, etc.— llegue al saldo: un rechazo de algo que mueve el dinero
+     * de la cuenta abierta lo deja por confirmar, y cualquier ACK o rechazo despierta al cobro que espera. Null en pruebas
+     * que no la necesitan.
+     */
+    private val tableSession: com.jaac.avoqado_tpv.features.tables.data.TableSession? = null,
 ) {
     private val replayMutex = Mutex()
     private val gson = Gson()
@@ -145,6 +152,20 @@ class SyncOutbox @Inject constructor(
      * primer nivel)? Si sí, una lectura de esa cuenta en el SERVIDOR no trae todo lo que esta terminal ya hizo (una ronda o un
      * cobro sin red que el replay no alcanzó a subir), y no puede reemplazar lo que la terminal sabe del saldo.
      */
+    /**
+     * D8 (Codex r7): una ronda (o un cobro, un descuento…) que el SERVIDOR rechazó al sincronizar ya no cuenta, pero la terminal
+     * la tenía en el saldo: queda por confirmar y el cobro relee. Corre en el hilo principal, como todo lo que escribe la sesión.
+     */
+    private suspend fun reaccionarAlSaldo(intent: SyncIntentEntity, ack: SyncIntentAck) {
+        val sesion = tableSession ?: return
+        withContext(Dispatchers.Main.immediate) {
+            if (ack.isRejected) {
+                sesion.current()?.let { actual -> if (intent.mueveElSaldoDe(actual.idsDeLaCuenta)) sesion.saldoPorConfirmar() }
+            }
+            sesion.algoSeSincronizo()
+        }
+    }
+
     suspend fun hayPendientesDe(venueId: String, cuentas: Set<String>): Boolean {
         if (cuentas.isEmpty()) return false
         return dao.pendingForVenue(venueId).any { it.mueveElSaldoDe(cuentas) }
@@ -262,7 +283,7 @@ class SyncOutbox @Inject constructor(
      *   [applyAck] arriba; este callback es solo notificación.
      */
     suspend fun replayNow(venueId: String, onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { _, _ -> }) {
-        replay(venueId, singleBatch = false, onAck = onAck, canEmit = { true })
+        replay(venueId, singleBatch = false, onAckDelLlamador = onAck, canEmit = { true })
     }
 
     /** Un lote del MISMO replayer para recuperación fuera de Mesas. No crea otro emisor. */
@@ -274,7 +295,7 @@ class SyncOutbox @Inject constructor(
         val venue = secureStorage.getVenueId()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
         val staff = secureStorage.getStaffId()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
         val token = secureStorage.getToken()?.takeIf { it.isNotBlank() } ?: return ReplayProgress(0, false)
-        return replay(venue, singleBatch = true, onAck = onAck, canEmit = {
+        return replay(venue, singleBatch = true, onAckDelLlamador = onAck, canEmit = {
             secureStorage.getVenueId() == venue && secureStorage.getStaffId() == staff && secureStorage.getToken() == token
         })
     }
@@ -282,9 +303,13 @@ class SyncOutbox @Inject constructor(
     private suspend fun replay(
         venueId: String,
         singleBatch: Boolean,
-        onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit,
+        onAckDelLlamador: suspend (SyncIntentEntity, SyncIntentAck) -> Unit,
         canEmit: () -> Boolean,
     ): ReplayProgress = replayMutex.withLock {
+        val onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { intent, ack ->
+            onAckDelLlamador(intent, ack)
+            if (!ack.isRetry) reaccionarAlSaldo(intent, ack)
+        }
         var resolved = 0
         // D6: la cola se renumera por un rechazo de número a lo más UNA vez por pasada. Si el servidor vuelve a rechazar
         // por número (otra instalación con el mismo serial sigue adelante), se queda rechazado como antes: sin hot-loop.

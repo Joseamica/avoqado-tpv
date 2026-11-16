@@ -19,8 +19,7 @@ class UpdateRequestManagerTest {
     private val repo = mockk<AvoqadoUpdateRepository>(relaxed = true)
     private val installer = mockk<ApkInstaller>(relaxed = true)
     private val db = mockk<AvoqadoDatabase>(relaxed = true)
-    private val secureStorage = mockk<com.jaac.avoqado_tpv.core.data.local.SecureStorage>(relaxed = true)
-    private val manager = UpdateRequestManager(repo, installer, mockk<ObservabilityManager>(relaxed = true), mockk<Context>(relaxed = true), Provider { db }, secureStorage)
+    private val manager = UpdateRequestManager(repo, installer, mockk<ObservabilityManager>(relaxed = true), mockk<Context>(relaxed = true), Provider { db })
     @After fun cleanup() { CommandExecutionWindow.setExecuting(false); CommandExecutionWindow.setForeground(false); CommandExecutionWindow.setRoute(null) }
     @Test fun `accepting an old update dialog on a payment route cannot download or install`() = runTest {
         val update = mockk<AvoqadoUpdateInfo>(relaxed = true)
@@ -50,24 +49,43 @@ class UpdateRequestManagerTest {
         assertThat(CommandExecutionWindow.executing.value).isFalse()
         assertThat(manager.updateRequestState.value).isInstanceOf(UpdateRequestState.Error::class.java)
     }
-    @Test fun `P1 aceptar una version anterior con mesas sin subir no descarga ni instala`() = runTest {
-        coEvery { repo.getSpecificVersion(41) } returns UpdateCheckResult.UpdateAvailable(mockk(relaxed = true))
+    private fun sinPagosPendientes() {
         coEvery { db.pendingPaymentDao().getPendingCount() } returns 0
         coEvery { db.pendingPaymentDao().getFailedCount() } returns 0
         coEvery { db.pendingRefundDao().getPendingCount() } returns 0
         coEvery { db.pendingRefundDao().getFailedCount() } returns 0
         coEvery { db.paymentAttemptDao().countUnresolvedCharges() } returns 0
-        every { secureStorage.getVenueId() } returns "venue-activo"
-        coEvery { db.syncIntentDao().contarSinSubir("venue-activo") } returns 1
-        coEvery { db.localShiftSessionDao().contarSinSubir(any()) } returns 0
+    }
+
+    private fun version(code: Int) = mockk<AvoqadoUpdateInfo>(relaxed = true).also { every { it.versionCode } returns code }
+
+    @Test fun `P1 aceptar una version anterior que borraria ventas de mesas no descarga ni instala`() = runTest {
+        val anterior = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE - 1
+        coEvery { repo.getSpecificVersion(anterior) } returns UpdateCheckResult.UpdateAvailable(version(anterior))
+        sinPagosPendientes()
+        coEvery { db.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        coEvery { db.localShiftSessionDao().contarQueBajarDeVersionBorraria() } returns 0
         CommandExecutionWindow.setForeground(true); CommandExecutionWindow.setRoute("home")
-        manager.handleUpdateRequest("c3", versionCode = 41)
+        manager.handleUpdateRequest("c3", versionCode = anterior)
         manager.acceptUpdate()
         coVerify(exactly = 0) { repo.downloadApk(any(), any()) }
         coVerify(exactly = 0) { installer.install(any()) }
         val state = manager.updateRequestState.value
         assertThat(state).isInstanceOf(UpdateRequestState.Error::class.java)
-        assertThat((state as UpdateRequestState.Error).message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
+        assertThat((state as UpdateRequestState.Error).message)
+            .isEqualTo(com.jaac.avoqado_tpv.features.remote_command.domain.MENSAJE_BAJAR_DE_VERSION_BORRARIA)
         assertThat(CommandExecutionWindow.executing.value).isFalse()
+    }
+
+    @Test fun `aceptar una version nueva no se frena por ventas de mesas sin subir`() = runTest {
+        val nueva = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE + 1
+        coEvery { repo.checkForUpdate() } returns UpdateCheckResult.UpdateAvailable(version(nueva))
+        sinPagosPendientes()
+        coEvery { db.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        coEvery { repo.downloadApk(any(), any()) } returns DownloadResult.Error("offline")
+        CommandExecutionWindow.setForeground(true); CommandExecutionWindow.setRoute("home")
+        manager.handleUpdateRequest("c4")
+        manager.acceptUpdate()
+        coVerify(exactly = 1) { repo.downloadApk(any(), any()) }
     }
 }

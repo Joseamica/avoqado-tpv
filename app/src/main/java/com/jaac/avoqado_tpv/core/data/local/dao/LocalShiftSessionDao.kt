@@ -72,15 +72,14 @@ interface LocalShiftSessionDao {
     suspend fun contar(venueId: String): Int
 
     /**
-     * D4 (encargo dd4185): cajas de la sucursal ACTIVA cuya apertura o cierre todavía va a subir solo; el MISMO predicado
-     * con que [reclamar] las toma (bajar de versión borra la base entera). No cuentan, porque nadie las drena solas y
-     * frenarían las actualizaciones para siempre: una apertura en REVIEW, ni el cierre PENDING que queda detrás de ella
-     * (el cierre sólo sube con la apertura CONFIRMED; Codex r1 #1), ni las de otra sucursal (Codex r1 #2).
+     * D4 (encargo dd4185): cajas que BAJAR DE VERSIÓN borraría sin que el servidor las tenga, de TODAS las sucursales (la
+     * base se borra entera): apertura o cierre por subir o en revisión. El REVIEW de un cierre sólo OBSERVADO en el
+     * servidor (sin gesto de este aparato, `close_operation_id` nulo; D65) no cuenta: el servidor ya tiene ese cierre.
      */
-    @Query("""SELECT COUNT(*) FROM local_shift_sessions WHERE venue_id = :venueId
-        AND (opening_status IN ('PENDING','SYNCING') OR
-            (opening_status = 'CONFIRMED' AND local_status = 'CLOSED' AND close_status IN ('PENDING','SYNCING')))""")
-    suspend fun contarSinSubir(venueId: String): Int
+    @Query("""SELECT COUNT(*) FROM local_shift_sessions
+        WHERE opening_status IN ('PENDING','SYNCING','REVIEW') OR close_status IN ('PENDING','SYNCING')
+        OR (close_status = 'REVIEW' AND close_operation_id IS NOT NULL)""")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
 
     @Query("SELECT * FROM local_shift_sessions WHERE venue_id = :venueId ORDER BY created_at, local_session_id LIMIT 20 OFFSET :offset")
     suspend fun pagina(venueId: String, offset: Int): List<LocalShiftSessionEntity>

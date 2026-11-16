@@ -114,6 +114,13 @@ class CommandExecutor @Inject constructor(
         } finally { recoveryMutex.unlock() }
     }
 
+    /** El `versionCode` de un INSTALL_VERSION, con el mismo parseo flexible que [executeInstallVersion]. */
+    private fun versionCodeDelComando(command: TpvCommand): Int? = when (val raw = command.payload?.get("versionCode")) {
+        is Number -> raw.toInt()
+        is String -> raw.toIntOrNull()
+        else -> null
+    }
+
     fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { commandInbox.remember(it) } }
 
     companion object {
@@ -163,17 +170,21 @@ class CommandExecutor @Inject constructor(
             if (unresolved) return@withLock CommandResult(
                 com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Hay pagos o devoluciones pendientes de resolver")
-            // D4 (encargo dd4185): bajar de versión borra la base entera. Mismo candado, mismo criterio: si no se puede
-            // leer, no se borra. Qué cuenta y qué no: [hayMesasOCajasSinSubir].
-            val sinSubir = try {
-                databaseProvider.get().hayMesasOCajasSinSubir(secureStorage.getVenueId())
+        }
+        // D4 (encargo dd4185): bajar de versión borra la base entera. Se rechaza (no espera) para que el SUPERADMIN vea por qué:
+        // un rechazo en cuarentena o una caja en revisión no se resuelven solos. Si no se puede leer, tampoco se borra.
+        if (command.type == TpvCommandType.INSTALL_VERSION && esBajarDeVersion(versionCodeDelComando(command))) {
+            val borraria = try {
+                databaseProvider.get().hayAlgoQueBajarDeVersionBorraria()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 true
             }
-            if (sinSubir) return@withLock CommandResult(
-                com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
-                MENSAJE_MESAS_O_CAJAS_SIN_SUBIR)
+            if (borraria) {
+                val rejected = CommandResult.rejected(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+                commandInbox.complete(command.commandId, rejected)
+                return@withLock rejected
+            }
         }
         if (!CommandExecutionWindow.tryBeginCommand()) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")

@@ -51,14 +51,13 @@ interface SyncIntentDao {
     suspend fun pendingBatchForVenue(venueId: String, limit: Int): List<SyncIntentEntity>
 
     /**
-     * D4 (encargo dd4185): lo que todavía va a subir solo en la sucursal ACTIVA del aparato (la única que reproduce
-     * [com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox]). Lo lee el candado de los comandos remotos
-     * ([com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor]): bajar de versión borra la base entera.
-     * No cuentan, porque nadie los drena solos y frenarían las actualizaciones para siempre (Codex r1 #2): un REJECTED
-     * (espera a una persona en la cuarentena) ni lo de otra sucursal que quedó en la base tras mover la terminal.
+     * D4 (encargo dd4185): lo que BAJAR DE VERSIÓN borraría sin que el servidor lo tenga, de TODAS las sucursales del aparato
+     * (la base se borra entera): lo que espera subir (PENDING) y los rechazos que nadie ha resuelto en la cuarentena
+     * (REJECTED: el efectivo que el servidor no aceptó sólo existe aquí). Lo lee
+     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
      */
-    @Query("SELECT COUNT(*) FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING'")
-    suspend fun contarSinSubir(venueId: String): Int
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE status IN ('PENDING', 'REJECTED')")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
 
     @Query("SELECT EXISTS(SELECT 1 FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING')")
     suspend fun hasPendingForVenue(venueId: String): Boolean

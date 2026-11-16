@@ -93,9 +93,8 @@ class CommandExecutorTest {
         coEvery { mockDatabase.pendingRefundDao().getPendingCount() } returns 0
         coEvery { mockDatabase.pendingRefundDao().getFailedCount() } returns 0
         coEvery { mockDatabase.paymentAttemptDao().countUnresolvedCharges() } returns 0
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 0
-        coEvery { mockDatabase.localShiftSessionDao().contarSinSubir(any()) } returns 0
-        every { mockSecureStorage.getVenueId() } returns "venue-activo"
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 0
+        coEvery { mockDatabase.localShiftSessionDao().contarQueBajarDeVersionBorraria() } returns 0
         CommandExecutionWindow.setForeground(true)
         CommandExecutionWindow.setRoute("home")
         val persisted = mutableMapOf<String, String>()
@@ -170,57 +169,57 @@ class CommandExecutorTest {
         verify(exactly = 0) { mockSecureStorage.clearAll() }
     }
 
-    // D4 (encargo dd4185): bajar de versión borra la base. Lo que va a borrar sin haber subido frena los mismos comandos.
-    private val comandosQueBorranOReinician = listOf(TpvCommandType.INSTALL_VERSION, TpvCommandType.REQUEST_UPDATE,
-        TpvCommandType.FORCE_UPDATE, TpvCommandType.FACTORY_RESET, TpvCommandType.RESTART, TpvCommandType.SHUTDOWN,
-        TpvCommandType.REMOTE_ACTIVATE)
+    // D4 (encargo dd4185): bajar de versión borra la base entera; es lo único que la borra.
+    private fun sinVersionEnElServidor() = coEvery { mockAvoqadoUpdateRepository.getSpecificVersion(any()) } returns
+        com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult.Error("sin red en la prueba")
 
-    @Test fun `P1 instalar otra version espera mientras haya ventas de mesas sin subir`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 1
-        comandosQueBorranOReinician.forEach { type ->
-            val result = commandExecutor.execute(createCommand(type).copy(commandId = "d4-${type.name}"))
-            assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
-            assertThat(result.message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
-        }
+    private fun instalar(versionCode: Int, id: String) =
+        createCommand(TpvCommandType.INSTALL_VERSION, payload = mapOf("versionCode" to versionCode)).copy(commandId = id)
+
+    @Test fun `P1 bajar de version se rechaza si borraria ventas de mesas sin subir`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        val result = commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-baja"))
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
+        assertThat(result.message).isEqualTo(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
         coVerify(exactly = 0) { mockAvoqadoUpdateRepository.getSpecificVersion(any()) }
-        verify(exactly = 0) { mockSecureStorage.clearAll() }
+        // El rechazo queda como recibo: la reentrega del mismo comando no lo vuelve a intentar.
+        assertThat(CommandInbox(mockSecureStorage).previousResult("d4-baja")).isEqualTo(result)
     }
 
-    @Test fun `P1 instalar otra version espera mientras haya una caja local sin subir`() = runTest {
-        coEvery { mockDatabase.localShiftSessionDao().contarSinSubir("venue-activo") } returns 1
-        val result = commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION))
-        assertThat(result.status).isEqualTo(TpvCommandResultStatus.DEFERRED)
-        assertThat(result.message).isEqualTo("Hay ventas de mesas o cortes de caja sin subir")
+    @Test fun `P1 bajar de version se rechaza si borraria una caja sin subir o en revision`() = runTest {
+        coEvery { mockDatabase.localShiftSessionDao().contarQueBajarDeVersionBorraria() } returns 1
+        assertThat(commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-caja")).status)
+            .isEqualTo(TpvCommandResultStatus.REJECTED)
+        coVerify(exactly = 0) { mockAvoqadoUpdateRepository.getSpecificVersion(any()) }
     }
 
-    @Test fun `P1 si no se puede leer la cola de mesas el comando espera`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } throws IllegalStateException("disco")
-        assertThat(commandExecutor.execute(createCommand(TpvCommandType.INSTALL_VERSION)).status)
-            .isEqualTo(TpvCommandResultStatus.DEFERRED)
+    @Test fun `P1 si no se puede leer la base no se baja de version`() = runTest {
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } throws IllegalStateException("disco")
+        assertThat(commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-disco")).status)
+            .isEqualTo(TpvCommandResultStatus.REJECTED)
+        coVerify(exactly = 0) { mockAvoqadoUpdateRepository.getSpecificVersion(any()) }
     }
 
-    @Test fun `P1 el mismo comando pasa en cuanto la cola de mesas subio`() = runTest {
+    @Test fun `bajar de version con la base al dia sigue como antes`() = runTest {
+        sinVersionEnElServidor()
+        commandExecutor.execute(instalar(BuildConfig.VERSION_CODE - 1, "d4-limpia"))
+        coVerify(exactly = 1) { mockAvoqadoUpdateRepository.getSpecificVersion(BuildConfig.VERSION_CODE - 1) }
+    }
+
+    @Test fun `subir de version no se frena por ventas de mesas sin subir`() = runTest {
+        sinVersionEnElServidor()
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 3
+        coEvery { mockDatabase.localShiftSessionDao().contarQueBajarDeVersionBorraria() } returns 3
+        commandExecutor.execute(instalar(BuildConfig.VERSION_CODE + 1, "d4-sube"))
+        coVerify(exactly = 1) { mockAvoqadoUpdateRepository.getSpecificVersion(BuildConfig.VERSION_CODE + 1) }
+    }
+
+    @Test fun `reiniciar o borrar de fabrica no se frenan por ventas de mesas sin subir`() = runTest {
         commandExecutor.stopProcess = {}
-        val command = createCommand(TpvCommandType.FACTORY_RESET).copy(commandId = "d4-reintento")
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 1
-        assertThat(commandExecutor.execute(command).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
-        verify(exactly = 0) { mockSecureStorage.clearAll() }
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir("venue-activo") } returns 0
-        assertThat(commandExecutor.execute(command).status).isNotEqualTo(TpvCommandResultStatus.DEFERRED)
+        coEvery { mockDatabase.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 3
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET).copy(commandId = "d4-fabrica")).status)
+            .isNotEqualTo(TpvCommandResultStatus.REJECTED)
         verify(exactly = 1) { mockSecureStorage.clearAll() }
-    }
-
-    @Test fun `sin sucursal activa no hay cola que suba y el candado nuevo no frena`() = runTest {
-        commandExecutor.stopProcess = {}
-        every { mockSecureStorage.getVenueId() } returns null
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 5
-        assertThat(commandExecutor.execute(createCommand(TpvCommandType.FACTORY_RESET)).status)
-            .isNotEqualTo(TpvCommandResultStatus.DEFERRED)
-    }
-
-    @Test fun `una cola de mesas pendiente no frena un comando que no borra ni reinicia`() = runTest {
-        coEvery { mockDatabase.syncIntentDao().contarSinSubir(any()) } returns 3
-        assertThat(commandExecutor.execute(createCommand(TpvCommandType.LOCK)).status).isEqualTo(TpvCommandResultStatus.SUCCESS)
     }
 
     // ========================================

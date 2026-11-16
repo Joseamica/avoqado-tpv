@@ -2,7 +2,11 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
+import com.jaac.avoqado_tpv.core.data.local.ProductoGuardado
 import com.jaac.avoqado_tpv.core.domain.variantes.Familia
+import com.jaac.avoqado_tpv.features.tables.domain.model.MenuModifier
+import com.jaac.avoqado_tpv.features.tables.domain.model.MenuModifierGroup
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
@@ -32,6 +36,8 @@ data class TableMenuUiState(
      * decide en qué lugar de la lista sale el botón de cada una.
      */
     val familias: Map<String, Familia<MenuProduct>> = emptyMap(),
+    /** D86: el menú que se ve es el guardado en la terminal (sin red); `null` = el del SERVIDOR. */
+    val avisoCatalogo: String? = null,
 ) {
     fun productsForSelectedCategory(): List<MenuProduct> =
         if (selectedCategoryId == null) products else products.filter { it.categoryId == selectedCategoryId }
@@ -52,6 +58,8 @@ class TableMenuViewModel @Inject constructor(
     val tableSession: TableSession,
     val pendingCart: PendingRoundCart,
     private val deviceInfoManager: DeviceInfoManager,
+    /** D86: el catálogo que la terminal ya guarda, para pedir sin red. */
+    private val catalogoGuardado: CatalogoGuardado,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TableMenuUiState())
@@ -85,11 +93,31 @@ class TableMenuViewModel @Inject constructor(
                             familias = familias,
                             categories = categoriesResult.getOrElse { current.categories },
                             errorMessage = null,
+                            avisoCatalogo = null,
                         )
                     }
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
+                    // D86: sin red y sin catálogo en memoria, se pide del catálogo que la terminal ya guarda.
+                    if (e is IOException && _uiState.value.products.isEmpty()) {
+                        val guardados = leerCatalogoGuardado(vId)
+                        val guardado = guardados.map { it.aMenuDeMesas() }
+                        if (guardado.isNotEmpty()) {
+                            val familias = reglasDeMesas.familiasDe(guardado)
+                            _uiState.update { current ->
+                                current.copy(
+                                    isLoading = false,
+                                    products = guardado,
+                                    familias = familias,
+                                    categories = categoriasDe(guardados),
+                                    errorMessage = null,
+                                    avisoCatalogo = AVISO_CATALOGO_GUARDADO,
+                                )
+                            }
+                            return@fold
+                        }
+                    }
                     _uiState.update { current ->
                         if (current.products.isNotEmpty()) {
                             // Offline-first de lectura: el catálogo ya cargado se
@@ -102,7 +130,8 @@ class TableMenuViewModel @Inject constructor(
                             current.copy(
                                 isLoading = false,
                                 errorMessage = if (e is IOException) {
-                                    "Sin conexión. Verifica tu red e intenta de nuevo."
+                                    // D86: la terminal no tiene un catálogo guardado de este negocio.
+                                    "Sin conexión y sin menú guardado en esta terminal. Verifica tu red e intenta de nuevo."
                                 } else {
                                     "No se pudo cargar el menú."
                                 },
@@ -112,6 +141,20 @@ class TableMenuViewModel @Inject constructor(
                 },
             )
         }
+    }
+
+    /**
+     * D86 (Codex r0 #3): sólo lo que se puede vender — `available` (activo y con existencia; el guardado no separa las dos) y de
+     * una categoría activa. Lo inactivo nunca aparece: Mesas no lo deshabilita en la cuadrícula, sólo no lo muestra.
+     */
+    private suspend fun leerCatalogoGuardado(venueId: String): List<ProductoGuardado> = try {
+        // Room: las consultas `suspend` ya corren fuera del hilo principal.
+        catalogoGuardado.disponibles(venueId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableMenu] No se pudo leer el catálogo guardado")
+        emptyList()
     }
 
     fun selectCategory(categoryId: String?) {
@@ -140,3 +183,27 @@ class TableMenuViewModel @Inject constructor(
         )
     }
 }
+
+/** D86: el aviso de «Agregar productos» cuando el menú es el guardado en la terminal. */
+internal const val AVISO_CATALOGO_GUARDADO = "Sin conexión: menú guardado en la terminal. La ronda se guarda y se sube sola."
+
+/** D86: un producto del catálogo guardado (el de «Cobrar» rápido) visto como producto de Mesas. */
+internal fun ProductoGuardado.aMenuDeMesas(): MenuProduct = MenuProduct(
+    id = id,
+    name = nombre,
+    price = precio,
+    categoryId = categoriaId,
+    imageUrl = imagenUrl,
+    color = categoriaColor,
+    active = true,
+    modifierGroups = grupos.map { g ->
+        MenuModifierGroup(id = g.id, name = g.nombre, type = g.tipo, required = g.obligatorio, modifiers = g.extras.map { MenuModifier(it.id, it.nombre, it.precio) })
+    },
+    familia = familia,
+)
+
+/** D86: las categorías del catálogo guardado, en el orden en que llegaron (sin duplicados). */
+internal fun categoriasDe(guardados: List<ProductoGuardado>): List<MenuCategory> =
+    guardados.distinctBy { it.categoriaId }.mapIndexed { indice, p ->
+        MenuCategory(id = p.categoriaId, name = p.categoriaNombre, displayOrder = indice, color = p.categoriaColor, active = true)
+    }

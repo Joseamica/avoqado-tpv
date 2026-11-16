@@ -569,6 +569,12 @@ class TablesRepository @Inject constructor(
         isProvisional: Boolean,
         amount: BigDecimal,
         tip: BigDecimal = BigDecimal.ZERO,
+        /**
+         * D86: lo que la terminal creía que debía la cuenta ANTES de este cobro (pesos). Sólo para una cuenta del SERVIDOR
+         * (como ANDROID: la provisional no lo manda). El SERVIDOR lo usa sólo como rastro (`COBRO_SIN_RED_CON_DIFERENCIA`
+         * si su saldo es otro); nunca cambia ni rechaza el cobro, y uno viejo lo ignora.
+         */
+        saldoEsperado: BigDecimal? = null,
     ): Result<PayCashOutcome> {
         val intentId = UUID.randomUUID().toString()
         val payload = JsonObject().apply {
@@ -576,6 +582,9 @@ class TablesRepository @Inject constructor(
             addProperty("amountCents", amount.toCents())
             addProperty("tipCents", tip.toCents())
             addProperty("method", "CASH")
+            if (!isProvisional && saldoEsperado != null && saldoEsperado >= BigDecimal.ZERO) {
+                addProperty("expectedBalanceBeforeCents", saldoEsperado.toCents())
+            }
         }
         syncOutbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, payload, id = intentId)
 

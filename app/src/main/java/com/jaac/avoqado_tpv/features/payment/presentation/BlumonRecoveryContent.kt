@@ -77,7 +77,9 @@ internal fun BlumonRecoveryContent(
             BlumonAttemptResolver.State.RECORDED -> "Avoqado confirmó este pago. No vuelvas a cobrar esta venta."
             BlumonAttemptResolver.State.RELEASED -> if (result.row?.lastError?.startsWith("declarado_sin_cobro:") == true)
                 "Quedó registrado que revisaste la terminal y no se cobró. Puedes volver a cobrar esta venta; si Avoqado encuentra el cobro después, te avisará."
-                else "Se guardó la declaración de que no se presentó tarjeta. Puedes volver a cobrar."
+                // D5 (533d77, Codex r4): neutral. La liberación del servidor deja el mismo `last_error` para «no presentó tarjeta» y para
+                // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó.
+                else "Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar."
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."
             BlumonAttemptResolver.State.UNAVAILABLE -> "No se pudo leer este intento o todavía está en curso. No vuelvas a pasar la tarjeta."
             else -> "No vuelvas a pasar la tarjeta. Estamos consultando el intento guardado; que aún no aparezca no significa que el banco lo rechazó."

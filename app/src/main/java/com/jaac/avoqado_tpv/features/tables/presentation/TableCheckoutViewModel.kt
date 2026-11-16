@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -294,6 +296,12 @@ class TableCheckoutViewModel @Inject constructor(
 
     private val venueId: String? get() = deviceInfoManager.getVenueId()
 
+    /**
+     * D86 (Codex r5): una sola fila para leer la cuenta, calcular el saldo sin red y cobrar en efectivo. Así una lectura nunca
+     * se cruza con un cobro (ni la que salió antes ni la que nace durante él): la que espera turno ve el resultado del cobro.
+     */
+    private val fila = Mutex()
+
     // D86 (Codex r3): estos campos van ANTES de `init`: Kotlin inicializa en el orden del texto, y `init` ya lanza la primera
     // lectura; declarados después, se reiniciaban a media lectura y la primera respuesta se tiraba («Cargando cuenta…» sin fin).
     /** D86 (Codex r2 #1): cuántas lecturas de la cuenta y cuántos cobros en efectivo han empezado (para tirar lecturas viejas). */
@@ -381,10 +389,12 @@ class TableCheckoutViewModel @Inject constructor(
             _state.update { it.copy(isLoading = false, errorMessage = "No hay venue configurado en este terminal") }
             return
         }
-        // D86 (Codex r2 #1): sólo la lectura más nueva, y sólo si ningún cobro empezó mientras viajaba, puede cambiar el saldo.
-        val miLectura = ++lecturasIniciadas
-        val cobrosAlSalir = cobrosIniciados
         viewModelScope.launch {
+            // D86 (Codex r5): leer la cuenta, calcular el saldo y cobrar van EN FILA, nunca a la vez.
+            fila.withLock {
+            // D86 (Codex r2 #1): sólo la lectura más nueva, y sólo si ningún cobro empezó mientras viajaba, cambia el saldo.
+            val miLectura = ++lecturasIniciadas
+            val cobrosAlSalir = cobrosIniciados
             _state.update { it.copy(isLoading = it.check == null) }
             try {
                 tableSyncCoordinator.replay(vId)
@@ -444,6 +454,7 @@ class TableCheckoutViewModel @Inject constructor(
                 },
             )
         }
+        }
     }
 
     /**
@@ -452,9 +463,11 @@ class TableCheckoutViewModel @Inject constructor(
      */
     private fun calcularSaldoSinRed(session: TableSession.Active) {
         val vId = venueId ?: return
-        val cobrosAlSalir = cobrosIniciados
-        val miCalculo = ++calculosDeSaldo
         viewModelScope.launch {
+            // D86 (Codex r5): leer la cuenta, calcular el saldo y cobrar van EN FILA, nunca a la vez.
+            fila.withLock {
+            val cobrosAlSalir = cobrosIniciados
+            val miCalculo = ++calculosDeSaldo
             val saldo = try {
                 // D86 (Codex r0 #2): la apertura ya confirmada por otro camino promueve la sesión (y el colector relee la cuenta).
                 if (promoverSiYaSeConfirmo(vId, session)) return@launch
@@ -473,6 +486,7 @@ class TableCheckoutViewModel @Inject constructor(
             val restante = (saldo as? SaldoSinRed.Conocido)?.porPagar ?: BigDecimal.ZERO
             tableSession.updateTotal(restante)
             _state.update { it.copy(saldoSinRed = saldo, remaining = restante) }
+        }
         }
     }
 
@@ -520,7 +534,10 @@ class TableCheckoutViewModel @Inject constructor(
      * - Mesa del SERVIDOR: nada propio sin subir de esa cuenta.
      */
     private suspend fun motivoParaNoCobrar(venueId: String, session: TableSession.Active, restanteMostrado: BigDecimal): String? = try {
-        if (session.isProvisional) {
+        if (_state.value.remaining.compareTo(restanteMostrado) != 0) {
+            // D86 (Codex r5): mientras este cobro esperaba su turno en la fila, una lectura cambió lo que falta.
+            "La cuenta cambió: ahora falta ${moneyEnTexto(_state.value.remaining)}. Revisa antes de cobrar."
+        } else if (session.isProvisional) {
             if (promoverSiYaSeConfirmo(venueId, session)) {
                 CUENTA_SE_ACTUALIZA
             } else {
@@ -722,6 +739,8 @@ class TableCheckoutViewModel @Inject constructor(
         _state.update { it.copy(isProcessingCash = true, errorMessage = null) }
         cobrosIniciados++
         viewModelScope.launch {
+            // D86 (Codex r5): leer la cuenta, calcular el saldo y cobrar van EN FILA, nunca a la vez.
+            fila.withLock {
             // D86 (Codex r2): el saldo se valida AL COBRAR, no sólo cuando se pintó: la cola pudo cambiar después (una apertura
             // rechazada o confirmada, un cobro propio que no ha subido). Si ya no cuadra, no se cobra y se dice por qué.
             val motivo = motivoParaNoCobrar(vId, session, remainingBeforeThisPayment)
@@ -798,6 +817,7 @@ class TableCheckoutViewModel @Inject constructor(
                     alTerminarElCobro()
                 },
             )
+        }
         }
     }
 

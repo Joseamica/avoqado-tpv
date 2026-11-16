@@ -103,6 +103,7 @@ class TableOrderViewModelTest {
         every { networkMonitor.networkStateFlow } returns emptyFlow()
         coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         saldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox)
     }
 
@@ -1548,5 +1549,30 @@ class TableOrderViewModelTest {
         vieja.complete(Unit)
 
         assertThat((viewModel.saldoSinRed.value as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("100.00"))
+    }
+
+    @Test
+    fun D86_r5_2_si_la_apertura_se_confirma_antes_que_su_ronda_por_sincronizar_se_queda_hasta_que_suba() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // La apertura sube, la ronda todavía no: el SERVIDOR devuelve la cuenta vacía.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // Sube la ronda: la siguiente lectura sola ya la trae y «Por sincronizar» se va.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns emptyList()
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(viewModel.queuedLines.value).isEmpty()
     }
 }

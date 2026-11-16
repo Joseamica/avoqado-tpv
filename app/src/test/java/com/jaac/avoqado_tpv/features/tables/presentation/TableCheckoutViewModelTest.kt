@@ -1221,4 +1221,34 @@ class TableCheckoutViewModelTest {
     }
 
     // endregion
+
+    @Test
+    fun D86_r5_1_una_lectura_que_nace_durante_un_cobro_espera_su_turno_y_ve_el_cobro() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            if (lecturas == 1) {
+                Result.success(OrderDetail(id = "orden-1", total = BigDecimal("110.00"), amountLeft = BigDecimal("110.00")))
+            } else {
+                Result.success(OrderDetail(id = "orden-1", total = BigDecimal("110.00"), amountLeft = BigDecimal("70.00")))
+            }
+        }
+        val cobro = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } coAnswers {
+            cobro.await()
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = null, queued = false))
+        }
+        val viewModel = createViewModel()
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        viewModel.setCustomAmountInput("40")
+        viewModel.payCash(viewModel.chargeableAmount()) // espera al procesador
+
+        viewModel.loadCheck() // p. ej. la relectura tras quitar un descuento: nace durante el cobro
+        assertThat(lecturas).isEqualTo(1) // espera su turno en la fila
+        cobro.complete(Unit)
+
+        assertThat(lecturas).isEqualTo(2)
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("70.00"))
+    }
 }

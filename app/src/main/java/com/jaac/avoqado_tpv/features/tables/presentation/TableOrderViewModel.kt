@@ -210,6 +210,10 @@ class TableOrderViewModel @Inject constructor(
     /** D86 (Codex r4): sólo el cálculo más nuevo del saldo sin red se aplica (uno viejo puede llegar después). Antes de `init`. */
     private var calculosDeSaldo = 0L
 
+    /** D86 (Codex r5 #2): relectura de la cuenta mientras una ronda propia no sube (con tope). Antes de `init`. */
+    private var relecturaDeLaMesa: kotlinx.coroutines.Job? = null
+    private var relecturasDeLaMesa = 0
+
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
         viewModelScope.launch {
@@ -217,7 +221,10 @@ class TableOrderViewModel @Inject constructor(
             var conectadaAntes = networkMonitor.isConnected()
             networkMonitor.networkStateFlow.collect { info ->
                 _isOnline.value = info.isConnected
-                if (info.isConnected && !conectadaAntes) loadCheck()
+                if (info.isConnected && !conectadaAntes) {
+                    relecturasDeLaMesa = 0
+                    loadCheck()
+                }
                 conectadaAntes = info.isConnected
             }
         }
@@ -305,9 +312,25 @@ class TableOrderViewModel @Inject constructor(
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
-                    // El replay pudo haber confirmado rondas que estaban en
-                    // "Por sincronizar" — el cheque fresco ya las incluye.
-                    _queuedLines.value = emptyList()
+                    // D86 (Codex r5 #2): «Por sincronizar» se va sólo si esta terminal ya no tiene nada sin subir de esta cuenta
+                    // (la apertura pudo confirmarse antes que su ronda). Si queda algo, se conserva y se vuelve a leer sola.
+                    val pendiente = try {
+                        saldoDeMesaSinRed.pendienteDeSubir(vId, session.orderId, listOfNotNull(session.localOrderId))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.w(e, "⚠️ [TableOrder] No se pudo revisar la cola de esta cuenta")
+                        com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
+                    }
+                    if (pendiente == null) {
+                        // El replay pudo haber confirmado rondas que estaban en
+                        // "Por sincronizar" — el cheque fresco ya las incluye.
+                        _queuedLines.value = emptyList()
+                        relecturaDeLaMesa?.cancel()
+                        relecturasDeLaMesa = 0
+                    } else {
+                        programarRelecturaDeLaMesa()
+                    }
                 },
                 onFailure = { e ->
                     // 🔴 Sin red NO es un error — es el estado normal de un
@@ -328,6 +351,16 @@ class TableOrderViewModel @Inject constructor(
                 },
             )
             _isLoadingCheck.value = false
+        }
+    }
+
+    private fun programarRelecturaDeLaMesa() {
+        if (relecturaDeLaMesa?.isActive == true || relecturasDeLaMesa >= MAX_RELECTURAS) return
+        relecturasDeLaMesa++
+        relecturaDeLaMesa = viewModelScope.launch {
+            kotlinx.coroutines.delay(RELECTURA_MS)
+            relecturaDeLaMesa = null
+            loadCheck()
         }
     }
 

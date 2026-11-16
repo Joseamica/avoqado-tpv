@@ -469,7 +469,8 @@ class AngelPayTicketBuilder @Inject constructor() {
      *  2. NUNCA el número de tarjeta completo. Sólo los últimos 4.
      */
     fun buildDeclineTicket(
-        amount: BigDecimal,
+        // null = no se sabe cuánto se intentó (D2: pantalla recreada sin poder leer el cobro): se OMITE la línea, nunca «$0.00».
+        amount: BigDecimal?,
         reason: String?,
         sdkCode: String? = null,
         last4: String? = null,
@@ -510,11 +511,13 @@ class AngelPayTicketBuilder @Inject constructor() {
                 terminalSerial?.takeIf { it.isNotBlank() }?.let {
                     PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Terminal", right = it)
                 },
-                PrintTicketItemRequest(
-                    type = PrintTicketItemType.TWO_COLUMNS,
-                    left = "Monto intentado",
-                    right = formatMoney(amount),
-                ),
+                amount?.let {
+                    PrintTicketItemRequest(
+                        type = PrintTicketItemType.TWO_COLUMNS,
+                        left = "Monto intentado",
+                        right = formatMoney(it),
+                    )
+                },
                 // Si no hay datos de tarjeta se OMITE la línea; imprimir "Tarjeta: -" no le
                 // sirve a nadie y ensucia el papel.
                 tarjeta.takeIf { it.isNotBlank() }?.let {

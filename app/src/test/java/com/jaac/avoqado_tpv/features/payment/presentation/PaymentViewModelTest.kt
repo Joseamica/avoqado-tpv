@@ -995,6 +995,29 @@ class PaymentViewModelTest {
         }
     }
 
+    @Test
+    fun `D10 con verificacion previa la propina del POS llega a la verificacion y atras sale del cobro, nunca a la calificacion`() = runTest {
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(showReviewScreen = true, showTipScreen = false, showVerificationScreen = true)
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountWithExternalInputs(amount = "100.00", tipCents = 1_500L, rating = 4, skipReview = false)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state).isInstanceOf(PaymentState.VerifyingPrePayment::class.java)
+            state as PaymentState.VerifyingPrePayment
+            assertThat(BigDecimal(state.tipAmount)).isEqualToIgnoringScale(BigDecimal("15.00"))
+
+            // La flecha (y desde D10 también «← Volver») sale del cobro: no regresa a una calificación que, al seguir,
+            // cobraría la propina en $0.
+            assertThat(viewModel.goBackOneStep()).isFalse()
+            assertThat(viewModel.state.value).isNotInstanceOf(PaymentState.CollectingRating::class.java)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // C. PAYMENT FLOW
     // ═══════════════════════════════════════════════════════════════════════════

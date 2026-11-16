@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.features.tables.data
 
-import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,18 +30,20 @@ internal const val TARJETA_SIN_REGISTRAR =
  *  - la cola de la terminal: un cobro de ESA cuenta rechazado sin revisar, o todavía subiendo (si el registro falló, ahí queda).
  * 🔴 NO usa `PaymentStateHolder.isCharging()` (Codex r2): es de toda la terminal, así que la tarjeta de la mesa A (o una
  * devolución de AngelPay) frenaba el efectivo de la mesa B diciendo «la tarjeta de esta cuenta».
+ * 🔴 Cola y libreta se leen en UNA sola sentencia ([PaymentAttemptLedger.dineroDeTarjetaSinConfirmarDeLaCuenta], Codex r3): en
+ * dos consultas, el traspaso libreta → cola podía caer entre las dos y ninguna veía el cobro.
  *
  * `null` = nada. Un fallo de lectura SE LANZA: quien pregunta para no cobrar de más falla cerrado.
  */
 @Singleton
 class DineroDeTarjetaDeLaCuenta @Inject constructor(
-    private val cola: PendingPaymentDao,
     private val libreta: PaymentAttemptLedger,
 ) {
-    suspend fun motivo(venueId: String, orderId: String): String? = when {
-        cola.hayCobroSinRegistrar(venueId, orderId) -> TARJETA_SIN_REGISTRAR
-        cola.hayCobroSubiendose(venueId, orderId) -> TARJETA_SUBIENDOSE
-        libreta.hayDineroEnJuegoDeLaVenta(orderId) -> TARJETA_REGISTRANDOSE
-        else -> null
-    }
+    suspend fun motivo(venueId: String, orderId: String): String? =
+        when (libreta.dineroDeTarjetaSinConfirmarDeLaCuenta(venueId, orderId)) {
+            null -> null
+            "SIN_REGISTRAR" -> TARJETA_SIN_REGISTRAR
+            "SUBIENDO" -> TARJETA_SUBIENDOSE
+            else -> TARJETA_REGISTRANDOSE // 'LIBRETA' (o algo que no se conoce: falla cerrado)
+        }
 }

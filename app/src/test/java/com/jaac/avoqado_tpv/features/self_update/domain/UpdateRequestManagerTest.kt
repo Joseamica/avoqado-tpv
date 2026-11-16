@@ -49,4 +49,43 @@ class UpdateRequestManagerTest {
         assertThat(CommandExecutionWindow.executing.value).isFalse()
         assertThat(manager.updateRequestState.value).isInstanceOf(UpdateRequestState.Error::class.java)
     }
+    private fun sinPagosPendientes() {
+        coEvery { db.pendingPaymentDao().getPendingCount() } returns 0
+        coEvery { db.pendingPaymentDao().getFailedCount() } returns 0
+        coEvery { db.pendingRefundDao().getPendingCount() } returns 0
+        coEvery { db.pendingRefundDao().getFailedCount() } returns 0
+        coEvery { db.paymentAttemptDao().countUnresolvedCharges() } returns 0
+    }
+
+    private fun version(code: Int) = mockk<AvoqadoUpdateInfo>(relaxed = true).also { every { it.versionCode } returns code }
+
+    @Test fun `P1 aceptar una version anterior que borraria ventas de mesas no descarga ni instala`() = runTest {
+        val anterior = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE - 1
+        coEvery { repo.getSpecificVersion(anterior) } returns UpdateCheckResult.UpdateAvailable(version(anterior))
+        sinPagosPendientes()
+        coEvery { db.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        coEvery { db.localShiftSessionDao().contarQueBajarDeVersionBorraria() } returns 0
+        CommandExecutionWindow.setForeground(true); CommandExecutionWindow.setRoute("home")
+        manager.handleUpdateRequest("c3", versionCode = anterior)
+        manager.acceptUpdate()
+        coVerify(exactly = 0) { repo.downloadApk(any(), any()) }
+        coVerify(exactly = 0) { installer.install(any()) }
+        val state = manager.updateRequestState.value
+        assertThat(state).isInstanceOf(UpdateRequestState.Error::class.java)
+        assertThat((state as UpdateRequestState.Error).message)
+            .isEqualTo(com.jaac.avoqado_tpv.features.remote_command.domain.MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+        assertThat(CommandExecutionWindow.executing.value).isFalse()
+    }
+
+    @Test fun `aceptar una version nueva no se frena por ventas de mesas sin subir`() = runTest {
+        val nueva = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE + 1
+        coEvery { repo.checkForUpdate() } returns UpdateCheckResult.UpdateAvailable(version(nueva))
+        sinPagosPendientes()
+        coEvery { db.syncIntentDao().contarQueBajarDeVersionBorraria() } returns 1
+        coEvery { repo.downloadApk(any(), any()) } returns DownloadResult.Error("offline")
+        CommandExecutionWindow.setForeground(true); CommandExecutionWindow.setRoute("home")
+        manager.handleUpdateRequest("c4")
+        manager.acceptUpdate()
+        coVerify(exactly = 1) { repo.downloadApk(any(), any()) }
+    }
 }

@@ -411,6 +411,24 @@ class SyncOutbox @Inject constructor(
             RejectedIntent(id = it.id, type = it.type, errorCode = it.errorCode, message = it.message, createdAt = it.createdAt)
         }
 
+    /**
+     * D86: las filas PENDING o REJECTED de [venueId] que mencionan [cuenta] en su payload (filtro grueso; quien llama revisa
+     * el JSON). Para calcular sin red el saldo de una cuenta que esta terminal abrió sin red.
+     */
+    suspend fun vivasQueMencionan(venueId: String, cuenta: String): List<SyncIntentEntity> =
+        withContext(Dispatchers.IO) { dao.vivasQueMencionan(venueId, cuenta) }
+
+    /** D86: las aperturas ya confirmadas que mencionan [cuenta] (para promover una sesión cuyo ACK llegó por otro camino). */
+    suspend fun aperturasConfirmadasQueMencionan(venueId: String, cuenta: String): List<SyncIntentEntity> =
+        withContext(Dispatchers.IO) { dao.aperturasConfirmadasQueMencionan(venueId, cuenta) }
+
+    /** D86 (Codex r7): un aviso por cada escritura de la cola de [venueId] (ver [SyncIntentDao.observarCambios]). */
+    fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.observarCambios(venueId)
+
+    /** D86 (Codex r1 #2): las aperturas confirmadas cuyo resultado menciona [orderId] (el id real). */
+    suspend fun aperturasConfirmadasConResultado(venueId: String, orderId: String): List<SyncIntentEntity> =
+        withContext(Dispatchers.IO) { dao.aperturasConfirmadasConResultado(venueId, orderId) }
+
     /** El mesero/gerente descartó un rechazo tras resolverlo a mano. */
     suspend fun dismissRejected(venueId: String, id: String) {
         dao.dismiss(id, venueId)

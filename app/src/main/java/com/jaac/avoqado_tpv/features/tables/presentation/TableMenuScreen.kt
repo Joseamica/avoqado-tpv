@@ -149,6 +149,15 @@ fun TableMenuScreen(
 
                 else -> {
                     Column(modifier = Modifier.padding(padding)) {
+                        // D86: sin red se pide del catálogo guardado en la terminal; se dice con todas sus letras.
+                        uiState.avisoCatalogo?.let { aviso ->
+                            Text(
+                                text = aviso,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space2),
+                            )
+                        }
                         if (uiState.categories.size > 1) {
                             CategoryChipsRow(
                                 categories = uiState.categories,

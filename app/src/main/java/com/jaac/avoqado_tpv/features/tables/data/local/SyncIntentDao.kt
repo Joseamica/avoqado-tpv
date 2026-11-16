@@ -50,6 +50,15 @@ interface SyncIntentDao {
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC LIMIT :limit")
     suspend fun pendingBatchForVenue(venueId: String, limit: Int): List<SyncIntentEntity>
 
+    /**
+     * D4 (encargo dd4185): lo que BAJAR DE VERSIÓN borraría sin que el servidor lo tenga, de TODAS las sucursales del aparato
+     * (la base se borra entera): lo que espera subir (PENDING) y los rechazos que nadie ha resuelto en la cuarentena
+     * (REJECTED: el efectivo que el servidor no aceptó sólo existe aquí). Lo lee
+     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
+     */
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE status IN ('PENDING', 'REJECTED')")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
+
     @Query("SELECT EXISTS(SELECT 1 FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING')")
     suspend fun hasPendingForVenue(venueId: String): Boolean
 
@@ -84,6 +93,42 @@ interface SyncIntentDao {
     }
 
     /** Cuarentena: rechazos de negocio permanentes, visibles hasta que el mesero/gerente los descarte. */
+    /**
+     * D86: las filas vivas (PENDING o REJECTED) cuyo payload MENCIONA [texto] — p. ej. el id local de una cuenta abierta sin
+     * red. Es sólo un filtro grueso para no leer toda la cola: quien llama revisa el JSON y se queda con las que de verdad
+     * nombran esa cuenta.
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND status IN ('PENDING', 'REJECTED') " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq ASC",
+    )
+    suspend fun vivasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
+    /**
+     * D86 (Codex r7 H2–H4): emite cada vez que alguien escribe la cola de Mesas (encolar, ACK, rechazo, descarte, desde
+     * cualquier camino: la pantalla, el cobro o el trabajador). Room vuelve a correr la consulta en cada escritura de la
+     * tabla; el número da igual, importa el aviso.
+     */
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE venue_id = :venueId")
+    fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+
+    /** D86: aperturas (OPEN_TABLE) ya confirmadas cuyo payload menciona [texto] — el id local de una cuenta abierta sin red. */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
+    /**
+     * D86 (Codex r1 #2): aperturas (OPEN_TABLE) confirmadas cuyo RESULTADO menciona [texto] — el id real de una cuenta —, para
+     * saber con qué id local la abrió esta terminal aunque la sesión ya no lo recuerde («Ver cuenta» desde el plano).
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND result_json IS NOT NULL AND instr(result_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasConResultado(venueId: String, texto: String): List<SyncIntentEntity>
+
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
 

@@ -76,6 +76,8 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
@@ -251,7 +253,7 @@ fun TableCheckoutScreen(
             viewModel.onExit()
             onNavigateBack()
         },
-        onRetryLoad = viewModel::loadCheck,
+        onRetryLoad = viewModel::reintentar,
         onSelectSplitType = viewModel::selectSplitType,
         onCustomAmountChanged = viewModel::setCustomAmountInput,
         onEqualPartsChanged = viewModel::setEqualParts,
@@ -338,7 +340,12 @@ private fun TableCheckoutScreenContent(
         topBar = {
             AvoqadoTopBar(
                 title = "Cobrar · ${session.label}",
-                subtitle = "Restante ${moneyDisplay(state.remaining)}",
+                // D86: sin cuenta ni saldo seguro no se enseña un «Restante $0.00» que no es cierto.
+                subtitle = if (state.check == null && state.efectivoBloqueadoPor != null) {
+                    "Restante: sin conexión"
+                } else {
+                    "Restante ${moneyDisplay(state.remaining)}"
+                },
                 onNavigationClick = onNavigateBack,
             )
         },
@@ -386,9 +393,11 @@ private fun TableCheckoutScreenContent(
                         CheckSummaryCard(
                             check = check,
                             remaining = state.remaining,
-                            isRemovingDiscount = isRemovingDiscount,
+                            sinCuenta = state.avisoSinRed ?: state.efectivoBloqueadoPor ?: SIN_CUENTA_SIN_RED,
+                            // D92: con un cobro en curso, «Quitar» espera (el cobro ya salió con el importe de antes).
+                            isRemovingDiscount = isRemovingDiscount || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveDiscount = onRemoveDiscount,
-                            isRemovingServiceCharge = isRemovingServiceCharge,
+                            isRemovingServiceCharge = isRemovingServiceCharge || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveServiceCharge = onRemoveServiceCharge,
                         )
                     }
@@ -504,6 +513,8 @@ private fun TableCheckoutScreenContent(
 private fun CheckSummaryCard(
     check: OrderDetail?,
     remaining: BigDecimal,
+    /** D86: qué decir cuando no hay cheque del SERVIDOR (mesa abierta sin red aquí, o sin red y sin cuenta leída). */
+    sinCuenta: String = SIN_CUENTA_SIN_RED,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
     isRemovingServiceCharge: Boolean = false,
@@ -515,11 +526,16 @@ private fun CheckSummaryCard(
     ) {
         Column(modifier = Modifier.padding(Spacing.Space4)) {
             if (check == null) {
+                // D86: antes decía «abierta local» aunque la mesa fuera del SERVIDOR. Ahora dice lo que de verdad pasa.
                 Text(
-                    text = "Sin conexión — abierta local; el desglose llega cuando la mesa se sincronice.",
+                    text = sinCuenta,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (sinCuenta == COBRO_CON_LO_DE_ESTA_TERMINAL) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.Space2))
+                    SummaryRow(label = "Restante", amount = remaining, emphasized = true)
+                }
                 return@Column
             }
 
@@ -819,11 +835,17 @@ private fun CheckoutBottomBar(
     // paidProductsId (ver KDoc de TablesRepository.payCash). Hueco de
     // producto documentado, no un olvido.
     val cashSupportsThisSplit = state.splitType != CheckoutSplitType.PERPRODUCT
-    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso
+    // D86: sin cuenta leída ni saldo sin red seguro, el efectivo espera con su razón (nunca cobra con un número que no es el de la cuenta).
+    val efectivoBloqueadoPor = state.efectivoBloqueadoPor
+    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso && efectivoBloqueadoPor == null
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
-        state.avisoDeSaldoPorConfirmar?.let { aviso ->
+        // Una sola razón a la vez. Primero D9 (encargo 49276c): tras entregar una tarjeta, los dos botones esperan a releer
+        // la cuenta. Si no, la de D86/D92 (sin cuenta leída, algo propio sin subir, un cambio por confirmar).
+        val avisoDeLaTarjeta = state.avisoDeSaldoPorConfirmar
+        val aviso = avisoDeLaTarjeta ?: efectivoBloqueadoPor?.takeIf { !state.isLoading }
+        if (aviso != null) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
                 verticalAlignment = Alignment.CenterVertically,
@@ -834,7 +856,13 @@ private fun CheckoutBottomBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                if (!state.revisandoSaldo) {
+                val puedeReintentar = if (avisoDeLaTarjeta != null) {
+                    !state.revisandoSaldo
+                } else {
+                    // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
+                    state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)
+                }
+                if (puedeReintentar) {
                     TextButton(onClick = onRetryLoad) { Text("Reintentar") }
                 }
             }

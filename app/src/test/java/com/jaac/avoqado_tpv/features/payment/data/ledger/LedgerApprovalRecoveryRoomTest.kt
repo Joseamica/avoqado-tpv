@@ -79,6 +79,29 @@ class LedgerApprovalRecoveryRoomTest {
         coVerify(exactly = 1) { fast.recordPayment(any(), any(), "AUTH", "REF") }
     }
 
+    @Test fun `D3 un cobro sin sesion cuyo host_approved no se escribio sigue recuperable tras un primer registro fallido (Room real)`() = runTest {
+        // Codex r2 (encargo 9308a7): la escritura de «el banco aprobó» falló (la fila sigue en AUTORIZANDO sin la marca), la
+        // sesión se cerró y la rama sin sesión la deja AUTORIZADO. Si la recuperación falla una vez, la fila pasa a
+        // REGISTRO_FALLIDO: sin `host_approved = 1` esa consulta ya no la volvía a tomar. La rama sin sesión repite la marca.
+        dao.insert(blumon("s1").copy(state = "AUTORIZANDO", hostApproved = null, authCode = null, referenceNumber = null, operationId = null))
+        val ledger = PaymentAttemptLedger(dao, mockk(relaxed = true))
+        assertThat(ledger.markHostResponded("s1", approved = true, operationId = "123", referenceNumber = "REF", authCode = "AUTH")).isTrue()
+        ledger.markAuthorized("s1", "****1111", "VISA", "CHIP")
+        assertThat(dao.getById("s1")!!.state).isEqualTo("AUTORIZADO")
+        assertThat(dao.getById("s1")!!.hostApproved).isTrue()
+
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.failure(java.io.IOException("503"))
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", now)).isEqualTo(0)
+        assertThat(dao.getById("s1")!!.state).isEqualTo("REGISTRO_FALLIDO")
+
+        // Vencido el lease, la siguiente pasada la vuelve a tomar y la registra con la misma llave.
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt)
+        val despues = System.currentTimeMillis() + 3_600_000L
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", despues)).isEqualTo(1)
+        assertThat(dao.getById("s1")!!.state).isEqualTo("REGISTRADO")
+        coVerify(exactly = 2) { fast.recordPayment(any(), any(), "AUTH", "REF") }
+    }
+
     @Test fun `una aprobacion ANGELPAY con REST exitoso llega a REGISTRADO por el veredicto (E1) y deja la evidencia del servidor (Room real)`() = runTest {
         dao.insert(angelPay("a1"))
         coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt.copy(solicitudLigada = "req-a1"))

@@ -179,6 +179,23 @@ class CatalogoGuardadoTest {
         assertThat(db.productDao().getProductByCodigo("v2", "sku-S")).isNull()
     }
 
+    @Test fun `D86 lo disponible para Mesas sin red deja fuera lo inactivo y lo de categorias apagadas`() = runTest {
+        guardar(
+            "v1",
+            playera("S", "Playera básica"),
+            playera("M", "Playera básica").copy(available = false),
+            playera("L", "Playera básica").copy(categoryIsActive = false),
+        )
+        guardar("v2", playera("XL", "Playera básica"))
+
+        val disponibles = catalogo.disponibles("v1")
+
+        assertThat(disponibles.map { it.id }).containsExactly("S")
+        assertThat(disponibles.single().precio).isEqualTo(BigDecimal("199.00"))
+        assertThat(disponibles.single().categoriaNombre).isEqualTo("Ropa")
+        assertThat(disponibles.single().familia?.groupId).isEqualTo("g-playera")
+    }
+
     private fun productoJson(id: String, gtin: String) = """{
         "id":"$id","name":"Agua $id","description":null,"price":25.0,"type":"SIMPLE","sku":"SKU-$id","gtin":$gtin,
         "categoryId":"cat1","active":true,"displayOrder":1,"trackInventory":false,"inventoryMethod":null,"imageUrl":null,

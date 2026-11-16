@@ -318,6 +318,23 @@ interface PaymentAttemptDao {
         " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
     suspend fun retencionDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
 
+    /**
+     * D9 (Mesas, Codex r3, 16-nov): ¿esta terminal tiene dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma?
+     * Junta en UNA sentencia —una sola fotografía de la base— las dos fuentes por cuenta: la cola (el mismo predicado que
+     * `PendingPaymentDao.hayCobroSinRegistrar` y `hayCobroSubiendose`) y la libreta ([retencionDeLaVenta], la cerca 2). Leídas en
+     * dos consultas, el traspaso libreta → cola (una transacción) podía caer ENTRE las dos y ninguna lo veía.
+     * 'SIN_REGISTRAR' · 'SUBIENDO' · 'LIBRETA' · null (nada).
+     */
+    @Query("""SELECT CASE
+        WHEN EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId AND order_id = :orderId
+            AND (sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0) THEN 'SIN_REGISTRAR'
+        WHEN EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId AND order_id = :orderId
+            AND sync_status IN ('PENDING', 'SYNCING')) THEN 'SUBIENDO'
+        WHEN EXISTS(SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
+            AND instr(payment_context_json, :orderJsonFragment) > 0) THEN 'LIBRETA'
+        END""")
+    suspend fun dineroDeTarjetaDeLaCuenta(venueId: String, orderId: String, orderJsonFragment: String, processToken: String): String?
+
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
         AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')

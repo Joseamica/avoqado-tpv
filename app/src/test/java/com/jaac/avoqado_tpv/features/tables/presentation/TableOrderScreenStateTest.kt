@@ -33,6 +33,38 @@ import java.math.BigDecimal
  */
 class TableOrderScreenStateTest {
 
+    // region — D89: «Pagar · $X» dice lo que FALTA, igual que «Cobrar»
+
+    /**
+     * D89 (PAX, 16-nov): mesa de $118 con un abono de $40 en efectivo. Sin red «Pagar» decía $78 (saldo sin red, D86); con
+     * red, ya subido el abono, decía $118 (el TOTAL de la cuenta). «Cobrar» decía «Restante $78». Ahora los dos: $78.
+     */
+    @Test
+    fun D89_mesa_del_servidor_con_abono_paga_lo_que_falta_y_no_el_total() {
+        val cuenta = OrderDetail(id = "o1", total = BigDecimal("118.00"), paidAmount = BigDecimal("40.00"), amountLeft = BigDecimal("78.00"))
+        assertThat(montoDePagar(isProvisional = false, check = cuenta, saldoProvisional = null)).isEqualToIgnoringScale("78.00")
+    }
+
+    @Test
+    fun D89_sin_amount_left_se_usa_el_total_como_en_Cobrar() {
+        val cuenta = OrderDetail(id = "o1", total = BigDecimal("118.00"), amountLeft = null)
+        assertThat(montoDePagar(isProvisional = false, check = cuenta, saldoProvisional = null)).isEqualToIgnoringScale("118.00")
+    }
+
+    @Test
+    fun D89_mesa_abierta_sin_red_aqui_sigue_con_su_saldo_sin_red() {
+        assertThat(montoDePagar(isProvisional = true, check = null, saldoProvisional = BigDecimal("78.00"))).isEqualToIgnoringScale("78.00")
+        assertThat(montoDePagar(isProvisional = true, check = null, saldoProvisional = null)).isNull()
+    }
+
+    @Test
+    fun D89_el_boton_Pagar_pinta_montoDePagar() {
+        val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableOrderScreen.kt").readText()
+        assertThat(pantalla).contains("checkTotal = montoDePagar(isProvisional = session.isProvisional, check = check, saldoProvisional = saldoProvisional)")
+    }
+
+    // endregion
+
     // region — resolveTableOrderBodyState: la regresión real (Mesa M1)
 
     @Test

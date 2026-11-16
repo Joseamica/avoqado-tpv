@@ -22,6 +22,8 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +70,8 @@ class TableOrderViewModel @Inject constructor(
     private val autorizacionDeGerente: AutorizacionDeGerente,
     /** D86: el saldo sin red de una cuenta que esta terminal abrió sin red (rondas propias menos efectivo propio). */
     private val saldoDeMesaSinRed: SaldoDeMesaSinRed,
+    /** D1 (hz:163ad26c:D1): los avisos del SERVIDOR sobre ESTA cuenta (otro aparato abona o manda una ronda). */
+    private val socketManager: SocketManager,
 ) : ViewModel() {
     /** La hora que se le enseña al mesero es la del negocio, no el desfase que trae el servidor. */
     val zonaDelNegocio: java.time.ZoneId get() = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
@@ -214,8 +218,15 @@ class TableOrderViewModel @Inject constructor(
     private var relecturaDeLaMesa: kotlinx.coroutines.Job? = null
     private var relecturasDeLaMesa = 0
 
-    /** D86 (Codex r6 #2): sólo la lectura más nueva de la cuenta decide si «Por sincronizar» se va. Antes de `init`. */
+    /**
+     * D86 (Codex r6 #2) y D1 (Codex D88-D90 r6): cuántas veces se ha PEDIDO la cuenta y cuál es la petición de la cuenta que se
+     * ve. El número se toma justo al pedir (antes de pedir, una lectura espera la cola y otra puede adelantársele) y una
+     * respuesta se tira sólo si una petición POSTERIOR ya pintó con éxito: con «la lectura que empezó al último manda», la
+     * lectura buena tras una ronda propia se tiraba si la del aviso del SERVIDOR fallaba después, y con avisos seguidos
+     * ninguna pintaba. Antes de `init`.
+     */
     private var cargasDeLaMesa = 0L
+    private var cuentaPintada = 0L
 
     /** D86 (Codex r7 H4): la última lectura vio algo propio sin subir de esta cuenta (aunque «Por sincronizar» esté vacío). */
     private var habiaPendienteSinSubir = false
@@ -259,6 +270,27 @@ class TableOrderViewModel @Inject constructor(
                 saldoDeMesaSinRed.cambiosDeLaCola(vId).collect {
                     val actual = tableSession.current() ?: return@collect
                     if (actual.isProvisional) recalcularSaldoSinRed() else cargar(reproducir = false)
+                }
+            }
+        }
+        viewModelScope.launch {
+            // D1 (hz:163ad26c:D1, 16-nov): si OTRO aparato le cambia esta cuenta con la pantalla abierta (abona, manda una
+            // ronda), el SERVIDOR avisa con el id de la orden y la cuenta se relee sola; antes sólo al salir y volver, y «Pagar»
+            // seguía con el restante viejo mientras «Cobrar» ya decía otro. Sin reproducir la cola (D86 r8). Un aviso por ráfaga.
+            var relecturaPorAviso: kotlinx.coroutines.Job? = null
+            socketManager.events.collect { event ->
+                val orden = when (event) {
+                    is SocketEvent.OrderUpdated -> event.orderId
+                    is SocketEvent.OrderStatusChanged -> event.orderId
+                    is SocketEvent.PaymentCompleted -> event.orderId
+                    else -> null
+                }
+                val actual = tableSession.current()
+                if (orden == null || actual == null || actual.isProvisional || orden != actual.orderId) return@collect
+                relecturaPorAviso?.cancel()
+                relecturaPorAviso = launch {
+                    delay(RELECTURA_POR_AVISO_MS)
+                    cargar(reproducir = false)
                 }
             }
         }
@@ -316,7 +348,6 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val vId = venueId ?: return
-        val miCarga = ++cargasDeLaMesa
         viewModelScope.launch {
             _isLoadingCheck.value = true
             // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
@@ -337,20 +368,27 @@ class TableOrderViewModel @Inject constructor(
 
             // D86 (Codex r5 #2, r6 #2): «Por sincronizar» se va sólo si esta terminal no tenía nada sin subir de esta cuenta
             // ANTES de leer (así la lectura ya trae todo lo propio) ni lo tiene después. Si no, se conserva y se relee sola.
+            val colaAntes = ultimaDeLaCola(vId)
             val pendienteAntes = pendienteDeLaMesa(vId, session)
+            val miCarga = ++cargasDeLaMesa // sin suspensión entre este número y la petición: siguen el mismo orden
             val leida = repository.getOrder(vId, session.orderId)
-            if (miCarga != cargasDeLaMesa) {
-                // Salió otra lectura después de ésta: la nueva manda.
+            if (miCarga < cuentaPintada) {
+                // Una petición posterior ya pintó la cuenta (y apagó la carga): ésa manda.
                 return@launch
             }
             leida.fold(
                 onSuccess = { detail ->
+                    cuentaPintada = miCarga
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
+                    // D1 (Codex D88-D90 r7): algo propio que nació Y subió mientras esta lectura viajaba no está en ella y no lo ve
+                    // ninguna de las dos revisiones. Si la cola recibió algo nuevo, la lectura pinta pero no da lo propio por
+                    // incluido: «Por sincronizar» se queda y se relee sola.
                     val pendiente = pendienteAntes ?: pendienteDeLaMesa(vId, session)
-                    // D86 (Codex r7 H2): si mientras se revisaba la cola salió otra lectura, ésa decide.
-                    if (miCarga != cargasDeLaMesa) return@fold
+                        ?: if (ultimaDeLaCola(vId) != colaAntes) com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA else null
+                    // D86 (Codex r7 H2): si mientras se revisaba la cola una petición posterior ya pintó, ésa decide.
+                    if (miCarga < cuentaPintada) return@fold
                     habiaPendienteSinSubir = pendiente != null
                     if (pendiente == null) {
                         // El replay pudo haber confirmado rondas que estaban en
@@ -390,6 +428,16 @@ class TableOrderViewModel @Inject constructor(
     fun actualizarCuenta() {
         relecturasDeLaMesa = 0
         loadCheck()
+    }
+
+    /** D1: la secuencia más alta de la cola (`-1` si no se pudo leer: dos fallos se ven iguales y no bloquean de más). */
+    private suspend fun ultimaDeLaCola(venueId: String): Long = try {
+        syncOutbox.ultimaSecuencia(venueId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "⚠️ [TableOrder] No se pudo leer la secuencia de la cola")
+        -1L
     }
 
     private suspend fun pendienteDeLaMesa(venueId: String, session: TableSession.Active): String? = try {
@@ -522,6 +570,9 @@ class TableOrderViewModel @Inject constructor(
          * umbral dos veces y desincronizarse en silencio si cambia.
          */
         const val SEND_ROUND_REASSURANCE_DELAY_MS = 4_000L
+
+        /** D1: espera tras un aviso del SERVIDOR antes de releer (una ronda manda un aviso por renglón). Igual que el plano. */
+        private const val RELECTURA_POR_AVISO_MS = 800L
     }
 
     fun consumeNotice() {

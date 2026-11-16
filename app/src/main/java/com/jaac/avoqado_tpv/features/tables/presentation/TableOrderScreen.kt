@@ -449,7 +449,6 @@ private fun TableOrderScreenContent(
     val checkTotal = check?.total
     // D86: una mesa abierta sin red en ESTA terminal se cobra con su saldo sin red (rondas propias menos efectivo propio).
     val saldoProvisional = (saldoSinRed as? SaldoSinRed.Conocido)?.porPagar
-    val montoDePagar = if (session.isProvisional) saldoProvisional else checkTotal
     val motivoSinPagar = if (session.isProvisional && queuedLines.isNotEmpty()) (saldoSinRed as? SaldoSinRed.EnGris)?.motivo else null
     // "Pagar" solo tiene sentido con algo YA en la cuenta (rondas enviadas,
     // no lo pendiente de enviar) — una mesa recién abierta sin nada mandado
@@ -524,7 +523,7 @@ private fun TableOrderScreenContent(
                 sendTakingLong = sendTakingLong,
                 readOnly = readOnly,
                 canCheckout = canCheckout,
-                checkTotal = montoDePagar,
+                checkTotal = montoDePagar(isProvisional = session.isProvisional, check = check, saldoProvisional = saldoProvisional),
                 motivoSinPagar = motivoSinPagar,
                 onAddProducts = onAddProducts,
                 onSendRound = onSendRound,
@@ -1071,6 +1070,14 @@ internal fun splitBySeatEnabled(readOnly: Boolean, hasSentItems: Boolean, check:
  *
  * Probado por `CobrarMesaAjenaTest` y `TableOrderScreenStateTest`.
  */
+/**
+ * D89 (PAX, 16-nov): lo que dice «Pagar · $X» es lo que FALTA, igual que «Restante» de «Cobrar»
+ * (`TableCheckoutViewModel.loadCheck`: `amountLeft ?: total`). Antes era el TOTAL de la cuenta: una mesa de $118 con un abono
+ * de $40 decía $78 sin red (saldo sin red, D86) y $118 con red. Una mesa abierta sin red AQUÍ sigue con su saldo sin red.
+ */
+internal fun montoDePagar(isProvisional: Boolean, check: OrderDetail?, saldoProvisional: BigDecimal?): BigDecimal? =
+    if (isProvisional) saldoProvisional else check?.let { it.amountLeft ?: it.total }
+
 internal fun checkoutButtonVisible(
     readOnlyForPayment: Boolean,
     isProvisional: Boolean,

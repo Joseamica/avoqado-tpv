@@ -112,6 +112,10 @@ interface SyncIntentDao {
     @Query("SELECT COUNT(*) FROM sync_intents WHERE venue_id = :venueId")
     fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int>
 
+    /** D1 (Codex D88-D90 r7): la secuencia más alta de la cola de Mesas del venue. Sube con cada intención nueva; un ACK no la mueve. */
+    @Query("SELECT MAX(seq) FROM sync_intents WHERE venue_id = :venueId")
+    suspend fun ultimaSecuencia(venueId: String): Long?
+
     /** D86: aperturas (OPEN_TABLE) ya confirmadas cuyo payload menciona [texto] — el id local de una cuenta abierta sin red. */
     @Query(
         "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +

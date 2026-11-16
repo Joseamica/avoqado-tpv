@@ -187,6 +187,17 @@ class TablesViewModel @Inject constructor(
     private var socketReloadJob: Job? = null
     private var didLoadOnce = false
 
+    /**
+     * D88 (Codex r1–r4): cuántas veces se ha PEDIDO el plano al SERVIDOR y cuál es la petición del plano que se ve. El número se
+     * toma justo al pedir (no al empezar la carga: antes de pedir, una carga puede esperar la cola o la cuarentena y otra que
+     * empezó después adelantársele, r4). Una respuesta se tira sólo si una petición POSTERIOR ya pintó un plano bueno: así una
+     * vieja no regresa el plano (la mesa volvía a verse libre); con avisos seguidos, cada carga que termina sí pinta; y un fallo
+     * nunca cuenta como plano pintado, para que no haga tirar un éxito que llega después.
+     * Tabla completa: `docs/audit/2026-11-16-d88-d90-tpv-mesas/pasada-exhaustiva-orden-de-cargas.md` (workspace).
+     */
+    private var cargasDelPlano = 0L
+    private var planoPintado = 0L
+
     init {
         viewModelScope.launch {
             tableSession.active.collect { active ->
@@ -229,7 +240,11 @@ class TablesViewModel @Inject constructor(
     private fun listenToSocketEvents() {
         viewModelScope.launch {
             socketManager.events.collect { event ->
-                val affectsTables = event is SocketEvent.TableStatusChange ||
+                // D88 (PAX, 16-nov): `Connected` también es la RECONEXIÓN. Los avisos que el SERVIDOR mandó mientras el socket
+                // estaba caído (p. ej. la apertura que la cola sin red acababa de subir) se perdieron: el plano se vuelve a pedir,
+                // con la cola reproducida antes ([loadTables]), o seguía ofreciendo «Abrir mesa» sobre una mesa con cuenta.
+                val affectsTables = event is SocketEvent.Connected ||
+                    event is SocketEvent.TableStatusChange ||
                     event is SocketEvent.OrderCreated ||
                     event is SocketEvent.OrderUpdated ||
                     event is SocketEvent.OrderStatusChanged ||
@@ -281,11 +296,15 @@ class TablesViewModel @Inject constructor(
             // solo al abrir la pantalla.
             refreshQuarantineCount(venueId)
 
+            val miCarga = ++cargasDelPlano // sin suspensión entre este número y la petición: siguen el mismo orden
             val tablesResult = tablesRepository.getTables(venueId)
             val elementsResult = tablesRepository.getFloorElements(venueId)
+            // D88: una petición POSTERIOR ya pintó un plano bueno (y apagó los indicadores de carga). Ver [planoPintado].
+            if (miCarga < planoPintado) return@launch
 
             tablesResult.fold(
                 onSuccess = { tables ->
+                    planoPintado = miCarga
                     Timber.i("✅ [Tables] %d mesas cargadas (venue=%s)", tables.size, venueId)
                     _uiState.update { current ->
                         current.copy(

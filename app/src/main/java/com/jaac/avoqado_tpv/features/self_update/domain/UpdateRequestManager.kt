@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.self_update.domain
 
+import com.jaac.avoqado_tpv.features.remote_command.domain.esBajarDeVersion
+import com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria
 import android.content.Context
 import android.os.Build
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow
@@ -155,6 +157,12 @@ class UpdateRequestManager @Inject constructor(
             db.pendingRefundDao().getPendingCount() > 0 || db.pendingRefundDao().getFailedCount() > 0 ||
             db.paymentAttemptDao().countUnresolvedCharges() > 0) {
             _updateRequestState.value = UpdateRequestState.Error("Hay pagos o devoluciones pendientes de resolver")
+            return
+        }
+        // D4 (encargo dd4185): el diálogo puede traer una versión ANTERIOR (`versionCode` del comando), que borra la base.
+        if (esBajarDeVersion(updateInfo.versionCode) && db.hayAlgoQueBajarDeVersionBorraria()) {
+            _updateRequestState.value = UpdateRequestState.Error(
+                com.jaac.avoqado_tpv.features.remote_command.domain.MENSAJE_BAJAR_DE_VERSION_BORRARIA)
             return
         }
         Timber.i("📥 [$TAG] User accepted update - starting download")

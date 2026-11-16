@@ -386,9 +386,10 @@ private fun TableCheckoutScreenContent(
                             check = check,
                             remaining = state.remaining,
                             sinCuenta = state.avisoSinRed ?: state.efectivoBloqueadoPor ?: SIN_CUENTA_SIN_RED,
-                            isRemovingDiscount = isRemovingDiscount,
+                            // D92: con un cobro en curso, «Quitar» espera (el cobro ya salió con el importe de antes).
+                            isRemovingDiscount = isRemovingDiscount || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveDiscount = onRemoveDiscount,
-                            isRemovingServiceCharge = isRemovingServiceCharge,
+                            isRemovingServiceCharge = isRemovingServiceCharge || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveServiceCharge = onRemoveServiceCharge,
                         )
                     }

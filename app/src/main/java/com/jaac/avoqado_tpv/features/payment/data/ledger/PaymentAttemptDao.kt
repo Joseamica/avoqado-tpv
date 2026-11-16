@@ -326,7 +326,8 @@ interface PaymentAttemptDao {
 
     /**
      * 🔴 D5 (encargo 533d77, Codex r1 #1): el MISMO reclamo, pero nunca sobre una venta de la PAX cuyo SDK puede seguir dentro de
-     * ESTE proceso ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]: `HOST_RESPONDIO` sin `sdk_returned_at`, el cierre EMV pendiente).
+     * ESTE proceso: `HOST_RESPONDIO` sin `sdk_returned_at`, el cierre EMV pendiente. Sólo ese estado (Codex r2 #2): `AUTORIZADO` y
+     * `REGISTRO_FALLIDO` ya pasaron el cierre aunque la marca del fin del SDK no se haya podido escribir, y se recuperan como siempre.
      * Con un chip lento, la fila pasaba de 2 min mientras `CompleteEmvTrans` seguía corriendo; la recuperación la reclamaba, el
      * chip rechazaba, la pantalla la dejaba en duda y la recuperación registraba igual, con el contexto que ya tenía en memoria.
      * La condición va DENTRO del UPDATE: la pantalla deja la fila en duda ANTES de marcar el fin del SDK, así que no hay un
@@ -336,7 +337,7 @@ interface PaymentAttemptDao {
         WHERE attempt_id = :attemptId AND venue_id = :venueId
         AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
         AND (lease_until IS NULL OR lease_until < :now)
-        AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""")
+        AND NOT (processor = 'BLUMON' AND state = 'HOST_RESPONDIO' AND process_token IS :processToken AND sdk_returned_at IS NULL)""")
     suspend fun claimRecoveryConElSdkFuera(attemptId: String, venueId: String, now: Long, leaseUntil: Long, processToken: String): Int
 
     /**
@@ -522,8 +523,11 @@ interface PaymentAttemptDao {
            SET state = 'INDETERMINADO', state_version = state_version + 1, updated_at = :now,
                host_approved = NULL, last_error = 'chip_rechazo_tras_aprobacion'
            WHERE attempt_id = :attemptId AND legacy_shadow = 0 AND kind = 'SALE' AND processor = 'BLUMON'
-             -- Codex r1 #2: también si la escritura de «el banco aprobó» falló y la fila se quedó en AUTORIZANDO.
-             AND ((state = 'HOST_RESPONDIO' AND host_approved = 1) OR (state = 'AUTORIZANDO' AND host_approved IS NULL))
+             -- Codex r1 #2: también si la escritura de «el banco aprobó» falló y la fila se quedó en AUTORIZANDO, o si el barrido
+             -- ya la puso en cuarentena por reloj antes del reintento (Codex r2 #1): el SDK ya regresó y la duda tiene su motivo real.
+             AND ((state = 'HOST_RESPONDIO' AND host_approved = 1)
+                  OR (state = 'AUTORIZANDO' AND host_approved IS NULL)
+                  OR (state = 'INDETERMINADO' AND host_approved IS NULL AND last_error = 'cuarentena_por_antiguedad'))
              AND server_outcome IS NULL AND server_processor_evidence IS NOT 'APPROVED'
              AND server_veto IS NULL AND server_payment_id IS NULL"""
     )

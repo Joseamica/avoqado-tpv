@@ -274,4 +274,59 @@ class ChipRechazaTrasAprobacionRoomTest {
         aprobadoPorElBanco(libreta)
         assertFalse(libreta.retenidaPorChipRechazo("a1"))
     }
+
+    // ── Codex r2 ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    @Test fun `P1 Codex r2-2 una aprobacion ya terminada de este proceso se recupera aunque no se escribiera el fin del SDK`() = runTest {
+        val libreta = proceso()
+        aprobadoPorElBanco(libreta)
+        // El cierre EMV terminó bien, la marca del fin del SDK no se pudo escribir y el registro quedó pendiente (AUTORIZADO).
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
+        val ahora = System.currentTimeMillis()
+        assertEquals("sólo HOST_RESPONDIO espera al cierre EMV", 1,
+            dao.claimRecoveryConElSdkFuera("a1", venue, ahora, ahora + 300_000, libreta.tokenDelProceso()))
+    }
+
+    @Test fun `P1 Codex r2-1 la duda que no se escribio se reintenta en la puerta de la siguiente venta, tambien desde AUTORIZANDO`() = runTest {
+        val libreta = proceso()
+        aprobadoPorElBanco(libreta)
+        // Doble fallo: la aprobación no quedó escrita (AUTORIZANDO) y tampoco la duda.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
+        assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'AUTORIZANDO', host_approved = NULL WHERE attempt_id = 'a1'")
+        libreta.marcarSdkRegreso("a1")
+
+        // La siguiente venta pasa por la puerta: la duda se escribe y el aparato queda libre.
+        assertTrue("la terminal cobra la siguiente venta",
+            libreta.openAttempt("siguiente", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}"))
+        assertEquals(PaymentAttemptEntity.STATE_INDETERMINADO, dao.getById("a1")?.state)
+        assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, dao.getById("a1")?.lastError)
+        assertFalse(libreta.chipRechazoPendienteDeEscribir("a1"))
+    }
+
+    @Test fun `P1 Codex r2-1 tambien despues de que el barrido la puso en cuarentena por reloj`() = runTest {
+        val libreta = proceso()
+        assertTrue(libreta.openAttempt("a1", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "ORDER", orden7))
+        assertTrue(libreta.markAuthorizing("a1"))
+        assertEquals(1, dao.quarantineStaleAuthorizing(venue, Long.MAX_VALUE, System.currentTimeMillis()))
+
+        assertEquals(EN_DUDA, libreta.markChipRechazoTrasAprobacion("a1"))
+        assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, dao.getById("a1")?.lastError)
+        assertEquals("sigue cercando su venta", "a1", libreta.retencionDeLaVenta("orden-7")?.attemptId)
+    }
+
+    @Test fun `P1 Codex r2-3 la pantalla trata la duda no escrita como duda y no como evidencia de cobro`() = runTest {
+        val libreta = proceso()
+        aprobadoPorElBanco(libreta, contexto = "{}", ruta = "FAST")
+        val storage = mockk<com.jaac.avoqado_tpv.core.data.local.SecureStorage>(relaxed = true)
+        io.mockk.every { storage.getVenueId() } returns venue
+        val resolver = BlumonAttemptResolver(libreta, mockk(relaxed = true), mockk(relaxed = true), storage)
+        assertEquals("aprobada sin la duda: evidencia de cobro, como siempre",
+            BlumonAttemptResolver.State.MONEY_EVIDENCE, resolver.current(venue, "a1").state)
+
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'AUTORIZADO' WHERE attempt_id = 'a1'")
+        assertEquals(SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+        assertEquals(BlumonAttemptResolver.State.PENDING, resolver.current(venue, "a1").state)
+    }
 }

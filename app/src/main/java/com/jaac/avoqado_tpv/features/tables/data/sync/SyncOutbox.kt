@@ -425,6 +425,9 @@ class SyncOutbox @Inject constructor(
     /** D86 (Codex r7): un aviso por cada escritura de la cola de [venueId] (ver [SyncIntentDao.observarCambios]). */
     fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.observarCambios(venueId)
 
+    /** D1 (Codex D88-D90 r7): ver [SyncIntentDao.ultimaSecuencia]. `0` con la cola vacía. */
+    suspend fun ultimaSecuencia(venueId: String): Long = dao.ultimaSecuencia(venueId) ?: 0L
+
     /** D86 (Codex r1 #2): las aperturas confirmadas cuyo resultado menciona [orderId] (el id real). */
     suspend fun aperturasConfirmadasConResultado(venueId: String, orderId: String): List<SyncIntentEntity> =
         withContext(Dispatchers.IO) { dao.aperturasConfirmadasConResultado(venueId, orderId) }

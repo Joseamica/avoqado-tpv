@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.TableOrder
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
@@ -399,11 +400,172 @@ class TablesViewModelTest {
         val vm = createViewModel()
         vm.initialize(ScreenProfile.RegularPortrait)
 
-        socketEvents.emit(SocketEvent.Connected)
+        socketEvents.emit(SocketEvent.Disconnected)
         advanceTimeBy(1000)
 
         coVerify(exactly = 1) { repository.getTables(venueId) } // solo la carga inicial
     }
+
+    @Test
+    fun al_reconectar_el_socket_el_plano_se_vuelve_a_pedir_con_la_cola_reproducida_antes() = runTest {
+        // D88 (PAX, 16-nov): la cola sin red subió la apertura de M5 mientras el socket estaba caído; su aviso se perdió y el
+        // plano siguió con M5 libre (ofrecía «Abrir mesa» sobre una mesa con cuenta) hasta salir y volver a entrar a Mesas.
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(table(id = "m5")))
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+
+        coEvery { repository.getTables(venueId) } returns Result.success(listOf(m5ConCuenta()))
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801)
+
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        coVerifyOrder {
+            coordinator.replay(venueId)
+            repository.getTables(venueId)
+            coordinator.replay(venueId)
+            repository.getTables(venueId)
+        }
+    }
+
+    @Test
+    fun una_carga_vieja_del_plano_que_termina_despues_no_pisa_a_la_mas_nueva() = runTest {
+        // D88 (Codex r1 #1): el mesero refresca (carga A, que tarda) y en eso se reconecta el socket (carga B, ya con M5
+        // ocupada). Si A terminaba al último, volvía a pintar M5 libre y a ofrecer «Abrir mesa».
+        val viejo = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> viejo.await()
+                else -> Result.success(listOf(m5ConCuenta()))
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga A: se queda esperando
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801) // carga B: M5 ocupada
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+
+        viejo.complete(Result.success(listOf(table(id = "m5"))))
+
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun con_cargas_encimadas_la_que_termina_pinta_aunque_otra_mas_nueva_siga_en_camino() = runTest {
+        // D88 (Codex r2 #1): avisos seguidos con cargas lentas (cada una termina después de que empezó la siguiente). Exigir «la
+        // última que empezó» las tiraba todas y el plano no se movía. La más nueva que TERMINA pinta.
+        val segunda = CompletableDeferred<Result<List<DiningTable>>>()
+        val tercera = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> segunda.await()
+                else -> tercera.await()
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga 2
+        vm.refresh() // carga 3, empieza antes de que termine la 2
+        segunda.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+
+        tercera.complete(Result.success(listOf(table(id = "m5"))))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun un_fallo_mas_nuevo_no_hace_tirar_un_exito_que_llega_despues() = runTest {
+        // D88 (Codex r3 #1): la carga 2 (buena, lenta) sigue en camino y la 3 falla sin red. Un fallo no es un plano pintado:
+        // cuando llega la 2, pinta.
+        val lenta = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            when (++llamadas) {
+                1 -> Result.success(listOf(table(id = "m5")))
+                2 -> lenta.await()
+                else -> Result.failure(java.io.IOException("sin red"))
+            }
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        vm.refresh() // carga 2
+        vm.refresh() // carga 3: falla
+        assertThat(vm.uiState.value.isOffline).isTrue()
+
+        lenta.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isOffline).isFalse()
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun en_arranque_en_frio_un_fallo_mas_nuevo_no_tapa_el_unico_plano_que_llego() = runTest {
+        // D88 (Codex r3 #1): la carga inicial tarda; un aviso dispara otra que falla (sin plano: error). Al llegar la inicial,
+        // el plano se ve y el error se va.
+        val inicial = CompletableDeferred<Result<List<DiningTable>>>()
+        var llamadas = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            if (++llamadas == 1) inicial.await() else Result.failure(java.io.IOException("sin red"))
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801)
+        assertThat(vm.uiState.value.errorMessage).isNotNull()
+
+        inicial.complete(Result.success(listOf(m5ConCuenta())))
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.errorMessage).isNull()
+        assertThat(vm.uiState.value.isLoading).isFalse()
+    }
+
+    @Test
+    fun la_carga_que_empezo_antes_pero_pidio_el_plano_despues_si_pinta() = runTest {
+        // D88 (Codex r4): A (refresco a mano) se queda esperando la cuarentena; B (reconexión) empieza después, se le adelanta y
+        // pinta M5 libre; luego A PIDE el plano y ya trae M5 con cuenta. El orden que cuenta es el de la petición, no el de inicio.
+        val cuarentenaDeA = CompletableDeferred<Unit>()
+        var lecturasDeCuarentena = 0
+        coEvery { syncOutbox.rejectedIntents(venueId) } coAnswers {
+            if (++lecturasDeCuarentena == 2) cuarentenaDeA.await()
+            emptyList()
+        }
+        var peticiones = 0
+        coEvery { repository.getTables(venueId) } coAnswers {
+            if (++peticiones <= 2) Result.success(listOf(table(id = "m5"))) else Result.success(listOf(m5ConCuenta()))
+        }
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait) // petición 1
+
+        vm.refresh() // A: espera la cuarentena
+        socketEvents.emit(SocketEvent.Connected)
+        advanceTimeBy(801) // B: petición 2, M5 libre, pinta
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+
+        cuarentenaDeA.complete(Unit) // A: petición 3, M5 con cuenta
+        assertThat(vm.uiState.value.tables.single().displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+        assertThat(vm.uiState.value.isRefreshing).isFalse()
+    }
+
+    private fun m5ConCuenta() = table(id = "m5", status = "OCCUPIED").copy(
+        currentOrder = TableOrder(id = "orden-m5", orderNumber = "ORD-5", total = BigDecimal("49.00")),
+    )
 
     // endregion
 

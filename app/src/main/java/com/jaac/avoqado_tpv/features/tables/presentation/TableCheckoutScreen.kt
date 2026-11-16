@@ -803,6 +803,17 @@ private fun OfflineCardNotice(reason: String?) {
     }
 }
 
+/**
+ * Monto que enseña el botón de Efectivo; `null` = sólo «Efectivo».
+ * D2 (PAX, 16-nov): sin la cuenta leída y con el efectivo en gris, el monto es el TOTAL del plano con que arranca la sesión
+ * (salía «$118.00» con $78 por pagar): no se enseña, igual que el subtítulo dice «Restante: sin conexión».
+ */
+internal fun montoDelBotonEfectivo(
+    state: TableCheckoutState,
+    chargeableAmount: BigDecimal,
+    cashSupportsThisSplit: Boolean,
+): BigDecimal? = chargeableAmount.takeIf { cashSupportsThisSplit && !(state.check == null && state.efectivoBloqueadoPor != null) }
+
 @Composable
 private fun CheckoutBottomBar(
     chargeableAmount: BigDecimal,
@@ -881,7 +892,7 @@ private fun CheckoutBottomBar(
         ) {
             CheckoutChargeButton(
                 label = if (!cashSupportsThisSplit) "Efectivo no disponible" else "Efectivo",
-                amountText = if (cashSupportsThisSplit) moneyDisplay(chargeableAmount) else null,
+                amountText = montoDelBotonEfectivo(state, chargeableAmount, cashSupportsThisSplit)?.let(::moneyDisplay),
                 onClick = onPayCash,
                 enabled = cashEnabled,
                 loading = state.isProcessingCash,

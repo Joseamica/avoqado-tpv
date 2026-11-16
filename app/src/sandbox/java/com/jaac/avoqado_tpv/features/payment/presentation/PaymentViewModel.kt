@@ -8364,6 +8364,17 @@ class PaymentViewModel @Inject constructor(
                     // la caja de ese momento, nunca los de quien entre después) cuando vuelve a haber sesión y red: entrar y
                     // reconectar piden la pasada. La misma llave: el servidor nunca lo duplica.
                     attemptIdDelCobro?.let { attemptId ->
+                        // Codex r2: la marca «el banco aprobó» (`host_approved = 1`) tiene que quedar durable ANTES de AUTORIZADO.
+                        // Si su escritura falló al contestar el banco (se ignora su resultado), un primer registro fallido de la
+                        // recuperación dejaba la fila en REGISTRO_FALLIDO sin la marca, y esa consulta ya no la vuelve a tomar.
+                        // Repetirla es inocuo: si ya quedó en HOST_RESPONDIO el CAS no cambia nada.
+                        paymentAttemptLedger.markHostResponded(
+                            attemptId = attemptId,
+                            approved = true,
+                            operationId = blumonOperationNumber?.toString(),
+                            referenceNumber = referenceNumber,
+                            authCode = authorizationNumber
+                        )
                         paymentAttemptLedger.markAuthorized(
                             attemptId = attemptId,
                             maskedPan = cardDetails.maskedPan,

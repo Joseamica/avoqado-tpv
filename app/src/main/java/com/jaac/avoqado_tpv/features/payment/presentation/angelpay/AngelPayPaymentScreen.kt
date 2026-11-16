@@ -154,6 +154,7 @@ fun AngelPayPaymentScreen(
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives filter + banner)
     val merchantRouting by viewModel.merchantRouting.collectAsStateWithLifecycle()
+    val avisoDeCuenta by viewModel.avisoDeCuenta.collectAsStateWithLifecycle()
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()
 
@@ -630,13 +631,17 @@ fun AngelPayPaymentScreen(
                 is AngelPayPaymentState.SelectingMerchant -> {
                     // 🧭 MERCHANT_ROUTING_RULES: show only eligible accounts (unless show-all) + banner.
                     val routing = merchantRouting
-                    val visibleMerchants = if (routing == null || routing.shouldShowAll) {
-                        merchants
-                    } else {
-                        merchants.filter { routing.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
-                            .ifEmpty { merchants }
-                    }
-                    val routingBanner = if (routing?.showFallbackBanner == true) {
+                    // D3: si la cuenta elegida no puede cobrar esta venta, la lista se queda a la vista con las permitidas (ver
+                    // [selectorDeCuentas]) mientras la Nexgo pasa sola a la permitida.
+                    val selector = selectorDeCuentas(
+                        todas = merchants,
+                        reglas = routing,
+                        elegida = currentMerchant,
+                        sesionPideElegir = authState is AngelPayAuthState.SelectingMerchant,
+                    )
+                    val visibleMerchants = selector.cuentas
+                    // D3: el aviso de la cuenta permitida manda sobre el de «mostrando todas» (no salen juntos: ése es sin filtro).
+                    val routingBanner = avisoDeCuenta ?: if (routing?.showFallbackBanner == true) {
                         "Mostrando todas las cuentas: ninguna regla de cobro aplica a esta venta."
                     } else null
                     // T26: la auth en fondo apaga Tarjeta pero no Efectivo (ver AngelPayMetodosDePago.kt).
@@ -651,7 +656,9 @@ fun AngelPayPaymentScreen(
                         tipAmount = currentState.tipAmount,
                         rating = currentState.rating,
                         merchants = visibleMerchants,
-                        currentMerchant = currentMerchant,
+                        // 🧭 D3: una cuenta que la regla excluye no se pasa como elegida: «Tarjeta» queda apagada con ella (el
+                        // ViewModel tampoco arranca el SDK: startCardPayment) hasta que la Nexgo pase a la permitida.
+                        currentMerchant = currentMerchant.takeIf { selector.elegidaPermitida },
                         // Multi-AngelPay accounts per venue (2026-05-19): block
                         // Tarjeta/Efectivo/Cripto while a merchant switch is in
                         // flight. Two distinct flight sources, both need to be
@@ -687,7 +694,8 @@ fun AngelPayPaymentScreen(
                         showCashOption = CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         showCryptoOption = viewModel.showCryptoOption &&
                             CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
-                        hideAccountSelector = visibleMerchants.size <= 1,
+                        hideAccountSelector = selector.ocultarLista,
+                        mostrarListaConUnaCuenta = !selector.ocultarLista,
                         // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
                         routingBannerMessage = routingBanner,
                         // 💵 D2 «Cobrar sin red»: sólo efectivo (tarjeta y cripto en gris con el motivo). Va

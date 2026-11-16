@@ -88,4 +88,14 @@ class DeclineTicketTest {
     fun `imprime el monto que se intentó cobrar`() {
         assertThat(textoDe(ticket())).contains("150")
     }
+
+    @Test
+    fun `D2 sin importe conocido OMITE la línea, nunca imprime cero`() {
+        val t = textoDe(
+            builder.buildDeclineTicket(amount = null, reason = "FONDOS INSUFICIENTES", sdkCode = "51", venueName = "Restaurante El Atole"),
+        )
+        assertThat(t).doesNotContain("Monto intentado")
+        assertThat(t).doesNotContain("$0.00")
+        assertThat(t).contains("NO SE REALIZO EL CARGO")
+    }
 }

@@ -165,8 +165,23 @@ object AngelPayOutcomeClassifier {
      *  2. **Forma de sesión expirada** (D308 o «registrar la terminal antes del cobro») ⇒ REGLAS_DE_HOY: ya es un
      *     rechazo cierto con relanzamiento automático ([AngelPayErrorMapper]), y el candado de registro del SDK la arma
      *     sin referencia.
-     *  3. **`authorizationAttempted = true`** ⇒ REGLAS_DE_HOY. ⬜ Pendiente declarado (decisión del founder, 18-sep):
-     *     NO se endurece aquí un `G500`/`N400` sin respuesta del host (§2.2 4a); `attempted=true` se clasifica como hoy.
+     *  3. **`authorizationAttempted = true`** ⇒ REGLAS_DE_HOY, con UNA excepción:
+     *     a. **`G500` sin ningún campo del host** ⇒ [DecisionDelSdk.INCIERTO] (D2, 16-nov; encargo 60960d, tarjeta
+     *        hz:033d44ca:D2). Leído en el bytecode del 1.0.23: el rechazo REAL del gateway llega con la respuesta (código del
+     *        emisor, descripción, referencia…; `b.c` 217–431), y el G500 sin respuesta es el cajón de sastre del armador
+     *        para un error que el traductor no reconoce (`o.n`: IOException, SocketException, «unexpected end of stream») o
+     *        una respuesta ilegible (`o.h`) — sin pasar por `verify_in_doubt`. Eso no es un veredicto del banco: duda, nunca
+     *        «Reintentar». No depende de la referencia (no hay veredicto que correlacionar).
+     *        ⚠️ Costo aceptado (Codex r1, 16-nov, reproducido con el AAR): una respuesta del gateway que SÍ se leyó pero no
+     *        trae nada (p. ej. `{"request_status":false,"http_code":400,"mensaje":"Solicitud rechazada"}` en una venta por
+     *        BANDA, cuya petición no lleva `CardInformation` y por eso tampoco `cardLast4`) también cae aquí. No es
+     *        distinguible del error de red por el resultado, y ningún campo del banco acredita que el dinero no se movió:
+     *        queda en duda (la resuelve el aviso del banco, el verificador o la ventana del servidor). Sólo cuesta espera,
+     *        nunca un cobro doble.
+     *     Lo demás sigue como hoy, a propósito: un rechazo con CUALQUIER dato del banco, y el `N400` (el binario sólo lo
+     *     produce antes de que el banco procese: no hubo conexión, falló el saludo seguro o 429; `o.k`). Esto cierra el
+     *     pendiente §2.2 4a del 18-sep para el G500; evidencia en
+     *     `Avoqado/docs/audit/2026-11-15-auditoria-sin-red-lanzamiento/evidencia/angelpay-1023-n400-g500.md`.
      *  4. **La referencia no prueba que el resultado sea de ESTE intento** —ninguna (null o en blanco), la de OTRO intento,
      *     o sin intento propio con qué compararla— ⇒ [DecisionDelSdk.INCIERTO] (diseño §2.1, 3a; Codex r1, P1-1). Los
      *     resultados de respaldo del contrato (`Cancelled`, `Error al parsear resultado`, `Unknown error`, validación) y la
@@ -211,8 +226,13 @@ object AngelPayOutcomeClassifier {
         if (AngelPayErrorMapper.isAuthError(codigo) || AngelPayErrorMapper.isPreChargeRegisterFailure(r.message)) {
             return DecisionDelSdk.REGLAS_DE_HOY
         }
-        // 3. La petición salió (o estaba por salir) al host: como hoy (4a queda pendiente).
-        if (r.authorizationAttempted) return DecisionDelSdk.REGLAS_DE_HOY
+        // 3. La petición salió (o estaba por salir) al host: como hoy, salvo el G500 que NO trae nada del banco (3a).
+        if (r.authorizationAttempted) {
+            // 3a. G500 sin ningún campo de la respuesta: el error de red que el traductor del SDK no reconoce (`o.n`) o una
+            //     respuesta ilegible (`o.h`). No es un veredicto del banco ⇒ duda, nunca «Reintentar» (D2, 16-nov).
+            return if (codigo == CODIGO_RECHAZO_DEL_GATEWAY && r.camposDelHost.values.all { it == null }) DecisionDelSdk.INCIERTO
+            else DecisionDelSdk.REGLAS_DE_HOY
+        }
         // 4. Sólo NUESTRA referencia correlaciona el resultado con ESTE intento. Sin ella (null o en blanco), con la de otro
         //    intento o sin intento propio con qué compararla ⇒ INCIERTO: un resultado sin correlación nunca es un negativo
         //    cierto, tampoco el C200 al abrir la pantalla ni un E608 (Codex r1, P1-1). La única excepción sin referencia es
@@ -235,6 +255,15 @@ object AngelPayOutcomeClassifier {
 
     /** `E608` («Límite contactless excedido»): hoy es un rechazo con «Reintentar» en la misma venta, y eso no cambia. */
     private const val CODIGO_LIMITE_SIN_CONTACTO = "E608"
+
+    /**
+     * `G500` («Transaccion rechazada por el gateway»): en el AAR 1.0.23 es el cajón de sastre del armador de resultados
+     * (`c0.v0.a(b.d, Boolean, String)`, bytecode 0–146): además del rechazo real —que trae la respuesta del gateway—, cae
+     * ahí un error que el traductor no reconoce (`o.n`) o una respuesta ilegible (`o.h`), con TODOS los campos del host en
+     * null (`b.c` 437–558) — y también una respuesta leída que no trae ningún dato (venta por banda). Ver el paso 3a de
+     * [decidirSegunElSdk119].
+     */
+    private const val CODIGO_RECHAZO_DEL_GATEWAY = "G500"
 
     /**
      * @param aprobado `PaymentResult.approved`.

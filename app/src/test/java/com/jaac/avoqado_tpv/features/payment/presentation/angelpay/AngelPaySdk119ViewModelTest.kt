@@ -1005,6 +1005,54 @@ class AngelPaySdk119ViewModelTest {
         }
     }
 
+    /**
+     * El G500 que arma el AAR 1.0.23 cuando el cobro revienta DESPUÉS de enviar con un error que su traductor no reconoce
+     * (`o.n`) o una respuesta ilegible (`o.h`): sin NADA de la respuesta del banco, con tarjeta leída y `attempted = true`.
+     * Detalle del bytecode en `AngelPaySdk119ReglaTest.delErrorTrasEnviar`.
+     */
+    private fun g500TrasEnviarSinBanco(ref: String?) = PaymentResult(
+        approved = false, status = PaymentResult.Status.DECLINED, message = "unexpected end of stream", amount = 10_000L,
+        cardEntryMode = "contactless", aid = "A0000000031010", arqc = "9F2601AB", applicationLabel = "VISA",
+        tvr = "0000008000", tsi = "E800", authentication = "Sin firma", integratorReference = ref,
+        operationType = "VENTA", requireSignature = false, authorizationAttempted = true,
+        callResult = callResultDe(AppErrorCatalog.Code.G500),
+    )
+
+    @Test
+    fun `P1 D2 Pago rapido - G500 tras enviar sin nada del banco queda en duda, sin Reintentar ni rechazo en la libreta`() = runTest(testDispatcher) {
+        val (vm, intento) = cobroLanzado()
+        try {
+            vm.onAngelPaySdkResult(g500TrasEnviarSinBanco(intento))
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            coVerify(exactly = 1) { paymentAttemptLedger.markIndeterminate(intento, any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) }
+            // No es una contradicción del SDK: es una duda honesta.
+            verify(exactly = 0) { observabilityManager.logError("AngelPaySdkContradiccion", any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 D2 cobro del POS - G500 tras enviar sin nada del banco nunca emite failed a la tablet`() = runTest(testDispatcher) {
+        val (vm, intento) = cobroLanzado(requestId = "req-g500-sin-banco")
+        try {
+            vm.onAngelPaySdkResult(g500TrasEnviarSinBanco(intento))
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            coVerify(exactly = 0) { paymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `P1 E608 sigue como hoy - rechazo con Reintentar en la misma venta`() = runTest(testDispatcher) {
         val (vm, intento) = cobroLanzado()

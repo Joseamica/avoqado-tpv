@@ -12,9 +12,12 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.features.tables.data.DineroDeTarjetaDeLaCuenta
 import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
+import com.jaac.avoqado_tpv.features.tables.data.TARJETA_REGISTRANDOSE
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
@@ -67,8 +70,10 @@ class TableCheckoutViewModelTest {
     private val networkMonitor = mockk<NetworkMonitor>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val syncOutbox = mockk<SyncOutbox>()
+    private val dineroDeTarjeta = mockk<DineroDeTarjetaDeLaCuenta>()
     private val cambiosDeLaCola = kotlinx.coroutines.flow.MutableStateFlow(0)
     private lateinit var tableSession: TableSession
+    private lateinit var letrero: ConnectionStateManager
 
     private val venueId = "venue-1"
 
@@ -78,6 +83,7 @@ class TableCheckoutViewModelTest {
         clearMocks(repository, tableSyncCoordinator, networkMonitor, deviceInfoManager)
 
         tableSession = TableSession()
+        letrero = ConnectionStateManager()
 
         every { deviceInfoManager.getVenueId() } returns venueId
         every { networkMonitor.isConnected() } returns true
@@ -87,6 +93,7 @@ class TableCheckoutViewModelTest {
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
+        coEvery { dineroDeTarjeta.motivo(any(), any()) } returns null
     }
 
     @After
@@ -101,6 +108,8 @@ class TableCheckoutViewModelTest {
         networkMonitor = networkMonitor,
         deviceInfoManager = deviceInfoManager,
         saldoDeMesaSinRed = saldo,
+        connectionStateManager = letrero,
+        dineroDeTarjeta = dineroDeTarjeta,
     )
 
     // region — el cobro con TARJETA apunta a la orden EXISTENTE, nunca crea una nueva
@@ -134,6 +143,62 @@ class TableCheckoutViewModelTest {
         assertThat(state.cardPaymentDisabledReason).isEqualTo("Necesita conexión")
         assertThat(state.error).isNull()
         assertThat(state.checkStaysOpen).isTrue()
+    }
+
+    /**
+     * D90 (PAX, 16-nov): en «Cargando cuenta…» la tarjeta se veía habilitada, y con el TOTAL del plano (no lo que falta): un
+     * toque ahí podía cobrar con la tarjeta una cuenta que ya tenía abonos. Mientras la cuenta no se lee, la tarjeta espera.
+     */
+    @Test
+    fun D90_mientras_carga_la_cuenta_la_tarjeta_queda_en_gris() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("118.00")))
+        val servidor = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { servidor.await() }
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.isLoading).isTrue()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo("Cargando la cuenta…")
+
+        servidor.complete(Result.success(OrderDetail(id = "orden-1", total = BigDecimal("118.00"), amountLeft = BigDecimal("78.00"))))
+
+        assertThat(viewModel.state.value.cardPaymentEnabled).isTrue()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D90_si_la_cuenta_no_se_pudo_leer_la_tarjeta_queda_en_gris_aunque_haya_red() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("118.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(BackendHttpException(500, "falla"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.check).isNull()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo("No se pudo cargar la cuenta")
+        viewModel.viewModelScope.cancel()
+    }
+
+    /**
+     * D90: al volver la red, el aparato avisa ~2 s antes de que el letrero «Sin conexión a internet» se quite (lo quita la
+     * comprobación de conexión, no el aviso del aparato). En ese rato la tarjeta se veía habilitada bajo el letrero.
+     */
+    @Test
+    fun D90_con_el_letrero_de_sin_internet_puesto_la_tarjeta_queda_en_gris_aunque_el_aparato_ya_tenga_red() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("118.00"), amountLeft = BigDecimal("118.00")))
+        letrero.setInternetConnected(false)
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.isOnline).isTrue()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo("Necesita conexión")
+
+        letrero.setInternetConnected(true)
+
+        assertThat(viewModel.state.value.cardPaymentEnabled).isTrue()
+        viewModel.viewModelScope.cancel()
     }
 
     /**
@@ -897,6 +962,8 @@ class TableCheckoutViewModelTest {
         // 🔴 Una propina, un cobro: si la pantalla vieja vuelve a cobrar (otra parte de la cuenta), no la repite.
         assertThat(viewModel.state.value.tipAmount).isEqualTo(BigDecimal.ZERO)
         assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        // Encargo 49276c: antes de otro cobro, la pantalla vieja relee la cuenta al volver al frente.
+        viewModel.alVolverAlFrente()
         assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("445.50"))!!.tipAmount).isEqualTo(BigDecimal.ZERO)
     }
 
@@ -1014,10 +1081,249 @@ class TableCheckoutViewModelTest {
 
     // endregion
 
+    // region — D9 · encargo 49276c: tras entregar una TARJETA, la «Cobrar mesa» vieja no cobra con el saldo de antes
+
+    private fun cuenta(porPagar: String) =
+        Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal(porPagar)))
+
+    private fun cobroEnEfectivoOk() {
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
+        // Saldar la cuenta libera la mesa (onPaymentCompleted → releaseTable → clearTable) — Codex r2 #2.
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+    }
+
+    @Test
+    fun p1_tras_entregar_TARJETA_el_efectivo_espera_a_releer_la_cuenta_y_cobra_lo_que_de_verdad_queda() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+        viewModel.setCustomAmountInput("50")
+        viewModel.prepararCobroConTarjeta(viewModel.chargeableAmount())!!
+        viewModel.cobroConTarjetaEntregado()
+        // La tarjeta pagó $50 en «Cobrar»; el mesero regresa con el «atrás» del sistema desde «Aprobado».
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.selectSplitType(CheckoutSplitType.FULLPAYMENT)
+
+        // Antes de releer: la pantalla todavía cree que se deben $200 y NO deja cobrar.
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        viewModel.payCash(viewModel.chargeableAmount())
+        assertThat(viewModel.prepararCobroConTarjeta(viewModel.chargeableAmount())).isNull()
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        viewModel.alVolverAlFrente()
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.state.value.avisoDeSaldoPorConfirmar).isNull()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+        viewModel.payCash(viewModel.chargeableAmount())
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
+        coVerify(exactly = 0) { repository.payCash(venueId, "orden-1", false, BigDecimal("200.00"), any(), any()) }
+    }
+
+    @Test
+    fun p1_si_no_se_puede_releer_tras_la_TARJETA_los_botones_siguen_esperando_y_lo_dice() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("200.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(IOException("sin red"))
+        viewModel.alVolverAlFrente()
+
+        val estado = viewModel.state.value
+        assertThat(estado.saldoPorConfirmar).isTrue()
+        assertThat(estado.revisandoSaldo).isFalse()
+        assertThat(estado.avisoDeSaldoPorConfirmar).contains("No se pudo confirmar cuánto queda")
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        // «Reintentar» con la red de vuelta: la tarjeta saldó todo, ya no queda nada que cobrar.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("0.00")
+        viewModel.loadCheck()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal.ZERO)
+    }
+
+    @Test
+    fun p1_una_lectura_que_salio_antes_de_la_TARJETA_no_confirma_el_saldo() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        // Con la cuenta ya leída sale otra lectura (p. ej. la relectura por un cambio de la cola) que se queda en vuelo. Sin la
+        // cuenta leída la tarjeta ya ni se prepara (D90, PR #58), así que la lectura vieja sólo puede salir así.
+        val lecturaVieja = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturaVieja.await() }
+        viewModel.loadCheck()
+
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+        lecturaVieja.complete(cuenta("200.00")) // llega tarde, con el saldo de antes de la tarjeta
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+    }
+
+    @Test
+    fun p1_una_lectura_que_empieza_con_Cobrar_abierto_no_confirma_el_saldo() = runTest {
+        // Codex r2: «Quitar descuento» (o un cargo) relee la cuenta; si esa lectura empieza DESPUÉS de entregar la
+        // tarjeta pero ANTES de que cobre, trae el saldo de antes del abono. No debe apagar el bloqueo.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+        viewModel.loadCheck() // con «Cobrar» abierto: la tarjeta aún no cobra, el servidor dice $200
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        assertThat(viewModel.state.value.revisandoSaldo).isFalse()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        // La tarjeta cobró $50; al volver la pantalla relee y ahora sí confirma.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+    }
+
+    @Test
+    fun p1_una_lectura_de_cuando_Cobrar_estaba_abierto_que_llega_tarde_no_pisa_el_saldo_confirmado() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        // Con «Cobrar» abierto sale una lectura (p. ej. tras «Quitar descuento») que se queda en vuelo con $200.
+        val lecturaDeEnMedio = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturaDeEnMedio.await() }
+        viewModel.loadCheck()
+
+        // La tarjeta cobra $50; la pantalla vuelve y su lectura espera turno detrás de la de en medio (D86: una sola fila).
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        viewModel.alVolverAlFrente()
+        // Mientras espera, los dos botones siguen esperando y el aviso dice «Revisando…» (no «No se pudo confirmar»).
+        assertThat(viewModel.state.value.saldoPorConfirmar).isTrue()
+        assertThat(viewModel.state.value.revisandoSaldo).isTrue()
+        assertThat(viewModel.state.value.avisoDeSaldoPorConfirmar).startsWith("Revisando")
+
+        lecturaDeEnMedio.complete(cuenta("200.00")) // llega tarde: se tira, y luego la de la pantalla confirma $150
+
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+    }
+
+    // Codex r1 de la unión (16-nov): la PAX enseña «Aprobado» ANTES de registrar el cobro en el SERVIDOR. Si el cajero vuelve
+    // con «atrás» mientras registra, la cuenta que lee el SERVIDOR todavía no descuenta la tarjeta.
+    @Test
+    fun d9_tarjeta_aprobada_que_todavia_se_registra_no_deja_cobrar_el_saldo_de_antes() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+        viewModel.prepararCobroConTarjeta(BigDecimal("50.00"))!!
+        viewModel.cobroConTarjetaEntregado()
+
+        // «Aprobado» y «atrás» mientras el registro de la tarjeta sigue en camino: el SERVIDOR todavía dice $200.
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } returns TARJETA_REGISTRANDOSE
+        viewModel.alVolverAlFrente()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(TARJETA_REGISTRANDOSE)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+
+        // La tarjeta ya se registró: la relectura sola trae lo que de verdad falta y se cobra eso.
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } returns null
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("150.00")
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal("150.00"))
+        viewModel.payCash(BigDecimal("150.00"))
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
+    }
+
+    @Test
+    fun d9_si_no_se_puede_revisar_la_tarjeta_de_la_cuenta_no_se_cobra() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        coEvery { dineroDeTarjeta.motivo(venueId, "orden-1") } throws IllegalStateException("libreta ilegible")
+        cobroEnEfectivoOk()
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(SALDO_NO_RECUPERADO)
+        viewModel.payCash(BigDecimal("200.00"))
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun volver_al_frente_sin_haber_entregado_TARJETA_no_relee() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuenta("200.00")
+        val viewModel = createViewModel()
+
+        viewModel.alVolverAlFrente()
+
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.state.value.saldoPorConfirmar).isFalse()
+    }
+
+    // endregion
+
     // region — D86: «Cobrar» sin red nunca cobra con un número que no es el de la cuenta
 
     private fun filaD86(id: String, tipo: String, payload: String, estado: String = SyncIntentEntity.STATUS_PENDING, result: String? = null) =
         SyncIntentEntity(id = id, venueId = venueId, seq = id.hashCode().toLong(), type = tipo, payloadJson = payload, status = estado, resultJson = result)
+
+    @Test
+    fun D90_sin_cuenta_leida_tocar_tarjeta_no_entrega_un_cobro() = runTest {
+        // D90: se revalida al tocar, no sólo al pintar el botón.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("118.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(BackendHttpException(500, "falla"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("118.00"))).isNull()
+        assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D90_con_un_cobro_propio_sin_subir_y_la_lectura_fallida_la_tarjeta_dice_por_que() = runTest {
+        // D90 (PAX, 16-nov, caso 6 del D86): $20 en efectivo propio sin subir y la lectura de la cuenta falla. La tarjeta salía
+        // habilitada con $58 y el aviso de cobro sin sincronizar nunca salía.
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":2000,"tipCents":0}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(BackendHttpException(500, "falla"))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.check).isNull()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo(MESA_COBRO_SIN_SINCRONIZAR)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNotNull()
+        viewModel.viewModelScope.cancel()
+    }
 
     @Test
     fun D86_mesa_del_servidor_sin_cuenta_y_sin_red_no_cobra_con_el_total_del_plano() = runTest {

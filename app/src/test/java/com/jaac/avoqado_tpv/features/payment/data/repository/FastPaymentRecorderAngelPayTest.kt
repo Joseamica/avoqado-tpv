@@ -144,4 +144,28 @@ class FastPaymentRecorderAngelPayTest {
         assertThat(cuerpo["isOfflineReplay"].asBoolean).isTrue()
         assertThat(cuerpo.has("createdAtLocal")).isFalse()
     }
+
+    // D5 (Codex r1): el cuerpo REAL que sale con una tarjeta de débito — directo y reproducido desde la cola — dice DEBIT_CARD.
+    private val debito = CardDetails(maskedPan = "", cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.OTHER, cardNature = com.jaac.avoqado_tpv.features.payment.domain.model.CardNature.DEBIT)
+
+    @Test
+    fun `D5 fast AngelPay con debito manda DEBIT_CARD`() = runTest {
+        val captured = slot<FastPaymentRequest>()
+        coEvery { apiService.recordFastPayment(venueId = any(), request = capture(captured)) } returns successResponse()
+
+        recorder.recordPayment(angelPayFastContext().copy(idempotencyKey = "k-debito"), debito, "067718", "000000067718").getOrThrow()
+
+        assertThat(Gson().toJsonTree(captured.captured).asJsonObject["method"].asString).isEqualTo("DEBIT_CARD")
+    }
+
+    @Test
+    fun `D5 fast AngelPay con debito reproducido desde la cola manda el MISMO DEBIT_CARD`() = runTest {
+        val captured = slot<FastPaymentRequest>()
+        coEvery { apiService.recordFastPayment(venueId = any(), request = capture(captured)) } returns successResponse()
+        val fila = QueuedPayment.desdeContexto(angelPayFastContext().copy(idempotencyKey = "k-debito-cola"), null, debito, "067718", "000000067718", null)
+
+        recorder.recordPayment(fila.toPaymentContext(), fila.toCardDetails(), "067718", "000000067718").getOrThrow()
+
+        assertThat(Gson().toJsonTree(captured.captured).asJsonObject["method"].asString).isEqualTo("DEBIT_CARD")
+    }
 }

@@ -268,6 +268,7 @@ class PaymentSyncWorker @AssistedInject constructor(
             // Worker detenido (WorkManager: la red dejó de estar validada, límite de tiempo):
             // no es un intento fallido, así que no cuenta.
             soltarSinTerminar(sinTerminar, contarIntentoDeLaPrimera = false)
+            if (sinTerminar.isNotEmpty()) pedirOtraPasadaDespuesDeSoltar()
             throw e
         } catch (e: Exception) {
             // Unexpected error (e.g., database crash). La fila en curso sí cuenta el intento:
@@ -303,6 +304,16 @@ class PaymentSyncWorker @AssistedInject constructor(
                 releaseClaim(payment, intentos, "La sincronización se detuvo antes de terminar; se reintenta")
             }
         }
+    }
+
+    /**
+     * D15 (Codex r2): WorkManager vuelve a programar el trabajo detenido SIN esperar a que éste termine de soltar sus filas,
+     * así que la pasada siguiente pudo tomar sólo una parte (o nada) y salir sin pedir otra. Esta pasada encadenada corre
+     * DESPUÉS (APPEND sobre la inmediata, con red) y recoge lo que quedó. Nunca tumba la salida: es lo último antes de lanzar.
+     */
+    private fun pedirOtraPasadaDespuesDeSoltar() {
+        runCatching { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext) }
+            .onFailure { Timber.w(it, "⚠️ [Payment Sync] No se pudo pedir la pasada que recoge lo soltado; queda el periódico") }
     }
 
     /**
@@ -654,7 +665,8 @@ class PaymentSyncWorker @AssistedInject constructor(
      */
     private suspend fun drainRefunds() {
         val refunds = try {
-            refundQueueRepository.claimBatch(MAX_REFUNDS_PER_RUN)
+            // D15: como el reclamo de cobros (D7), para no perder la lista si la cancelación llega justo al confirmarse.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { refundQueueRepository.claimBatch(MAX_REFUNDS_PER_RUN) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -669,13 +681,20 @@ class PaymentSyncWorker @AssistedInject constructor(
 
         var successCount = 0
         var failedCount = 0
-        // D7: a diferencia de los cobros, un reembolso detenido a media tanda NO se suelta antes de
-        // su lease (10 min): el SERVIDOR no vuelve a buscar la llave bajo su candado y un reenvío
-        // simultáneo saldría 400 «sin saldo» → FAILED permanente (Codex r1, hallazgo 2).
-        for (refund in refunds) {
+        // D15: un reembolso detenido a media tanda también se suelta (sin contar intento), como los cobros (D7). Ya es
+        // seguro: desde el D1 del SERVIDOR (10a3d87d7, en producción el 13-nov) el reembolso vuelve a buscar su llave bajo
+        // el candado, así que un reenvío simultáneo devuelve el mismo reembolso en vez de un 400 «sin saldo».
+        for ((i, refund) in refunds.withIndex()) {
             val ok = try {
                 syncRefund(refund)
             } catch (e: CancellationException) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    refunds.drop(i).forEach {
+                        runCatching { refundQueueRepository.release(it.idempotencyKey, it.claimToken.orEmpty(), it.retryCount,
+                            "La sincronización se detuvo antes de terminar; se reintenta") }
+                    }
+                }
+                pedirOtraPasadaDespuesDeSoltar()
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "💸 [Refund Sync] Fallo inesperado en una fila | key=${refund.idempotencyKey}")

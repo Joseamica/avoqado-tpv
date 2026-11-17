@@ -63,6 +63,7 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -70,8 +71,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -250,10 +254,42 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    /** D15: cada ViewModel que crea la prueba, para cerrarlo y esperarlo en [tearDown] antes de quitar Dispatchers.Main. */
+    private val viewModelsDeLaPrueba = java.util.Collections.synchronizedList(mutableListOf<AngelPayPaymentViewModel>())
+
     @After
     fun tearDown() {
-        Dispatchers.resetMain()
-        unmockkAll()
+        try {
+            esperarQueTerminenLosViewModels()
+        } finally {
+            Dispatchers.resetMain()
+            unmockkAll()
+        }
+    }
+
+    /**
+     * D15 (16-nov, CI del PR #63, run 43941175154): una prueba termina, pero su ViewModel puede seguir trabajando un
+     * momento en OTRO hilo. El registro con tarjeta vuelve de `withContext(NonCancellable + Dispatchers.IO)` y, como aquí
+     * Dispatchers.Main es «unconfined», sigue en ese hilo de IO: pinta el estado y termina los colectores del ViewModel
+     * (`state.collect`, el `merge` del ruteo D3) cuando la prueba ya canceló y salió. Si en ese rato `resetMain()` ya
+     * quitó Dispatchers.Main, ese hilo truena con «Dispatchers.Main was accessed when … the test dispatcher was unset» y
+     * lo paga la prueba que va después (en el CI: «r8 P2-6» deja el trabajo y truena «fix3 P2b»).
+     *
+     * Por eso, ANTES de quitar Dispatchers.Main, se cancela cada ViewModel y se ESPERA a que su último coroutine termine.
+     * Es un orden fijo, no un tiempo: lo que el ViewModel deja corriendo en un hilo de fondo acaba mientras Main sigue
+     * puesto, y nada de él puede correr después. Si algo no termina en 10 s, la prueba lo dejó colgado: se dice aquí,
+     * con su nombre, en vez de tronar a la de al lado.
+     */
+    private fun esperarQueTerminenLosViewModels() {
+        val trabajos = synchronized(viewModelsDeLaPrueba) {
+            viewModelsDeLaPrueba.mapNotNull { it.viewModelScope.coroutineContext[Job] }
+        }
+        trabajos.forEach { it.cancel() }
+        val terminaron = runBlocking { withTimeoutOrNull(10_000) { trabajos.joinAll(); true } } == true
+        check(terminaron) {
+            "D15: la prueba dejó trabajo de su ViewModel corriendo 10 s después de terminar: " +
+                trabajos.flatMap { it.children.toList() }.filter { !it.isCompleted }
+        }
     }
 
     private fun createViewModel(
@@ -269,7 +305,7 @@ class AngelPayPaymentViewModelTest {
     ): AngelPayPaymentViewModel = run {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(shiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(paymentAttemptLedger)
-        AngelPayPaymentViewModel(
+        val vm = AngelPayPaymentViewModel(
         appContext = appContext,
         recordPaymentUseCase = recordPaymentUseCase,
         shiftRepository = shiftRepository,
@@ -313,6 +349,8 @@ class AngelPayPaymentViewModelTest {
         modulesRepository = modulesRepository,
         despuesDeCobrarFolio = despuesDeCobrarFolio,
     )
+        viewModelsDeLaPrueba += vm   // D15: tearDown lo cierra y lo espera antes de quitar Dispatchers.Main
+        vm
     }
 
     // ----------------------------------------------------------------------
@@ -2284,6 +2322,55 @@ class AngelPayPaymentViewModelTest {
         } finally {
             Dispatchers.setMain(testDispatcher)
         }
+    }
+
+    /** Un cobro con tarjeta aprobado cuyo hilo de IO se queda a media marcha DESPUÉS de pintar el Success (D15). */
+    private fun kotlinx.coroutines.test.TestScope.registroConElHiloDeIoAMediaMarcha(
+        pintoElExito: java.util.concurrent.CountDownLatch,
+        sigue: java.util.concurrent.CountDownLatch,
+    ): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-d15",
+                receiptUrl = "https://r/d15",
+                accessKey = "k",
+                amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+        // El aviso al POS sale en el MISMO hilo de IO, justo después de pintar el Success: ahí se detiene.
+        every {
+            socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        } answers { pintoElExito.countDown(); sigue.await(5, java.util.concurrent.TimeUnit.SECONDS); Unit }
+        val vm = createViewModel()
+        vm.initPayment(amount = "100.00"); runCurrent()
+        vm.setSocketPaymentSource("SOCKET", "req-d15")
+        vm.onAngelPaySdkResult(approvedSdkResult()); runCurrent()
+        assertThat(pintoElExito.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+        return vm
+    }
+
+    @Test
+    fun `D15 tearDown espera el registro con tarjeta que sigue en el hilo de IO antes de quitar Dispatchers Main`() = runTest(testDispatcher) {
+        // CI del PR #63 (run 43941175154): «r8 P2-6» terminaba con su registro con tarjeta todavía en el hilo de IO (aquí
+        // Main es «unconfined» y el registro sigue en el hilo al que volvió). Ese hilo pinta el Success y luego cierra los
+        // colectores del ViewModel; el del ruteo (`merge`, D3) y `state.collect` vuelven por Dispatchers.Main, que tearDown
+        // ya había quitado: tronaba «fix3 P2b», la prueba que va después. En la nube, 16 de 1,100 pares r8 → fix3 tronaron.
+        // Aquí ese orden se fija con candados: el hilo de IO se queda a media marcha DESPUÉS de pintar el Success. Con el
+        // tearDown de antes (cancelar y `resetMain()` sin esperar) esta misma secuencia tronaba 3 de 3 con el mismo «Dispatchers.Main was accessed…» del CI.
+        val pintoElExito = java.util.concurrent.CountDownLatch(1)
+        val sigue = java.util.concurrent.CountDownLatch(1)
+        val vm = registroConElHiloDeIoAMediaMarcha(pintoElExito, sigue)
+        vm.viewModelScope.cancel()   // la prueba termina, como todas, con el hilo de IO todavía trabajando
+        val suelta = Thread { Thread.sleep(100); sigue.countDown() }.apply { start() }
+        esperarQueTerminenLosViewModels()   // lo que hace tearDown ANTES de quitar Dispatchers.Main
+        suelta.join(5_000)
+        // Nada del ViewModel sigue vivo: quitar Dispatchers.Main después ya no puede tronarle a nadie.
+        assertThat(vm.viewModelScope.coroutineContext[Job]!!.isCompleted).isTrue()
+        assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Success::class.java)
     }
 
     @Test

@@ -539,7 +539,9 @@ class PaymentAttemptLedger(
             evidenciaSinGuardar[attemptId] = fila.venueId
             false
         }
-        aprobacionSinGuardar.remove(attemptId)
+        // Codex r18 #2: la pantalla sigue con el aviso hasta que la marca quede ESCRITA (lo confirma el vigilante); una devolución
+        // (que no se marca) se suelta.
+        if (marcada || fila.kind != PaymentAttemptEntity.KIND_SALE) aprobacionSinGuardar.remove(attemptId)
         return marcada
     }
 
@@ -564,7 +566,7 @@ class PaymentAttemptLedger(
             // DESCARTADA pasa a la evidencia sin escribir, que la puerta escribe a continuación con su mecanismo de siempre.
             if (fila?.state == PaymentAttemptEntity.STATE_DESCARTADA && fila.kind == PaymentAttemptEntity.KIND_SALE && aprobacionSinGuardar.containsKey(attemptId)) {
                 evidenciaSinGuardar[attemptId] = fila.venueId
-                aprobacionSinGuardar.remove(attemptId)
+                // Codex r18 #2: la aprobación (y su aviso) se quedan hasta que el vigilante vea la marca escrita.
             }
         }
         return aprobacionPorRevisar.isNotEmpty()
@@ -587,7 +589,10 @@ class PaymentAttemptLedger(
         val sigue = fila != null && fila.hostApproved != true &&
             // Codex r13 y r17: AUTORIZADO o REGISTRO_FALLIDO SIN la marca del banco no dejan el cobro recuperable: sigue pendiente.
             (fila.state in ESPERANDO_AL_BANCO || fila.state == PaymentAttemptEntity.STATE_REGISTRO_FALLIDO ||
-                fila.state == PaymentAttemptEntity.STATE_AUTORIZADO) &&
+                fila.state == PaymentAttemptEntity.STATE_AUTORIZADO ||
+                // Codex r18 #1: una fila «no se cobró» con una aprobación encima no está a salvo hasta tener su marca de dinero.
+                (fila.state == PaymentAttemptEntity.STATE_DESCARTADA && fila.kind == PaymentAttemptEntity.KIND_SALE &&
+                    fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)) &&
             !(fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION)
         if (!sigue) soltarAprobacion(attemptId)
         return sigue

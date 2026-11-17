@@ -304,6 +304,8 @@ class AprobacionSinGuardarRoomTest {
         assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
 
         assertTrue("es dinero sin escribir", libreta.tieneEvidenciaSinGuardar("a1"))
+        assertTrue("y la pantalla conserva el aviso hasta que la marca quede escrita (Codex r18 #2)", libreta.aprobacionPendienteDeGuardar("a1"))
+        assertTrue("el vigilante no la suelta con la fila descartada sin marca (Codex r18 #1)", libreta.revisarAprobacionPendiente("a1"))
         assertFalse("la misma mesa no se vuelve a cobrar mientras falte",
             libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
 
@@ -312,6 +314,7 @@ class AprobacionSinGuardarRoomTest {
 
         assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
         assertEquals("la mesa queda cercada en la base", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
+        assertFalse("con la marca escrita el vigilante la suelta", libreta.revisarAprobacionPendiente("a1"))
         assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
     }
 
@@ -337,6 +340,9 @@ class AprobacionSinGuardarRoomTest {
         libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa)
 
         io.mockk.coVerify(exactly = 1) { dudoso.marcarEvidenciaPositivaDelServidor("a1", venue, any()) }
+        // El vigilante lee la fila ya marcada y suelta el aviso.
+        io.mockk.coEvery { dudoso.getById("a1") } returns descartada.copy(serverProcessorEvidence = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertFalse(libreta.revisarAprobacionPendiente("a1"))
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
         assertFalse("la marca quedó escrita", libreta.tieneEvidenciaSinGuardar("a1"))
     }

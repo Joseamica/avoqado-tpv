@@ -102,10 +102,11 @@ class AprobacionSinGuardarRoomTest {
         cobrandoCincuentaDeLaMesa(libreta)
         fallaLaAprobacion()
         assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        vuelveLaBase()
 
         libreta.markAuthorized("a1", "****4242", "VISA", "CHIP")
 
-        assertFalse("AUTORIZADO la deja a salvo: se suelta", libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse("AUTORIZADO (con su marca del banco) la deja a salvo: se suelta", libreta.aprobacionPendienteDeGuardar("a1"))
         // El proceso muere antes del registro y de la cola. Arranca otro.
         val nuevo = proceso()
         nuevo.cuarentenaDeHuerfanos()
@@ -114,7 +115,6 @@ class AprobacionSinGuardarRoomTest {
             nuevo.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
         assertEquals("y la recuperación la registra", listOf("a1"),
             dao.getApprovalRecoveryCandidates(venue, Long.MAX_VALUE, System.currentTimeMillis()).map { it.attemptId })
-        vuelveLaBase()
     }
 
     @Test fun `P1 tambien la suelta el registro y la cola`() = runTest {
@@ -346,5 +346,39 @@ class AprobacionSinGuardarRoomTest {
         assertEquals(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, dao.getById("a1")?.state)
         assertTrue("sin host_approved la recuperación no lo toma: el aviso sigue", libreta.aprobacionPendienteDeGuardar("a1"))
         assertTrue(libreta.revisarAprobacionPendiente("a1"))
+    }
+
+    @Test fun `P1 Codex r16-1 AUTORIZADO sella la marca del banco y asi un registro fallido sigue siendo recuperable`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        // Falla sólo la PRIMERA vez que se escribe host_approved (las dos escrituras del host van juntas en la memoria de abajo).
+        fallaLaAprobacion()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        vuelveLaBase()
+
+        libreta.markAuthorized("a1", "****4242", "VISA", "CHIP")
+        libreta.markRecordFailed("a1", "sin red")
+
+        val fila = dao.getById("a1")!!
+        assertEquals(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, fila.state)
+        assertEquals("AUTORIZADO selló la marca del banco", true, fila.hostApproved)
+        assertEquals("ref-1", fila.referenceNumber)
+        assertEquals("y la recuperación lo toma", listOf("a1"),
+            dao.getApprovalRecoveryCandidates(venue, Long.MAX_VALUE, System.currentTimeMillis()).map { it.attemptId })
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+    }
+
+    @Test fun `P1 Codex r16-1 si AUTORIZADO entra pero el sello no, la proteccion y el aviso siguen`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        fallaLaAprobacion()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+
+        libreta.markAuthorized("a1", "****4242", "VISA", "CHIP")
+
+        assertEquals(PaymentAttemptEntity.STATE_AUTORIZADO, dao.getById("a1")?.state)
+        assertNull(dao.getById("a1")?.hostApproved)
+        assertTrue("sin la marca no se suelta", libreta.aprobacionPendienteDeGuardar("a1"))
+        vuelveLaBase()
     }
 }

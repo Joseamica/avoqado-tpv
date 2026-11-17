@@ -806,10 +806,10 @@ fun PaymentScreen(
                     // `approvedAnimationShown`: al volver de «No se pudo imprimir» esta rama se
                     // compone de nuevo y este `remember` nace otra vez — sin la marca repetía la
                     // animación como si se hubiera cobrado dos veces (PAX, 1-oct-2026).
-                    // D13 (Codex r8): en el KIOSCO el aviso de «no se pudo guardar» no termina la espera del recibo (como antes de
-                    // D13): si la terminara, su cuenta regresiva de 12 s cerraría la venta con «Total pagado $0.00» sin recibo.
-                    val avisoQueCortaLaEspera = currentState.pendingSyncMessage != null &&
-                        !(isKioskPayment && onKioskPaymentSuccess != null && currentState.aprobacionSinGuardar)
+                    // D13 (Codex r8, r16 #2): el aviso de «no se pudo guardar» NO corta la animación de «Aprobado» (se ve dentro de
+                    // ella): en el KIOSCO su cuenta regresiva cerraría la venta con «Total pagado $0.00» sin recibo, y en el POS el
+                    // botón «Inicio» saldría antes que hoy en main y podría cortar el encolado del cobro.
+                    val avisoQueCortaLaEspera = currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar
                     var showApprovedAnimation by remember(currentState.authCode) {
                         mutableStateOf(
                             !currentState.approvedAnimationShown &&

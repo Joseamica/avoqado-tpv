@@ -124,7 +124,7 @@ class AprobacionSinGuardarFuenteTest {
     fun `P2 Codex r8 en el kiosco el aviso de D13 no corta la espera del recibo`() {
         val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
         assertTrue("el kiosco cierra la venta a los 12 s sin recibo",
-            pantalla.contains("!(isKioskPayment && onKioskPaymentSuccess != null && currentState.aprobacionSinGuardar)") &&
+            pantalla.contains("val avisoQueCortaLaEspera = currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar") &&
                 pantalla.contains("currentState.recordingLostMessage != null || avisoQueCortaLaEspera"))
         assertTrue("el kiosco espera el recibo sin mostrar el aviso (Codex r9)",
             pantalla.contains("aviso = currentState.pendingSyncMessage?.takeIf { currentState.aprobacionSinGuardar }"))

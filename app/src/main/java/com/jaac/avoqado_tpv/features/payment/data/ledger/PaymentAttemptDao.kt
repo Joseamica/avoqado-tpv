@@ -500,6 +500,21 @@ interface PaymentAttemptDao {
         operationId: String?, referenceNumber: String?, authCode: String?, hostApproved: Boolean
     ): Int
 
+    /**
+     * 🔴 D13 (encargo ff3278, Codex r16 #1): la marca «el banco aprobó» que no entró al contestar el banco, sellada por la libreta
+     * en el MISMO paso en que la fila pasa a AUTORIZADO (nunca desde otro camino). No cambia el estado: deja `host_approved = 1` y
+     * lo que dijo el banco si faltaba, para que un REGISTRO_FALLIDO posterior siga siendo candidato de la recuperación.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET host_approved = 1, state_version = state_version + 1, updated_at = :now,
+               operation_id = COALESCE(operation_id, :operationId),
+               reference_number = COALESCE(reference_number, :referenceNumber),
+               auth_code = COALESCE(auth_code, :authCode)
+           WHERE attempt_id = :attemptId AND host_approved IS NULL AND state = 'AUTORIZADO'"""
+    )
+    suspend fun sellarAprobacionDelHost(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
+
     /** CAS + card details (available at record time). */
     @Query(
         """UPDATE payment_attempts

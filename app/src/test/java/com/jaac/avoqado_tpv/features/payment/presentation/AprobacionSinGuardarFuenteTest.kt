@@ -124,5 +124,7 @@ class AprobacionSinGuardarFuenteTest {
         assertTrue("el kiosco cierra la venta a los 12 s sin recibo",
             pantalla.contains("!(isKioskPayment && onKioskPaymentSuccess != null && currentState.aprobacionSinGuardar)") &&
                 pantalla.contains("currentState.recordingLostMessage != null || avisoQueCortaLaEspera"))
+        assertTrue("el kiosco espera el recibo sin mostrar el aviso (Codex r9)",
+            pantalla.contains("aviso = currentState.pendingSyncMessage?.takeIf { currentState.aprobacionSinGuardar }"))
     }
 }

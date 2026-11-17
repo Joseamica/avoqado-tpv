@@ -862,7 +862,9 @@ fun PaymentScreen(
                                         showApprovedAnimation = false
                                     }
                                 },
-                                isRefund = currentState.isRefund  // 💸 Show "Reembolso Aprobado" for refunds
+                                isRefund = currentState.isRefund,  // 💸 Show "Reembolso Aprobado" for refunds
+                                // D13 (Codex r9): el kiosco se queda aquí esperando el recibo; el aviso se ve aquí mismo.
+                                aviso = currentState.pendingSyncMessage?.takeIf { currentState.aprobacionSinGuardar },
                             )
                         }
 

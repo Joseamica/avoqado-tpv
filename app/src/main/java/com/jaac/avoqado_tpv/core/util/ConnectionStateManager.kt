@@ -4,6 +4,7 @@ import com.google.firebase.crashlytics.FirebaseCrashlytics
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -49,37 +50,40 @@ class ConnectionStateManager @Inject constructor() {
     @Volatile
     private var measurementCount: Int = 0
 
+    private val _escriturasDelLatido = MutableStateFlow(0L)
+
     /**
      * Cuántas veces ha escrito el LATIDO (su respuesta, o «sin red» tras su gracia). En 0, el `true/true` de arriba es el
-     * supuesto del arranque, no evidencia de que el servidor conteste (D13, Codex r1 #1). Sube ANTES de publicar el estado,
-     * así quien recibe ese estado ya lo ve. Sólo lo escribe el `ConnectionViewModel`, en el hilo principal.
+     * supuesto del arranque, no evidencia de que el servidor conteste (D13, Codex r1 #1). Es un flujo y sube DESPUÉS de
+     * publicar el estado: así se ve cada escritura, también la de un latido idéntico al anterior, que no cambia
+     * [connectionState] (Codex r2).
      */
-    @Volatile
-    var escriturasDelLatido: Long = 0L
-        private set
+    val escriturasDelLatido: StateFlow<Long> = _escriturasDelLatido.asStateFlow()
+
+    private fun contarEscrituraDelLatido() = _escriturasDelLatido.update { it + 1 }
 
     /**
      * Update internet connectivity status
      */
     fun setInternetConnected(connected: Boolean) {
-        escriturasDelLatido++
         val current = _connectionState.value
         if (current.hasInternet != connected) {
             Timber.i("🌐 [ConnectionState] Internet: $connected")
             _connectionState.value = current.copy(hasInternet = connected)
         }
+        contarEscrituraDelLatido()
     }
 
     /**
      * Update server connectivity status
      */
     fun setServerConnected(connected: Boolean) {
-        escriturasDelLatido++
         val current = _connectionState.value
         if (current.hasServer != connected) {
             Timber.i("🖥️ [ConnectionState] Server: $connected")
             _connectionState.value = current.copy(hasServer = connected)
         }
+        contarEscrituraDelLatido()
     }
 
     /**
@@ -87,7 +91,6 @@ class ConnectionStateManager @Inject constructor() {
      * Applies hysteresis for slow connection detection.
      */
     fun updateState(hasInternet: Boolean, hasServer: Boolean, latencyMs: Long? = null) {
-        escriturasDelLatido++
         val now = System.currentTimeMillis()
 
         // Skip first measurement (cold TCP + TLS handshake is always slow)
@@ -129,6 +132,7 @@ class ConnectionStateManager @Inject constructor() {
                 }
             } catch (_: Exception) { /* Firebase not initialized yet during early startup */ }
         }
+        contarEscrituraDelLatido()
     }
 
     /** Lo publican [WifiSinSalidaMonitor] (DETECTADO / NO) y [ControlDeWifi] vía el VM (REINICIANDO). */

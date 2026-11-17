@@ -1016,6 +1016,24 @@ class ShiftViewModelTest {
     }
 
     @Test
+    fun `P1 D13 un latido identico al anterior tambien cuenta (Codex r2)`() = runTest {
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        cajaAbiertaGuardada()
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        // El siguiente latido contesta con la MISMA latencia: el estado no cambia, pero contestó.
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isFalse()
+        coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
+    }
+
+    @Test
     fun `P1 D13 al arrancar, antes del primer latido, decide lo que Android valido (Codex r1 #1)`() = runTest {
         // El manager nace en true/true sin que nadie haya contestado; un WiFi sin salida no está validado.
         every { connectivityObserver.getCurrentNetworkStatus() } returns NetworkStatus.Unavailable

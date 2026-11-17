@@ -208,7 +208,11 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // su rama y se renumeró a 46 el 3-nov al integrar la 2.15.0, que ya está en la calle con OTRA v45 (la de arriba).
     // 🔴 Cruza versión de esquema: instalar encima cualquier APK con base v45 (la 2.15.0) o anterior es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local, también la cola de fotos. El retroceso exige un APK con v46.
-    version = 46,
+    // ⭐ Version 47 (17-nov-2026, D5): `pending_payments.card_nature` (crédito/débito del registro original), para que un cobro
+    // reproducido desde la cola mande el MISMO método. Aditiva y nullable (MIGRATION_46_47); filas viejas en NULL = como hoy.
+    // 🔴 Cruza versión de esquema: instalar encima un APK con base v46 o anterior es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local. El retroceso exige un APK con v47.
+    version = 47,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2244,6 +2248,20 @@ abstract class AvoqadoDatabase : RoomDatabase() {
          * de `46.json`. Nació como v45 en la rama y se renumeró el 3-nov al integrar la 2.15.0, que ya publicó SU v45 («ninguna
          * duda»): dos esquemas con el mismo número dejarían en crash-loop a las terminales. Idempotente por `IF NOT EXISTS`.
          */
+        /**
+         * v47 (D5): `pending_payments.card_nature` TEXT nullable. Sólo ADICIÓN, sin backfill: una fila de una cola vieja queda
+         * NULL y se reproduce como hoy (crédito). Idempotente por `PRAGMA table_info`.
+         */
+        val MIGRATION_46_47 = object : Migration(46, 47) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existe = db.query("PRAGMA table_info(pending_payments)").use { cursor ->
+                    val nombre = cursor.getColumnIndex("name")
+                    generateSequence { if (cursor.moveToNext()) cursor.getString(nombre) else null }.any { it == "card_nature" }
+                }
+                if (!existe) db.execSQL("ALTER TABLE pending_payments ADD COLUMN card_nature TEXT")
+            }
+        }
+
         val MIGRATION_45_46 = object : Migration(45, 46) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `proof_of_sale_queue` (`idempotency_key` TEXT NOT NULL, `kind` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `payment_id` TEXT NOT NULL, `verification_id` TEXT, `slot` TEXT NOT NULL, `local_path` TEXT, `linking_number` TEXT, `ported_number` TEXT, `captured_at` INTEGER NOT NULL, `capture_seq` INTEGER NOT NULL, `capture_device_id` TEXT NOT NULL, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `retry_count` INTEGER NOT NULL, `permanent` INTEGER NOT NULL DEFAULT 0, `outcome` TEXT, `last_error` TEXT, `created_at` INTEGER NOT NULL, `venue_slug` TEXT, `photo_url` TEXT, PRIMARY KEY(`idempotency_key`))")

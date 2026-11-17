@@ -76,24 +76,33 @@ class ConnectivityObserver @Inject constructor(
     /**
      * Observe network connectivity changes as Flow.
      *
-     * Emits:
-     * - NetworkStatus.Available when connection is restored
-     * - NetworkStatus.Unavailable when connection is lost
+     * Android llama `onAvailable`/`onLost` por CADA red que cumple la petición. Se lleva el conjunto de redes validadas y se
+     * emite Unavailable sólo cuando queda vacío (D18, PAX 16-nov: al volver el WiFi llegan dos redes y ~10 s después un
+     * «Network LOST» de la vieja; antes eso decía «sin red» con la otra viva y el `distinctUntilChanged` se tragaba el corte
+     * real siguiente, que el latido descubría hasta ~33 s después).
      *
      * @return Flow<NetworkStatus> with distinct values (no duplicates)
      */
     fun observe(): Flow<NetworkStatus> = callbackFlow {
+        val validadas = mutableSetOf<Network>()
+
+        // Bajo el candado: las emisiones salen en el mismo orden que los cambios del conjunto.
+        fun cambiar(network: Network, validada: Boolean, motivo: String) = synchronized(validadas) {
+            if (validada) validadas.add(network) else validadas.remove(network)
+            val status = if (validadas.isEmpty()) NetworkStatus.Unavailable else NetworkStatus.Available
+            Timber.i("🌐 [Connectivity] $motivo ($network) — redes validadas=${validadas.size} → $status")
+            trySend(status)
+        }
+
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 super.onAvailable(network)
-                Timber.i("🌐 [Connectivity] Network AVAILABLE")
-                trySend(NetworkStatus.Available)
+                cambiar(network, validada = true, motivo = "Network AVAILABLE")
             }
 
             override fun onLost(network: Network) {
                 super.onLost(network)
-                Timber.w("⚠️ [Connectivity] Network LOST")
-                trySend(NetworkStatus.Unavailable)
+                cambiar(network, validada = false, motivo = "Network LOST")
             }
 
             override fun onCapabilitiesChanged(
@@ -101,16 +110,8 @@ class ConnectivityObserver @Inject constructor(
                 networkCapabilities: NetworkCapabilities
             ) {
                 super.onCapabilitiesChanged(network, networkCapabilities)
-                val isConnected = networkCapabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
-                )
-                if (isConnected) {
-                    Timber.d("🌐 [Connectivity] Network capabilities changed - CONNECTED")
-                    trySend(NetworkStatus.Available)
-                } else {
-                    Timber.d("⚠️ [Connectivity] Network capabilities changed - DISCONNECTED")
-                    trySend(NetworkStatus.Unavailable)
-                }
+                val validada = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                cambiar(network, validada, motivo = "Network capabilities changed")
             }
         }
 
@@ -121,10 +122,13 @@ class ConnectivityObserver @Inject constructor(
 
         connectivityManager.registerNetworkCallback(request, callback)
 
-        // Emit initial state
-        val currentStatus = getCurrentNetworkStatus()
-        trySend(currentStatus)
-        Timber.d("🌐 [Connectivity] Initial status: $currentStatus")
+        // Estado inicial: si los avisos de las redes ya llegaron, mandan ellos; si no, la red activa (sus `onAvailable` vienen
+        // en camino y la confirman).
+        synchronized(validadas) {
+            val currentStatus = if (validadas.isNotEmpty()) NetworkStatus.Available else getCurrentNetworkStatus()
+            trySend(currentStatus)
+            Timber.d("🌐 [Connectivity] Initial status: $currentStatus")
+        }
 
         awaitClose {
             Timber.d("🌐 [Connectivity] Unregistering network callback")

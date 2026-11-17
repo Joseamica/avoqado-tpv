@@ -53,6 +53,8 @@ data class QueuedPayment(
     val cardBrand: String?,
     val entryMode: String, // "CHIP", "CONTACTLESS", "SWIPE"
     val isInternational: Boolean,
+    /** D5: «CREDIT»/«DEBIT» del registro original; null (fila vieja o sin dato) ⇒ el replay sigue como hoy. */
+    val cardNature: String? = null,
 
     // Blumon Authorization
     val authorizationNumber: String?,
@@ -169,6 +171,7 @@ data class QueuedPayment(
                 cardBrand = cardDetails.cardBrand.name.takeUnless { cardDetails.isCash },
                 entryMode = cardDetails.entryMode.name,
                 isInternational = cardDetails.isInternational,
+                cardNature = cardDetails.naturalezaParaLaCola(),
                 authorizationNumber = authorizationNumber,
                 idempotencyKey = context.idempotencyKey,
                 processor = if (angel != null) ProcessorType.ANGELPAY else ProcessorType.BLUMON,
@@ -353,7 +356,9 @@ data class QueuedPayment(
                 "OTHER" -> CardEntryMode.OTHER
                 else -> CardEntryMode.CHIP
             },
-            isInternational = isInternational
+            isInternational = isInternational,
+            // D5: el replay manda el MISMO método que el registro original (una fila vieja, sin el dato, como hoy).
+            cardNature = CardNature.fromBlumonType(cardNature),
         )
     }
 }

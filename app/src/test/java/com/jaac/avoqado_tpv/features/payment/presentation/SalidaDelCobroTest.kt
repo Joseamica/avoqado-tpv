@@ -46,4 +46,18 @@ class SalidaDelCobroTest {
         assertThat(salidaDelCobro(pendiente(remoto, contesto = true), puedeRevisar = true, puedeDeclararSinTarjeta = false))
             .isEqualTo(SalidaDelCobro.FALTA_PERMISO_GERENCIA)
     }
+
+    @Test fun `P1 D5 el chip rechazo tras aprobar en un cobro del POS no ofrece decir que no se presento tarjeta`() {
+        val remoto = fila.copy(terminalPaymentRequestId = "req", lastError = PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION)
+        for (gerencia in listOf(true, false)) {
+            assertThat(salidaDelCobro(pendiente(remoto, contesto = true), puedeRevisar = true, puedeDeclararSinTarjeta = gerencia))
+                .isEqualTo(SalidaDelCobro.EN_EL_AVISO_O_EL_POS)
+        }
+    }
+
+    @Test fun `P1 D5 el chip rechazo tras aprobar en un cobro local ofrece revise la terminal`() {
+        val local = fila.copy(lastError = PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION)
+        assertThat(salidaDelCobro(pendiente(local, contesto = true), puedeRevisar = true, puedeDeclararSinTarjeta = true))
+            .isEqualTo(SalidaDelCobro.REVISE_LA_TERMINAL)
+    }
 }

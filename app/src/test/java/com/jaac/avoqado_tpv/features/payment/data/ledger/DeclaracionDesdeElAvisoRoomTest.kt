@@ -227,6 +227,30 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(obligaciones()).isEmpty()
     }
 
+    /**
+     * D20 (Codex r2): «Ver anteriores» en Pagos amplía la lista de 50 en 50. La declaración por el servidor vuelve a buscar el cobro
+     * antes de mandarlo (`yaNoEsDeclarable`): si buscara sólo en los 50 más recientes, un cobro viejo del POS se vería y fallaría.
+     */
+    @Test fun `D20 una solicitud del POS mas vieja que las 50 recientes se declara desde Ver anteriores`() = runBlocking<Unit> {
+        val viejo = System.currentTimeMillis() - 10 * 60 * 60_000L
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "a-viejo", venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"r-viejo"}""",
+                terminalPaymentRequestId = "r-viejo", createdAt = viejo, updatedAt = viejo,
+            ),
+        )
+        repeat(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) { duda("local-$it") }
+        assertThat(declarables().map { it.identidad }).doesNotContain("r-viejo")
+        val cobro = ledger.observarCobrosDeclarables(venue, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA).first().single { it.identidad == "r-viejo" }
+        coEvery { api.declararSinCobro(venue, "r-viejo", any()) } returns liberada("r-viejo")
+        coEvery { api.getAttemptStatus(venue, "a-viejo") } returns s6Declarada("a-viejo", "r-viejo")
+
+        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(Declarado)
+
+        assertThat(dao.getById("a-viejo")!!.state).isEqualTo("DESCARTADA")
+    }
+
     @Test fun `P1 2xx de una PAX sin vinculo - cierra por la solicitud`() = runBlocking<Unit> {
         val cobro = duda("a-pax", "r-pax", processor = "BLUMON")
         coEvery { api.declararSinCobro(venue, "r-pax", any()) } returns liberada("r-pax")

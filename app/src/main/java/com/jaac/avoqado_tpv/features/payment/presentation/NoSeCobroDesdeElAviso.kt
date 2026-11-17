@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,6 +41,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
+import com.jaac.avoqado_tpv.core.remotepayment.ObligacionPendiente
 import com.jaac.avoqado_tpv.features.payment.data.ledger.CobroDeclarable
 import com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
 import com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDeLaDeclaracion
@@ -179,6 +181,70 @@ internal fun BannerDeCobrosPendientes(
     DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
 }
 
+/** Cada cuánto se pone al día el «hace N min» del recuadro «Por revisar». */
+internal const val RELOJ_DE_POR_REVISAR_MS = 30_000L
+
+/**
+ * 🔴 D20 (founder, 17-nov: «lista»): el recuadro «Por revisar» de Pagos. Es lo mismo que el banner del Inicio (el mismo
+ * [FlujoDeNoSeCobro], los mismos diálogos y el mismo refresco de uno en uno), pero sin la ventana de 10 min. El aviso verde se quita
+ * porque a los 10 min ya no evita un cobro doble, y la duda se quedaba sin ninguna salida en la terminal. Sin nada por revisar, no pinta nada.
+ */
+@Composable
+internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAviso) {
+    val alcance = rememberCoroutineScope()
+    val flujo = remember(venueId) { FlujoDeNoSeCobro(declaracion, venueId, alcance) }
+    val paso by flujo.paso.collectAsStateWithLifecycle()
+    // Codex r2: con más de 50 por revisar, «Ver anteriores» trae otros 50; sin esto los viejos sólo salían al resolver los recientes.
+    var limite by remember(venueId) { mutableStateOf(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) }
+    val cobrosFlow = remember(venueId, limite) { declaracion.observarDeclarables(venueId, limite) }
+    val cobros by cobrosFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val recortada = DeclaracionDesdeElAviso.recortada(cobros, limite)
+    val porRevisar = DeclaracionDesdeElAviso.porRevisar(cobros)
+    val porRevisarAlDia by rememberUpdatedState(porRevisar)
+    val hayPorRevisar = porRevisar.isNotEmpty()
+    val ahora by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(RELOJ_DE_POR_REVISAR_MS)
+            value = System.currentTimeMillis()
+        }
+    }
+    val cicloDeVida = LocalLifecycleOwner.current.lifecycle
+
+    LaunchedEffect(porRevisar) { flujo.vigentesCambiaron(porRevisar) }
+    // Si otro aparato o el POS lo resolvió, sale de la lista en segundos: una consulta, de una en una, sólo con Pagos a la vista.
+    LaunchedEffect(hayPorRevisar, venueId) {
+        if (!hayPorRevisar) return@LaunchedEffect
+        cicloDeVida.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                declaracion.refrescarUno(venueId, porRevisarAlDia)
+                delay(REFRESCO_DEL_BANNER_MS)
+            }
+        }
+    }
+
+    val texto = AvisoDeCobrosPendientes.textoPorRevisar(
+        porRevisar.map { ObligacionPendiente(it.totalCentavos, it.desdeMillis) }, ahora, recortada = recortada,
+    )
+    if (texto != null) {
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text(text = texto, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (recortada) {
+                        TextButton(onClick = { limite += DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA }) {
+                            Text("Ver anteriores")
+                        }
+                    }
+                    TextButton(onClick = { flujo.tocar(porRevisar) }) {
+                        Text("No se cobró")
+                    }
+                }
+            }
+        }
+    }
+    DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
+}
+
 /** El texto arriba y los botones abajo: los tres no caben junto al texto en los 360 dp de la PAX. */
 @Composable
 internal fun AvisoConBotones(
@@ -283,6 +349,18 @@ private fun ListaDeCobrosDialog(
     )
 }
 
+/**
+ * D12 (16-nov): con solicitud, la declaración va al servidor y ahí queda quién y cuándo; un Pago rápido (sin solicitud) se
+ * declara en la libreta de ESTA terminal ([com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.declareChecked])
+ * y no llega al servidor. El texto no promete más.
+ */
+internal fun textoDeLaConfirmacion(cobro: CobroDeclarable, ahora: Long): String =
+    AvisoDeCobrosPendientes.importeYAntiguedad(cobro.totalCentavos, cobro.desdeMillis, ahora) +
+        // Codex r3 (D12): sin «si el banco avisa que sí se cobró, se registra como cobrado»: el aviso del banco no crea el pago
+        // (el receptor de Blumon TPV sólo busca un `Payment` que ya exista; si no, lo deja pendiente hasta marcarlo huérfano).
+        if (cobro.requestId != null) ". Revísalo antes de confirmar: queda tu nombre y la hora."
+        else ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado."
+
 @Composable
 private fun ConfirmacionDialog(
     cobro: CobroDeclarable,
@@ -298,11 +376,7 @@ private fun ConfirmacionDialog(
             Text("¿No se cobró este cobro?")
         },
         text = {
-            Text(
-                AvisoDeCobrosPendientes.importeYAntiguedad(cobro.totalCentavos, cobro.desdeMillis, ahora) +
-                    ". Revísalo antes de confirmar: queda tu nombre y la hora. Si el banco avisa que sí se cobró, se registra como cobrado.",
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-            )
+            Text(textoDeLaConfirmacion(cobro, ahora), modifier = Modifier.verticalScroll(rememberScrollState()))
         },
         confirmButton = {
             AvoqadoButton(text = "Sí, no se cobró", onClick = onConfirmar, loading = enviando)

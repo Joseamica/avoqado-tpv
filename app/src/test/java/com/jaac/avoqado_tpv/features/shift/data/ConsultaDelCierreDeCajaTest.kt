@@ -221,4 +221,17 @@ class ConsultaDelCierreDeCajaTest {
         assertThat(conRed).contains("POS")
         assertThat(conRed).contains("soporte")
     }
+
+    /** D20: lo que el aviso verde ya no nombra se resuelve en Pagos › «Por revisar»; soporte queda al final, no como única salida. */
+    @Test fun `D20 con respuesta, antes de soporte manda a Pagos - Por revisar`() {
+        for ((operaciones, delPos) in listOf(1 to 0, 2 to 0, 1 to 1, 3 to 2)) {
+            val texto = textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = false)
+            assertThat(texto).contains("Pagos › «Por revisar»")
+            assertThat(texto.indexOf("Por revisar")).isLessThan(texto.indexOf("soporte"))
+            // Codex r1 #2: lo que bloquea puede no estar en la lista (devolución, aprobado, en curso): no se promete que esté.
+            assertThat(texto).containsMatch("Si no aparecen? ahí")
+        }
+        // Sólo del POS: «Por revisar» no tiene nada suyo que ofrecer.
+        assertThat(textoDelCierreBloqueado(0, 2, sinRespuesta = false)).doesNotContain("Por revisar")
+    }
 }

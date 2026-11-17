@@ -1395,6 +1395,30 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `D5 la fila que encola un cobro con DEBITO se reproduce como DEBIT_CARD, el mismo metodo que el registro directo`() = runTest(testDispatcher) {
+        val filas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { paymentQueueRepository.enqueue(capture(filas)) } returns Result.success(Unit)
+        val debito = com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails(
+            maskedPan = "",
+            cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA,
+            entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.OTHER,
+            cardNature = com.jaac.avoqado_tpv.features.payment.domain.model.CardNature.DEBIT,
+        )
+        val vm = createViewModel()
+        try {
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext().copy(cardDetails = debito),
+                error = RuntimeException("respuesta perdida"),
+            )
+            assertThat(debito.toPaymentMethod()).isEqualTo("DEBIT_CARD")
+            assertThat(filas.single().toCardDetails().toPaymentMethod()).isEqualTo("DEBIT_CARD")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `un cobro exitoso con registro encolado NO es un estado de Error`() = runTest(testDispatcher) {
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
 

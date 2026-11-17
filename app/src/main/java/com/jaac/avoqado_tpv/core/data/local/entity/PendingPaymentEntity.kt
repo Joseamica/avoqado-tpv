@@ -88,6 +88,10 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "is_international")
     val isInternational: Boolean,
 
+    // D5 (v47): crédito o débito con que se armó el registro («CREDIT»/«DEBIT»). NULL en filas viejas ⇒ se reproduce como hoy.
+    @ColumnInfo(name = "card_nature")
+    val cardNature: String? = null,
+
     // Blumon Authorization Data
     @ColumnInfo(name = "authorization_number")
     val authorizationNumber: String?, // e.g., "502511"

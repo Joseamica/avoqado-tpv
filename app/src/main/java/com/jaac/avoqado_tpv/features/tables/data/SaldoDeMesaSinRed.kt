@@ -149,6 +149,37 @@ internal fun aperturaConfirmadaDe(cuenta: String, filas: List<SyncIntentEntity>)
         }
         .firstOrNull()
 
+/**
+ * D16: la cuenta aparte en la que el SERVIDOR puso una ronda que esta terminal mandó a [orderId] cuando otra caja ya la había
+ * cobrado (D7). [orderNumber], [version] y [total] son los del ACK (un reintento sólo trae el id).
+ */
+data class CuentaAparte(val orderId: String, val orderNumber: String?, val version: Int?, val total: BigDecimal?)
+
+/** D16: de las rondas ACKED, la cuenta aparte del ACK más nuevo (`seq`) que nombra [orderId]; `null` si no hay. */
+internal fun cuentaAparteDe(orderId: String, filas: List<SyncIntentEntity>): CuentaAparte? =
+    filas.asSequence()
+        .filter { it.type == SyncIntentTypes.ADD_ITEMS && it.status == SyncIntentEntity.STATUS_ACKED }
+        .sortedByDescending { it.seq }
+        .mapNotNull { fila ->
+            val result = fila.resultJson?.let(::parsear)?.asJsonObject ?: return@mapNotNull null
+            if (result.texto("orderId") != orderId) return@mapNotNull null
+            val aparte = result.get("cuentaAparte")?.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val id = aparte.texto("orderId")?.takeIf { it.isNotBlank() && it != orderId } ?: return@mapNotNull null
+            CuentaAparte(
+                orderId = id,
+                orderNumber = aparte.texto("orderNumber"),
+                version = aparte.numero("version")?.toInt(),
+                total = aparte.numero("total"),
+            )
+        }
+        .firstOrNull()
+
+private fun com.google.gson.JsonObject.texto(clave: String): String? =
+    get(clave)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+
+private fun com.google.gson.JsonObject.numero(clave: String): BigDecimal? =
+    get(clave)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asBigDecimal
+
 private fun parsear(json: String): JsonElement? = runCatching { JsonParser.parseString(json) }.getOrNull()?.takeIf { it.isJsonObject }
 
 /** ¿Algún texto del payload (a cualquier profundidad) es exactamente [cuenta]? */
@@ -206,6 +237,10 @@ class SaldoDeMesaSinRed @Inject constructor(private val syncOutbox: SyncOutbox) 
      * con [otrosIds] (p. ej. el local de la sesión) y con los ids locales que la cola recuerda de su apertura sin red.
      * Ver [pendienteDeSubirEn].
      */
+    /** D16: ¿una ronda de esta terminal para [orderId] cayó en una cuenta aparte? Se lee de la cola en disco. */
+    suspend fun cuentaAparte(venueId: String, orderId: String): CuentaAparte? =
+        cuentaAparteDe(orderId, syncOutbox.confirmadasConCuentaAparte(venueId, orderId))
+
     suspend fun pendienteDeSubir(venueId: String, orderId: String, otrosIds: List<String> = emptyList()): String? {
         val cuentas = (listOf(orderId) + otrosIds + idsLocalesDe(orderId, syncOutbox.aperturasConfirmadasConResultado(venueId, orderId))).distinct()
         return pendienteDeSubirEn(cuentas, cuentas.flatMap { syncOutbox.vivasQueMencionan(venueId, it) }.distinctBy { it.id })

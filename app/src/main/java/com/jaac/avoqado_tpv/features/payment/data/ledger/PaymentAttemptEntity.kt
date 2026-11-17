@@ -198,6 +198,13 @@ data class PaymentAttemptEntity(
          */
         const val CUARENTENA_POR_ANTIGUEDAD = "cuarentena_por_antiguedad"
         /**
+         * 🔴 D5 (encargo 533d77, opción C, 16-nov): en la PAX el banco APROBÓ y después la tarjeta rechazó el cierre
+         * (`CompleteEmvTrans`). No se sabe si Blumon TPV revierte el cargo: la fila pasa de HOST_RESPONDIO a INDETERMINADO con esta
+         * marca y SIN `host_approved` ([PaymentAttemptDao.casChipRechazoTrasAprobacion]). Es dinero en juego: cerca SU venta
+         * ([SQL_CERCA_LA_VENTA]) aunque no tenga `host_approved`. La operación, la referencia y la autorización del banco se conservan.
+         */
+        const val MOTIVO_CHIP_RECHAZO_TRAS_APROBACION = "chip_rechazo_tras_aprobacion"
+        /**
          * 🔴 Ronda 20 (founder, 23-sep): la duda que deja un proceso MUERTO a media venta. A diferencia de
          * [CUARENTENA_POR_ANTIGUEDAD] SÍ acredita que la llamada nativa terminó —el SDK vive en el proceso de la app (su
          * manifiesto no declara `android:process`), así que murió con él—: por eso no aparta el aparato, y sin dinero conocido
@@ -331,6 +338,8 @@ data class PaymentAttemptEntity(
             "state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') " +
             "OR (state = 'INDETERMINADO' AND (host_approved IS 1 OR server_processor_evidence IS 'APPROVED' " +
                 "OR server_veto IS NOT NULL " +
+                // D5 (533d77): el banco aprobó y el chip rechazó el cierre — no se sabe si hubo cargo, pero hay dinero en juego.
+                "OR last_error IS 'chip_rechazo_tras_aprobacion' " +
                 "OR server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
                 "OR (last_error = 'cuarentena_por_antiguedad' AND process_token IS :processToken))) " +
             "OR (state = 'DESCARTADA' AND (server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"

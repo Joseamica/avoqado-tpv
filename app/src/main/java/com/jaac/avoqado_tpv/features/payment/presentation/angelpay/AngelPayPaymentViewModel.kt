@@ -5172,7 +5172,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         )
 
         val merchantAccountId = cuentaParaRegistrar()
-        Timber.d("🔶 [AngelPay SDK] Recording card payment | merchantAccountId=$merchantAccountId")
+        // D5: el tipo del BIN no es dato sensible; sin esta línea no se sabe en el aparato por qué salió crédito o débito.
+        Timber.d("🔶 [AngelPay SDK] Recording card payment | merchantAccountId=$merchantAccountId | cardType=$cardType → ${cardDetails.cardNature}")
 
         val paymentContext = PaymentContext.AngelPayPayment(
             venueId = venueId,

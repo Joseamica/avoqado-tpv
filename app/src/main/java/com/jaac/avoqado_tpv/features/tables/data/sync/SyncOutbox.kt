@@ -432,6 +432,10 @@ class SyncOutbox @Inject constructor(
     suspend fun aperturasConfirmadasConResultado(venueId: String, orderId: String): List<SyncIntentEntity> =
         withContext(Dispatchers.IO) { dao.aperturasConfirmadasConResultado(venueId, orderId) }
 
+    /** D16: las rondas confirmadas de [venueId] que el SERVIDOR puso en una cuenta aparte y mencionan [orderId] (filtro grueso). */
+    suspend fun confirmadasConCuentaAparte(venueId: String, orderId: String): List<SyncIntentEntity> =
+        withContext(Dispatchers.IO) { dao.confirmadasConCuentaAparte(venueId, orderId) }
+
     /** El mesero/gerente descartó un rechazo tras resolverlo a mano. */
     suspend fun dismissRejected(venueId: String, id: String) {
         dao.dismiss(id, venueId)

@@ -133,6 +133,17 @@ interface SyncIntentDao {
     )
     suspend fun aperturasConfirmadasConResultado(venueId: String, texto: String): List<SyncIntentEntity>
 
+    /**
+     * D16: rondas (ADD_ITEMS) confirmadas cuyo RESULTADO menciona una cuenta aparte y [texto] — el id de la cuenta que pidió esta
+     * terminal. Filtro grueso; quien llama revisa el JSON ([com.jaac.avoqado_tpv.features.tables.data.cuentaAparteDe]).
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'ADD_ITEMS' AND status = 'ACKED' " +
+            "AND result_json IS NOT NULL AND instr(result_json, 'cuentaAparte') > 0 AND instr(result_json, :texto) > 0 " +
+            "ORDER BY seq DESC LIMIT 20",
+    )
+    suspend fun confirmadasConCuentaAparte(venueId: String, texto: String): List<SyncIntentEntity>
+
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
 

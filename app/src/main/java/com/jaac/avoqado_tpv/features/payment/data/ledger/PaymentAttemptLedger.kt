@@ -449,7 +449,7 @@ class PaymentAttemptLedger(
             // cada pasada la vuelven a escribir, y quien llama lo lee con [tieneEvidenciaSinGuardar] para no pintar un «Aprobado»
             // limpio. Sólo ante un FALLO de escritura: un CAS que no encuentra la fila en su estado (repetir la marca sobre
             // HOST_RESPONDIO, D3) no es dinero perdido. Un rechazo no se recuerda: no movió dinero.
-            if (false && approved) { // SABOTAJE D13: sin recordar la aprobación (debe salir rojo)
+            if (approved) {
                 withContext(NonCancellable) {
                     candadoDeEvidencia.withLock { aprobacionesSinGuardar[attemptId] = AprobacionSinGuardar(operationId, referenceNumber, authCode) }
                 }

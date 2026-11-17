@@ -127,6 +127,12 @@ data class NoInstrumentResolutionRequest(
      * mide el aviso del banco de ese comercio, no el de lo que la terminal tenga asignado hoy. `null` viaja ausente (Gson).
      */
     @SerializedName("merchantAccountId") val merchantAccountId: String? = null,
+    /**
+     * 🔴 D22: sólo con `statement = UNCHARGED_VERIFIED` («revisé la terminal y no se cobró»), donde el servidor los EXIGE: el monto
+     * del cobro según la libreta, igual en cada reintento (el servidor compara el cuerpo). `null` viaja ausente (Gson).
+     */
+    @SerializedName("amountCents") val amountCents: Long? = null,
+    @SerializedName("tipCents") val tipCents: Long? = null,
 )
 
 /** Espejo tolerante de `TerminalAttemptStatus` del servidor: todo nulo por defecto (Gson no respeta la no-nulabilidad). */

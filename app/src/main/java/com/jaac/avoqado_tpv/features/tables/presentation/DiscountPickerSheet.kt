@@ -53,6 +53,8 @@ import java.math.BigDecimal
 fun DiscountPickerSheet(
     discounts: List<AvailableDiscount>,
     isLoading: Boolean,
+    /** D2: por qué no se pudo cargar la lista (sin red, rechazo). Con la lista vacía se dice esto, no que no hay. */
+    loadError: String? = null,
     isApplying: Boolean,
     onDismiss: () -> Unit,
     onSelect: (discountId: String) -> Unit,
@@ -69,6 +71,14 @@ fun DiscountPickerSheet(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         CircularProgressIndicator(modifier = Modifier.height(32.dp))
                     }
+                }
+
+                discounts.isEmpty() && loadError != null -> {
+                    Text(
+                        text = loadError,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 discounts.isEmpty() -> {

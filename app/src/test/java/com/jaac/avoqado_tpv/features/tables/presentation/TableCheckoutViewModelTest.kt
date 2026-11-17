@@ -716,6 +716,96 @@ class TableCheckoutViewModelTest {
 
         assertThat(viewModel.availableDiscounts.value).isEqualTo(discounts)
         assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+        assertThat(viewModel.discountsLoadError.value).isNull()
+    }
+
+    // D2 (hz:6884f503:D2, N86 17-nov): sin red la hoja decía «No hay descuentos disponibles para esta cuenta», que es otra
+    // cosa. La lista vacía de un ÉXITO y la de un fallo ya no se confunden, y el «sin red» sale de ESTA petición.
+    @Test
+    fun loadAvailableDiscounts_sin_red_dice_sin_conexion_y_no_que_no_hay_descuentos() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.failure(java.io.IOException("Unable to resolve host"))
+
+        viewModel.loadAvailableDiscounts()
+
+        assertThat(viewModel.discountsLoadError.value).startsWith("Sin conexión")
+        assertThat(viewModel.discountsLoadError.value).contains("necesita internet")
+        assertThat(viewModel.availableDiscounts.value).isEmpty()
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+    }
+
+    @Test
+    fun loadAvailableDiscounts_rechazo_del_servidor_no_dice_sin_conexion() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 403, message = "Sin permiso"))
+
+        viewModel.loadAvailableDiscounts()
+
+        assertThat(viewModel.discountsLoadError.value).isEqualTo("No se pudieron cargar los descuentos. Cierra y vuelve a intentar.")
+    }
+
+    @Test
+    fun loadAvailableDiscounts_que_vuelve_a_cargar_bien_borra_el_aviso_anterior() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.failure(java.io.IOException("timeout"))
+        viewModel.loadAvailableDiscounts()
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.success(emptyList())
+
+        viewModel.loadAvailableDiscounts()
+
+        // Ahora sí es «no hay»: un éxito con la lista vacía.
+        assertThat(viewModel.discountsLoadError.value).isNull()
+        assertThat(viewModel.availableDiscounts.value).isEmpty()
+    }
+
+    // D2 (Codex r1): abrir, cerrar y volver a abrir la hoja deja dos cargas en vuelo. La que llega TARDE (la vieja) no pisa a la vigente.
+    @Test
+    fun una_carga_vieja_de_descuentos_que_falla_tarde_no_pisa_a_la_vigente() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        val vieja = CompletableDeferred<Result<List<AvailableDiscount>>>()
+        val vigente = CompletableDeferred<Result<List<AvailableDiscount>>>()
+        val respuestas = ArrayDeque(listOf(vieja, vigente))
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } coAnswers { respuestas.removeFirst().await() }
+
+        viewModel.loadAvailableDiscounts()
+        viewModel.loadAvailableDiscounts()
+        vigente.complete(Result.success(emptyList()))
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+        vieja.complete(Result.failure(java.io.IOException("timeout")))
+
+        assertThat(viewModel.discountsLoadError.value).isNull()
+        assertThat(viewModel.availableDiscounts.value).isEmpty()
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+    }
+
+    @Test
+    fun un_exito_viejo_de_descuentos_no_borra_el_aviso_de_la_carga_vigente_ni_apaga_su_carga() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        val vieja = CompletableDeferred<Result<List<AvailableDiscount>>>()
+        val vigente = CompletableDeferred<Result<List<AvailableDiscount>>>()
+        val respuestas = ArrayDeque(listOf(vieja, vigente))
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } coAnswers { respuestas.removeFirst().await() }
+
+        viewModel.loadAvailableDiscounts()
+        viewModel.loadAvailableDiscounts()
+        vieja.complete(Result.success(emptyList()))
+        // La vigente sigue en camino: la hoja sigue cargando.
+        assertThat(viewModel.isLoadingDiscounts.value).isTrue()
+        vigente.complete(Result.failure(java.io.IOException("timeout")))
+
+        assertThat(viewModel.discountsLoadError.value).startsWith("Sin conexión")
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
     }
 
     @Test
@@ -821,6 +911,41 @@ class TableCheckoutViewModelTest {
         viewModel.loadAvailableServiceCharges()
 
         assertThat(viewModel.availableServiceCharges.value).isEqualTo(charges)
+        assertThat(viewModel.isLoadingServiceCharges.value).isFalse()
+        assertThat(viewModel.serviceChargesLoadError.value).isNull()
+    }
+
+    // D2: la hoja de cargos decía «Este venue no tiene cargos por servicio configurados» sin red.
+    @Test
+    fun loadAvailableServiceCharges_sin_red_dice_sin_conexion_y_no_que_no_hay_cargos() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        coEvery { repository.getAvailableServiceCharges(venueId) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 503, message = "Service Unavailable"))
+
+        viewModel.loadAvailableServiceCharges()
+
+        assertThat(viewModel.serviceChargesLoadError.value).startsWith("Sin conexión")
+        assertThat(viewModel.availableServiceCharges.value).isEmpty()
+    }
+
+    @Test
+    fun una_carga_vieja_de_cargos_que_falla_tarde_no_pisa_a_la_vigente() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        val vieja = CompletableDeferred<Result<List<AvailableServiceCharge>>>()
+        val vigente = CompletableDeferred<Result<List<AvailableServiceCharge>>>()
+        val respuestas = ArrayDeque(listOf(vieja, vigente))
+        coEvery { repository.getAvailableServiceCharges(venueId) } coAnswers { respuestas.removeFirst().await() }
+
+        viewModel.loadAvailableServiceCharges()
+        viewModel.loadAvailableServiceCharges()
+        vigente.complete(Result.success(emptyList()))
+        vieja.complete(Result.failure(java.io.IOException("timeout")))
+
+        assertThat(viewModel.serviceChargesLoadError.value).isNull()
         assertThat(viewModel.isLoadingServiceCharges.value).isFalse()
     }
 

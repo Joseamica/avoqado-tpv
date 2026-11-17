@@ -1027,7 +1027,8 @@ fun AppNavigation(
                     }
                 }
                 val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
-                if (aviso != null) {
+                // D22: montado siempre (sin aviso no pinta nada), para que el resultado de declarar el último cobro se alcance a leer.
+                run {
                     // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo ofrecía «Ayuda»: le decía al
                     // cajero que hay un cobro sin confirmar y lo dejaba sin ningún sitio donde comprobar si entró. Sigue sin poder
                     // taparse: se resuelve declarando («No se cobró», founder, 3-nov) o cuando la obligación se resuelve, nunca

@@ -696,6 +696,20 @@ class PaymentAttemptLedger(
      * venta ([PaymentAttemptDao.cerrarPorLiberacionDelServidor]). Nunca lanza; `true` sólo si transicionó.
      */
     suspend fun aplicarLiberacionDelServidor(l: LiberacionDelServidor, now: Long = System.currentTimeMillis()): Result<Boolean> = runCatching {
+        // 🔴 D22: la declaración del CAJERO que Avoqado guardó («revisé y no se cobró») no es «no presentó tarjeta» ni el silencio
+        // del banco: se cierra con el MISMO CAS que la declaración local, marcada «en Avoqado», y nunca sobre un cobro del POS. Si
+        // la fila ya se había cerrado sólo en la libreta (la respuesta del envío se perdió), sólo se le agrega la marca.
+        if (l.evidencia == LiberacionDelServidor.CAJERO_REVISO) {
+            if (l.requestId != null) return@runCatching false
+            return@runCatching salidaNegativa(l.attemptId, "declaración del cajero en Avoqado") {
+                declararSinCobroLocalYa(l.attemptId, l.venueId, l.quien, enAvoqado = true) ||
+                    run {
+                        if (dao.marcarDeclaracionEnAvoqado(l.attemptId, l.venueId, PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO) == 1)
+                            Timber.w("📒 [Libreta] la declaración local de %s ya estaba en Avoqado: marcada", l.attemptId)
+                        false
+                    }
+            }
+        }
         val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
         // 🔴 Pieza C (22-sep): sin `requestId` la liberación es de un cobro LOCAL y va a su propio CAS, que exige
         // `terminal_payment_request_id IS NULL`. Las dos consultas son excluyentes por construcción: una fila del POS
@@ -1301,10 +1315,11 @@ class PaymentAttemptLedger(
      *
      * @return true si la fila quedó cerrada y la terminal libre.
      */
-    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?): Boolean = try {
+    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean = false): Boolean = try {
         // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada. Pasada final
         // (P1-1): se mira DENTRO del candado, junto al CAS — mirarla antes dejaba cerrar si la evidencia llegaba en medio.
-        salidaNegativa(attemptId, "declaración sin cobro") { declararSinCobroLocalYa(attemptId, venueId, quien) }
+        // D22: [enAvoqado] = Avoqado contestó que la guardó; sólo cambia la marca que lee la pantalla, no el CAS.
+        salidaNegativa(attemptId, "declaración sin cobro") { declararSinCobroLocalYa(attemptId, venueId, quien, enAvoqado) }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
@@ -1312,8 +1327,9 @@ class PaymentAttemptLedger(
         false
     }
 
-    private suspend fun declararSinCobroLocalYa(attemptId: String, venueId: String, quien: String?): Boolean {
-        val motivo = "declarado_sin_cobro:" + (quien?.takeIf { it.isNotBlank() } ?: "sin_identificar")
+    private suspend fun declararSinCobroLocalYa(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean): Boolean {
+        val motivo = PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO + (quien?.takeIf { it.isNotBlank() } ?: "sin_identificar") +
+            (if (enAvoqado) PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO else "")
         val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis())
         if (filas == 1) Timber.w("📒 [Libreta] declarado SIN COBRO por el cajero | attemptId=%s motivo=%s", attemptId, motivo)
         else Timber.w("📒 [Libreta] la declaración NO aplicó (evidencia o estado cambiaron) | attemptId=%s", attemptId)

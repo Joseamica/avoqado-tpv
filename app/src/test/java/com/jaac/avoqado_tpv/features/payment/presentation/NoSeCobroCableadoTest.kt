@@ -19,6 +19,21 @@ class NoSeCobroCableadoTest {
         assertThat(navegacion).contains("BannerDeCobrosPendientes(")
     }
 
+    /**
+     * D22 (QA en la PAX, 17-nov): al declarar el ÚLTIMO cobro en duda el banner se va; si el diálogo vivía dentro del banner, el aviso
+     * «quedó en Avoqado» / «sólo en esta terminal» desaparecía antes de leerse. El banner queda montado siempre y sólo pinta el aviso si hay.
+     */
+    @Test fun `D22 el dialogo del banner sobrevive a que el banner se vaya`() {
+        val banner = dialogos.substring(dialogos.indexOf("internal fun BannerDeCobrosPendientes("), dialogos.indexOf("internal fun CobrosPorRevisar("))
+        assertThat(banner).contains("aviso: String?,")
+        val condicion = banner.indexOf("if (aviso != null) {")
+        val dialogo = banner.indexOf("DialogoDeNoSeCobro(paso")
+        assertThat(condicion).isAtLeast(0)
+        assertThat(dialogo).isGreaterThan(banner.indexOf("}", banner.indexOf("AvisoConBotones(", condicion)))
+        val llamada = navegacion.substring(navegacion.indexOf("val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)"))
+        assertThat(llamada.substring(0, llamada.indexOf("BannerDeCobrosPendientes("))).doesNotContain("if (aviso != null)")
+    }
+
     @Test fun `D20 Pagos lleva el recuadro Por revisar con la misma declaracion, sin la ventana de 10 min`() {
         val pagos = File("src/main/java/com/jaac/avoqado_tpv/features/payments/presentation/PaymentsScreen.kt").readText()
         assertThat(pagos).contains("encabezado()")
@@ -67,7 +82,7 @@ class NoSeCobroCableadoTest {
             "¿Cuál no se cobró?",
             "¿No se cobró este cobro?",
             ". Revísalo antes de confirmar: queda tu nombre y la hora.\"",
-            ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado.",
+            ". Revísalo antes de confirmar. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal.",
             "Sí, no se cobró",
             "Cancelar",
             "Pide a un gerente que ingrese su PIN",

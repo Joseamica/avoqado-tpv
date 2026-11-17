@@ -148,9 +148,23 @@ data class ResultadoDelVeredicto(
  * Lleva la solicitud que el servidor liberó ([requestId]): la fila sólo se cierra si es SUYA (pertenencia, Task 7 · B) —
  * una respuesta de otra solicitud, cruzada o atrasada, nunca acredita «no se cobró» sobre este intento.
  */
-data class LiberacionDelServidor(val venueId: String, val attemptId: String, val requestId: String?, val evidencia: String) {
+data class LiberacionDelServidor(
+    val venueId: String,
+    val attemptId: String,
+    val requestId: String?,
+    val evidencia: String,
+    /** D22: quién declaró, según el testimonio que publica el servidor (sólo con [CAJERO_REVISO]). */
+    val quien: String? = null,
+) {
     companion object {
         val EVIDENCIAS = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED")
+
+        /**
+         * 🔴 D22 (founder, 17-nov): la declaración «revisé la terminal y no se cobró» de un Pago rápido que Avoqado guardó
+         * (`UNCHARGED_VERIFIED`). No es [EVIDENCIAS]: la solicitud del POS nunca la trae (el servidor la rechaza con solicitud) y la
+         * libreta la cierra como la declaración local del cajero, no como «no presentó tarjeta».
+         */
+        const val CAJERO_REVISO = "CASHIER_CHECKED"
 
         /**
          * Evidencia POSITIVA del servidor sobre el INTENTO (Task 7 · fix 2, P1-2): un outcome con dinero (los cuatro de
@@ -213,7 +227,7 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
                 val declaracion = respuesta.attempt?.resolution ?: return null
                 val evidencia = evidenciaDeLaDeclaracion(runCatching { declaracion.get("kind")?.asString }.getOrNull()) ?: return null
                 // `requestId` nulo = «sin solicitud»: es lo que manda la fila local al CAS, que exige IS NULL.
-                return LiberacionDelServidor(venueId, attemptId, null, evidencia)
+                return LiberacionDelServidor(venueId, attemptId, null, evidencia, quienDeclaro(declaracion))
             }
 
             val requestId = requestIdCrudo ?: return null // sin solicitud no hay pertenencia que comprobar
@@ -273,7 +287,11 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
             else LiberacionDelServidor(
                 venueId, attemptId, requestId,
                 evidenciaDeLaDeclaracion(runCatching { respuesta?.attempt?.resolution?.get("kind")?.asString }.getOrNull()) ?: "OPERATOR_RECONCILED",
+                respuesta?.attempt?.resolution?.let(::quienDeclaro),
             )
+
+        /** D22: el `staffId` del testimonio publicado (el servidor lo toma de la sesión, nunca del cuerpo). */
+        private fun quienDeclaro(declaracion: JsonObject): String? = textoDe(declaracion, "staffId")?.takeIf { it.isNotBlank() }
 
         /**
          * Ronda 20: qué liberación representa cada testimonio que publica el servidor. `NO_INSTRUMENT_PRESENTED` es la palabra del
@@ -283,6 +301,8 @@ data class LiberacionDelServidor(val venueId: String, val attemptId: String, val
         fun evidenciaDeLaDeclaracion(kind: String?): String? = when (kind) {
             "NO_INSTRUMENT_PRESENTED" -> "OPERATOR_RECONCILED"
             "NO_BANK_TRACE_AFTER_WINDOW" -> "NO_EVIDENCE_AFTER_WINDOW"
+            // D22: sin esta línea, el 2xx de la declaración revisada caía en «no presentó tarjeta» (el `?:` de [desdeDeclaracion]).
+            "UNCHARGED_VERIFIED" -> CAJERO_REVISO
             else -> null
         }
     }

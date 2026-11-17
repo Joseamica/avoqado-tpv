@@ -33,6 +33,25 @@ internal fun salidaDelCobro(
         else SalidaDelCobro.FALTA_CONSULTAR
 }
 
+/**
+ * D12 (16-nov): «Ya revisé la terminal: no se cobró» en un cobro LOCAL sólo cambia la libreta de ESTA terminal
+ * (`declarado_sin_cobro:<staffId>`); el servidor no la recibe (medido en la PAX, acta de #55, parte 2). No prometer más.
+ * Codex r1: «no aparece en Avoqado» y no «no sale del aparato» (los diagnósticos llevan la línea de la libreta). Codex r1 y r2:
+ * el aviso de un cobro que aparezca después caduca con la poda (`pruneTerminalOlderThan`) y se apaga si la terminal cambia de
+ * negocio o pierde la activación, y la libreta puede guardar `declarado_sin_cobro:sin_identificar`: sin promesa de aviso ni de
+ * «quién». Que la declaración llegue a Avoqado lo decide el founder (camino (a), `docs/audit/2026-11-16-d12-…/promesa.md`).
+ */
+internal const val INVITACION_A_DECLARAR_EN_LA_TERMINAL =
+    "Si ya revisaste que no se cobró (por ejemplo, en la app del banco del cliente), déjalo anotado. Se anota en esta terminal; no aparece en Avoqado."
+
+/** «Intento cerrado»: con `declarado_sin_cobro:` lo cerró el cajero en esta terminal (D12); si no, lo liberó el servidor. */
+internal fun textoDelIntentoCerrado(lastError: String?): String =
+    if (lastError?.startsWith("declarado_sin_cobro:") == true)
+        "Quedó anotado en esta terminal que revisaste y no se cobró; no aparece en Avoqado. Puedes volver a cobrar esta venta."
+    // D5 (533d77, Codex r4): neutral. La liberación del servidor deja el mismo `last_error` para «no presentó tarjeta» y para
+    // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó.
+    else "Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar."
+
 /** D5 (533d77): ¿la duda es «el banco aprobó y la tarjeta rechazó el cierre»? */
 internal fun chipRechazoTrasAprobacion(lastError: String?): Boolean =
     lastError == com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION
@@ -75,11 +94,7 @@ internal fun BlumonRecoveryContent(
         }
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Avoqado confirmó este pago. No vuelvas a cobrar esta venta."
-            BlumonAttemptResolver.State.RELEASED -> if (result.row?.lastError?.startsWith("declarado_sin_cobro:") == true)
-                "Quedó registrado que revisaste la terminal y no se cobró. Puedes volver a cobrar esta venta; si Avoqado encuentra el cobro después, te avisará."
-                // D5 (533d77, Codex r4): neutral. La liberación del servidor deja el mismo `last_error` para «no presentó tarjeta» y para
-                // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó.
-                else "Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar."
+            BlumonAttemptResolver.State.RELEASED -> textoDelIntentoCerrado(result.row?.lastError)
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."
             BlumonAttemptResolver.State.UNAVAILABLE -> "No se pudo leer este intento o todavía está en curso. No vuelvas a pasar la tarjeta."
             else -> "No vuelvas a pasar la tarjeta. Estamos consultando el intento guardado; que aún no aparezca no significa que el banco lo rechazó."
@@ -88,7 +103,7 @@ internal fun BlumonRecoveryContent(
         if (pending && secondsRemaining > 0) Text("Esperando confirmación: $secondsRemaining s")
         if (pending && secondsRemaining == 0) when (salidaDelCobro(result, puedeRevisar = hasCheckPermission, puedeDeclararSinTarjeta = hasPermission)) {
             SalidaDelCobro.REVISE_LA_TERMINAL -> {
-                Text("Si ya revisaste que no se cobró (por ejemplo, en la app del banco del cliente), déjalo registrado: queda tu nombre y la hora.")
+                Text(INVITACION_A_DECLARAR_EN_LA_TERMINAL)
                 Button(onClick = onDeclareChecked, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                     Text("Ya revisé la terminal: no se cobró")
                 }

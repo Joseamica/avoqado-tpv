@@ -47,6 +47,9 @@ data class CardDetails(
         else -> "CREDIT_CARD"  // Default to credit if unknown
     }
 
+    /** D5: lo que guarda la cola (`card_nature`) para que el replay mande el mismo método; null si no hay dato. */
+    fun naturalezaParaLaCola(): String? = cardNature.name.takeUnless { isCash || cardNature == CardNature.UNKNOWN }
+
     companion object {
         /**
          * Instancia especial para pagos en efectivo.

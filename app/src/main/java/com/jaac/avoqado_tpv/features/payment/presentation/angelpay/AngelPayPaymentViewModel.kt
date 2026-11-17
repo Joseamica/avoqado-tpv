@@ -997,6 +997,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             cardBrand = context.cardDetails?.cardBrand?.name,
             entryMode = context.cardDetails?.entryMode?.name ?: CardEntryMode.OTHER.name,
             isInternational = context.cardDetails?.isInternational ?: false,
+            cardNature = context.cardDetails?.naturalezaParaLaCola(), // D5: el replay manda el mismo método
             authorizationNumber = context.authorizationCode,
             idempotencyKey = context.idempotencyKey,
             processor = ProcessorType.ANGELPAY,

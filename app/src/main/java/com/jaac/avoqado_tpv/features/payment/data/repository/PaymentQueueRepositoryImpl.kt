@@ -353,6 +353,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             cardBrand = cardBrand,
             entryMode = entryMode,
             isInternational = isInternational,
+            cardNature = cardNature,
             authorizationNumber = authorizationNumber,
             idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
             paymentProcessor = processor.name, // 🔶 Processor-aware queue (2026-07-09)
@@ -441,6 +442,7 @@ internal fun PendingPaymentEntity.toQueuedPayment(): QueuedPayment {
         cardBrand = cardBrand,
         entryMode = entryMode,
         isInternational = isInternational,
+        cardNature = cardNature,
         authorizationNumber = authorizationNumber,
         idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
         // 🔶 Processor-aware queue (2026-07-09) — unknown/legacy values fall back

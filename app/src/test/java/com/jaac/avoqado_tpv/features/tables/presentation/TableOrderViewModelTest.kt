@@ -111,6 +111,7 @@ class TableOrderViewModelTest {
         coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
         every { socketManager.events } returns avisosDelSocket
         coEvery { syncOutbox.ultimaSecuencia(any()) } coAnswers { secuenciaDeLaCola }
@@ -1781,4 +1782,264 @@ class TableOrderViewModelTest {
         assertThat(viewModel.queuedLines.value).isEmpty()
         assertThat(viewModel.check.value?.total).isEqualTo(BigDecimal("100.00"))
     }
+
+    // region — D16 (hz:033d44ca:D16): la ronda que cayó en una cuenta aparte se avisa en la cuenta cobrada
+
+    /** El ACK de la ronda sin red tal cual lo grabó la N86 el 16-nov (acta de D7). Un reintento sólo trae `cuentaAparte.orderId`. */
+    private fun ackDeRondaEnCuentaAparte(cuentaAparte: String = """{"total":89,"orderId":"O2","version":2,"orderNumber":"ORD-2"}""") = SyncIntentEntity(
+        id = "ronda-sin-red", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"orderId":"O1"}""",
+        status = SyncIntentEntity.STATUS_ACKED,
+        resultJson = """{"total":25,"orderId":"O1","version":3,"cuentaAparte":$cuentaAparte}""",
+    )
+
+    private fun cuentaCobrada() = OrderDetail(
+        id = "O1", total = BigDecimal("25.00"), amountLeft = BigDecimal.ZERO, paymentStatus = "PAID", version = 3,
+        items = listOf(OrderDetailItem(id = "i1", productId = "coca", quantity = 1, total = BigDecimal("25.00"))),
+    )
+
+    /** La cuenta aparte como la lee el SERVIDOR (`getOrder`: `tableName` = «Mesa <número>»). */
+    private fun cuentaAparteLeida(mesa: String = "mesa-5", nombreDeMesa: String = "Mesa M5", version: Int = 2) = OrderDetail(
+        id = "O2", orderNumber = "ORD-2", total = BigDecimal("89.00"), amountLeft = BigDecimal("89.00"), paymentStatus = "PENDING",
+        version = version, tableId = mesa, tableName = nombreDeMesa,
+        items = listOf(OrderDetailItem(id = "i2", productId = "tacos", quantity = 1, total = BigDecimal("89.00"))),
+    )
+
+    private fun enLaCuentaCobradaDeM5() {
+        tableSession.start(TableSession.Active(tableId = "mesa-5", tableNumber = "M5", areaName = "Barra", orderId = "O1", total = BigDecimal("25.00")))
+        coEvery { repository.getOrder(venueId, "O1") } returns Result.success(cuentaCobrada())
+    }
+
+    private fun calmaDeLaCola() {
+        testDispatcher.scheduler.advanceTimeBy(com.jaac.avoqado_tpv.features.tables.data.CALMA_DE_LA_COLA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+    }
+
+    private val avisoDeM5 = "Tu ronda no se perdió: como esta cuenta ya estaba cobrada, quedó en una cuenta aparte de la Mesa M5 por $89.00."
+
+    @Test
+    fun D16_al_entrar_a_la_cuenta_cobrada_avisa_que_la_ronda_quedo_en_la_cuenta_aparte() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+
+        val vm = createViewModel()
+
+        assertThat(vm.cuentaAparte.value?.texto).isEqualTo(avisoDeM5)
+        assertThat(vm.cuentaAparte.value?.orderId).isEqualTo("O2")
+        // La cuenta que se ve sigue siendo la cobrada (el aviso no la cambia solo) y el aviso no le pregunta nada al SERVIDOR:
+        // sólo dice lo que el ACK guardó, que ya no cambia (Codex r2).
+        assertThat(tableSession.current()?.orderId).isEqualTo("O1")
+        coVerify(exactly = 0) { repository.getOrder(venueId, "O2") }
+    }
+
+    @Test
+    fun D16_el_ack_que_llega_con_la_pantalla_abierta_da_el_aviso() = runTest {
+        enLaCuentaCobradaDeM5()
+        val vm = createViewModel()
+        assertThat(vm.cuentaAparte.value).isNull()
+
+        // El trabajador sube la ronda con la pantalla abierta: el ACK se guarda en la cola y la cola avisa.
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        cambiosDeLaCola.value = 1
+        calmaDeLaCola()
+
+        assertThat(vm.cuentaAparte.value?.texto).isEqualTo(avisoDeM5)
+    }
+
+    /** Codex r1 #1: el ACK ya está en la cola, pero la relectura de la cuenta cobrada falla (timeout): el aviso sale igual. */
+    @Test
+    fun D16_el_aviso_sale_aunque_la_cuenta_cobrada_no_se_pueda_releer() = runTest {
+        enLaCuentaCobradaDeM5()
+        val vm = createViewModel()
+
+        coEvery { repository.getOrder(venueId, "O1") } returns Result.failure(java.net.SocketTimeoutException("timeout"))
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        cambiosDeLaCola.value = 1
+        calmaDeLaCola()
+
+        assertThat(vm.cuentaAparte.value?.texto).isEqualTo(avisoDeM5)
+    }
+
+    @Test
+    fun D16_el_reintento_que_solo_trae_el_id_avisa_sin_monto() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte("""{"orderId":"O2"}"""))
+
+        val vm = createViewModel()
+
+        assertThat(vm.cuentaAparte.value?.texto)
+            .isEqualTo("Tu ronda no se perdió: como esta cuenta ya estaba cobrada, quedó en una cuenta aparte de la Mesa M5.")
+    }
+
+    @Test
+    fun D16_sin_ronda_en_cuenta_aparte_no_hay_aviso() = runTest {
+        enLaCuentaCobradaDeM5()
+        val vm = createViewModel()
+        assertThat(vm.cuentaAparte.value).isNull()
+    }
+
+    @Test
+    fun D16_abrir_la_cuenta_aparte_la_lee_y_la_carga_en_la_misma_mesa_con_el_carrito() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        coEvery { repository.getOrder(venueId, "O2") } returns Result.success(cuentaAparteLeida())
+        val vm = createViewModel()
+        // Lo que tenía sin mandar en la cuenta cobrada no se pierde: se va a la cuenta aparte.
+        pendingCart.addSimple(productId = "agua", name = "Agua", unitPrice = BigDecimal("20.00"))
+
+        vm.abrirCuentaAparte()
+
+        val sesion = tableSession.current()!!
+        assertThat(sesion.orderId).isEqualTo("O2")
+        assertThat(sesion.tableId).isEqualTo("mesa-5")
+        assertThat(sesion.label).isEqualTo("Mesa M5 · Barra")
+        assertThat(sesion.orderNumber).isEqualTo("ORD-2")
+        assertThat(sesion.version).isEqualTo(2)
+        assertThat(sesion.total).isEqualTo(BigDecimal("89.00"))
+        assertThat(sesion.isProvisional).isFalse()
+        assertThat(sesion.localOrderId).isNull()
+        assertThat(sesion.mode).isEqualTo(TableSession.Mode.ORDERING)
+        assertThat(vm.check.value?.id).isEqualTo("O2")
+        assertThat(vm.pendingLines.value.map { it.productId }).containsExactly("agua")
+        assertThat(vm.abriendoCuentaAparte.value).isFalse()
+        // En la cuenta aparte (que debe) no hay aviso.
+        assertThat(vm.cuentaAparte.value).isNull()
+    }
+
+    /** Codex r1 #3 y r2 #2: otro aparato movió la cuenta aparte a M6: se abre donde el SERVIDOR dice que está AL TOCAR. */
+    @Test
+    fun D16_si_movieron_la_cuenta_aparte_a_otra_mesa_se_abre_en_esa() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        coEvery { repository.getOrder(venueId, "O2") } returns Result.success(cuentaAparteLeida(mesa = "mesa-6", nombreDeMesa = "Mesa M6"))
+        val vm = createViewModel()
+
+        vm.abrirCuentaAparte()
+
+        val sesion = tableSession.current()!!
+        assertThat(sesion.tableId).isEqualTo("mesa-6")
+        assertThat(sesion.label).isEqualTo("Mesa M6")
+        assertThat(sesion.orderId).isEqualTo("O2")
+    }
+
+    @Test
+    fun D16_si_no_se_puede_leer_la_cuenta_aparte_no_se_mueve_y_lo_dice() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        coEvery { repository.getOrder(venueId, "O2") } returns Result.failure(java.io.IOException("sin red"))
+        val vm = createViewModel()
+        pendingCart.addSimple(productId = "agua", name = "Agua", unitPrice = BigDecimal("20.00"))
+
+        vm.abrirCuentaAparte()
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("O1")
+        assertThat(vm.error.value).isEqualTo(TableOrderViewModel.NO_SE_ABRIO_LA_CUENTA_APARTE)
+        assertThat(vm.cuentaAparte.value?.orderId).isEqualTo("O2") // el aviso se queda para volver a intentar
+        assertThat(vm.pendingLines.value.map { it.productId }).containsExactly("agua")
+        assertThat(vm.abriendoCuentaAparte.value).isFalse()
+    }
+
+    /**
+     * Codex r3: otra ronda de esta terminal a la cobrada sigue sin subir (su reenvío dio RETRY). Esa ronda nombra la cobrada: en la
+     * cuenta aparte nadie la vería («Por sincronizar» se vaciaba) ni frenaría su cobro. No se abre hasta que suba.
+     */
+    @Test
+    fun D16_con_otra_ronda_de_la_cobrada_sin_subir_no_abre_la_cuenta_aparte() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        coEvery { repository.getOrder(venueId, "O2") } returns Result.success(cuentaAparteLeida())
+        val vm = createViewModel()
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "O1") } returns listOf(
+            SyncIntentEntity(id = "otra-ronda", venueId = venueId, seq = 3, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"orderId":"O1","items":[]}"""),
+        )
+
+        vm.abrirCuentaAparte()
+
+        assertThat(tableSession.current()?.orderId).isEqualTo("O1")
+        assertThat(vm.error.value).isEqualTo(TableOrderViewModel.ESPERA_A_QUE_SE_SUBA_PARA_ABRIR)
+        assertThat(vm.cuentaAparte.value?.orderId).isEqualTo("O2")
+        assertThat(vm.abriendoCuentaAparte.value).isFalse()
+    }
+
+    /** Codex r4: «Abrir» y «Enviar ronda» no se cruzan: una ronda nueva nunca nace para la cobrada a media apertura. */
+    @Test
+    fun D16_mientras_se_abre_la_cuenta_aparte_no_se_manda_una_ronda() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        val tarde = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "O2") } coAnswers { tarde.await() }
+        val vm = createViewModel()
+        pendingCart.addSimple(productId = "agua", name = "Agua", unitPrice = BigDecimal("20.00"))
+
+        vm.abrirCuentaAparte()
+        vm.sendRound()
+        coVerify(exactly = 0) { repository.addItems(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { syncOutbox.enqueue(any(), any(), any(), any()) }
+
+        tarde.complete(Result.success(cuentaAparteLeida()))
+        runCurrent()
+        assertThat(tableSession.current()?.orderId).isEqualTo("O2")
+        assertThat(vm.pendingLines.value.map { it.productId }).containsExactly("agua")
+    }
+
+    @Test
+    fun D16_mientras_se_manda_una_ronda_no_se_abre_la_cuenta_aparte() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        val enviando = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.addItems(venueId, "O1", any(), any()) } coAnswers { enviando.await() }
+        val vm = createViewModel()
+        pendingCart.addSimple(productId = "agua", name = "Agua", unitPrice = BigDecimal("20.00"))
+
+        vm.sendRound()
+        vm.abrirCuentaAparte()
+
+        coVerify(exactly = 0) { repository.getOrder(venueId, "O2") }
+        assertThat(tableSession.current()?.orderId).isEqualTo("O1")
+        enviando.complete(Result.failure(java.io.IOException("sin red")))
+        runCurrent()
+    }
+
+    @Test
+    fun D16_si_sale_de_la_cuenta_mientras_se_lee_la_aparte_no_la_abre() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        val tarde = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "O2") } coAnswers { tarde.await() }
+        val vm = createViewModel()
+
+        vm.abrirCuentaAparte()
+        vm.abrirCuentaAparte() // doble toque: una sola lectura
+        assertThat(vm.abriendoCuentaAparte.value).isTrue()
+        vm.exitToFloor()
+        tarde.complete(Result.success(cuentaAparteLeida()))
+        runCurrent()
+
+        assertThat(tableSession.current()).isNull()
+        coVerify(exactly = 1) { repository.getOrder(venueId, "O2") }
+    }
+
+    @Test
+    fun D16_una_lectura_vieja_de_la_cuenta_cobrada_no_se_pinta_sobre_la_cuenta_aparte() = runTest {
+        enLaCuentaCobradaDeM5()
+        coEvery { syncOutbox.confirmadasConCuentaAparte(venueId, any()) } returns listOf(ackDeRondaEnCuentaAparte())
+        // La lectura al tocar «Abrir» contesta; la carga que sigue se queda esperando (la red está lenta).
+        var lecturasDeO2 = 0
+        val tardeO2 = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "O2") } coAnswers { if (++lecturasDeO2 == 1) Result.success(cuentaAparteLeida()) else tardeO2.await() }
+        val vm = createViewModel()
+        // Una relectura de la cobrada sale y tarda; mientras, la mesera abre la cuenta aparte.
+        val tardeO1 = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "O1") } coAnswers { tardeO1.await() }
+        vm.actualizarCuenta()
+        vm.abrirCuentaAparte()
+        assertThat(tableSession.current()?.orderId).isEqualTo("O2")
+
+        tardeO1.complete(Result.success(cuentaCobrada()))
+        runCurrent()
+        // La cuenta cobrada llega tarde: no se pinta ni le pone su versión (3) a la sesión de la cuenta aparte.
+        assertThat(vm.check.value?.id).isEqualTo("O2")
+        assertThat(tableSession.current()?.version).isEqualTo(2)
+    }
+
+    // endregion
 }

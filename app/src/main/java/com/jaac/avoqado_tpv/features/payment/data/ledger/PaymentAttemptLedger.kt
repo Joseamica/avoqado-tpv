@@ -432,28 +432,36 @@ class PaymentAttemptLedger(
         authCode: String?
     ): Boolean {
         if (!isEnabled()) return true
+        // 🔴 D13 (encargo 5ffa66, 17-nov): una APROBACIÓN que no se pudo escribir es dinero que la libreta no ve. Se recuerda en
+        // memoria —como la evidencia del servidor sin escribir—: frena la reserva y toda salida «no se cobró», la puerta y cada
+        // pasada la vuelven a escribir, y quien llama lo lee con [aprobacionSigueSinGuardar] / [tieneEvidenciaSinGuardar] para
+        // no pintar un «Aprobado» limpio. Sólo ante un FALLO de escritura: un CAS que no encuentra la fila en su estado (repetir
+        // la marca sobre HOST_RESPONDIO, D3) no es dinero perdido. Un rechazo no se recuerda: no movió dinero.
+        // Codex r1 #1: la escritura y el recuerdo van JUNTOS bajo [candadoDeEvidencia] (una aprobación sigue aterrizando siempre:
+        // el candado sólo serializa escrituras cortas). Si no, una salida «no se cobró» podía colarse entre la escritura fallida
+        // y el recuerdo, mirar la memoria vacía y cerrar la fila como DESCARTADA.
+        if (approved) return withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, operationId, referenceNumber, authCode, true)
+                    }
+                }.getOrElse {
+                    Timber.e(it, "📒 [Libreta] markHostResponded failed — la APROBACIÓN no quedó guardada: queda en memoria y se reintenta | attemptId=%s", attemptId)
+                    aprobacionesSinGuardar[attemptId] = AprobacionSinGuardar(operationId, referenceNumber, authCode)
+                    false
+                }
+            }
+        }
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
-                val to = if (approved) PaymentAttemptEntity.STATE_HOST_RESPONDIO else PaymentAttemptEntity.STATE_DESCARTADA
-                // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia; una
-                // aprobación es dinero y aterriza siempre.
-                if (approved) escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, true)
-                else salidaNegativa(attemptId, "rechazo del host") {
-                    escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, false)
+                // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia.
+                salidaNegativa(attemptId, "rechazo del host") {
+                    escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_DESCARTADA, operationId, referenceNumber, authCode, false)
                 }
             }
         }.getOrElse {
             Timber.e(it, "📒 [Libreta] markHostResponded failed — el desenlace NO quedó guardado")
-            // 🔴 D13 (encargo 5ffa66, 17-nov): una APROBACIÓN que no se pudo escribir es dinero que la libreta no ve. Se recuerda
-            // en memoria —como la evidencia del servidor sin escribir—: frena la reserva y toda salida «no se cobró», la puerta y
-            // cada pasada la vuelven a escribir, y quien llama lo lee con [tieneEvidenciaSinGuardar] para no pintar un «Aprobado»
-            // limpio. Sólo ante un FALLO de escritura: un CAS que no encuentra la fila en su estado (repetir la marca sobre
-            // HOST_RESPONDIO, D3) no es dinero perdido. Un rechazo no se recuerda: no movió dinero.
-            if (approved) {
-                withContext(NonCancellable) {
-                    candadoDeEvidencia.withLock { aprobacionesSinGuardar[attemptId] = AprobacionSinGuardar(operationId, referenceNumber, authCode) }
-                }
-            }
             false
         }
     }
@@ -499,14 +507,16 @@ class PaymentAttemptLedger(
                 (dao.fijarAprobacionDelHost(attemptId, p.operationId, p.referenceNumber, p.authCode) == 1).also {
                     if (it) Timber.w("📒 [Libreta] marca del banco puesta sobre %s | attemptId=%s", fila.state, attemptId)
                 }
-            // HOST_RESPONDIO / REGISTRADO / ENTREGADA_A_COLA / CERRADA ya cargan el dinero. DESCARTADA: la aprobación tampoco
-            // aterriza ahí hoy (ningún CAS la acepta); se deja el rastro y no se traba la terminal para siempre.
-            else -> {
-                if (fila.state == PaymentAttemptEntity.STATE_DESCARTADA) {
-                    Timber.e("📒 [Libreta] CONTRADICCIÓN: el banco aprobó y la fila dice DESCARTADA | attemptId=%s", attemptId)
-                }
-                true
+            // Codex r1 #1: el banco aprobó y la fila dice «no se cobró» (DESCARTADA). Ningún CAS deja aterrizar ahí la aprobación;
+            // se deja DURABLE como contradicción con un veto (cerca su venta y sale en el aviso, como el VETO_SDK_CONTRADICTION)
+            // y sólo entonces se suelta la memoria. Si el veto no se puede escribir, la memoria sigue.
+            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
+                Timber.e("📒 [Libreta] CONTRADICCIÓN: el banco aprobó y la fila dice DESCARTADA — veto durable | attemptId=%s", attemptId)
+                fila.serverVeto != null ||
+                    dao.marcarVetoDelServidor(attemptId, fila.venueId, PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR, now) == 1
             }
+            // HOST_RESPONDIO / REGISTRADO / ENTREGADA_A_COLA / CERRADA ya cargan el dinero.
+            else -> true
         }
     }
 

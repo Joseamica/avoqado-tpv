@@ -355,6 +355,12 @@ data class PaymentAttemptEntity(
          * en el MISMO UPDATE: sin él la fila reabierta era una duda más, y muerto el proceso [SQL_CERCA_LA_VENTA] dejaba pasar su venta.
          */
         const val VETO_SDK_CONTRADICTION = "SDK_CONTRADICTION"
+        /**
+         * 🔴 D13 (encargo 5ffa66, Codex r1 #1): tampoco lo publica el servidor. El banco APROBÓ, la libreta no pudo escribirlo
+         * y, para cuando pudo, la fila ya estaba DESCARTADA. Lo deja la libreta al reintentar esa aprobación: la venta queda
+         * cercada y la fila es contradicción, nunca «se puede volver a cobrar».
+         */
+        const val VETO_APROBACION_SIN_GUARDAR = "HOST_APPROVAL_CONTRADICTION"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

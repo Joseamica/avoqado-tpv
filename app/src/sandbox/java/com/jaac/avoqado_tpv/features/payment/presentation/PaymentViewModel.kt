@@ -925,6 +925,20 @@ class PaymentViewModel @Inject constructor(
             if (updatedState is PaymentState.Success) {
                 Timber.d("🐛 [DEBUG] Confirmed state update | receipt is ${if (updatedState.receipt != null) "NOT NULL" else "NULL"}")
             }
+        } else if (currentState is PaymentState.PrintError) {
+            // 🔴 D13 (Codex r1 #2): el registro llegó mientras se veía «No se pudo imprimir». Sin esto, «Cerrar» restauraba el
+            // éxito VIEJO con su aviso («no cierres la app… hasta que desaparezca este aviso») aunque el servidor ya lo tenía,
+            // y el reintento del recibo ya se había limpiado: el aviso no se iba nunca. El éxito guardado también se pone al día.
+            _state.value = currentState.copy(
+                previousState = currentState.previousState.copy(
+                    receipt = receipt,
+                    cardDetails = cardDetails,
+                    referenceNumber = referenceNumber,
+                    recordingLostMessage = null,
+                    pendingSyncMessage = null
+                )
+            )
+            Timber.d("🎫 [Receipt] Registrado durante «No se pudo imprimir»: el éxito guardado ya trae el recibo y sin aviso")
         }
     }
 

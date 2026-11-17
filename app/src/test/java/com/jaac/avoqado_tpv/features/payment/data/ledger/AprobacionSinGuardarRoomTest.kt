@@ -152,6 +152,32 @@ class AprobacionSinGuardarRoomTest {
         assertThat(delProcesoNuevo.tieneEvidenciaSinGuardar("a")).isFalse()
     }
 
+    @Test fun `P1 Codex r1 1 si la fila ya dice DESCARTADA cuando la base vuelve queda contradiccion durable y no se suelta en silencio`() = runTest {
+        aprobacionQueNoSeEscribio()
+        // Una salida «no se cobró» que la cerró por fuera de la memoria (lo que la carrera de Codex r1 #1 lograba).
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
+        laBaseVuelve()
+
+        assertThat(ledger.reintentarEvidenciaSinGuardar()).isEqualTo(0)
+        val fila = dao.getById("a")!!
+        assertThat(fila.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(fila.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR)
+        assertWithMessage("el banco aprobó y la fila dice «no se cobró»: es contradicción, nunca «se puede volver a cobrar»")
+            .that(dao.esContradiccion("a")).isTrue()
+    }
+
+    @Test fun `P1 Codex r1 1 si el veto tampoco se puede escribir la memoria sigue`() = runTest {
+        aprobacionQueNoSeEscribio()
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
+        laBaseVuelve()
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER veto_roto BEFORE UPDATE OF server_veto ON payment_attempts BEGIN SELECT RAISE(ABORT, 'disco lleno'); END",
+        )
+
+        assertThat(ledger.reintentarEvidenciaSinGuardar()).isEqualTo(1)
+        assertThat(ledger.tieneEvidenciaSinGuardar("a")).isTrue()
+    }
+
     @Test fun `control repetir la marca sobre HOST_RESPONDIO no inventa dinero sin escribir`() = runTest {
         assertThat(cobroNuevoEntra("a")).isTrue()
         assertThat(ledger.markAuthorizing("a")).isTrue()

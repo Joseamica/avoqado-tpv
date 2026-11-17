@@ -50,4 +50,20 @@ class AprobacionSinGuardarNoEsExitoLimpioTest {
                 rama.indexOf("buildRecordingLostState(", pregunta) > pregunta)
         }
     }
+
+    @Test
+    fun `el registro que llega durante No se pudo imprimir quita el aviso del exito guardado`() {
+        // Codex r1 #2: «Cerrar» restauraba el éxito viejo con su aviso aunque el servidor ya lo tenía.
+        for ((nombre, archivo) in variantes) {
+            val fuente = archivo.readText()
+            val inicio = fuente.indexOf("private suspend fun applyRecordedReceiptToSuccessState(")
+            assertTrue("[$nombre] no existe applyRecordedReceiptToSuccessState", inicio >= 0)
+            val cuerpo = fuente.substring(inicio, fuente.indexOf("\n    }\n", inicio))
+            val rama = cuerpo.indexOf("currentState is PaymentState.PrintError")
+            assertTrue("[$nombre] el registro no pone al día el éxito guardado en «No se pudo imprimir»", rama >= 0)
+            val resto = cuerpo.substring(rama)
+            assertTrue("[$nombre] el éxito guardado conserva el aviso", resto.contains("previousState = currentState.previousState.copy(") &&
+                resto.contains("pendingSyncMessage = null") && resto.contains("recordingLostMessage = null"))
+        }
+    }
 }

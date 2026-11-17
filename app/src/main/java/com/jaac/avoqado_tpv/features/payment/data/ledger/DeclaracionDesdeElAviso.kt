@@ -254,6 +254,19 @@ class DeclaracionDesdeElAviso @Inject constructor(
             .filter { ahoraMillis - it.desdeMillis < AvisoDeCobrosPendientes.VENTANA_AVISO_MS }
             .distinctBy { it.identidad }
 
+        /** D20: «Por revisar» (Pagos) ofrece lo mismo que [vigentes], sin la ventana de 10 min: la duda no se va con el aviso. */
+        fun porRevisar(cobros: List<CobroDeclarable>): List<CobroDeclarable> = cobros.distinctBy { it.identidad }
+
+        /** El `LIMIT 50` de cada mitad de [PaymentAttemptDao.observarCobrosDeclarables] (intentos y solicitudes sin intento). */
+        const val TOPE_DE_LA_CONSULTA = 50
+
+        /**
+         * D20 (Codex r1 #1): la consulta trae los 50 más recientes de cada mitad. Llena = puede haber más viejos que no salen, y el recuadro
+         * lo dice en vez de esconderlos: al declarar los de la lista, aparecen los anteriores.
+         */
+        fun recortada(cobros: List<CobroDeclarable>): Boolean =
+            cobros.count { it.attemptId != null } >= TOPE_DE_LA_CONSULTA || cobros.count { it.attemptId == null } >= TOPE_DE_LA_CONSULTA
+
         /** La MISMA declaración en cada intento, también tras reiniciar: el servidor la trata como replay. */
         private fun idDeLaDeclaracion(venueId: String, requestId: String): String =
             UUID.nameUUIDFromBytes("tpv:uncharged:$venueId:$requestId".toByteArray(Charsets.UTF_8)).toString()

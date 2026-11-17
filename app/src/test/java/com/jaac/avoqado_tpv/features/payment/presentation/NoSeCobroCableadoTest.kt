@@ -19,6 +19,22 @@ class NoSeCobroCableadoTest {
         assertThat(navegacion).contains("BannerDeCobrosPendientes(")
     }
 
+    @Test fun `D20 Pagos lleva el recuadro Por revisar con la misma declaracion, sin la ventana de 10 min`() {
+        val pagos = File("src/main/java/com/jaac/avoqado_tpv/features/payments/presentation/PaymentsScreen.kt").readText()
+        assertThat(pagos).contains("encabezado()")
+        val desdeLaRuta = navegacion.substring(navegacion.indexOf("route = NavRoute.Payments.route,"))
+        val rutaDePagos = desdeLaRuta.substring(0, desdeLaRuta.indexOf("composable("))
+        assertThat(rutaDePagos).contains("encabezado = {")
+        assertThat(rutaDePagos).contains("CobrosPorRevisar(")
+        assertThat(rutaDePagos).contains("kioskEntryPoint.declaracionDesdeElAviso()")
+        val recuadro = dialogos.substring(dialogos.indexOf("internal fun CobrosPorRevisar("))
+        assertThat(recuadro).contains("DeclaracionDesdeElAviso.porRevisar(")
+        assertThat(recuadro).doesNotContain("DeclaracionDesdeElAviso.vigentes(")
+        assertThat(recuadro).contains("FlujoDeNoSeCobro(")
+        assertThat(recuadro).contains("declaracion.refrescarUno(")
+        assertThat(recuadro).contains("repeatOnLifecycle(Lifecycle.State.STARTED)")
+    }
+
     @Test fun `el aviso sigue sin poder taparse, y el comentario ya no dice que no se puede descartar`() {
         assertThat(navegacion).doesNotContain("No se puede descartar a propósito")
         assertThat(navegacion).contains("se resuelve declarando")

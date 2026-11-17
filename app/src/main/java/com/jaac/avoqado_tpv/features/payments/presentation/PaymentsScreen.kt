@@ -65,7 +65,9 @@ fun PaymentsScreen(
      */
     autoOpenPaymentId: String? = null,
     onBack: () -> Unit = {},
-    onNavigateToRefund: (Payment) -> Unit = {}
+    onNavigateToRefund: (Payment) -> Unit = {},
+    /** D20: «Por revisar», debajo de la barra de arriba, para que se vea aunque el historial no cargue sin red. */
+    encabezado: @Composable () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     // 📒 Leído aquí para que el detalle se recomponga cuando la libreta conteste (devolución por confirmar tras el corte).
@@ -122,7 +124,7 @@ fun PaymentsScreen(
     var showFilterDialog by remember { mutableStateOf(false) }
 
     Scaffold(
-        topBar = {
+        topBar = { Column {
             AvoqadoTopBar(
                 title = "Historial de Pagos",
                 titleStyle = MaterialTheme.typography.titleMedium,
@@ -155,7 +157,8 @@ fun PaymentsScreen(
                     }
                 }
             )
-        },
+            encabezado()
+        } },
         // FAB for printing when payments selected
         floatingActionButton = {
             if (isPrintMode && selectedPaymentsForPrint.isNotEmpty()) {

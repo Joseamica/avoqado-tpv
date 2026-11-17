@@ -204,6 +204,30 @@ class CobrosDeclarablesRoomTest {
         assertThat(DeclaracionDesdeElAviso.vigentes(listOf(cobro), ahora + ventana)).isEmpty()
     }
 
+    /** D20: pasados los 10 min el aviso se va, pero la duda sigue: «Por revisar» (Pagos) la conserva hasta que se declare. */
+    @Test fun `D20 por revisar no tiene ventana - lo de hace horas sigue a la vista, uno por solicitud`() = runTest {
+        dao.insert(duda("viejo", haceMs = 3 * 60 * 60_000L))
+        dao.insert(duda("primero", "r-1", haceMs = 2 * 60 * 60_000L))
+        dao.insert(duda("segundo", "r-1", haceMs = 60 * 60_000L))
+
+        val todos = declarables()
+
+        assertThat(DeclaracionDesdeElAviso.vigentes(todos, ahora)).isEmpty()
+        assertThat(DeclaracionDesdeElAviso.porRevisar(todos).map { it.attemptId }).containsExactly("segundo", "viejo").inOrder()
+    }
+
+    /** Codex r1 #1: la consulta trae los 50 más recientes; con 51, el más viejo no sale y el recuadro tiene que decirlo. */
+    @Test fun `D20 con la consulta llena se sabe que hay mas, y con 49 no`() = runTest {
+        repeat(51) { i -> dao.insert(duda("local-$i", haceMs = (i + 1) * 60 * 60_000L)) }
+
+        val todos = declarables()
+
+        assertThat(todos).hasSize(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA)
+        assertThat(todos.map { it.attemptId }).doesNotContain("local-50")
+        assertThat(DeclaracionDesdeElAviso.recortada(todos)).isTrue()
+        assertThat(DeclaracionDesdeElAviso.recortada(todos.drop(1))).isFalse()
+    }
+
     @Test fun `una por solicitud - dos intentos limpios de la misma salen como uno, el mas reciente`() = runTest {
         dao.insert(duda("primero", "r-1", haceMs = 200_000))
         dao.insert(duda("segundo", "r-1", haceMs = 100_000))

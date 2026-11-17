@@ -2437,7 +2437,15 @@ fun AppNavigation(
             val autoOpenPaymentId = backStackEntry.arguments
                 ?.getString("autoOpenPaymentId")
                 ?.takeIf { it.isNotBlank() }
+            // D20 (founder, 17-nov: «lista»): lo que el aviso verde ya no nombra a los 10 min se declara aquí, con la misma declaración.
+            val declaracionPorRevisar = remember { kioskEntryPoint.declaracionDesdeElAviso() }
+            val venuePorRevisar = remember { secureStorage.getVenueId() }
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
+                encabezado = {
+                    if (!venuePorRevisar.isNullOrBlank()) {
+                        com.jaac.avoqado_tpv.features.payment.presentation.CobrosPorRevisar(venuePorRevisar, declaracionPorRevisar)
+                    }
+                },
                 refreshAfterRefund = refreshAfterRefund,
                 onRefundRefreshConsumed = {
                     backStackEntry.savedStateHandle.remove<Boolean>("refreshAfterRefund")

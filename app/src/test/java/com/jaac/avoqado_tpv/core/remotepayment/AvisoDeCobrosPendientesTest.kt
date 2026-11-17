@@ -57,6 +57,45 @@ class AvisoDeCobrosPendientesTest {
         assertThat(AvisoDeCobrosPendientes.importeYAntiguedad(1000, ahora - 150 * 60_000, ahora)).contains("hace 2 h")
     }
 
+    @Test fun `D20 desde 24 h se dice en dias`() {
+        assertThat(AvisoDeCobrosPendientes.importeYAntiguedad(1000, ahora - 50 * 60 * 60_000L, ahora)).contains("hace 2 d")
+        assertThat(AvisoDeCobrosPendientes.importeYAntiguedad(1000, ahora - 23 * 60 * 60_000L, ahora)).contains("hace 23 h")
+    }
+
+    // ── D20 · «Por revisar» en Pagos: lo que el aviso verde ya no nombra ─────────────────────────────────────────────────
+
+    @Test fun `D20 por revisar sin nada no dice nada`() {
+        assertThat(AvisoDeCobrosPendientes.textoPorRevisar(emptyList(), ahora)).isNull()
+    }
+
+    @Test fun `D20 por revisar con uno dice importe, antiguedad y que hacer, sin prometer que Avoqado lo ve`() {
+        val texto = AvisoDeCobrosPendientes.textoPorRevisar(listOf(obligacion(1000, 3 * 60 * 60_000L)), ahora)!!
+        assertThat(texto).contains("$10.00")
+        assertThat(texto).contains("hace 3 h")
+        assertThat(texto).contains("«No se cobró»")
+        assertThat(texto).contains("no lo vuelvas a cobrar")
+        // Un Pago rápido de la PAX no llega a Avoqado: decir que «Avoqado lo concilia» sería una pantalla que miente.
+        assertThat(texto).doesNotContain("Avoqado")
+    }
+
+    @Test fun `D20 por revisar con varios nombra hasta tres y cuenta el resto`() {
+        val texto = AvisoDeCobrosPendientes.textoPorRevisar(
+            listOf(obligacion(1000, 60 * 60_000L), obligacion(885600, 2 * 60 * 60_000L), obligacion(500, 26 * 60 * 60_000L),
+                obligacion(700, 30 * 60 * 60_000L), obligacion(900, 50 * 60 * 60_000L)), ahora)!!
+        assertThat(texto).contains("5 cobros")
+        assertThat(texto).contains("$10.00 hace 1 h")
+        assertThat(texto).contains("$8,856.00 hace 2 h")
+        assertThat(texto).contains("$5.00 hace 1 d")
+        assertThat(texto).contains("y 2 más")
+        assertThat(texto).doesNotContain("$7.00")
+        assertThat(texto).doesNotContain("Sólo caben")
+    }
+
+    @Test fun `D20 con la consulta llena dice que hay mas viejos, no los esconde`() {
+        val texto = AvisoDeCobrosPendientes.textoPorRevisar(listOf(obligacion(1000, 60_000)), ahora, recortada = true)!!
+        assertThat(texto).contains("Sólo caben los más recientes: al resolverlos, aparecen los anteriores.")
+    }
+
     /** El reloj del aparato puede ir atrás del que escribió la fila: jamás «hace -4 min». */
     @Test fun `P1 una fila del futuro no produce una antiguedad negativa`() {
         val texto = AvisoDeCobrosPendientes.texto(

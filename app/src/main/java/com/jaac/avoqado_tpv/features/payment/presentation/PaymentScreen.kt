@@ -2782,14 +2782,8 @@ private fun PaymentErrorContent(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Text(
-                        text = message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
+                    // D13 (Codex r12): el aviso va PRIMERO, para que «NO vuelvas a cobrar» se vea sin deslizar aun con letra grande.
                     aviso?.let {
-                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = it,
                             style = MaterialTheme.typography.bodyMedium,
@@ -2801,7 +2795,14 @@ private fun PaymentErrorContent(
                                 .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
                                 .padding(12.dp)
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
 

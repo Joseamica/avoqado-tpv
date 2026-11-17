@@ -56,4 +56,19 @@ class AprobacionSinGuardarFuenteTest {
         }
         assertEquals("production y sandbox divergen en el aviso de D13", textos[0], textos[1])
     }
+
+    @Test
+    fun `P1 Codex r2-3 el primer Aprobado ya sale con el aviso - chip y contactless`() {
+        for ((nombre, archivo) in variantes) {
+            val veces = archivo.readText().split("_state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(").size - 1
+            assertEquals("[$nombre] el éxito del chip y el del contactless no pasan por la libreta", 2, veces)
+        }
+    }
+
+    @Test
+    fun `P2 Codex r2-4 la prueba de venta no confunde el aviso de D13 con una venta en cola`() {
+        val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
+        assertTrue("la pantalla manda a «Pendientes» con el aviso de D13",
+            pantalla.contains("currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE"))
+    }
 }

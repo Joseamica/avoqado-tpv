@@ -439,6 +439,13 @@ sealed class PaymentState {
          */
         val pendingSyncMessage: String? = null,
         /**
+         * 🔴 D13 (encargo ff3278): [pendingSyncMessage] NO es «quedó en cola»: es el aviso de que el banco aprobó y la libreta de
+         * este equipo no pudo guardarlo (todavía no hay fila en la cola). Lo lee quien antes deducía «en cola» de
+         * [pendingSyncMessage] (la prueba de venta de SERIALIZED_INVENTORY). Lo prende sólo `buildApprovalNotSavedState`; cualquier
+         * otro aviso o el recibo registrado lo apagan.
+         */
+        val aprobacionSinGuardar: Boolean = false,
+        /**
          * La animación de «Pago aprobado» ya se vio para ESTE cobro. Sólo `dismissPrintError`
          * lo prende: al volver de «No se pudo imprimir» la pantalla del recibo se arma de nuevo
          * (su `remember` murió mientras se veía el error) y, sin esto, repetía la animación como

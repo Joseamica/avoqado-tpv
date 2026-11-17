@@ -151,7 +151,7 @@ class AprobacionSinGuardarRoomTest {
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
     }
 
-    @Test fun `P1 tambien si el registro ya fallo (REGISTRO_FALLIDO) o ya esta en la cola`() = runTest {
+    @Test fun `P1 tambien si el registro ya fallo (REGISTRO_FALLIDO) - se sella en la transicion siguiente`() = runTest {
         val libreta = proceso()
         cobrandoCincuentaDeLaMesa(libreta)
         fallaLaAprobacion()
@@ -198,6 +198,10 @@ class AprobacionSinGuardarRoomTest {
         assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
         // El chip rechaza el cierre: la duda sí se escribe (desde AUTORIZANDO).
         assertEquals(PaymentAttemptLedger.ChipRechazo.EN_DUDA, libreta.markChipRechazoTrasAprobacion("a1"))
+        // Codex r2 #2: la duda escrita sustituye a la aprobación pendiente EN EL ACTO (sin esperar otra pasada): la pantalla la ve
+        // como duda, con su salida, y no como «hay evidencia de cobro».
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
         vuelveLaBase()
 
         assertEquals(0, libreta.reintentarEvidenciaSinGuardar())
@@ -217,5 +221,34 @@ class AprobacionSinGuardarRoomTest {
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
         assertEquals(PaymentAttemptEntity.STATE_HOST_RESPONDIO, dao.getById("a1")?.state)
         assertEquals(0, libreta.reintentarEvidenciaSinGuardar())
+    }
+
+    @Test fun `P1 Codex r2-2 con la duda del chip todavia sin escribir la pantalla no la lee como dinero confirmado`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        fallaTodo()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        assertEquals(PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+
+        assertTrue(libreta.chipRechazoPendienteDeEscribir("a1"))
+        assertFalse("es la duda de D5, no «hay evidencia de cobro»", libreta.tieneEvidenciaSinGuardar("a1"))
+        assertTrue("pero no se olvida: se sigue reintentando", libreta.aprobacionPendienteDeGuardar("a1"))
+        vuelveLaBase()
+    }
+
+    @Test fun `P1 Codex r2-1 la aprobacion que llega despues de que la fila se cerro como no se cobro deja la venta cercada`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        // Una liberación ganó primero (p. ej. el servidor la dio por no cobrada) y DESPUÉS el historial confirma el cargo.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
+        assertNull("sin la aprobación la mesa estaría libre", libreta.retencionDeLaVenta("mesa-200"))
+
+        assertTrue(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
+
+        val fila = dao.getById("a1")!!
+        assertEquals("no se reabre", PaymentAttemptEntity.STATE_DESCARTADA, fila.state)
+        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, fila.serverProcessorEvidence)
+        assertEquals("la mesa queda cercada", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
     }
 }

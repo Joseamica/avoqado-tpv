@@ -2075,6 +2075,7 @@ class PaymentViewModelTest {
             assertThat(aviso.pendingSyncMessage).contains("NO vuelvas a cobrar")
             assertThat(aviso.pendingSyncMessage).contains("REF-50")
             assertThat(aviso.referenceNumber).isEqualTo("REF-50")
+            assertThat(aviso.aprobacionSinGuardar).isTrue()
             com.google.common.truth.Truth.assertWithMessage("ámbar, no la alarma roja: el registro sigue en curso").that(aviso.recordingLostMessage).isNull()
             assertThat(aviso.amount).isEqualTo("50.00")
             assertThat(aviso.orderId).isEqualTo("mesa-200")
@@ -2085,14 +2086,21 @@ class PaymentViewModelTest {
     }
 
     @Test
-    fun `P1 D13 el aviso se va como los demas - el recibo lo quita, la cola lo cambia y la alarma lo reemplaza`() = runTest {
+    fun `P1 D13 el aviso se va como los demas - la cola lo cambia, la alarma lo reemplaza y AUTORIZADO lo quita`() = runTest {
         val viewModel = createViewModel()
         try {
             val aviso = viewModel.buildApprovalNotSavedState(PaymentState.Success(authCode = "A", amount = "50.00"), "REF-50")!!
 
             val encolado = viewModel.buildPendingSyncState(aviso, "REF-50")!!
             assertThat(encolado.pendingSyncMessage).contains("quedó en cola")
+            com.google.common.truth.Truth.assertWithMessage("la cola apaga la marca de D13").that(encolado.aprobacionSinGuardar).isFalse()
             val perdido = viewModel.buildRecordingLostState(aviso, "REF-50")!!
+            com.google.common.truth.Truth.assertWithMessage("la alarma apaga la marca de D13").that(perdido.aprobacionSinGuardar).isFalse()
+            // AUTORIZADO la selló: se quita sólo el aviso de D13, nunca el de la cola ni otro.
+            val limpio = viewModel.clearApprovalNotSavedState(aviso)!!
+            com.google.common.truth.Truth.assertWithMessage("aviso de D13 quitado").that(limpio.pendingSyncMessage).isNull()
+            assertThat(limpio.aprobacionSinGuardar).isFalse()
+            assertThat(viewModel.clearApprovalNotSavedState(encolado)).isNull()
             com.google.common.truth.Truth.assertWithMessage("la alarma no convive con «se está registrando»").that(perdido.pendingSyncMessage).isNull()
             assertThat(perdido.recordingLostMessage).contains("NO vuelvas a cobrar")
         } finally {

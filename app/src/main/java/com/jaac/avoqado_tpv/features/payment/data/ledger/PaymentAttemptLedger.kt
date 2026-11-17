@@ -471,12 +471,10 @@ class PaymentAttemptLedger(
      * servidor en vuelo) puede colarse entre la escritura fallida y la memoria y cerrar la fila como DESCARTADA.
      */
     private suspend fun aprobacionDelHost(attemptId: String, a: AprobacionDelHost): Boolean = withContext(NonCancellable) {
-        // SABOTAJE D13: el comportamiento viejo (se ignora el fallo, nada se recuerda).
-        runCatching {
-            withContext(Dispatchers.IO) {
-                escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)
-            }
-        }.getOrDefault(false)
+        candadoDeEvidencia.withLock {
+            aprobacionSinGuardar[attemptId] = a
+            escribirAprobacionBajoCandado(attemptId, reintento = false)
+        }
     }
 
     /**
@@ -515,9 +513,19 @@ class PaymentAttemptLedger(
                         true
                     }
                     fila.state == PaymentAttemptEntity.STATE_REGISTRADO || fila.state == PaymentAttemptEntity.STATE_CERRADA -> true
+                    // Codex r2 #1: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación ganó) y DESPUÉS llega la
+                    // aprobación (p. ej. el historial de AngelPay la confirma). Es dinero: se deja la marca de cobro aprobado en la fila
+                    // (la misma que la cerca de la venta y los vetos ya leen en una DESCARTADA), sin reabrirla.
+                    fila.state == PaymentAttemptEntity.STATE_DESCARTADA && fila.kind == PaymentAttemptEntity.KIND_SALE -> {
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró»: queda marcado con dinero | attemptId=%s", attemptId)
+                        dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) == 1
+                    }
                     else -> {
-                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tiene en %s | attemptId=%s", fila.state, attemptId)
-                        true
+                        // Ni fallo de escritura ni dinero que la libreta pueda cercar (p. ej. una devolución ya cerrada): se reporta, se
+                        // suelta (no traba la terminal) y se contesta la verdad, que no quedó.
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta tiene en %s: no se pudo guardar | attemptId=%s", fila.state, attemptId)
+                        aprobacionSinGuardar.remove(attemptId)
+                        false
                     }
                 }
                 if (aSalvo && aprobacionSinGuardar.remove(attemptId) != null && reintento)
@@ -774,7 +782,9 @@ class PaymentAttemptLedger(
 
     /** Dinero CONOCIDO de este intento que la libreta no pudo escribir: la evidencia del servidor o la aprobación del banco (D13). */
     private fun hayDineroSinEscribir(attemptId: String): Boolean =
-        evidenciaSinGuardar.containsKey(attemptId) || aprobacionSinGuardar.containsKey(attemptId)
+        evidenciaSinGuardar.containsKey(attemptId) ||
+            // Codex r2 #2: si el chip rechazó el cierre (D5), la aprobación ya no es «cobrado»: es la duda, aunque falte escribirla.
+            (aprobacionSinGuardar.containsKey(attemptId) && attemptId !in chipRechazoSinEscribir)
 
     /** Una salida «no se cobró» bajo [candadoDeEvidencia]: con dinero del intento sin escribir, [escribir] ni se llama y da false. */
     private suspend fun salidaNegativa(attemptId: String, etiqueta: String, escribir: suspend () -> Boolean): Boolean =
@@ -922,7 +932,11 @@ class PaymentAttemptLedger(
             withContext(NonCancellable + Dispatchers.IO) {
                 candadoDeEvidencia.withLock {
                     puertaBajoCandado()
-                    escribirChipRechazoBajoCandado(attemptId)
+                    escribirChipRechazoBajoCandado(attemptId).also {
+                        // Codex r2 #2 (D13): la duda escrita sustituye a la aprobación que faltaba guardar; si no, la pantalla seguía
+                        // leyendo «hay dinero» y escondía la salida de D5.
+                        if (it == ChipRechazo.EN_DUDA) aprobacionSinGuardar.remove(attemptId)
+                    }
                 }
             }
         } catch (error: Exception) {

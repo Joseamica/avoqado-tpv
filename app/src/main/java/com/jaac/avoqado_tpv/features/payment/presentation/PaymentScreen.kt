@@ -953,7 +953,8 @@ fun PaymentScreen(
                                 proofOfSaleMessage = when {
                                     !showProofOfSale -> null
                                     proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
-                                    currentState.pendingSyncMessage != null -> PROOF_SALE_QUEUED_MESSAGE
+                                    // D13: el aviso de «no se pudo guardar» no es una venta en cola (Codex r2 #4).
+                                    currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE
                                     else -> null
                                 },
                                 onProofOfSalePhotoTaken = { photoPath, slot, number ->

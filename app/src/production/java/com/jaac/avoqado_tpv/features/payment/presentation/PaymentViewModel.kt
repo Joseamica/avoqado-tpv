@@ -907,7 +907,8 @@ class PaymentViewModel @Inject constructor(
                 recordingLostMessage = null,
                 // 🟡 Same reasoning: a queued-but-recovered payment just synced — the "pending
                 // sync" note no longer applies.
-                pendingSyncMessage = null
+                pendingSyncMessage = null,
+                aprobacionSinGuardar = false,
             )
             Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
             Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -953,6 +954,7 @@ class PaymentViewModel @Inject constructor(
             referenceNumber = referenceNumber,
             // D13 (ff3278): el aviso ámbar de «no se pudo guardar, se está registrando» ya no aplica: esta alarma lo reemplaza.
             pendingSyncMessage = null,
+            aprobacionSinGuardar = false,
             recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
                 "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
                 "supervisor con la referencia $referenceNumber para reconciliar el pago manualmente."
@@ -987,6 +989,7 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            aprobacionSinGuardar = false,
             pendingSyncMessage = "El cobro con tarjeta se realizó correctamente. Avoqado no pudo registrarlo " +
                 "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
                 "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: $referenceNumber"
@@ -1005,6 +1008,7 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            aprobacionSinGuardar = false,
             pendingSyncMessage = "El cobro con tarjeta SÍ se hizo. Se cerró la sesión antes de registrarlo en Avoqado: " +
                 "quedó guardado en este equipo y se registrará solo cuando alguien vuelva a entrar con su PIN. " +
                 "NO vuelvas a cobrar. Referencia: $referenceNumber"
@@ -1024,10 +1028,27 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            aprobacionSinGuardar = true,
             pendingSyncMessage = "El cobro con tarjeta SÍ se hizo, pero este equipo no pudo guardarlo. Se está registrando en " +
                 "Avoqado: NO vuelvas a cobrar y no cierres la app hasta que termine. Referencia: $referenceNumber"
         )
     }
+
+    /** D13: la aprobación ya quedó guardada (p. ej. al escribir AUTORIZADO): se quita SÓLO el aviso de D13, nunca otro. */
+    @VisibleForTesting
+    internal fun clearApprovalNotSavedState(current: PaymentState): PaymentState.Success? {
+        if (current !is PaymentState.Success || !current.aprobacionSinGuardar) return null
+        return current.copy(pendingSyncMessage = null, aprobacionSinGuardar = false)
+    }
+
+    /**
+     * D13 (Codex r2 #3): el PRIMER «Aprobado» ya sale con el aviso si la libreta no pudo guardar la aprobación — nunca la
+     * celebración limpia mientras se espera a AUTORIZADO.
+     */
+    private fun exitoConAvisoDeLaLibreta(exito: PaymentState.Success, referencia: String?): PaymentState.Success =
+        if (sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true)
+            buildApprovalNotSavedState(exito, referencia.orEmpty()) ?: exito
+        else exito
 
     // ═══════════════════════════════════════════════════════════════════════════════════════
     // 💸 REEMBOLSOS — los estados honestos, la telemetría y el desenlace de la cola
@@ -4244,11 +4265,11 @@ class PaymentViewModel @Inject constructor(
                 recordingInFlight = true
 
                 // ✅ FIX: Display total (subtotal + tip) in Success screen
-                _state.value = PaymentState.Success(
+                _state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(
                     authCode = saleData.authorization ?: "",
                     amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
                     tipAmount = getTipForFlow()
-                )
+                ), saleData.reference)
 
                 // ⭐ NEW: Record payment to backend (in background)
                 handlePaymentSuccess(
@@ -5738,11 +5759,11 @@ class PaymentViewModel @Inject constructor(
             recordingInFlight = true
 
             // ✅ FIX: Display total (subtotal + tip)
-            _state.value = PaymentState.Success(
+            _state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(
                 authCode = saleData.authorization ?: "",
                 amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
                 tipAmount = getTipForFlow()
-            )
+            ), saleData.reference)
 
             // ⭐ NEW: Record payment to backend (in background)
             handlePaymentSuccess(
@@ -7726,6 +7747,9 @@ class PaymentViewModel @Inject constructor(
                     // cambia lo de siempre: el recibo registrado, la cola o la alarma de «no quedó registrado».
                     if (paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptIdForLedger)) {
                         buildApprovalNotSavedState(_state.value, referenceNumber)?.let { _state.value = it }
+                    } else {
+                        // AUTORIZADO la selló: el aviso del primer «Aprobado» ya no es cierto.
+                        clearApprovalNotSavedState(_state.value)?.let { _state.value = it }
                     }
                 }
 

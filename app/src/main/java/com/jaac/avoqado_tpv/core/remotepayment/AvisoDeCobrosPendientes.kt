@@ -67,6 +67,28 @@ object AvisoDeCobrosPendientes {
     }
 
     /**
+     * 🔴 D20 (founder, 17-nov: «lista»): el recuadro «Por revisar» de Pagos, sin la ventana de 10 min. El aviso verde se quita a los
+     * 10 min porque ya no evita un cobro doble; la duda sigue, y sin esto no le quedaba ninguna salida en la terminal. No dice que
+     * Avoqado lo concilie: un Pago rápido de la PAX no llega a Avoqado (D22), y prometerlo sería una pantalla que miente.
+     */
+    fun textoPorRevisar(cobros: List<ObligacionPendiente>, ahoraMillis: Long, recortada: Boolean = false): String? {
+        val masReciente = cobros.firstOrNull() ?: return null
+        // Codex r1 #1 y r2: con la consulta llena puede haber más viejos; se dice y el recuadro ofrece «Ver anteriores».
+        val tope = if (recortada) " Hay más anteriores: toca «Ver anteriores»." else ""
+        val queHacer = "toca «No se cobró». Si sí se cobró, no lo vuelvas a cobrar y avísale a tu gerente.$tope"
+        if (cobros.size == 1) {
+            return "Por revisar: un cobro con tarjeta de ${pesos(masReciente.totalCentavos)} quedó sin confirmar " +
+                "(${antiguedad(ahoraMillis - masReciente.desdeMillis)}). Si ya revisaste que no se cobró, $queHacer"
+        }
+        val nombradas = cobros.take(MAXIMO_ENUMERADO)
+        val resto = cobros.size - nombradas.size
+        val enumeradas = nombradas.joinToString(", ") { "${pesos(it.totalCentavos)} ${antiguedad(ahoraMillis - it.desdeMillis)}" }
+        val cola = if (resto > 0) ", y $resto más" else ""
+        return "Por revisar: ${cobros.size} cobros con tarjeta quedaron sin confirmar: $enumeradas$cola. " +
+            "Si ya revisaste que alguno no se cobró, $queHacer"
+    }
+
+    /**
      * 10 min, en TODA terminal (founder: 24-sep para la PAX, 25-sep para todas — «ninguna duda apaga la terminal»). A los
      * 10 min el cliente ya se fue y el aviso ya no evita ningún cobro doble. La fila NO se toca: sigue para conciliar.
      */
@@ -149,7 +171,9 @@ object AvisoDeCobrosPendientes {
         return when {
             minutos < 1 -> "hace unos segundos"
             minutos < 60 -> "hace $minutos min"
-            else -> "hace ${minutos / 60} h"
+            // D20: «Por revisar» nombra dudas de días; «hace 50 h» no se lee.
+            minutos < 24 * 60 -> "hace ${minutos / 60} h"
+            else -> "hace ${minutos / (24 * 60)} d"
         }
     }
 }

@@ -623,7 +623,7 @@ interface PaymentAttemptDao {
                 WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
                 AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
                      OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
-            ORDER BY d.created_at DESC LIMIT 50)
+            ORDER BY d.created_at DESC LIMIT :limite)
         UNION ALL
         SELECT * FROM (
             SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
@@ -632,10 +632,11 @@ interface PaymentAttemptDao {
             WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM payment_attempts p
                 WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
-            ORDER BY r.created_at DESC LIMIT 50)
+            ORDER BY r.created_at DESC LIMIT :limite)
         ORDER BY desde_millis DESC"""
     )
-    fun observarCobrosDeclarables(venueId: String, processToken: String): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>>
+    // D20 (Codex r2): [limite] por mitad; el aviso usa 50 y «Ver anteriores» de Pagos lo amplía de 50 en 50.
+    fun observarCobrosDeclarables(venueId: String, processToken: String, limite: Int): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>>
 
     /**
      * SDK 1.0.19 (18-sep): la petición NO salió al host — lo acreditó el SDK de AngelPay (`authorizationAttempted = false`

@@ -75,7 +75,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
     /** Por identidad y no por posición: la lista cambia entre una vuelta y otra. */
     @Volatile private var ultimoRefrescado: String? = null
 
-    fun observarDeclarables(venueId: String) = ledger.observarCobrosDeclarables(venueId)
+    fun observarDeclarables(venueId: String, limite: Int = TOPE_DE_LA_CONSULTA) = ledger.observarCobrosDeclarables(venueId, limite)
 
     /**
      * Antes de pedir confirmación. `null` = se puede confirmar. Un Pago rápido consulta primero (Codex plan r1 #2): sin respuesta de Avoqado
@@ -198,7 +198,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
 
     /** null = sigue declarable. Si ya no: lo que la libreta sabe de dinero, o nada que afirmar. Una lectura fallida tampoco deja pasar. */
     private suspend fun yaNoEsDeclarable(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion? {
-        val sigue = ledger.observarCobrosDeclarables(venueId).first().any { it.identidad == cobro.identidad }
+        // D20 (Codex r2): sin el tope de la lista. «Ver anteriores» ofrece cobros fuera de los 50 más recientes, y buscar sólo ahí
+        // diría «no se puede» de uno que sí. ponytail: una lectura local sin tope al declarar; Room, no el servidor.
+        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad }
         return when {
             sigue -> null
             tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
@@ -253,6 +255,19 @@ class DeclaracionDesdeElAviso @Inject constructor(
         fun vigentes(cobros: List<CobroDeclarable>, ahoraMillis: Long): List<CobroDeclarable> = cobros
             .filter { ahoraMillis - it.desdeMillis < AvisoDeCobrosPendientes.VENTANA_AVISO_MS }
             .distinctBy { it.identidad }
+
+        /** D20: «Por revisar» (Pagos) ofrece lo mismo que [vigentes], sin la ventana de 10 min: la duda no se va con el aviso. */
+        fun porRevisar(cobros: List<CobroDeclarable>): List<CobroDeclarable> = cobros.distinctBy { it.identidad }
+
+        /** Cuántos trae cada mitad de [PaymentAttemptDao.observarCobrosDeclarables] (intentos y solicitudes sin intento) por vuelta. */
+        const val TOPE_DE_LA_CONSULTA = 50
+
+        /**
+         * D20 (Codex r1 #1 y r2): la consulta trae los [limite] más recientes de cada mitad. Llena = puede haber más viejos, y el recuadro
+         * ofrece «Ver anteriores» (otros 50) en vez de esconderlos.
+         */
+        fun recortada(cobros: List<CobroDeclarable>, limite: Int = TOPE_DE_LA_CONSULTA): Boolean =
+            cobros.count { it.attemptId != null } >= limite || cobros.count { it.attemptId == null } >= limite
 
         /** La MISMA declaración en cada intento, también tras reiniciar: el servidor la trata como replay. */
         private fun idDeLaDeclaracion(venueId: String, requestId: String): String =

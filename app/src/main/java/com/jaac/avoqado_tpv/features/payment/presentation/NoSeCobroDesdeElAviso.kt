@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,6 +41,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
+import com.jaac.avoqado_tpv.core.remotepayment.ObligacionPendiente
 import com.jaac.avoqado_tpv.features.payment.data.ledger.CobroDeclarable
 import com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
 import com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDeLaDeclaracion
@@ -176,6 +178,70 @@ internal fun BannerDeCobrosPendientes(
         onRevisar = onRevisar,
         onAyuda = onAyuda,
     )
+    DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
+}
+
+/** Cada cuánto se pone al día el «hace N min» del recuadro «Por revisar». */
+internal const val RELOJ_DE_POR_REVISAR_MS = 30_000L
+
+/**
+ * 🔴 D20 (founder, 17-nov: «lista»): el recuadro «Por revisar» de Pagos. Es lo mismo que el banner del Inicio (el mismo
+ * [FlujoDeNoSeCobro], los mismos diálogos y el mismo refresco de uno en uno), pero sin la ventana de 10 min. El aviso verde se quita
+ * porque a los 10 min ya no evita un cobro doble, y la duda se quedaba sin ninguna salida en la terminal. Sin nada por revisar, no pinta nada.
+ */
+@Composable
+internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAviso) {
+    val alcance = rememberCoroutineScope()
+    val flujo = remember(venueId) { FlujoDeNoSeCobro(declaracion, venueId, alcance) }
+    val paso by flujo.paso.collectAsStateWithLifecycle()
+    // Codex r2: con más de 50 por revisar, «Ver anteriores» trae otros 50; sin esto los viejos sólo salían al resolver los recientes.
+    var limite by remember(venueId) { mutableStateOf(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) }
+    val cobrosFlow = remember(venueId, limite) { declaracion.observarDeclarables(venueId, limite) }
+    val cobros by cobrosFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val recortada = DeclaracionDesdeElAviso.recortada(cobros, limite)
+    val porRevisar = DeclaracionDesdeElAviso.porRevisar(cobros)
+    val porRevisarAlDia by rememberUpdatedState(porRevisar)
+    val hayPorRevisar = porRevisar.isNotEmpty()
+    val ahora by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(RELOJ_DE_POR_REVISAR_MS)
+            value = System.currentTimeMillis()
+        }
+    }
+    val cicloDeVida = LocalLifecycleOwner.current.lifecycle
+
+    LaunchedEffect(porRevisar) { flujo.vigentesCambiaron(porRevisar) }
+    // Si otro aparato o el POS lo resolvió, sale de la lista en segundos: una consulta, de una en una, sólo con Pagos a la vista.
+    LaunchedEffect(hayPorRevisar, venueId) {
+        if (!hayPorRevisar) return@LaunchedEffect
+        cicloDeVida.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                declaracion.refrescarUno(venueId, porRevisarAlDia)
+                delay(REFRESCO_DEL_BANNER_MS)
+            }
+        }
+    }
+
+    val texto = AvisoDeCobrosPendientes.textoPorRevisar(
+        porRevisar.map { ObligacionPendiente(it.totalCentavos, it.desdeMillis) }, ahora, recortada = recortada,
+    )
+    if (texto != null) {
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text(text = texto, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (recortada) {
+                        TextButton(onClick = { limite += DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA }) {
+                            Text("Ver anteriores")
+                        }
+                    }
+                    TextButton(onClick = { flujo.tocar(porRevisar) }) {
+                        Text("No se cobró")
+                    }
+                }
+            }
+        }
+    }
     DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
 }
 

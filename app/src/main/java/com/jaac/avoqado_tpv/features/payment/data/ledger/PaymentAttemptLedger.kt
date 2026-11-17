@@ -588,12 +588,6 @@ class PaymentAttemptLedger(
         return sigue
     }
 
-    /**
-     * D13 (Codex r14): la cola de cobros (`pending_payments`) ya guardó este cobro: queda a salvo (la cola cerca su venta y lo
-     * registra), aunque la fila de la libreta no haya podido pasar a ENTREGADA_A_COLA (p. ej. seguía en AUTORIZANDO).
-     */
-    fun cobroGuardadoEnLaCola(attemptId: String) = soltarAprobacion(attemptId)
-
     /** Una transición de [attemptId] que SÍ se escribió la deja a salvo (AUTORIZADO, REGISTRADO, cola, D5; no REGISTRO_FALLIDO). */
     private fun soltarAprobacion(attemptId: String) {
         aprobacionPorRevisar.remove(attemptId)

@@ -1299,9 +1299,7 @@ class PaymentViewModel @Inject constructor(
             queueResult.onSuccess {
                 // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now.
                 context.idempotencyKey?.let { attemptIdForLedger -> authorizationUnresolved = false
-                            paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger)
-                            // D13 (Codex r14): la cola YA guardó el cobro, aunque la fila de la libreta no haya podido avanzar.
-                            paymentAttemptLedger.cobroGuardadoEnLaCola(attemptIdForLedger) }
+                            paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger) }
                 Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
                 // 🔴 Hueco 2 (2026-09-07): pedir el sync YA, no esperar al periódico de 15 min. Con la
                 // red viva (el caso diario: el registro se cortó por timeout) WorkManager lo corre en

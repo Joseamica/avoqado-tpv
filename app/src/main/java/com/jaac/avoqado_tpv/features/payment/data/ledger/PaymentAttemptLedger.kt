@@ -546,7 +546,7 @@ class PaymentAttemptLedger(
      */
     private val aprobacionPorRevisar: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    /** SÓLO bajo [candadoDeEvidencia]. Lee cada fila por revisar; la DESCARTADA recibe su marca. Devuelve si alguna sigue sin leerse. */
+    /** SÓLO bajo [candadoDeEvidencia]. Lee cada fila por revisar; la DESCARTADA pasa a [evidenciaSinGuardar]. Devuelve si alguna sigue sin leerse. */
     private suspend fun revisarAprobacionesSinLeer(): Boolean {
         for (attemptId in aprobacionPorRevisar.toList()) {
             val fila = try {
@@ -557,7 +557,12 @@ class PaymentAttemptLedger(
                 continue
             }
             aprobacionPorRevisar.remove(attemptId)
-            if (fila?.state == PaymentAttemptEntity.STATE_DESCARTADA && attemptId in aprobacionSinGuardar) marcarDineroEnLaDescartada(fila)
+            // Codex r7 #1: aquí NO se escribe (la puerta puede correr dentro de la transacción de una reserva que se revierte): una
+            // DESCARTADA pasa a la evidencia sin escribir, que la puerta escribe a continuación con su mecanismo de siempre.
+            if (fila?.state == PaymentAttemptEntity.STATE_DESCARTADA && fila.kind == PaymentAttemptEntity.KIND_SALE && attemptId in aprobacionSinGuardar) {
+                evidenciaSinGuardar[attemptId] = fila.venueId
+                aprobacionSinGuardar.remove(attemptId)
+            }
         }
         return aprobacionPorRevisar.isNotEmpty()
     }

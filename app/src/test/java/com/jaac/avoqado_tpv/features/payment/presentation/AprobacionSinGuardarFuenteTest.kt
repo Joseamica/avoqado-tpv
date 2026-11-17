@@ -107,4 +107,14 @@ class AprobacionSinGuardarFuenteTest {
         assertTrue("el recibo dice «se sincronice» con el aviso de D13",
             pantalla.contains("if (aprobacionSinGuardar) \"El recibo estará disponible en cuanto Avoqado registre el pago\""))
     }
+
+    @Test
+    fun `P2 Codex r7-2 el error de impresion no repone el aviso de una copia vieja`() {
+        for ((nombre, archivo) in variantes) {
+            val fuente = fuente(archivo)
+            assertEquals("[$nombre] queda un PrintError con la copia sin revisar", 0, fuente.split("previousState = currentState\n").size - 1)
+            assertEquals("[$nombre] los 7 PrintError pasan por exitoParaElErrorDeImpresion", 7,
+                fuente.split("previousState = exitoParaElErrorDeImpresion(currentState)").size - 1)
+        }
+    }
 }

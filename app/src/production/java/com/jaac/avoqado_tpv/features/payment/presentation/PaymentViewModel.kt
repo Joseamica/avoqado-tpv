@@ -1042,6 +1042,15 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * D13 (Codex r7 #2): la copia del éxito que guarda «No se pudo imprimir» se tomó ANTES de esperar a la impresora; si mientras
+     * tanto la aprobación quedó a salvo, el aviso de D13 de esa copia ya no es cierto y no se repone.
+     */
+    private fun exitoParaElErrorDeImpresion(copia: PaymentState.Success): PaymentState.Success =
+        if (copia.aprobacionSinGuardar && sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) != true)
+            clearApprovalNotSavedState(copia) ?: copia
+        else copia
+
+    /**
      * D13 (Codex r6 #3): quita el aviso del éxito vivo o del que guarda «No se pudo imprimir» (que lo muestra), nunca otro aviso.
      */
     private fun quitarAvisoDeAprobacionSinGuardar(current: PaymentState): PaymentState? = when (current) {
@@ -8433,7 +8442,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] No paper in printer")
                     _state.value = PaymentState.PrintError(
                         message = "Sin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8442,7 +8451,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Printer not ready: ${printerStatus.message}")
                     _state.value = PaymentState.PrintError(
                         message = printerStatus.message,
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8463,7 +8472,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Order has no items to print")
                     _state.value = PaymentState.PrintError(
                         message = "No se encontraron productos de la orden para imprimir. Intenta de nuevo.",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8512,7 +8521,7 @@ class PaymentViewModel @Inject constructor(
                     _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir recibo",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                 }
             } catch (e: Exception) {
@@ -8520,7 +8529,7 @@ class PaymentViewModel @Inject constructor(
                 _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
-                    previousState = currentState
+                    previousState = exitoParaElErrorDeImpresion(currentState)
                 )
             } finally {
                 _isPrinting.value = false // también en las salidas tempranas (sin papel, no lista, sin productos)
@@ -8812,7 +8821,7 @@ class PaymentViewModel @Inject constructor(
                     _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir comanda",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                 }
             } catch (e: Exception) {
@@ -8820,7 +8829,7 @@ class PaymentViewModel @Inject constructor(
                 _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
-                    previousState = currentState
+                    previousState = exitoParaElErrorDeImpresion(currentState)
                 )
             }
         }

@@ -227,21 +227,6 @@ class AprobacionSinGuardarRoomTest {
         assertTrue(dao.getApprovalRecoveryCandidates(venue, Long.MAX_VALUE, System.currentTimeMillis()).isEmpty())
     }
 
-    @Test fun `P1 Codex r2-1 la aprobacion que llega despues de que la fila se cerro como no se cobro deja la venta cercada`() = runTest {
-        val libreta = proceso()
-        cobrandoCincuentaDeLaMesa(libreta)
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
-        assertNull("sin la aprobación la mesa estaría libre", libreta.retencionDeLaVenta("mesa-200"))
-
-        assertTrue(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
-
-        val fila = dao.getById("a1")!!
-        assertEquals("no se reabre", PaymentAttemptEntity.STATE_DESCARTADA, fila.state)
-        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, fila.serverProcessorEvidence)
-        assertEquals("la mesa queda cercada", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
-        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
-    }
-
     @Test fun `control un rechazo del banco que no se pudo escribir no se recuerda como dinero`() = runTest {
         val libreta = proceso()
         cobrandoCincuentaDeLaMesa(libreta)
@@ -293,60 +278,6 @@ class AprobacionSinGuardarRoomTest {
         assertFalse("la pantalla ve la duda con su salida, no «hay dinero»", libreta.tieneEvidenciaSinGuardar("a1"))
     }
 
-    @Test fun `P1 Codex r5-1 si la marca de dinero sobre la fila descartada falla, la puerta la reintenta y no deja reservar`() = runTest {
-        val libreta = proceso()
-        cobrandoCincuentaDeLaMesa(libreta)
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
-        db.openHelper.writableDatabase.execSQL(
-            "CREATE TRIGGER falla_marca BEFORE UPDATE ON payment_attempts WHEN NEW.server_processor_evidence IS 'APPROVED' " +
-                "BEGIN SELECT RAISE(ABORT, 'disco lleno'); END")
-
-        assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
-
-        assertTrue("es dinero sin escribir", libreta.tieneEvidenciaSinGuardar("a1"))
-        assertTrue("y la pantalla conserva el aviso hasta que la marca quede escrita (Codex r18 #2)", libreta.aprobacionPendienteDeGuardar("a1"))
-        assertTrue("el vigilante no la suelta con la fila descartada sin marca (Codex r18 #1)", libreta.revisarAprobacionPendiente("a1"))
-        assertFalse("la misma mesa no se vuelve a cobrar mientras falte",
-            libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
-
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER falla_marca")
-        libreta.openAttempt("otra", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}")
-
-        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
-        assertEquals("la mesa queda cercada en la base", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
-        assertFalse("con la marca escrita el vigilante la suelta", libreta.revisarAprobacionPendiente("a1"))
-        assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
-    }
-
-    @Test fun `P1 Codex r6-1 si ni la fila se puede leer, la puerta no deja reservar y al leerla marca la descartada`() = runTest {
-        // DAO simulado (un espía de Room no puede volver a la lectura real): la PRIMERA lectura falla, la segunda ve la DESCARTADA.
-        val descartada = PaymentAttemptEntity(
-            attemptId = "a1", venueId = venue, processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
-            state = PaymentAttemptEntity.STATE_DESCARTADA, amountCents = 5000, tipCents = 0,
-            recordingRoute = "ORDER", paymentContextJson = mesa, createdAt = 1, updatedAt = 1,
-        )
-        val dudoso = mockk<PaymentAttemptDao>(relaxed = true)
-        io.mockk.coEvery { dudoso.casHostResponded(any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
-        io.mockk.coEvery { dudoso.getById("a1") } throws IllegalStateException("disco lleno") andThen descartada
-        io.mockk.coEvery { dudoso.getById("otra-vez") } returns null
-        io.mockk.coEvery { dudoso.marcarEvidenciaPositivaDelServidor("a1", venue, any()) } returns 1
-        io.mockk.coEvery { dudoso.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns -1L
-        val libreta = PaymentAttemptLedger(dudoso, settings)
-
-        assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
-        assertTrue("sin poder leer, la aprobación sigue protegida", libreta.tieneEvidenciaSinGuardar("a1"))
-
-        // La siguiente decisión pasa por la puerta: ya puede leer la fila, ve la DESCARTADA y le pone su marca de dinero.
-        libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa)
-
-        io.mockk.coVerify(exactly = 1) { dudoso.marcarEvidenciaPositivaDelServidor("a1", venue, any()) }
-        // El vigilante lee la fila ya marcada y suelta el aviso.
-        io.mockk.coEvery { dudoso.getById("a1") } returns descartada.copy(serverProcessorEvidence = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
-        assertFalse(libreta.revisarAprobacionPendiente("a1"))
-        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
-        assertFalse("la marca quedó escrita", libreta.tieneEvidenciaSinGuardar("a1"))
-    }
-
     @Test fun `P1 Codex r13 un registro fallido sin la marca del banco NO quita el aviso - lo quita la cola`() = runTest {
         val libreta = proceso()
         cobrandoCincuentaDeLaMesa(libreta)
@@ -396,5 +327,21 @@ class AprobacionSinGuardarRoomTest {
         assertTrue("sin la marca no se suelta", libreta.aprobacionPendienteDeGuardar("a1"))
         vuelveLaBase()
         assertTrue("y el vigilante de la pantalla tampoco la suelta (Codex r17 #1)", libreta.revisarAprobacionPendiente("a1"))
+    }
+
+    @Test fun `P2 Codex r19 la aprobacion que llega cuando la fila ya dice no se cobro se queda como en main y no traba nada`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        // El POS ya declaró «no se cobró» (o una liberación ganó) y DESPUÉS llega la aprobación: no es el caso de D13.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
+
+        assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
+
+        val fila = dao.getById("a1")!!
+        assertEquals("no se reabre", PaymentAttemptEntity.STATE_DESCARTADA, fila.state)
+        assertNull("no se marca con dinero (trababa el cierre de caja): decisión aparte", fila.serverProcessorEvidence)
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
+        assertEquals(0, libreta.reintentarEvidenciaSinGuardar())
     }
 }

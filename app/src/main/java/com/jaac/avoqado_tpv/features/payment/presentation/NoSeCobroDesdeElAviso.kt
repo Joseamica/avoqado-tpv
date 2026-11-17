@@ -283,6 +283,18 @@ private fun ListaDeCobrosDialog(
     )
 }
 
+/**
+ * D12 (16-nov): con solicitud, la declaración va al servidor y ahí queda quién y cuándo; un Pago rápido (sin solicitud) se
+ * declara en la libreta de ESTA terminal ([com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.declareChecked])
+ * y no llega al servidor. El texto no promete más.
+ */
+internal fun textoDeLaConfirmacion(cobro: CobroDeclarable, ahora: Long): String =
+    AvisoDeCobrosPendientes.importeYAntiguedad(cobro.totalCentavos, cobro.desdeMillis, ahora) +
+        // Codex r3 (D12): sin «si el banco avisa que sí se cobró, se registra como cobrado»: el aviso del banco no crea el pago
+        // (el receptor de Blumon TPV sólo busca un `Payment` que ya exista; si no, lo deja pendiente hasta marcarlo huérfano).
+        if (cobro.requestId != null) ". Revísalo antes de confirmar: queda tu nombre y la hora."
+        else ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado."
+
 @Composable
 private fun ConfirmacionDialog(
     cobro: CobroDeclarable,
@@ -298,11 +310,7 @@ private fun ConfirmacionDialog(
             Text("¿No se cobró este cobro?")
         },
         text = {
-            Text(
-                AvisoDeCobrosPendientes.importeYAntiguedad(cobro.totalCentavos, cobro.desdeMillis, ahora) +
-                    ". Revísalo antes de confirmar: queda tu nombre y la hora. Si el banco avisa que sí se cobró, se registra como cobrado.",
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-            )
+            Text(textoDeLaConfirmacion(cobro, ahora), modifier = Modifier.verticalScroll(rememberScrollState()))
         },
         confirmButton = {
             AvoqadoButton(text = "Sí, no se cobró", onClick = onConfirmar, loading = enviando)

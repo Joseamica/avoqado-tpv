@@ -47,7 +47,8 @@ class NoSeCobroCableadoTest {
         for (texto in listOf(
             "¿Cuál no se cobró?",
             "¿No se cobró este cobro?",
-            ". Revísalo antes de confirmar: queda tu nombre y la hora. Si el banco avisa que sí se cobró, se registra como cobrado.",
+            ". Revísalo antes de confirmar: queda tu nombre y la hora.\"",
+            ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado.",
             "Sí, no se cobró",
             "Cancelar",
             "Pide a un gerente que ingrese su PIN",

@@ -92,6 +92,28 @@ class AngelPaySdk119ReglaTest {
         callResult = callResultDe(codigo),
     )
 
+    /**
+     * 🔴 El G500 que NO es un rechazo del banco (AAR 1.0.23, encargo 60960d · hz:033d44ca:D2). Cuando la llamada de cobro
+     * revienta DESPUÉS de enviar con una excepción que el traductor no reconoce (`o.n`: IOException, SocketException,
+     * «unexpected end of stream») o con una respuesta ilegible (`o.h`), `b.c.a(TransactionChargeRequest, …)` arma el `b.d`
+     * con TODOS los campos de la respuesta en null (bytecode 437–558: sólo `c = "05"` —que el armador no lee— y `f` = el
+     * mensaje de la excepción), y el armador `c0.v0.a(b.d, Boolean, String)` (0–596) lo vuelve `G500` DECLINED sin pasar
+     * por `verify_in_doubt`. Lo que SÍ trae: los campos de tarjeta leída del orquestador, NUESTRA referencia (`B`) y
+     * `authorizationAttempted = m` (true: ya se mandó).
+     */
+    private fun delErrorTrasEnviar(
+        mensaje: String = "unexpected end of stream on https://gateway.angelpay.mx/...",
+        referencia: String? = intento,
+    ) = PaymentResult(
+        approved = false, status = PaymentResult.Status.DECLINED, message = mensaje, authCode = null, amount = centavos,
+        code = null, description = null, cardBrand = null, cardBin = null, cardLast4 = null,
+        cardEntryMode = "contactless", reference = null, affiliation = null, aid = "A0000000031010", arqc = "9F2601AB",
+        applicationLabel = "VISA CREDITO", tvr = "0000008000", tsi = "E800", authentication = "Sin firma",
+        integratorReference = referencia, folio = null, transactionDate = null, issuingBank = null, cardType = null,
+        operationType = "VENTA", requireSignature = false, authorizationAttempted = true,
+        callResult = callResultDe(AppErrorCatalog.Code.G500),
+    )
+
     private fun decidir(r: PaymentResult, attemptId: String? = intento, versionSdk: String? = version): DecisionDelSdk =
         AngelPayOutcomeClassifier.decidirSegunElSdk119(r.paraLaReglaDelSdk(versionSdk), attemptId)
 
@@ -298,8 +320,9 @@ class AngelPaySdk119ReglaTest {
     }
 
     @Test
-    fun `P1 T8 attempted=true con rechazo de la tabla sigue como hoy - rechazo confirmado (4a sin endurecer)`() {
-        // Decisión del 18-sep: G500/N400 con attempted=true NO se endurecen en esta entrega (§2.2 4a queda pendiente).
+    fun `P1 T8 attempted=true con rechazo de la tabla Y respuesta del banco sigue como hoy - rechazo confirmado`() {
+        // Un rechazo que TRAE algo del banco (código del emisor, descripción, referencia…) sigue con «Reintentar». El N400
+        // tampoco cambia: el binario 1.0.23 sólo lo produce antes de que el banco procese (`o.k`, evidencia del 16-nov).
         listOf(
             delHost(aprobado = false, codigo = AppErrorCatalog.Code.G500),
             delHost(aprobado = false, codigo = AppErrorCatalog.Code.G500, codigoEmisor = null),
@@ -308,6 +331,75 @@ class AngelPaySdk119ReglaTest {
             assertWithMessage("regla · ${r.callResult?.code}/${r.code}").that(decidir(r)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
             assertWithMessage("hoy · ${r.callResult?.code}/${r.code}").that(comoHoy(r)).isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)
         }
+    }
+
+    // ══════════ D2 (16-nov): G500 tras enviar SIN nada del banco = el error de red que la librería no reconoce ══════════
+
+    @Test
+    fun `P1 D2 G500 tras enviar sin ningun dato del banco es INCIERTO, nunca un rechazo con Reintentar`() {
+        listOf(
+            delErrorTrasEnviar(),
+            delErrorTrasEnviar(mensaje = "Software caused connection abort"),
+            // `o.h`: la respuesta llegó y no se pudo leer.
+            delErrorTrasEnviar(mensaje = "Unexpected JSON token at offset 0"),
+            // Sin mensaje: el SDK escribe «Error de conexion» (`b.c` 466).
+            delErrorTrasEnviar(mensaje = "Error de conexion"),
+        ).forEach { r ->
+            assertWithMessage("hoy · ${r.message}").that(comoHoy(r)).isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)
+            assertWithMessage("regla · ${r.message}").that(decidir(r)).isEqualTo(DecisionDelSdk.INCIERTO)
+        }
+    }
+
+    @Test
+    fun `P1 D2 costo aceptado - una respuesta LEIDA que no trae nada (banda) tambien queda en duda`() {
+        // Codex r1 (16-nov), reproducido con el AAR: `{"request_status":false,"http_code":400,"mensaje":"Solicitud rechazada"}`
+        // en una venta por banda (la petición no lleva `CardInformation`) sale por el camino de RESPUESTA de `b.c` (217–431)
+        // con los 12 campos del host en null y el mensaje del gateway. No se distingue del error de red y nada acredita que el
+        // dinero no se movió: duda, que sólo cuesta espera.
+        val respuestaVaciaPorBanda = delErrorTrasEnviar(mensaje = "Solicitud rechazada").copy(
+            cardEntryMode = "banda", aid = null, arqc = null, applicationLabel = null, tvr = null, tsi = null, authentication = null,
+        )
+        assertThat(comoHoy(respuestaVaciaPorBanda)).isEqualTo(DesenlaceDelCobro.RECHAZADO_CONFIRMADO)
+        assertThat(decidir(respuestaVaciaPorBanda)).isEqualTo(DecisionDelSdk.INCIERTO)
+    }
+
+    @Test
+    fun `P1 D2 sin nada del banco la duda no depende de la referencia`() {
+        // No hay veredicto que correlacionar: sin referencia, o con la de otro intento, sigue sin ser un rechazo.
+        assertThat(decidir(delErrorTrasEnviar(referencia = null))).isEqualTo(DecisionDelSdk.INCIERTO)
+        assertThat(decidir(delErrorTrasEnviar(referencia = otroIntento))).isEqualTo(DecisionDelSdk.INCIERTO)
+        assertThat(decidir(delErrorTrasEnviar(), attemptId = null)).isEqualTo(DecisionDelSdk.INCIERTO)
+    }
+
+    @Test
+    fun `P1 D2 un solo campo del banco basta para que el G500 siga siendo un rechazo como hoy`() {
+        val base = delErrorTrasEnviar()
+        listOf(
+            base.copy(code = "05"), base.copy(authCode = "x"), base.copy(description = "Fondos insuficientes"),
+            base.copy(cardBrand = "VISA"), base.copy(cardBin = "411111"), base.copy(cardLast4 = "1111"),
+            base.copy(reference = "260917233900"), base.copy(affiliation = "9814275"), base.copy(folio = "000123"),
+            base.copy(transactionDate = "2026-11-16T12:00:00"), base.copy(issuingBank = "BBVA"), base.copy(cardType = "CREDITO"),
+            // Un campo en BLANCO también es algo que escribió la respuesta (el armador del error escribe null).
+            base.copy(code = ""),
+        ).forEach { r ->
+            assertWithMessage("regla · ${r.paraLaReglaDelSdk(version).camposDelHost.filterValues { it != null }.keys}")
+                .that(decidir(r)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
+        }
+    }
+
+    @Test
+    fun `P1 D2 solo el G500 - N400 y los demas rechazos sin datos del banco siguen como hoy`() {
+        val base = delErrorTrasEnviar()
+        listOf(AppErrorCatalog.Code.N400, AppErrorCatalog.Code.G504, AppErrorCatalog.Code.E605).forEach { codigo ->
+            val r = base.copy(callResult = callResultDe(codigo))
+            assertWithMessage("regla · $codigo").that(decidir(r)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
+        }
+    }
+
+    @Test
+    fun `P1 D2 con otra version del SDK el mismo G500 sigue como hoy`() {
+        assertThat(decidir(delErrorTrasEnviar(), versionSdk = "1.0.22")).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
+        assertThat(decidir(delErrorTrasEnviar(), versionSdk = null)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
     }
 
     // ══════════════════════════ T10 · T11: aprobado y sesión expirada ganan como siempre ══════════════════════════

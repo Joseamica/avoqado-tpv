@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **PAX y Nexgo · un cobro con tarjeta en duda ya no se queda sin salida cuando el aviso verde se quita a los 10 min (D20, tarjeta hz:033d44ca:D20; founder 17-nov: «lista»)**: arriba de «Historial de Pagos» sale el recuadro «Por revisar» con los cobros sin confirmar que nadie resolvió, aunque sean de horas o días, con el mismo «No se cobró» del aviso (permiso, PIN de gerente, «primero consulta a Avoqado»). El aviso del Inicio se sigue quitando a los 10 min (decisión del 24/25-sep). El texto no promete que Avoqado lo vea (D22) y, si la consulta llega a su tope de 50, lo dice. El cierre de caja bloqueado manda a Pagos › «Por revisar» («si no aparece ahí, llama a soporte»), sin decir «cobro» ni «venta» porque también puede ser una devolución.
+
 ---
 
 ## [2.21.0] - 2026-11-17

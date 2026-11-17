@@ -76,6 +76,26 @@ object LedgerSweepScheduler {
         Timber.d("🔎 [LedgerServer] recuperación por servidor encolada (APPEND_OR_REPLACE, CONNECTED, +%d s)", retrasoSegundos)
     }
 
+    /**
+     * Codex r4 (D3, encargo 9308a7): otra pasada para una aprobación que la anterior saltó por RECIENTE (la recuperación sólo
+     * toma filas de más de 2 min). [runOnceNow] es KEEP: una petición que llega con otra pendiente se absorbe, y esa pendiente
+     * puede correr antes de que la fila cumpla su espera — sin esta pasada, la siguiente era la reconexión o la de 6 h.
+     * La pide el propio barrido; `APPEND_OR_REPLACE` porque la pide estando en curso (REPLACE se cancelaría a sí mismo).
+     */
+    fun runApprovalFollowUp(context: Context, delayMs: Long) {
+        val request = OneTimeWorkRequestBuilder<LedgerShadowSweepWorker>()
+            .setInitialDelay(delayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            FOLLOW_UP_WORK_NAME,
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            request
+        )
+        Timber.d("📒 [LedgerSweep] pasada de seguimiento en %d s (aprobación reciente)", delayMs / 1000)
+    }
+
+    private const val FOLLOW_UP_WORK_NAME = "ledger_aprobacion_reciente"
+
     /** One-shot catch-up sweep at login/startup (KEEP — repeated starts don't stack). */
     fun runOnceNow(context: Context) {
         val request = OneTimeWorkRequestBuilder<LedgerShadowSweepWorker>()

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -120,6 +121,9 @@ fun PaymentScreen(
     externalTipCents: Long? = null,  // 🔵 External device tip (cents)
     externalRating: Int? = null,  // 🔵 External device rating (1-5)
     externalSkipReview: Boolean = false,  // 🔵 External device: skip rating/tip screens
+    // 🪑 D9 (12-nov): la propina que el mesero escribió en Mesas (centavos). Se cobra sin volver a preguntarla;
+    // la calificación sigue igual. Sólo la pone la costura de Mesas; null o ≤ 0 = el camino de siempre.
+    propinaYaElegidaCents: Long? = null,
     skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
     isPortabilidad: Boolean = false,  // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
     serialNumber: String? = null,  // 📱 SERIALIZED: ICCID/serial number for receipt
@@ -176,6 +180,13 @@ fun PaymentScreen(
 
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // 🪑 D9: la propina de la mesa se cobra UNA vez por entrada a «Cobrar». Tras un cobro exitoso, `resetPayment()` regresa
+    // a Idle y el auto-arranque de abajo se vuelve a correr con los mismos argumentos (p. ej. «Nueva Orden» mientras se libera
+    // la mesa): ahí ya no se reaplica. Un reintento tras un error (sin cobro) sí la conserva.
+    var propinaDeMesaCobrada by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state is PaymentState.Success) propinaDeMesaCobrada = true
+    }
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
     // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives filter + banner)
     val merchantRouting by viewModel.merchantRouting.collectAsStateWithLifecycle()
@@ -594,7 +605,7 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, ventaLocalJson) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, propinaYaElegidaCents, ventaLocalJson) {
                         // 🧾 P4: antes de CADA arranque (también tras un resetPayment() que vuelve aquí), el ViewModel sabe si cobra un folio.
                         viewModel.setFolio(folio)
                         if (!viewModel.setVentaLocalJson(ventaLocalJson)) return@LaunchedEffect
@@ -634,6 +645,21 @@ fun PaymentScreen(
                             val hasExternalInputs = externalTipCents != null || externalRating != null || externalSkipReview
 
                             when {
+                                // 🪑 D9: la propina de la mesa ya viene escrita — se califica (si está prendida) y se
+                                // cobra con ella, sin pantalla de propina. Va primero: Mesas nunca pone las llaves remotas.
+                                propinaYaElegidaCents != null && propinaYaElegidaCents > 0L && !propinaDeMesaCobrada -> {
+                                    viewModel.submitAmountConPropinaYaElegida(
+                                        amount = initialAmount,
+                                        propinaCents = propinaYaElegidaCents,
+                                        orderId = orderId,
+                                        orderNumber = orderNumber,
+                                        splitType = splitType,
+                                        equalPartsPartySize = equalPartsPartySize,
+                                        equalPartsPayedFor = equalPartsPayedFor,
+                                        paidProductIds = paidProductIds,
+                                        skipLocalOrderValidation = skipLocalOrderValidation
+                                    )
+                                }
                                 hasExternalInputs -> {
                                     // 🔵 External device provided tip/rating or requested skip
                                     viewModel.submitAmountWithExternalInputs(

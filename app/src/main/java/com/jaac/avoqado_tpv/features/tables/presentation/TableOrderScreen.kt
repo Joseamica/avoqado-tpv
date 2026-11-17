@@ -69,6 +69,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
@@ -111,6 +112,7 @@ fun TableOrderScreen(
     val readOnly by viewModel.readOnly.collectAsStateWithLifecycle()
     val readOnlyForPayment by viewModel.readOnlyForPayment.collectAsStateWithLifecycle()
     val lockOwnerName by viewModel.lockOwnerName.collectAsStateWithLifecycle()
+    val saldoSinRed by viewModel.saldoSinRed.collectAsStateWithLifecycle()
 
     // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER.
     val isSplitting by viewModel.isSplitting.collectAsStateWithLifecycle()
@@ -263,6 +265,7 @@ fun TableOrderScreen(
         readOnly = readOnly,
         readOnlyForPayment = readOnlyForPayment,
         lockOwnerName = lockOwnerName,
+        saldoSinRed = saldoSinRed,
         snackbarHostState = snackbarHostState,
         onNavigateBack = {
             viewModel.exitToFloor()
@@ -271,6 +274,7 @@ fun TableOrderScreen(
         onAddProducts = onAddProducts,
         onSendRound = viewModel::sendRound,
         onRetryLoad = viewModel::loadCheck,
+        onActualizar = viewModel::actualizarCuenta,
         onNavigateToCheckout = onNavigateToCheckout,
         onSplitClick = { showSplitSheet = true },
         onCompClick = { showCompSheet = true },
@@ -420,12 +424,16 @@ private fun TableOrderScreenContent(
      */
     readOnlyForPayment: Boolean,
     lockOwnerName: String?,
+    /** D86: saldo de una mesa que esta terminal abrió sin red (`null` si no es provisional). */
+    saldoSinRed: SaldoSinRed? = null,
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
     onAddProducts: () -> Unit,
     onSendRound: () -> Unit,
     onRetryLoad: () -> Unit,
     onNavigateToCheckout: () -> Unit,
+    /** D86 (Codex r6 #3): vuelve a leer la cuenta cuando hay rondas «Por sincronizar» de una mesa del SERVIDOR. */
+    onActualizar: () -> Unit = {},
     onSplitClick: () -> Unit = {},
     onCompClick: () -> Unit = {},
     onMoveClick: () -> Unit = {},
@@ -439,6 +447,9 @@ private fun TableOrderScreenContent(
     val pendingCount = pendingLines.sumOf { it.quantity }
     val pendingTotal = pendingLines.fold(BigDecimal.ZERO) { acc, line -> acc + line.lineTotal }
     val checkTotal = check?.total
+    // D86: una mesa abierta sin red en ESTA terminal se cobra con su saldo sin red (rondas propias menos efectivo propio).
+    val saldoProvisional = (saldoSinRed as? SaldoSinRed.Conocido)?.porPagar
+    val motivoSinPagar = if (session.isProvisional && queuedLines.isNotEmpty()) (saldoSinRed as? SaldoSinRed.EnGris)?.motivo else null
     // "Pagar" solo tiene sentido con algo YA en la cuenta (rondas enviadas,
     // no lo pendiente de enviar) — una mesa recién abierta sin nada mandado
     // a cocina no tiene cheque contra el cual cobrar. 🔴 Y cuelga de
@@ -447,6 +458,7 @@ private fun TableOrderScreenContent(
         readOnlyForPayment = readOnlyForPayment,
         isProvisional = session.isProvisional,
         checkTotal = checkTotal,
+        saldoProvisional = saldoProvisional,
     )
     // Separar/dar cortesía necesitan artículos YA enviados; mover mesa no
     // (una mesa provisional recién abierta offline también se puede mover).
@@ -511,7 +523,8 @@ private fun TableOrderScreenContent(
                 sendTakingLong = sendTakingLong,
                 readOnly = readOnly,
                 canCheckout = canCheckout,
-                checkTotal = checkTotal,
+                checkTotal = montoDePagar(isProvisional = session.isProvisional, check = check, saldoProvisional = saldoProvisional),
+                motivoSinPagar = motivoSinPagar,
                 onAddProducts = onAddProducts,
                 onSendRound = onSendRound,
                 onNavigateToCheckout = onNavigateToCheckout,
@@ -555,7 +568,15 @@ private fun TableOrderScreenContent(
                     }
 
                     if (queuedLines.isNotEmpty()) {
-                        item(key = "queued-header") { SectionHeader("Por sincronizar") }
+                        item(key = "queued-header") {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.weight(1f)) { SectionHeader("Por sincronizar") }
+                                // D86: la pantalla se relee sola; si se agotan las relecturas automáticas, se puede a mano.
+                                if (!session.isProvisional) {
+                                    androidx.compose.material3.TextButton(onClick = onActualizar) { Text("Actualizar") }
+                                }
+                            }
+                        }
                         items(queuedLines, key = { "queued-${it.lineId}" }) { line ->
                             QueuedLineRow(line = line)
                         }
@@ -874,6 +895,8 @@ private fun TableOrderBottomBar(
     readOnly: Boolean,
     canCheckout: Boolean,
     checkTotal: BigDecimal?,
+    /** D86: por qué una mesa abierta sin red todavía no se puede pagar aquí (en gris, con su razón). */
+    motivoSinPagar: String? = null,
     onAddProducts: () -> Unit,
     onSendRound: () -> Unit,
     onNavigateToCheckout: () -> Unit,
@@ -933,6 +956,17 @@ private fun TableOrderBottomBar(
         // (canCheckout) y sin rondas pendientes de mandar primero (evita
         // cobrar una cuenta que todavía no refleja lo que el mesero acaba de
         // teclear).
+        if (!canCheckout && motivoSinPagar != null) {
+            Text(
+                text = motivoSinPagar,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.Space4, vertical = Spacing.Space2),
+            )
+        }
         if (canCheckout) {
             Row(
                 modifier = Modifier
@@ -1030,17 +1064,27 @@ internal fun splitBySeatEnabled(readOnly: Boolean, hasSentItems: Boolean, check:
  * existía. La llamada nunca salía, así que no había 403 ni rastro en el log del
  * server: sólo un cajero parado frente a un cliente.
  *
- * Las otras dos razones para esconderlo NO cambian: una sesión provisional
- * (mesa recién abierta offline, sin orden real todavía) y una cuenta sin nada
- * enviado a cocina no tienen cheque contra el cual cobrar.
+ * Una cuenta sin nada enviado a cocina no tiene contra qué cobrar. Una sesión provisional (mesa abierta sin red en ESTA
+ * terminal) se paga con [saldoProvisional] —lo que esta terminal le mandó menos lo que ya cobró, D86—; sin ese saldo
+ * (`null`: no se pudo asegurar) no se pinta.
  *
- * Probado por `CobrarMesaAjenaTest`.
+ * Probado por `CobrarMesaAjenaTest` y `TableOrderScreenStateTest`.
  */
+/**
+ * D89 (PAX, 16-nov): lo que dice «Pagar · $X» es lo que FALTA, igual que «Restante» de «Cobrar»
+ * (`TableCheckoutViewModel.loadCheck`: `amountLeft ?: total`). Antes era el TOTAL de la cuenta: una mesa de $118 con un abono
+ * de $40 decía $78 sin red (saldo sin red, D86) y $118 con red. Una mesa abierta sin red AQUÍ sigue con su saldo sin red.
+ */
+internal fun montoDePagar(isProvisional: Boolean, check: OrderDetail?, saldoProvisional: BigDecimal?): BigDecimal? =
+    if (isProvisional) saldoProvisional else check?.let { it.amountLeft ?: it.total }
+
 internal fun checkoutButtonVisible(
     readOnlyForPayment: Boolean,
     isProvisional: Boolean,
     checkTotal: BigDecimal?,
-): Boolean = !readOnlyForPayment && !isProvisional && (checkTotal ?: BigDecimal.ZERO) > BigDecimal.ZERO
+    saldoProvisional: BigDecimal? = null,
+): Boolean = !readOnlyForPayment &&
+    (if (isProvisional) saldoProvisional else checkTotal).let { (it ?: BigDecimal.ZERO) > BigDecimal.ZERO }
 
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS

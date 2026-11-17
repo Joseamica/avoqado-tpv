@@ -569,6 +569,12 @@ class TablesRepository @Inject constructor(
         isProvisional: Boolean,
         amount: BigDecimal,
         tip: BigDecimal = BigDecimal.ZERO,
+        /**
+         * D86: lo que la terminal creía que debía la cuenta ANTES de este cobro (pesos). Sólo para una cuenta del SERVIDOR
+         * (como ANDROID: la provisional no lo manda). El SERVIDOR lo usa sólo como rastro (`COBRO_SIN_RED_CON_DIFERENCIA`
+         * si su saldo es otro); nunca cambia ni rechaza el cobro, y uno viejo lo ignora.
+         */
+        saldoEsperado: BigDecimal? = null,
     ): Result<PayCashOutcome> {
         val intentId = UUID.randomUUID().toString()
         val payload = JsonObject().apply {
@@ -576,6 +582,9 @@ class TablesRepository @Inject constructor(
             addProperty("amountCents", amount.toCents())
             addProperty("tipCents", tip.toCents())
             addProperty("method", "CASH")
+            if (!isProvisional && saldoEsperado != null && saldoEsperado >= BigDecimal.ZERO) {
+                addProperty("expectedBalanceBeforeCents", saldoEsperado.toCents())
+            }
         }
         syncOutbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, payload, id = intentId)
 
@@ -626,8 +635,20 @@ class TablesRepository @Inject constructor(
      * nada. El server RECHAZA la liberación si queda una cuenta sin pagar
      * (`applyClearTable`/`table.tpv.service.ts::clearTable`) — ese rechazo se
      * propaga tal cual, nunca se disfraza de éxito.
+     *
+     * D79 (como el D75 de ANDROID): el intent sin red nombra la cuenta que esta terminal soltó —[orderId] con
+     * [isProvisional] decide `localOrderId` u `orderId`, igual que [payCash]—. Si la mesa se abrió sin red y mientras
+     * tanto recibió otra cuenta, el SERVIDOR deja la cuenta de esta terminal aparte (D51/D71); con la cuenta en el
+     * payload contesta ACK sin tocar la mesa cuando la suya ya no debe y la mesa debe otra, en vez de rechazar y dejar
+     * una «operación por revisar» que nadie puede resolver. Sin [orderId] (o con un SERVIDOR viejo) todo queda como antes.
+     * La ruta en línea no cambia: no acepta cuenta y su rechazo no deja nada por revisar.
      */
-    suspend fun clearTable(venueId: String, tableId: String): Result<Unit> {
+    suspend fun clearTable(
+        venueId: String,
+        tableId: String,
+        orderId: String? = null,
+        isProvisional: Boolean = false,
+    ): Result<Unit> {
         val onlineResult = try {
             val response = api.clearTable(venueId, tableId)
             if (response.isSuccessful) {
@@ -654,7 +675,7 @@ class TablesRepository @Inject constructor(
 
         return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
             is TablesSyncOutcome.Retryable -> {
-                val payload = JsonObject().apply { addProperty("tableId", tableId) }
+                val payload = clearTablePayload(tableId, orderId, isProvisional)
                 syncOutbox.enqueue(venueId, SyncIntentTypes.CLEAR_TABLE, payload)
                 Timber.i("📤 [Tables] Sin conexión — CLEAR_TABLE encolado (venue=%s, table=%s)", venueId, tableId)
                 Result.success(Unit)
@@ -663,6 +684,15 @@ class TablesRepository @Inject constructor(
             else -> onlineResult
         }
     }
+
+    /** D79: `tableId` y, si se conoce, la cuenta que se soltó (`localOrderId` mientras la sesión siga provisional). */
+    internal fun clearTablePayload(tableId: String, orderId: String?, isProvisional: Boolean): JsonObject =
+        JsonObject().apply {
+            addProperty("tableId", tableId)
+            if (!orderId.isNullOrBlank()) {
+                if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            }
+        }
 
     // ══════════════════════════════════════════════════════════════════
     // Fase 1 (2026-08-03) — SPLIT_ORDER · APPLY_DISCOUNT · COMP_ORDER · MOVE_ORDER

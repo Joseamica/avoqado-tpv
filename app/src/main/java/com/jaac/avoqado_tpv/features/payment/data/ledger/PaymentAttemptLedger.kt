@@ -1001,6 +1001,13 @@ class PaymentAttemptLedger(
         dao.retencionDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
 
     /**
+     * D9 (Mesas, Codex r3): [PaymentAttemptDao.dineroDeTarjetaDeLaCuenta] —cola y libreta de ESTA cuenta en una sola
+     * fotografía— con el token de ESTE proceso. Un fallo de lectura SE LANZA: quien pregunta para no cobrar de más falla cerrado.
+     */
+    suspend fun dineroDeTarjetaSinConfirmarDeLaCuenta(venueId: String, orderId: String): String? =
+        dao.dineroDeTarjetaDeLaCuenta(venueId, orderId, "\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken)
+
+    /**
      * 🔴 Decisión del founder (23-sep, «corrige y avisa»): los cobros que la terminal dio por NO cobrados y el servidor SÍ
      * registró, en su caso limpio ([PaymentAttemptEntity.SQL_COBRO_POR_RECONOCER]). Los pinta el aviso con «Entendido». Un
      * fallo al leer no tumba la pantalla: se lee como «nada que confirmar» (la fila sigue en la libreta; no se libera nada).

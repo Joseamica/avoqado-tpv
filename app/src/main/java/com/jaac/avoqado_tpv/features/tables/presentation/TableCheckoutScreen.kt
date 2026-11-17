@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.Intent
 import com.jaac.avoqado_tpv.BuildConfig
@@ -75,6 +76,8 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
@@ -99,18 +102,29 @@ import java.math.RoundingMode
  * nunca navega ahí directo ni conoce `getPaymentRoute()` — esa traducción
  * vive en `AppNavigation.kt`, el mismo dueño de la costura para
  * `SplitByProductScreen`/`SplitByPersonScreen`.
+ *
+ * D9 (12-nov): la navegación avisa cómo terminó la entrega con los dos avisos que recibe:
+ * `entregado` («Cobrar» ya tiene la solicitud con la propina: la casilla se vacía) o `noSalio`
+ * (la terminal no estaba lista: la casilla conserva la propina). Llama EXACTAMENTE uno.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TableCheckoutScreen(
     onNavigateBack: () -> Unit,
-    onProceedToCardPayment: (CardChargeRequest) -> Unit,
+    onProceedToCardPayment: (request: CardChargeRequest, entregado: () -> Unit, noSalio: () -> Unit) -> Unit,
     onPaymentFinished: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: TableCheckoutViewModel = hiltViewModel(),
 ) {
     val session by viewModel.tableSession.active.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // D9 (encargo 49276c): al volver al frente tras entregar una tarjeta (p. ej. «atrás» del sistema desde «Aprobado»),
+    // relee la cuenta: esta pantalla sigue viva en la pila y su saldo puede ser el de ANTES de la tarjeta.
+    LifecycleResumeEffect(Unit) {
+        viewModel.alVolverAlFrente()
+        onPauseOrDispose { }
+    }
 
     // Fase 1 (2026-08-03) — APPLY_DISCOUNT.
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
@@ -239,7 +253,7 @@ fun TableCheckoutScreen(
             viewModel.onExit()
             onNavigateBack()
         },
-        onRetryLoad = viewModel::loadCheck,
+        onRetryLoad = viewModel::reintentar,
         onSelectSplitType = viewModel::selectSplitType,
         onCustomAmountChanged = viewModel::setCustomAmountInput,
         onEqualPartsChanged = viewModel::setEqualParts,
@@ -248,7 +262,10 @@ fun TableCheckoutScreen(
         onTipChanged = viewModel::setTip,
         onPayCash = { viewModel.payCash(chargeableAmount) },
         onPayCard = {
-            onProceedToCardPayment(viewModel.buildPaymentPayload(chargeableAmount))
+            // D9: null = ya hay un cobro en curso (efectivo o una tarjeta abriéndose); el toque no hace nada.
+            viewModel.prepararCobroConTarjeta(chargeableAmount)?.let { request ->
+                onProceedToCardPayment(request, viewModel::cobroConTarjetaEntregado, viewModel::cobroConTarjetaNoSalio)
+            }
         },
         onAddDiscountClick = {
             showDiscountSheet = true
@@ -323,7 +340,12 @@ private fun TableCheckoutScreenContent(
         topBar = {
             AvoqadoTopBar(
                 title = "Cobrar · ${session.label}",
-                subtitle = "Restante ${moneyDisplay(state.remaining)}",
+                // D86: sin cuenta ni saldo seguro no se enseña un «Restante $0.00» que no es cierto.
+                subtitle = if (state.check == null && state.efectivoBloqueadoPor != null) {
+                    "Restante: sin conexión"
+                } else {
+                    "Restante ${moneyDisplay(state.remaining)}"
+                },
                 onNavigationClick = onNavigateBack,
             )
         },
@@ -334,6 +356,7 @@ private fun TableCheckoutScreenContent(
                 state = state,
                 onPayCash = onPayCash,
                 onPayCard = onPayCard,
+                onRetryLoad = onRetryLoad,
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -370,9 +393,11 @@ private fun TableCheckoutScreenContent(
                         CheckSummaryCard(
                             check = check,
                             remaining = state.remaining,
-                            isRemovingDiscount = isRemovingDiscount,
+                            sinCuenta = state.avisoSinRed ?: state.efectivoBloqueadoPor ?: SIN_CUENTA_SIN_RED,
+                            // D92: con un cobro en curso, «Quitar» espera (el cobro ya salió con el importe de antes).
+                            isRemovingDiscount = isRemovingDiscount || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveDiscount = onRemoveDiscount,
-                            isRemovingServiceCharge = isRemovingServiceCharge,
+                            isRemovingServiceCharge = isRemovingServiceCharge || state.isProcessingCash || state.isHandingOffToCard,
                             onRemoveServiceCharge = onRemoveServiceCharge,
                         )
                     }
@@ -488,6 +513,8 @@ private fun TableCheckoutScreenContent(
 private fun CheckSummaryCard(
     check: OrderDetail?,
     remaining: BigDecimal,
+    /** D86: qué decir cuando no hay cheque del SERVIDOR (mesa abierta sin red aquí, o sin red y sin cuenta leída). */
+    sinCuenta: String = SIN_CUENTA_SIN_RED,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
     isRemovingServiceCharge: Boolean = false,
@@ -499,11 +526,16 @@ private fun CheckSummaryCard(
     ) {
         Column(modifier = Modifier.padding(Spacing.Space4)) {
             if (check == null) {
+                // D86: antes decía «abierta local» aunque la mesa fuera del SERVIDOR. Ahora dice lo que de verdad pasa.
                 Text(
-                    text = "Sin conexión — abierta local; el desglose llega cuando la mesa se sincronice.",
+                    text = sinCuenta,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (sinCuenta == COBRO_CON_LO_DE_ESTA_TERMINAL) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.Space2))
+                    SummaryRow(label = "Restante", amount = remaining, emphasized = true)
+                }
                 return@Column
             }
 
@@ -771,12 +803,24 @@ private fun OfflineCardNotice(reason: String?) {
     }
 }
 
+/**
+ * Monto que enseña el botón de Efectivo; `null` = sólo «Efectivo».
+ * D2 (PAX, 16-nov): sin la cuenta leída y con el efectivo en gris, el monto es el TOTAL del plano con que arranca la sesión
+ * (salía «$118.00» con $78 por pagar): no se enseña, igual que el subtítulo dice «Restante: sin conexión».
+ */
+internal fun montoDelBotonEfectivo(
+    state: TableCheckoutState,
+    chargeableAmount: BigDecimal,
+    cashSupportsThisSplit: Boolean,
+): BigDecimal? = chargeableAmount.takeIf { cashSupportsThisSplit && !(state.check == null && state.efectivoBloqueadoPor != null) }
+
 @Composable
 private fun CheckoutBottomBar(
     chargeableAmount: BigDecimal,
     state: TableCheckoutState,
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
+    onRetryLoad: () -> Unit = {},
 ) {
     // 🔴 Contrato verificado, no asumido (Task 8): la pantalla de pago con
     // tarjeta de Nexgo (`AngelPayPaymentScreen`) NO expone `splitType` /
@@ -788,7 +832,11 @@ private fun CheckoutBottomBar(
     // cambie, TARJETA + división distinta de "cuenta completa" solo se
     // ofrece en PAX.
     val cardSupportsThisSplit = state.splitType == CheckoutSplitType.FULLPAYMENT || BuildConfig.ENABLE_PAX_SDK
-    val cardEnabled = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
+    // D9: una sola reserva de cobro — con efectivo esperando respuesta o una tarjeta abriéndose, el otro botón espera.
+    // D9 (encargo 49276c): tras entregar una tarjeta, los dos esperan a que se relea la cuenta.
+    val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard || state.saldoPorConfirmar
+    val cardAvailable = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
+    val cardEnabled = cardAvailable && !cobroEnCurso
     val cardReason = when {
         !state.cardPaymentEnabled -> state.cardPaymentDisabledReason
         !cardSupportsThisSplit -> "División no disponible en este equipo — cobra el total o usa efectivo"
@@ -798,10 +846,38 @@ private fun CheckoutBottomBar(
     // paidProductsId (ver KDoc de TablesRepository.payCash). Hueco de
     // producto documentado, no un olvido.
     val cashSupportsThisSplit = state.splitType != CheckoutSplitType.PERPRODUCT
-    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !state.isProcessingCash
+    // D86: sin cuenta leída ni saldo sin red seguro, el efectivo espera con su razón (nunca cobra con un número que no es el de la cuenta).
+    val efectivoBloqueadoPor = state.efectivoBloqueadoPor
+    val cashEnabled = cashSupportsThisSplit && chargeableAmount > BigDecimal.ZERO && !cobroEnCurso && efectivoBloqueadoPor == null
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
+        // Una sola razón a la vez. Primero D9 (encargo 49276c): tras entregar una tarjeta, los dos botones esperan a releer
+        // la cuenta. Si no, la de D86/D92 (sin cuenta leída, algo propio sin subir, un cambio por confirmar).
+        val avisoDeLaTarjeta = state.avisoDeSaldoPorConfirmar
+        val aviso = avisoDeLaTarjeta ?: efectivoBloqueadoPor?.takeIf { !state.isLoading }
+        if (aviso != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = aviso,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                val puedeReintentar = if (avisoDeLaTarjeta != null) {
+                    !state.revisandoSaldo
+                } else {
+                    // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
+                    state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)
+                }
+                if (puedeReintentar) {
+                    TextButton(onClick = onRetryLoad) { Text("Reintentar") }
+                }
+            }
+        }
         if (cardReason != null) {
             Text(
                 text = cardReason,
@@ -816,7 +892,7 @@ private fun CheckoutBottomBar(
         ) {
             CheckoutChargeButton(
                 label = if (!cashSupportsThisSplit) "Efectivo no disponible" else "Efectivo",
-                amountText = if (cashSupportsThisSplit) moneyDisplay(chargeableAmount) else null,
+                amountText = montoDelBotonEfectivo(state, chargeableAmount, cashSupportsThisSplit)?.let(::moneyDisplay),
                 onClick = onPayCash,
                 enabled = cashEnabled,
                 loading = state.isProcessingCash,
@@ -824,10 +900,11 @@ private fun CheckoutBottomBar(
                 modifier = Modifier.weight(1f),
             )
             CheckoutChargeButton(
-                label = if (cardEnabled) "Tarjeta" else "Tarjeta no disponible",
-                amountText = if (cardEnabled) moneyDisplay(chargeableAmount) else null,
+                label = if (cardAvailable) "Tarjeta" else "Tarjeta no disponible",
+                amountText = if (cardAvailable) moneyDisplay(chargeableAmount) else null,
                 onClick = onPayCard,
                 enabled = cardEnabled,
+                loading = state.isHandingOffToCard,
                 icon = Icons.Default.CreditCard,
                 modifier = Modifier.weight(1f),
             )

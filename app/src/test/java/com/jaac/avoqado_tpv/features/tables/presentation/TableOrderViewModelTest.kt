@@ -1,14 +1,21 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
+import com.jaac.avoqado_tpv.core.util.NetworkType
+import com.jaac.avoqado_tpv.core.util.NetworkInfo
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
+import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
 import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
+import com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
@@ -29,6 +36,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -72,8 +80,13 @@ class TableOrderViewModelTest {
     private val secureStorage = mockk<SecureStorage>()
     private val networkMonitor = mockk<NetworkMonitor>()
     private val autorizacion = mockk<AutorizacionDeGerente>()
+    private val socketManager = mockk<SocketManager>()
+    private val avisosDelSocket = MutableSharedFlow<SocketEvent>()
+    private var secuenciaDeLaCola = 0L
     private lateinit var tableSession: TableSession
     private lateinit var pendingCart: PendingRoundCart
+    private lateinit var saldoDeMesaSinRed: SaldoDeMesaSinRed
+    private val cambiosDeLaCola = MutableStateFlow(0)
     private lateinit var ownershipFlow: MutableStateFlow<TablesRepository.TableOwnership>
 
     private val venueId = "venue-1"
@@ -95,6 +108,13 @@ class TableOrderViewModelTest {
         every { networkMonitor.isConnected() } returns true
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
         every { networkMonitor.networkStateFlow } returns emptyFlow()
+        coEvery { syncOutbox.vivasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasQueMencionan(any(), any()) } returns emptyList()
+        coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
+        every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
+        every { socketManager.events } returns avisosDelSocket
+        coEvery { syncOutbox.ultimaSecuencia(any()) } coAnswers { secuenciaDeLaCola }
+        saldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox)
     }
 
     @After
@@ -112,7 +132,181 @@ class TableOrderViewModelTest {
         secureStorage = secureStorage,
         networkMonitor = networkMonitor,
         autorizacionDeGerente = autorizacion,
+        saldoDeMesaSinRed = saldoDeMesaSinRed,
+        socketManager = socketManager,
     )
+
+    // region — D1 (hz:163ad26c:D1): la pantalla de la mesa se entera de lo que OTRO aparato le hace a la cuenta
+
+    /**
+     * Otra caja abona $40 a la cuenta de $118 con la pantalla de la mesa abierta en la TPV. Antes la pantalla no se enteraba
+     * hasta salir y volver: «Pagar» decía $118 mientras «Cobrar» decía $78. El aviso del SERVIDOR de ESA orden la relee sola,
+     * sin reproducir la cola (la reproduce el trabajador; reproducirla desde un aviso puede dar vueltas, D86 r8).
+     */
+    @Test
+    fun D1_un_abono_de_otro_aparato_a_esta_cuenta_la_relee_sola() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            val restante = if (++lecturas == 1) "118.00" else "78.00"
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("118.00"), amountLeft = BigDecimal(restante)))
+        }
+        val vm = createViewModel()
+        assertThat(vm.check.value?.amountLeft).isEqualTo(BigDecimal("118.00"))
+
+        avisosDelSocket.emit(
+            SocketEvent.PaymentCompleted(paymentId = "p1", amount = 4000, currency = "MXN", tableId = "mesa-1", orderId = "orden-1", venueId = venueId, timestamp = ""),
+        )
+        advanceTimeBy(801)
+
+        assertThat(vm.check.value?.amountLeft).isEqualTo(BigDecimal("78.00"))
+        coVerify(exactly = 1) { tableSyncCoordinator.replay(any()) } // sólo la carga al entrar
+    }
+
+    @Test
+    fun D1_una_ronda_de_otro_aparato_a_esta_cuenta_la_relee_sola() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val vm = createViewModel()
+
+        avisosDelSocket.emit(
+            SocketEvent.OrderUpdated(orderId = "orden-1", venueId = venueId, tableId = "mesa-1", status = null, items = null, total = null, timestamp = ""),
+        )
+        advanceTimeBy(801)
+
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    @Test
+    fun D1_el_aviso_de_otra_cuenta_no_la_relee() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val vm = createViewModel()
+
+        avisosDelSocket.emit(
+            SocketEvent.OrderUpdated(orderId = "otra", venueId = venueId, tableId = "mesa-2", status = null, items = null, total = null, timestamp = ""),
+        )
+        advanceTimeBy(801)
+
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    /**
+     * D1 (Codex D88-D90 r6): la ronda propia relee (A) y su aviso del SERVIDOR relee otra vez (B). Si B fallaba después, la
+     * guarda vieja («la que empezó al último manda») tiraba A, que traía la cuenta buena: la pantalla se quedaba atrasada.
+     */
+    @Test
+    fun D1_la_lectura_buena_no_se_tira_si_la_del_aviso_falla_despues() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        val lecturaA = CompletableDeferred<Result<OrderDetail>>()
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            when (++lecturas) {
+                1 -> Result.success(OrderDetail(id = "orden-1", amountLeft = BigDecimal("118.00")))
+                2 -> lecturaA.await()
+                else -> Result.failure(java.io.IOException("sin red"))
+            }
+        }
+        val vm = createViewModel()
+
+        vm.loadCheck() // A
+        avisosDelSocket.emit(
+            SocketEvent.OrderUpdated(orderId = "orden-1", venueId = venueId, tableId = "mesa-1", status = null, items = null, total = null, timestamp = ""),
+        )
+        advanceTimeBy(801) // B: falla
+        lecturaA.complete(Result.success(OrderDetail(id = "orden-1", amountLeft = BigDecimal("78.00"))))
+
+        assertThat(vm.check.value?.amountLeft).isEqualTo(BigDecimal("78.00"))
+        assertThat(vm.isLoadingCheck.value).isFalse()
+    }
+
+    /**
+     * D1 (Codex D88-D90 r7): A pide la cuenta; mientras viaja, se manda una ronda sin red («Por sincronizar»), la del aviso (B)
+     * falla y el trabajador sube la ronda. A vuelve con la cuenta de ANTES de la ronda: puede pintarse, pero no puede quitar
+     * «Por sincronizar» ni dejar de releer (las dos revisiones de la cola la ven vacía: nació y subió en medio).
+     */
+    @Test
+    fun D1_una_lectura_anterior_a_una_ronda_propia_no_quita_por_sincronizar() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        val lecturaA = CompletableDeferred<Result<OrderDetail>>()
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            when (++lecturas) {
+                1 -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00")))
+                2 -> lecturaA.await()
+                3 -> Result.failure(java.io.IOException("sin red"))
+                else -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("140.00")))
+            }
+        }
+        coEvery { repository.addItems(venueId, "orden-1", any(), any()) } returns
+            Result.success(OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-1", quantity = 1))))
+        val vm = createViewModel()
+
+        vm.loadCheck() // A
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("40.00"))
+        vm.sendRound()
+        secuenciaDeLaCola = 1L // la ronda entró a la cola
+        assertThat(vm.queuedLines.value).hasSize(1)
+        avisosDelSocket.emit(
+            SocketEvent.OrderUpdated(orderId = "orden-1", venueId = venueId, tableId = "mesa-1", status = null, items = null, total = null, timestamp = ""),
+        )
+        advanceTimeBy(801) // B: falla
+        lecturaA.complete(Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"))))
+
+        assertThat(vm.queuedLines.value).hasSize(1)
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(vm.check.value?.total).isEqualTo(BigDecimal("140.00"))
+        assertThat(vm.queuedLines.value).isEmpty()
+    }
+
+    /** D1 (Codex D88-D90 r6): A espera la cola y pide DESPUÉS que B (la del aviso, sin cola): la respuesta de A sí pinta. */
+    @Test
+    fun D1_la_lectura_que_espera_la_cola_y_pide_despues_si_pinta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        val colaDeA = CompletableDeferred<Unit>()
+        var replays = 0
+        coEvery { tableSyncCoordinator.replay(any()) } coAnswers { if (++replays == 2) colaDeA.await() }
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            val restante = if (++lecturas <= 2) "118.00" else "78.00"
+            Result.success(OrderDetail(id = "orden-1", amountLeft = BigDecimal(restante)))
+        }
+        val vm = createViewModel()
+
+        vm.loadCheck() // A: espera la cola
+        avisosDelSocket.emit(
+            SocketEvent.OrderUpdated(orderId = "orden-1", venueId = venueId, tableId = "mesa-1", status = null, items = null, total = null, timestamp = ""),
+        )
+        advanceTimeBy(801) // B: pide y pinta $118
+        assertThat(vm.check.value?.amountLeft).isEqualTo(BigDecimal("118.00"))
+
+        colaDeA.complete(Unit) // A: pide después y trae $78
+        assertThat(vm.check.value?.amountLeft).isEqualTo(BigDecimal("78.00"))
+    }
+
+    // endregion
+
+    // region — D85: una lectura de la cuenta nunca cambia la mesa de la sesión (Codex r5: se quitó corregirMesa)
+
+    @Test
+    fun D85_una_lectura_que_llega_despues_de_mover_mesa_no_regresa_la_sesion_a_la_mesa_vieja() = runTest {
+        // Codex r3 #1: el getOrder de B sale con la sesión en M8; el cajero mueve B a M9 y se confirma; después llega la
+        // lectura vieja (M8). La sesión se queda en M9.
+        tableSession.start(TableSession.Active(tableId = "m8", tableNumber = "M8", orderId = "b", version = 3))
+        val lectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "b") } coAnswers { lectura.await() }
+        coEvery { repository.moveOrder(venueId, "b", false, "m9") } returns
+            Result.success(TablesRepository.MoveOutcome(queued = false, targetTableId = "m9", version = 4))
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(DiningTable(id = "m9", number = "M9", status = "AVAILABLE"))
+        lectura.complete(Result.success(OrderDetail(id = "b", version = 3, tableId = "m8", tableName = "Mesa M8")))
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("m9")
+    }
+
+    // endregion
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error
 
@@ -1463,4 +1657,128 @@ class TableOrderViewModelTest {
     }
 
     // endregion
+
+    // region — D86: la pantalla de la mesa se pone al día sola y «Pagar» de una mesa abierta sin red
+
+    @Test
+    fun D86_mesa_abierta_sin_red_enseña_pagar_con_lo_que_le_mandó_esta_terminal() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            SyncIntentEntity(id = "abrir", venueId = venueId, seq = 1, type = SyncIntentTypes.OPEN_TABLE, payloadJson = """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}"""),
+        )
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        viewModel.sendRound()
+
+        val saldo = viewModel.saldoSinRed.value
+        assertThat(saldo).isInstanceOf(SaldoSinRed.Conocido::class.java)
+        assertThat((saldo as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("90.00"))
+        assertThat(checkoutButtonVisible(readOnlyForPayment = false, isProvisional = true, checkTotal = null, saldoProvisional = saldo.porPagar)).isTrue()
+    }
+
+    @Test
+    fun D86_al_confirmarse_la_apertura_la_pantalla_lee_la_cuenta_sola() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", total = BigDecimal("20.00")))
+        val viewModel = createViewModel()
+        coVerify(exactly = 0) { repository.getOrder(any(), any()) }
+
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.check.value?.total).isEqualTo(BigDecimal("20.00"))
+        assertThat(viewModel.saldoSinRed.value).isNull()
+    }
+
+    @Test
+    fun D86_al_volver_la_red_la_pantalla_lee_la_cuenta_sola() = runTest {
+        val red = MutableStateFlow(NetworkInfo(type = NetworkType.WIFI, isMetered = false, isConnected = false, signalStrength = null))
+        every { networkMonitor.isConnected() } returns false
+        every { networkMonitor.networkStateFlow } returns red
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        createViewModel()
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+
+        red.value = red.value.copy(isConnected = true)
+
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    // endregion
+
+    @Test
+    fun D86_r4_un_calculo_viejo_del_saldo_que_llega_tarde_no_esconde_pagar() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val apertura = SyncIntentEntity(id = "abrir", venueId = venueId, seq = 1, type = SyncIntentTypes.OPEN_TABLE, payloadJson = """{"tableId":"mesa-1","localOrderId":"local-1"}""")
+        val ronda = SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}""")
+        val vieja = CompletableDeferred<Unit>()
+        var consultas = 0
+        // La primera consulta (antes de la ronda) tarda y llega al final, sin la ronda.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } coAnswers {
+            consultas++
+            if (consultas == 1) { vieja.await(); listOf(apertura) } else listOf(apertura, ronda)
+        }
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat((viewModel.saldoSinRed.value as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("100.00"))
+
+        vieja.complete(Unit)
+
+        assertThat((viewModel.saldoSinRed.value as SaldoSinRed.Conocido).porPagar).isEqualTo(BigDecimal("100.00"))
+    }
+
+    @Test
+    fun D86_r5_2_si_la_apertura_se_confirma_antes_que_su_ronda_por_sincronizar_se_queda_hasta_que_suba() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        coEvery { syncOutbox.enqueue(venueId, SyncIntentTypes.ADD_ITEMS, any(), any()) } returns "r1"
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // La apertura sube, la ronda todavía no: el SERVIDOR devuelve la cuenta vacía.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns listOf(
+            SyncIntentEntity(id = "r1", venueId = venueId, seq = 2, type = SyncIntentTypes.ADD_ITEMS, payloadJson = """{"localOrderId":"local-1","items":[]}"""),
+        )
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        tableSession.promoteProvisional("local-1", "orden-1", "ORD-1", 2)
+
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // Sube la ronda: la siguiente lectura sola ya la trae y «Por sincronizar» se va.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } returns emptyList()
+        testDispatcher.scheduler.advanceTimeBy(RELECTURA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(viewModel.queuedLines.value).isEmpty()
+    }
+
+    @Test
+    fun D86_r7_H2_cuando_la_ronda_sube_por_otro_camino_la_pantalla_se_relee_sola() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        // La ronda se encola sin red y aparece «Por sincronizar».
+        coEvery { repository.addItems(venueId, "orden-1", any(), any()) } returns
+            Result.success(OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "pending-0", productId = "prod-1", quantity = 1))))
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("100.00"))
+        viewModel.sendRound()
+        assertThat(viewModel.queuedLines.value).hasSize(1)
+
+        // El trabajador la sube: la cola cambia y, tras la calma, la pantalla relee sola.
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), items = listOf(OrderDetailItem(id = "i1", productId = "prod-1", quantity = 1, total = BigDecimal("100.00")))))
+        cambiosDeLaCola.value = 1
+        testDispatcher.scheduler.advanceTimeBy(com.jaac.avoqado_tpv.features.tables.data.CALMA_DE_LA_COLA_MS + 1)
+        testDispatcher.scheduler.runCurrent()
+
+        assertThat(viewModel.queuedLines.value).isEmpty()
+        assertThat(viewModel.check.value?.total).isEqualTo(BigDecimal("100.00"))
+    }
 }

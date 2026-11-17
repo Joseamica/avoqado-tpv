@@ -50,10 +50,89 @@ interface SyncIntentDao {
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC LIMIT :limit")
     suspend fun pendingBatchForVenue(venueId: String, limit: Int): List<SyncIntentEntity>
 
+    /**
+     * D4 (encargo dd4185): lo que BAJAR DE VERSIÓN borraría sin que el servidor lo tenga, de TODAS las sucursales del aparato
+     * (la base se borra entera): lo que espera subir (PENDING) y los rechazos que nadie ha resuelto en la cuarentena
+     * (REJECTED: el efectivo que el servidor no aceptó sólo existe aquí). Lo lee
+     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
+     */
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE status IN ('PENDING', 'REJECTED')")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
+
     @Query("SELECT EXISTS(SELECT 1 FROM sync_intents WHERE venue_id = :venueId AND status = 'PENDING')")
     suspend fun hasPendingForVenue(venueId: String): Boolean
 
+    @Query("UPDATE sync_intents SET seq = :seq WHERE venue_id = :venueId AND id = :id AND status = 'PENDING'")
+    suspend fun cambiarSeqPendiente(venueId: String, id: String, seq: Long): Int
+
+    /**
+     * D6: el SERVIDOR rechazó por número (`STALE_DEVICE_SEQUENCE`) porque ya vio [piso] de este aparato, MÁS ALTO que
+     * cualquier número de esta base: la base se reinstaló o se borró y volvió a contar desde 1. Quien llama lo comprueba
+     * ([com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox]); sólo así ninguna fila de esta base llegó a entrar
+     * ni a quedar apartada en el servidor, y cambiarles el número no rompe una recuperación (el servidor retoma una
+     * reserva sólo con su número original) ni reordena nada.
+     *
+     * Mueve TODO lo que sigue en espera arriba del piso y de cualquier fila de la base, en el mismo orden. Una sola
+     * transacción: si el proceso muere, o queda como estaba o queda renumerado. Los números nuevos son mayores que todos
+     * los de la base, así que ningún paso choca con el índice único. Las filas resueltas no se tocan (y una que dejó de
+     * estar en espera a media transacción, tampoco).
+     *
+     * @return cuántas se renumeraron.
+     */
+    @Transaction
+    suspend fun renumerarPendientesSobre(venueId: String, piso: Long): Int {
+        var siguiente = maxOf(piso, maxSeq(venueId) ?: 0L) + 1
+        var renumeradas = 0
+        pendingForVenue(venueId).forEach { fila ->
+            if (cambiarSeqPendiente(venueId, fila.id, siguiente) == 1) {
+                siguiente++
+                renumeradas++
+            }
+        }
+        return renumeradas
+    }
+
     /** Cuarentena: rechazos de negocio permanentes, visibles hasta que el mesero/gerente los descarte. */
+    /**
+     * D86: las filas vivas (PENDING o REJECTED) cuyo payload MENCIONA [texto] — p. ej. el id local de una cuenta abierta sin
+     * red. Es sólo un filtro grueso para no leer toda la cola: quien llama revisa el JSON y se queda con las que de verdad
+     * nombran esa cuenta.
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND status IN ('PENDING', 'REJECTED') " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq ASC",
+    )
+    suspend fun vivasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
+    /**
+     * D86 (Codex r7 H2–H4): emite cada vez que alguien escribe la cola de Mesas (encolar, ACK, rechazo, descarte, desde
+     * cualquier camino: la pantalla, el cobro o el trabajador). Room vuelve a correr la consulta en cada escritura de la
+     * tabla; el número da igual, importa el aviso.
+     */
+    @Query("SELECT COUNT(*) FROM sync_intents WHERE venue_id = :venueId")
+    fun observarCambios(venueId: String): kotlinx.coroutines.flow.Flow<Int>
+
+    /** D1 (Codex D88-D90 r7): la secuencia más alta de la cola de Mesas del venue. Sube con cada intención nueva; un ACK no la mueve. */
+    @Query("SELECT MAX(seq) FROM sync_intents WHERE venue_id = :venueId")
+    suspend fun ultimaSecuencia(venueId: String): Long?
+
+    /** D86: aperturas (OPEN_TABLE) ya confirmadas cuyo payload menciona [texto] — el id local de una cuenta abierta sin red. */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND instr(payload_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasQueMencionan(venueId: String, texto: String): List<SyncIntentEntity>
+
+    /**
+     * D86 (Codex r1 #2): aperturas (OPEN_TABLE) confirmadas cuyo RESULTADO menciona [texto] — el id real de una cuenta —, para
+     * saber con qué id local la abrió esta terminal aunque la sesión ya no lo recuerde («Ver cuenta» desde el plano).
+     */
+    @Query(
+        "SELECT * FROM sync_intents WHERE venue_id = :venueId AND type = 'OPEN_TABLE' AND status = 'ACKED' " +
+            "AND result_json IS NOT NULL AND instr(result_json, :texto) > 0 ORDER BY seq DESC LIMIT 5",
+    )
+    suspend fun aperturasConfirmadasConResultado(venueId: String, texto: String): List<SyncIntentEntity>
+
     @Query("SELECT * FROM sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY seq ASC")
     suspend fun rejectedForVenue(venueId: String): List<SyncIntentEntity>
 

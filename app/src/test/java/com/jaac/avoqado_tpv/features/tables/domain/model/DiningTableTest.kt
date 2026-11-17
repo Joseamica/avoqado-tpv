@@ -190,4 +190,70 @@ class DiningTableTest {
     }
 
     // endregion
+
+    // region — openChecks: TODAS las cuentas de la mesa (D85, 15-nov)
+    // La cuenta que la terminal abrió sin red queda APARTE en la misma mesa (SERVIDOR D51/D71) mientras otro
+    // mesero ya tenía otra. El plano, la lista y la hoja sólo leían primaryCheck: la de la terminal, con
+    // consumo y sin pagar, no se veía ni se podía cobrar desde la TPV.
+
+    @Test
+    fun D85_openChecks_trae_las_dos_cuentas_con_la_principal_primero() {
+        val deMaria = check(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00"), waiterName = "María")
+        val deLaTerminal = check(id = "de-la-terminal", orderNumber = "ORD-2", total = BigDecimal("20.00"), waiterName = "Cajero")
+        // El SERVIDOR las ordena por antigüedad: la de la terminal nació antes (sin red), pero el puntero es la de María.
+        val mesa = DiningTable(
+            id = "m8",
+            number = "M8",
+            status = "OCCUPIED",
+            currentOrder = order(id = "de-maria", orderNumber = "ORD-1", total = BigDecimal("30.00")),
+            openOrders = listOf(deLaTerminal, deMaria),
+        )
+
+        assertThat(mesa.openChecks.map { it.id }).containsExactly("de-maria", "de-la-terminal").inOrder()
+        assertThat(mesa.openChecksTotal).isEqualTo(BigDecimal("50.00"))
+        assertThat(mesa.openChecksTotalDisplay).isEqualTo("$50.00")
+    }
+
+    @Test
+    fun D85_openChecks_con_una_sola_cuenta_es_la_misma_que_primaryCheck() {
+        val unica = check(id = "c1", total = BigDecimal("45.00"))
+        val mesa = DiningTable(id = "m5", number = "M5", openOrders = listOf(unica))
+
+        assertThat(mesa.openChecks).containsExactly(unica)
+        assertThat(mesa.openChecksTotal).isEqualTo(BigDecimal("45.00"))
+    }
+
+    @Test
+    fun D85_openChecks_con_un_servidor_viejo_sin_openOrders_cae_al_puntero() {
+        val mesa = DiningTable(id = "m1", number = "M1", currentOrder = order(id = "o1", total = BigDecimal("603.50")))
+
+        assertThat(mesa.openChecks.map { it.id }).containsExactly("o1")
+        assertThat(mesa.openChecksTotal).isEqualTo(BigDecimal("603.50"))
+    }
+
+    @Test
+    fun D85_openChecks_vacio_en_una_mesa_libre() {
+        val mesa = DiningTable(id = "m2", number = "M2", status = "AVAILABLE")
+
+        assertThat(mesa.openChecks).isEmpty()
+        assertThat(mesa.openChecksTotal).isEqualTo(BigDecimal.ZERO)
+    }
+
+    @Test
+    fun D85_openChecks_con_el_puntero_en_una_cuenta_ya_cobrada_no_la_repite_ni_la_inventa() {
+        // El puntero quedó en la cuenta pagada (cheque dividido): sólo cuentan las vivas, sin duplicar la que primaryCheck elige.
+        val viva1 = check(id = "v1", total = BigDecimal("10.00"))
+        val viva2 = check(id = "v2", total = BigDecimal("15.00"))
+        val mesa = DiningTable(
+            id = "m3",
+            number = "M3",
+            currentOrder = order(id = "ya-pagada", total = BigDecimal("99.00")),
+            openOrders = listOf(viva1, viva2),
+        )
+
+        assertThat(mesa.openChecks.map { it.id }).containsExactly("v1", "v2").inOrder()
+        assertThat(mesa.openChecksTotal).isEqualTo(BigDecimal("25.00"))
+    }
+
+    // endregion
 }

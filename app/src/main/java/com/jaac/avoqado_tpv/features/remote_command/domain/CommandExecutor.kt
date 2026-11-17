@@ -114,6 +114,13 @@ class CommandExecutor @Inject constructor(
         } finally { recoveryMutex.unlock() }
     }
 
+    /** El `versionCode` de INSTALL_VERSION o REQUEST_UPDATE, con el mismo parseo flexible que [executeInstallVersion]. */
+    private fun versionCodeDelComando(command: TpvCommand): Int? = when (val raw = command.payload?.get("versionCode")) {
+        is Number -> raw.toInt()
+        is String -> raw.toIntOrNull()
+        else -> null
+    }
+
     fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { commandInbox.remember(it) } }
 
     companion object {
@@ -147,6 +154,24 @@ class CommandExecutor @Inject constructor(
             val result = CommandResult.rejected("Command expired before execution")
             commandInbox.complete(command.commandId, result)
             return@withLock result
+        }
+        // D4 (encargo dd4185): bajar de versión borra la base entera. Se rechaza (no espera) para que el SUPERADMIN vea por qué:
+        // un rechazo en cuarentena o una caja en revisión no se resuelven solos. Va ANTES del candado de pagos para que una
+        // base que no abre también termine en este rechazo (Codex r3 #2). REQUEST_UPDATE se rechaza aquí, al llegar: lo que
+        // pase después en su diálogo ya no le llega al servidor (Codex r3 #1); `acceptUpdate` vuelve a preguntar.
+        if ((command.type == TpvCommandType.INSTALL_VERSION || command.type == TpvCommandType.REQUEST_UPDATE) &&
+            esBajarDeVersion(versionCodeDelComando(command))) {
+            val borraria = try {
+                databaseProvider.get().hayAlgoQueBajarDeVersionBorraria()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                true
+            }
+            if (borraria) {
+                val rejected = CommandResult.rejected(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+                commandInbox.complete(command.commandId, rejected)
+                return@withLock rejected
+            }
         }
         if (command.type in setOf(TpvCommandType.FACTORY_RESET, TpvCommandType.REMOTE_ACTIVATE,
                 TpvCommandType.RESTART, TpvCommandType.SHUTDOWN, TpvCommandType.INSTALL_VERSION,

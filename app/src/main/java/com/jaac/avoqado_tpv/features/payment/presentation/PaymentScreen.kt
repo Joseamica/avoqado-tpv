@@ -806,10 +806,14 @@ fun PaymentScreen(
                     // `approvedAnimationShown`: al volver de «No se pudo imprimir» esta rama se
                     // compone de nuevo y este `remember` nace otra vez — sin la marca repetía la
                     // animación como si se hubiera cobrado dos veces (PAX, 1-oct-2026).
+                    // D13 (Codex r8): en el KIOSCO el aviso de «no se pudo guardar» no termina la espera del recibo (como antes de
+                    // D13): si la terminara, su cuenta regresiva de 12 s cerraría la venta con «Total pagado $0.00» sin recibo.
+                    val avisoQueCortaLaEspera = currentState.pendingSyncMessage != null &&
+                        !(isKioskPayment && onKioskPaymentSuccess != null && currentState.aprobacionSinGuardar)
                     var showApprovedAnimation by remember(currentState.authCode) {
                         mutableStateOf(
                             !currentState.approvedAnimationShown &&
-                                currentState.recordingLostMessage == null && currentState.pendingSyncMessage == null
+                                currentState.recordingLostMessage == null && !avisoQueCortaLaEspera
                         )
                     }
                     // 🔴 Fix round 1 (Important): the check above is NEVER actually true when it
@@ -826,8 +830,8 @@ fun PaymentScreen(
                     // SAME reasoning: it also arrives asynchronously after Success first publishes,
                     // and a cashier who needs to read "don't recharge" should get there as fast as
                     // possible — a few seconds of confetti first isn't worth delaying that note.
-                    LaunchedEffect(currentState.recordingLostMessage, currentState.pendingSyncMessage) {
-                        if (currentState.recordingLostMessage != null || currentState.pendingSyncMessage != null) {
+                    LaunchedEffect(currentState.recordingLostMessage, currentState.pendingSyncMessage, avisoQueCortaLaEspera) {
+                        if (currentState.recordingLostMessage != null || avisoQueCortaLaEspera) {
                             showApprovedAnimation = false
                         }
                     }

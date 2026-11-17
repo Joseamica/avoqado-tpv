@@ -75,7 +75,11 @@ class AprobacionSinGuardarFuenteTest {
             val vigilante = entre(fuente(archivo), "private fun vigilarAprobacionSinGuardar(", "\n    }\n", nombre)
             assertTrue("[$nombre] el vigilante no lee la fila (un veredicto del servidor no la soltaría)",
                 vigilante.contains("paymentAttemptLedger.revisarAprobacionPendiente(attemptId)"))
-            assertTrue("[$nombre] AUTORIZADO no limpia el aviso", tramo.contains("clearApprovalNotSavedState(_state.value)"))
+            assertTrue("[$nombre] el vigilante no limpia también «No se pudo imprimir» (Codex r6 #3)",
+                vigilante.contains("quitarAvisoDeAprobacionSinGuardar(_state.value)"))
+            val quitar = entre(fuente(archivo), "private fun quitarAvisoDeAprobacionSinGuardar(", "\n    }\n", nombre)
+            assertTrue("[$nombre] quitar el aviso no cubre la pantalla de impresión", quitar.contains("is PaymentState.PrintError ->"))
+            assertTrue("[$nombre] AUTORIZADO no limpia el aviso", tramo.contains("quitarAvisoDeAprobacionSinGuardar(_state.value)"))
         }
     }
 

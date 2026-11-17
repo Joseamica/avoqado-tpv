@@ -497,7 +497,10 @@ class PaymentAttemptLedger(
                         return@withLock false
                     }
                 } catch (error: Exception) {
-                    Timber.e(error, "📒 [Libreta] no se pudo leer el intento aprobado: la aprobación queda sólo en memoria | attemptId=%s", attemptId)
+                    // Codex r6 #1: sin poder leer, no se sabe si la fila ya decía «no se cobró» (entonces nada cercaría la venta).
+                    // Queda POR REVISAR: LA PUERTA la vuelve a leer antes de reservar y no deja reservar mientras no pueda.
+                    Timber.e(error, "📒 [Libreta] no se pudo leer el intento aprobado: queda por revisar en la puerta | attemptId=%s", attemptId)
+                    aprobacionPorRevisar.add(attemptId)
                     return@withLock false
                 }
                 when {
@@ -509,25 +512,55 @@ class PaymentAttemptLedger(
                     // Codex r2 #1: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación ganó) y DESPUÉS llega la
                     // aprobación (p. ej. el historial de AngelPay la confirma). Es dinero: se deja la marca de cobro aprobado (la misma
                     // que la cerca de la venta ya lee en una DESCARTADA), sin reabrirla. Una devolución cerrada no se toca.
-                    fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
-                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» | attemptId=%s kind=%s", attemptId, fila.kind)
-                        val marcada = fila.kind == PaymentAttemptEntity.KIND_SALE && try {
-                            withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) } == 1
-                        } catch (error: Exception) {
-                            // Codex r5 #1: es la MISMA marca que la evidencia del servidor sin escribir: se le entrega a ese
-                            // mecanismo, que la reintenta en LA PUERTA y no deja reservar mientras falte.
-                            Timber.e(error, "📒 [Libreta] no se pudo marcar el dinero en la fila descartada: queda como evidencia sin escribir | attemptId=%s", attemptId)
-                            evidenciaSinGuardar[attemptId] = fila.venueId
-                            false
-                        }
-                        aprobacionSinGuardar.remove(attemptId)
-                        marcada
-                    }
+                    fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> marcarDineroEnLaDescartada(fila)
                     // Sigue esperando al banco: la base no escribió. Queda en memoria hasta AUTORIZADO, el registro o la cola.
                     else -> false
                 }
             }
         }
+
+    /**
+     * Codex r2 #1: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación ganó) y DESPUÉS llega la aprobación (p. ej.
+     * el historial de AngelPay la confirma). Es dinero: se deja la marca de cobro aprobado (la misma que la cerca de la venta ya lee en
+     * una DESCARTADA), sin reabrirla. Una devolución cerrada no se toca. Codex r5 #1: si la marca falla, se entrega a
+     * [evidenciaSinGuardar] (la misma marca), que la reintenta en LA PUERTA y no deja reservar mientras falte. SÓLO bajo
+     * [candadoDeEvidencia]. Devuelve si quedó marcada.
+     */
+    private suspend fun marcarDineroEnLaDescartada(fila: PaymentAttemptEntity): Boolean {
+        val attemptId = fila.attemptId
+        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» | attemptId=%s kind=%s", attemptId, fila.kind)
+        val marcada = fila.kind == PaymentAttemptEntity.KIND_SALE && try {
+            withContext(NonCancellable + Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) } == 1
+        } catch (error: Exception) {
+            Timber.e(error, "📒 [Libreta] no se pudo marcar el dinero en la fila descartada: queda como evidencia sin escribir | attemptId=%s", attemptId)
+            evidenciaSinGuardar[attemptId] = fila.venueId
+            false
+        }
+        aprobacionSinGuardar.remove(attemptId)
+        return marcada
+    }
+
+    /**
+     * Codex r6 #1: aprobaciones cuya fila no se pudo ni leer al llegar. Mientras estén aquí, LA PUERTA las vuelve a leer y no deja
+     * reservar (puede ser una DESCARTADA que necesita su marca de dinero). Nunca reescribe la aprobación (v2).
+     */
+    private val aprobacionPorRevisar: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** SÓLO bajo [candadoDeEvidencia]. Lee cada fila por revisar; la DESCARTADA recibe su marca. Devuelve si alguna sigue sin leerse. */
+    private suspend fun revisarAprobacionesSinLeer(): Boolean {
+        for (attemptId in aprobacionPorRevisar.toList()) {
+            val fila = try {
+                withContext(NonCancellable + Dispatchers.IO) { dao.getById(attemptId) }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                continue
+            }
+            aprobacionPorRevisar.remove(attemptId)
+            if (fila?.state == PaymentAttemptEntity.STATE_DESCARTADA && attemptId in aprobacionSinGuardar) marcarDineroEnLaDescartada(fila)
+        }
+        return aprobacionPorRevisar.isNotEmpty()
+    }
 
     /**
      * D13 (Codex r3 #2 y r4 H5): ¿la aprobación de este intento sigue sin quedar a salvo? Lee la fila: si ya avanzó por el camino de
@@ -551,6 +584,7 @@ class PaymentAttemptLedger(
 
     /** Una transición de [attemptId] que SÍ se escribió la deja a salvo (AUTORIZADO, REGISTRO_FALLIDO, REGISTRADO, cola, D5). */
     private fun soltarAprobacion(attemptId: String) {
+        aprobacionPorRevisar.remove(attemptId)
         if (aprobacionSinGuardar.remove(attemptId))
             Timber.w("📒 [Libreta] la aprobación del banco que no se había podido guardar ya quedó a salvo | attemptId=%s", attemptId)
     }
@@ -832,6 +866,8 @@ class PaymentAttemptLedger(
         for (attemptId in chipRechazoSinEscribir.toList()) {
             if (escribirChipRechazoBajoCandado(attemptId) != ChipRechazo.SIN_ESCRIBIR) soltarChipRechazoEscrito(attemptId)
         }
+        // D13 (Codex r6 #1): primero se leen las aprobaciones cuya fila no se pudo leer (una DESCARTADA pasa a la evidencia de abajo).
+        val sinLeer = revisarAprobacionesSinLeer()
         for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) {
             try {
                 withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, now) }
@@ -843,7 +879,7 @@ class PaymentAttemptLedger(
                 Timber.e(error, "📒 [Libreta] la puerta no pudo escribir el dinero pendiente | attemptId=%s", attemptId)
             }
         }
-        return evidenciaSinGuardar.isNotEmpty()
+        return evidenciaSinGuardar.isNotEmpty() || sinLeer
     }
 
     /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */

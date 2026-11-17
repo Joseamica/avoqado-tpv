@@ -314,4 +314,21 @@ class AprobacionSinGuardarRoomTest {
         assertEquals("la mesa queda cercada en la base", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
         assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
     }
+
+    @Test fun `P1 Codex r6-1 si ni la fila se puede leer, la puerta no deja reservar y al leerla marca la descartada`() = runTest {
+        val dudoso = io.mockk.spyk(dao)
+        io.mockk.coEvery { dudoso.getById("a1") } throws IllegalStateException("disco lleno") andThenAnswer { callOriginal() }
+        val libreta = PaymentAttemptLedger(dudoso, settings)
+        cobrandoCincuentaDeLaMesa(libreta)
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
+
+        assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
+
+        // La siguiente decisión pasa por la puerta: ya puede leer la fila, ve la DESCARTADA y le pone su marca de dinero.
+        assertFalse("la misma mesa no se vuelve a cobrar",
+            libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
+        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
+        assertEquals("a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+    }
 }

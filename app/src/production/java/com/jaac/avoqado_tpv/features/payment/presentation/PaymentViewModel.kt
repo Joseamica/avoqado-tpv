@@ -1042,6 +1042,15 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * D13 (Codex r6 #3): quita el aviso del éxito vivo o del que guarda «No se pudo imprimir» (que lo muestra), nunca otro aviso.
+     */
+    private fun quitarAvisoDeAprobacionSinGuardar(current: PaymentState): PaymentState? = when (current) {
+        is PaymentState.Success -> clearApprovalNotSavedState(current)
+        is PaymentState.PrintError -> clearApprovalNotSavedState(current.previousState)?.let { current.copy(previousState = it) }
+        else -> null
+    }
+
+    /**
      * D13 (Codex r2 #3): el PRIMER «Aprobado» ya sale con el aviso si la libreta no pudo guardar la aprobación — nunca la
      * celebración limpia mientras se espera a AUTORIZADO.
      */
@@ -1052,7 +1061,7 @@ class PaymentViewModel @Inject constructor(
     private fun vigilarAprobacionSinGuardar(attemptId: String) {
         viewModelScope.launch {
             while (isActive && paymentAttemptLedger.revisarAprobacionPendiente(attemptId)) delay(1_000)
-            if (sessionSnapshot.paymentAttemptId == attemptId) clearApprovalNotSavedState(_state.value)?.let { _state.value = it }
+            if (sessionSnapshot.paymentAttemptId == attemptId) quitarAvisoDeAprobacionSinGuardar(_state.value)?.let { _state.value = it }
         }
     }
 
@@ -7761,7 +7770,7 @@ class PaymentViewModel @Inject constructor(
                         vigilarAprobacionSinGuardar(attemptIdForLedger)
                     } else {
                         // AUTORIZADO la selló: el aviso del primer «Aprobado» ya no es cierto.
-                        clearApprovalNotSavedState(_state.value)?.let { _state.value = it }
+                        quitarAvisoDeAprobacionSinGuardar(_state.value)?.let { _state.value = it }
                     }
                 }
 

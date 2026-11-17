@@ -33,9 +33,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -446,49 +444,6 @@ class ConnectionViewModelTest {
         assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.DisconnectedNoInternet)
 
         viewModel.viewModelScope.cancel()
-    }
-
-    // D18 (Codex r1 #1): la sonda que sigue a «Available» (2 s + hasta 8 s esperando al servidor) detenía el `collect`, así
-    // que un corte que llegaba en ese rato esperaba en fila y «Sin conexión» tardaba hasta ~13 s.
-
-    /** Conectado, vuelve la red y la sonda ya le preguntó al servidor, que no ha contestado. */
-    private suspend fun TestScope.sondaEsperandoAlServidor():
-        Pair<ConnectionViewModel, CompletableDeferred<Result<HeartbeatResponseDto>>> {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        val viewModel = createViewModel()
-        runCurrent()
-        assertThat(viewModel.state.value).isEqualTo(ConnectionState.Connected)
-        val respuesta = CompletableDeferred<Result<HeartbeatResponseDto>>()
-        coEvery { heartbeatRepository.sendHeartbeat(any()) } coAnswers { respuesta.await() }
-        fakeNetworkStatus.emit(NetworkStatus.Available)
-        advanceTimeBy(ConnectionViewModel.ONLINE_STABILIZATION_MS + 1)
-        coVerify(exactly = 2) { heartbeatRepository.sendHeartbeat(any()) } // el del arranque y el de la sonda
-        return viewModel to respuesta
-    }
-
-    @Test
-    fun `P1 D18 un corte que llega mientras la sonda espera al servidor dice Sin conexion tras la gracia`() = runTest {
-        val (viewModel, _) = sondaEsperandoAlServidor()
-        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
-        val corte = launch { fakeNetworkStatus.emit(NetworkStatus.Unavailable) }
-        try {
-            advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
-            assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedNoInternet)
-        } finally { corte.cancel(); viewModel.viewModelScope.cancel() } // un rojo no deja vivo el ciclo del latido
-    }
-
-    @Test
-    fun `P1 D18 la respuesta de la sonda que llega despues del corte no cancela la gracia`() = runTest {
-        val (viewModel, respuesta) = sondaEsperandoAlServidor()
-        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
-        val corte = launch { fakeNetworkStatus.emit(NetworkStatus.Unavailable) }
-        try {
-            runCurrent()
-            respuesta.complete(Result.Success(fakeHeartbeatResponse)) // alcanzó a contestar antes del corte
-            runCurrent()
-            advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
-            assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedNoInternet)
-        } finally { corte.cancel(); viewModel.viewModelScope.cancel() }
     }
 
     // ========================================

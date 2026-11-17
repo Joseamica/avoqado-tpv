@@ -285,17 +285,13 @@ class ConnectionViewModel @Inject constructor(
                     NetworkStatus.Available -> {
                         Timber.i("🌐 [Connection] Network restored - checking after stabilization")
                         cancelOfflineTransition()
-                        // Aparte del `collect` (D18): la espera de 2 s + la sonda (hasta 8 s) detenían la lectura de un
-                        // corte que llegara en ese rato, y «Sin conexión» salía hasta ~13 s después.
-                        viewModelScope.launch {
-                            // Grace period: Wait for network to fully stabilize after wake (DNS/DHCP)
-                            delay(ONLINE_STABILIZATION_MS)
-                            // Clear dismissed state - network change is a new situation
-                            isDismissed = false
-                            val version = nextVersion()
-                            probeConnectivity(version)
-                            evaluateCellularFailoverSafely(source = "network_available")
-                        }
+                        // Grace period: Wait for network to fully stabilize after wake (DNS/DHCP)
+                        delay(ONLINE_STABILIZATION_MS)
+                        // Clear dismissed state - network change is a new situation
+                        isDismissed = false
+                        val version = nextVersion()
+                        probeConnectivity(version)
+                        evaluateCellularFailoverSafely(source = "network_available")
 
                         // NOTE: SDK re-init on network restore is handled by HomeViewModel.listenForConnectionRestored()
                         // which passes the correct merchantPosId. Do NOT call ensureInitialized() here
@@ -400,8 +396,7 @@ class ConnectionViewModel @Inject constructor(
             when (result) {
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Probe OK (latency=${latencyMs}ms)")
-                    // No cancela una gracia pendiente (D18): la gracia vuelve a mirar la red al terminar, y una respuesta
-                    // que llegó justo antes de un corte la mataba y dejaba «con conexión» hasta el siguiente latido.
+                    cancelOfflineTransition()
                     markServerProbeSucceeded()
                     connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                     handleReconnectionSuccess(version)
@@ -476,7 +471,7 @@ class ConnectionViewModel @Inject constructor(
 
                     // UI state — gated by version
                     if (isLatest(version)) {
-                        // Sin cancelar la gracia pendiente: ver la sonda (D18).
+                        cancelOfflineTransition()
                         markServerProbeSucceeded()
                         connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                         handleReconnectionSuccess(version)

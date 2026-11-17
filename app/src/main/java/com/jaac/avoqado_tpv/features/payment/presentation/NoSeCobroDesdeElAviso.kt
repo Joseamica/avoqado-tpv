@@ -142,7 +142,8 @@ internal class FlujoDeNoSeCobro(
 /** El banner verde de cobros sin confirmar, con su botón «No se cobró», sus diálogos y su refresco. */
 @Composable
 internal fun BannerDeCobrosPendientes(
-    aviso: String,
+    /** null = no hay nada que avisar: no se pinta el banner, pero el diálogo sigue (D22, abajo). */
+    aviso: String?,
     venueId: String,
     ahora: Long,
     declaracion: DeclaracionDesdeElAviso,
@@ -171,13 +172,17 @@ internal fun BannerDeCobrosPendientes(
         }
     }
 
-    AvisoConBotones(
-        aviso = aviso,
-        mostrarNoSeCobro = hayDeclarables,
-        onNoSeCobro = { flujo.tocar(vigentes) },
-        onRevisar = onRevisar,
-        onAyuda = onAyuda,
-    )
+    if (aviso != null) {
+        AvisoConBotones(
+            aviso = aviso,
+            mostrarNoSeCobro = hayDeclarables,
+            onNoSeCobro = { flujo.tocar(vigentes) },
+            onRevisar = onRevisar,
+            onAyuda = onAyuda,
+        )
+    }
+    // 🔴 D22 (QA en la PAX, 17-nov): el diálogo vive aunque ya no haya banner. Al declarar el ÚLTIMO cobro en duda el banner se va, y
+    // con él se iba el aviso que dice si la declaración quedó en Avoqado o sólo en esta terminal, antes de que el cajero lo leyera.
     DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
 }
 
@@ -350,16 +355,17 @@ private fun ListaDeCobrosDialog(
 }
 
 /**
- * D12 (16-nov): con solicitud, la declaración va al servidor y ahí queda quién y cuándo; un Pago rápido (sin solicitud) se
+ * D12 (16-nov): con solicitud, la declaración va al servidor y ahí queda quién y cuándo. Un Pago rápido (sin solicitud) se
  * declara en la libreta de ESTA terminal ([com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.declareChecked])
- * y no llega al servidor. El texto no promete más.
+ * y, desde D22 (17-nov), también en Avoqado si hay red. Antes de confirmar no se sabe cuál de los dos pasará: el texto dice los
+ * dos casos, y después de declarar el aviso dice cuál pasó (`DeclaradoEnAvoqado` / `DeclaradoSoloEnLaTerminal`).
  */
 internal fun textoDeLaConfirmacion(cobro: CobroDeclarable, ahora: Long): String =
     AvisoDeCobrosPendientes.importeYAntiguedad(cobro.totalCentavos, cobro.desdeMillis, ahora) +
         // Codex r3 (D12): sin «si el banco avisa que sí se cobró, se registra como cobrado»: el aviso del banco no crea el pago
         // (el receptor de Blumon TPV sólo busca un `Payment` que ya exista; si no, lo deja pendiente hasta marcarlo huérfano).
         if (cobro.requestId != null) ". Revísalo antes de confirmar: queda tu nombre y la hora."
-        else ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado."
+        else ". Revísalo antes de confirmar. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal."
 
 @Composable
 private fun ConfirmacionDialog(

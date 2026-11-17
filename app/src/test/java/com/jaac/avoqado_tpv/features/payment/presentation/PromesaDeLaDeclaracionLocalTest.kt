@@ -20,7 +20,7 @@ class PromesaDeLaDeclaracionLocalTest {
 
     private fun promesaHonesta(texto: String) {
         assertThat(texto).contains("en esta terminal")
-        assertThat(texto).contains("no aparece en Avoqado")
+        assertThat(texto).contains("no aparece")
         assertThat(texto).doesNotContain("queda tu nombre")
         assertThat(texto).doesNotContain("registrado")
         assertThat(texto).doesNotContain("no se envía")
@@ -28,22 +28,38 @@ class PromesaDeLaDeclaracionLocalTest {
         assertThat(texto).doesNotContain("quién")
     }
 
-    @Test fun `P1 antes de declarar un cobro local dice que se anota en esta terminal y no aparece en Avoqado`() {
-        promesaHonesta(INVITACION_A_DECLARAR_EN_LA_TERMINAL)
+    /** D22: ANTES de declarar no se sabe si habrá red: se dicen los dos casos, sin prometer que llega. */
+    private fun dosCasos(texto: String) {
+        assertThat(texto).contains("Con internet queda en Avoqado con tu nombre y la hora")
+        assertThat(texto).contains("sin internet, sólo en esta terminal")
+        assertThat(texto).doesNotContain("registrado")
+        assertThat(texto).doesNotContain("avis")
     }
 
-    @Test fun `P1 tras declarar un cobro local no dice que quedo registrado ni promete un aviso`() {
+    @Test fun `P1 antes de declarar un cobro local dice los dos casos - con internet en Avoqado, sin internet sólo aquí (D22)`() {
+        dosCasos(INVITACION_A_DECLARAR_EN_LA_TERMINAL)
+    }
+
+    @Test fun `P1 tras declarar un cobro local que no llegó a Avoqado lo dice y no promete un aviso`() {
         promesaHonesta(textoDelIntentoCerrado("declarado_sin_cobro:staff-1"))
         promesaHonesta(textoDelIntentoCerrado("declarado_sin_cobro:sin_identificar"))
+    }
+
+    @Test fun `P1 tras declarar un cobro local que Avoqado guardó dice que quedó en Avoqado (D22)`() {
+        val texto = textoDelIntentoCerrado("declarado_sin_cobro:staff-1:avoqado")
+        assertThat(texto).contains("Quedó anotado en Avoqado")
+        assertThat(texto).doesNotContain("no aparece")
+        assertThat(texto).doesNotContain("sólo en esta terminal")
+        assertThat(texto).doesNotContain("avis")
     }
 
     @Test fun `P2 una liberacion que dio el servidor conserva su texto`() {
         assertThat(textoDelIntentoCerrado(null)).isEqualTo("Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar.")
     }
 
-    @Test fun `P1 el aviso del Inicio no promete el nombre ni un aviso en un Pago rapido`() {
+    @Test fun `P1 el aviso del Inicio en un Pago rapido dice los dos casos y no promete un aviso (D22)`() {
         val local = CobroDeclarable("a1", requestId = null, totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1)
-        promesaHonesta(textoDeLaConfirmacion(local, ahora = 60_000))
+        dosCasos(textoDeLaConfirmacion(local, ahora = 60_000))
     }
 
     @Test fun `P2 el aviso del Inicio en un cobro del POS conserva quien y cuando, porque el servidor si lo guarda`() {

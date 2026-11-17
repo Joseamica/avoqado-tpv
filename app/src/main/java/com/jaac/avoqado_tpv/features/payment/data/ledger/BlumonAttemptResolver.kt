@@ -144,7 +144,8 @@ class BlumonAttemptResolver @Inject constructor(
      * El cajero deja constancia de que revisó la terminal y no se cobró, con o sin red (founder, 25-sep; antes sólo sin red
      * y sólo gerencia). Sólo cobros LOCALES: los del POS tienen su propio camino. Primero se consulta a Avoqado; con
      * evidencia de dinero no se declara, y la libreta exige que Avoqado haya contestado alguna vez por ese cobro. Queda
-     * quién y cuándo; si después aparece el cobro, la terminal avisa. También en la Nexgo, desde el botón del banner verde
+     * quién y cuándo; si después aparece el cobro, la terminal avisa. D22 (17-nov): con red, además, la declaración queda en
+     * Avoqado ([enviarDeclaracionRevisada]) y la libreta lo marca ([PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO]). También en la Nexgo, desde el botón del banner verde
      * (founder, 3-nov): con las mismas condiciones, y lo demás de esta clase sigue siendo sólo de la pantalla de la PAX.
      */
     suspend fun declareChecked(venueId: String, attemptId: String): Result = mutex.withLock {
@@ -155,8 +156,90 @@ class BlumonAttemptResolver @Inject constructor(
         if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeDeclararseEnDuda(row, venueId)) return@withLock reading
         // Recheck session and effective permission AFTER the network suspension as well as in the UI.
         if (!hasCheckPermission()) return@withLock reading.copy(state = State.PERMISSION_REQUIRED)
-        ledger.declararSinCobroLocal(attemptId, venueId, storage.getStaffId())
+        val staffId = storage.getStaffId()
+        // 🔴 D22 (founder, 17-nov: «Sí, A1»): con red, la declaración también llega a Avoqado — quién (la sesión, nunca el cuerpo),
+        // cuándo, el monto según la libreta y la terminal —, y el dueño la ve en la Bitácora. Sin respuesta se anota sólo aquí,
+        // como antes. El CAS local va DESPUÉS del envío: la evidencia que llegue en medio gana (salidaNegativa).
+        // Si la consulta de ESTA misma llamada no tuvo respuesta (sin red, WiFi sin salida), no se intenta el envío: fallaría igual y
+        // haría esperar al cajero otro tope de red. Se anota sólo aquí y la pantalla lo dice.
+        val envio = if (!reading.serverAnswered) EnvioRevisado.NO_LLEGO else enviarDeclaracionRevisada(venueId, attemptId, row, staffId)
+        val enAvoqado = when (envio) {
+            EnvioRevisado.GUARDADO -> true
+            EnvioRevisado.NO_LLEGO -> false
+            EnvioRevisado.HAY_DINERO -> return@withLock inspect(venueId, attemptId, LOS_DOS).copy(state = State.MONEY_EVIDENCE, serverAnswered = true)
+            EnvioRevisado.SIN_PERMISO -> return@withLock reading.copy(state = State.PERMISSION_REQUIRED, serverAnswered = true)
+            is EnvioRevisado.ConVeto -> return@withLock envio.resultado
+        }
+        ledger.declararSinCobroLocal(attemptId, venueId, staffId, enAvoqado)
         inspect(venueId, attemptId, LOS_DOS).copy(resultJson = reading.resultJson)
+    }
+
+    /** D22: lo que pasó con el envío de la declaración revisada. */
+    private sealed interface EnvioRevisado {
+        /** Avoqado la guardó: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó. */
+        data object GUARDADO : EnvioRevisado
+        /** Sin red, sin respuesta, 5xx o un rechazo que no habla de dinero ni de permiso (p. ej. un servidor viejo): sólo aquí. */
+        data object NO_LLEGO : EnvioRevisado
+        /** 409 POSITIVE_EVIDENCE_EXISTS: Avoqado tiene evidencia de cobro. No se declara. */
+        data object HAY_DINERO : EnvioRevisado
+        /** 401/403: Avoqado dice que esta sesión no puede declararlo. No se anota en ningún lado. */
+        data object SIN_PERMISO : EnvioRevisado
+        /** El 2xx trajo dinero o un veto: ya se guardó lo que trae; no se declara. */
+        data class ConVeto(val resultado: Result) : EnvioRevisado
+    }
+
+    private suspend fun enviarDeclaracionRevisada(venueId: String, attemptId: String, row: PaymentAttemptEntity, staffId: String?): EnvioRevisado {
+        // UNA declaración lógica por intento, en reintentos, pantalla recreada y muerte del proceso; el monto sale de la libreta, así
+        // que el cuerpo es idéntico cada vez y el servidor contesta el replay sin escribir otra vez.
+        val resolutionId = UUID.nameUUIDFromBytes("tpv:checked:$venueId:$attemptId".toByteArray(Charsets.UTF_8)).toString()
+        val response = try {
+            api.resolveNoInstrument(
+                venueId, attemptId,
+                NoInstrumentResolutionRequest(
+                    requestId = null, resolutionId = resolutionId, statement = "UNCHARGED_VERIFIED",
+                    amountCents = row.amountCents, tipCents = row.tipCents,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return EnvioRevisado.NO_LLEGO
+        }
+        if (!response.isSuccessful) {
+            val code = runCatching {
+                com.google.gson.JsonParser.parseString(response.errorBody()?.string().orEmpty()).asJsonObject.get("code")?.asString
+            }.getOrNull()
+            return when {
+                response.code() == 409 && code == "POSITIVE_EVIDENCE_EXISTS" -> {
+                    saveMoney(venueId, attemptId)
+                    EnvioRevisado.HAY_DINERO
+                }
+                response.code() == 401 || response.code() == 403 -> {
+                    PermissionsRepository.invalidarListaTrasRechazo(storage, venueId, staffId)
+                    EnvioRevisado.SIN_PERMISO
+                }
+                else -> EnvioRevisado.NO_LLEGO
+            }
+        }
+        val body = response.body()
+        // Un 2xx no basta: tiene que ser de ESTE intento, sin solicitud, y publicar el testimonio que se mandó.
+        val declaracion = body?.attempt?.resolution
+        val esLaNuestra = body?.success == true && body.attemptId == attemptId && body.attempt?.attemptId == attemptId &&
+            body.requestId.isNullOrBlank() && declaracion != null &&
+            runCatching { declaracion.get("kind")?.asString == "UNCHARGED_VERIFIED" && declaracion.get("id")?.asString == resolutionId }.getOrDefault(false)
+        val money = LiberacionDelServidor.acreditaDinero(body?.attempt)
+        val veto = LiberacionDelServidor.motivoDelVeto(body?.attempt)
+        if (body?.attemptId == attemptId && body.attempt?.attemptId == attemptId && (money || veto != null)) {
+            // Lo que trae la respuesta se guarda ANTES de devolver, aunque la pantalla se cierre (el mismo orden que [declare]).
+            withContext(NonCancellable) {
+                val moneySaved = !money || saveMoney(venueId, attemptId)
+                if (veto != null && !ledger.marcarVetoDelServidor(venueId, attemptId, veto).getOrDefault(false)) unsavedVetoes.add(attemptId)
+                if (moneySaved) VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, body)?.let { ledger.aplicarVeredictoDelServidor(it) }
+            }
+            val after = inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true)
+            return EnvioRevisado.ConVeto(if (after.state == State.RECORDED && veto == null) after else after.copy(state = State.MONEY_EVIDENCE))
+        }
+        return if (esLaNuestra) EnvioRevisado.GUARDADO else EnvioRevisado.NO_LLEGO
     }
 
     /**

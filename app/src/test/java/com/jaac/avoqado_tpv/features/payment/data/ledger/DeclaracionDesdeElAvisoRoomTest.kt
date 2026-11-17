@@ -181,6 +181,14 @@ class DeclaracionDesdeElAvisoRoomTest {
             """"processorEvidence":"APPROVED","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,"resolution":null},"request":null}""",
     )
 
+    /** D22: el 2xx de la declaración revisada de un Pago rápido, con el testimonio que guardó Avoqado. */
+    private fun s6Revisada(id: String, resolutionId: String) = s6(
+        """{"success":true,"attemptId":"$id","requestId":null,"attempt":{"attemptId":"$id","outcome":"NOT_RECORDED","paymentId":null,""" +
+            """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+            """"resolution":{"id":"$resolutionId","kind":"UNCHARGED_VERIFIED","staffId":"cajera","by":"SESSION"}},"request":null,""" +
+            """"resolution":{"id":"$resolutionId","acceptedAt":"2026-11-17T18:00:00.000Z","by":"SESSION"}}""",
+    )
+
     private fun s6(json: String): Response<TerminalAttemptStatusResponse> =
         Response.success(Gson().fromJson(json, TerminalAttemptStatusResponse::class.java))
 
@@ -508,9 +516,11 @@ class DeclaracionDesdeElAvisoRoomTest {
         for ((id, procesador) in listOf("a-nexgo" to "ANGELPAY", "a-pax" to "BLUMON")) {
             val cobro = duda(id, processor = procesador, serverAnsweredAt = 1L)
             coEvery { api.getAttemptStatus(venue, id) } throws java.io.IOException("sin red")
+            // D22: sin red el envío a Avoqado tampoco sale; se anota sólo aquí, y el aviso lo dice.
+            coEvery { api.resolveNoInstrument(venue, id, any()) } throws java.io.IOException("sin red")
 
             assertThat(declaracion.preparar(venue, cobro)).isNull()
-            assertThat(declaracion.declarar(venue, cobro)).isEqualTo(Declarado)
+            assertThat(declaracion.declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal)
 
             val fila = dao.getById(id)!!
             assertThat(fila.state).isEqualTo("DESCARTADA")
@@ -541,10 +551,17 @@ class DeclaracionDesdeElAvisoRoomTest {
     @Test fun `al conectarse, la misma consulta deja que se ofrezca confirmar`() = runBlocking<Unit> {
         val cobro = duda("a-1")
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        // D22: con red, Avoqado guarda la declaración y la libreta lo marca; el aviso dice que quedó en Avoqado.
+        val cuerpo = slot<NoInstrumentResolutionRequest>()
+        coEvery { api.resolveNoInstrument(venue, "a-1", capture(cuerpo)) } answers { s6Revisada("a-1", cuerpo.captured.resolutionId) }
 
         assertThat(declaracion.preparar(venue, cobro)).isNull()
         assertThat(dao.getById("a-1")!!.serverAnsweredAt).isNotNull()
-        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(Declarado)
+        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
+        assertThat(cuerpo.captured.amountCents).isEqualTo(10_000)
+        assertThat(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado.texto()).contains("quedó anotado en Avoqado")
+        assertThat(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal.texto()).contains("no aparece en Avoqado")
     }
 
     @Test fun `P1 Codex 1 - falla SOLO la escritura del veto y la siguiente escritura funciona - no se declara y dice hay evidencia`() = runBlocking<Unit> {
@@ -699,7 +716,9 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(1)
 
         coEvery { api.getAttemptStatus(venue, "a-local") } returns s6Limpia("a-local")
-        assertThat(declaracionCon(libreta2).declarar(venue, declarables(libreta2).single())).isEqualTo(Declarado)
+        coEvery { api.resolveNoInstrument(venue, "a-local", any()) } throws java.io.IOException("sin red")
+        assertThat(declaracionCon(libreta2).declarar(venue, declarables(libreta2).single()))
+            .isEqualTo(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal)
 
         assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(0)
         assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
@@ -728,6 +747,29 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(post.path).isEqualTo("/api/v1/tpv/venues/$venue/terminal-payment/requests/r-1/uncharged-declaration")
         val cuerpo = Gson().fromJson(post.body.readUtf8(), Map::class.java)
         assertThat(cuerpo).containsExactly("resolutionId", idDe("r-1"), "statement", "UNCHARGED_VERIFIED", "statementVersion", 1.0)
+    }
+
+    /**
+     * D22: el cuerpo EXACTO que la terminal manda al declarar un Pago rápido. El esquema del servidor es `.strict()`: una llave de
+     * más (`requestId: null`, `supervisorPin: null`, `merchantAccountId`) sería un 409 y la declaración se quedaría sin llegar.
+     */
+    @Test fun `P1 Retrofit real D22 - un Pago rapido manda la clase nueva con el monto de la libreta y nada mas`() = runBlocking<Unit> {
+        val transporte = apiReal()
+        servidor!!.enqueue(json(200, """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","processorEvidence":"NONE","resolution":null},"request":null}"""))
+        servidor!!.enqueue(json(200, """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","processorEvidence":"NONE","resolution":{"id":"${UUID.nameUUIDFromBytes("tpv:checked:$venue:a-1".toByteArray(Charsets.UTF_8))}","kind":"UNCHARGED_VERIFIED","staffId":"cajera"}},"request":null,"resolution":{"id":"x","acceptedAt":"y","by":"SESSION"}}"""))
+        val cobro = duda("a-1", serverAnsweredAt = 1L)
+
+        assertThat(declaracionCon(ledger, transporte).declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+
+        servidor!!.takeRequest() // la consulta S6 de antes
+        val post = servidor!!.takeRequest()
+        assertThat(post.method).isEqualTo("POST")
+        assertThat(post.path).isEqualTo("/api/v1/tpv/venues/$venue/terminal-payment/attempts/a-1/no-instrument-resolution")
+        val cuerpo = Gson().fromJson(post.body.readUtf8(), Map::class.java)
+        assertThat(cuerpo).containsExactly(
+            "resolutionId", UUID.nameUUIDFromBytes("tpv:checked:$venue:a-1".toByteArray(Charsets.UTF_8)).toString(),
+            "statement", "UNCHARGED_VERIFIED", "statementVersion", 1.0, "amountCents", 10_000.0, "tipCents", 0.0,
+        )
     }
 
     @Test fun `P1 Retrofit real - el PIN viaja cuando lo hay, y el 403 del servidor pide PIN`() = runBlocking<Unit> {

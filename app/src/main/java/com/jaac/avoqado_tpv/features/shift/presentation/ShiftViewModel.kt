@@ -24,7 +24,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
@@ -194,39 +193,32 @@ class ShiftViewModel @Inject constructor(
     private fun observeConnectivity() {
         viewModelScope.launch {
             // Sólo cuenta como «el latido contestó» lo que escriba DESPUÉS de suscribirse: un latido viejo no borra una
-            // lectura de la caja que falló después. Tampoco un cambio que no es del latido (`setWifiSinSalida`).
-            var escriturasVistas = connectionStateManager.escriturasDelLatido.value
-            // ¿Dijo «Sin conexión» desde el último latido que contestó? Entonces ese latido la pone al día.
-            var estuvoSinConexion = false
-            // Con el contador en el flujo, un latido idéntico al anterior también se ve (Codex r2).
-            combine(connectionStateManager.connectionState, connectionStateManager.escriturasDelLatido, ::Pair)
-                .collect { (estado, escrituras) ->
-                    val wasOffline = _isOffline.value
-                    if (wasOffline) estuvoSinConexion = true
-                    val antes = sinRed
-                    sinRed = if (escrituras == 0L) {
-                        // Antes del primer latido, el `true/true` del manager es un supuesto del arranque: decide lo que
-                        // Android validó, como antes de D13 (un WiFi sin salida no cuenta; Codex r1 #1).
-                        connectivityObserver.getCurrentNetworkStatus() == NetworkStatus.Unavailable
-                    } else !estado.isFullyConnected
-                    val elLatidoContesto = escrituras > escriturasVistas && estado.isFullyConnected
-                    escriturasVistas = escrituras
-                    if (elLatidoContesto) servidorSinContestar = false
-                    publicarSinConexion()
-                    if (sinRed && !antes) {
-                        Timber.w("⚠️ [ShiftViewModel] Latido sin conexión - loading cached shift state")
-                        loadCachedShiftInfo()
-                    } else if (wasOffline && !_isOffline.value) {
-                        Timber.i("✅ [ShiftViewModel] El latido contestó - clearing cached info")
-                        _cachedShiftInfo.value = null
-                    }
-                    // Se pone al día con lo que diga el servidor; si esa lectura falla sin respuesta, regresa «Sin conexión».
-                    // M-4: igual que al reconectar, nunca se relee durante un cierre en curso.
-                    if (elLatidoContesto && estuvoSinConexion && !_cerrandoCaja.value) {
-                        estuvoSinConexion = false
-                        loadCurrentShift()
-                    }
+            // lectura de la caja que falló después. Cada emisión trae lo que dejó ESA escritura (Codex r3 #1).
+            var escriturasVistas = connectionStateManager.latido.value.escrituras
+            connectionStateManager.latido.collect { latido ->
+                val wasOffline = _isOffline.value
+                val antes = sinRed
+                sinRed = if (latido.escrituras == 0L) {
+                    // Antes del primer latido, el `true/true` del manager es un supuesto del arranque: decide lo que
+                    // Android validó, como antes de D13 (un WiFi sin salida no cuenta; Codex r1 #1).
+                    connectivityObserver.getCurrentNetworkStatus() == NetworkStatus.Unavailable
+                } else !latido.contesto
+                val elLatidoContesto = latido.escrituras > escriturasVistas && latido.contesto
+                escriturasVistas = latido.escrituras
+                if (elLatidoContesto) servidorSinContestar = false
+                publicarSinConexion()
+                if (sinRed && !antes) {
+                    Timber.w("⚠️ [ShiftViewModel] Latido sin conexión - loading cached shift state")
+                    loadCachedShiftInfo()
+                } else if (wasOffline && !_isOffline.value) {
+                    Timber.i("✅ [ShiftViewModel] El latido contestó - clearing cached info")
+                    _cachedShiftInfo.value = null
                 }
+                // Se pone al día con lo que diga el servidor; si esa lectura falla sin respuesta, regresa «Sin conexión».
+                // M-4: igual que «Connection restored», durante un cierre en curso no se relee, ni se deja para después
+                // (Codex r3 #2): el cierre publica su propio resultado.
+                if (elLatidoContesto && wasOffline && !_cerrandoCaja.value) loadCurrentShift()
+            }
         }
     }
 

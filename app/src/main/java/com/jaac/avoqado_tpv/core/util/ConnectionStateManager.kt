@@ -50,17 +50,18 @@ class ConnectionStateManager @Inject constructor() {
     @Volatile
     private var measurementCount: Int = 0
 
-    private val _escriturasDelLatido = MutableStateFlow(0L)
+    private val _latido = MutableStateFlow(Latido())
 
     /**
-     * Cuántas veces ha escrito el LATIDO (su respuesta, o «sin red» tras su gracia). En 0, el `true/true` de arriba es el
-     * supuesto del arranque, no evidencia de que el servidor conteste (D13, Codex r1 #1). Es un flujo y sube DESPUÉS de
-     * publicar el estado: así se ve cada escritura, también la de un latido idéntico al anterior, que no cambia
-     * [connectionState] (Codex r2).
+     * Cada escritura del LATIDO (su respuesta, o «sin red» tras su gracia), con lo que dejó: una sola emisión por escritura,
+     * así nunca se empareja un latido con el estado de otro (D13, Codex r3 #1), y se ve también un latido idéntico al
+     * anterior, que no cambia [connectionState] (Codex r2). Con `escrituras = 0`, el `true/true` de arriba es el supuesto
+     * del arranque, no evidencia de que el servidor conteste (Codex r1 #1). `setWifiSinSalida` no es del latido.
      */
-    val escriturasDelLatido: StateFlow<Long> = _escriturasDelLatido.asStateFlow()
+    val latido: StateFlow<Latido> = _latido.asStateFlow()
 
-    private fun contarEscrituraDelLatido() = _escriturasDelLatido.update { it + 1 }
+    private fun publicarLatido() =
+        _latido.update { Latido(escrituras = it.escrituras + 1, contesto = _connectionState.value.isFullyConnected) }
 
     /**
      * Update internet connectivity status
@@ -71,7 +72,7 @@ class ConnectionStateManager @Inject constructor() {
             Timber.i("🌐 [ConnectionState] Internet: $connected")
             _connectionState.value = current.copy(hasInternet = connected)
         }
-        contarEscrituraDelLatido()
+        publicarLatido()
     }
 
     /**
@@ -83,7 +84,7 @@ class ConnectionStateManager @Inject constructor() {
             Timber.i("🖥️ [ConnectionState] Server: $connected")
             _connectionState.value = current.copy(hasServer = connected)
         }
-        contarEscrituraDelLatido()
+        publicarLatido()
     }
 
     /**
@@ -132,7 +133,7 @@ class ConnectionStateManager @Inject constructor() {
                 }
             } catch (_: Exception) { /* Firebase not initialized yet during early startup */ }
         }
-        contarEscrituraDelLatido()
+        publicarLatido()
     }
 
     /** Lo publican [WifiSinSalidaMonitor] (DETECTADO / NO) y [ControlDeWifi] vía el VM (REINICIANDO). */
@@ -175,6 +176,9 @@ class ConnectionStateManager @Inject constructor() {
  * [isSlowConnection] is computed by [ConnectionStateManager] with hysteresis,
  * not purely from a single [latencyMs] measurement.
  */
+/** Una escritura del latido: cuántas van y si con ella quedó internet Y servidor (lo que el aviso rojo llama conectado). */
+data class Latido(val escrituras: Long = 0L, val contesto: Boolean = false)
+
 data class ConnectionState(
     val hasInternet: Boolean = true,
     val hasServer: Boolean = true,

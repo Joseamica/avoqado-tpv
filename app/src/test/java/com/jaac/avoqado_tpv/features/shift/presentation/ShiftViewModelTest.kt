@@ -376,6 +376,29 @@ class ShiftViewModelTest {
     }
 
     @Test
+    fun `M-4 D13 un latido que contesta durante el cierre no relee ni lo deja para despues (Codex r3)`() = runTest {
+        val respuesta = CompletableDeferred<Result<Shift>>()
+        val viewModel = cierreEsperando(respuesta)
+        connectionStateManager.setInternetConnected(false) // el recuadro dice «Sin conexión» a media pregunta del cierre
+        advanceUntilIdle()
+        clearMocks(shiftRepository, answers = false, recordedCalls = true)
+
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isEqualTo(ShiftState.Loading) // sigue diciendo que está cerrando
+        coVerify(exactly = 0) { shiftRepository.getCurrentShift(any()) }
+
+        respuesta.complete(motivoDelBloqueo)
+        advanceUntilIdle()
+        // Otro latido que contesta, sin otra desconexión: no se come el mensaje de bloqueo.
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        advanceUntilIdle()
+
+        assertThat((viewModel.state.value as ShiftState.Error).message).contains("No se puede cerrar la caja")
+        coVerify(exactly = 0) { shiftRepository.getCurrentShift(any()) }
+    }
+
+    @Test
     fun `M-4 sin cierre en curso, la reconexion si recarga`() = runTest {
         val viewModel = createViewModel()
         advanceUntilIdle()
@@ -1031,6 +1054,23 @@ class ShiftViewModelTest {
 
         assertThat(viewModel.isOffline.value).isFalse()
         coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
+    }
+
+    @Test
+    fun `P1 D13 un latido que falla nunca cuenta como que contesto, aunque haya otro cambio pendiente (Codex r3)`() = runTest {
+        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = 100)
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns sinServidor()
+        cajaAbiertaGuardada()
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.isOffline.value).isTrue()
+
+        connectionStateManager.setWifiSinSalida(com.jaac.avoqado_tpv.core.util.EstadoWifiSinSalida.DETECTADO)
+        connectionStateManager.updateState(hasInternet = true, hasServer = false)
+        advanceUntilIdle()
+
+        assertThat(viewModel.isOffline.value).isTrue()
+        coVerify(exactly = 1) { shiftRepository.getCurrentShift("venue-123") }
     }
 
     @Test

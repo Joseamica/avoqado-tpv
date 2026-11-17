@@ -585,7 +585,9 @@ class PaymentAttemptLedger(
             return true
         }
         val sigue = fila != null && fila.hostApproved != true &&
-            (fila.state in ESPERANDO_AL_BANCO || fila.state == PaymentAttemptEntity.STATE_REGISTRO_FALLIDO) && // Codex r13
+            // Codex r13 y r17: AUTORIZADO o REGISTRO_FALLIDO SIN la marca del banco no dejan el cobro recuperable: sigue pendiente.
+            (fila.state in ESPERANDO_AL_BANCO || fila.state == PaymentAttemptEntity.STATE_REGISTRO_FALLIDO ||
+                fila.state == PaymentAttemptEntity.STATE_AUTORIZADO) &&
             !(fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION)
         if (!sigue) soltarAprobacion(attemptId)
         return sigue

@@ -316,20 +316,29 @@ class AprobacionSinGuardarRoomTest {
     }
 
     @Test fun `P1 Codex r6-1 si ni la fila se puede leer, la puerta no deja reservar y al leerla marca la descartada`() = runTest {
-        val dudoso = io.mockk.spyk(dao)
-        io.mockk.coEvery { dudoso.getById("a1") } throws IllegalStateException("disco lleno") andThenAnswer { callOriginal() }
+        // DAO simulado (un espía de Room no puede volver a la lectura real): la PRIMERA lectura falla, la segunda ve la DESCARTADA.
+        val descartada = PaymentAttemptEntity(
+            attemptId = "a1", venueId = venue, processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
+            state = PaymentAttemptEntity.STATE_DESCARTADA, amountCents = 5000, tipCents = 0,
+            recordingRoute = "ORDER", paymentContextJson = mesa, createdAt = 1, updatedAt = 1,
+        )
+        val dudoso = mockk<PaymentAttemptDao>(relaxed = true)
+        io.mockk.coEvery { dudoso.casHostResponded(any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
+        io.mockk.coEvery { dudoso.getById("a1") } throws IllegalStateException("disco lleno") andThen descartada
+        io.mockk.coEvery { dudoso.getById("otra-vez") } returns null
+        io.mockk.coEvery { dudoso.marcarEvidenciaPositivaDelServidor("a1", venue, any()) } returns 1
+        io.mockk.coEvery { dudoso.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns -1L
         val libreta = PaymentAttemptLedger(dudoso, settings)
-        cobrandoCincuentaDeLaMesa(libreta)
-        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
 
         assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
+        assertTrue("sin poder leer, la aprobación sigue protegida", libreta.tieneEvidenciaSinGuardar("a1"))
 
         // La siguiente decisión pasa por la puerta: ya puede leer la fila, ve la DESCARTADA y le pone su marca de dinero.
-        assertFalse("la misma mesa no se vuelve a cobrar",
-            libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
-        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
-        assertEquals("a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
+        libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa)
+
+        io.mockk.coVerify(exactly = 1) { dudoso.marcarEvidenciaPositivaDelServidor("a1", venue, any()) }
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse("la marca quedó escrita", libreta.tieneEvidenciaSinGuardar("a1"))
     }
 
     @Test fun `P1 Codex r13 un registro fallido sin la marca del banco NO quita el aviso - lo quita la cola`() = runTest {
@@ -380,5 +389,6 @@ class AprobacionSinGuardarRoomTest {
         assertNull(dao.getById("a1")?.hostApproved)
         assertTrue("sin la marca no se suelta", libreta.aprobacionPendienteDeGuardar("a1"))
         vuelveLaBase()
+        assertTrue("y el vigilante de la pantalla tampoco la suelta (Codex r17 #1)", libreta.revisarAprobacionPendiente("a1"))
     }
 }

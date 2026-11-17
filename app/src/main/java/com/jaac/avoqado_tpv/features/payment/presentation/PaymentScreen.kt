@@ -879,6 +879,7 @@ fun PaymentScreen(
                                 showPrintButton = viewModel.canPrintReceipt,
                                 recordingLostMessage = currentState.recordingLostMessage,  // 🚨 Money-safety alarm banner
                                 pendingSyncMessage = currentState.pendingSyncMessage,  // 🟡 Queued-for-sync note
+                                aprobacionSinGuardar = currentState.aprobacionSinGuardar,  // D13: no es «en cola»
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
@@ -1040,8 +1041,10 @@ fun PaymentScreen(
                 // se reimprime desde el recibo, que además sabe si era recibo o comanda.
                 is PaymentState.PrintError -> {
                     val yaPaso = if (currentState.previousState.isRefund) "La devolución sí se hizo." else "El cobro sí quedó aprobado."
+                    // D13 (Codex r5 #5): con la aprobación sin guardar en el equipo, el aviso «NO vuelvas a cobrar» sigue a la vista.
+                    val avisoD13 = currentState.previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage
                     PaymentErrorContent(
-                        message = "$yaPaso\n\n${currentState.message}",
+                        message = listOfNotNull(yaPaso, avisoD13, currentState.message).joinToString("\n\n"),
                         canRetry = false,
                         title = "No se pudo imprimir",
                         icon = "🖨️",
@@ -1645,6 +1648,8 @@ private fun PaymentSuccessContent(
     // Email/WhatsApp (server-dependent) while leaving Imprimir enabled (local, ESC/POS). Null
     // (default) for every normal Success, which stays byte-identical.
     pendingSyncMessage: String? = null,
+    /** D13 (Codex r5 #6): [pendingSyncMessage] es el aviso de «no se pudo guardar», no «quedó en cola». */
+    aprobacionSinGuardar: Boolean = false,
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
@@ -2127,7 +2132,8 @@ private fun PaymentSuccessContent(
                         recordingLostMessage != null -> Unit
                         pendingSyncMessage != null -> {
                             Text(
-                                text = "El recibo estará disponible en cuanto el pago se sincronice",
+                                text = if (aprobacionSinGuardar) "El recibo estará disponible en cuanto Avoqado registre el pago"
+                                    else "El recibo estará disponible en cuanto el pago se sincronice",
                                 textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
                                 color = MaterialTheme.colorScheme.onSurface,

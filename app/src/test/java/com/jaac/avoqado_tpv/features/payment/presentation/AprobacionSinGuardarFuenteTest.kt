@@ -94,4 +94,13 @@ class AprobacionSinGuardarFuenteTest {
                 cuerpo.contains("paymentAttemptLedger::aprobacionPendienteDeGuardar") && cuerpo.contains("clearApprovalNotSavedState(restaurado)"))
         }
     }
+
+    @Test
+    fun `P2 Codex r5-5 y 6 No se pudo imprimir y el recibo no esconden ni contradicen el aviso`() {
+        val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
+        val error = entre(pantalla, "is PaymentState.PrintError -> {", "PaymentErrorContent(", "PaymentScreen")
+        assertTrue("el error de impresión esconde «NO vuelvas a cobrar»", error.contains("previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage"))
+        assertTrue("el recibo dice «se sincronice» con el aviso de D13",
+            pantalla.contains("if (aprobacionSinGuardar) \"El recibo estará disponible en cuanto Avoqado registre el pago\""))
+    }
 }

@@ -275,4 +275,43 @@ class AprobacionSinGuardarRoomTest {
         assertEquals(PaymentAttemptEntity.STATE_HOST_RESPONDIO, dao.getById("a1")?.state)
         assertEquals(0, libreta.reintentarEvidenciaSinGuardar())
     }
+
+    @Test fun `P1 Codex r5-2 la duda del chip que escribe la puerta de OTRO cobro tambien suelta la aprobacion`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        fallaTodo()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        assertEquals(PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+        vuelveLaBase()
+
+        // Otra venta pasa por la puerta: ahí se escribe la duda (D5).
+        libreta.openAttempt("otra", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}")
+
+        assertEquals(PaymentAttemptEntity.STATE_INDETERMINADO, dao.getById("a1")?.state)
+        assertFalse(libreta.chipRechazoPendienteDeEscribir("a1"))
+        assertFalse("la aprobación ya no queda colgada", libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse("la pantalla ve la duda con su salida, no «hay dinero»", libreta.tieneEvidenciaSinGuardar("a1"))
+    }
+
+    @Test fun `P1 Codex r5-1 si la marca de dinero sobre la fila descartada falla, la puerta la reintenta y no deja reservar`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a1'")
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER falla_marca BEFORE UPDATE ON payment_attempts WHEN NEW.server_processor_evidence IS 'APPROVED' " +
+                "BEGIN SELECT RAISE(ABORT, 'disco lleno'); END")
+
+        assertFalse(libreta.markHostResponded("a1", true, null, "ref-1", "auth-1"))
+
+        assertTrue("es dinero sin escribir", libreta.tieneEvidenciaSinGuardar("a1"))
+        assertFalse("la misma mesa no se vuelve a cobrar mientras falte",
+            libreta.openAttempt("otra-vez", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 20000, 0, "ORDER", mesa))
+
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER falla_marca")
+        libreta.openAttempt("otra", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}")
+
+        assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
+        assertEquals("la mesa queda cercada en la base", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
+        assertFalse(libreta.tieneEvidenciaSinGuardar("a1"))
+    }
 }

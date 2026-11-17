@@ -514,8 +514,11 @@ class PaymentAttemptLedger(
                         val marcada = fila.kind == PaymentAttemptEntity.KIND_SALE && try {
                             withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) } == 1
                         } catch (error: Exception) {
-                            Timber.e(error, "📒 [Libreta] no se pudo marcar el dinero en la fila descartada | attemptId=%s", attemptId)
-                            return@withLock false
+                            // Codex r5 #1: es la MISMA marca que la evidencia del servidor sin escribir: se le entrega a ese
+                            // mecanismo, que la reintenta en LA PUERTA y no deja reservar mientras falte.
+                            Timber.e(error, "📒 [Libreta] no se pudo marcar el dinero en la fila descartada: queda como evidencia sin escribir | attemptId=%s", attemptId)
+                            evidenciaSinGuardar[attemptId] = fila.venueId
+                            false
                         }
                         aprobacionSinGuardar.remove(attemptId)
                         marcada
@@ -951,6 +954,9 @@ class PaymentAttemptLedger(
      * anota aquí intentos cuyo `CompleteEmvTrans` ya regresó.
      */
     private suspend fun soltarChipRechazoEscrito(attemptId: String) {
+        // D13 (Codex r5 #2): la duda escrita (o la evidencia del servidor) sustituye a la aprobación que faltaba guardar, también
+        // cuando la escribe la puerta de OTRO cobro; si no, la pantalla seguía leyendo «hay dinero» y escondía la salida de D5.
+        soltarAprobacion(attemptId)
         if (!chipRechazoSinEscribir.remove(attemptId)) return
         marcarSdkRegreso(attemptId)
     }

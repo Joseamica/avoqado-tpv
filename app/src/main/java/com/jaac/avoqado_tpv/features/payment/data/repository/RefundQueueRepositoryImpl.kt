@@ -98,7 +98,12 @@ class RefundQueueRepositoryImpl @Inject constructor(
                 tipRefundCents = refund.tipRefundCents,
                 processor = if (refund.processor == ProcessorType.ANGELPAY) "angelpay" else null,
             )
-        }.getOrElse { Result.failure(it) }
+        }.getOrElse {
+            // D15: un worker detenido no es un intento fallido. Tragarse la cancelación hacía que `syncRefund` llamara
+            // `release(retry + 1)`, y Room 2.7 escribe aunque quien llama ya esté cancelado: contaba un intento por parpadeo.
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            Result.failure(it)
+        }
 
         return resultado.fold(
             onSuccess = { SyncOutcome.Synced },

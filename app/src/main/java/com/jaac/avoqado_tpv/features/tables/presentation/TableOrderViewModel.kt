@@ -507,7 +507,7 @@ class TableOrderViewModel @Inject constructor(
                     // apagón. Avisar aquí hacía que el mesero viera "no se
                     // pudo cargar la cuenta" cada vez que entraba a una mesa
                     // con la cuenta perfectamente bien.
-                    if (!isNetworkError(e)) {
+                    if (!esFallaDeRedEnMesas(e)) {
                         _error.value = "No se pudo actualizar la cuenta"
                     }
                     // Ver KDoc de [checkLoadFailed]: SOLO si esta es la
@@ -561,12 +561,6 @@ class TableOrderViewModel @Inject constructor(
             relecturaDeLaMesa = null
             loadCheck()
         }
-    }
-
-    private fun isNetworkError(e: Throwable): Boolean = when (e) {
-        is IOException -> true
-        is BackendHttpException -> e.statusCode in setOf(502, 503, 504, 408, 429)
-        else -> false
     }
 
     /**
@@ -1346,3 +1340,10 @@ fun OrderDetail.roundsSentToKitchen(): List<KitchenRound> = items
     .groupBy { it.sentToKitchenAt }
     .map { (sentAt, lines) -> KitchenRound(sentAt, lines) }
     .sortedWith(compareByDescending { it.sentAt ?: "" })
+
+/** ¿El fallo es de la red (sin conexión, servidor caído o saturado) y no un rechazo del SERVIDOR? Lo usan la cuenta y el cobro de Mesas. */
+internal fun esFallaDeRedEnMesas(e: Throwable): Boolean = when (e) {
+    is IOException -> true
+    is BackendHttpException -> e.statusCode in setOf(502, 503, 504, 408, 429)
+    else -> false
+}

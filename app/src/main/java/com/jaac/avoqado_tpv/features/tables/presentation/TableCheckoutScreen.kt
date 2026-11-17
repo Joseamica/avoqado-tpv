@@ -129,6 +129,7 @@ fun TableCheckoutScreen(
     // Fase 1 (2026-08-03) — APPLY_DISCOUNT.
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
     val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
+    val discountsLoadError by viewModel.discountsLoadError.collectAsStateWithLifecycle()
     val isApplyingDiscount by viewModel.isApplyingDiscount.collectAsStateWithLifecycle()
     // Paridad Android 2026-08-06 (`paridad-android-tpv.md`, Hallazgo #4) —
     // "quitar descuento aplicado", SIEMPRE online (ver KDoc de
@@ -146,6 +147,7 @@ fun TableCheckoutScreen(
     // Fase 3 (2026-08-03) — APPLY_SERVICE_CHARGE.
     val availableServiceCharges by viewModel.availableServiceCharges.collectAsStateWithLifecycle()
     val isLoadingServiceCharges by viewModel.isLoadingServiceCharges.collectAsStateWithLifecycle()
+    val serviceChargesLoadError by viewModel.serviceChargesLoadError.collectAsStateWithLifecycle()
     val isApplyingServiceCharge by viewModel.isApplyingServiceCharge.collectAsStateWithLifecycle()
     // Paridad Android 2026-08-06 (`paridad-android-tpv.md`, Hallazgo #4) —
     // "quitar cargo por servicio aplicado", SIEMPRE online (ver KDoc de
@@ -285,6 +287,7 @@ fun TableCheckoutScreen(
         DiscountPickerSheet(
             discounts = availableDiscounts,
             isLoading = isLoadingDiscounts,
+            loadError = discountsLoadError,
             isApplying = isApplyingDiscount,
             onDismiss = { if (!isApplyingDiscount) showDiscountSheet = false },
             onSelect = { discountId ->
@@ -298,6 +301,7 @@ fun TableCheckoutScreen(
         ServiceChargePickerSheet(
             charges = availableServiceCharges,
             isLoading = isLoadingServiceCharges,
+            loadError = serviceChargesLoadError,
             isApplying = isApplyingServiceCharge,
             onDismiss = { if (!isApplyingServiceCharge) showServiceChargeSheet = false },
             onSelect = { serviceChargeId ->

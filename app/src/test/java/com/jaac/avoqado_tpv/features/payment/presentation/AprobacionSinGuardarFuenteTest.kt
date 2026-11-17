@@ -132,4 +132,12 @@ class AprobacionSinGuardarFuenteTest {
         assertTrue("el aviso del kiosco no va en ámbar (Codex r10)",
             entre(aprobado, "aviso?.let {", "\n            }\n", "PaymentApprovedScreen").contains("avoqadoColors.statusWarning.copy(alpha = 0.12f)"))
     }
+
+    @Test
+    fun `P2 Codex r14 la cola que guarda el cobro suelta la aprobacion aunque la fila no avance`() {
+        for ((nombre, archivo) in variantes) {
+            val cola = entre(fuente(archivo), "internal suspend fun handleOfflineQueueOutcome(", "}.onFailure { queueError ->", nombre)
+            assertTrue("[$nombre] la cola no avisa a la libreta", cola.contains("paymentAttemptLedger.cobroGuardadoEnLaCola(attemptIdForLedger)"))
+        }
+    }
 }

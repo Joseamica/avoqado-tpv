@@ -1053,6 +1053,17 @@ class PaymentViewModel @Inject constructor(
      * D13 (Codex r2 #3): el PRIMER «Aprobado» ya sale con el aviso si la libreta no pudo guardar la aprobación — nunca la
      * celebración limpia mientras se espera a AUTORIZADO.
      */
+    /**
+     * D13 (Codex r3 #2): mientras se registra, la puerta o la recuperación pueden dejar la aprobación a salvo; entonces el aviso
+     * de «no se pudo guardar» ya no es cierto y se quita. Sólo el de ESTE cobro, y sólo el de D13 (nunca el de la cola ni otro).
+     */
+    private fun vigilarAprobacionSinGuardar(attemptId: String) {
+        viewModelScope.launch {
+            while (isActive && paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptId)) delay(1_000)
+            if (sessionSnapshot.paymentAttemptId == attemptId) clearApprovalNotSavedState(_state.value)?.let { _state.value = it }
+        }
+    }
+
     private fun exitoConAvisoDeLaLibreta(exito: PaymentState.Success, referencia: String?): PaymentState.Success =
         if (sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true)
             buildApprovalNotSavedState(exito, referencia.orEmpty()) ?: exito
@@ -8518,6 +8529,7 @@ class PaymentViewModel @Inject constructor(
                     // cambia lo de siempre: el recibo registrado, la cola o la alarma de «no quedó registrado».
                     if (paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptIdForLedger)) {
                         buildApprovalNotSavedState(_state.value, referenceNumber)?.let { _state.value = it }
+                        vigilarAprobacionSinGuardar(attemptIdForLedger)
                     } else {
                         // AUTORIZADO la selló: el aviso del primer «Aprobado» ya no es cierto.
                         clearApprovalNotSavedState(_state.value)?.let { _state.value = it }

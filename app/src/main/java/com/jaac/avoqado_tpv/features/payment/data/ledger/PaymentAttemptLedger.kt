@@ -469,73 +469,91 @@ class PaymentAttemptLedger(
      * La aprobación es dinero: aterriza siempre; si no se puede escribir, se recuerda. Codex r1 #1 (D13): la memoria se anota ANTES
      * de escribir y todo va bajo [candadoDeEvidencia], dentro de NonCancellable: ninguna salida «no se cobró» (una liberación del
      * servidor en vuelo) puede colarse entre la escritura fallida y la memoria y cerrar la fila como DESCARTADA.
+     * Devuelve si ESTA llamada escribió (contrato de siempre: una aprobación tardía sobre una fila que ya la tenía da false y no
+     * la toca). Que la aprobación siga pendiente lo dice [aprobacionPendienteDeGuardar].
      */
     private suspend fun aprobacionDelHost(attemptId: String, a: AprobacionDelHost): Boolean = withContext(NonCancellable) {
         candadoDeEvidencia.withLock {
             aprobacionSinGuardar[attemptId] = a
-            escribirAprobacionBajoCandado(attemptId, reintento = false)
+            escribirAprobacionBajoCandado(attemptId, reintento = false) == AprobacionGuardada.ESCRITA
         }
     }
 
+    /** D13: lo que pasó al intentar dejar a salvo una aprobación pendiente. Todo menos [PENDIENTE] la suelta de la memoria. */
+    private enum class AprobacionGuardada {
+        /** Esta llamada la escribió (respuesta del host, sello de `host_approved` o marca de dinero en una DESCARTADA). */
+        ESCRITA,
+        /** La fila ya la tenía, o ya es del servidor (REGISTRADO/CERRADA), o la duda de D5 la sustituye: nada que escribir. */
+        YA_A_SALVO,
+        /** La fila está en un estado donde la libreta no puede cercar ese dinero (p. ej. una devolución cerrada): se reporta. */
+        NO_APLICA,
+        /** La base no pudo (o la duda de D5 sigue sin escribirse): se queda en la memoria y se reintenta. */
+        PENDIENTE,
+    }
+
     /**
-     * Vuelve a escribir la aprobación pendiente de [attemptId] y la suelta si ya quedó a salvo. Devuelve si quedó a salvo (o si no
-     * había nada pendiente). Se llama SÓLO con [candadoDeEvidencia] tomado. Nunca lanza.
+     * Vuelve a escribir la aprobación pendiente de [attemptId] y la suelta si ya quedó a salvo. Se llama SÓLO con
+     * [candadoDeEvidencia] tomado. Nunca lanza.
      *
      * «A salvo» = la fila dice que el banco aprobó (`host_approved = 1`), o ya está en un estado que cerca la venta o que es del
      * servidor o de la cola (AUTORIZADO, REGISTRO_FALLIDO, ENTREGADA_A_COLA — a éstos se les sella `host_approved` sin cambiar
-     * el estado —, REGISTRADO, CERRADA). Una fila en duda porque el chip rechazó el cierre (D5) se queda en duda: esa duda ya es la
-     * verdad y cerca la venta. Otro estado (p. ej. DESCARTADA) no es un fallo de escritura: se reporta y NO traba la terminal.
+     * el estado —, REGISTRADO, CERRADA). La duda de D5 (el chip rechazó el cierre) va PRIMERO y gana: con ella sin escribir no se
+     * escribe la aprobación (Codex r3 #1: dejaba una venta que pudo revertirse lista para registrarse sola como cobrada).
      */
-    private suspend fun escribirAprobacionBajoCandado(attemptId: String, reintento: Boolean = true): Boolean {
-        val a = aprobacionSinGuardar[attemptId] ?: return true
-        return try {
+    private suspend fun escribirAprobacionBajoCandado(attemptId: String, reintento: Boolean = true): AprobacionGuardada {
+        val a = aprobacionSinGuardar[attemptId] ?: return AprobacionGuardada.YA_A_SALVO
+        val desenlace = try {
             withContext(NonCancellable + Dispatchers.IO) {
                 // El primer intento es la misma escritura de siempre (una sola sentencia con la base sana). Un REINTENTO lee
                 // primero: la fila pudo avanzar o quedar en la duda de D5 mientras tanto, y el CAS del host también acepta
                 // INDETERMINADO (Codex r1 #2: reescribirla deshacía esa duda).
-                if (!reintento && escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)) {
-                    aprobacionSinGuardar.remove(attemptId)
-                    return@withContext true
+                if (!reintento && escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true))
+                    return@withContext AprobacionGuardada.ESCRITA
+                if (attemptId in chipRechazoSinEscribir) {
+                    when (escribirChipRechazoBajoCandado(attemptId)) {
+                        ChipRechazo.SIN_ESCRIBIR -> return@withContext AprobacionGuardada.PENDIENTE
+                        ChipRechazo.EN_DUDA -> { soltarChipRechazoEscrito(attemptId); return@withContext AprobacionGuardada.YA_A_SALVO }
+                        ChipRechazo.HAY_EVIDENCIA -> soltarChipRechazoEscrito(attemptId) // el servidor tiene el cobro: se guarda la aprobación
+                    }
                 }
                 val fila = dao.getById(attemptId)
-                val aSalvo = when {
+                when {
                     fila == null -> {
                         Timber.e("🚨 [Libreta] el banco aprobó un intento SIN fila en la libreta | attemptId=%s", attemptId)
-                        true
+                        AprobacionGuardada.NO_APLICA
                     }
-                    fila.hostApproved == true -> true
+                    fila.hostApproved == true -> AprobacionGuardada.YA_A_SALVO
                     fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
-                        fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION -> true
+                        fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION -> AprobacionGuardada.YA_A_SALVO
                     fila.state in ESPERANDO_AL_BANCO ->
-                        escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)
-                    fila.state in YA_CON_EL_DINERO -> {
-                        dao.sellarAprobacionDelHost(attemptId, a.operationId, a.referenceNumber, a.authCode, System.currentTimeMillis())
-                        true
-                    }
-                    fila.state == PaymentAttemptEntity.STATE_REGISTRADO || fila.state == PaymentAttemptEntity.STATE_CERRADA -> true
+                        if (escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true))
+                            AprobacionGuardada.ESCRITA else AprobacionGuardada.PENDIENTE
+                    fila.state in YA_CON_EL_DINERO ->
+                        if (dao.sellarAprobacionDelHost(attemptId, a.operationId, a.referenceNumber, a.authCode, System.currentTimeMillis()) == 1)
+                            AprobacionGuardada.ESCRITA else AprobacionGuardada.YA_A_SALVO
+                    fila.state == PaymentAttemptEntity.STATE_REGISTRADO || fila.state == PaymentAttemptEntity.STATE_CERRADA -> AprobacionGuardada.YA_A_SALVO
                     // Codex r2 #1: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación ganó) y DESPUÉS llega la
                     // aprobación (p. ej. el historial de AngelPay la confirma). Es dinero: se deja la marca de cobro aprobado en la fila
                     // (la misma que la cerca de la venta y los vetos ya leen en una DESCARTADA), sin reabrirla.
                     fila.state == PaymentAttemptEntity.STATE_DESCARTADA && fila.kind == PaymentAttemptEntity.KIND_SALE -> {
                         Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró»: queda marcado con dinero | attemptId=%s", attemptId)
-                        dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) == 1
+                        if (dao.marcarEvidenciaPositivaDelServidor(attemptId, fila.venueId, System.currentTimeMillis()) == 1)
+                            AprobacionGuardada.ESCRITA else AprobacionGuardada.PENDIENTE
                     }
                     else -> {
-                        // Ni fallo de escritura ni dinero que la libreta pueda cercar (p. ej. una devolución ya cerrada): se reporta, se
-                        // suelta (no traba la terminal) y se contesta la verdad, que no quedó.
+                        // Ni fallo de escritura ni dinero que la libreta pueda cercar: se reporta y se suelta (no traba la terminal).
                         Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta tiene en %s: no se pudo guardar | attemptId=%s", fila.state, attemptId)
-                        aprobacionSinGuardar.remove(attemptId)
-                        false
+                        AprobacionGuardada.NO_APLICA
                     }
                 }
-                if (aSalvo && aprobacionSinGuardar.remove(attemptId) != null && reintento)
-                    Timber.w("📒 [Libreta] la aprobación del banco que no se había podido guardar ya quedó a salvo | attemptId=%s", attemptId)
-                aSalvo
             }
         } catch (error: Exception) {
             Timber.e(error, "📒 [Libreta] la aprobación del banco sigue SIN guardar — se reintenta en la siguiente decisión | attemptId=%s", attemptId)
-            false
+            AprobacionGuardada.PENDIENTE
         }
+        if (desenlace != AprobacionGuardada.PENDIENTE && aprobacionSinGuardar.remove(attemptId) != null && reintento)
+            Timber.w("📒 [Libreta] la aprobación del banco que no se había podido guardar quedó resuelta (%s) | attemptId=%s", desenlace, attemptId)
+        return desenlace
     }
 
     /** Tras una transición de [attemptId] que sí se escribió (AUTORIZADO, REGISTRO_FALLIDO, REGISTRADO, cola): suelta lo pendiente. */

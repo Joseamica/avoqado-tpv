@@ -187,7 +187,8 @@ class AprobacionSinGuardarRoomTest {
         cobrandoCincuentaDeLaMesa(libreta)
         assertTrue(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
 
-        assertTrue("ya estaba escrita: quedó", libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        // Contrato de siempre: esta llamada no escribió nada (la fila ya la tenía) ⇒ false, y nada queda pendiente.
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
     }
 
@@ -250,5 +251,26 @@ class AprobacionSinGuardarRoomTest {
         assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, fila.serverProcessorEvidence)
         assertEquals("la mesa queda cercada", "a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+    }
+
+    @Test fun `P1 Codex r3-1 con la aprobacion y la duda del chip sin escribir la recuperacion escribe primero la duda`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        fallaTodo()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        assertEquals(PaymentAttemptLedger.ChipRechazo.SIN_ESCRIBIR, libreta.markChipRechazoTrasAprobacion("a1"))
+        vuelveLaBase()
+
+        // La pasada de la recuperación (no la puerta) es la primera en ver la base sana.
+        assertEquals(0, libreta.reintentarEvidenciaSinGuardar())
+
+        val fila = dao.getById("a1")!!
+        assertEquals("gana la duda: el chip rechazó el cierre", PaymentAttemptEntity.STATE_INDETERMINADO, fila.state)
+        assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, fila.lastError)
+        assertNull("nunca «el banco aprobó = dinero» sobre la duda", fila.hostApproved)
+        assertTrue("la recuperación no la registra sola como cobrada",
+            dao.getApprovalRecoveryCandidates(venue, Long.MAX_VALUE, System.currentTimeMillis()).isEmpty())
+        assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+        assertFalse(libreta.chipRechazoPendienteDeEscribir("a1"))
     }
 }

@@ -18,6 +18,8 @@ class AprobacionSinGuardarFuenteTest {
         "production" to File("src/production/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentViewModel.kt"),
     )
 
+    private fun fuente(archivo: File): String = archivo.readText()
+
     private fun entre(fuente: String, desde: String, hasta: String, nombre: String): String {
         val inicio = fuente.indexOf(desde)
         assertTrue("[$nombre] no se encontró «$desde»", inicio >= 0)
@@ -62,6 +64,15 @@ class AprobacionSinGuardarFuenteTest {
         for ((nombre, archivo) in variantes) {
             val veces = archivo.readText().split("_state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(").size - 1
             assertEquals("[$nombre] el éxito del chip y el del contactless no pasan por la libreta", 2, veces)
+            // Codex r3 #4: que la función de verdad pregunte a la libreta y ponga el aviso (no sólo que se llame).
+            val cuerpo = entre(fuente(archivo), "private fun exitoConAvisoDeLaLibreta(", "\n\n", nombre)
+            assertTrue("[$nombre] exitoConAvisoDeLaLibreta no pregunta a la libreta",
+                cuerpo.contains("paymentAttemptLedger::aprobacionPendienteDeGuardar"))
+            assertTrue("[$nombre] exitoConAvisoDeLaLibreta no pone el aviso", cuerpo.contains("buildApprovalNotSavedState(exito"))
+            // Y el vigilante quita el aviso si la aprobación se guarda mientras se registra (Codex r3 #2).
+            val tramo = entre(fuente(archivo), "// 📒 [Libreta] Money moved", "recordPaymentUseCase(", nombre)
+            assertTrue("[$nombre] sin vigilante del aviso", tramo.contains("vigilarAprobacionSinGuardar(attemptIdForLedger)"))
+            assertTrue("[$nombre] AUTORIZADO no limpia el aviso", tramo.contains("clearApprovalNotSavedState(_state.value)"))
         }
     }
 

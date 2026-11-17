@@ -66,4 +66,16 @@ class AprobacionSinGuardarNoEsExitoLimpioTest {
                 resto.contains("pendingSyncMessage = null") && resto.contains("recordingLostMessage = null"))
         }
     }
+
+    @Test
+    fun `No se pudo imprimir guarda el exito vigente y no la copia de antes de esperar a la impresora`() {
+        // Codex r2 #2: el registro podía llegar mientras se revisaba la impresora y la copia vieja volvía a pintar el aviso.
+        for ((nombre, archivo) in variantes) {
+            val fuente = archivo.readText()
+            assertFalse("[$nombre] queda un PrintError con la copia capturada antes de esperar",
+                Regex("""previousState = currentState\n""").containsMatchIn(fuente))
+            assertEquals("[$nombre] los 7 PrintError usan el éxito vigente", 7,
+                Regex("""previousState = exitoVigente\(currentState\)""").findAll(fuente).count())
+        }
+    }
 }

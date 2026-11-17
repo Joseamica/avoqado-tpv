@@ -178,6 +178,48 @@ class AprobacionSinGuardarRoomTest {
         assertThat(ledger.tieneEvidenciaSinGuardar("a")).isTrue()
     }
 
+    @Test fun `P1 Codex r2 1 la aprobacion que llega cuando la fila YA dice no se cobro deja la contradiccion en el acto`() = runTest {
+        // La intercalación de Codex r2: una salida negativa tenía el candado y cerró la fila mientras la aprobación esperaba.
+        assertThat(cobroNuevoEntra("a")).isTrue()
+        assertThat(ledger.markAuthorizing("a")).isTrue()
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
+
+        assertWithMessage("el CAS no la deja aterrizar en DESCARTADA")
+            .that(ledger.markHostResponded("a", approved = true, operationId = "op-1", referenceNumber = "ref-1", authCode = "auth-1")).isFalse()
+        val fila = dao.getById("a")!!
+        assertThat(fila.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+        assertThat(fila.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR)
+        assertThat(dao.esContradiccion("a")).isTrue()
+        assertThat(ledger.tieneEvidenciaSinGuardar("a")).isFalse()
+    }
+
+    @Test fun `P1 Codex r2 1 si ese veto no se puede escribir la aprobacion queda en memoria y se veta al volver la base`() = runTest {
+        assertThat(cobroNuevoEntra("a")).isTrue()
+        assertThat(ledger.markAuthorizing("a")).isTrue()
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER veto_roto BEFORE UPDATE OF server_veto ON payment_attempts BEGIN SELECT RAISE(ABORT, 'disco lleno'); END",
+        )
+
+        assertThat(ledger.markHostResponded("a", approved = true, operationId = "op-1", referenceNumber = "ref-1", authCode = "auth-1")).isFalse()
+        assertThat(ledger.aprobacionSigueSinGuardar("a")).isTrue()
+        assertThat(cobroNuevoEntra("b")).isFalse()
+
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER veto_roto")
+        assertThat(ledger.reintentarEvidenciaSinGuardar()).isEqualTo(0)
+        assertThat(dao.getById("a")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR)
+    }
+
+    @Test fun `control una devolucion DESCARTADA que el banco aprueba no recibe veto de venta`() = runTest {
+        assertThat(ledger.openAttempt("r", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 5000, 0, "FAST", """{"amount":50.00}""",
+            kind = PaymentAttemptEntity.KIND_REFUND)).isTrue()
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'r'")
+
+        assertThat(ledger.markHostResponded("r", approved = true, operationId = null, referenceNumber = "ref-r", authCode = null)).isFalse()
+        assertThat(dao.getById("r")!!.serverVeto).isNull()
+        assertThat(ledger.tieneEvidenciaSinGuardar("r")).isFalse()
+    }
+
     @Test fun `control repetir la marca sobre HOST_RESPONDIO no inventa dinero sin escribir`() = runTest {
         assertThat(cobroNuevoEntra("a")).isTrue()
         assertThat(ledger.markAuthorizing("a")).isTrue()

@@ -445,6 +445,7 @@ class PaymentAttemptLedger(
                 runCatching {
                     withContext(Dispatchers.IO) {
                         escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, operationId, referenceNumber, authCode, true)
+                            .also { escrita -> if (!escrita) vetarSiYaDiceQueNoSeCobro(attemptId, System.currentTimeMillis()) }
                     }
                 }.getOrElse {
                     Timber.e(it, "📒 [Libreta] markHostResponded failed — la APROBACIÓN no quedó guardada: queda en memoria y se reintenta | attemptId=%s", attemptId)
@@ -464,6 +465,31 @@ class PaymentAttemptLedger(
             Timber.e(it, "📒 [Libreta] markHostResponded failed — el desenlace NO quedó guardado")
             false
         }
+    }
+
+    /**
+     * 🔴 D13 (Codex r2 #1): la aprobación llegó cuando la fila YA decía «no se cobró» (DESCARTADA): una salida negativa que tenía
+     * el candado la cerró mientras la aprobación esperaba su turno, y el CAS de la aprobación no acepta DESCARTADA (da 0 sin
+     * excepción). Se deja durable como contradicción en ese mismo momento. Si esa escritura FALLA, lanza: quien llama lo recuerda
+     * en memoria y la puerta lo reintenta. Sólo ventas: una devolución tiene su propia cola.
+     */
+    private suspend fun vetarSiYaDiceQueNoSeCobro(attemptId: String, now: Long) {
+        val fila = dao.getById(attemptId) ?: return
+        if (fila.state == PaymentAttemptEntity.STATE_DESCARTADA) {
+            if (!vetarDescartadaAprobada(fila, now)) error("no se pudo dejar el veto de la aprobación sobre DESCARTADA")
+        }
+    }
+
+    /** D13: una VENTA DESCARTADA que el banco aprobó ⇒ veto durable (contradicción, venta cercada). true = ya no queda nada que escribir. */
+    private suspend fun vetarDescartadaAprobada(fila: PaymentAttemptEntity, now: Long): Boolean {
+        if (fila.kind != PaymentAttemptEntity.KIND_SALE || fila.legacyShadow) {
+            // Una devolución tiene su cola; una fila heredada no admite veto (`legacy_shadow = 0` en su UPDATE). Rastro y fuera.
+            Timber.e("📒 [Libreta] el banco aprobó un intento que la libreta dice DESCARTADA (devolución o heredada) | attemptId=%s", fila.attemptId)
+            return true
+        }
+        Timber.e("📒 [Libreta] CONTRADICCIÓN: el banco aprobó y la fila dice DESCARTADA — veto durable | attemptId=%s", fila.attemptId)
+        return fila.serverVeto != null ||
+            dao.marcarVetoDelServidor(fila.attemptId, fila.venueId, PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR, now) == 1
     }
 
     /** D13: lo que el banco contestó a una aprobación cuya escritura falló (para volver a escribirla igual). */
@@ -510,11 +536,7 @@ class PaymentAttemptLedger(
             // Codex r1 #1: el banco aprobó y la fila dice «no se cobró» (DESCARTADA). Ningún CAS deja aterrizar ahí la aprobación;
             // se deja DURABLE como contradicción con un veto (cerca su venta y sale en el aviso, como el VETO_SDK_CONTRADICTION)
             // y sólo entonces se suelta la memoria. Si el veto no se puede escribir, la memoria sigue.
-            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
-                Timber.e("📒 [Libreta] CONTRADICCIÓN: el banco aprobó y la fila dice DESCARTADA — veto durable | attemptId=%s", attemptId)
-                fila.serverVeto != null ||
-                    dao.marcarVetoDelServidor(attemptId, fila.venueId, PaymentAttemptEntity.VETO_APROBACION_SIN_GUARDAR, now) == 1
-            }
+            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> vetarDescartadaAprobada(fila, now)
             // HOST_RESPONDIO / REGISTRADO / ENTREGADA_A_COLA / CERRADA ya cargan el dinero.
             else -> true
         }

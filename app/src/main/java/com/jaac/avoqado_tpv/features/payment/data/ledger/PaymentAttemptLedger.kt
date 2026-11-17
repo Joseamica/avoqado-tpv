@@ -581,13 +581,14 @@ class PaymentAttemptLedger(
         } catch (error: Exception) {
             return true
         }
-        val sigue = fila != null && fila.hostApproved != true && fila.state in ESPERANDO_AL_BANCO &&
+        val sigue = fila != null && fila.hostApproved != true &&
+            (fila.state in ESPERANDO_AL_BANCO || fila.state == PaymentAttemptEntity.STATE_REGISTRO_FALLIDO) && // Codex r13
             !(fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION)
         if (!sigue) soltarAprobacion(attemptId)
         return sigue
     }
 
-    /** Una transición de [attemptId] que SÍ se escribió la deja a salvo (AUTORIZADO, REGISTRO_FALLIDO, REGISTRADO, cola, D5). */
+    /** Una transición de [attemptId] que SÍ se escribió la deja a salvo (AUTORIZADO, REGISTRADO, cola, D5; no REGISTRO_FALLIDO). */
     private fun soltarAprobacion(attemptId: String) {
         aprobacionPorRevisar.remove(attemptId)
         if (aprobacionSinGuardar.remove(attemptId))
@@ -671,7 +672,8 @@ class PaymentAttemptLedger(
                     PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, System.currentTimeMillis(), error?.take(500)
                 )
                 logCas(n, attemptId, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO)
-                if (n == 1) soltarAprobacion(attemptId)
+                // D13 (Codex r13): REGISTRO_FALLIDO NO suelta la aprobación pendiente: sin `host_approved` la recuperación no lo
+                // toma; lo dejan a salvo la cola (ENTREGADA_A_COLA) o el registro.
                 if (n == 1) avisarIncertidumbre(attemptId)
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markRecordFailed failed") }

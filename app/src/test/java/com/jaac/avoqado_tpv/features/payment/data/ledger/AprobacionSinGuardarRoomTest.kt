@@ -117,8 +117,8 @@ class AprobacionSinGuardarRoomTest {
         vuelveLaBase()
     }
 
-    @Test fun `P1 tambien la sueltan el registro fallido, la cola y el registro`() = runTest {
-        for ((paso, ultimo) in listOf("REGISTRO_FALLIDO" to 1, "REGISTRADO" to 2)) {
+    @Test fun `P1 tambien la suelta el registro y la cola`() = runTest {
+        for ((paso, ultimo) in listOf("REGISTRADO" to 2)) {
             val libreta = proceso()
             val id = "a-$paso"
             assertTrue(libreta.openAttempt(id, venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 100, 0, "FAST", "{}"))
@@ -330,5 +330,21 @@ class AprobacionSinGuardarRoomTest {
         assertEquals(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED, dao.getById("a1")?.serverProcessorEvidence)
         assertEquals("a1", libreta.retencionDeLaVenta("mesa-200")?.attemptId)
         assertFalse(libreta.aprobacionPendienteDeGuardar("a1"))
+    }
+
+    @Test fun `P1 Codex r13 un registro fallido sin la marca del banco NO quita el aviso - lo quita la cola`() = runTest {
+        val libreta = proceso()
+        cobrandoCincuentaDeLaMesa(libreta)
+        // El barrido ya la había puesto en duda por reloj (el cobro tardó), y fallan la aprobación y AUTORIZADO.
+        assertEquals(1, dao.quarantineStaleAuthorizing(venue, Long.MAX_VALUE, System.currentTimeMillis()))
+        fallaTodo()
+        assertFalse(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+        libreta.markAuthorized("a1", null, null, null)
+        vuelveLaBase()
+        libreta.markRecordFailed("a1", "sin red")
+
+        assertEquals(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, dao.getById("a1")?.state)
+        assertTrue("sin host_approved la recuperación no lo toma: el aviso sigue", libreta.aprobacionPendienteDeGuardar("a1"))
+        assertTrue(libreta.revisarAprobacionPendiente("a1"))
     }
 }

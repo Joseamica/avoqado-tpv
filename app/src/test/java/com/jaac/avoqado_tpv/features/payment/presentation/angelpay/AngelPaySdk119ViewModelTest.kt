@@ -1089,6 +1089,53 @@ class AngelPaySdk119ViewModelTest {
         }
     }
 
+    /**
+     * D5 (16-nov): el SDK trae en `cardType` el tipo del BIN que le contesta AngelPay («CREDITO»/«DEBITO»). Antes se tiraba y
+     * toda venta de la Nexgo se registraba como CREDIT_CARD: el SERVIDOR calculaba la comisión de crédito también en débito.
+     */
+    private fun TestScope.metodoRegistradoCon(cardType: String?): String {
+        val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+        coEvery { recordPaymentUseCase(any(), capture(tarjetas), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-1", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO),
+        )
+        val (vm, intento) = cobroLanzado()
+        try {
+            vm.onAngelPaySdkResult(
+                delHost(intento, aprobado = true, codigo = AppErrorCatalog.Code.S000, codigoEmisor = "00").copy(cardBin = "411111", cardType = cardType),
+            )
+            runCurrent()
+            coVerify(timeout = 2_000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            return tarjetas.single().toPaymentMethod()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 D5 tarjeta de debito se registra como DEBIT_CARD`() = runTest(testDispatcher) {
+        assertThat(metodoRegistradoCon("DEBITO")).isEqualTo("DEBIT_CARD")
+    }
+
+    @Test
+    fun `P1 D5 tarjeta de debito con acento tambien es DEBIT_CARD`() = runTest(testDispatcher) {
+        assertThat(metodoRegistradoCon("DÉBITO")).isEqualTo("DEBIT_CARD")
+    }
+
+    @Test
+    fun `P1 D5 tarjeta de credito sigue como CREDIT_CARD`() = runTest(testDispatcher) {
+        assertThat(metodoRegistradoCon("CREDITO")).isEqualTo("CREDIT_CARD")
+    }
+
+    @Test
+    fun `P1 D5 sin tipo sigue como hoy - CREDIT_CARD`() = runTest(testDispatcher) {
+        assertThat(metodoRegistradoCon(null)).isEqualTo("CREDIT_CARD")
+    }
+
+    @Test
+    fun `P1 D5 un tipo desconocido sigue como hoy - CREDIT_CARD`() = runTest(testDispatcher) {
+        assertThat(metodoRegistradoCon("PREPAGO")).isEqualTo("CREDIT_CARD")
+    }
+
     @Test
     fun `P1 T2 un respaldo del contrato sin referencia sigue incierto`() = runTest(testDispatcher) {
         val (vm, _) = cobroLanzado(requestId = "req-respaldo")

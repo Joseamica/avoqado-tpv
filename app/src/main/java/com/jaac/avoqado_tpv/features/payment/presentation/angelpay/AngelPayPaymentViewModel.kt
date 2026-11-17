@@ -5123,6 +5123,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         cardBin = result.cardBin,
         // SDK 1.0.21: el país emisor del chip (EMV 5F28). El historial de AngelPay no lo trae: la verificación va sin él.
         issuerCountryCode = result.cardCountryCode,
+        // D5: el tipo del BIN que contesta AngelPay («CREDITO»/«DEBITO»). Sin él toda venta salía CREDIT_CARD.
+        cardType = result.cardType,
     )
 
     /**
@@ -5139,6 +5141,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         reference: String,
         cardBin: String?,
         issuerCountryCode: String? = null,
+        cardType: String? = null,
     ) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
@@ -5163,6 +5166,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             // Sólo evidencia para el clasificador sombra del servidor; `isInternational` no cambia (mismo trato que la PAX).
             issuerCountryCode = paisDelEmisor,
             issuerCountrySource = paisDelEmisor?.let { com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource.EMV_5F28 },
+            // D5: crédito o débito; sin tipo (historial de la verificación) o uno desconocido queda UNKNOWN → CREDIT_CARD como antes.
+            cardNature = com.jaac.avoqado_tpv.features.payment.domain.model.CardNature.fromBlumonType(cardType),
         )
 
         val merchantAccountId = cuentaParaRegistrar()

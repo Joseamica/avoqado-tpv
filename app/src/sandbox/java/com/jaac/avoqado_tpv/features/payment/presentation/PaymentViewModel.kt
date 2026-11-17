@@ -1000,6 +1000,36 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * 🔴 D13 (encargo 5ffa66, 17-nov): el «Aprobado» que se publica en cuanto el banco aprueba (chip y contactless). Si la libreta
+     * NO pudo escribir esa aprobación (disco lleno, error de E/S: `markHostResponded` dio false por un fallo de escritura), el éxito
+     * sale con su aviso ámbar —SÍ se cobró, todavía no quedó guardado, NO vuelvas a cobrar— y nunca limpio: si el proceso muriera
+     * antes de registrarlo, la libreta sólo diría «en duda». La libreta lo reintenta una vez aquí y en cada pasada. El aviso se
+     * quita solo cuando el servidor lo registra (`applyRecordedReceiptToSuccessState`); si lo guarda la cola, su aviso lo
+     * reemplaza; si no lo guarda nadie, sale la alarma de siempre ([buildRecordingLostState]).
+     */
+    @VisibleForTesting
+    internal suspend fun exitoTrasAprobacion(authCode: String?, referenceNumber: String?): PaymentState.Success {
+        val exito = PaymentState.Success(
+            authCode = authCode ?: "",
+            amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
+            tipAmount = getTipForFlow()
+        )
+        val sinGuardar = sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.aprobacionSigueSinGuardar(it) } == true
+        if (!sinGuardar) return exito
+        Timber.e("📒 [Libreta] D13: el banco APROBÓ y la terminal no pudo guardarlo — «Aprobado» con aviso | ref=%s", referenceNumber)
+        return exito.copy(
+            referenceNumber = referenceNumber,
+            pendingSyncMessage = mensajeAprobacionSinGuardar(referenceNumber)
+        )
+    }
+
+    /** D13: el aviso ámbar del cobro aprobado que la terminal todavía no pudo guardar. */
+    internal fun mensajeAprobacionSinGuardar(referenceNumber: String?): String =
+        "El cobro con tarjeta SÍ se hizo, pero esta terminal no pudo guardarlo todavía. Se está registrando en Avoqado: " +
+            "no cierres la app ni apagues la terminal hasta que desaparezca este aviso. NO vuelvas a cobrar." +
+            (referenceNumber?.takeIf { it.isNotBlank() }?.let { " Referencia: $it" } ?: "")
+
+    /**
      * 🔴 D3 (encargo 9308a7): el banco aprobó, pero la sesión se cerró antes de registrar. Se dice tal cual: SÍ se cobró,
      * quedó en este equipo y se registra al volver a entrar. Ámbar como [buildPendingSyncState], nunca rojo: no falló.
      */
@@ -4214,11 +4244,8 @@ class PaymentViewModel @Inject constructor(
                 recordingInFlight = true
 
                 // ✅ FIX: Display total (subtotal + tip) in Success screen
-                _state.value = PaymentState.Success(
-                    authCode = saleData.authorization ?: "",
-                    amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
-                    tipAmount = getTipForFlow()
-                )
+                // 🔴 D13: si la libreta no pudo escribir la aprobación, el «Aprobado» sale con su aviso, nunca limpio.
+                _state.value = exitoTrasAprobacion(saleData.authorization, saleData.reference)
 
                 // ⭐ NEW: Record payment to backend (in background)
                 handlePaymentSuccess(
@@ -6482,11 +6509,8 @@ class PaymentViewModel @Inject constructor(
             recordingInFlight = true
 
             // ✅ FIX: Display total (subtotal + tip)
-            _state.value = PaymentState.Success(
-                authCode = saleData.authorization ?: "",
-                amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
-                tipAmount = getTipForFlow()
-            )
+            // 🔴 D13: si la libreta no pudo escribir la aprobación, el «Aprobado» sale con su aviso, nunca limpio.
+            _state.value = exitoTrasAprobacion(saleData.authorization, saleData.reference)
 
             // ⭐ NEW: Record payment to backend (in background)
             handlePaymentSuccess(
@@ -8393,7 +8417,10 @@ class PaymentViewModel @Inject constructor(
                                 com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.MARGEN_MS
                         )
                     }
-                    buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
+                    // 🔴 D13: si además la libreta no pudo guardar nada, «quedó guardado en este equipo» sería falso: alarma.
+                    val nadaGuardado = attemptIdDelCobro?.let { paymentAttemptLedger.aprobacionSigueSinGuardar(it) } == true
+                    (if (nadaGuardado) buildRecordingLostState(_state.value, referenceNumber)
+                    else buildPendingLoginState(_state.value, referenceNumber))?.let { _state.value = it }
                     return@launch
                 }
 

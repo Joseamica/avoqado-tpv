@@ -484,6 +484,21 @@ interface PaymentAttemptDao {
         operationId: String?, referenceNumber: String?, authCode: String?, hostApproved: Boolean
     ): Int
 
+    /**
+     * 🔴 D13 (encargo 5ffa66): la marca «el banco aprobó» que no se pudo escribir al contestar el banco, puesta DESPUÉS sobre una
+     * fila que ya avanzó (AUTORIZADO o REGISTRO_FALLIDO sin la marca). No cambia el estado ni la versión: sólo agrega el dato que
+     * le faltaba, para que un registro fallido siga siendo candidato de la recuperación. Los ids que ya tenga no se pisan.
+     */
+    @Query(
+        """UPDATE payment_attempts
+           SET host_approved = 1,
+               operation_id = COALESCE(operation_id, :operationId),
+               reference_number = COALESCE(reference_number, :referenceNumber),
+               auth_code = COALESCE(auth_code, :authCode)
+           WHERE attempt_id = :attemptId AND state IN ('AUTORIZADO','REGISTRO_FALLIDO') AND host_approved IS NOT 1"""
+    )
+    suspend fun fijarAprobacionDelHost(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?): Int
+
     /** CAS + card details (available at record time). */
     @Query(
         """UPDATE payment_attempts

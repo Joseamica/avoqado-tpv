@@ -2101,6 +2101,49 @@ class PaymentViewModelTest {
     }
 
     @Test
+    fun `D13 con la aprobacion sin guardar en la libreta el exito sale con aviso, nunca Aprobado limpio`() = runTest {
+        // D13 (encargo 5ffa66): markHostResponded falló al escribir; la libreta lo sigue teniendo sólo en memoria.
+        val viewModel = createViewModel()
+        try {
+            PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+                viewModel, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "a-13")
+            )
+            coEvery { mockPaymentAttemptLedger.aprobacionSigueSinGuardar("a-13", any()) } returns true
+
+            val exito = viewModel.exitoTrasAprobacion("F628CL", "873257481453")
+
+            assertThat(exito.authCode).isEqualTo("F628CL")
+            assertThat(exito.pendingSyncMessage).isNotNull()
+            assertThat(exito.pendingSyncMessage).contains("SÍ se hizo")
+            assertThat(exito.pendingSyncMessage).contains("no pudo guardarlo")
+            assertThat(exito.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            assertThat(exito.pendingSyncMessage).contains("873257481453")
+            assertThat(exito.referenceNumber).isEqualTo("873257481453")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D13 control con la aprobacion escrita el exito sale limpio como siempre`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+                viewModel, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "a-13")
+            )
+            coEvery { mockPaymentAttemptLedger.aprobacionSigueSinGuardar("a-13", any()) } returns false
+
+            val exito = viewModel.exitoTrasAprobacion("F628CL", "873257481453")
+
+            assertThat(exito.authCode).isEqualTo("F628CL")
+            assertThat(exito.pendingSyncMessage).isNull()
+            assertThat(exito.recordingLostMessage).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `buildPendingLoginState dice que SI se cobro, que se registra al volver a entrar y que no se vuelva a cobrar`() = runTest {
         // D3 (encargo 9308a7): el banco aprobó y la sesión se cerró antes de registrar.
         val viewModel = createViewModel()

@@ -1089,6 +1089,17 @@ class TableCheckoutViewModel @Inject constructor(
     val isApplyingDiscount: StateFlow<Boolean> = _isApplyingDiscount.asStateFlow()
 
     /**
+     * D2 (17-nov): por qué la ÚLTIMA carga del catálogo falló, para que [DiscountPickerSheet] no diga «No hay descuentos» cuando
+     * en realidad no se pudo preguntar. `null` = la última carga salió bien (o todavía no hay). El «sin conexión» sale de ESA
+     * petición ([esFallaDeRedEnMesas]), nunca de una bandera de red.
+     */
+    private val _discountsLoadError = MutableStateFlow<String?>(null)
+    val discountsLoadError: StateFlow<String?> = _discountsLoadError.asStateFlow()
+
+    /** D2 (Codex r1): número de la carga vigente; sólo ella escribe lista, aviso y «cargando» (abrir, cerrar y reabrir deja dos en vuelo). */
+    private var cargaDeDescuentos = 0L
+
+    /**
      * Catálogo del venue — lectura ONLINE pura, sin equivalente offline (no
      * hay forma de saber qué descuentos aplican sin preguntarle al server).
      * Solo alcanzable con el cheque ya cargado (`state.isProvisional` en
@@ -1099,17 +1110,26 @@ class TableCheckoutViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         if (session.isProvisional) return
+        val miCarga = ++cargaDeDescuentos
         viewModelScope.launch {
             _isLoadingDiscounts.value = true
             repository.getAvailableDiscounts(vId, session.orderId).fold(
                 onSuccess = { discounts ->
+                    if (miCarga != cargaDeDescuentos) return@fold
                     _availableDiscounts.value = discounts
+                    _discountsLoadError.value = null
                     _isLoadingDiscounts.value = false
                 },
                 onFailure = { e ->
-                    _isLoadingDiscounts.value = false
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(errorMessage = "No se pudieron cargar los descuentos disponibles") }
+                    if (miCarga != cargaDeDescuentos) return@fold
+                    _isLoadingDiscounts.value = false
+                    // Antes iba a `errorMessage`, que con la cuenta ya cargada no se pinta: sólo quedaba el «No hay» de la hoja.
+                    _discountsLoadError.value = if (esFallaDeRedEnMesas(e)) {
+                        "Sin conexión: la lista de descuentos necesita internet."
+                    } else {
+                        "No se pudieron cargar los descuentos. Cierra y vuelve a intentar."
+                    }
                 },
             )
         }
@@ -1221,6 +1241,13 @@ class TableCheckoutViewModel @Inject constructor(
     private val _isApplyingServiceCharge = MutableStateFlow(false)
     val isApplyingServiceCharge: StateFlow<Boolean> = _isApplyingServiceCharge.asStateFlow()
 
+    /** D2: igual que [discountsLoadError], para [ServiceChargePickerSheet] («Este venue no tiene cargos…» sólo si de verdad no hay). */
+    private val _serviceChargesLoadError = MutableStateFlow<String?>(null)
+    val serviceChargesLoadError: StateFlow<String?> = _serviceChargesLoadError.asStateFlow()
+
+    /** D2 (Codex r1): como [cargaDeDescuentos], para los cargos por servicio. */
+    private var cargaDeCargos = 0L
+
     /**
      * Catálogo del venue — lectura ONLINE pura (ver KDoc de
      * [TablesRepository.getAvailableServiceCharges]). Mismo guard que
@@ -1230,17 +1257,25 @@ class TableCheckoutViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         if (session.isProvisional) return
+        val miCarga = ++cargaDeCargos
         viewModelScope.launch {
             _isLoadingServiceCharges.value = true
             repository.getAvailableServiceCharges(vId).fold(
                 onSuccess = { charges ->
+                    if (miCarga != cargaDeCargos) return@fold
                     _availableServiceCharges.value = charges
+                    _serviceChargesLoadError.value = null
                     _isLoadingServiceCharges.value = false
                 },
                 onFailure = { e ->
-                    _isLoadingServiceCharges.value = false
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(errorMessage = "No se pudieron cargar los cargos por servicio disponibles") }
+                    if (miCarga != cargaDeCargos) return@fold
+                    _isLoadingServiceCharges.value = false
+                    _serviceChargesLoadError.value = if (esFallaDeRedEnMesas(e)) {
+                        "Sin conexión: la lista de cargos por servicio necesita internet."
+                    } else {
+                        "No se pudieron cargar los cargos por servicio. Cierra y vuelve a intentar."
+                    }
                 },
             )
         }

@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### **Fixed**
+- **Mesas · sin red, las hojas de descuentos y de cargos por servicio dicen «Sin conexión» en vez de «no hay» (D2, tarjeta hz:6884f503:D2; visto en la N86 el 17-nov)**: en «Cobrar» de una mesa, si la lista no se pudo traer, la hoja decía «No hay descuentos disponibles para esta cuenta» o «Este venue no tiene cargos por servicio configurados». El fallo iba a un aviso que con la cuenta abierta no se pinta. Ahora dice «Sin conexión: la lista de … necesita internet» (falla de red, la misma regla de la cuenta de Mesas) o «No se pudieron cargar …» (rechazo del SERVIDOR); con una lista que de verdad llega vacía sigue diciendo «no hay». Una carga vieja (abrir, cerrar y reabrir la hoja) ya no pisa a la vigente (Codex r1). Aplicar un descuento o cargo sigue igual.
 - **PAX y Nexgo · un cobro con tarjeta en duda ya no se queda sin salida cuando el aviso verde se quita a los 10 min (D20, tarjeta hz:033d44ca:D20; founder 17-nov: «lista»)**: arriba de «Historial de Pagos» sale el recuadro «Por revisar» con los cobros sin confirmar que nadie resolvió, aunque sean de horas o días, con el mismo «No se cobró» del aviso (permiso, PIN de gerente, «primero consulta a Avoqado»). El aviso del Inicio se sigue quitando a los 10 min (decisión del 24/25-sep). El texto no promete que Avoqado lo vea (D22) y, con más de 50, «Ver anteriores» trae los siguientes 50. El cierre de caja bloqueado manda a Pagos › «Por revisar» («si no aparece ahí, llama a soporte»), sin decir «cobro» ni «venta» porque también puede ser una devolución.
 
 ---

@@ -2059,6 +2059,47 @@ class PaymentViewModelTest {
         }
     }
 
+    // 🔴 D13 (encargo ff3278): el banco aprobó y la libreta no pudo guardarlo. Nunca un «Aprobado» limpio.
+
+    @Test
+    fun `P1 D13 buildApprovalNotSavedState dice que SI se cobro, que no quedo guardado y que no se vuelva a cobrar`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val exito = PaymentState.Success(authCode = "AUTH50", amount = "50.00", tipAmount = "0", orderId = "mesa-200")
+
+            val aviso = viewModel.buildApprovalNotSavedState(exito, "REF-50")
+
+            assertThat(aviso).isNotNull()
+            assertThat(aviso!!.pendingSyncMessage).contains("SÍ se hizo")
+            assertThat(aviso.pendingSyncMessage).contains("no pudo guardarlo")
+            assertThat(aviso.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            assertThat(aviso.pendingSyncMessage).contains("REF-50")
+            assertThat(aviso.referenceNumber).isEqualTo("REF-50")
+            com.google.common.truth.Truth.assertWithMessage("ámbar, no la alarma roja: el registro sigue en curso").that(aviso.recordingLostMessage).isNull()
+            assertThat(aviso.amount).isEqualTo("50.00")
+            assertThat(aviso.orderId).isEqualTo("mesa-200")
+            assertThat(viewModel.buildApprovalNotSavedState(PaymentState.Idle, "REF-50")).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 D13 el aviso se va como los demas - el recibo lo quita, la cola lo cambia y la alarma lo reemplaza`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val aviso = viewModel.buildApprovalNotSavedState(PaymentState.Success(authCode = "A", amount = "50.00"), "REF-50")!!
+
+            val encolado = viewModel.buildPendingSyncState(aviso, "REF-50")!!
+            assertThat(encolado.pendingSyncMessage).contains("quedó en cola")
+            val perdido = viewModel.buildRecordingLostState(aviso, "REF-50")!!
+            com.google.common.truth.Truth.assertWithMessage("la alarma no convive con «se está registrando»").that(perdido.pendingSyncMessage).isNull()
+            assertThat(perdido.recordingLostMessage).contains("NO vuelvas a cobrar")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // 🟡 buildPendingSyncState — same pure-function shape as buildRecordingLostState above, for
     // the far more common "queue enqueue SUCCEEDED" sibling: the charge went through, backend
     // recording failed, but a queue row exists and will self-heal. This is what

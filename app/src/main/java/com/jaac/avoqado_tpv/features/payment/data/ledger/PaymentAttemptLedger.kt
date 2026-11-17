@@ -129,7 +129,7 @@ class PaymentAttemptLedger(
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.terminalPaymentRequestId == null &&
             fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.hostApproved != true && fila.serverOutcome == null &&
             fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED && fila.serverVeto == null &&
-            !evidenciaSinGuardar.containsKey(fila.attemptId) &&
+            !hayDineroSinEscribir(fila.attemptId) &&
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
 
     /** PAX operator recovery is never offered for a call still alive in this process. */
@@ -434,20 +434,104 @@ class PaymentAttemptLedger(
         authCode: String?
     ): Boolean {
         if (!isEnabled()) return true
+        if (approved) return aprobacionDelHost(attemptId, AprobacionDelHost(operationId, referenceNumber, authCode))
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
-                val to = if (approved) PaymentAttemptEntity.STATE_HOST_RESPONDIO else PaymentAttemptEntity.STATE_DESCARTADA
-                // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia; una
-                // aprobación es dinero y aterriza siempre.
-                if (approved) escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, true)
-                else salidaNegativa(attemptId, "rechazo del host") {
-                    escribirRespuestaDelHost(attemptId, to, operationId, referenceNumber, authCode, false)
+                // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia.
+                salidaNegativa(attemptId, "rechazo del host") {
+                    escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_DESCARTADA, operationId, referenceNumber, authCode, false)
                 }
             }
         }.getOrElse {
             Timber.e(it, "📒 [Libreta] markHostResponded failed — el desenlace NO quedó guardado")
             false
         }
+    }
+
+    /** Lo que dijo el banco al aprobar: lo que hace falta para volver a escribirlo. */
+    private data class AprobacionDelHost(val operationId: String?, val referenceNumber: String?, val authCode: String?)
+
+    /**
+     * 🔴 D13 (encargo ff3278, 17-nov): las aprobaciones del banco que la libreta NO pudo escribir (Room falló: disco lleno, error de
+     * E/S). Antes el `false` de [markHostResponded] se ignoraba: la pantalla decía «Aprobado», y si el proceso moría antes de
+     * AUTORIZADO / registro / cola, la fila quedaba AUTORIZANDO sin `host_approved`, la cuarentena la pasaba a «en duda» sin
+     * dinero conocido y la venta ya no quedaba cercada: la cuenta se podía cobrar otra vez. Aquí se recuerda; la PUERTA la vuelve
+     * a escribir antes de cada decisión de dinero y, mientras no quede escrita, nadie reserva, autoriza ni dice «no se cobró».
+     * ⚠️ Residual declarado (como [evidenciaSinGuardar]): si el proceso muere con la base todavía rota, se pierde; el servidor la
+     * tiene si el registro alcanzó a llegar.
+     */
+    private val aprobacionSinGuardar = java.util.concurrent.ConcurrentHashMap<String, AprobacionDelHost>()
+
+    /** ¿El banco aprobó este intento y la libreta todavía no lo pudo escribir? La pantalla lo lee para no decir «Aprobado» a secas. */
+    fun aprobacionPendienteDeGuardar(attemptId: String): Boolean = aprobacionSinGuardar.containsKey(attemptId)
+
+    /**
+     * La aprobación es dinero: aterriza siempre; si no se puede escribir, se recuerda. Codex r1 #1 (D13): la memoria se anota ANTES
+     * de escribir y todo va bajo [candadoDeEvidencia], dentro de NonCancellable: ninguna salida «no se cobró» (una liberación del
+     * servidor en vuelo) puede colarse entre la escritura fallida y la memoria y cerrar la fila como DESCARTADA.
+     */
+    private suspend fun aprobacionDelHost(attemptId: String, a: AprobacionDelHost): Boolean = withContext(NonCancellable) {
+        candadoDeEvidencia.withLock {
+            aprobacionSinGuardar[attemptId] = a
+            escribirAprobacionBajoCandado(attemptId, reintento = false)
+        }
+    }
+
+    /**
+     * Vuelve a escribir la aprobación pendiente de [attemptId] y la suelta si ya quedó a salvo. Devuelve si quedó a salvo (o si no
+     * había nada pendiente). Se llama SÓLO con [candadoDeEvidencia] tomado. Nunca lanza.
+     *
+     * «A salvo» = la fila dice que el banco aprobó (`host_approved = 1`), o ya está en un estado que cerca la venta o que es del
+     * servidor o de la cola (AUTORIZADO, REGISTRO_FALLIDO, ENTREGADA_A_COLA — a éstos se les sella `host_approved` sin cambiar
+     * el estado —, REGISTRADO, CERRADA). Una fila en duda porque el chip rechazó el cierre (D5) se queda en duda: esa duda ya es la
+     * verdad y cerca la venta. Otro estado (p. ej. DESCARTADA) no es un fallo de escritura: se reporta y NO traba la terminal.
+     */
+    private suspend fun escribirAprobacionBajoCandado(attemptId: String, reintento: Boolean = true): Boolean {
+        val a = aprobacionSinGuardar[attemptId] ?: return true
+        return try {
+            withContext(NonCancellable + Dispatchers.IO) {
+                // El primer intento es la misma escritura de siempre (una sola sentencia con la base sana). Un REINTENTO lee
+                // primero: la fila pudo avanzar o quedar en la duda de D5 mientras tanto, y el CAS del host también acepta
+                // INDETERMINADO (Codex r1 #2: reescribirla deshacía esa duda).
+                if (!reintento && escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)) {
+                    aprobacionSinGuardar.remove(attemptId)
+                    return@withContext true
+                }
+                val fila = dao.getById(attemptId)
+                val aSalvo = when {
+                    fila == null -> {
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento SIN fila en la libreta | attemptId=%s", attemptId)
+                        true
+                    }
+                    fila.hostApproved == true -> true
+                    fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
+                        fila.lastError == PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION -> true
+                    fila.state in ESPERANDO_AL_BANCO ->
+                        escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)
+                    fila.state in YA_CON_EL_DINERO -> {
+                        dao.sellarAprobacionDelHost(attemptId, a.operationId, a.referenceNumber, a.authCode, System.currentTimeMillis())
+                        true
+                    }
+                    fila.state == PaymentAttemptEntity.STATE_REGISTRADO || fila.state == PaymentAttemptEntity.STATE_CERRADA -> true
+                    else -> {
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tiene en %s | attemptId=%s", fila.state, attemptId)
+                        true
+                    }
+                }
+                if (aSalvo && aprobacionSinGuardar.remove(attemptId) != null && reintento)
+                    Timber.w("📒 [Libreta] la aprobación del banco que no se había podido guardar ya quedó a salvo | attemptId=%s", attemptId)
+                aSalvo
+            }
+        } catch (error: Exception) {
+            Timber.e(error, "📒 [Libreta] la aprobación del banco sigue SIN guardar — se reintenta en la siguiente decisión | attemptId=%s", attemptId)
+            false
+        }
+    }
+
+    /** Tras una transición de [attemptId] que sí se escribió (AUTORIZADO, REGISTRO_FALLIDO, REGISTRADO, cola): suelta lo pendiente. */
+    private suspend fun resolverAprobacionPendiente(attemptId: String) {
+        if (!aprobacionSinGuardar.containsKey(attemptId)) return
+        withContext(NonCancellable) { candadoDeEvidencia.withLock { escribirAprobacionBajoCandado(attemptId) } }
     }
 
     private suspend fun escribirRespuestaDelHost(
@@ -495,19 +579,23 @@ class PaymentAttemptLedger(
                 logCas(n, attemptId, PaymentAttemptEntity.STATE_AUTORIZADO)
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markAuthorized failed") }
+        resolverAprobacionPendiente(attemptId)
     }
 
-    suspend fun markRecorded(attemptId: String) = casNonCancellable(
-        attemptId,
-        from = listOf(
-            PaymentAttemptEntity.STATE_AUTORIZADO,
-            PaymentAttemptEntity.STATE_HOST_RESPONDIO,
-            // Live verdict beats the sweep's guess: a quarantined-but-alive attempt that
-            // goes on to record successfully must close as REGISTRADO, not rot forever.
-            PaymentAttemptEntity.STATE_INDETERMINADO
-        ),
-        to = PaymentAttemptEntity.STATE_REGISTRADO, label = "REGISTRADO"
-    )
+    suspend fun markRecorded(attemptId: String) {
+        casNonCancellable(
+            attemptId,
+            from = listOf(
+                PaymentAttemptEntity.STATE_AUTORIZADO,
+                PaymentAttemptEntity.STATE_HOST_RESPONDIO,
+                // Live verdict beats the sweep's guess: a quarantined-but-alive attempt that
+                // goes on to record successfully must close as REGISTRADO, not rot forever.
+                PaymentAttemptEntity.STATE_INDETERMINADO
+            ),
+            to = PaymentAttemptEntity.STATE_REGISTRADO, label = "REGISTRADO"
+        )
+        resolverAprobacionPendiente(attemptId)
+    }
 
     suspend fun markRecordFailed(attemptId: String, error: String?) {
         if (!isEnabled()) return
@@ -529,6 +617,7 @@ class PaymentAttemptLedger(
                 if (n == 1) avisarIncertidumbre(attemptId)
             }
         }.onFailure { Timber.e(it, "📒 [Libreta] markRecordFailed failed") }
+        resolverAprobacionPendiente(attemptId)
     }
 
     /**
@@ -679,7 +768,11 @@ class PaymentAttemptLedger(
     private val candadoDeEvidencia = Mutex()
 
     /** ¿El servidor dijo que hay dinero de este intento y la libreta todavía no lo pudo escribir? También lo lee la pantalla. */
-    fun tieneEvidenciaSinGuardar(attemptId: String): Boolean = evidenciaSinGuardar.containsKey(attemptId)
+    fun tieneEvidenciaSinGuardar(attemptId: String): Boolean = hayDineroSinEscribir(attemptId)
+
+    /** Dinero CONOCIDO de este intento que la libreta no pudo escribir: la evidencia del servidor o la aprobación del banco (D13). */
+    private fun hayDineroSinEscribir(attemptId: String): Boolean =
+        evidenciaSinGuardar.containsKey(attemptId) || aprobacionSinGuardar.containsKey(attemptId)
 
     /** Una salida «no se cobró» bajo [candadoDeEvidencia]: con dinero del intento sin escribir, [escribir] ni se llama y da false. */
     private suspend fun salidaNegativa(attemptId: String, etiqueta: String, escribir: suspend () -> Boolean): Boolean =
@@ -687,8 +780,8 @@ class PaymentAttemptLedger(
             // Codex final-2: primero LA PUERTA — si la base ya puede, el dinero pendiente se escribe aquí y el SQL de la salida
             // ya lo ve; si no puede, la memoria frena.
             puertaBajoCandado()
-            if (evidenciaSinGuardar.containsKey(attemptId)) {
-                Timber.w("📒 [Libreta] %s RECHAZADA: hay dinero del servidor sin escribir | attemptId=%s", etiqueta, attemptId)
+            if (hayDineroSinEscribir(attemptId)) {
+                Timber.w("📒 [Libreta] %s RECHAZADA: hay dinero de este intento sin escribir | attemptId=%s", etiqueta, attemptId)
                 false
             } else escribir()
         }
@@ -716,13 +809,18 @@ class PaymentAttemptLedger(
                 Timber.e(error, "📒 [Libreta] la puerta no pudo escribir el dinero pendiente | attemptId=%s", attemptId)
             }
         }
-        return evidenciaSinGuardar.isNotEmpty()
+        // D13 (ff3278): la aprobación del banco que no se pudo escribir, igual: primero se intenta, y mientras falte nadie decide.
+        for (attemptId in aprobacionSinGuardar.keys.toList()) escribirAprobacionBajoCandado(attemptId)
+        return evidenciaSinGuardar.isNotEmpty() || aprobacionSinGuardar.isNotEmpty()
     }
 
-    /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */
+    /** Vuelve a escribir la evidencia pendiente (y las aprobaciones del banco sin guardar, D13). Devuelve cuántas siguen sin escribirse. */
     suspend fun reintentarEvidenciaSinGuardar(now: Long = System.currentTimeMillis()): Int {
         for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
-        return evidenciaSinGuardar.size
+        if (aprobacionSinGuardar.isNotEmpty()) withContext(NonCancellable) {
+            candadoDeEvidencia.withLock { for (attemptId in aprobacionSinGuardar.keys.toList()) escribirAprobacionBajoCandado(attemptId) }
+        }
+        return evidenciaSinGuardar.size + aprobacionSinGuardar.size
     }
 
     /**
@@ -737,10 +835,13 @@ class PaymentAttemptLedger(
     }
 
     /** Compatibilidad: el DAO comprueba el sucesor durable y su contrato en Tx; sin prueba conserva la fuente. */
-    suspend fun markDeliveredToQueue(attemptId: String) = casNonCancellable(
-        attemptId, from = listOf(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO),
-        to = PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, label = "ENTREGADA_A_COLA"
-    )
+    suspend fun markDeliveredToQueue(attemptId: String) {
+        casNonCancellable(
+            attemptId, from = listOf(PaymentAttemptEntity.STATE_REGISTRO_FALLIDO),
+            to = PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, label = "ENTREGADA_A_COLA"
+        )
+        resolverAprobacionPendiente(attemptId)
+    }
 
     /**
      * 📒 El desenlace NO se conoce: el SDK volvió sin veredicto del procesador
@@ -1323,6 +1424,17 @@ enum class CercaDeSolicitud {
     /** Ya salió su desenlace final (o hay lápida): la terminal no la ejecuta; el POS debe reenviarla. */
     CERRADA,
 }
+
+/** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */
+private val ESPERANDO_AL_BANCO = setOf(
+    PaymentAttemptEntity.STATE_AUTORIZANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
+    PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_INDETERMINADO,
+)
+
+/** D13: ya pasaron la respuesta del banco y el dinero sigue en la terminal (cerca su venta o lo trae la cola): se les sella. */
+private val YA_CON_EL_DINERO = setOf(
+    PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_ENTREGADA_A_COLA,
+)
 
 /**
  * B1 (Pre-B, Codex r3 #9): lo que el BUILD fija del aparato. [procesador] es `BuildConfig.SUPPORTED_PROCESSOR` (BLUMON = PAX,

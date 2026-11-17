@@ -951,6 +951,8 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            // D13 (ff3278): el aviso ámbar de «no se pudo guardar, se está registrando» ya no aplica: esta alarma lo reemplaza.
+            pendingSyncMessage = null,
             recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
                 "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
                 "supervisor con la referencia $referenceNumber para reconciliar el pago manualmente."
@@ -1006,6 +1008,24 @@ class PaymentViewModel @Inject constructor(
             pendingSyncMessage = "El cobro con tarjeta SÍ se hizo. Se cerró la sesión antes de registrarlo en Avoqado: " +
                 "quedó guardado en este equipo y se registrará solo cuando alguien vuelva a entrar con su PIN. " +
                 "NO vuelvas a cobrar. Referencia: $referenceNumber"
+        )
+    }
+
+    /**
+     * 🔴 D13 (encargo ff3278): el banco APROBÓ y la libreta de este equipo no pudo guardarlo (la base falló). Se dice tal cual,
+     * en ámbar como [buildPendingSyncState] (no falló el cobro): SÍ se cobró, y si la app se cierra antes de registrarlo este
+     * equipo no lo recordaría. Lo quitan el recibo registrado o la cola, igual que los demás avisos.
+     */
+    @VisibleForTesting
+    internal fun buildApprovalNotSavedState(
+        current: PaymentState,
+        referenceNumber: String
+    ): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            pendingSyncMessage = "El cobro con tarjeta SÍ se hizo, pero este equipo no pudo guardarlo. Se está registrando en " +
+                "Avoqado: NO vuelvas a cobrar y no cierres la app hasta que termine. Referencia: $referenceNumber"
         )
     }
 
@@ -7646,7 +7666,11 @@ class PaymentViewModel @Inject constructor(
                                 com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.MARGEN_MS
                         )
                     }
-                    buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
+                    // 🔴 D13 (ff3278): si la aprobación del banco tampoco se pudo guardar en este equipo, no hay nada que lo
+                    // registre al volver a entrar: la alarma de «no quedó registrado», nunca «quedó guardado en este equipo».
+                    val sinGuardar = attemptIdDelCobro?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true
+                    (if (sinGuardar) buildRecordingLostState(_state.value, referenceNumber)
+                        else buildPendingLoginState(_state.value, referenceNumber))?.let { _state.value = it }
                     return@launch
                 }
 
@@ -7697,6 +7721,12 @@ class PaymentViewModel @Inject constructor(
                         cardBrand = cardDetails.cardBrand.name,
                         entryMode = cardDetails.entryMode.name
                     )
+                    // 🔴 D13 (ff3278): el banco aprobó y la libreta no pudo guardarlo (ni al contestar el banco ni ahora). No es un
+                    // «Aprobado» limpio: la pantalla lo dice en ámbar mientras el servidor o la cola no lo tengan. Lo quita o lo
+                    // cambia lo de siempre: el recibo registrado, la cola o la alarma de «no quedó registrado».
+                    if (paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptIdForLedger)) {
+                        buildApprovalNotSavedState(_state.value, referenceNumber)?.let { _state.value = it }
+                    }
                 }
 
                 Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$effectiveStaffId, shift=$currentShiftId, amount=${getAmountForFlow()}, tip=${getTipForFlow()}, rating=${getRatingForFlow()}, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")

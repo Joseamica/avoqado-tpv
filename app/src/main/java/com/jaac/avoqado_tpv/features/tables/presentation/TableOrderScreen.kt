@@ -113,6 +113,8 @@ fun TableOrderScreen(
     val readOnlyForPayment by viewModel.readOnlyForPayment.collectAsStateWithLifecycle()
     val lockOwnerName by viewModel.lockOwnerName.collectAsStateWithLifecycle()
     val saldoSinRed by viewModel.saldoSinRed.collectAsStateWithLifecycle()
+    val cuentaAparte by viewModel.cuentaAparte.collectAsStateWithLifecycle()
+    val abriendoCuentaAparte by viewModel.abriendoCuentaAparte.collectAsStateWithLifecycle()
 
     // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER.
     val isSplitting by viewModel.isSplitting.collectAsStateWithLifecycle()
@@ -266,6 +268,9 @@ fun TableOrderScreen(
         readOnlyForPayment = readOnlyForPayment,
         lockOwnerName = lockOwnerName,
         saldoSinRed = saldoSinRed,
+        cuentaAparte = cuentaAparte,
+        abriendoCuentaAparte = abriendoCuentaAparte,
+        onAbrirCuentaAparte = viewModel::abrirCuentaAparte,
         snackbarHostState = snackbarHostState,
         onNavigateBack = {
             viewModel.exitToFloor()
@@ -426,6 +431,10 @@ private fun TableOrderScreenContent(
     lockOwnerName: String?,
     /** D86: saldo de una mesa que esta terminal abrió sin red (`null` si no es provisional). */
     saldoSinRed: SaldoSinRed? = null,
+    /** D16: la ronda de esta terminal que cayó en una cuenta aparte de la mesa (`null` si no hay). */
+    cuentaAparte: AvisoDeCuentaAparte? = null,
+    abriendoCuentaAparte: Boolean = false,
+    onAbrirCuentaAparte: () -> Unit = {},
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
     onAddProducts: () -> Unit,
@@ -512,6 +521,7 @@ private fun TableOrderScreenContent(
                 if (readOnly) {
                     OwnershipLockBanner(ownerName = lockOwnerName)
                 }
+                cuentaAparte?.let { CuentaAparteBanner(texto = it.texto, abriendo = abriendoCuentaAparte, onAbrir = onAbrirCuentaAparte) }
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -794,6 +804,30 @@ private fun OwnershipLockBanner(ownerName: String?) {
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,
         )
+    }
+}
+
+/**
+ * D16: «Tu ronda no se perdió…» con el botón para abrir la cuenta aparte. Informativo (azul), no de error. Mientras lee la
+ * cuenta aparte, el botón dice «Abriendo…» y no se puede volver a tocar.
+ */
+@Composable
+private fun CuentaAparteBanner(texto: String, abriendo: Boolean, onAbrir: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.avoqadoColors.statusInfo.copy(alpha = 0.15f))
+            .padding(horizontal = Spacing.Space4, vertical = Spacing.Space2),
+    ) {
+        Text(
+            text = texto,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        TextButton(onClick = onAbrir, enabled = !abriendo, modifier = Modifier.align(Alignment.End)) {
+            Text(if (abriendo) "Abriendo…" else "Abrir cuenta aparte")
+        }
     }
 }
 
@@ -1180,6 +1214,40 @@ private fun TableOrderScreenCashierCanPayPreview() {
             readOnly = true,
             readOnlyForPayment = false,
             lockOwnerName = "Fátima Flores",
+            snackbarHostState = remember { SnackbarHostState() },
+            onNavigateBack = {},
+            onAddProducts = {},
+            onSendRound = {},
+            onRetryLoad = {},
+            onNavigateToCheckout = {},
+        )
+    }
+}
+
+/** D16: la cuenta que otra caja cobró, con el aviso de la ronda que cayó en una cuenta aparte (N86, 16-nov). */
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX A910S — D16 ronda en cuenta aparte")
+@Composable
+private fun TableOrderScreenCuentaApartePreview() {
+    AvoqadoTheme {
+        TableOrderScreenContent(
+            session = TableSession.Active(tableId = "1", tableNumber = "M5", areaName = "Barra", orderId = "O1", total = BigDecimal("25.00")),
+            check = OrderDetail(
+                id = "O1",
+                total = BigDecimal("25.00"),
+                amountLeft = BigDecimal.ZERO,
+                paymentStatus = "PAID",
+                items = listOf(OrderDetailItem(id = "i1", productName = "Coca-Cola 600ml", quantity = 1, unitPrice = BigDecimal("25.00"), total = BigDecimal("25.00"), sentToKitchenAt = "2026-11-16T23:45:00Z")),
+            ),
+            isLoadingCheck = false,
+            checkLoadFailed = false,
+            isSending = false,
+            sendTakingLong = false,
+            pendingLines = emptyList(),
+            queuedLines = emptyList(),
+            readOnly = false,
+            readOnlyForPayment = false,
+            lockOwnerName = null,
+            cuentaAparte = AvisoDeCuentaAparte(orderId = "O2", texto = textoDeCuentaAparte("Mesa M5", BigDecimal("89.00"))),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {},
             onAddProducts = {},

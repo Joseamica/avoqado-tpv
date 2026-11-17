@@ -211,6 +211,104 @@ class TableOrderViewModel @Inject constructor(
     private val _saldoSinRed = MutableStateFlow<SaldoSinRed?>(null)
     val saldoSinRed: StateFlow<SaldoSinRed?> = _saldoSinRed.asStateFlow()
 
+    /**
+     * D16 (hz:033d44ca:D16): una ronda que esta terminal mandó sin red a ESTA cuenta y que el SERVIDOR puso en una cuenta aparte
+     * porque otra caja ya la había cobrado (D7). Sin el aviso, la ronda desaparecía de la cuenta cobrada y la mesera la creía
+     * perdida (acta de D7, N86). Se arma de la cola en disco tras cada lectura de la cuenta, buena o fallida (Codex r1 #1); `null`
+     * si no hay.
+     *
+     * Sólo dice lo que el ACK guardó y ya no cambia (Codex r2, regla de parada): a dónde fue la ronda y por cuánto quedó esa
+     * cuenta. Nunca si la cuenta aparte se debe ahora ni en qué mesa está ahora: eso lo cambian otras cajas en cualquier momento
+     * (la cobran, la mueven, la juntan) y un aviso guardado mentía. Eso lo dice la cuenta misma al abrirla.
+     */
+    private val _cuentaAparte = MutableStateFlow<AvisoDeCuentaAparte?>(null)
+    val cuentaAparte: StateFlow<AvisoDeCuentaAparte?> = _cuentaAparte.asStateFlow()
+
+    private val _abriendoCuentaAparte = MutableStateFlow(false)
+    val abriendoCuentaAparte: StateFlow<Boolean> = _abriendoCuentaAparte.asStateFlow()
+
+    /** D16: sólo la revisión más nueva del aviso se aplica (dos lecturas seguidas de la cuenta). Antes de `init`. */
+    private var revisionesDeCuentaAparte = 0L
+
+    /**
+     * D16: «Abrir cuenta aparte». Lee la cuenta aparte del SERVIDOR en ese momento y la abre en la mesa donde está ahora (otro
+     * aparato pudo moverla, Codex r1 #3 y r2 #2), sin salir de esta pantalla. Lo que la mesera tenía sin mandar en el carrito se va
+     * con ella (en la cobrada no se podía mandar). Si no se puede leer, no cambia nada y lo dice. Si mientras leía la mesera salió
+     * o entró a otra cuenta, no la mueve de ahí. Mientras abre no se puede «Enviar ronda», ni abrir mientras se envía (Codex r4).
+     *
+     * Codex r3: mientras esta terminal tenga algo sin subir (o por revisar) de la cobrada, no se abre: eso nombra la cobrada y en la
+     * cuenta aparte nadie lo vería ni frenaría su cobro. Como «Abrir» y «Enviar ronda» se excluyen durante TODA la apertura (Codex
+     * r4), nada nuevo para la cobrada nace entre esa revisión y el cambio de cuenta.
+     */
+    fun abrirCuentaAparte() {
+        val aviso = _cuentaAparte.value ?: return
+        val vId = venueId ?: return
+        val original = tableSession.current() ?: return
+        if (_abriendoCuentaAparte.value || _isSending.value) return
+        _abriendoCuentaAparte.value = true
+        val epocaAlTocar = tableSession.epoch
+        viewModelScope.launch {
+            try {
+                val leida = repository.getOrder(vId, aviso.orderId).getOrNull()?.takeIf { it.id == aviso.orderId }
+                val actual = tableSession.current()
+                if (tableSession.epoch != epocaAlTocar || actual == null || actual.orderId != original.orderId) return@launch
+                val mesa = leida?.tableId
+                if (leida == null || mesa == null) {
+                    _error.value = NO_SE_ABRIO_LA_CUENTA_APARTE
+                    return@launch
+                }
+                if (pendienteDeLaMesa(vId, actual) != null) {
+                    _error.value = ESPERA_A_QUE_SE_SUBA_PARA_ABRIR
+                    return@launch
+                }
+                if (tableSession.epoch != epocaAlTocar || tableSession.current()?.orderId != original.orderId) return@launch
+                val mismaMesa = mesa == actual.tableId
+                pendingCart.promote(actual.orderId, leida.id)
+                tableSession.start(
+                    actual.copy(
+                        tableId = mesa,
+                        tableNumber = if (mismaMesa) actual.tableNumber else leida.tableName?.removePrefix("Mesa ")?.takeIf { it.isNotBlank() },
+                        areaName = actual.areaName.takeIf { mismaMesa },
+                        orderId = leida.id,
+                        orderNumber = leida.orderNumber.takeIf { it.isNotBlank() },
+                        version = leida.version,
+                        total = leida.total,
+                        mode = TableSession.Mode.ORDERING,
+                        isProvisional = false,
+                        localOrderId = null,
+                    ),
+                )
+                _cuentaAparte.value = null
+                _check.value = leida
+                loadCheck()
+            } finally {
+                _abriendoCuentaAparte.value = false
+            }
+        }
+    }
+
+    /** D16: revisa en la cola (en disco) si una ronda de [session] cayó en una cuenta aparte. Sin red: no lee nada del SERVIDOR. */
+    private fun revisarCuentaAparte(venueId: String, session: TableSession.Active) {
+        val miRevision = ++revisionesDeCuentaAparte
+        viewModelScope.launch {
+            val aparte = try {
+                saldoDeMesaSinRed.cuentaAparte(venueId, session.orderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [TableOrder] No se pudo revisar la cola por una cuenta aparte")
+                return@launch // se conserva el aviso que hubiera
+            }
+            if (miRevision != revisionesDeCuentaAparte || tableSession.current()?.orderId != session.orderId) return@launch
+            _cuentaAparte.value = aparte?.let {
+                AvisoDeCuentaAparte(
+                    orderId = it.orderId,
+                    texto = textoDeCuentaAparte(mesa = session.tableNumber?.let { n -> "Mesa $n" }, monto = it.total),
+                )
+            }
+        }
+    }
+
     /** D86 (Codex r4): sólo el cálculo más nuevo del saldo sin red se aplica (uno viejo puede llegar después). Antes de `init`. */
     private var calculosDeSaldo = 0L
 
@@ -372,6 +470,9 @@ class TableOrderViewModel @Inject constructor(
             val pendienteAntes = pendienteDeLaMesa(vId, session)
             val miCarga = ++cargasDeLaMesa // sin suspensión entre este número y la petición: siguen el mismo orden
             val leida = repository.getOrder(vId, session.orderId)
+            // D16: si mientras se leía la sesión pasó a otra cuenta («Abrir cuenta aparte»), esta lectura ya no es de la que se ve:
+            // pintarla ponía la cuenta y la versión de la vieja sobre la nueva.
+            if (tableSession.current()?.orderId != session.orderId) return@launch
             if (miCarga < cuentaPintada) {
                 // Una petición posterior ya pintó la cuenta (y apagó la carga): ésa manda.
                 return@launch
@@ -382,6 +483,7 @@ class TableOrderViewModel @Inject constructor(
                     _check.value = detail
                     _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
+                    revisarCuentaAparte(vId, session)
                     // D1 (Codex D88-D90 r7): algo propio que nació Y subió mientras esta lectura viajaba no está en ella y no lo ve
                     // ninguna de las dos revisiones. Si la cola recibió algo nuevo, la lectura pinta pero no da lo propio por
                     // incluido: «Por sincronizar» se queda y se relee sola.
@@ -416,6 +518,8 @@ class TableOrderViewModel @Inject constructor(
                     if (_check.value == null) {
                         _checkLoadFailed.value = true
                     }
+                    // D16 (Codex r1 #1): el ACK ya está en la cola aunque la cuenta no se pudo leer: el aviso sale igual.
+                    revisarCuentaAparte(vId, session)
                     // D86 (Codex r6 #3, r7 H4): con algo propio sin subir, una lectura fallida no detiene la relectura.
                     if (_queuedLines.value.isNotEmpty() || habiaPendienteSinSubir) programarRelecturaDeLaMesa()
                 },
@@ -479,7 +583,7 @@ class TableOrderViewModel @Inject constructor(
             _error.value = "Mesa de ${lockOwnerName.value ?: "otro mesero"} — solo lectura"
             return
         }
-        if (_isSending.value) return
+        if (_isSending.value || _abriendoCuentaAparte.value) return // D16 (Codex r4): no mientras se abre la cuenta aparte
         val lines = pendingCart.lines.value
         if (lines.isEmpty()) {
             _error.value = "Agrega productos para enviar"
@@ -573,6 +677,14 @@ class TableOrderViewModel @Inject constructor(
 
         /** D1: espera tras un aviso del SERVIDOR antes de releer (una ronda manda un aviso por renglón). Igual que el plano. */
         private const val RELECTURA_POR_AVISO_MS = 800L
+
+        /** D16: «Abrir cuenta aparte» no pudo leer esa cuenta del SERVIDOR (sin red, o ya no existe). */
+        const val NO_SE_ABRIO_LA_CUENTA_APARTE = "No se pudo abrir la cuenta aparte: vuelve a intentarlo o búscala en el plano de mesas."
+
+        /** D16 (Codex r3): esta terminal todavía tiene algo sin subir (o un cobro por revisar) de la cuenta cobrada. */
+        const val ESPERA_A_QUE_SE_SUBA_PARA_ABRIR =
+            "Esta cuenta todavía tiene algo sin sincronizar o por revisar: abre la cuenta aparte cuando se resuelva."
+
     }
 
     fun consumeNotice() {
@@ -1206,6 +1318,18 @@ class TableOrderViewModel @Inject constructor(
             )
         }
     }
+}
+
+/** D16: la ronda de esta terminal que cayó en una cuenta aparte de la mesa, ya con su texto para la mesera. */
+data class AvisoDeCuentaAparte(val orderId: String, val texto: String)
+
+/**
+ * D16: el texto del aviso: lo que pasó cuando llegó la ronda (lo dice el ACK y ya no cambia), no el estado de ahora de la cuenta
+ * aparte. [monto] es el total de esa cuenta en el ACK (un reintento no lo trae); sin [mesa], «esta mesa».
+ */
+internal fun textoDeCuentaAparte(mesa: String?, monto: java.math.BigDecimal?): String {
+    val pesos = monto?.let { " por $" + it.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() } ?: ""
+    return "Tu ronda no se perdió: como esta cuenta ya estaba cobrada, quedó en una cuenta aparte de ${mesa?.let { "la $it" } ?: "esta mesa"}$pesos."
 }
 
 /** Una ronda ya enviada — todas las líneas que comparten el mismo `sentToKitchenAt`. */

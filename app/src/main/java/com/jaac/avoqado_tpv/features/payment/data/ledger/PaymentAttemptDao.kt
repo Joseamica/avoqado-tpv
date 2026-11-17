@@ -500,22 +500,6 @@ interface PaymentAttemptDao {
         operationId: String?, referenceNumber: String?, authCode: String?, hostApproved: Boolean
     ): Int
 
-    /**
-     * 🔴 D13 (encargo ff3278): la aprobación del banco que no se pudo escribir a tiempo, sellada DESPUÉS sobre una fila que ya
-     * avanzó (AUTORIZADO, REGISTRO_FALLIDO, ENTREGADA_A_COLA). NO cambia el estado: sólo deja `host_approved = 1` (y lo que dijo el
-     * banco si faltaba), para que la recuperación de aprobaciones la siga tomando aunque su registro falle. Nunca pisa un dato.
-     */
-    @Query(
-        """UPDATE payment_attempts
-           SET host_approved = 1, state_version = state_version + 1, updated_at = :now,
-               operation_id = COALESCE(operation_id, :operationId),
-               reference_number = COALESCE(reference_number, :referenceNumber),
-               auth_code = COALESCE(auth_code, :authCode)
-           WHERE attempt_id = :attemptId AND host_approved IS NULL
-             AND state IN ('AUTORIZADO','REGISTRO_FALLIDO','ENTREGADA_A_COLA')"""
-    )
-    suspend fun sellarAprobacionDelHost(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
-
     /** CAS + card details (available at record time). */
     @Query(
         """UPDATE payment_attempts

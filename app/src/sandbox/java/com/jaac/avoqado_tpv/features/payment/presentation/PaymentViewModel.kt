@@ -1054,12 +1054,12 @@ class PaymentViewModel @Inject constructor(
      * celebración limpia mientras se espera a AUTORIZADO.
      */
     /**
-     * D13 (Codex r3 #2): mientras se registra, la puerta o la recuperación pueden dejar la aprobación a salvo; entonces el aviso
+     * D13 (Codex r3 #2, r4 H5): mientras se registra, otro escritor (un veredicto del servidor, la cola) puede dejar el cobro a salvo; entonces el aviso
      * de «no se pudo guardar» ya no es cierto y se quita. Sólo el de ESTE cobro, y sólo el de D13 (nunca el de la cola ni otro).
      */
     private fun vigilarAprobacionSinGuardar(attemptId: String) {
         viewModelScope.launch {
-            while (isActive && paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptId)) delay(1_000)
+            while (isActive && paymentAttemptLedger.revisarAprobacionPendiente(attemptId)) delay(1_000)
             if (sessionSnapshot.paymentAttemptId == attemptId) clearApprovalNotSavedState(_state.value)?.let { _state.value = it }
         }
     }
@@ -9595,7 +9595,11 @@ class PaymentViewModel @Inject constructor(
         val currentState = _state.value
         if (currentState is PaymentState.PrintError) {
             // El recibo se arma de nuevo al volver: sin la marca repetía «Pago aprobado».
-            _state.value = currentState.previousState.copy(approvedAnimationShown = true)
+            val restaurado = currentState.previousState.copy(approvedAnimationShown = true)
+            // D13: la copia del éxito pudo guardarse con el aviso de «no se pudo guardar»; si la libreta ya la dejó a salvo
+            // mientras se veía el error de la impresora, ese aviso ya no es cierto.
+            val sigueSinGuardar = sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true
+            _state.value = if (restaurado.aprobacionSinGuardar && !sigueSinGuardar) clearApprovalNotSavedState(restaurado) ?: restaurado else restaurado
             Timber.d("🔙 [Print] Dismissed print error, returned to Success state")
         }
     }

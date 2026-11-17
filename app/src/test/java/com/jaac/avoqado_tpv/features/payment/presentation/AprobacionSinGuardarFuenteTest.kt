@@ -72,6 +72,9 @@ class AprobacionSinGuardarFuenteTest {
             // Y el vigilante quita el aviso si la aprobación se guarda mientras se registra (Codex r3 #2).
             val tramo = entre(fuente(archivo), "// 📒 [Libreta] Money moved", "recordPaymentUseCase(", nombre)
             assertTrue("[$nombre] sin vigilante del aviso", tramo.contains("vigilarAprobacionSinGuardar(attemptIdForLedger)"))
+            val vigilante = entre(fuente(archivo), "private fun vigilarAprobacionSinGuardar(", "\n    }\n", nombre)
+            assertTrue("[$nombre] el vigilante no lee la fila (un veredicto del servidor no la soltaría)",
+                vigilante.contains("paymentAttemptLedger.revisarAprobacionPendiente(attemptId)"))
             assertTrue("[$nombre] AUTORIZADO no limpia el aviso", tramo.contains("clearApprovalNotSavedState(_state.value)"))
         }
     }
@@ -81,5 +84,14 @@ class AprobacionSinGuardarFuenteTest {
         val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
         assertTrue("la pantalla manda a «Pendientes» con el aviso de D13",
             pantalla.contains("currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE"))
+    }
+
+    @Test
+    fun `P2 al cerrar No se pudo imprimir no revive el aviso si la aprobacion ya quedo a salvo`() {
+        for ((nombre, archivo) in variantes) {
+            val cuerpo = entre(fuente(archivo), "fun dismissPrintError() {", "\n    }\n", nombre)
+            assertTrue("[$nombre] «Cerrar» restaura la copia con el aviso sin preguntar a la libreta",
+                cuerpo.contains("paymentAttemptLedger::aprobacionPendienteDeGuardar") && cuerpo.contains("clearApprovalNotSavedState(restaurado)"))
+        }
     }
 }

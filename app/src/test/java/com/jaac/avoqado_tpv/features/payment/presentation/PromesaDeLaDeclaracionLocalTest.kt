@@ -46,8 +46,18 @@ class PromesaDeLaDeclaracionLocalTest {
         promesaHonesta(textoDeLaConfirmacion(local, ahora = 60_000))
     }
 
-    @Test fun `P2 el aviso del Inicio en un cobro del POS conserva su texto, porque el servidor si lo guarda`() {
+    @Test fun `P2 el aviso del Inicio en un cobro del POS conserva quien y cuando, porque el servidor si lo guarda`() {
         val remoto = CobroDeclarable("a1", requestId = "req-1", totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1)
         assertThat(textoDeLaConfirmacion(remoto, ahora = 60_000)).contains("queda tu nombre y la hora")
+    }
+
+    /**
+     * Codex r3: «Si el banco avisa que sí se cobró, se registra como cobrado» no se cumple. El aviso del banco no crea el pago:
+     * el receptor de Blumon TPV sólo busca un `Payment` que ya exista y, si no, lo deja pendiente hasta marcarlo huérfano
+     * (`blumon-webhook.service.ts`, `blumon-webhook-reconciliation.job.ts`); el de AngelPay tampoco lo crea.
+     */
+    @Test fun `P1 el aviso del Inicio en un cobro del POS ya no promete que el aviso del banco lo registra`() {
+        val remoto = CobroDeclarable("a1", requestId = "req-1", totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1)
+        assertThat(textoDeLaConfirmacion(remoto, ahora = 60_000)).doesNotContain("se registra como cobrado")
     }
 }

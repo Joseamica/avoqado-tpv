@@ -126,5 +126,8 @@ class AprobacionSinGuardarFuenteTest {
                 pantalla.contains("currentState.recordingLostMessage != null || avisoQueCortaLaEspera"))
         assertTrue("el kiosco espera el recibo sin mostrar el aviso (Codex r9)",
             pantalla.contains("aviso = currentState.pendingSyncMessage?.takeIf { currentState.aprobacionSinGuardar }"))
+        val aprobado = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/components/PaymentApprovedScreen.kt").readText()
+        assertTrue("el aviso del kiosco no va en ámbar (Codex r10)",
+            entre(aprobado, "aviso?.let {", "\n            }\n", "PaymentApprovedScreen").contains("avoqadoColors.statusWarning.copy(alpha = 0.12f)"))
     }
 }

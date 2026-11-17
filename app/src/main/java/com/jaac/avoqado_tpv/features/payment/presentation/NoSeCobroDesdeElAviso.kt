@@ -142,7 +142,8 @@ internal class FlujoDeNoSeCobro(
 /** El banner verde de cobros sin confirmar, con su botón «No se cobró», sus diálogos y su refresco. */
 @Composable
 internal fun BannerDeCobrosPendientes(
-    aviso: String,
+    /** null = no hay nada que avisar: no se pinta el banner, pero el diálogo sigue (D22, abajo). */
+    aviso: String?,
     venueId: String,
     ahora: Long,
     declaracion: DeclaracionDesdeElAviso,
@@ -171,13 +172,17 @@ internal fun BannerDeCobrosPendientes(
         }
     }
 
-    AvisoConBotones(
-        aviso = aviso,
-        mostrarNoSeCobro = hayDeclarables,
-        onNoSeCobro = { flujo.tocar(vigentes) },
-        onRevisar = onRevisar,
-        onAyuda = onAyuda,
-    )
+    if (aviso != null) {
+        AvisoConBotones(
+            aviso = aviso,
+            mostrarNoSeCobro = hayDeclarables,
+            onNoSeCobro = { flujo.tocar(vigentes) },
+            onRevisar = onRevisar,
+            onAyuda = onAyuda,
+        )
+    }
+    // 🔴 D22 (QA en la PAX, 17-nov): el diálogo vive aunque ya no haya banner. Al declarar el ÚLTIMO cobro en duda el banner se va, y
+    // con él se iba el aviso que dice si la declaración quedó en Avoqado o sólo en esta terminal, antes de que el cajero lo leyera.
     DialogoDeNoSeCobro(paso, ahora, onElegir = flujo::elegir, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar)
 }
 

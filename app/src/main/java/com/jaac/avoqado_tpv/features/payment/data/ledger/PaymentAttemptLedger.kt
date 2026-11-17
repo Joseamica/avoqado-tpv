@@ -144,8 +144,10 @@ class PaymentAttemptLedger(
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
 
     /** Lo que el banner verde puede ofrecer declarar: con el token de ESTE proceso, que sabe qué cuarentena por reloj sigue viva. */
-    fun observarCobrosDeclarables(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>> =
-        dao.observarCobrosDeclarables(venueId, processToken)
+    fun observarCobrosDeclarables(
+        venueId: String,
+        limite: Int = DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA,
+    ): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>> = dao.observarCobrosDeclarables(venueId, processToken, limite)
 
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.

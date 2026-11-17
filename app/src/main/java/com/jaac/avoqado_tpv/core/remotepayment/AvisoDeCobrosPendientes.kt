@@ -73,8 +73,8 @@ object AvisoDeCobrosPendientes {
      */
     fun textoPorRevisar(cobros: List<ObligacionPendiente>, ahoraMillis: Long, recortada: Boolean = false): String? {
         val masReciente = cobros.firstOrNull() ?: return null
-        // Codex r1 #1: con la consulta llena puede haber más viejos que no salen; se dice, no se esconde.
-        val tope = if (recortada) " Sólo caben los más recientes: al resolverlos, aparecen los anteriores." else ""
+        // Codex r1 #1 y r2: con la consulta llena puede haber más viejos; se dice y el recuadro ofrece «Ver anteriores».
+        val tope = if (recortada) " Hay más anteriores: toca «Ver anteriores»." else ""
         val queHacer = "toca «No se cobró». Si sí se cobró, no lo vuelvas a cobrar y avísale a tu gerente.$tope"
         if (cobros.size == 1) {
             return "Por revisar: un cobro con tarjeta de ${pesos(masReciente.totalCentavos)} quedó sin confirmar " +

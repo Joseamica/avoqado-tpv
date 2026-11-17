@@ -226,6 +226,11 @@ class CobrosDeclarablesRoomTest {
         assertThat(todos.map { it.attemptId }).doesNotContain("local-50")
         assertThat(DeclaracionDesdeElAviso.recortada(todos)).isTrue()
         assertThat(DeclaracionDesdeElAviso.recortada(todos.drop(1))).isFalse()
+
+        // Codex r2: «Ver anteriores» (otros 50) sí lo alcanza, y la lista ya no está llena.
+        val ampliada = ledger.observarCobrosDeclarables(venue, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA).first()
+        assertThat(ampliada.map { it.attemptId }).contains("local-50")
+        assertThat(DeclaracionDesdeElAviso.recortada(ampliada, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA)).isFalse()
     }
 
     @Test fun `una por solicitud - dos intentos limpios de la misma salen como uno, el mas reciente`() = runTest {

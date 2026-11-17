@@ -33,6 +33,9 @@ class NoSeCobroCableadoTest {
         assertThat(recuadro).contains("FlujoDeNoSeCobro(")
         assertThat(recuadro).contains("declaracion.refrescarUno(")
         assertThat(recuadro).contains("repeatOnLifecycle(Lifecycle.State.STARTED)")
+        // Codex r2: con la lista llena, «Ver anteriores» amplía la consulta en vez de sólo avisar.
+        assertThat(recuadro).contains("\"Ver anteriores\"")
+        assertThat(recuadro).contains("limite += DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA")
     }
 
     @Test fun `el aviso sigue sin poder taparse, y el comentario ya no dice que no se puede descartar`() {

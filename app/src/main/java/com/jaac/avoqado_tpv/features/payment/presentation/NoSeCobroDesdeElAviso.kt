@@ -194,8 +194,11 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
     val alcance = rememberCoroutineScope()
     val flujo = remember(venueId) { FlujoDeNoSeCobro(declaracion, venueId, alcance) }
     val paso by flujo.paso.collectAsStateWithLifecycle()
-    val cobrosFlow = remember(venueId) { declaracion.observarDeclarables(venueId) }
+    // Codex r2: con más de 50 por revisar, «Ver anteriores» trae otros 50; sin esto los viejos sólo salían al resolver los recientes.
+    var limite by remember(venueId) { mutableStateOf(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) }
+    val cobrosFlow = remember(venueId, limite) { declaracion.observarDeclarables(venueId, limite) }
     val cobros by cobrosFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val recortada = DeclaracionDesdeElAviso.recortada(cobros, limite)
     val porRevisar = DeclaracionDesdeElAviso.porRevisar(cobros)
     val porRevisarAlDia by rememberUpdatedState(porRevisar)
     val hayPorRevisar = porRevisar.isNotEmpty()
@@ -220,13 +223,18 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
     }
 
     val texto = AvisoDeCobrosPendientes.textoPorRevisar(
-        porRevisar.map { ObligacionPendiente(it.totalCentavos, it.desdeMillis) }, ahora, recortada = DeclaracionDesdeElAviso.recortada(cobros),
+        porRevisar.map { ObligacionPendiente(it.totalCentavos, it.desdeMillis) }, ahora, recortada = recortada,
     )
     if (texto != null) {
         Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                 Text(text = texto, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (recortada) {
+                        TextButton(onClick = { limite += DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA }) {
+                            Text("Ver anteriores")
+                        }
+                    }
                     TextButton(onClick = { flujo.tocar(porRevisar) }) {
                         Text("No se cobró")
                     }

@@ -88,12 +88,12 @@ class AvisoDeCobrosPendientesTest {
         assertThat(texto).contains("$5.00 hace 1 d")
         assertThat(texto).contains("y 2 más")
         assertThat(texto).doesNotContain("$7.00")
-        assertThat(texto).doesNotContain("Sólo caben")
+        assertThat(texto).doesNotContain("Ver anteriores")
     }
 
-    @Test fun `D20 con la consulta llena dice que hay mas viejos, no los esconde`() {
+    @Test fun `D20 con la consulta llena dice que hay mas viejos y como verlos`() {
         val texto = AvisoDeCobrosPendientes.textoPorRevisar(listOf(obligacion(1000, 60_000)), ahora, recortada = true)!!
-        assertThat(texto).contains("Sólo caben los más recientes: al resolverlos, aparecen los anteriores.")
+        assertThat(texto).contains("Hay más anteriores: toca «Ver anteriores».")
     }
 
     /** El reloj del aparato puede ir atrás del que escribió la fila: jamás «hace -4 min». */

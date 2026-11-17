@@ -907,7 +907,8 @@ class PaymentViewModel @Inject constructor(
                 recordingLostMessage = null,
                 // 🟡 Same reasoning: a queued-but-recovered payment just synced — the "pending
                 // sync" note no longer applies.
-                pendingSyncMessage = null
+                pendingSyncMessage = null,
+                aprobacionSinGuardar = false,
             )
             Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
             Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -951,6 +952,9 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            // D13 (ff3278): el aviso ámbar de «no se pudo guardar, se está registrando» ya no aplica: esta alarma lo reemplaza.
+            pendingSyncMessage = null,
+            aprobacionSinGuardar = false,
             recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
                 "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
                 "supervisor con la referencia $referenceNumber para reconciliar el pago manualmente."
@@ -985,6 +989,7 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            aprobacionSinGuardar = false,
             pendingSyncMessage = "El cobro con tarjeta se realizó correctamente. Avoqado no pudo registrarlo " +
                 "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
                 "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: $referenceNumber"
@@ -1003,11 +1008,76 @@ class PaymentViewModel @Inject constructor(
         if (current !is PaymentState.Success) return null
         return current.copy(
             referenceNumber = referenceNumber,
+            aprobacionSinGuardar = false,
             pendingSyncMessage = "El cobro con tarjeta SÍ se hizo. Se cerró la sesión antes de registrarlo en Avoqado: " +
                 "quedó guardado en este equipo y se registrará solo cuando alguien vuelva a entrar con su PIN. " +
                 "NO vuelvas a cobrar. Referencia: $referenceNumber"
         )
     }
+
+    /**
+     * 🔴 D13 (encargo ff3278): el banco APROBÓ y la libreta de este equipo no pudo guardarlo (la base falló). Se dice tal cual,
+     * en ámbar como [buildPendingSyncState] (no falló el cobro): SÍ se cobró, y si la app se cierra antes de registrarlo este
+     * equipo no lo recordaría. Lo quitan el recibo registrado o la cola, igual que los demás avisos.
+     */
+    @VisibleForTesting
+    internal fun buildApprovalNotSavedState(
+        current: PaymentState,
+        referenceNumber: String
+    ): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            aprobacionSinGuardar = true,
+            pendingSyncMessage = "El cobro con tarjeta SÍ se hizo, pero este equipo no pudo guardarlo. Se está registrando en " +
+                "Avoqado: NO vuelvas a cobrar y no cierres la app hasta que termine. Referencia: $referenceNumber"
+        )
+    }
+
+    /** D13: la aprobación ya quedó guardada (p. ej. al escribir AUTORIZADO): se quita SÓLO el aviso de D13, nunca otro. */
+    @VisibleForTesting
+    internal fun clearApprovalNotSavedState(current: PaymentState): PaymentState.Success? {
+        if (current !is PaymentState.Success || !current.aprobacionSinGuardar) return null
+        return current.copy(pendingSyncMessage = null, aprobacionSinGuardar = false)
+    }
+
+    /**
+     * D13 (Codex r7 #2): la copia del éxito que guarda «No se pudo imprimir» se tomó ANTES de esperar a la impresora; si mientras
+     * tanto la aprobación quedó a salvo, el aviso de D13 de esa copia ya no es cierto y no se repone.
+     */
+    private fun exitoParaElErrorDeImpresion(copia: PaymentState.Success): PaymentState.Success =
+        if (copia.aprobacionSinGuardar && sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) != true)
+            clearApprovalNotSavedState(copia) ?: copia
+        else copia
+
+    /**
+     * D13 (Codex r6 #3): quita el aviso del éxito vivo o del que guarda «No se pudo imprimir» (que lo muestra), nunca otro aviso.
+     */
+    private fun quitarAvisoDeAprobacionSinGuardar(current: PaymentState): PaymentState? = when (current) {
+        is PaymentState.Success -> clearApprovalNotSavedState(current)
+        is PaymentState.PrintError -> clearApprovalNotSavedState(current.previousState)?.let { current.copy(previousState = it) }
+        else -> null
+    }
+
+    /**
+     * D13 (Codex r2 #3): el PRIMER «Aprobado» ya sale con el aviso si la libreta no pudo guardar la aprobación — nunca la
+     * celebración limpia mientras se espera a AUTORIZADO.
+     */
+    /**
+     * D13 (Codex r3 #2, r4 H5): mientras se registra, otro escritor (un veredicto del servidor, la cola) puede dejar el cobro a salvo; entonces el aviso
+     * de «no se pudo guardar» ya no es cierto y se quita. Sólo el de ESTE cobro, y sólo el de D13 (nunca el de la cola ni otro).
+     */
+    private fun vigilarAprobacionSinGuardar(attemptId: String) {
+        viewModelScope.launch {
+            while (isActive && paymentAttemptLedger.revisarAprobacionPendiente(attemptId)) delay(1_000)
+            if (sessionSnapshot.paymentAttemptId == attemptId) quitarAvisoDeAprobacionSinGuardar(_state.value)?.let { _state.value = it }
+        }
+    }
+
+    private fun exitoConAvisoDeLaLibreta(exito: PaymentState.Success, referencia: String?): PaymentState.Success =
+        if (sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true)
+            buildApprovalNotSavedState(exito, referencia.orEmpty()) ?: exito
+        else exito
 
     // ═══════════════════════════════════════════════════════════════════════════════════════
     // 💸 REEMBOLSOS — los estados honestos, la telemetría y el desenlace de la cola
@@ -4224,11 +4294,11 @@ class PaymentViewModel @Inject constructor(
                 recordingInFlight = true
 
                 // ✅ FIX: Display total (subtotal + tip) in Success screen
-                _state.value = PaymentState.Success(
+                _state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(
                     authCode = saleData.authorization ?: "",
                     amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
                     tipAmount = getTipForFlow()
-                )
+                ), saleData.reference)
 
                 // ⭐ NEW: Record payment to backend (in background)
                 handlePaymentSuccess(
@@ -5718,11 +5788,11 @@ class PaymentViewModel @Inject constructor(
             recordingInFlight = true
 
             // ✅ FIX: Display total (subtotal + tip)
-            _state.value = PaymentState.Success(
+            _state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(
                 authCode = saleData.authorization ?: "",
                 amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
                 tipAmount = getTipForFlow()
-            )
+            ), saleData.reference)
 
             // ⭐ NEW: Record payment to backend (in background)
             handlePaymentSuccess(
@@ -7646,7 +7716,11 @@ class PaymentViewModel @Inject constructor(
                                 com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerApprovalRecovery.MARGEN_MS
                         )
                     }
-                    buildPendingLoginState(_state.value, referenceNumber)?.let { _state.value = it }
+                    // 🔴 D13 (ff3278): si la aprobación del banco tampoco se pudo guardar en este equipo, no hay nada que lo
+                    // registre al volver a entrar: la alarma de «no quedó registrado», nunca «quedó guardado en este equipo».
+                    val sinGuardar = attemptIdDelCobro?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true
+                    (if (sinGuardar) buildRecordingLostState(_state.value, referenceNumber)
+                        else buildPendingLoginState(_state.value, referenceNumber))?.let { _state.value = it }
                     return@launch
                 }
 
@@ -7697,6 +7771,16 @@ class PaymentViewModel @Inject constructor(
                         cardBrand = cardDetails.cardBrand.name,
                         entryMode = cardDetails.entryMode.name
                     )
+                    // 🔴 D13 (ff3278): el banco aprobó y la libreta no pudo guardarlo (ni al contestar el banco ni ahora). No es un
+                    // «Aprobado» limpio: la pantalla lo dice en ámbar mientras el servidor o la cola no lo tengan. Lo quita o lo
+                    // cambia lo de siempre: el recibo registrado, la cola o la alarma de «no quedó registrado».
+                    if (paymentAttemptLedger.aprobacionPendienteDeGuardar(attemptIdForLedger)) {
+                        buildApprovalNotSavedState(_state.value, referenceNumber)?.let { _state.value = it }
+                        vigilarAprobacionSinGuardar(attemptIdForLedger)
+                    } else {
+                        // AUTORIZADO la selló: el aviso del primer «Aprobado» ya no es cierto.
+                        quitarAvisoDeAprobacionSinGuardar(_state.value)?.let { _state.value = it }
+                    }
                 }
 
                 Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$effectiveStaffId, shift=$currentShiftId, amount=${getAmountForFlow()}, tip=${getTipForFlow()}, rating=${getRatingForFlow()}, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
@@ -8358,7 +8442,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] No paper in printer")
                     _state.value = PaymentState.PrintError(
                         message = "Sin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8367,7 +8451,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Printer not ready: ${printerStatus.message}")
                     _state.value = PaymentState.PrintError(
                         message = printerStatus.message,
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8388,7 +8472,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Order has no items to print")
                     _state.value = PaymentState.PrintError(
                         message = "No se encontraron productos de la orden para imprimir. Intenta de nuevo.",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                     return@launch
                 }
@@ -8437,7 +8521,7 @@ class PaymentViewModel @Inject constructor(
                     _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir recibo",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                 }
             } catch (e: Exception) {
@@ -8445,7 +8529,7 @@ class PaymentViewModel @Inject constructor(
                 _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
-                    previousState = currentState
+                    previousState = exitoParaElErrorDeImpresion(currentState)
                 )
             } finally {
                 _isPrinting.value = false // también en las salidas tempranas (sin papel, no lista, sin productos)
@@ -8462,7 +8546,11 @@ class PaymentViewModel @Inject constructor(
         val currentState = _state.value
         if (currentState is PaymentState.PrintError) {
             // El recibo se arma de nuevo al volver: sin la marca repetía «Pago aprobado».
-            _state.value = currentState.previousState.copy(approvedAnimationShown = true)
+            val restaurado = currentState.previousState.copy(approvedAnimationShown = true)
+            // D13: la copia del éxito pudo guardarse con el aviso de «no se pudo guardar»; si la libreta ya la dejó a salvo
+            // mientras se veía el error de la impresora, ese aviso ya no es cierto.
+            val sigueSinGuardar = sessionSnapshot.paymentAttemptId?.let(paymentAttemptLedger::aprobacionPendienteDeGuardar) == true
+            _state.value = if (restaurado.aprobacionSinGuardar && !sigueSinGuardar) clearApprovalNotSavedState(restaurado) ?: restaurado else restaurado
             Timber.d("🔙 [Print] Dismissed print error, returned to Success state")
         }
     }
@@ -8733,7 +8821,7 @@ class PaymentViewModel @Inject constructor(
                     _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir comanda",
-                        previousState = currentState
+                        previousState = exitoParaElErrorDeImpresion(currentState)
                     )
                 }
             } catch (e: Exception) {
@@ -8741,7 +8829,7 @@ class PaymentViewModel @Inject constructor(
                 _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
-                    previousState = currentState
+                    previousState = exitoParaElErrorDeImpresion(currentState)
                 )
             }
         }

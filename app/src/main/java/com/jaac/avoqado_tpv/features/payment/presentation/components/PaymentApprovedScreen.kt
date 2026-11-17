@@ -43,7 +43,9 @@ fun PaymentApprovedScreen(
     amount: String,
     onAnimationComplete: () -> Unit,
     modifier: Modifier = Modifier,
-    isRefund: Boolean = false  // 💸 True = show "Reembolso Aprobado", False = show "Aprobado"
+    isRefund: Boolean = false,  // 💸 True = show "Reembolso Aprobado", False = show "Aprobado"
+    /** D13 (Codex r9): el aviso de «no se pudo guardar» bajo el monto, para el kiosco que se queda aquí esperando el recibo. */
+    aviso: String? = null,
 ) {
     // Animation duration constants
     val circleDuration = 600
@@ -152,6 +154,24 @@ fun PaymentApprovedScreen(
                 ),
                 color = textColor
             )
+
+            aviso?.let {
+                Spacer(modifier = Modifier.height(16.dp))
+                // Codex r10: el MISMO ámbar que el aviso del POS (fondo statusWarning al 12 %, texto onSurface por contraste).
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier
+                        .padding(horizontal = 24.dp)
+                        .background(
+                            MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f),
+                            androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                        )
+                        .padding(12.dp)
+                )
+            }
         }
     }
 }

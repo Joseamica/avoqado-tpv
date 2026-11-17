@@ -806,10 +806,14 @@ fun PaymentScreen(
                     // `approvedAnimationShown`: al volver de «No se pudo imprimir» esta rama se
                     // compone de nuevo y este `remember` nace otra vez — sin la marca repetía la
                     // animación como si se hubiera cobrado dos veces (PAX, 1-oct-2026).
+                    // D13 (Codex r8, r16 #2): el aviso de «no se pudo guardar» NO corta la animación de «Aprobado» (se ve dentro de
+                    // ella): en el KIOSCO su cuenta regresiva cerraría la venta con «Total pagado $0.00» sin recibo, y en el POS el
+                    // botón «Inicio» saldría antes que hoy en main y podría cortar el encolado del cobro.
+                    val avisoQueCortaLaEspera = currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar
                     var showApprovedAnimation by remember(currentState.authCode) {
                         mutableStateOf(
                             !currentState.approvedAnimationShown &&
-                                currentState.recordingLostMessage == null && currentState.pendingSyncMessage == null
+                                currentState.recordingLostMessage == null && !avisoQueCortaLaEspera
                         )
                     }
                     // 🔴 Fix round 1 (Important): the check above is NEVER actually true when it
@@ -826,8 +830,8 @@ fun PaymentScreen(
                     // SAME reasoning: it also arrives asynchronously after Success first publishes,
                     // and a cashier who needs to read "don't recharge" should get there as fast as
                     // possible — a few seconds of confetti first isn't worth delaying that note.
-                    LaunchedEffect(currentState.recordingLostMessage, currentState.pendingSyncMessage) {
-                        if (currentState.recordingLostMessage != null || currentState.pendingSyncMessage != null) {
+                    LaunchedEffect(currentState.recordingLostMessage, currentState.pendingSyncMessage, avisoQueCortaLaEspera) {
+                        if (currentState.recordingLostMessage != null || avisoQueCortaLaEspera) {
                             showApprovedAnimation = false
                         }
                     }
@@ -858,7 +862,9 @@ fun PaymentScreen(
                                         showApprovedAnimation = false
                                     }
                                 },
-                                isRefund = currentState.isRefund  // 💸 Show "Reembolso Aprobado" for refunds
+                                isRefund = currentState.isRefund,  // 💸 Show "Reembolso Aprobado" for refunds
+                                // D13 (Codex r9): el kiosco se queda aquí esperando el recibo; el aviso se ve aquí mismo.
+                                aviso = currentState.pendingSyncMessage?.takeIf { currentState.aprobacionSinGuardar },
                             )
                         }
 
@@ -879,6 +885,7 @@ fun PaymentScreen(
                                 showPrintButton = viewModel.canPrintReceipt,
                                 recordingLostMessage = currentState.recordingLostMessage,  // 🚨 Money-safety alarm banner
                                 pendingSyncMessage = currentState.pendingSyncMessage,  // 🟡 Queued-for-sync note
+                                aprobacionSinGuardar = currentState.aprobacionSinGuardar,  // D13: no es «en cola»
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
@@ -953,7 +960,8 @@ fun PaymentScreen(
                                 proofOfSaleMessage = when {
                                     !showProofOfSale -> null
                                     proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
-                                    currentState.pendingSyncMessage != null -> PROOF_SALE_QUEUED_MESSAGE
+                                    // D13: el aviso de «no se pudo guardar» no es una venta en cola (Codex r2 #4).
+                                    currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE
                                     else -> null
                                 },
                                 onProofOfSalePhotoTaken = { photoPath, slot, number ->
@@ -1039,8 +1047,11 @@ fun PaymentScreen(
                 // se reimprime desde el recibo, que además sabe si era recibo o comanda.
                 is PaymentState.PrintError -> {
                     val yaPaso = if (currentState.previousState.isRefund) "La devolución sí se hizo." else "El cobro sí quedó aprobado."
+                    // D13 (Codex r5 #5): con la aprobación sin guardar en el equipo, el aviso «NO vuelvas a cobrar» sigue a la vista.
+                    val avisoD13 = currentState.previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage
                     PaymentErrorContent(
-                        message = "$yaPaso\n\n${currentState.message}",
+                        message = listOfNotNull(yaPaso, currentState.message).joinToString("\n\n"),
+                        aviso = avisoD13,  // Codex r11: en ámbar, no como texto normal
                         canRetry = false,
                         title = "No se pudo imprimir",
                         icon = "🖨️",
@@ -1644,6 +1655,8 @@ private fun PaymentSuccessContent(
     // Email/WhatsApp (server-dependent) while leaving Imprimir enabled (local, ESC/POS). Null
     // (default) for every normal Success, which stays byte-identical.
     pendingSyncMessage: String? = null,
+    /** D13 (Codex r5 #6): [pendingSyncMessage] es el aviso de «no se pudo guardar», no «quedó en cola». */
+    aprobacionSinGuardar: Boolean = false,
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
@@ -2126,7 +2139,8 @@ private fun PaymentSuccessContent(
                         recordingLostMessage != null -> Unit
                         pendingSyncMessage != null -> {
                             Text(
-                                text = "El recibo estará disponible en cuanto el pago se sincronice",
+                                text = if (aprobacionSinGuardar) "El recibo estará disponible en cuanto Avoqado registre el pago"
+                                    else "El recibo estará disponible en cuanto el pago se sincronice",
                                 textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -2712,6 +2726,8 @@ private fun PaymentErrorContent(
     showCashFallback: Boolean = false,
     isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
     title: String? = null,  // 🖨️ Errores que NO son del cobro (impresora): no decir «Error en el Pago»
+    /** D13 (Codex r11): el aviso de «no se pudo guardar», en el mismo ámbar que el éxito, debajo del mensaje. */
+    aviso: String? = null,
     icon: String = "❌",
     cancelText: String = "Cancelar",
     onRetry: () -> Unit,
@@ -2766,6 +2782,21 @@ private fun PaymentErrorContent(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // D13 (Codex r12): el aviso va PRIMERO, para que «NO vuelvas a cobrar» se vea sin deslizar aun con letra grande.
+                    aviso?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                                .padding(12.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
                     Text(
                         text = message,
                         style = MaterialTheme.typography.bodyMedium,

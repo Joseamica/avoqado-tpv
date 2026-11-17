@@ -281,9 +281,8 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             } catch (e: CancellationException) {
                 // Mismo motivo que en markSynced/release: CancellationException ES una
                 // Exception en Kotlin — un catch (e: Exception) desnudo se la tragaría y
-                // devolvería 0 en vez de repropagarla a doWork(). Un worker cancelado debe
-                // dejar la fila reclamada para el barrido de stale-claim, nunca seguir
-                // escribiendo.
+                // devolvería 0 en vez de repropagarla a doWork(). Un worker cancelado nunca
+                // sigue escribiendo; lo que deja reclamado lo suelta doWork() al salir (D7).
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Payment Queue] markPermanentlyFailed() falló | queueId=$queueId")
@@ -313,9 +312,10 @@ class PaymentQueueRepositoryImpl @Inject constructor(
                 // `catch (e: Exception)` alone would swallow worker cancellation and return 0
                 // instead of propagating. Before round 1, release() had NO catch at all, so
                 // cancellation reached doWork()'s `catch (e: CancellationException) { throw e }`
-                // untouched — a cancelled worker must leave this row claimed for the stale sweep
-                // and must NEVER keep writing into the next payment of the batch. Rethrow BEFORE
-                // the generic catch.
+                // untouched — a cancelled worker must NEVER keep writing into the next payment of
+                // the batch. Rethrow BEFORE the generic catch. (D7: the claims it leaves are
+                // released by PaymentSyncWorker.soltarSinTerminar() under NonCancellable, so this
+                // path is only reached by a cancellation that arrives mid-write.)
                 throw e
             } catch (e: Exception) {
                 // 🔒 F-9, Fix round 1 (Important 1): sin este try/catch, un throw aquí (disco

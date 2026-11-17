@@ -1050,7 +1050,8 @@ fun PaymentScreen(
                     // D13 (Codex r5 #5): con la aprobación sin guardar en el equipo, el aviso «NO vuelvas a cobrar» sigue a la vista.
                     val avisoD13 = currentState.previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage
                     PaymentErrorContent(
-                        message = listOfNotNull(yaPaso, avisoD13, currentState.message).joinToString("\n\n"),
+                        message = listOfNotNull(yaPaso, currentState.message).joinToString("\n\n"),
+                        aviso = avisoD13,  // Codex r11: en ámbar, no como texto normal
                         canRetry = false,
                         title = "No se pudo imprimir",
                         icon = "🖨️",
@@ -2725,6 +2726,8 @@ private fun PaymentErrorContent(
     showCashFallback: Boolean = false,
     isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
     title: String? = null,  // 🖨️ Errores que NO son del cobro (impresora): no decir «Error en el Pago»
+    /** D13 (Codex r11): el aviso de «no se pudo guardar», en el mismo ámbar que el éxito, debajo del mensaje. */
+    aviso: String? = null,
     icon: String = "❌",
     cancelText: String = "Cancelar",
     onRetry: () -> Unit,
@@ -2785,6 +2788,20 @@ private fun PaymentErrorContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
+                    aviso?.let {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                                .padding(12.dp)
+                        )
+                    }
                 }
             }
 

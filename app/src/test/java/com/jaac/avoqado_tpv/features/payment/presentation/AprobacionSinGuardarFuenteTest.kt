@@ -104,6 +104,8 @@ class AprobacionSinGuardarFuenteTest {
         val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
         val error = entre(pantalla, "is PaymentState.PrintError -> {", "PaymentErrorContent(", "PaymentScreen")
         assertTrue("el error de impresión esconde «NO vuelvas a cobrar»", error.contains("previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage"))
+        assertTrue("el aviso del error de impresión no va en ámbar (Codex r11)",
+            entre(pantalla, "is PaymentState.PrintError -> {", "onCancel = viewModel::dismissPrintError", "PaymentScreen").contains("aviso = avisoD13"))
         assertTrue("el recibo dice «se sincronice» con el aviso de D13",
             pantalla.contains("if (aprobacionSinGuardar) \"El recibo estará disponible en cuanto Avoqado registre el pago\""))
     }

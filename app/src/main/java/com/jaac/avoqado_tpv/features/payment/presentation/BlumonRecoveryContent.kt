@@ -34,20 +34,27 @@ internal fun salidaDelCobro(
 }
 
 /**
- * D12 (16-nov): «Ya revisé la terminal: no se cobró» en un cobro LOCAL sólo cambia la libreta de ESTA terminal
- * (`declarado_sin_cobro:<staffId>`); el servidor no la recibe (medido en la PAX, acta de #55, parte 2). No prometer más.
+ * D12 (16-nov): «Ya revisé la terminal: no se cobró» en un cobro LOCAL cambiaba sólo la libreta de ESTA terminal
+ * (`declarado_sin_cobro:<staffId>`). 🔴 D22 (founder, 17-nov: «Sí, A1»): con red, además queda en Avoqado; sin red, sólo aquí. Antes
+ * de tocar no se sabe cuál de los dos pasará: la invitación dice los dos, y «Intento cerrado» dice cuál pasó ([textoDelIntentoCerrado]).
  * Codex r1: «no aparece en Avoqado» y no «no sale del aparato» (los diagnósticos llevan la línea de la libreta). Codex r1 y r2:
  * el aviso de un cobro que aparezca después caduca con la poda (`pruneTerminalOlderThan`) y se apaga si la terminal cambia de
  * negocio o pierde la activación, y la libreta puede guardar `declarado_sin_cobro:sin_identificar`: sin promesa de aviso ni de
  * «quién». Que la declaración llegue a Avoqado lo decide el founder (camino (a), `docs/audit/2026-11-16-d12-…/promesa.md`).
  */
 internal const val INVITACION_A_DECLARAR_EN_LA_TERMINAL =
-    "Si ya revisaste que no se cobró (por ejemplo, en la app del banco del cliente), déjalo anotado. Se anota en esta terminal; no aparece en Avoqado."
+    "Si ya revisaste que no se cobró (por ejemplo, en la app del banco del cliente), déjalo anotado. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal."
 
-/** «Intento cerrado»: con `declarado_sin_cobro:` lo cerró el cajero en esta terminal (D12); si no, lo liberó el servidor. */
+/**
+ * «Intento cerrado»: con `declarado_sin_cobro:` lo declaró el cajero (D12) — y con la marca de D22, Avoqado lo guardó; si no, lo
+ * liberó el servidor. Sin la marca se dice «no aparece en Avoqado» aunque una respuesta perdida lo haya guardado: la pantalla dice
+ * de menos, nunca de más, y la siguiente consulta agrega la marca (`marcarDeclaracionEnAvoqado`).
+ */
 internal fun textoDelIntentoCerrado(lastError: String?): String =
-    if (lastError?.startsWith("declarado_sin_cobro:") == true)
-        "Quedó anotado en esta terminal que revisaste y no se cobró; no aparece en Avoqado. Puedes volver a cobrar esta venta."
+    if (com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.declaradoEnAvoqado(lastError))
+        "Quedó anotado en Avoqado que se revisó y no se cobró, con el nombre de quien lo declaró y la hora. Puedes volver a cobrar esta venta."
+    else if (lastError?.startsWith("declarado_sin_cobro:") == true)
+        "Quedó anotado sólo en esta terminal que revisaste y no se cobró: Avoqado no lo recibió y no aparece ahí. Puedes volver a cobrar esta venta."
     // D5 (533d77, Codex r4): neutral. La liberación del servidor deja el mismo `last_error` para «no presentó tarjeta» y para
     // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó.
     else "Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar."

@@ -223,6 +223,18 @@ data class PaymentAttemptEntity(
         /** El cajero declaró «no se presentó tarjeta» y el servidor lo acreditó (OPERATOR_RECONCILED). */
         const val SERVER_OPERATOR_NO_INSTRUMENT = "OPERATOR_NO_INSTRUMENT"
         const val LAST_ERROR_LIBERADA_PREFIX = "liberada_por_el_servidor:"
+        /**
+         * El cajero declaró «revisé la terminal y no se cobró» de un cobro LOCAL ([PaymentAttemptLedger.declararSinCobroLocal]):
+         * `last_error` = prefijo + quién. 🔴 D22 (founder, 17-nov: «Sí, A1»): si Avoqado la recibió y la guardó, lleva además
+         * [SUFIJO_DECLARADO_EN_AVOQADO] — lo que la pantalla usa para decir «quedó en Avoqado» o «sólo en esta terminal». Sin
+         * migración: la columna ya es texto y el prefijo, que leen la poda y la pantalla, no cambia.
+         */
+        const val PREFIJO_DECLARADO_SIN_COBRO = "declarado_sin_cobro:"
+        const val SUFIJO_DECLARADO_EN_AVOQADO = ":avoqado"
+
+        /** D22: ¿esta declaración del cajero quedó en Avoqado (no sólo en la libreta)? */
+        fun declaradoEnAvoqado(lastError: String?): Boolean =
+            lastError != null && lastError.startsWith(PREFIJO_DECLARADO_SIN_COBRO) && lastError.endsWith(SUFIJO_DECLARADO_EN_AVOQADO)
         /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
         const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
 

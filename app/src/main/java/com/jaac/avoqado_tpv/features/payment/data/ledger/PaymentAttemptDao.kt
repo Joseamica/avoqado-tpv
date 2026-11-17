@@ -593,6 +593,25 @@ interface PaymentAttemptDao {
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long): Int
 
     /**
+     * 🔴 D22 (Codex plan r1, bloqueante 1): la respuesta del envío se perdió, la terminal cerró la duda SÓLO en la libreta (sin
+     * la marca) y después S6 trae la declaración que Avoqado sí guardó. El cierre ya no aplica (la fila no está INDETERMINADO):
+     * esto sólo AGREGA la marca [PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO] a una declaración local ya cerrada, para que la
+     * pantalla no siga diciendo «no aparece en Avoqado». No cambia estado, hora ni retención (la poda mide desde `updated_at`),
+     * es idempotente y nunca toca una fila con dinero, veto o solicitud del POS.
+     */
+    @Query(
+        """UPDATE payment_attempts SET last_error = last_error || :sufijo
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0
+             AND terminal_payment_request_id IS NULL AND state = 'DESCARTADA'
+             AND last_error LIKE 'declarado_sin_cobro:%' AND last_error NOT LIKE '%' || :sufijo
+             AND (host_approved IS NULL OR host_approved = 0)
+             AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
+             AND (server_outcome IS NULL
+                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))"""
+    )
+    suspend fun marcarDeclaracionEnAvoqado(attemptId: String, venueId: String, sufijo: String): Int
+
+    /**
      * 🔴 Botón «No se cobró» del banner verde (founder, 3-nov: «A»): a qué cobros se les puede afirmar que no se cobraron. Lista para
      * ofrecer el botón, no para decidir: quien decide es el servidor o el CAS de [declararSinCobroLocal].
      *

@@ -67,7 +67,7 @@ class NoSeCobroCableadoTest {
             "¿Cuál no se cobró?",
             "¿No se cobró este cobro?",
             ". Revísalo antes de confirmar: queda tu nombre y la hora.\"",
-            ". Revísalo antes de confirmar. Se anota en esta terminal; no aparece en Avoqado.",
+            ". Revísalo antes de confirmar. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal.",
             "Sí, no se cobró",
             "Cancelar",
             "Pide a un gerente que ingrese su PIN",

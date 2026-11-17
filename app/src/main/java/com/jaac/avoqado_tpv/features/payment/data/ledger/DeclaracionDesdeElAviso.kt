@@ -34,6 +34,10 @@ data class CobroDeclarable(
 /** Lo que le pasó a la declaración, con el texto que lee el cajero. */
 sealed interface ResultadoDeLaDeclaracion {
     data object Declarado : ResultadoDeLaDeclaracion
+    /** D22: un Pago rápido declarado ahora, y Avoqado lo guardó (con el nombre de la sesión, la hora y el monto). */
+    data object DeclaradoEnAvoqado : ResultadoDeLaDeclaracion
+    /** D22: un Pago rápido declarado ahora, pero Avoqado no lo recibió (sin red, sin respuesta o un servidor anterior). */
+    data object DeclaradoSoloEnLaTerminal : ResultadoDeLaDeclaracion
     data object PidePin : ResultadoDeLaDeclaracion
     data class Rechazado(val mensaje: String) : ResultadoDeLaDeclaracion
     data object SinRed : ResultadoDeLaDeclaracion
@@ -50,6 +54,10 @@ sealed interface ResultadoDeLaDeclaracion {
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
+        // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
+        DeclaradoEnAvoqado -> "Listo: quedó anotado en Avoqado que revisaste y no se cobró, con tu nombre y la hora. Puedes volver a cobrar."
+        DeclaradoSoloEnLaTerminal ->
+            "Listo, pero Avoqado no lo recibió: quedó anotado sólo en esta terminal y no aparece en Avoqado. Puedes volver a cobrar."
         Declarado, PidePin -> ""
     }
 }
@@ -171,9 +179,16 @@ class DeclaracionDesdeElAviso @Inject constructor(
         val resultado = resolver.declareChecked(venueId, attemptId)
         resultado.resultJson?.let(socket.get()::emitDurableTerminalPaymentResult)
         // PENDING = no se cerró: nunca contestó Avoqado, o algo cambió entre leer y escribir y el CAS no aplicó.
-        return if (resultado.state == BlumonAttemptResolver.State.PENDING) {
-            if (resultado.row?.serverAnsweredAt == null) ResultadoDeLaDeclaracion.FaltaConsultar else GENERICO
-        } else desenlaceEnLaLibreta(resultado)
+        return when {
+            resultado.state == BlumonAttemptResolver.State.PENDING ->
+                if (resultado.row?.serverAnsweredAt == null) ResultadoDeLaDeclaracion.FaltaConsultar else GENERICO
+            // D22: la declaración del cajero de ESTA libreta dice si quedó en Avoqado; otra liberación (del servidor) se cierra como antes.
+            resultado.state == BlumonAttemptResolver.State.RELEASED &&
+                resultado.row?.lastError?.startsWith(PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO) == true ->
+                if (PaymentAttemptEntity.declaradoEnAvoqado(resultado.row?.lastError)) ResultadoDeLaDeclaracion.DeclaradoEnAvoqado
+                else ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal
+            else -> desenlaceEnLaLibreta(resultado)
+        }
     }
 
     private fun desenlaceEnLaLibreta(resultado: BlumonAttemptResolver.Result): ResultadoDeLaDeclaracion = when (resultado.state) {

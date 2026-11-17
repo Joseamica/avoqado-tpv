@@ -50,9 +50,19 @@ class ConnectionStateManager @Inject constructor() {
     private var measurementCount: Int = 0
 
     /**
+     * Cuántas veces ha escrito el LATIDO (su respuesta, o «sin red» tras su gracia). En 0, el `true/true` de arriba es el
+     * supuesto del arranque, no evidencia de que el servidor conteste (D13, Codex r1 #1). Sube ANTES de publicar el estado,
+     * así quien recibe ese estado ya lo ve. Sólo lo escribe el `ConnectionViewModel`, en el hilo principal.
+     */
+    @Volatile
+    var escriturasDelLatido: Long = 0L
+        private set
+
+    /**
      * Update internet connectivity status
      */
     fun setInternetConnected(connected: Boolean) {
+        escriturasDelLatido++
         val current = _connectionState.value
         if (current.hasInternet != connected) {
             Timber.i("🌐 [ConnectionState] Internet: $connected")
@@ -64,6 +74,7 @@ class ConnectionStateManager @Inject constructor() {
      * Update server connectivity status
      */
     fun setServerConnected(connected: Boolean) {
+        escriturasDelLatido++
         val current = _connectionState.value
         if (current.hasServer != connected) {
             Timber.i("🖥️ [ConnectionState] Server: $connected")
@@ -76,6 +87,7 @@ class ConnectionStateManager @Inject constructor() {
      * Applies hysteresis for slow connection detection.
      */
     fun updateState(hasInternet: Boolean, hasServer: Boolean, latencyMs: Long? = null) {
+        escriturasDelLatido++
         val now = System.currentTimeMillis()
 
         // Skip first measurement (cold TCP + TLS handshake is always slow)

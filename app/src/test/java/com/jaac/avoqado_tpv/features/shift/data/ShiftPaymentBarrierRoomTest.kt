@@ -10,6 +10,8 @@ import com.jaac.avoqado_tpv.MainDispatcherRule
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
+import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
+import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
@@ -407,9 +409,12 @@ class ShiftPaymentBarrierRoomTest {
         coEvery { repo.getCachedOpenShift(any()) } returns null
         val connections = mockk<ConnectionEventManager>(relaxed = true)
         every { connections.connectionRestoredEvents } returns MutableSharedFlow()
+        val connectivity = mockk<ConnectivityObserver>(relaxed = true)
+        every { connectivity.observe() } returns MutableSharedFlow<NetworkStatus>()
+        every { connectivity.getCurrentNetworkStatus() } returns com.jaac.avoqado_tpv.core.util.NetworkStatus.Available
         val permissions = mockk<PermissionsRepository>()
         coEvery { permissions.hasPermission(any()) } returns true
-        return ShiftViewModel(repo, storage, connections, cache, com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), permissions, refunds).also { viewModels += it }
+        return ShiftViewModel(repo, storage, connections, cache, connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager()).also { viewModels += it }
     }
 
     private fun shift(id: String) = Shift(id = id, venueId = "v1", staffId = "seller", staffName = "Vendedora",

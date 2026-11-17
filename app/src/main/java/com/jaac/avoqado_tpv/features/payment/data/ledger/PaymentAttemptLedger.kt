@@ -471,10 +471,12 @@ class PaymentAttemptLedger(
      * servidor en vuelo) puede colarse entre la escritura fallida y la memoria y cerrar la fila como DESCARTADA.
      */
     private suspend fun aprobacionDelHost(attemptId: String, a: AprobacionDelHost): Boolean = withContext(NonCancellable) {
-        candadoDeEvidencia.withLock {
-            aprobacionSinGuardar[attemptId] = a
-            escribirAprobacionBajoCandado(attemptId, reintento = false)
-        }
+        // SABOTAJE D13: el comportamiento viejo (se ignora el fallo, nada se recuerda).
+        runCatching {
+            withContext(Dispatchers.IO) {
+                escribirRespuestaDelHost(attemptId, PaymentAttemptEntity.STATE_HOST_RESPONDIO, a.operationId, a.referenceNumber, a.authCode, true)
+            }
+        }.getOrDefault(false)
     }
 
     /**

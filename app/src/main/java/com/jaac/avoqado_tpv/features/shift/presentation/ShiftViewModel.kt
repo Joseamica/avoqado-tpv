@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
@@ -68,10 +69,13 @@ class ShiftViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val connectionEventManager: ConnectionEventManager,
     private val cachedShiftDao: CachedShiftDao,
+    /** Sólo para el arranque, antes del primer latido (ver [observeConnectivity]). */
     private val connectivityObserver: ConnectivityObserver,
     private val permissionsRepository: PermissionsRepository,
     /** 💸 La cola durable de REEMBOLSOS: lo que impide cerrar la caja (Fase 2, Task 9). */
-    private val refundQueueRepository: RefundQueueRepository
+    private val refundQueueRepository: RefundQueueRepository,
+    /** El MISMO estado que pinta el aviso rojo («Sin conexión al servidor»): lo escribe el latido (D13). */
+    private val connectionStateManager: ConnectionStateManager,
 ) : ViewModel() {
 
     /**
@@ -122,10 +126,10 @@ class ShiftViewModel @Inject constructor(
     private val _isOffline = MutableStateFlow(false)
     val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
 
-    // «Sin conexión» tiene DOS causas y el ConnectivityObserver sólo ve una: el aparato sin red, o
-    // con WiFi pero el servidor sin contestar (N86, 23-sep-2026: arrancar sin servidor dejaba «Sin
-    // turno de caja» con la caja abierta y guardada). `isOffline` es la suma; cada fuente escribe
-    // sólo la suya, así un «WiFi disponible» no borra un servidor que sigue callado.
+    // «Sin conexión» tiene DOS causas: el latido sin internet o sin servidor (`sinRed`, lo mismo que el aviso rojo), o la
+    // lectura de la caja sin respuesta (N86, 23-sep-2026: arrancar sin servidor dejaba «Sin turno de caja» con la caja
+    // abierta y guardada). `isOffline` es la suma; cada fuente escribe la suya. Un «WiFi disponible» de Android no borra
+    // una caja que no contestó; un latido que SÍ contestó la borra (es el servidor contestando) y la vuelve a pedir.
     private var sinRed = false
     private var servidorSinContestar = false
     private fun publicarSinConexion() {
@@ -175,36 +179,45 @@ class ShiftViewModel @Inject constructor(
     }
 
     /**
-     * 🌐 Observe Network Connectivity Changes
+     * 🌐 «Sin conexión» por la red: lo decide el LATIDO, el mismo estado que pinta el aviso rojo (D13, PAX 16-nov-2026).
      *
-     * Monitors network status to update offline state and load cached data
-     * when connection is lost.
+     * Antes se escuchaba el aviso crudo de Android (`ConnectivityObserver`), que manda un `onLost` por CADA red. Al volver el
+     * WiFi, Android avisó «Network LOST» de una red vieja ~10 s después (09:44:57 y 09:49:56); el `ConnectionViewModel` lo
+     * absorbió en su gracia de 3 s, pero aquí nunca llegó otro «Available» y el recuadro del Inicio se quedó en «Caja abierta ·
+     * Sin conexión · guardado en este aparato» con el latido en server=true, hasta salir y volver.
      *
-     * **Pattern (Square/Toast POS - Prevention):**
-     * - Connection lost → Show cached shift state with "Último estado conocido"
-     * - Connection restored → ConnectionEventManager handles auto-sync
-     * - Shift operations blocked when offline
+     * Ahora: «Sin conexión» mientras el latido no tiene internet o no le contesta el servidor; se quita en cuanto contesta
+     * (también el de una lectura de la caja que no tuvo respuesta, como ya hacía «Connection restored»), y la caja se vuelve
+     * a pedir: si esa lectura falla sin respuesta, regresa «Sin conexión».
      */
     private fun observeConnectivity() {
         viewModelScope.launch {
-            connectivityObserver.observe().collect { status ->
+            // Sólo cuenta como «el latido contestó» lo que escriba DESPUÉS de suscribirse: un latido viejo no borra una
+            // lectura de la caja que falló después. Cada emisión trae lo que dejó ESA escritura (Codex r3 #1).
+            var escriturasVistas = connectionStateManager.latido.value.escrituras
+            connectionStateManager.latido.collect { latido ->
                 val wasOffline = _isOffline.value
-                sinRed = status == NetworkStatus.Unavailable
+                val antes = sinRed
+                sinRed = if (latido.escrituras == 0L) {
+                    // Antes del primer latido, el `true/true` del manager es un supuesto del arranque: decide lo que
+                    // Android validó, como antes de D13 (un WiFi sin salida no cuenta; Codex r1 #1).
+                    connectivityObserver.getCurrentNetworkStatus() == NetworkStatus.Unavailable
+                } else !latido.contesto
+                val elLatidoContesto = latido.escrituras > escriturasVistas && latido.contesto
+                escriturasVistas = latido.escrituras
+                if (elLatidoContesto) servidorSinContestar = false
                 publicarSinConexion()
-
-                when (status) {
-                    NetworkStatus.Unavailable -> {
-                        Timber.w("⚠️ [ShiftViewModel] Network lost - loading cached shift state")
-                        loadCachedShiftInfo()
-                    }
-                    NetworkStatus.Available -> {
-                        if (wasOffline && !_isOffline.value) {
-                            Timber.i("✅ [ShiftViewModel] Network restored - clearing cached info")
-                            _cachedShiftInfo.value = null
-                            // Note: ConnectionEventManager handles auto-sync via listenToConnectionRestored()
-                        }
-                    }
+                if (sinRed && !antes) {
+                    Timber.w("⚠️ [ShiftViewModel] Latido sin conexión - loading cached shift state")
+                    loadCachedShiftInfo()
+                } else if (wasOffline && !_isOffline.value) {
+                    Timber.i("✅ [ShiftViewModel] El latido contestó - clearing cached info")
+                    _cachedShiftInfo.value = null
                 }
+                // Se pone al día con lo que diga el servidor; si esa lectura falla sin respuesta, regresa «Sin conexión».
+                // M-4: igual que «Connection restored», durante un cierre en curso no se relee, ni se deja para después
+                // (Codex r3 #2): el cierre publica su propio resultado.
+                if (elLatidoContesto && wasOffline && !_cerrandoCaja.value) loadCurrentShift()
             }
         }
     }

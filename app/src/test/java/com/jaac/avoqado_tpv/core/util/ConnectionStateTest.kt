@@ -199,4 +199,35 @@ class ConnectionStateTest {
         manager.updateState(hasInternet = true, hasServer = false, latencyMs = null)
         assertThat(manager.connectionState.value.isSlowConnection).isTrue()
     }
+
+    // ========================================
+    // D13 · cada escritura del latido, con lo que dejó (Codex r2 y r3)
+    // ========================================
+
+    @Test
+    fun `D13 cada escritura del latido se publica con su propio resultado`() {
+        val manager = ConnectionStateManager()
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 0, contesto = false))
+
+        manager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 1, contesto = true))
+
+        // Idéntico al anterior: el estado no cambia, pero el latido sí escribió.
+        manager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 2, contesto = true))
+
+        manager.updateState(hasInternet = true, hasServer = false)
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 3, contesto = false))
+
+        manager.setInternetConnected(false)
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 4, contesto = false))
+    }
+
+    @Test
+    fun `D13 el WiFi sin salida no es una escritura del latido`() {
+        val manager = ConnectionStateManager()
+        manager.updateState(hasInternet = true, hasServer = true, latencyMs = 120)
+        manager.setWifiSinSalida(EstadoWifiSinSalida.DETECTADO)
+        assertThat(manager.latido.value).isEqualTo(Latido(escrituras = 1, contesto = true))
+    }
 }

@@ -268,7 +268,6 @@ class PaymentSyncWorker @AssistedInject constructor(
             // Worker detenido (WorkManager: la red dejó de estar validada, límite de tiempo):
             // no es un intento fallido, así que no cuenta.
             soltarSinTerminar(sinTerminar, contarIntentoDeLaPrimera = false)
-            if (sinTerminar.isNotEmpty()) pedirOtraPasadaDespuesDeSoltar()
             throw e
         } catch (e: Exception) {
             // Unexpected error (e.g., database crash). La fila en curso sí cuenta el intento:
@@ -304,16 +303,6 @@ class PaymentSyncWorker @AssistedInject constructor(
                 releaseClaim(payment, intentos, "La sincronización se detuvo antes de terminar; se reintenta")
             }
         }
-    }
-
-    /**
-     * D15 (Codex r2): WorkManager vuelve a programar el trabajo detenido SIN esperar a que éste termine de soltar sus filas,
-     * así que la pasada siguiente pudo tomar sólo una parte (o nada) y salir sin pedir otra. Esta pasada encadenada corre
-     * DESPUÉS (APPEND sobre la inmediata, con red) y recoge lo que quedó. Nunca tumba la salida: es lo último antes de lanzar.
-     */
-    private fun pedirOtraPasadaDespuesDeSoltar() {
-        runCatching { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext) }
-            .onFailure { Timber.w(it, "⚠️ [Payment Sync] No se pudo pedir la pasada que recoge lo soltado; queda el periódico") }
     }
 
     /**
@@ -694,7 +683,6 @@ class PaymentSyncWorker @AssistedInject constructor(
                             "La sincronización se detuvo antes de terminar; se reintenta") }
                     }
                 }
-                pedirOtraPasadaDespuesDeSoltar()
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "💸 [Refund Sync] Fallo inesperado en una fila | key=${refund.idempotencyKey}")

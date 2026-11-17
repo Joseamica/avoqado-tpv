@@ -71,7 +71,6 @@ class ColaSueltaAlCancelarRoomTest {
 
     @Before fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(context)
         db = Room.inMemoryDatabaseBuilder(context, AvoqadoDatabase::class.java).allowMainThreadQueries().build()
     }
 
@@ -107,8 +106,6 @@ class ColaSueltaAlCancelarRoomTest {
         assertThat(trasDetenerse.claimedAt).isNull()
         // Detenerse no es un intento fallido del cobro: un parpadeo tras otro nunca debe llevarlo a FAILED.
         assertThat(trasDetenerse.retryCount).isEqualTo(0)
-        // Codex r2: la pasada que WorkManager reprograma pudo arrancar antes de soltar; queda otra encadenada DESPUÉS.
-        assertThat(pasadaEncadenada()).isTrue()
 
         // La siguiente pasada (WorkManager la vuelve a programar al regresar la red) la toma YA, sin esperar 15 min.
         assertThat(worker(pagos, useCase).doWork()).isEqualTo(ListenableWorker.Result.success())
@@ -146,7 +143,6 @@ class ColaSueltaAlCancelarRoomTest {
         assertThat(trasDetenerse.syncStatus).isEqualTo(PendingRefundEntity.SYNC_STATUS_PENDING)
         assertThat(trasDetenerse.claimToken).isNull()
         assertThat(trasDetenerse.retryCount).isEqualTo(0)
-        assertThat(pasadaEncadenada()).isTrue()
 
         assertThat(worker(pagos, mockk(), reembolsos).doWork()).isEqualTo(ListenableWorker.Result.success())
 
@@ -156,11 +152,6 @@ class ColaSueltaAlCancelarRoomTest {
     }
 
     // ─── Ayudantes ──────────────────────────────────────────────────────────────
-
-    /** ¿Quedó pedida una pasada inmediata (la que recoge lo soltado) y sin correr todavía? */
-    private fun pasadaEncadenada(): Boolean = androidx.work.WorkManager.getInstance(context)
-        .getWorkInfosForUniqueWork(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.IMMEDIATE_WORK_NAME).get()
-        .any { !it.state.isFinished }
 
     private fun worker(
         pagos: PaymentQueueRepository,

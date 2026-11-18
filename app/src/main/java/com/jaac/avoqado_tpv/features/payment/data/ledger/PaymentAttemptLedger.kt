@@ -961,6 +961,9 @@ class PaymentAttemptLedger(
      * ANTES de [marcarSdkRegreso]. Nunca lanza.
      */
     suspend fun markChipRechazoTrasAprobacion(attemptId: String): ChipRechazo {
+        // Codex r3 #1: lo que el bloque ya decidió bajo el candado. Si quien llama se canceló mientras tanto, `withContext` lanza la
+        // cancelación AL VOLVER aunque todo se haya guardado: no es «la duda no quedó escrita».
+        var decidido: ChipRechazo? = null
         val desenlace = try {
             withContext(NonCancellable + Dispatchers.IO) {
                 candadoDeEvidencia.withLock {
@@ -971,14 +974,17 @@ class PaymentAttemptLedger(
                         // naa0a0de (Codex r1 #3): la duda sin escribir se anota DENTRO del candado: si no, una reserva podía pasar por
                         // la puerta entre el fallo y la anotación y no reintentarla.
                         if (it == ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.add(attemptId)
+                        decidido = it
                     }
                 }
             }
         } catch (error: Exception) {
-            Timber.e(error, "📒 [Libreta] markChipRechazoTrasAprobacion failed — la duda no quedó escrita | attemptId=%s", attemptId)
-            // Sólo si el candado ni siquiera se alcanzó a usar (no debería pasar: nada aquí lanza).
-            chipRechazoSinEscribir.add(attemptId)
-            ChipRechazo.SIN_ESCRIBIR
+            decidido ?: run {
+                Timber.e(error, "📒 [Libreta] markChipRechazoTrasAprobacion failed — la duda no quedó escrita | attemptId=%s", attemptId)
+                // Sólo si el bloque ni siquiera decidió (no debería pasar: nada ahí lanza).
+                chipRechazoSinEscribir.add(attemptId)
+                ChipRechazo.SIN_ESCRIBIR
+            }
         }
         // Codex r2 #1: el SIN_ESCRIBIR ya se anotó dentro del candado; volver a anotarlo aquí resucitaba una duda que otra puerta
         // acababa de escribir y soltar.

@@ -1764,7 +1764,7 @@ class TablesRepository @Inject constructor(
         private const val OPTIMISTIC_ITEM_ID_PREFIX = "pending-"
 
         /** na78d478: la fila del cobro no se pudo leer después de reproducir la cola: no se sabe si quedó en espera o rechazada. */
-        private const val COBRO_SIN_CONFIRMAR_CODIGO = "COBRO_SIN_CONFIRMAR"
+        const val COBRO_SIN_CONFIRMAR_CODIGO = "COBRO_SIN_CONFIRMAR"
         private const val COBRO_SIN_CONFIRMAR =
             "No se pudo confirmar si este cobro quedó guardado. NO lo vuelvas a cobrar: revisa la cuenta en un momento."
 

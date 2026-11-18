@@ -159,6 +159,30 @@ class TablesRepositoryPayCashTest {
         assertThat(result.getOrThrow().queued).isTrue()
     }
 
+    /**
+     * na78d478 (Codex r2 #4 y r3 #4): el replay propio recibió RETRY y, al soltar la cola, OTRO reproductor guardó el rechazo
+     * definitivo. Un RETRY no es la última palabra: se lee la fila, y el rechazo gana sobre «guardado».
+     */
+    @Test
+    fun un_RETRY_propio_seguido_del_rechazo_de_otro_reproductor_no_dice_guardado() = runTest {
+        val idSlot = slot<String>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, any(), capture(idSlot)) } answers { idSlot.captured }
+        coEvery { outbox.replayNow(venueId, any()) } coAnswers {
+            val onAck = secondArg<suspend (SyncIntentEntity, SyncIntentAck) -> Unit>()
+            onAck(
+                SyncIntentEntity(id = idSlot.captured, venueId = venueId, seq = 1, type = SyncIntentTypes.PAY_CASH, payloadJson = "{}"),
+                SyncIntentAck(id = idSlot.captured, status = "RETRY", errorCode = "VERSION_CONFLICT"),
+            )
+        }
+        coEvery { outbox.acuseGuardado(venueId, any()) } answers {
+            SyncIntentAck(id = secondArg(), status = "REJECTED", errorCode = "ORDER_ALREADY_PAID", message = "La cuenta ya está pagada")
+        }
+
+        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
+
+        assertThat((result.exceptionOrNull() as TablesRepository.PayCashRejectedException).errorCode).isEqualTo("ORDER_ALREADY_PAID")
+    }
+
     // endregion
 
     // region — REJECTED: rechazo de negocio, se propaga tal cual

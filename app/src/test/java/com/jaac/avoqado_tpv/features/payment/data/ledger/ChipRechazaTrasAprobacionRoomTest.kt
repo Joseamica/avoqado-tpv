@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import io.mockk.mockk
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -342,5 +343,38 @@ class ChipRechazaTrasAprobacionRoomTest {
         assertEquals(BlumonAttemptResolver.State.PENDING, lectura.state)
         // Codex r3 #2: con el motivo, para que la pantalla no ofrezca «no presentó tarjeta» en un cobro del POS.
         assertEquals(PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION, lectura.row?.lastError)
+    }
+
+    /**
+     * Codex r3 #1 (dinero de la nube, naa0a0de): el cajero sale con Atrás mientras se escribe la duda. El bloque bajo el candado
+     * la escribe (y suelta su marca de «pendiente»), pero `withContext` lanza la cancelación AL VOLVER; antes el `catch` la volvía
+     * a anotar como «sin escribir» fuera del candado y la pantalla seguía leyendo esa duda vieja.
+     */
+    @Test fun `P1 la cancelacion de quien llama despues de escribir la duda no la vuelve a anotar como pendiente`() = runTest {
+        var cancelarAlEscribir: (() -> Unit)? = null
+        val base = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
+            .allowMainThreadQueries()
+            .setQueryCallback({ sql, _ ->
+                if (sql.trimStart().startsWith("UPDATE") && sql.contains("INDETERMINADO")) cancelarAlEscribir?.also { cancelarAlEscribir = null }?.invoke()
+            }, java.util.concurrent.Executor { it.run() })
+            .build()
+        try {
+            val libreta = PaymentAttemptLedger(base.paymentAttemptDao(), settings)
+            assertTrue(libreta.openAttempt("a1", venue, PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 500, "ORDER", orden7))
+            assertTrue(libreta.markAuthorizing("a1"))
+            assertTrue(libreta.markHostResponded("a1", true, "op-1", "ref-1", "auth-1"))
+
+            val pantalla = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default)
+                .launch(start = kotlinx.coroutines.CoroutineStart.LAZY) { libreta.markChipRechazoTrasAprobacion("a1") }
+            cancelarAlEscribir = { pantalla.cancel() }
+            pantalla.start()
+            pantalla.join()
+
+            assertTrue("se canceló a media escritura", pantalla.isCancelled)
+            assertEquals("la duda SÍ quedó escrita", PaymentAttemptEntity.STATE_INDETERMINADO, base.paymentAttemptDao().getById("a1")?.state)
+            assertFalse("y no vuelve a contar como «sin escribir»", libreta.chipRechazoPendienteDeEscribir("a1"))
+        } finally {
+            base.close()
+        }
     }
 }

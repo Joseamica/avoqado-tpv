@@ -312,6 +312,41 @@ class BlumonAttemptResolverTest {
         coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
+    /**
+     * na1bd1b1 (Codex r2 #3 y r3 #4): Avoqado guardó la declaración y el cierre local no aplicó. El rastro «la declaración quedó
+     * contradicha» sólo sale con dinero de ESTE intento; un veto por evidencia de otra terminal no lo es.
+     */
+    @Test fun `na1bd1b1 the contradiction trace needs this attempt's own money, not a foreign veto`() = runTest {
+        cajeroQueRevisa()
+        guardadaEnAvoqado(mutableListOf())
+        val errores = mutableListOf<String>()
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                if (priority >= android.util.Log.ERROR) errores += message
+            }
+        }
+        timber.log.Timber.plant(arbol)
+        try {
+            val enDuda = row
+            coEvery { ledger.declararSinCobroLocal("pax", "venue", "cajero", any()) } coAnswers {
+                row = row.copy(serverVeto = "LINK_VENUE_MISMATCH") // evidencia de OTRA terminal
+                false
+            }
+            resolver.declareChecked("venue", "pax")
+            assertThat(errores.filter { "contradicha" in it }).isEmpty()
+
+            row = enDuda
+            coEvery { ledger.declararSinCobroLocal("pax", "venue", "cajero", any()) } coAnswers {
+                row = row.copy(state = "HOST_RESPONDIO", hostApproved = true) // la aprobación del banco llegó con el envío en camino
+                false
+            }
+            resolver.declareChecked("venue", "pax")
+            assertThat(errores.filter { "contradicha" in it }).hasSize(1)
+        } finally {
+            timber.log.Timber.uproot(arbol)
+        }
+    }
+
     @Test fun `D22 if Avoqado has money evidence the declaration is refused and the evidence saved`() = runTest {
         cajeroQueRevisa()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(409,

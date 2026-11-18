@@ -863,7 +863,8 @@ class PaymentViewModel @Inject constructor(
                                 orderIdForFlow = retry.orderIdForFlow,
                                 llave = retry.context.idempotencyKey,
                             )
-                            pendingReceiptRetry = null
+                            // Codex r2 #1 (encargo 1df453): sólo si sigue siendo ESTE reintento; el cobro siguiente pudo dejar el suyo.
+                            if (pendingReceiptRetry === retry) pendingReceiptRetry = null
                         }.onFailure { error ->
                             Timber.w("⚠️ [PaymentViewModel] Receipt retry failed on reconnect (will retry next reconnect): ${error.message}")
                             // Leave pendingReceiptRetry intact — will retry on next reconnect event
@@ -1118,7 +1119,8 @@ class PaymentViewModel @Inject constructor(
      */
     private fun mostrarErrorDeImpresion(mensaje: String, copia: PaymentState.Success, llave: String?) {
         val visible = exitoVisible(_state.value)
-        val otroCobro = if (llave != null) !esLaLlaveEnPantalla(llave) else visible != null && !esElMismoCobro(visible, copia)
+        // Codex r2 #1: sin éxito en pantalla (reset, otra pantalla) tampoco se reabre la copia vieja.
+        val otroCobro = visible == null || (if (llave != null) !esLaLlaveEnPantalla(llave) else !esElMismoCobro(visible, copia))
         if (otroCobro) {
             Timber.w("🖨️ [Print] «$mensaje», pero en pantalla ya hay otro cobro: no se reabre el anterior")
             return
@@ -1393,7 +1395,8 @@ class PaymentViewModel @Inject constructor(
                 // so. Note the live success screen (fresh re-read; it may have moved on) so the
                 // cashier sees a calm "queued, don't recharge" instead of a blank QR with no
                 // explanation. See buildPendingSyncState kdoc for why this is a flag on Success.
-                alExitoVisible(context.idempotencyKey) { buildPendingSyncState(it, referenceNumber) }
+                // Codex r2 #2: si el recibo ya llegó (la reconexión le ganó a la cola), el aviso de cola ya no es cierto.
+                alExitoVisible(context.idempotencyKey) { if (it.receipt != null) null else buildPendingSyncState(it, referenceNumber) }
             }.onFailure { queueError ->
                 Timber.e(queueError, "❌ [Offline Queue] Failed to queue payment - CRITICAL")
                 Timber.e("   → Payment succeeded with Blumon but NOT recorded to backend")
@@ -1406,7 +1409,7 @@ class PaymentViewModel @Inject constructor(
                 // buildRecordingLostState/reportRecordingLost kdoc for why this is a
                 // flag on Success (never Error) and why it's escalated past
                 // AngelPay's Queued-case logWarning.
-                alExitoVisible(context.idempotencyKey) { buildRecordingLostState(it, referenceNumber) }
+                alExitoVisible(context.idempotencyKey) { if (it.receipt != null) null else buildRecordingLostState(it, referenceNumber) }
                 reportRecordingLost(
                     queuedPayment = queuedPayment,
                     recordError = recordError,
@@ -8690,8 +8693,8 @@ class PaymentViewModel @Inject constructor(
                         orderIdForFlow = orderIdForFlow,
                         llave = context.idempotencyKey,
                     )
-                    // 🔄 Clear any pending retry (recording succeeded on the happy path)
-                    pendingReceiptRetry = null
+                    // 🔄 Clear any pending retry (recording succeeded on the happy path) — Codex r2 #1: sólo el de ESTE cobro.
+                    if (pendingReceiptRetry?.context?.idempotencyKey == context.idempotencyKey) pendingReceiptRetry = null
                 }.onFailure { error ->
                     // 📒 [Libreta] REGISTRO_FALLIDO — the row is the evidence until the queue takes over.
                     context.idempotencyKey?.let { paymentAttemptLedger.markRecordFailed(it, error.message) }

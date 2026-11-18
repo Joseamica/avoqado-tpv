@@ -2546,6 +2546,65 @@ class PaymentViewModelTest {
     }
 
     @Test
+    fun `P1 Codex r2 1 el reintento viejo de otro cobro no borra el reintento del cobro en pantalla`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            dejarReintentoDelReciboDe(viewModel, "intento-A")
+            cobroEnPantalla(viewModel, "intento-A")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+            val campo = PaymentViewModel::class.java.getDeclaredField("pendingReceiptRetry").apply { isAccessible = true }
+            val reintentoDeA = campo.get(viewModel)
+            // El registro de A tarda; mientras tanto el kiosco ya va en B y B dejó su propio reintento.
+            val respuestaDeA = CompletableDeferred<Result<PaymentReceipt>>()
+            coEvery { mockRecordPaymentUseCase(any(), any(), any(), any(), any()) } coAnswers { respuestaDeA.await() }
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+            cobroEnPantalla(viewModel, "intento-B")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "B00001", amount = "25.00", receipt = null)
+            dejarReintentoDelReciboDe(viewModel, "intento-B")
+            val reintentoDeB = campo.get(viewModel)
+            assertThat(reintentoDeB).isNotSameInstanceAs(reintentoDeA)
+
+            respuestaDeA.complete(Result.success(reciboRegistrado))
+
+            assertThat(campo.get(viewModel)).isSameInstanceAs(reintentoDeB)
+            assertThat((viewModel.state.value as PaymentState.Success).receipt).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 Codex r2 2 el aviso de cola que llega despues del recibo no lo tapa`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = reciboRegistrado)
+            val enCola = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0, referenceNumber = "873257481453", venueId = testVenueId, staffId = testStaffId,
+                amount = BigDecimal("25.00"), tip = BigDecimal.ZERO, rating = null, merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417", maskedPan = "**** 4242", cardBrand = "VISA", entryMode = "CHIP",
+                isInternational = false, authorizationNumber = "F628CL", idempotencyKey = "idem-1",
+                createdAt = System.currentTimeMillis(), retryCount = 0, lastError = "HTTP 502",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING,
+            )
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = enCola,
+                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a"),
+                recordError = RuntimeException("HTTP 502"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null,
+            )
+
+            val exito = viewModel.state.value as PaymentState.Success
+            assertThat(exito.receipt).isEqualTo(reciboRegistrado)
+            assertThat(exito.pendingSyncMessage).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `P2 na783d44 con la sesion cerrada la prueba de venta no dice que la venta quedo en cola`() = runTest(testDispatcher) {
         val viewModel = createViewModel()
         try {

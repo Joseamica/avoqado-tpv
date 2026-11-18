@@ -284,13 +284,16 @@ class SyncOutboxDesenlaceDelCobroTest {
 
     // endregion
 
-    // region — una respuesta que ya llegó se guarda completa (Codex r3 #1)
+    // region — la cancelación sale como siempre (Task6 F3)
 
     @Test
-    fun `P1 el trabajador cancelado a media respuesta igual guarda el rechazo del cobro`() = runTest {
+    fun `una cancelacion a media respuesta sale como antes y no sigue avisando`() = runTest {
+        // Codex r3 #1 pedía guardar el resto de la respuesta al cancelar; r5 y r6 mostraron que eso rompía otros flujos (la
+        // versión de la mesa, la recuperación de D6). Queda declarado: si el trabajador se cancela entre dos acuses y «Cobrar»
+        // decide ya sin red, ve el cobro en espera; al volver la red, el reenvío trae el mismo rechazo.
         servidor { request -> request.intents.map { if (it.type == SyncIntentTypes.PAY_CASH) rechaza(it.id) else acepta(it.id) } }
         val ronda = encola(SyncIntentTypes.ADD_ITEMS)
-        val cobro = encola()
+        encola()
 
         lateinit var trabajador: Job
         val avisados = mutableListOf<String>()
@@ -304,14 +307,9 @@ class SyncOutboxDesenlaceDelCobroTest {
         }
         trabajador.join()
 
-        // La respuesta se guardó completa; los avisos ya no siguieron y la cancelación salió (Codex r4 #5, Task6 F3).
-        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
         assertThat(avisados).containsExactly(ronda)
         assertThat(siguio).isFalse()
         assertThat(trabajador.isCancelled).isTrue()
-        coEvery { api.syncIntents(VENUE, any()) } throws IOException("sin red") // «Cobrar» ya sin red
-        assertThat(outbox.reproducirYResolver(VENUE, cobro))
-            .isEqualTo(SyncOutbox.DesenlaceDelIntent.Rechazado("BUSINESS_RULE", "Order not found"))
     }
 
     // endregion
@@ -334,45 +332,6 @@ class SyncOutboxDesenlaceDelCobroTest {
     // endregion
 
     // region — Codex r4
-
-    @Test
-    fun `P1 el trabajador sigue guardando la respuesta aunque una fila anterior ya se haya descartado`() = runTest {
-        // r4 #1: la ronda salió por su ruta en línea mientras el lote del trabajador viajaba; el `0` de esa fila ya no corta la
-        // pasada y el rechazo del cobro que venía detrás queda escrito.
-        val ronda = encola(SyncIntentTypes.ADD_ITEMS)
-        val cobro = encola()
-        coEvery { api.syncIntents(VENUE, any()) } coAnswers {
-            val request = secondArg<SyncIntentsRequest>()
-            db.syncIntentDao().discardPending(ronda)
-            Response.success(SyncIntentsResponse(data = request.intents.map {
-                if (it.type == SyncIntentTypes.PAY_CASH) rechaza(it.id) else acepta(it.id)
-            }))
-        }
-        outbox.replayNow(VENUE) // el trabajador, antes que «Cobrar»
-
-        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
-        coEvery { api.syncIntents(VENUE, any()) } throws IOException("sin red")
-        assertThat(outbox.reproducirYResolver(VENUE, cobro))
-            .isEqualTo(SyncOutbox.DesenlaceDelIntent.Rechazado("BUSINESS_RULE", "Order not found"))
-    }
-
-    @Test
-    fun `una fila anterior ya descartada no avisa al callback y lo de detras si`() = runTest {
-        val ronda = encola(SyncIntentTypes.ADD_ITEMS)
-        val cobro = encola()
-        coEvery { api.syncIntents(VENUE, any()) } coAnswers {
-            val request = secondArg<SyncIntentsRequest>()
-            db.syncIntentDao().discardPending(ronda)
-            Response.success(SyncIntentsResponse(data = request.intents.map { acepta(it.id) }))
-        }
-        val avisados = mutableListOf<String>()
-
-        outbox.replayNow(VENUE) { intent, _ -> avisados += intent.id }
-
-        assertThat(avisados).containsExactly(cobro)
-        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
-        assertThat(fila(ronda).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
-    }
 
     @Test
     fun `P1 D6 un rechazo por numero que la base no deja guardar NO se anuncia como rechazo - no se sabe`() = runTest {

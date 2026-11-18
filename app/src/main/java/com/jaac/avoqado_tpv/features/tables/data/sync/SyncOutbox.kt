@@ -173,9 +173,9 @@ class SyncOutbox @Inject constructor(
     }
 
     /**
-     * D19 (Codex r3 #4, r4 #1): qué pasó al guardar un acuse. [YA_NO_ESTABA] es el `0` normal de una fila que ya no está en
-     * espera (su ruta en línea la descartó, o ya estaba resuelta): no es una falla y la pasada sigue con el resto de la
-     * respuesta. [FALLO] es una excepción de la base: la pasada se corta como antes.
+     * D19 (Codex r3 #4): qué pasó al guardar un acuse. Para la pasada, todo lo que no es [SI] la corta, como siempre. Para la
+     * decisión de [reproducirYResolver], sólo [FALLO] (una excepción de la base) cuenta como «la cola no es de fiar»; el `0`
+     * normal de una fila que ya no está en espera ([YA_NO_ESTABA]: su ruta en línea la descartó) no.
      */
     private enum class Guardado { SI, YA_NO_ESTABA, FALLO, NO_SE_GUARDA }
 
@@ -432,12 +432,10 @@ class SyncOutbox @Inject constructor(
             // D19: el acuse del intent que se vigila se toma de la respuesta COMPLETA, aunque una fila anterior no se pueda
             // guardar y el bucle de abajo salga antes de llegar a él.
             vigia?.alRecibir(response.data)
-            // Cada acuse se guarda y se avisa ([onAck]) en orden, uno por uno, como siempre (Codex r5 #1: avisar todos al final
-            // dejaba que un aviso viejo pisara la versión que la pantalla acababa de leer). D19 (Codex r3 #1): si cancelan a quien
-            // pidió el lote (WorkManager detiene al trabajador cuando la red parpadea) con la respuesta YA en la mano, lo que falta
-            // se guarda sin avisar a nadie y la cancelación sale igual (un trabajador detenido no toca la sesión, Task6 F3). Antes,
-            // el rechazo de un cobro que venía detrás quedaba sin escribir y «Cobrar», ya sin red, decía «guardado».
-            val paso = try { run procesar@{
+            // D19: el recorrido de la respuesta es el de siempre (cada acuse se guarda y se avisa en orden; un `0` o una falla
+            // cortan; la cancelación sale donde salía). Las rondas r3–r6 de Codex mostraron que cambiarlo para el caso raro (otro
+            // reproductor cancelado, o una fila ya descartada, con la red caída al decidir) rompía otros flujos: queda declarado.
+            val paso = run procesar@{
                 var next = 0
                 // D6: rechazos por número que se renumeran en vez de guardarse, y si esta respuesta los deja renumerar.
                 val porNumero = mutableListOf<Pair<Int, SyncIntentAck>>()
@@ -474,17 +472,14 @@ class SyncOutbox @Inject constructor(
                         // lo que entra, en orden: si el proceso muere en medio, nunca queda lo nuevo aplicado y lo viejo en
                         // espera (Codex r3).
                         for ((indice, rechazo) in porNumero) {
-                            when (applyAckChecked(rechazo.id, rechazo.status, rechazo.errorCode, rechazo.message, null, vigia)) {
-                                Guardado.SI -> {
-                                    // D19 (Codex r4 #4): un rechazo por número cuenta sólo si quedó GUARDADO: si no, la fila
-                                    // sigue en espera y la siguiente pasada puede renumerarla y registrarla.
-                                    vigia?.alGuardar(rechazo)
-                                    resolved++
-                                    onAck(batch[indice], rechazo)
-                                }
-                                Guardado.YA_NO_ESTABA -> Unit // ya no estaba en espera: nada que avisar, sigue la respuesta
-                                Guardado.FALLO, Guardado.NO_SE_GUARDA -> return@procesar Paso.Termina
+                            if (applyAckChecked(rechazo.id, rechazo.status, rechazo.errorCode, rechazo.message, null, vigia) != Guardado.SI) {
+                                return@procesar Paso.Termina
                             }
+                            // D19 (Codex r4 #4): un rechazo por número cuenta sólo si quedó GUARDADO: si no, la fila sigue en
+                            // espera y la siguiente pasada puede renumerarla y registrarla.
+                            vigia?.alGuardar(rechazo)
+                            resolved++
+                            onAck(batch[indice], rechazo)
                         }
                         porNumero.clear()
                         piso = null
@@ -495,19 +490,11 @@ class SyncOutbox @Inject constructor(
                         onAck(batch[next], ack)
                         return@procesar Paso.Termina
                     }
-                    when (guardado) {
-                        Guardado.SI -> {
-                            vigia?.alGuardar(ack)
-                            resolved++
-                            entraronEnEstaRespuesta++
-                            onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
-                        }
-                        // D19 (Codex r4 #1): la fila ya no estaba en espera (su ruta en línea la descartó mientras viajaba el lote):
-                        // no es una falla. Antes la pasada se cortaba aquí y el rechazo de un cobro que venía detrás quedaba sin
-                        // escribir. Lo que el SERVIDOR aceptó sí entró (D6 no renumera después de eso).
-                        Guardado.YA_NO_ESTABA -> if (ack.isAcked) entraronEnEstaRespuesta++
-                        Guardado.FALLO, Guardado.NO_SE_GUARDA -> return@procesar Paso.Termina
-                    }
+                    if (guardado != Guardado.SI) return@procesar Paso.Termina
+                    vigia?.alGuardar(ack)
+                    resolved++
+                    entraronEnEstaRespuesta++
+                    onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
                     next++
                 }
                 if (piso != null && porNumero.isNotEmpty()) {
@@ -528,9 +515,6 @@ class SyncOutbox @Inject constructor(
                     return@procesar Paso.OtraVuelta
                 }
                 Paso.Sigue(next)
-            } } catch (cancelled: CancellationException) {
-                withContext(NonCancellable) { guardarLoQueYaContesto(ready, response.data, vigia) }
-                throw cancelled
             }
             when (paso) {
                 Paso.Termina -> return ReplayProgress(resolved, false)
@@ -547,21 +531,6 @@ class SyncOutbox @Inject constructor(
                 batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
         } while (otraVuelta)
         return ReplayProgress(resolved, false)
-    }
-
-    /**
-     * D19 (Codex r3 #1, r5 #1): cancelaron a quien pidió el lote cuando su respuesta YA había llegado. Se guarda lo que el
-     * SERVIDOR contestó, en orden y sin avisar a nadie, hasta el primer RETRY, rechazo por número (D6 decide eso en la pasada
-     * siguiente), acuse fuera de orden o falla de la base. Guardar otra vez un acuse ya guardado no hace nada (`resolve` sólo
-     * toca filas en espera).
-     */
-    private suspend fun guardarLoQueYaContesto(ready: List<SyncIntentEntity>, acuses: List<SyncIntentAck>, vigia: VigiaDelIntent?) {
-        for ((indice, ack) in acuses.withIndex()) {
-            if (ready.getOrNull(indice)?.id != ack.id) break
-            if (!(ack.isAcked || ack.isRejected) || ack.errorCode == SyncIntentAck.STALE_DEVICE_SEQUENCE) break
-            val guardado = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) }, vigia)
-            if (guardado == Guardado.FALLO) break
-        }
     }
 
     // MARK: - Cuarentena

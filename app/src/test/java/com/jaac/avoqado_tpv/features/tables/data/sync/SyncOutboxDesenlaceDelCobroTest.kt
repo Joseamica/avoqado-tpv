@@ -307,7 +307,9 @@ class SyncOutboxDesenlaceDelCobroTest {
         }
         trabajador.join()
 
-        assertThat(avisados).containsExactly(ronda)
+        // Como en `main`: la cancelación sale y lo que seguía después de `replayNow` no corre. Cuántos avisos alcanzan a salir
+        // depende de en qué suspensión la note (una consulta de Room puede terminar sin suspender): eso no se fija aquí.
+        assertThat(avisados.first()).isEqualTo(ronda)
         assertThat(siguio).isFalse()
         assertThat(trabajador.isCancelled).isTrue()
     }

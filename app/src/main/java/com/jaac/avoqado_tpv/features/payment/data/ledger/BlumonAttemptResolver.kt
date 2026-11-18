@@ -271,9 +271,14 @@ class BlumonAttemptResolver @Inject constructor(
             val after = inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true)
             return EnvioRevisado.ConVeto(if (after.state == State.RECORDED && veto == null) after else after.copy(state = State.MONEY_EVIDENCE))
         }
-        // F1: además de ser la nuestra, tiene que venir FIRMADA por un PIN (una respuesta antigua o de la sesión no cierra A).
-        val gerente = LiberacionDelServidor.firmante(declaracion)
-        return if (esLaNuestra && gerente != null) EnvioRevisado.Firmado(gerente) else EnvioRevisado.NO_FIRMADO
+        // F1 (Codex código r1 #3): además de ser la nuestra (intento, negocio en el id, declaración e importe), con quién la declaró:
+        // el PIN del gerente, o la sesión de una declaración vieja que Avoqado ya guardó y repite tal cual.
+        val mismoImporte = runCatching {
+            declaracion?.get("amountCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.amountCents } &&
+                declaracion?.get("tipCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.tipCents }
+        }.getOrDefault(false)
+        val quien = LiberacionDelServidor.quienDeclaroElAcuse(declaracion)
+        return if (esLaNuestra && mismoImporte && quien != null) EnvioRevisado.Firmado(quien) else EnvioRevisado.NO_FIRMADO
     }
 
     /**

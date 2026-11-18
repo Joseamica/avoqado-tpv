@@ -177,7 +177,10 @@ class DeclaracionDesdeElAvisoTest {
             ResultadoDeLaDeclaracion.UsaElPos to "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS.",
             ResultadoDeLaDeclaracion.FaltaConsultar to "Primero hay que consultar a Avoqado: conéctate a internet.",
             ResultadoDeLaDeclaracion.SinPermiso to "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente.",
-            ResultadoDeLaDeclaracion.HayEvidencia to "Avoqado tiene evidencia de este cobro: no lo declares ni lo vuelvas a cobrar.",
+            // F1 (Codex código r1 #9): también lo lee el gerente en una fila «sólo consulta»: el banco sí registró algo.
+            ResultadoDeLaDeclaracion.HayEvidencia to "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
+            // F1 (Codex código r1 #11): una revisión de una persona no es la respuesta del banco.
+            ResultadoDeLaDeclaracion.YaResuelto to "Este cobro ya lo revisó otra persona: ya no está por revisar.",
             ResultadoDeLaDeclaracion.Rechazado("lo que dijo el servidor") to "lo que dijo el servidor",
         )
         for ((resultado, texto) in textos) assertThat(resultado.texto()).isEqualTo(texto)

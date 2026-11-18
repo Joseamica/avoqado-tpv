@@ -44,6 +44,7 @@ class LedgerUnknownRecovery @Inject constructor(
                 if (result is VerificacionDelCobro.Cobrado) {
                     if (dao.completeUnknownRecovery(row.attemptId, venueId, ownedLease,
                             maxOf(now, System.currentTimeMillis()), result.referencia, result.authCode) == 1) confirmed++
+                    else conservarElDineroTrasUnCierre(venueId, row.attemptId, result.referencia)
                 }
                 // Empty, partial, failed or unsupported lookup leaves the same unknown row untouched.
             } catch (cancelled: CancellationException) {
@@ -53,5 +54,18 @@ class LedgerUnknownRecovery @Inject constructor(
             }
         }
         return confirmed
+    }
+
+    /**
+     * 🔴 F1 (Codex código r1 #1): mientras se esperaba a AngelPay, la fila se cerró como «no se cobró» (el gerente firmó, o Avoqado
+     * la liberó) y AngelPay contestó «cobrado» después. El aprobado no se descarta: queda la marca «hubo dinero» (la de D13,
+     * `server_processor_evidence`), que aparta la cuenta para la tarjeta, la saca en «Por revisar» y la cuenta el cierre de caja.
+     * Una fila que sigue en duda (otra recuperación la tiene) se deja a su dueño.
+     */
+    private suspend fun conservarElDineroTrasUnCierre(venueId: String, attemptId: String, referencia: String) {
+        val fila = dao.getById(attemptId) ?: return
+        if (fila.venueId != venueId || fila.state != PaymentAttemptEntity.STATE_DESCARTADA || fila.hostApproved == true) return
+        Timber.e("🚨 [Libreta] AngelPay aprobó un intento que ya estaba como «no se cobró»: queda marcado con dinero | attemptId=%s ref=%s", attemptId, referencia)
+        ledger.marcarEvidenciaPositivaDelServidor(venueId, attemptId)
     }
 }

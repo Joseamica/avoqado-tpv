@@ -50,7 +50,7 @@ sealed interface ResultadoDeLaDeclaracion {
     data object FaltaConsultar : ResultadoDeLaDeclaracion
     data object SinPermiso : ResultadoDeLaDeclaracion
     data object UsaElPos : ResultadoDeLaDeclaracion
-    /** F1: la fila elegida ya se resolvió sin cobro (Avoqado, el POS u otra pantalla). */
+    /** F1: otra PERSONA ya revisó la fila elegida (su declaración, aquí, en el POS o en otra pantalla). No es la respuesta del banco. */
     data object YaResuelto : ResultadoDeLaDeclaracion
     /** F1: la fila elegida resultó cobrada: Avoqado la registró. */
     data object YaCobrado : ResultadoDeLaDeclaracion
@@ -62,11 +62,13 @@ sealed interface ResultadoDeLaDeclaracion {
         is Rechazado -> mensaje
         // F1: la firma del gerente va a Avoqado; sin red nada se cierra.
         SinRed -> "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva."
-        HayEvidencia -> "Avoqado tiene evidencia de este cobro: no lo declares ni lo vuelvas a cobrar."
+        // F1 (Codex código r1 #9): también la lee el gerente en una fila «sólo consulta» (el banco aprobó después de cerrarla).
+        HayEvidencia -> "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado."
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
-        YaResuelto -> "Este cobro ya quedó resuelto como no cobrado: ya no está por revisar."
+        // F1 (Codex código r1 #11): una revisión humana nunca se presenta como respuesta del banco.
+        YaResuelto -> "Este cobro ya lo revisó otra persona: ya no está por revisar."
         YaCobrado -> "Este cobro SÍ pasó: Avoqado ya lo registró. No lo vuelvas a cobrar."
         YaNoEstaPorRevisar -> "Este cobro ya no está por revisar: se resolvió en el POS o en Avoqado. Revisa Pagos para ver cómo quedó."
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
@@ -230,7 +232,12 @@ class DeclaracionDesdeElAviso @Inject constructor(
             fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
             tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
             fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
-            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> ResultadoDeLaDeclaracion.YaResuelto
+            // Codex código r1 #11: «lo revisó otra persona» sólo si fue una persona (su firma o «no presentó tarjeta»); lo que soltó
+            // la ventana del banco o el silencio no lo revisó nadie.
+            fila.state == PaymentAttemptEntity.STATE_DESCARTADA &&
+                (fila.lastError?.startsWith(PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO) == true ||
+                    fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT) -> ResultadoDeLaDeclaracion.YaResuelto
+            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             else -> GENERICO
         }
     } ?: GENERICO

@@ -177,6 +177,7 @@ class BlumonAttemptResolverTest {
 
     private fun guardadaEnAvoqado(
         cuerpos: MutableList<NoInstrumentResolutionRequest>, kind: String = "UNCHARGED_VERIFIED", id: String? = null, by: String? = "SUPERVISOR_PIN",
+        amountCents: Long? = null,
     ) {
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
             val cuerpo = thirdArg<NoInstrumentResolutionRequest>()
@@ -186,6 +187,7 @@ class BlumonAttemptResolverTest {
                 addProperty("id", id ?: cuerpo.resolutionId)
                 addProperty("staffId", if (by == "SUPERVISOR_PIN") "gerente-1" else "cajero")
                 if (by != null) addProperty("by", by)
+                if (amountCents != null) addProperty("amountCents", amountCents)
             }
             Response.success(TerminalAttemptStatusResponse(success = true, attemptId = "pax",
                 attempt = TerminalAttemptResultDto(attemptId = "pax", outcome = "NOT_RECORDED", resolution = resolution)))
@@ -255,14 +257,16 @@ class BlumonAttemptResolverTest {
         coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
-    // F1 (tarea 3): un 2xx que no es el acuse FIRMADO de esta declaración (otra clase, otro id, sin firmante) no cierra A.
-    @Test fun `F1 a 2xx that is not this signed declaration (other kind, other id, no signer) closes nothing`() = runTest {
+    // F1 (tarea 3 y Codex código r1 #3): un 2xx que no es el acuse de ESTA declaración (otra clase, otro id, otro importe, sin quién la
+    // declaró o automática) no cierra A. El acuse viejo por la sesión que Avoqado ya guardó SÍ (ver DeclaracionDesdeElAvisoRoomTest).
+    @Test fun `F1 a 2xx that is not this declaration (other kind, id or amount, no declarer, automatic) closes nothing`() = runTest {
         cajeroQueRevisa()
         cierraLaLibreta()
         for (respuesta in listOf<() -> Unit>(
             { guardadaEnAvoqado(mutableListOf(), kind = "NO_INSTRUMENT_PRESENTED") },
             { guardadaEnAvoqado(mutableListOf(), id = "otra-declaracion") },
-            { guardadaEnAvoqado(mutableListOf(), by = "SESSION") },
+            { guardadaEnAvoqado(mutableListOf(), amountCents = row.amountCents + 1) },
+            { guardadaEnAvoqado(mutableListOf(), by = "AUTOMATIC") },
             { guardadaEnAvoqado(mutableListOf(), by = null) },
         )) {
             respuesta()

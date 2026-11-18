@@ -85,9 +85,12 @@ class DeclaracionRevisadaEnAvoqadoRoomTest {
         val porElPost = LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada()))!!
         assertThat(porElPost.evidencia).isEqualTo(LiberacionDelServidor.CAJERO_REVISO)
         assertThat(porElPost.evidencia).isNotEqualTo("OPERATOR_RECONCILED")
-        // F1: sin firmante (la sesión, o una respuesta antigua sin `by`) no libera, ni por S6 ni por el POST.
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada(by = "SESSION")))).isNull()
-        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada(by = "SESSION")))).isNull()
+        // F1 (Codex código r1 #3): el acuse viejo por la sesión que Avoqado ya guardó libera, a nombre de quien lo declaró.
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada(by = "SESSION")))?.quien).isEqualTo("cajero-1")
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada(by = "SESSION")))?.quien).isEqualTo("cajero-1")
+        // Sin quién la declaró (automática, o una respuesta sin `by`) no libera, ni por S6 ni por el POST.
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada(by = "AUTOMATIC")))).isNull()
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada(by = "AUTOMATIC")))).isNull()
         assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada().apply { remove("by") }))).isNull()
     }
 

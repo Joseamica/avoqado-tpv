@@ -853,13 +853,8 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
     }
 
-    @Test fun `F1 el acuse tambien llega por la consulta - la recuperacion cierra A con la firma, nunca sin ella`() = runBlocking<Unit> {
+    @Test fun `F1 el acuse tambien llega por la consulta - la recuperacion cierra A con el acuse firmado`() = runBlocking<Unit> {
         duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
-        // Una declaración SIN firmante (un servidor anterior, o la de una sesión) no cierra A.
-        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Firmada("a-1", idDeLaRevisada("a-1"), gerente = "cajera", by = "SESSION")
-        LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
-        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
-
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Firmada("a-1", idDeLaRevisada("a-1"))
         LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
         val fila = dao.getById("a-1")!!
@@ -867,7 +862,109 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(fila.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
     }
 
-    @Test fun `F1 un 403, una respuesta sin firmante o una aprobacion simultanea nunca cierran A`() = runBlocking<Unit> {
+    /**
+     * Codex código r1 #3: la cajera declaró ANTES de F1 (Avoqado la guardó por la sesión) y la respuesta se perdió. El SERVIDOR real
+     * contesta SIEMPRE ese mismo acuse viejo: en la consulta y en el replay de la firma del gerente (mismo `resolutionId` y cuerpo).
+     * Rechazarlo dejaba la cuenta sin salida; la terminal lo acepta, a nombre de quien lo declaró entonces.
+     */
+    @Test fun `F1 Codex r1 3 - el acuse viejo de la sesion que Avoqado ya guardo cierra A, por la consulta y por el replay de la firma`() = runBlocking<Unit> {
+        duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Firmada("a-1", idDeLaRevisada("a-1"), gerente = "cajera", by = "SESSION")
+        LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("DESCARTADA")
+        assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
+
+        // El gerente firma B y Avoqado contesta el replay del acuse viejo de la cajera (lo que hace el servidor real).
+        val cobro = duda("a-2", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-2") } returns s6Limpia("a-2")
+        coEvery { api.resolveNoInstrument(venue, "a-2", any()) } answers {
+            s6Firmada("a-2", thirdArg<NoInstrumentResolutionRequest>().resolutionId, gerente = "cajera", by = "SESSION")
+        }
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(dao.getById("a-2")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
+    }
+
+    /** Las dos declaraciones humanas, por la consulta: «no presentó tarjeta» también se acepta por la sesión (decisión de F1). */
+    @Test fun `F1 Codex r1 2 - no presento tarjeta por la sesion que Avoqado guardo tambien cierra A`() = runBlocking<Unit> {
+        duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6(
+            """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","paymentId":null,""" +
+                """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+                """"resolution":{"id":"x","kind":"NO_INSTRUMENT_PRESENTED","staffId":"cajera","by":"SESSION"}},"request":null}""",
+        )
+        LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("DESCARTADA")
+    }
+
+    /**
+     * Codex código r1 #1 (N86, **TPV SOLA**): la terminal consulta a AngelPay por el intento A; mientras espera, el gerente firma y
+     * Avoqado acusa; DESPUÉS el historial contesta «cobrado». Antes ese aprobado se perdía (la fila ya era DESCARTADA) y la cuenta
+     * aceptaba otra tarjeta. Ahora queda la marca «hubo dinero»: la cuenta sigue apartada y la fila sale en «Por revisar» (#9).
+     */
+    @Test fun `F1 Codex r1 1 - el aprobado de AngelPay que llega despues de la firma deja la cuenta apartada y la fila a la vista`() = runBlocking<Unit> {
+        val contexto = """{"venueId":"$venue","staffId":"cajera","orderId":"orden-7","idempotencyKey":"a-1","deviceSerialNumber":"terminal",""" +
+            """"processorAffiliation":"afiliacion","amount":100.00,"tip":0,"merchantAccountId":"merchant"}"""
+        val creado = System.currentTimeMillis() - 60_000
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "a-1", venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
+                recordingRoute = "ORDER", paymentContextJson = contexto, serverAnsweredAt = 1L, createdAt = creado, updatedAt = creado,
+            ),
+        )
+        val cobro = declarable("a-1")
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
+        val verificador = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
+        coEvery { verificador.verificar("a-1", "terminal", any(), any(), any(), "afiliacion") } coAnswers {
+            assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro.Cobrado("AUTH", "REF", null)
+        }
+
+        LedgerUnknownRecovery(dao, ledger, verificador).recover(venue, System.currentTimeMillis() + 600_000)
+
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("DESCARTADA")
+        assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
+        assertThat(ledger.retencionDeLaVenta("orden-7")?.attemptId).isEqualTo("a-1")
+        assertThat(ledger.openAttempt("a-2", venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-7"}""")).isFalse()
+        assertThat(declarables().single { it.identidad == "a-1" }.declarable).isFalse()
+        assertThat(declaracion.consultarYDecir(venue, declarables().single { it.identidad == "a-1" })).isEqualTo(HayEvidencia)
+    }
+
+    /**
+     * Codex código r1 #9: el SERVIDOR confirma evidencia bancaria DESPUÉS de que la fila quedó DESCARTADA. La fila frena la tarjeta de
+     * su cuenta y el cierre de caja: también tiene que salir en «Por revisar», sólo para consultarla.
+     */
+    @Test fun `F1 Codex r1 9 - lo que frena el cierre por evidencia tardia sale en Por revisar, solo para consultar`() = runBlocking<Unit> {
+        duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'declarado_sin_cobro:gerente-1:avoqado' WHERE attempt_id = 'a-1'")
+        assertThat(declarables()).isEmpty()
+
+        assertThat(ledger.marcarEvidenciaPositivaDelServidor(venue, "a-1").getOrThrow()).isTrue()
+
+        val fila = declarables().single()
+        assertThat(fila.identidad).isEqualTo("a-1")
+        assertThat(fila.declarable).isFalse()
+    }
+
+    /** Codex código r1 #11: una revisión de una persona no se presenta como respuesta del banco. */
+    @Test fun `F1 Codex r1 11 - si otra persona ya lo reviso se dice eso, no que quedo como no cobrado`() = runBlocking<Unit> {
+        val revisado = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'declarado_sin_cobro:gerente-1:avoqado' WHERE attempt_id = 'a-1'")
+        assertThat(declaracion.resultadoDe(venue, revisado).texto()).isEqualTo("Este cobro ya lo revisó otra persona: ya no está por revisar.")
+
+        // Lo que soltó el silencio del banco (la ventana) no lo revisó nadie: no se dice que sí.
+        val porVentana = duda("a-2", serverAnsweredAt = 1L)
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', server_outcome = 'RELEASED_NO_EVIDENCE' WHERE attempt_id = 'a-2'")
+        val texto = declaracion.resultadoDe(venue, porVentana).texto()
+        assertThat(texto).doesNotContain("revisó otra persona")
+        assertThat(texto).doesNotContain("no cobrado")
+    }
+
+    @Test fun `F1 un 403, un acuse de otro intento o una aprobacion simultanea nunca cierran A`() = runBlocking<Unit> {
         val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
 
@@ -877,9 +974,12 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(declaracion.declarar(venue, cobro, "0000")).isEqualTo(PidePin)
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
 
-        // 2 · Un 2xx sin firmante (por la sesión): no se cierra.
+        // 2 · Un 2xx con el acuse de OTRA declaración (otro intento), o sin quién lo declaró: no se cierra.
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", idDeLaRevisada("otro-intento")) }
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(Rechazado(generico))
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
         coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers {
-            s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId, gerente = "cajera", by = "SESSION")
+            s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId, by = "AUTOMATIC")
         }
         assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(Rechazado(generico))
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")

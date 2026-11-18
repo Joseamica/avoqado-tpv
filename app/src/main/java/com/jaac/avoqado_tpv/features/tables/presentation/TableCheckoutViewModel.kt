@@ -375,6 +375,13 @@ class TableCheckoutViewModel @Inject constructor(
     /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
     private var releerAlTerminarElCobro = false
 
+    /**
+     * D19 (Codex r7): un cobro en efectivo quedó en duda. Si la primera lectura buena que llega después trae la cuenta saldada y
+     * sin nada propio por subir, el cobro sí entró: la mesa se libera y la pantalla regresa al plano, como tras un cobro que salda
+     * (en `main` eso pasaba con el recibo local «guardado»). Lo apaga esa lectura o el siguiente cobro.
+     */
+    private var liberarSiQuedoPagada = false
+
     /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
     private var relectura: kotlinx.coroutines.Job? = null
 
@@ -535,6 +542,11 @@ class TableCheckoutViewModel @Inject constructor(
                             saldoPorConfirmar = it.saldoPorConfirmar && !confirmaElSaldo,
                             revisandoSaldo = if (confirmaElSaldo) false else it.revisandoSaldo,
                         )
+                    }
+                    // D19 (Codex r7): tras una duda, la cuenta saldada dice que el cobro sí entró.
+                    if (liberarSiQuedoPagada) {
+                        liberarSiQuedoPagada = false
+                        if (pendiente == null && freshRemaining.signum() == 0 && !_state.value.tableReleased) onPaymentCompleted(BigDecimal.ZERO)
                     }
                     // D86 (Codex r1 #4): con algo propio sin subir, se vuelve a leer sola hasta que suba (no se queda trabada).
                     if (pendiente != null) {
@@ -902,6 +914,7 @@ class TableCheckoutViewModel @Inject constructor(
         val tipAtChargeTime = _state.value.tipAmount
         val willSettle = amount >= remainingBeforeThisPayment
 
+        liberarSiQuedoPagada = false
         _state.update { it.copy(isProcessingCash = true, errorMessage = null, avisoDelCobro = null) }
         cobrosIniciados++
         viewModelScope.launch {
@@ -986,6 +999,7 @@ class TableCheckoutViewModel @Inject constructor(
                     if (esperaLaCuenta) {
                         lecturasIniciadas++
                         relecturasSeguidas = 0
+                        liberarSiQuedoPagada = duda
                     }
                     _state.update {
                         it.copy(

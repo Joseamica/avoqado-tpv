@@ -59,9 +59,6 @@ class TablesRepositoryPayCashTest {
     @Before
     fun setUp() {
         clearMocks(api, outbox)
-        // na78d478: sin acuse propio, el cobro lee su fila en la cola; aquí sigue EN ESPERA (el caso de otro reproductor que ya
-        // lo mandó vive en `PayCashConOtroReproductorRoomTest`, con Room real).
-        coEvery { outbox.acuseGuardado(venueId, any()) } returns null
         repo = TablesRepository(api, outbox, permissions)
     }
 
@@ -127,20 +124,6 @@ class TablesRepositoryPayCashTest {
         assertThat(result.getOrThrow().queued).isTrue()
     }
 
-    /** na78d478 (Codex r1 #7): sólo una fila leída EN ESPERA acredita «guardado»; si no se puede leer, no se promete nada. */
-    @Test
-    fun sin_ack_propio_y_sin_poder_leer_la_cola_no_dice_guardado_y_pide_no_cobrar_otra_vez() = runTest {
-        coEvery { outbox.enqueue(any(), any(), any(), any()) } returns "intent-1"
-        coEvery { outbox.replayNow(venueId, any()) } returns Unit
-        coEvery { outbox.acuseGuardado(venueId, any()) } throws IllegalStateException("error de E/S")
-
-        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
-
-        val error = result.exceptionOrNull() as TablesRepository.PayCashRejectedException
-        assertThat(error.errorCode).isEqualTo("COBRO_SIN_CONFIRMAR")
-        assertThat(error.message).contains("NO lo vuelvas a cobrar")
-    }
-
     @Test
     fun un_ack_RETRY_se_ve_como_exito_encolado_NUNCA_error() = runTest {
         val idSlot = slot<String>()
@@ -157,30 +140,6 @@ class TablesRepositoryPayCashTest {
 
         assertThat(result.isSuccess).isTrue()
         assertThat(result.getOrThrow().queued).isTrue()
-    }
-
-    /**
-     * na78d478 (Codex r2 #4 y r3 #4): el replay propio recibió RETRY y, al soltar la cola, OTRO reproductor guardó el rechazo
-     * definitivo. Un RETRY no es la última palabra: se lee la fila, y el rechazo gana sobre «guardado».
-     */
-    @Test
-    fun un_RETRY_propio_seguido_del_rechazo_de_otro_reproductor_no_dice_guardado() = runTest {
-        val idSlot = slot<String>()
-        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, any(), capture(idSlot)) } answers { idSlot.captured }
-        coEvery { outbox.replayNow(venueId, any()) } coAnswers {
-            val onAck = secondArg<suspend (SyncIntentEntity, SyncIntentAck) -> Unit>()
-            onAck(
-                SyncIntentEntity(id = idSlot.captured, venueId = venueId, seq = 1, type = SyncIntentTypes.PAY_CASH, payloadJson = "{}"),
-                SyncIntentAck(id = idSlot.captured, status = "RETRY", errorCode = "VERSION_CONFLICT"),
-            )
-        }
-        coEvery { outbox.acuseGuardado(venueId, any()) } answers {
-            SyncIntentAck(id = secondArg(), status = "REJECTED", errorCode = "ORDER_ALREADY_PAID", message = "La cuenta ya está pagada")
-        }
-
-        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
-
-        assertThat((result.exceptionOrNull() as TablesRepository.PayCashRejectedException).errorCode).isEqualTo("ORDER_ALREADY_PAID")
     }
 
     // endregion

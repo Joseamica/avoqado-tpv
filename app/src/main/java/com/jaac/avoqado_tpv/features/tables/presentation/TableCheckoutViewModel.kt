@@ -184,11 +184,6 @@ data class TableCheckoutState(
      * apaga [TableCheckoutViewModel.loadCheck] al recibir esa lectura.
      */
     val saldoPorConfirmar: Boolean = false,
-    /**
-     * na78d478 (Codex r3 #2): [saldoPorConfirmar] lo prendió un cobro en efectivo que no se pudo confirmar (la fila de la cola no
-     * se leyó), no una tarjeta: el aviso lo dice así. Mientras tanto ni efectivo ni tarjeta, igual que tras la tarjeta.
-     */
-    val saldoPorConfirmarTrasEfectivo: Boolean = false,
     /** D9: la lectura que confirma el saldo tras la tarjeta va en camino (el aviso dice «Revisando…»). */
     val revisandoSaldo: Boolean = false,
 
@@ -240,13 +235,10 @@ data class TableCheckoutState(
 
     /** D9: por qué los dos botones esperan tras un cobro con tarjeta; `null` si no esperan por eso. */
     val avisoDeSaldoPorConfirmar: String?
-        get() {
-            val despues = if (saldoPorConfirmarTrasEfectivo) "ese cobro en efectivo" else "la tarjeta"
-            return when {
-                !saldoPorConfirmar -> null
-                revisandoSaldo -> "Revisando cuánto queda por pagar después de $despues…"
-                else -> "No se pudo confirmar cuánto queda por pagar después de $despues. Revisa la conexión y toca Reintentar."
-            }
+        get() = when {
+            !saldoPorConfirmar -> null
+            revisandoSaldo -> "Revisando cuánto queda por pagar después de la tarjeta…"
+            else -> "No se pudo confirmar cuánto queda por pagar después de la tarjeta. Revisa la conexión y toca Reintentar."
         }
 
     /**
@@ -375,12 +367,6 @@ class TableCheckoutViewModel @Inject constructor(
 
     /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
     private var releerAlTerminarElCobro = false
-
-    /**
-     * na78d478 (Codex r1 #8): el aviso de un cobro en efectivo que NO entró (rechazado o sin confirmar). La relectura que esperaba
-     * a que terminara el cobro lo borraba al cargar bien la cuenta y la pantalla quitaba el aviso antes de que se leyera.
-     */
-    private var avisoDelCobro: String? = null
 
     /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
     private var relectura: kotlinx.coroutines.Job? = null
@@ -536,11 +522,10 @@ class TableCheckoutViewModel @Inject constructor(
                             isLoading = false,
                             check = detail,
                             remaining = freshRemaining,
-                            errorMessage = it.errorMessage?.takeIf { aviso -> aviso == avisoDelCobro },
+                            errorMessage = null,
                             pendienteSinSubir = pendiente,
                             // D9: sólo una lectura que empezó con la pantalla ya de vuelta confirma (Codex r2).
                             saldoPorConfirmar = it.saldoPorConfirmar && !confirmaElSaldo,
-                            saldoPorConfirmarTrasEfectivo = it.saldoPorConfirmarTrasEfectivo && !confirmaElSaldo,
                             revisandoSaldo = if (confirmaElSaldo) false else it.revisandoSaldo,
                         )
                     }
@@ -570,8 +555,7 @@ class TableCheckoutViewModel @Inject constructor(
                             current.copy(
                                 isLoading = false,
                                 revisandoSaldo = revisando,
-                                // Codex r2 #5: el aviso de un efectivo que no entró no lo tapa un «no se pudo cargar».
-                                errorMessage = avisoDelCobro?.takeIf { aviso -> aviso == current.errorMessage } ?: "No se pudo cargar la cuenta",
+                                errorMessage = "No se pudo cargar la cuenta",
                                 pendienteSinSubir = pendienteAntes ?: current.pendienteSinSubir,
                             )
                         }
@@ -836,7 +820,6 @@ class TableCheckoutViewModel @Inject constructor(
         // D92: con un descuento o cargo en camino, o la cuenta por confirmar, no sale con el importe de antes (ya va en lo de arriba).
         if (s.pendienteSinSubir != null || s.cambiosEnCamino > 0) return null
         val request = buildPaymentPayload(amount)
-        avisoDelCobro = null // Codex r3 #3: tras la tarjeta, el aviso de un efectivo anterior no se queda pegado
         _state.update { it.copy(isHandingOffToCard = true) }
         return request
     }
@@ -851,8 +834,7 @@ class TableCheckoutViewModel @Inject constructor(
         marcaDeSaldo++
         alFrenteDesdeLaEntrega = false
         _state.update {
-            it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO, saldoPorConfirmar = true, saldoPorConfirmarTrasEfectivo = false,
-                revisandoSaldo = false)
+            it.copy(isHandingOffToCard = false, tipAmount = BigDecimal.ZERO, saldoPorConfirmar = true, revisandoSaldo = false)
         }
     }
 
@@ -913,7 +895,6 @@ class TableCheckoutViewModel @Inject constructor(
         val tipAtChargeTime = _state.value.tipAmount
         val willSettle = amount >= remainingBeforeThisPayment
 
-        avisoDelCobro = null // Codex r3 #3: el aviso de un cobro anterior no sobrevive al siguiente
         _state.update { it.copy(isProcessingCash = true, errorMessage = null) }
         cobrosIniciados++
         viewModelScope.launch {
@@ -982,28 +963,16 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
-                    val aviso = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
-                        // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
-                        // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
-                        if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
-                    } ?: "No se pudo registrar el cobro"
-                    avisoDelCobro = aviso
-                    // na78d478 (Codex r3 #2): no se sabe si el cobro quedó en la cola: la pantalla pide no cobrar otra vez, y por eso
-                    // ni efectivo ni tarjeta hasta releer la cuenta (si no, un segundo toque mandaba otro cobro con el saldo viejo).
-                    val sinConfirmar = (e as? TablesRepository.PayCashRejectedException)?.errorCode ==
-                        TablesRepository.COBRO_SIN_CONFIRMAR_CODIGO
-                    // Una mesa abierta sin red AQUÍ no espera al SERVIDOR: su saldo sin red se recalcula de la cola (que cuenta ese
-                    // cobro si quedó en espera) en la misma relectura.
-                    val esperaLaCuenta = sinConfirmar && !session.isProvisional
-                    if (esperaLaCuenta) marcaDeSaldo++ // lo leído antes de este cobro ya no vale
                     _state.update {
                         it.copy(
-                            isProcessingCash = false, errorMessage = aviso,
-                            saldoPorConfirmar = it.saldoPorConfirmar || esperaLaCuenta,
-                            saldoPorConfirmarTrasEfectivo = if (esperaLaCuenta) true else it.saldoPorConfirmarTrasEfectivo,
+                            isProcessingCash = false,
+                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
+                                // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
+                                // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
+                                if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
+                            } ?: "No se pudo registrar el cobro",
                         )
                     }
-                    if (sinConfirmar) loadCheck()
                     alTerminarElCobro()
                 },
             )
@@ -1075,7 +1044,6 @@ class TableCheckoutViewModel @Inject constructor(
     }
 
     fun consumeError() {
-        avisoDelCobro = null
         _state.update { it.copy(errorMessage = null) }
     }
 

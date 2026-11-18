@@ -4,6 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_POR_REVISAR
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
+import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
+import com.jaac.avoqado_tpv.features.tables.data.SaldoSinRed
 import com.jaac.avoqado_tpv.features.tables.data.TARJETA_REGISTRANDOSE
 import com.jaac.avoqado_tpv.features.tables.data.TARJETA_SIN_REGISTRAR
 import com.jaac.avoqado_tpv.features.tables.data.TARJETA_SUBIENDOSE
@@ -115,5 +117,25 @@ class TableCheckoutAvisosDelPieTest {
         assertThat(pie.aviso).isEqualTo(state.avisoDeSaldoPorConfirmar)
         assertThat(pie.puedeReintentar).isTrue()
         assertThat(pie.razonDeLaTarjeta).isNull()
+    }
+
+    @Test
+    fun D19_mesa_abierta_sin_red_cuyo_saldo_no_se_pudo_leer_ofrece_reintentar() {
+        // Codex r2 #4: tras un cobro rechazado o en duda, la mesa abierta sin red recalcula su saldo de la cola; si la cola no se
+        // pudo leer, quedaba en gris sin salida.
+        val state = TableCheckoutState(isLoading = false, isProvisional = true, saldoSinRed = SaldoSinRed.EnGris(SALDO_NO_RECUPERADO))
+
+        val pie = avisosDelPie(state, cardSupportsThisSplit = true)
+
+        assertThat(pie.aviso).isEqualTo(SALDO_NO_RECUPERADO)
+        assertThat(pie.puedeReintentar).isTrue()
+    }
+
+    @Test
+    fun D19_mesa_abierta_sin_red_por_revisar_no_ofrece_reintentar() {
+        // Releer no la arregla: la resuelve un gerente en «Acciones rechazadas».
+        val state = TableCheckoutState(isLoading = false, isProvisional = true, saldoSinRed = SaldoSinRed.EnGris(MESA_COBRO_POR_REVISAR))
+
+        assertThat(avisosDelPie(state, cardSupportsThisSplit = true).puedeReintentar).isFalse()
     }
 }

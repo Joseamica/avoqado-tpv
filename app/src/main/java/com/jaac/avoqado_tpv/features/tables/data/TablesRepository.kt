@@ -586,44 +586,55 @@ class TablesRepository @Inject constructor(
                 addProperty("expectedBalanceBeforeCents", saldoEsperado.toCents())
             }
         }
-        syncOutbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, payload, id = intentId)
-
-        var capturedAck: SyncIntentAck? = null
-        // CancellationException se repropaga tal cual — el intent YA está
-        // escrito (write-ahead), así que una cancelación a medio replay no
-        // pierde nada: el próximo replay lo reproduce solo.
-        syncOutbox.replayNow(venueId) { intent, ack ->
-            if (intent.id == intentId) capturedAck = ack
+        // D19: si ni siquiera se pudo escribir (la caja cerrada, el permiso, el disco), nada se cobró: se dice con su texto en
+        // vez de dejar salir la excepción (que cerraba la pantalla). Una cancelación sigue saliendo: la fila pudo quedar escrita y
+        // el próximo replay la manda sola.
+        try {
+            syncOutbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, payload, id = intentId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] No se pudo guardar el cobro en efectivo (venue=%s, order=%s)", venueId, orderId)
+            return Result.failure(PayCashNoGuardadoException(e.message?.takeIf { it.isNotBlank() } ?: COBRO_NO_GUARDADO))
         }
 
-        val ack = capturedAck
-        return when {
-            // Sin ack para NUESTRO intent: o no hay red (replayNow no lanzó,
-            // solo no llegó a mandar nada), o un intent más viejo en el
-            // mismo batch cortó en RETRY antes de llegar al nuestro. En
-            // ambos casos el efecto es el mismo: sigue PENDING, se verá
-            // como "guardado" — NUNCA como error (regla de oro offline).
-            ack == null -> Result.success(PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
-            ack.isAcked -> Result.success(
-                PayCashOutcome(
-                    paymentId = ack.result?.stringOrNull("paymentId"),
-                    orderNumber = ack.result?.stringOrNull("orderNumber"),
-                    queued = false,
-                    // 🧾 `applyPayCash` (sync.mobile.service.ts) YA regresa
-                    // `digitalReceipt: { accessKey, receiptUrl, autofacturaAvailable }`
-                    // en el ack — el mismo shape que usan avoqado-android/ios. Antes de
-                    // este cambio el cliente TPV lo descartaba por completo (solo leía
-                    // paymentId/orderNumber), así que un cobro en EFECTIVO de Mesas
-                    // nunca tenía forma de mostrar/compartir su recibo digital ni el
-                    // acceso a autofactura — el hueco que este cambio cierra.
-                    receiptUrl = ack.result?.jsonObjectOrNull("digitalReceipt")?.stringOrNull("receiptUrl"),
-                    autofacturaAvailable = ack.result?.jsonObjectOrNull("digitalReceipt")?.booleanOrNull("autofacturaAvailable") ?: false,
+        // D19 (`na78d478`): el desenlace de ESTE cobro lo decide la cola bajo su candado: el acuse de la pasada propia o, si otro
+        // reproductor (el plano, la mesa, el trabajador) ya lo mandó, lo que dejó en su fila. Antes, sin acuse propio, salía
+        // «guardado» aunque el SERVIDOR lo hubiera rechazado (PAX, 18-nov: «Cobro guardado · Cobrado $203», 0 pagos).
+        return when (val desenlace = syncOutbox.reproducirYResolver(venueId, intentId)) {
+            is SyncOutbox.DesenlaceDelIntent.Aceptado -> {
+                val result = desenlace.result
+                Result.success(
+                    PayCashOutcome(
+                        paymentId = result?.stringOrNull("paymentId"),
+                        orderNumber = result?.stringOrNull("orderNumber"),
+                        queued = false,
+                        // 🧾 `applyPayCash` (sync.mobile.service.ts) YA regresa
+                        // `digitalReceipt: { accessKey, receiptUrl, autofacturaAvailable }`
+                        // en el ack — el mismo shape que usan avoqado-android/ios. Antes de
+                        // este cambio el cliente TPV lo descartaba por completo (solo leía
+                        // paymentId/orderNumber), así que un cobro en EFECTIVO de Mesas
+                        // nunca tenía forma de mostrar/compartir su recibo digital ni el
+                        // acceso a autofactura — el hueco que este cambio cierra.
+                        receiptUrl = result?.jsonObjectOrNull("digitalReceipt")?.stringOrNull("receiptUrl"),
+                        autofacturaAvailable = result?.jsonObjectOrNull("digitalReceipt")?.booleanOrNull("autofacturaAvailable") ?: false,
+                    ),
+                )
+            }
+            // El acuse repetido del SERVIDOR (`ackFromExisting`) no trae `message`: se dice con el código (Codex r1 #7).
+            is SyncOutbox.DesenlaceDelIntent.Rechazado -> Result.failure(
+                PayCashRejectedException(
+                    desenlace.message?.takeIf { it.isNotBlank() } ?: rechazoSinMotivo(desenlace.errorCode),
+                    desenlace.errorCode,
                 ),
             )
-            ack.isRejected -> Result.failure(PayCashRejectedException(ack.message ?: "El cobro fue rechazado", ack.errorCode))
-            // RETRY (VERSION_CONFLICT u otro transitorio): SyncOutbox.applyAck
-            // ya lo dejó PENDING — nunca se convierte en error ni se pierde.
-            else -> Result.success(PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+            // Sin red, o un intent anterior cortó en RETRY: sigue PENDING, se verá como "guardado" — NUNCA como error (regla de oro
+            // offline). Un RETRY propio tampoco es la última palabra.
+            SyncOutbox.DesenlaceDelIntent.EnEspera -> Result.success(PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+            is SyncOutbox.DesenlaceDelIntent.NoSeSabe -> {
+                Timber.e("❌ [Tables] Cobro en efectivo %s sin desenlace conocido: %s", intentId, desenlace.motivo)
+                Result.failure(PayCashSinConfirmarException())
+            }
         }
     }
 
@@ -1711,6 +1722,15 @@ class TablesRepository @Inject constructor(
     /** Rechazo de NEGOCIO de un `PAY_CASH` (ack `REJECTED`) — no es HTTP, viaja dentro de un 200 de `sync/intents`. */
     class PayCashRejectedException(message: String, val errorCode: String?) : Exception(message)
 
+    /**
+     * D19: el cobro se escribió en la cola pero esta terminal no puede saber qué pasó con él (no pudo leer su fila, o la base
+     * no dejó guardar una respuesta de esa misma pasada). Pudo entrar: no se vuelve a cobrar hasta releer la cuenta.
+     */
+    class PayCashSinConfirmarException : Exception(COBRO_SIN_CONFIRMAR)
+
+    /** D19: el cobro ni siquiera se pudo escribir en la cola (la caja cerrada, el permiso, el disco): nada se cobró. */
+    class PayCashNoGuardadoException(message: String) : Exception(message)
+
     private fun parseBackendErrorMessage(rawBody: String?, fallback: String): String {
         val trimmedBody = rawBody?.trim().orEmpty()
         if (trimmedBody.isBlank()) {
@@ -1754,6 +1774,18 @@ class TablesRepository @Inject constructor(
         const val PERMISSION_PAY_ANY = "tables:pay-any"
 
         private const val OPTIMISTIC_ITEM_ID_PREFIX = "pending-"
+
+        /** D19: la duda — el cobro pudo entrar. */
+        const val COBRO_SIN_CONFIRMAR =
+            "No se pudo confirmar este cobro. NO lo vuelvas a cobrar: revisa la cuenta en un momento. La propina se quitó para no cobrarla dos veces."
+
+        /** D19: nada se escribió y no hay otra razón que decir. */
+        const val COBRO_NO_GUARDADO = "No se pudo guardar el cobro en esta terminal: no se cobró. Intenta otra vez."
+
+        /** D19: el SERVIDOR rechazó sin texto (su acuse repetido sólo trae el código). */
+        fun rechazoSinMotivo(errorCode: String?): String =
+            "El sistema no aceptó este cobro" + (errorCode?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "") +
+                ". Queda en «Acciones rechazadas» de Mesas: avisa al gerente antes de volver a cobrar esta mesa."
 
         /**
          * True si [detail] es el `OrderDetail` OPTIMISTA que [addItems] arma

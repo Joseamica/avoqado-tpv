@@ -77,6 +77,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
+import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
 import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
@@ -240,6 +241,13 @@ fun TableCheckoutScreen(
         state.error?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.consumeError()
+        }
+    }
+    // D19: el desenlace de un cobro en efectivo que no entró, una vez, aunque la cuenta se relea mientras se enseña.
+    LaunchedEffect(state.avisoDelCobro) {
+        state.avisoDelCobro?.let {
+            snackbarHostState.showSnackbar(it, duration = androidx.compose.material3.SnackbarDuration.Long)
+            viewModel.consumeAvisoDelCobro()
         }
     }
 
@@ -835,8 +843,10 @@ internal fun avisosDelPie(state: TableCheckoutState, cardSupportsThisSplit: Bool
     val puedeReintentar = aviso != null && if (avisoDeLaTarjeta != null) {
         !state.revisandoSaldo
     } else {
-        // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
-        state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)
+        // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano. D19 (Codex r2 #4): también una mesa
+        // abierta sin red aquí cuyo saldo no se pudo leer de la cola (antes quedaba en gris sin salida).
+        state.pendienteSinSubir != null || (state.check == null && !state.isProvisional) ||
+            (state.isProvisional && aviso == SALDO_NO_RECUPERADO)
     }
     val razonDeLaTarjeta = when {
         !state.cardPaymentEnabled -> state.cardPaymentDisabledReason

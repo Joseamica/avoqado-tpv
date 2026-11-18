@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.tables.data.CAMBIOS_SIN_SINCRONIZAR
 import com.jaac.avoqado_tpv.features.tables.data.CUENTA_SE_ACTUALIZA
 import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_SIN_SINCRONIZAR
+import com.jaac.avoqado_tpv.features.tables.data.MESA_COBRO_POR_REVISAR
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
 import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
@@ -256,7 +257,8 @@ class TableCheckoutViewModelTest {
 
         viewModel.payCash(BigDecimal("150.00"))
 
-        assertThat(viewModel.state.value.error).isEqualTo("El cobro fue rechazado")
+        // D19: el motivo va en su propio aviso (una relectura ya no lo borra antes de verse).
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("El cobro fue rechazado")
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
         assertThat(viewModel.state.value.tableReleased).isFalse()
         coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
@@ -277,7 +279,7 @@ class TableCheckoutViewModelTest {
 
         viewModel.payCash(BigDecimal("150.00"))
 
-        assertThat(viewModel.state.value.error).isEqualTo(
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo(
             "No se registró el cobro: la terminal perdió su numeración (¿se reinstaló la app?). Avisa al gerente: queda en «Acciones rechazadas» de Mesas.",
         )
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
@@ -1990,6 +1992,158 @@ class TableCheckoutViewModelTest {
 
         coVerify(exactly = 0) { repository.removeDiscount(any(), any(), any()) }
         cobro.complete(Result.failure(IOException("fin de la prueba")))
+    }
+
+    // endregion
+
+    // region — D19 (na78d478, PAX 18-nov): el desenlace del efectivo que NO entró
+
+    private fun cuentaD19(total: String) =
+        Result.success(OrderDetail(id = "orden-1", total = BigDecimal(total), amountLeft = BigDecimal(total)))
+
+    @Test
+    fun P1_D19_rechazado_no_descuenta_ni_libera_y_efectivo_y_tarjeta_esperan_una_lectura_nueva() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("203.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("203.00")
+        val viewModel = createViewModel()
+        val relectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { relectura.await() }
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("203.00"), any(), any()) } returns
+            Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
+
+        viewModel.payCash(BigDecimal("203.00"))
+
+        val s = viewModel.state.value
+        assertThat(s.avisoDelCobro).isEqualTo("Order not found")
+        assertThat(s.cashReceipt).isNull()
+        assertThat(s.notice).isNull()
+        assertThat(s.remaining).isEqualTo(BigDecimal("203.00"))
+        assertThat(s.tableReleased).isFalse()
+        // Antes: los dos botones quedaban libres con el saldo de antes hasta que la cola avisara.
+        assertThat(s.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        assertThat(s.cardPaymentEnabled).isFalse()
+        coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
+
+        // La relectura ve el cobro rechazado en la cola: la cuenta queda «por revisar», nunca libre con el saldo viejo.
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "orden-1") } returns listOf(
+            filaD86("c1", SyncIntentTypes.PAY_CASH, """{"orderId":"orden-1","amountCents":20300,"tipCents":0}""", SyncIntentEntity.STATUS_REJECTED),
+        )
+        relectura.complete(cuentaD19("203.00"))
+
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_POR_REVISAR)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("Order not found") // la relectura no lo borra
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D19_tras_un_rechazo_una_relectura_limpia_libera_los_botones_con_el_saldo_del_servidor() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("203.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("203.00")
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("150.00") // otra caja abonó
+
+        viewModel.payCash(BigDecimal("203.00"))
+
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+        assertThat(viewModel.state.value.cardPaymentEnabled).isTrue()
+    }
+
+    @Test
+    fun P1_D19_en_la_duda_no_descuenta_quita_la_propina_y_los_botones_esperan() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+        val relectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { relectura.await() }
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), BigDecimal("20.00"), any()) } returns
+            Result.failure(TablesRepository.PayCashSinConfirmarException())
+
+        viewModel.payCash(BigDecimal("50.00"))
+
+        val s = viewModel.state.value
+        assertThat(s.avisoDelCobro).isEqualTo(TablesRepository.COBRO_SIN_CONFIRMAR)
+        assertThat(s.tipAmount).isEqualTo(BigDecimal.ZERO) // pudo entrar con su propina: no se ofrece otra vez
+        assertThat(s.remaining).isEqualTo(BigDecimal("100.00"))
+        assertThat(s.cashReceipt).isNull()
+        assertThat(s.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        assertThat(s.cardPaymentEnabled).isFalse()
+        relectura.complete(Result.failure(IOException("sin red")))
+        // Una relectura fallida no libera nada: siguen esperando, con «Reintentar».
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(CUENTA_POR_CONFIRMAR)
+        assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D19_si_el_cobro_no_se_pudo_guardar_lo_dice_sin_bloquear_la_cuenta_ni_releer() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("10.00"))
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(TablesRepository.PayCashNoGuardadoException("Abre la caja antes de iniciar otra venta."))
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        val s = viewModel.state.value
+        assertThat(s.avisoDelCobro).isEqualTo("Abre la caja antes de iniciar otra venta.")
+        assertThat(s.isProcessingCash).isFalse()
+        assertThat(s.efectivoBloqueadoPor).isNull()
+        assertThat(s.cardPaymentEnabled).isTrue()
+        assertThat(s.tipAmount).isEqualTo(BigDecimal("10.00"))
+        assertThat(s.remaining).isEqualTo(BigDecimal("100.00"))
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") } // sólo la carga inicial
+    }
+
+    @Test
+    fun D19_el_aviso_del_cobro_no_lo_borra_cambiar_la_division_y_se_consume_una_vez() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
+
+        viewModel.payCash(BigDecimal("100.00"))
+        viewModel.selectSplitType(CheckoutSplitType.CUSTOMAMOUNT)
+
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("Order not found")
+        viewModel.consumeAvisoDelCobro()
+        assertThat(viewModel.state.value.avisoDelCobro).isNull()
+    }
+
+    @Test
+    fun P1_D19_mesa_abierta_sin_red_aqui_rechazada_no_reofrece_efectivo_con_el_saldo_de_antes() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-1")
+        val saldo = SaldoDeMesaSinRed(syncOutbox)
+        saldo.libreta.anotarRonda("local-1", "r1", BigDecimal("65.00"))
+        var filas = listOf(
+            filaD86("abrir", SyncIntentTypes.OPEN_TABLE, """{"tableId":"mesa-1","localOrderId":"local-1"}"""),
+            filaD86("r1", SyncIntentTypes.ADD_ITEMS, """{"localOrderId":"local-1","items":[]}"""),
+        )
+        var espera: CompletableDeferred<Unit>? = null
+        coEvery { syncOutbox.vivasQueMencionan(venueId, "local-1") } coAnswers { espera?.await(); filas }
+        coEvery { repository.payCash(venueId, "local-1", true, BigDecimal("65.00"), any(), any()) } coAnswers {
+            espera = CompletableDeferred()
+            filas = filas + filaD86("c1", SyncIntentTypes.PAY_CASH, """{"localOrderId":"local-1","amountCents":6500,"tipCents":0}""", SyncIntentEntity.STATUS_REJECTED)
+            Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
+        }
+        val viewModel = createViewModel(saldo)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
+
+        viewModel.payCash(BigDecimal("65.00"))
+
+        // Mientras recalcula, el efectivo espera (antes seguía libre con los $65 de antes).
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo("Calculando lo que debe la mesa…")
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("Order not found")
+        espera!!.complete(Unit)
+        assertThat(viewModel.state.value.efectivoBloqueadoPor).isEqualTo(MESA_COBRO_POR_REVISAR)
+        coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
+        viewModel.viewModelScope.cancel()
     }
 
     // endregion

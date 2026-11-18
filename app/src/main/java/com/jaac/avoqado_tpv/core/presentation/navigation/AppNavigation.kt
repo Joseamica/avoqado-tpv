@@ -2156,26 +2156,20 @@ fun AppNavigation(
                         }
                     }
                 },
-                // 🪑 na286b5f: «Inicio» del recibo de un cobro que saldó la mesa la suelta, igual que «Nueva Orden»; antes
-                // dejaba «Tu mesa» pegada a una cuenta pagada. Sólo si el cobro fue por TODO lo que faltaba (Codex r1 #6: con el
-                // registro en cola el saldo llega `null` y «sin saldo» no prueba nada); PaymentScreen además lo descarta con saldo
-                // pendiente y en reembolsos.
-                onNavigateHomeTrasSaldarLaMesa = if (cameFromTables && folio == null &&
-                    splitType == com.jaac.avoqado_tpv.features.tables.presentation.CheckoutSplitType.FULLPAYMENT.wireValue) {
+                // 🪑 na286b5f: «Inicio» del recibo de un cobro con tarjeta de Mesas navega de inmediato y, aparte, suelta «Tu mesa»
+                // si el SERVIDOR dice que su cuenta ya no debe (no libera la mesa: eso lo hace el SERVIDOR al registrar el cobro).
+                onNavigateHomeTrasSaldarLaMesa = if (cameFromTables && folio == null) {
                     {
-                        coroutineScope.launch {
-                            com.jaac.avoqado_tpv.features.tables.presentation.soltarLaMesaTrasElCobroConTarjeta(
-                                secureStorage.getVenueId(), tableSession, tablesRepository, salida = "Inicio (PAX)",
-                            )
-                            val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
-                            if (!popped) {
-                                navController.navigate(NavRoute.Home.route) {
-                                    popUpTo(NavRoute.Home.route) { inclusive = false }
-                                    launchSingleTop = true
-                                }
+                        com.jaac.avoqado_tpv.features.tables.presentation.SalidaDelReciboDeLaMesa.soltarSiLaCuentaYaNoDebe(
+                            secureStorage.getVenueId(), tableSession, tablesRepository, salida = "Inicio (PAX)",
+                        )
+                        val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                        if (!popped) {
+                            navController.navigate(NavRoute.Home.route) {
+                                popUpTo(NavRoute.Home.route) { inclusive = false }
+                                launchSingleTop = true
                             }
                         }
-                        Unit
                     }
                 } else null,
                 onRefundComplete = {
@@ -3172,13 +3166,21 @@ fun AppNavigation(
             // 🧾 Tienda híbrida: el cobro de un folio (siempre por TODO lo que falta: Nexgo no cobra en partes).
             val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
-            // 🪑 Las tres salidas del recibo de una mesa saldada en la Nexgo («Nueva Orden», «Inicio», «Ver en Pagos»).
+            // 🪑 Salidas del recibo de una mesa en la Nexgo: «Nueva Orden» libera la mesa y suelta la sesión (como siempre);
+            // «Inicio» y «Ver en Pagos» sólo sueltan la sesión si el SERVIDOR dice que la cuenta ya no debe (na286b5f).
+            fun entradaDeMesas() = EntryPointAccessors.fromApplication(
+                angelPayContext.applicationContext,
+                AppNavigationEntryPoint::class.java,
+            )
             suspend fun soltarLaMesaDeLaNexgo(salida: String) {
-                val entry = EntryPointAccessors.fromApplication(
-                    angelPayContext.applicationContext,
-                    AppNavigationEntryPoint::class.java,
-                )
+                val entry = entradaDeMesas()
                 com.jaac.avoqado_tpv.features.tables.presentation.soltarLaMesaTrasElCobroConTarjeta(
+                    secureStorage.getVenueId(), entry.tableSession(), entry.tablesRepository(), salida,
+                )
+            }
+            fun soltarSesionDeLaNexgoSiYaNoDebe(salida: String) {
+                val entry = entradaDeMesas()
+                com.jaac.avoqado_tpv.features.tables.presentation.SalidaDelReciboDeLaMesa.soltarSiLaCuentaYaNoDebe(
                     secureStorage.getVenueId(), entry.tableSession(), entry.tablesRepository(), salida,
                 )
             }
@@ -3221,23 +3223,15 @@ fun AppNavigation(
                             }
                         }
                     }
-                    // 🪑 na286b5f: en la Nexgo «Inicio» sólo aparece tras un cobro aprobado, y en Mesas siempre es por el total
-                    // (ver el KDoc de cameFromTables arriba): suelta la mesa igual que «Nueva Orden».
-                    if (cameFromTables && folio == null) {
-                        angelPayCoroutineScope.launch {
-                            soltarLaMesaDeLaNexgo("Inicio (Nexgo)")
-                            irAlInicio()
-                        }
-                    } else {
-                        irAlInicio()
-                    }
+                    // 🪑 na286b5f: «Inicio» navega de inmediato y, aparte, suelta «Tu mesa» si el SERVIDOR dice que la cuenta ya no
+                    // debe (Codex r2: sin esperar la red para navegar ni liberar la mesa con el plano atrasado).
+                    if (cameFromTables && folio == null) soltarSesionDeLaNexgoSiYaNoDebe("Inicio (Nexgo)")
+                    irAlInicio()
                 },
                 onViewInPayments = { paymentId ->
                     paymentArgsHandle?.let(::clearPaymentArgs)
-                    // 🪑 na286b5f: «Ver en Pagos» también sale del recibo de la mesa saldada.
-                    if (cameFromTables && folio == null) {
-                        angelPayCoroutineScope.launch { soltarLaMesaDeLaNexgo("Ver en Pagos (Nexgo)") }
-                    }
+                    // 🪑 na286b5f: «Ver en Pagos» también sale del recibo de la mesa (misma regla que «Inicio»).
+                    if (cameFromTables && folio == null) soltarSesionDeLaNexgoSiYaNoDebe("Ver en Pagos (Nexgo)")
                     // Deep-link: open Pagos with this payment's detail
                     // bottom sheet auto-opened. Pops to Home first so the
                     // backstack stays shallow (otherwise: Cobrar →

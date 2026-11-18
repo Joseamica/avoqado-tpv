@@ -56,9 +56,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  * sin pagar, rechazaba el «Liberar mesa» (`Cannot clear table with unpaid order …`) y quedaba en «Acciones rechazadas»
  * aunque el cobro entrara segundos después.
  *
- * Regla (`todo-funciona-sin-red.md`, pregunta 3): lo que cierra una etapa es BARRERA. Un `CLEAR_TABLE` cuya cuenta tiene un
- * cobro de este aparato todavía subiéndose espera (con todo lo que va detrás, para no romper el FIFO) y sale en la misma
- * pasada, después del cobro. Un cobro que ya no se va a subir solo (FAILED) no lo detiene.
+ * Regla (rediseño tras Codex r2): un `CLEAR_TABLE` cuya cuenta tiene un cobro con tarjeta de esta terminal que todavía no
+ * sube NO se manda (queda DISCARDED): cuando ese cobro se registre, el SERVIDOR libera la mesa solo (`releaseTableIfSettled`),
+ * y si nunca se registra, la cuenta sigue debiendo y el rechazo habría sido el mismo. La cola de Mesas no se frena. Un cobro
+ * sin registrar y sin revisar (FAILED) no cambia nada: el «Liberar mesa» se manda como antes.
  *
  * Room, cola de cobros, `SyncOutbox`, `TableSyncCoordinator` y el trabajador son REALES; el SERVIDOR de mentiras sigue la regla
  * del real (`clearTableInTransaction`: rechaza si la cuenta todavía debe).
@@ -66,7 +67,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, application = Application::class, sdk = [28])
 @LooperMode(LooperMode.Mode.PAUSED)
-class LiberarMesaEsperaAlCobroEnColaRoomTest {
+class LiberarMesaConSuCobroEnColaRoomTest {
     @get:Rule val mainDispatcherRule = MainDispatcherRule()
 
     private val context = ApplicationProvider.getApplicationContext<Application>()
@@ -120,19 +121,20 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
     @After fun tearDown() { db.close() }
 
     @Test
-    fun `P2 el Liberar mesa de una cuenta con su cobro con tarjeta en cola espera al cobro y sale ACKED en la misma pasada`() = runTest {
+    fun `P2 el Liberar mesa de una cuenta con su cobro con tarjeta en cola no se manda ni queda por revisar`() = runTest {
         db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
         val liberar = liberarMesa(MESA, CUENTA)
 
         assertThat(trabajador().doWork()).isEqualTo(ListenableWorker.Result.success())
 
-        assertThat(llegadas).containsExactly("COBRO:$CUENTA", SyncIntentTypes.CLEAR_TABLE).inOrder()
-        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
+        // El cobro sube (y en el SERVIDOR real libera la mesa al registrarse); el «Liberar mesa» nunca sale.
+        assertThat(llegadas).containsExactly("COBRO:$CUENTA")
+        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
         assertThat(outbox.rejectedIntents(VENUE)).isEmpty()
     }
 
     @Test
-    fun `lo que va DETRAS del Liberar mesa tambien espera, sin romper el orden de la cola`() = runTest {
+    fun `lo que va DETRAS del Liberar mesa no se frena`() = runTest {
         db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
         val liberar = liberarMesa(MESA, CUENTA)
         val abrirOtra = outbox.enqueue(VENUE, SyncIntentTypes.OPEN_TABLE,
@@ -140,13 +142,13 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
 
         trabajador().doWork()
 
-        assertThat(llegadas).containsExactly("COBRO:$CUENTA", SyncIntentTypes.CLEAR_TABLE, SyncIntentTypes.OPEN_TABLE).inOrder()
-        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
+        assertThat(llegadas).containsExactly(SyncIntentTypes.OPEN_TABLE, "COBRO:$CUENTA").inOrder()
+        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
         assertThat(fila(abrirOtra).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
     }
 
     @Test
-    fun `si el cobro todavia no puede subir, el Liberar mesa sigue en espera y NO se manda (nada por revisar)`() = runTest {
+    fun `si el cobro todavia no puede subir, el Liberar mesa tampoco se manda ni queda por revisar`() = runTest {
         cobrosSinRed = true
         db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
         val liberar = liberarMesa(MESA, CUENTA)
@@ -154,18 +156,22 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
         trabajador().doWork()
 
         assertThat(llegadas).doesNotContain(SyncIntentTypes.CLEAR_TABLE)
-        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_PENDING)
+        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
         assertThat(outbox.rejectedIntents(VENUE)).isEmpty()
+        // El cobro sigue en su cola, intacto.
+        assertThat(db.pendingPaymentDao().hayCobroSubiendose(VENUE, CUENTA)).isTrue()
     }
 
     @Test
-    fun `Codex r1 4 - el Liberar mesa que se encola MIENTRAS sube el cobro sale en la misma pasada`() = runTest {
+    fun `Codex r1 4 - el Liberar mesa que se encola MIENTRAS sube el cobro sale en la siguiente pasada y entra`() = runTest {
         db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
         var liberar: String? = null
         mientrasSubeElCobro = { liberar = liberarMesa(MESA, CUENTA) }
 
         trabajador().doWork()
+        trabajador().doWork()
 
+        // Cuando sale, su cobro ya subió: el SERVIDOR lo acepta, nunca lo rechaza.
         assertThat(llegadas).containsExactly("COBRO:$CUENTA", SyncIntentTypes.CLEAR_TABLE).inOrder()
         assertThat(fila(checkNotNull(liberar)).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
     }

@@ -401,13 +401,9 @@ class SocketManagerTest {
             JSONObject().put("requestId", "req-s5s").put("attemptId", "att-s5s").put("paymentId", "pay-s5s")
                 .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
         )
-        // TEMPORAL (medición «antes»): la lectura de hoy, sobre la lista viva y sin su candado.
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            kotlinx.coroutines.withTimeout(3000) {
-                while (eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().size < 2) kotlinx.coroutines.delay(20)
-            }
-        }
-        val confirmados = eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().associateBy { it.requestId }
+        // El listener despacha en `Dispatchers.IO` (tiempo real): un `delay` del reloj virtual de runTest no espera nada.
+        val confirmados = esperarEn(eventos) { v -> v.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().size >= 2 }
+            .filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().associateBy { it.requestId }
         assertThat(confirmados.keys).containsExactly("req-s5r", "req-s5s")
         assertThat(confirmados.getValue("req-s5r").receiptUrl).isEqualTo("https://dashboard.avoqado.io/receipts/public/key-s5r")
         assertThat(confirmados.getValue("req-s5r").receiptAccessKey).isEqualTo("key-s5r")

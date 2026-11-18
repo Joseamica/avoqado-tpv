@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Prueba inestable `SocketManagerTest` S5 (sólo pruebas)**: recorría sin su candado listas que llena el hilo de IO (`ConcurrentModificationException` al azar en el CI, corrida 44160547325) y esperaba con el reloj virtual; ahora lee copias tomadas bajo el candado y espera en tiempo real. No cambia código de producción.
+
 ---
 
 ## [2.22.0] - 2026-11-17

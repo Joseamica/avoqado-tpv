@@ -75,8 +75,6 @@ class QuarantineViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     private val permissionsRepository: PermissionsRepository,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
-    /** nab0e38e: para quitar solos los «Liberar mesa» que ya no hacen falta. Último y con default por las pruebas. */
-    private val tablesRepository: com.jaac.avoqado_tpv.features.tables.data.TablesRepository? = null,
 ) : ViewModel() {
 
     /** La hora que se le enseña al mesero es la del negocio, no la del aparato. */
@@ -122,20 +120,6 @@ class QuarantineViewModel @Inject constructor(
                     isLoading = false,
                     items = rejected.map { intent -> intent.toUiItem() },
                 )
-            }
-            // nab0e38e: DESPUÉS de enseñar la lista (nunca la retrasa, Codex r4 #3): un «Liberar mesa» rechazado cuya mesa ya está
-            // libre en el SERVIDOR se quita solo, con su razón escrita, y la lista se vuelve a leer.
-            val resueltos = try {
-                tablesRepository?.resolverLiberarMesaQueYaNoHaceFalta(venueId) ?: 0
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                timber.log.Timber.w(e, "⚠️ [Quarantine] No se pudo revisar «Liberar mesa» rechazados")
-                0
-            }
-            if (resueltos > 0) {
-                val vigentes = outbox.rejectedIntents(venueId)
-                _state.update { it.copy(items = vigentes.map { intent -> intent.toUiItem() }) }
             }
         }
     }

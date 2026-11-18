@@ -344,28 +344,6 @@ class TablesViewModel @Inject constructor(
         }
     }
 
-    /** nab0e38e: una revisión a la vez, aparte del plano (cada «Liberar mesa» rechazado es una pregunta al SERVIDOR). */
-    private var revisionDeLiberarMesa: kotlinx.coroutines.Job? = null
-
-    /**
-     * nab0e38e: quita solos (con su razón) los «Liberar mesa» rechazados cuya cuenta ya está pagada, y vuelve a contar si quitó
-     * alguno. Corre aparte: nunca retrasa la carga del plano. Si falla, el badge queda como estaba (nunca esconde un rechazo).
-     */
-    private fun revisarLiberarMesaRechazados(venueId: String) {
-        if (revisionDeLiberarMesa?.isActive == true) return
-        revisionDeLiberarMesa = viewModelScope.launch {
-            val resueltos = try {
-                tablesRepository.resolverLiberarMesaQueYaNoHaceFalta(venueId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [Tables] No se pudo revisar «Liberar mesa» rechazados (venue=%s)", venueId)
-                0
-            }
-            if (resueltos > 0) refreshQuarantineCount(venueId, revisar = false)
-        }
-    }
-
     /**
      * Refresca [TablesUiState.quarantineCount] desde
      * [SyncOutbox.rejectedIntents] (Plan C, Task 9). `CancellationException`
@@ -374,8 +352,7 @@ class TablesViewModel @Inject constructor(
      * de golpe (eso sería esconder un rechazo real, exactamente lo que este
      * badge existe para prevenir).
      */
-    private suspend fun refreshQuarantineCount(venueId: String, revisar: Boolean = true) {
-        if (revisar) revisarLiberarMesaRechazados(venueId)
+    private suspend fun refreshQuarantineCount(venueId: String) {
         val count = try {
             syncOutbox.rejectedIntents(venueId).size
         } catch (e: CancellationException) {

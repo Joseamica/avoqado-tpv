@@ -2156,24 +2156,6 @@ fun AppNavigation(
                         }
                     }
                 },
-                // 🪑 na286b5f: «Inicio» del recibo de un cobro con tarjeta de Mesas suelta «Tu mesa» al momento (sin red, sin
-                // liberar la mesa) sólo si el SERVIDOR ya confirmó el saldo de esa cuenta en cero (el recibo lo trae al registrar).
-                // «Por el total» no basta (Codex r4 #4): otro aparato pudo agregar algo mientras se cobraba. PaymentScreen sólo lo
-                // usa fuera de reembolsos y sin saldo pendiente.
-                onNavigateHomeTrasSaldarLaMesa = if (cameFromTables && folio == null) {
-                    { saldoConfirmadoEnCero ->
-                        if (saldoConfirmadoEnCero) {
-                            com.jaac.avoqado_tpv.features.tables.presentation.soltarSesionDelCobro(tableSession, orderId, "Inicio (PAX)")
-                        }
-                        val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
-                        if (!popped) {
-                            navController.navigate(NavRoute.Home.route) {
-                                popUpTo(NavRoute.Home.route) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        }
-                    }
-                } else null,
                 onRefundComplete = {
                     // 💸 Refund success: signal Payments to refresh, then return
                     navController.getBackStackEntry(NavRoute.Payments.route)
@@ -2204,9 +2186,13 @@ fun AppNavigation(
                         // unpaid) and return to the Mesas floor plan, never the
                         // legacy FloorPlan/unified Cart.
                         coroutineScope.launch {
-                            com.jaac.avoqado_tpv.features.tables.presentation.soltarLaMesaTrasElCobroConTarjeta(
-                                secureStorage.getVenueId(), tableSession, tablesRepository, salida = "Nueva Orden (PAX)",
-                            )
+                            val venueId = secureStorage.getVenueId()
+                            val session = tableSession.current()
+                            if (venueId != null && session != null) {
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
+                            }
+                            tableSession.clear()
                             navController.navigate(NavRoute.Tables.route) {
                                 popUpTo(NavRoute.Home.route) { inclusive = false }
                             }
@@ -3168,18 +3154,6 @@ fun AppNavigation(
             // 🧾 Tienda híbrida: el cobro de un folio (siempre por TODO lo que falta: Nexgo no cobra en partes).
             val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
-            // 🪑 «Nueva Orden» tras un cobro de Mesas en la Nexgo: libera la mesa y suelta la sesión (como siempre). «Inicio» y
-            // «Ver en Pagos» no la tocan: su recibo no trae el saldo confirmado por el SERVIDOR (na286b5f, Codex r4 #4).
-            suspend fun soltarLaMesaDeLaNexgo(salida: String) {
-                val entry = EntryPointAccessors.fromApplication(
-                    angelPayContext.applicationContext,
-                    AppNavigationEntryPoint::class.java,
-                )
-                com.jaac.avoqado_tpv.features.tables.presentation.soltarLaMesaTrasElCobroConTarjeta(
-                    secureStorage.getVenueId(), entry.tableSession(), entry.tablesRepository(), salida,
-                )
-            }
-
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
                 orderId = orderId,
@@ -3246,7 +3220,19 @@ fun AppNavigation(
                         // balance). Same clearTable-then-navigate-to-Tables as the
                         // Blumon Payment branch above.
                         angelPayCoroutineScope.launch {
-                            soltarLaMesaDeLaNexgo("Nueva Orden (Nexgo)")
+                            val entry = EntryPointAccessors.fromApplication(
+                                angelPayContext.applicationContext,
+                                AppNavigationEntryPoint::class.java,
+                            )
+                            val tablesRepository = entry.tablesRepository()
+                            val tableSession = entry.tableSession()
+                            val venueId = secureStorage.getVenueId()
+                            val session = tableSession.current()
+                            if (venueId != null && session != null) {
+                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
+                            }
+                            tableSession.clear()
                             navController.navigate(NavRoute.Tables.route) {
                                 popUpTo(NavRoute.Home.route) { inclusive = false }
                             }

@@ -185,13 +185,6 @@ interface SyncIntentDao {
     suspend fun dismiss(id: String, venueId: String): Int
 
     /**
-     * nab0e38e: como [dismiss], pero lo hace la terminal sola y deja escrita la RAZÓN en `message` (el `error_code` del
-     * SERVIDOR se conserva). Nada se quita de la cuarentena en silencio. Sólo sobre `REJECTED`.
-     */
-    @Query("UPDATE sync_intents SET status = 'DISMISSED', message = :mensaje WHERE id = :id AND venue_id = :venueId AND status = 'REJECTED'")
-    suspend fun dismissConRazon(id: String, venueId: String, mensaje: String): Int
-
-    /**
      * Descarta un intent PENDING que resultó innecesario — patrón write-ahead
      * (Task 4 P1 fix): el caller escribe el intent ANTES de intentar el
      * camino online, y si ESE intento SÍ tiene éxito (o el server lo rechaza

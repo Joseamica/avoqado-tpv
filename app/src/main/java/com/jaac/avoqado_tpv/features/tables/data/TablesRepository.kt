@@ -690,32 +690,35 @@ class TablesRepository @Inject constructor(
      * hz:nube0000:nab0e38e (encargo 64000e): un «Liberar mesa» sin red puede llegar al SERVIDOR antes que el cobro con tarjeta
      * de su cuenta (el trabajador reproduce Mesas antes que los cobros, y la PAX enseña «Aprobado» antes de registrar). El
      * SERVIDOR lo rechaza con razón (la cuenta todavía debía) y quedaba en «Acciones rechazadas» para siempre, aunque segundos
-     * después el cobro entrara y el SERVIDOR liberara la mesa solo (`releaseTableIfSettled`). Aquí la terminal pregunta por la
-     * cuenta de cada «Liberar mesa» rechazado y, si ya está pagada o cerrada, lo quita de la cuarentena con la razón escrita
-     * (no en silencio). La cola de Mesas no se toca: el rechazo pasa como siempre y su orden FIFO sigue igual.
+     * después el cobro entrara y el SERVIDOR liberara la mesa solo (`releaseTableIfSettled`).
      *
-     * Sólo con la cuenta del SERVIDOR (`orderId`): un id local no se puede preguntar. Si no se puede preguntar, se queda. A lo
-     * más [TOPE_LIBERAR_MESA_POR_REVISAR] por vuelta. Nunca lanza salvo cancelación. @return cuántos se resolvieron solos.
+     * Aquí la terminal pide el plano al SERVIDOR (UNA consulta) y quita de la cuarentena, con la razón escrita, cada «Liberar
+     * mesa» rechazado cuya mesa ya está LIBRE en el SERVIDOR (`AVAILABLE`, sin cuenta viva): ya no queda nada que liberar.
+     * Si la mesa sigue ocupada (por la cuenta pagada porque la liberación del SERVIDOR falló, por otra cuenta o por clientes
+     * nuevos), o no se puede preguntar, se queda como hoy: alguien tiene que verla (Codex r4 #1). La cola de Mesas no se toca.
+     * Nunca lanza salvo cancelación. @return cuántos se resolvieron solos.
      */
     suspend fun resolverLiberarMesaQueYaNoHaceFalta(venueId: String): Int {
         val rechazados = try {
-            syncOutbox.liberarMesaRechazados(venueId, TOPE_LIBERAR_MESA_POR_REVISAR)
+            syncOutbox.liberarMesaRechazados(venueId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Timber.w(e, "⚠️ [Tables] No se pudo leer la cuarentena para «Liberar mesa» (venue=%s)", venueId)
             return 0
         }
+        if (rechazados.isEmpty()) return 0
+        val mesas = getTables(venueId).getOrNull()?.associateBy { it.id } ?: return 0
         var resueltos = 0
         for (intent in rechazados) {
-            val cuenta = try {
-                JsonParser.parseString(intent.payloadJson).asJsonObject.get("orderId")
-                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotBlank() }
+            val mesaId = try {
+                JsonParser.parseString(intent.payloadJson).asJsonObject.get("tableId")
+                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
             } catch (e: Exception) {
                 null
             } ?: continue
-            val detalle = getOrder(venueId, cuenta).getOrNull() ?: continue
-            if (detalle.paymentStatus != "PAID" && detalle.status != "COMPLETED") continue
+            val mesa = mesas[mesaId] ?: continue
+            if (mesa.status != "AVAILABLE" || mesa.currentOrder != null || mesa.openOrders.isNotEmpty()) continue
             val hecho = try {
                 syncOutbox.resueltoSolo(venueId, intent, RAZON_LIBERAR_MESA_YA_NO_HACE_FALTA)
             } catch (e: CancellationException) {
@@ -726,8 +729,8 @@ class TablesRepository @Inject constructor(
             }
             if (hecho) {
                 resueltos++
-                Timber.w("🪑 [Tables] CLEAR_TABLE %s rechazado (%s) ya no hace falta: la cuenta %s ya está pagada — resuelto solo",
-                    intent.id, intent.errorCode, cuenta)
+                Timber.w("🪑 [Tables] CLEAR_TABLE %s rechazado (%s) ya no hace falta: la mesa %s ya está libre — resuelto solo",
+                    intent.id, intent.errorCode, mesaId)
             }
         }
         return resueltos
@@ -1842,9 +1845,6 @@ internal fun ProductCatalogDto.toMenuProduct(): MenuProduct = MenuProduct(
     familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions),
 )
 
-/** nab0e38e: cuántos «Liberar mesa» rechazados se revisan por vuelta (cada uno es una pregunta al SERVIDOR). */
-internal const val TOPE_LIBERAR_MESA_POR_REVISAR = 10
-
 /** nab0e38e: la razón que queda escrita en un «Liberar mesa» que la terminal quitó sola de «Acciones rechazadas». */
 internal const val RAZON_LIBERAR_MESA_YA_NO_HACE_FALTA =
-    "Se resolvió solo: la cuenta ya está pagada (al registrar su cobro, el servidor libera la mesa)."
+    "Se resolvió solo: la mesa ya está libre en el servidor (al registrar el cobro de la cuenta, el servidor la liberó)."

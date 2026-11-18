@@ -26,8 +26,8 @@ import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
-import com.jaac.avoqado_tpv.features.tables.data.api.dto.OrderDetailResponse
-import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.TablesResponse
+import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsRequest
@@ -86,6 +86,7 @@ class LiberarMesaConSuCobroEnColaRoomTest {
     private val cuentasPagadas = mutableSetOf<String>()
     private var cobrosSinRed = false
     private var sinRedParaPreguntar = false
+    private var laLiberacionDelServidorFallo = false
 
     @Before fun setUp() {
         every { storage.getVenueId() } returns VENUE
@@ -108,14 +109,15 @@ class LiberarMesaConSuCobroEnColaRoomTest {
                 }
             }))
         }
-        coEvery { tableApi.getOrder(VENUE, any()) } coAnswers {
+        coEvery { tableApi.getTables(VENUE) } coAnswers {
             if (sinRedParaPreguntar) throw IOException("sin red")
-            val cuenta = secondArg<String>()
-            Response.success(OrderDetailResponse(data = if (cuenta in cuentasPagadas) {
-                OrderDetail(id = cuenta, status = "COMPLETED", paymentStatus = "PAID")
-            } else {
-                OrderDetail(id = cuenta, status = "PENDING", paymentStatus = "PENDING")
-            }))
+            // Como el SERVIDOR real: al registrar el cobro que salda la cuenta, libera la mesa (`releaseTableIfSettled`),
+            // salvo que esa liberación falle (Codex r4 #1).
+            val libre = CUENTA in cuentasPagadas && !laLiberacionDelServidorFallo
+            Response.success(TablesResponse(data = listOf(
+                if (libre) DiningTable(id = MESA, number = "8", status = "AVAILABLE")
+                else DiningTable(id = MESA, number = "8", status = "OCCUPIED", currentOrder = mockk(relaxed = true)),
+            )))
         }
         coEvery { record(any(), any(), any(), any(), true) } coAnswers {
             if (cobrosSinRed) return@coAnswers Result.failure(IOException("sin red"))
@@ -144,7 +146,7 @@ class LiberarMesaConSuCobroEnColaRoomTest {
         assertThat(outbox.rejectedIntents(VENUE)).isEmpty()
         assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_DISMISSED)
         // Nunca en silencio: la fila dice por qué se quitó, y conserva el rechazo del SERVIDOR.
-        assertThat(fila(liberar).message).contains("Se resolvió solo")
+        assertThat(fila(liberar).message).contains("la mesa ya está libre en el servidor")
         assertThat(fila(liberar).message).contains("Cannot clear table with unpaid order 42")
         assertThat(fila(liberar).errorCode).isEqualTo("BUSINESS_RULE")
     }
@@ -174,6 +176,17 @@ class LiberarMesaConSuCobroEnColaRoomTest {
         assertThat(mesas().resolverLiberarMesaQueYaNoHaceFalta(VENUE)).isEqualTo(0)
         assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
         assertThat(outbox.rejectedIntents(VENUE)).hasSize(1)
+    }
+
+    @Test
+    fun `Codex r4 1 - la cuenta quedo pagada pero el SERVIDOR no libero la mesa - el rechazo se queda para que alguien la vea`() = runTest {
+        laLiberacionDelServidorFallo = true
+        db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
+        val liberar = liberarMesa(MESA, CUENTA)
+        trabajador().doWork()
+
+        assertThat(mesas().resolverLiberarMesaQueYaNoHaceFalta(VENUE)).isEqualTo(0)
+        assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
     }
 
     @Test

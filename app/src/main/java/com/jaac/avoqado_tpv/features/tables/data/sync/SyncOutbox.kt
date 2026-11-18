@@ -441,9 +441,9 @@ class SyncOutbox @Inject constructor(
         dao.dismiss(id, venueId)
     }
 
-    /** nab0e38e: los «Liberar mesa» rechazados de este venue (los más viejos primero), para ver si ya se resolvieron solos. */
-    suspend fun liberarMesaRechazados(venueId: String, tope: Int): List<SyncIntentEntity> =
-        dao.rejectedForVenue(venueId).filter { it.type == SyncIntentTypes.CLEAR_TABLE }.take(tope)
+    /** nab0e38e: los «Liberar mesa» rechazados de este venue, para ver si ya se resolvieron solos. */
+    suspend fun liberarMesaRechazados(venueId: String): List<SyncIntentEntity> =
+        dao.rejectedForVenue(venueId).filter { it.type == SyncIntentTypes.CLEAR_TABLE }
 
     /** nab0e38e: quita de la cuarentena un rechazo que ya no hace falta resolver, dejando su razón escrita. */
     suspend fun resueltoSolo(venueId: String, intent: SyncIntentEntity, razon: String): Boolean =

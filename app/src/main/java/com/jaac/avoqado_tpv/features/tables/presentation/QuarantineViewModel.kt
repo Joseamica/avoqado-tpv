@@ -116,14 +116,26 @@ class QuarantineViewModel @Inject constructor(
         this.venueId = venueId
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true) }
-            // nab0e38e: un «Liberar mesa» rechazado cuya cuenta ya está pagada se quita solo, con su razón escrita.
-            tablesRepository?.resolverLiberarMesaQueYaNoHaceFalta(venueId)
             val rejected = outbox.rejectedIntents(venueId)
             _state.update {
                 it.copy(
                     isLoading = false,
                     items = rejected.map { intent -> intent.toUiItem() },
                 )
+            }
+            // nab0e38e: DESPUÉS de enseñar la lista (nunca la retrasa, Codex r4 #3): un «Liberar mesa» rechazado cuya mesa ya está
+            // libre en el SERVIDOR se quita solo, con su razón escrita, y la lista se vuelve a leer.
+            val resueltos = try {
+                tablesRepository?.resolverLiberarMesaQueYaNoHaceFalta(venueId) ?: 0
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                timber.log.Timber.w(e, "⚠️ [Quarantine] No se pudo revisar «Liberar mesa» rechazados")
+                0
+            }
+            if (resueltos > 0) {
+                val vigentes = outbox.rejectedIntents(venueId)
+                _state.update { it.copy(items = vigentes.map { intent -> intent.toUiItem() }) }
             }
         }
     }

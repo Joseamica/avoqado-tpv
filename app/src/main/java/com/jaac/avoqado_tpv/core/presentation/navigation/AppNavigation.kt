@@ -2157,12 +2157,12 @@ fun AppNavigation(
                     }
                 },
                 // 🪑 na286b5f: «Inicio» del recibo de un cobro con tarjeta de Mesas suelta «Tu mesa» al momento (sin red, sin
-                // liberar la mesa) si ese cobro saldó la cuenta: por el total, o con el saldo confirmado en cero. PaymentScreen
-                // sólo lo usa fuera de reembolsos y sin saldo pendiente.
+                // liberar la mesa) sólo si el SERVIDOR ya confirmó el saldo de esa cuenta en cero (el recibo lo trae al registrar).
+                // «Por el total» no basta (Codex r4 #4): otro aparato pudo agregar algo mientras se cobraba. PaymentScreen sólo lo
+                // usa fuera de reembolsos y sin saldo pendiente.
                 onNavigateHomeTrasSaldarLaMesa = if (cameFromTables && folio == null) {
                     { saldoConfirmadoEnCero ->
-                        if (saldoConfirmadoEnCero ||
-                            splitType == com.jaac.avoqado_tpv.features.tables.presentation.CheckoutSplitType.FULLPAYMENT.wireValue) {
+                        if (saldoConfirmadoEnCero) {
                             com.jaac.avoqado_tpv.features.tables.presentation.soltarSesionDelCobro(tableSession, orderId, "Inicio (PAX)")
                         }
                         val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
@@ -3168,20 +3168,16 @@ fun AppNavigation(
             // 🧾 Tienda híbrida: el cobro de un folio (siempre por TODO lo que falta: Nexgo no cobra en partes).
             val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
-            // 🪑 Salidas del recibo de una mesa en la Nexgo: «Nueva Orden» libera la mesa y suelta la sesión (como siempre);
-            // «Inicio» y «Ver en Pagos» sólo sueltan la sesión de ESA cuenta, al momento y sin red (na286b5f).
-            fun entradaDeMesas() = EntryPointAccessors.fromApplication(
-                angelPayContext.applicationContext,
-                AppNavigationEntryPoint::class.java,
-            )
+            // 🪑 «Nueva Orden» tras un cobro de Mesas en la Nexgo: libera la mesa y suelta la sesión (como siempre). «Inicio» y
+            // «Ver en Pagos» no la tocan: su recibo no trae el saldo confirmado por el SERVIDOR (na286b5f, Codex r4 #4).
             suspend fun soltarLaMesaDeLaNexgo(salida: String) {
-                val entry = entradaDeMesas()
+                val entry = EntryPointAccessors.fromApplication(
+                    angelPayContext.applicationContext,
+                    AppNavigationEntryPoint::class.java,
+                )
                 com.jaac.avoqado_tpv.features.tables.presentation.soltarLaMesaTrasElCobroConTarjeta(
                     secureStorage.getVenueId(), entry.tableSession(), entry.tablesRepository(), salida,
                 )
-            }
-            fun soltarSesionDeLaNexgo(salida: String) {
-                com.jaac.avoqado_tpv.features.tables.presentation.soltarSesionDelCobro(entradaDeMesas().tableSession(), orderId, salida)
             }
 
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
@@ -3213,24 +3209,16 @@ fun AppNavigation(
                 },
                 onNavigateHome = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
-                    val irAlInicio = {
-                        val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
-                        if (!popped) {
-                            navController.navigate(NavRoute.Home.route) {
-                                popUpTo(NavRoute.Home.route) { inclusive = false }
-                                launchSingleTop = true
-                            }
+                    val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    if (!popped) {
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                            launchSingleTop = true
                         }
                     }
-                    // 🪑 na286b5f: en la Nexgo «Inicio» sólo aparece tras un cobro aprobado y en Mesas siempre es por el total
-                    // (KDoc de cameFromTables arriba): suelta «Tu mesa» de esa cuenta, al momento y sin red.
-                    if (cameFromTables && folio == null) soltarSesionDeLaNexgo("Inicio (Nexgo)")
-                    irAlInicio()
                 },
                 onViewInPayments = { paymentId ->
                     paymentArgsHandle?.let(::clearPaymentArgs)
-                    // 🪑 na286b5f: «Ver en Pagos» también sale del recibo de la mesa (misma regla que «Inicio»).
-                    if (cameFromTables && folio == null) soltarSesionDeLaNexgo("Ver en Pagos (Nexgo)")
                     // Deep-link: open Pagos with this payment's detail
                     // bottom sheet auto-opened. Pops to Home first so the
                     // backstack stays shallow (otherwise: Cobrar →

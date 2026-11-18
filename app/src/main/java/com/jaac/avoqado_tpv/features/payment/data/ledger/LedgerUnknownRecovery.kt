@@ -21,8 +21,10 @@ class LedgerUnknownRecovery @Inject constructor(
         var confirmed = 0
         val rows = dao.getUnknownRecoveryCandidates(venueId, now - 120_000L, now)
         for (row in rows) {
+            // F1 (Codex código r2 #1): la DESCARTADA que trae la consulta es la declarada por una persona (el SQL decide cuál).
             if (row.venueId != venueId || row.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
-                row.state !in listOf(PaymentAttemptEntity.STATE_AUTORIZANDO, PaymentAttemptEntity.STATE_INDETERMINADO) ||
+                row.state !in listOf(PaymentAttemptEntity.STATE_AUTORIZANDO, PaymentAttemptEntity.STATE_INDETERMINADO,
+                    PaymentAttemptEntity.STATE_DESCARTADA) ||
                 row.hostApproved != null || row.verifyAttempts >= 5) continue
             try {
                 val waitMs = 120_000L * (1L shl row.verifyAttempts.coerceIn(0, 4))
@@ -57,9 +59,10 @@ class LedgerUnknownRecovery @Inject constructor(
     }
 
     /**
-     * 🔴 F1 (Codex código r1 #1): mientras se esperaba a AngelPay, la fila se cerró como «no se cobró» (el gerente firmó, o Avoqado
-     * la liberó) y AngelPay contestó «cobrado» después. El aprobado no se descarta: queda la marca «hubo dinero» (la de D13,
-     * `server_processor_evidence`), que aparta la cuenta para la tarjeta, la saca en «Por revisar» y la cuenta el cierre de caja.
+     * 🔴 F1 (Codex código r1 #1, respaldo desde r2): la fila declarada por una persona ya la reabrió [PaymentAttemptDao.completeUnknownRecovery]
+     * con la referencia y la autorización. Esto queda para una DESCARTADA que NO se puede reabrir (rechazo del banco, «no salió al
+     * banco», veto, Payment ya en Avoqado) y a la que AngelPay contesta «cobrado»: el aprobado no se descarta, queda la marca
+     * «hubo dinero» (`server_processor_evidence`), que aparta la cuenta, la saca en «Por revisar» y la cuenta el cierre de caja.
      * Una fila que sigue en duda (otra recuperación la tiene) se deja a su dueño.
      */
     private suspend fun conservarElDineroTrasUnCierre(venueId: String, attemptId: String, referencia: String) {

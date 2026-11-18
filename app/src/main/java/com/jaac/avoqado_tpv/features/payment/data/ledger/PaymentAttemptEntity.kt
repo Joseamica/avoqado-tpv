@@ -363,6 +363,17 @@ data class PaymentAttemptEntity(
          * La usan la admisión ([PaymentAttemptDao.reserveTerminal]), su lectura gemela y el CAS antes del banco y del lector. El SALDO
          * (efectivo de Mesas, «Pedidos por pagar») sigue con [SQL_CERCA_LA_VENTA]: una duda sin dinero no cambia lo que se debe.
          */
+        /**
+         * 🔴 F1 (Codex código r2 #1, `pasada-aprobado-tardio.md`): la venta que una PERSONA cerró como «no se cobró» — la firma o
+         * declaración de esta terminal (`declarado_sin_cobro:`) o la del POS / «no presentó tarjeta» que trajo el servidor
+         * (`OPERATOR_NO_INSTRUMENT`) — sin rechazo del banco, sin veto y sin Payment. Es la única DESCARTADA que la respuesta del
+         * banco puede reabrir: un positivo gana a una declaración. Fuera quedan la ventana o el silencio del banco
+         * (`RELEASED_NO_EVIDENCE`), «no salió al banco» del SDK (`sin_autorizacion:`) y el rechazo explícito. Sin alias.
+         */
+        const val SQL_DECLARADA_POR_UNA_PERSONA = "(state = 'DESCARTADA' AND legacy_shadow = 0 AND kind = 'SALE' " +
+            "AND host_approved IS NULL AND server_veto IS NULL AND server_payment_id IS NULL " +
+            "AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT'))"
+
         const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
             " OR (legacy_shadow = 0 AND kind = 'SALE' AND state = 'INDETERMINADO'))"
 

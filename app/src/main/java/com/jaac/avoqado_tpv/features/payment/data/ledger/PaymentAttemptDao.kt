@@ -29,8 +29,10 @@ interface PaymentAttemptDao {
      */
     // 🔴 29-sep-2026: sólo VENTAS. Una devolución la verifica su propio flujo; hoy sólo la dejaba fuera que su `processor`
     // se escribe en minúsculas, una coincidencia que no protege nada.
+    // 🔴 F1 (Codex código r2 #1): también la venta que una persona declaró «no se cobró» (la firma pudo llegar antes de la primera
+    // consulta, o tras reiniciar): AngelPay se sigue consultando con la MISMA pausa y el MISMO tope de 5.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND processor = 'ANGELPAY' AND state IN ('AUTORIZANDO','INDETERMINADO')
+        AND processor = 'ANGELPAY' AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
         AND host_approved IS NULL AND server_veto IS NULL AND created_at < :olderThan AND verify_attempts < 5
         AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
     suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
@@ -45,7 +47,7 @@ interface PaymentAttemptDao {
 
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL
-        AND state IN ('AUTORIZANDO','INDETERMINADO')
+        AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
         AND (lease_until IS NULL OR lease_until < :now)""")
     suspend fun claimUnknownRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
 
@@ -390,15 +392,44 @@ interface PaymentAttemptDao {
     suspend fun completeRecovery(attemptId: String, venueId: String, ownedLease: Long,
         newState: String, now: Long, error: String?): Int
 
-    /** I-1: `server_veto IS NULL` también DENTRO del UPDATE — un veto que llega entre tomar la fila y escribir no la deja subir. */
+    /**
+     * I-1: `server_veto IS NULL` también DENTRO del UPDATE — un veto que llega entre tomar la fila y escribir no la deja subir.
+     *
+     * 🔴 F1 (Codex código r2 #1, `pasada-aprobado-tardio.md`): también REABRE la venta que una persona declaró «no se cobró»
+     * ([PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA]), aunque la firma haya llegado con la consulta en vuelo: con la
+     * referencia y la autorización de AngelPay queda `HOST_RESPONDIO` y `LedgerApprovalRecovery` la registra por el camino de
+     * siempre, con la llave del intento (el SERVIDOR deduplica y avisa del sobrepago). Se limpia el veredicto que la liberó (un
+     * positivo gana) y queda rastro en `last_error`. El fin del SDK se marca sólo con la declaración de ESTA terminal, que nunca
+     * se ofrece con la llamada viva; así la fila reabierta no aparta el aparato.
+     */
     @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', state_version = state_version + 1,
         updated_at = :now, host_approved = 1, reference_number = :reference, auth_code = :authorization,
-        lease_until = NULL, verify_attempts = 0
+        lease_until = NULL, verify_attempts = 0,
+        server_outcome = CASE WHEN state = 'DESCARTADA' THEN NULL ELSE server_outcome END,
+        server_verdict_at = CASE WHEN state = 'DESCARTADA' THEN NULL ELSE server_verdict_at END,
+        sdk_returned_at = CASE WHEN state = 'DESCARTADA' AND IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%'
+                               THEN COALESCE(sdk_returned_at, :now) ELSE sdk_returned_at END,
+        last_error = CASE WHEN state = 'DESCARTADA' THEN 'aprobado_tras_declaracion:' || IFNULL(last_error, '') ELSE last_error END
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
-        AND lease_until > :now AND host_approved IS NULL AND state IN ('AUTORIZANDO','INDETERMINADO')
+        AND lease_until > :now AND host_approved IS NULL
+        AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
         AND server_veto IS NULL""")
     suspend fun completeUnknownRecovery(attemptId: String, venueId: String, ownedLease: Long,
         now: Long, reference: String, authorization: String): Int
+
+    /**
+     * 🔴 F1 (Codex código r2 #1, rama `nad53a00`): la respuesta del banco en ESTE proceso (SDK de la PAX o de la N86, o la consulta
+     * de la pantalla) aprueba una venta que una persona ya declaró «no se cobró». Se reabre a `HOST_RESPONDIO` con lo que dijo el
+     * banco y sigue el camino normal: la pantalla la registra y, si el chip de la PAX revierte, pasa a la duda de D5 (que el
+     * gerente vuelve a ver en «Por revisar»), en vez de la marca que trababa el cierre sin salida (Codex r19). No marca el fin del
+     * SDK: en la PAX el cierre EMV sigue pendiente y lo marca la pantalla.
+     */
+    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', state_version = state_version + 1, updated_at = :now,
+        operation_id = :operationId, reference_number = :referenceNumber, auth_code = :authCode, host_approved = 1,
+        lease_until = NULL, verify_attempts = 0, server_outcome = NULL, server_verdict_at = NULL,
+        last_error = 'aprobado_tras_declaracion:' || IFNULL(last_error, '')
+        WHERE attempt_id = :attemptId AND """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA)
+    suspend fun reabrirDeclaradaPorAprobacion(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
 
     /** Returns -1 when the PK already exists (attemptId reuse — double-charge signal, never silent). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -662,22 +693,26 @@ interface PaymentAttemptDao {
             SELECT d.attempt_id AS attempt_id, d.terminal_payment_request_id AS request_id,
                 (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at,
                 -- F1 (tarea 4): con dinero o contradicción la fila sale para CONSULTARLA, pero no admite declaración.
-                CASE WHEN d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
+                CASE WHEN d.state = 'INDETERMINADO'
+                    AND d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
                     AND (d.server_outcome IS NULL
                          OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
-                    AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """ THEN 1 ELSE 0 END AS declarable
+                    AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+                    -- F1 (Codex código r2 #4): lo que antes la SACABA de la lista ahora sólo le quita la declaración: la cuarentena por
+                    -- reloj de ESTE proceso (nadie comprobó que el lector terminó) y otro intento de la misma solicitud corriendo, con
+                    -- dinero o registrado (la declaración es de toda la solicitud). La fila se ve igual: el cierre de caja la cuenta.
+                    AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
+                    AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
+                        WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
+                        AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
+                             OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
+                    THEN 1 ELSE 0 END AS declarable
             FROM payment_attempts d
             WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0
             -- F1 (Codex código r1 #9): también la DESCARTADA con dinero (el banco aprobó después, o Avoqado trajo evidencia o un veto):
             -- frena la tarjeta de su cuenta y el cierre de caja (`LocalShiftObligation`), así que se ve aquí, sólo para consultarla.
             AND (d.state = 'INDETERMINADO'
                  OR (d.state = 'DESCARTADA' AND (d.host_approved IS 1 OR d.server_processor_evidence IS 'APPROVED' OR d.server_veto IS NOT NULL)))
-            AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
-            -- Dentro de este FROM los nombres sin prefijo son los del hermano.
-            AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
-                WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
-                AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
-                     OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
             ORDER BY d.created_at DESC LIMIT :limite)
         UNION ALL
         SELECT * FROM (

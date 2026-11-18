@@ -526,14 +526,24 @@ class PaymentAttemptLedger(
                         aprobacionSinGuardar.remove(attemptId)
                         false
                     }
-                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación o la declaración del POS ganó)
-                    // y DESPUÉS llega la aprobación. NO es el caso de D13 (no falló una escritura): se queda como en main y se reporta.
-                    // Marcarla con dinero trababa el cierre de caja sin salida cuando el chip rechazaba el cierre; dejarla libre puede
-                    // cobrarse otra vez: es una decisión aparte (anotada en el pizarrón para el founder).
+                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» y DESPUÉS llega la aprobación. Marcarla con
+                    // dinero trababa el cierre de caja sin salida cuando el chip rechazaba el cierre. 🔴 F1 (Codex código r2 #1,
+                    // `pasada-aprobado-tardio.md`, opción B del founder): si la cerró una PERSONA, se REABRE con lo que dijo el banco y
+                    // sigue el camino normal (registro; o, si el chip revierte, la duda de D5 que el gerente vuelve a firmar). Cualquier
+                    // otro cierre (rechazo, «no salió al banco», la ventana) se queda como estaba y se reporta.
                     fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
-                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (como en main: no se toca) | attemptId=%s kind=%s", attemptId, fila.kind)
                         aprobacionSinGuardar.remove(attemptId)
-                        false
+                        val reabierta = try {
+                            withContext(Dispatchers.IO) {
+                                dao.reabrirDeclaradaPorAprobacion(attemptId, operationId, referenceNumber, authCode, System.currentTimeMillis()) == 1
+                            }
+                        } catch (error: Exception) {
+                            Timber.e(error, "📒 [Libreta] no se pudo reabrir la venta declarada que el banco aprobó | attemptId=%s", attemptId)
+                            false
+                        }
+                        if (reabierta) Timber.e("🚨 [Libreta] el banco aprobó una venta declarada «no se cobró»: se reabre con su respuesta | attemptId=%s", attemptId)
+                        else Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (no lo cerró una persona: no se toca) | attemptId=%s kind=%s", attemptId, fila.kind)
+                        reabierta
                     }
                     // Sigue esperando al banco: la base no escribió. Queda en memoria hasta AUTORIZADO, el registro o la cola.
                     else -> false

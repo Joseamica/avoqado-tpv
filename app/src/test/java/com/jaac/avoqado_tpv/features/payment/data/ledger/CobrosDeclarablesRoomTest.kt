@@ -161,7 +161,8 @@ class CobrosDeclarablesRoomTest {
         assertThat(declarables()).isEmpty()
     }
 
-    @Test fun `una solicitud con otro intento con dinero o corriendo no entra - la declaracion es de toda la solicitud`() = runTest {
+    // F1 (Codex código r2 #4): «no entra» = no se puede DECLARAR; la fila se ve igual, sólo para consultar (el cierre la cuenta).
+    @Test fun `una solicitud con otro intento con dinero o corriendo no se declara - la declaracion es de toda la solicitud`() = runTest {
         val hermanos = mapOf<String, (PaymentAttemptEntity) -> PaymentAttemptEntity>(
             "host respondio" to { it.copy(state = "HOST_RESPONDIO", hostApproved = true) },
             "lector corriendo" to { it.copy(state = "KERNEL_ACTIVO") },
@@ -176,7 +177,7 @@ class CobrosDeclarablesRoomTest {
             dao.insert(marca(duda("hermano", "r-1")))
             // F1 (tarea 4): la solicitud no se ofrece para declarar; un hermano EN DUDA con dinero sale sólo para consulta.
             assertWithMessage(nombre).that(declarables().filter { it.declarable }).isEmpty()
-            assertWithMessage(nombre).that(declarables().map { it.attemptId }).doesNotContain("limpio")
+            assertWithMessage(nombre).that(declarables().single { it.attemptId == "limpio" }.declarable).isFalse()
         }
     }
 
@@ -187,17 +188,18 @@ class CobrosDeclarablesRoomTest {
         assertThat(declarables().map { it.attemptId }).containsExactly("limpio")
     }
 
-    @Test fun `la cuarentena por reloj de ESTE proceso no entra - nadie comprobo que el lector terminara`() = runTest {
+    @Test fun `la cuarentena por reloj de ESTE proceso no se declara - nadie comprobo que el lector terminara`() = runTest {
         assertThat(ledger.openAttempt("viva", venue, "ANGELPAY", 100, 0, "FAST", "{}")).isTrue()
         assertThat(ledger.markAuthorizing("viva")).isTrue()
         assertThat(dao.quarantineStaleAuthorizing(venue, Long.MAX_VALUE, ahora)).isEqualTo(1)
         assertThat(dao.getById("viva")!!.lastError).isEqualTo(PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD)
 
-        assertThat(declarables()).isEmpty()
+        // Codex código r2 #4: se ve (el cierre de caja la cuenta), pero sólo para consultar.
+        assertThat(declarables().single().declarable).isFalse()
 
         // El proceso murió: su llamada nativa murió con él y ya se puede declarar.
         val procesoNuevo = PaymentAttemptLedger(dao, mockk(relaxed = true))
-        assertThat(procesoNuevo.observarCobrosDeclarables(venue).first().map { it.attemptId }).containsExactly("viva")
+        assertThat(procesoNuevo.observarCobrosDeclarables(venue).first().single { it.attemptId == "viva" }.declarable).isTrue()
     }
 
     // ── La ventana y «una por solicitud» ──────────────────────────────────────────────────────────────────────────────

@@ -256,15 +256,8 @@ class AuthRepository @Inject constructor(
                 val venue = response.body()!!
                 secureStorage.saveVenueName(venue.name)
                 secureStorage.saveVenueLogo(venue.logo)
-                // na7522fd (encargo 1df453): el RFC y la razón social del emisor de Facturación, si el negocio lo tiene; si no,
-                // las columnas de siempre. null = la respuesta no trajo el encabezado y se conserva el emisor ya guardado.
-                val fiscal = com.jaac.avoqado_tpv.core.data.network.dto.datosFiscalesDelTicket(venue, venueId, secureStorage.getVenueFiscalDe())
-                if (fiscal != null) {
-                    // Codex mac r3: los tres en UNA sola escritura (nunca «RFC de B con la marca de A» en disco).
-                    secureStorage.guardarDatosFiscales(fiscal.legalName, fiscal.rfc, fiscal.emisorDe)
-                } else {
-                    Timber.w("⚠️ El negocio no mandó el encabezado del ticket: se conserva el emisor ya guardado")
-                }
+                secureStorage.saveVenueLegalName(venue.legalName)
+                secureStorage.saveVenueRfc(venue.rfc)
                 secureStorage.saveVenueAddress(venue.address)
                 secureStorage.saveVenueCity(venue.city)
                 secureStorage.saveVenueState(venue.state)

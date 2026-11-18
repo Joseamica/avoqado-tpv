@@ -316,7 +316,7 @@ fun ShiftDto.toDomain(): Shift {
         id = id,
         venueId = venueId,
         staffId = staffId,
-        staffName = staff?.let { "${it.firstName} ${it.lastName}" } ?: "Unknown",
+        staffName = staff?.let { "${it.firstName} ${it.lastName}" } ?: "",
         startTime = startTime,
         endTime = endTime,
         status = when (status.uppercase()) {

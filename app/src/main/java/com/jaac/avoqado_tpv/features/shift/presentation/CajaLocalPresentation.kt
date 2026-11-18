@@ -68,6 +68,12 @@ data class CajaLocalPresentation(val session: LocalShiftSessionEntity, val summa
     private fun money(value: BigDecimal) = "$${value.setScale(2, RoundingMode.UNNECESSARY).toPlainString()}"
 }
 
+/**
+ * D97: el turno abierto llega del SERVIDOR sin `staff` (a propósito, para no cambiarle la respuesta a apps viejas).
+ * Vacío o el «Unknown» de cachés viejas = no hay nombre que mostrar.
+ */
+fun Shift.nombreDeQuienAbrio(): String? = staffName.takeIf { it.isNotBlank() && it != "Unknown" }
+
 /** Gson omite defaults Kotlin en cachés viejas: null conserva el contrato anterior. */
 fun Shift.hasKnownFinancialTotals(): Boolean = financialTotalsKnown != false
 

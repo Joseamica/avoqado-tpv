@@ -285,7 +285,7 @@ fun CloseShiftDialog(
 ) {
     if (cashReconciliationEnabled) {
         CashReconciliationCloseDialog(
-            staffName = shift.staffName,
+            staffName = shift.nombreDeQuienAbrio(),
             onDismiss = onDismiss,
             onCounted = onCounted,
             onSkipped = onSkipped
@@ -318,12 +318,14 @@ fun CloseShiftDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Staff name
-                Text(
-                    text = shift.staffName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
+                // Staff name (D97: sin nombre no se pinta «Unknown»)
+                shift.nombreDeQuienAbrio()?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
@@ -434,7 +436,7 @@ fun CloseShiftDialog(
  */
 @Composable
 private fun CashReconciliationCloseDialog(
-    staffName: String,
+    staffName: String?,
     onDismiss: () -> Unit,
     onCounted: (BigDecimal) -> Unit,
     onSkipped: () -> Unit
@@ -511,11 +513,13 @@ private fun CashReconciliationCloseDialog(
                             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        Text(
-                            text = staffName,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        staffName?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Text(
                             text = "Cuenta todo el efectivo físico antes de cerrar la caja.",
                             style = MaterialTheme.typography.bodyMedium,

@@ -143,6 +143,13 @@ data class TableCheckoutState(
     val isLoading: Boolean = true,
     val check: OrderDetail? = null,
     val errorMessage: String? = null,
+    /**
+     * D19 (Codex r2 #7, r3 #3): el motivo del desenlace de un cobro en EFECTIVO que no entró (rechazado, en duda o sin poder
+     * guardarse). Va aparte de [errorMessage] porque una relectura, una lectura fallida o cambiar la forma de dividir lo
+     * borraban antes de verse. Sólo lo escribe el desenlace del cobro; lo limpia el siguiente cobro; la pantalla lo enseña una
+     * vez y lo consume ([TableCheckoutViewModel.consumeAvisoDelCobro]).
+     */
+    val avisoDelCobro: String? = null,
     val notice: String? = null,
 
     /**
@@ -895,7 +902,7 @@ class TableCheckoutViewModel @Inject constructor(
         val tipAtChargeTime = _state.value.tipAmount
         val willSettle = amount >= remainingBeforeThisPayment
 
-        _state.update { it.copy(isProcessingCash = true, errorMessage = null) }
+        _state.update { it.copy(isProcessingCash = true, errorMessage = null, avisoDelCobro = null) }
         cobrosIniciados++
         viewModelScope.launch {
             // D86 (Codex r5): leer la cuenta, calcular el saldo y cobrar van EN FILA, nunca a la vez.
@@ -963,17 +970,35 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
+                    val rechazado = e is TablesRepository.PayCashRejectedException
+                    val duda = e is TablesRepository.PayCashSinConfirmarException
+                    val aviso = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
+                        // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
+                        // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
+                        if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
+                    } ?: e.message?.takeIf { it.isNotBlank() } ?: "No se pudo registrar el cobro"
+                    // D19: tras un rechazo o una duda, el saldo de esta pantalla ya no es de fiar (otro aparato pudo cambiar la
+                    // cuenta, o el cobro pudo entrar). En una cuenta del SERVIDOR, Efectivo y Tarjeta esperan una lectura que salga
+                    // DESPUÉS (la espera de D92; las que ya viajaban se tiran). En una abierta sin red aquí, el saldo se recalcula
+                    // de la cola. Si ni siquiera se pudo guardar, nada cambió: sólo el aviso.
+                    val releer = rechazado || duda
+                    val esperaLaCuenta = releer && !session.isProvisional
+                    if (esperaLaCuenta) {
+                        lecturasIniciadas++
+                        relecturasSeguidas = 0
+                    }
                     _state.update {
                         it.copy(
                             isProcessingCash = false,
-                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
-                                // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
-                                // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
-                                if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
-                            } ?: "No se pudo registrar el cobro",
+                            avisoDelCobro = aviso,
+                            // D19 (Codex r1 #5): en la duda el cobro pudo entrar con su propina; no se ofrece otra vez.
+                            tipAmount = if (duda) BigDecimal.ZERO else it.tipAmount,
+                            pendienteSinSubir = if (esperaLaCuenta) it.pendienteSinSubir ?: CUENTA_POR_CONFIRMAR else it.pendienteSinSubir,
+                            saldoSinRed = if (releer && it.isProvisional) null else it.saldoSinRed,
                         )
                     }
                     alTerminarElCobro()
+                    if (releer) loadCheck()
                 },
             )
         }
@@ -1045,6 +1070,11 @@ class TableCheckoutViewModel @Inject constructor(
 
     fun consumeNotice() {
         _state.update { it.copy(notice = null) }
+    }
+
+    /** D19: la pantalla ya enseñó el desenlace del cobro en efectivo. */
+    fun consumeAvisoDelCobro() {
+        _state.update { it.copy(avisoDelCobro = null) }
     }
 
     fun consumeError() {

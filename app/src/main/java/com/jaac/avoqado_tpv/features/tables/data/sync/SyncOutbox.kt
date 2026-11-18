@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data.sync
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
@@ -171,24 +172,32 @@ class SyncOutbox @Inject constructor(
         applyAckChecked(intentId, status, errorCode, message, resultJson)
     }
 
-    /** El mismo adjudicador para el caller público y el replay; true sólo si Room avanzó. */
+    /**
+     * D19 (Codex r3 #4): qué pasó al guardar un acuse. Para la pasada, todo lo que no es [SI] la corta, como siempre. Para la
+     * decisión de [reproducirYResolver], sólo [FALLO] (una excepción de la base) cuenta como «la cola no es de fiar»; el `0`
+     * normal de una fila que ya no está en espera ([YA_NO_ESTABA]: su ruta en línea la descartó) no.
+     */
+    private enum class Guardado { SI, YA_NO_ESTABA, FALLO, NO_SE_GUARDA }
+
+    /** El mismo adjudicador para el caller público y el replay. */
     private suspend fun applyAckChecked(
         intentId: String, status: String, errorCode: String?, message: String?, resultJson: String?,
-    ): Boolean = when (status) {
+        vigia: VigiaDelIntent? = null,
+    ): Guardado = when (status) {
         SyncIntentEntity.STATUS_ACKED, SyncIntentEntity.STATUS_REJECTED -> {
-            val persisted = persistTerminalAck(intentId, status, errorCode, message, resultJson)
-            if (persisted && status == SyncIntentEntity.STATUS_REJECTED) {
+            val guardado = persistTerminalAck(intentId, status, errorCode, message, resultJson, vigia)
+            if (guardado == Guardado.SI && status == SyncIntentEntity.STATUS_REJECTED) {
                 Timber.w("🚫 [Tables] Intent %s RECHAZADO: %s — %s", intentId, errorCode, message)
             }
-            persisted
+            guardado
         }
         STATUS_RETRY -> {
             Timber.d("🔁 [Tables] Intent %s en RETRY (%s) — sigue PENDING, se reintenta solo", intentId, errorCode)
-            false
+            Guardado.NO_SE_GUARDA
         }
         else -> {
             Timber.w("⚠️ [Tables] Ack con status desconocido '%s' para intent %s — ignorado, se queda PENDING", status, intentId)
-            false
+            Guardado.NO_SE_GUARDA
         }
     }
 
@@ -204,13 +213,16 @@ class SyncOutbox @Inject constructor(
      */
     private suspend fun persistTerminalAck(
         intentId: String, status: String, errorCode: String?, message: String?, resultJson: String?,
-    ): Boolean = try {
-        dao.resolve(intentId, status, errorCode, message, resultJson) == 1
+        vigia: VigiaDelIntent? = null,
+    ): Guardado = try {
+        if (dao.resolve(intentId, status, errorCode, message, resultJson) == 1) Guardado.SI else Guardado.YA_NO_ESTABA
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Timber.e(e, "❌ [Tables] No se pudo persistir el ack de %s — queda PENDING, se reintenta", intentId)
-        false
+        // D19: sólo una excepción cuenta como «la base no dejó guardar»; el `0` de una fila ya resuelta o descartada no.
+        vigia?.escrituraFallida = true
+        Guardado.FALLO
     }
 
     /**
@@ -254,6 +266,95 @@ class SyncOutbox @Inject constructor(
         replay(venueId, singleBatch = false, onAck = onAck, canEmit = { true })
     }
 
+    /** D19: qué contestó el SERVIDOR de UN intent (ver [reproducirYResolver]). */
+    sealed interface DesenlaceDelIntent {
+        data class Aceptado(val result: JsonObject?) : DesenlaceDelIntent
+        data class Rechazado(val errorCode: String?, val message: String?) : DesenlaceDelIntent
+        data object EnEspera : DesenlaceDelIntent
+        data class NoSeSabe(val motivo: String) : DesenlaceDelIntent
+    }
+
+    /**
+     * D19 (`na78d478`, PAX 18-nov): reproduce la cola como [replayNow] y, ANTES de soltar el candado, dice qué contestó el
+     * SERVIDOR de [intentId]. Antes, quien encolaba un cobro sólo veía el acuse que le llegaba a SU callback: si otro
+     * reproductor (el plano por un aviso de socket, la mesa, el trabajador) mandó el intent mientras éste esperaba el candado,
+     * su lote ya no lo traía y contestaba «guardado» aunque el SERVIDOR lo hubiera rechazado («Cobro guardado · Cobrado
+     * $203» con 0 pagos en la base).
+     *
+     * Orden de la decisión, todo bajo [replayMutex] (ningún otro reproductor puede escribir la fila en medio):
+     * 1. el acuse ACKED/REJECTED de ESE intent en la respuesta de esta pasada, se haya podido guardar o no (un rechazo por
+     *    número que D6 renumera y reenvía no cuenta: sólo el que queda guardado como rechazo); RETRY nunca cuenta;
+     * 2. si no, su fila: PENDING ⇒ [DesenlaceDelIntent.EnEspera]; ACKED ⇒ aceptado con su `resultJson`; REJECTED o
+     *    DISMISSED ⇒ rechazado;
+     * 3. [DesenlaceDelIntent.NoSeSabe] si la fila no está o está en otro estado, si no se puede leer, o si sigue PENDING
+     *    pero en esta pasada la base no dejó guardar un acuse (o falló leer la cola): entonces la cola no es de fiar.
+     *
+     * Nunca lanza salvo cancelación. Residuo declarado (`docs/audit/2026-11-18-d19-efectivo-mesas-rechazado/promesa.md`):
+     * OTRO reproductor recibió la respuesta y la base no lo dejó guardarla, y además esta pasada perdió la suya.
+     */
+    suspend fun reproducirYResolver(venueId: String, intentId: String): DesenlaceDelIntent = replayMutex.withLock {
+        val vigia = VigiaDelIntent(intentId)
+        val replayFallo = try {
+            replayBajoCandado(venueId, singleBatch = false, onAck = { _, _ -> }, canEmit = { true }, vigia = vigia)
+            false
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.e(error, "❌ [Tables] Falló reproducir la cola antes de decidir %s (venue=%s)", intentId, venueId)
+            true
+        }
+        decidir(venueId, intentId, vigia, replayFallo)
+    }
+
+    /** D19: lo que una pasada vio de UN intent. Vive sólo dentro del candado de [reproducirYResolver]. */
+    private class VigiaDelIntent(val intentId: String) {
+        /** El acuse ACKED/REJECTED definitivo de [intentId] que contestó el SERVIDOR en esta pasada. */
+        var acuseFinal: SyncIntentAck? = null
+
+        /** En esta pasada la base lanzó al guardar un acuse (no cuenta el `0` de una fila ya resuelta o descartada). */
+        var escrituraFallida = false
+
+        /** Lo que trae la respuesta completa, antes de guardar nada: un rechazo por número todavía no es definitivo (D6). */
+        fun alRecibir(acuses: List<SyncIntentAck>) {
+            acuses.lastOrNull { it.id == intentId && esDefinitivo(it) && it.errorCode != SyncIntentAck.STALE_DEVICE_SEQUENCE }
+                ?.let { acuseFinal = it }
+        }
+
+        /** Un acuse que esta pasada guarda como definitivo (también el rechazo por número que D6 ya no reenvía). */
+        fun alGuardar(ack: SyncIntentAck) {
+            if (ack.id == intentId && esDefinitivo(ack)) acuseFinal = ack
+        }
+
+        private fun esDefinitivo(ack: SyncIntentAck) = ack.isAcked || ack.isRejected
+    }
+
+    private suspend fun decidir(venueId: String, intentId: String, vigia: VigiaDelIntent, replayFallo: Boolean): DesenlaceDelIntent {
+        vigia.acuseFinal?.let { ack ->
+            return if (ack.isAcked) DesenlaceDelIntent.Aceptado(ack.result) else DesenlaceDelIntent.Rechazado(ack.errorCode, ack.message)
+        }
+        val fila = try {
+            dao.leer(venueId, intentId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.e(error, "❌ [Tables] No se pudo leer en la cola %s (venue=%s)", intentId, venueId)
+            return DesenlaceDelIntent.NoSeSabe("No se pudo leer la cola de esta terminal")
+        }
+        return when (fila?.status) {
+            SyncIntentEntity.STATUS_PENDING ->
+                if (vigia.escrituraFallida || replayFallo) DesenlaceDelIntent.NoSeSabe("La cola de esta terminal no se pudo actualizar")
+                else DesenlaceDelIntent.EnEspera
+            SyncIntentEntity.STATUS_ACKED -> DesenlaceDelIntent.Aceptado(
+                fila.resultJson?.let { runCatching { JsonParser.parseString(it).asJsonObject }.getOrNull() },
+            )
+            SyncIntentEntity.STATUS_REJECTED, SyncIntentEntity.STATUS_DISMISSED -> DesenlaceDelIntent.Rechazado(fila.errorCode, fila.message)
+            else -> {
+                Timber.e("❌ [Tables] El intent %s no está en espera ni resuelto (%s) — no se sabe", intentId, fila?.status)
+                DesenlaceDelIntent.NoSeSabe("El cobro no está en la cola de esta terminal")
+            }
+        }
+    }
+
     /** Un lote del MISMO replayer para recuperación fuera de Mesas. No crea otro emisor. */
     data class ReplayProgress(val resolved: Int, val moreAfterLimit: Boolean)
 
@@ -273,7 +374,23 @@ class SyncOutbox @Inject constructor(
         singleBatch: Boolean,
         onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit,
         canEmit: () -> Boolean,
-    ): ReplayProgress = replayMutex.withLock {
+    ): ReplayProgress = replayMutex.withLock { replayBajoCandado(venueId, singleBatch, onAck, canEmit, vigia = null) }
+
+    /** D19: cómo sigue la pasada después de guardar una respuesta (ver [replayBajoCandado]). */
+    private sealed interface Paso {
+        data object Termina : Paso
+        data object OtraVuelta : Paso
+        data class Sigue(val next: Int) : Paso
+    }
+
+    /** El cuerpo de [replay]; quien llama ya tiene [replayMutex]. [vigia] (D19) sólo mira: no cambia nada de la pasada. */
+    private suspend fun replayBajoCandado(
+        venueId: String,
+        singleBatch: Boolean,
+        onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit,
+        canEmit: () -> Boolean,
+        vigia: VigiaDelIntent?,
+    ): ReplayProgress {
         var resolved = 0
         // D6: la cola se renumera por un rechazo de número a lo más UNA vez por pasada. Si el servidor vuelve a rechazar
         // por número (otra instalación con el mismo serial sigue adelante), se queda rechazado como antes: sin hot-loop.
@@ -281,9 +398,9 @@ class SyncOutbox @Inject constructor(
         var otraVuelta: Boolean
         do {
             otraVuelta = !singleBatch
-            if (!canEmit()) return@withLock ReplayProgress(resolved, false)
+            if (!canEmit()) return ReplayProgress(resolved, false)
             val batch = dao.pendingBatchForVenue(venueId, BATCH_SIZE)
-            if (batch.isEmpty()) return@withLock ReplayProgress(resolved, false)
+            if (batch.isEmpty()) return ReplayProgress(resolved, false)
             val ready = mutableListOf<SyncIntentEntity>()
             var waitingForMapping = false
             for (intent in batch) {
@@ -297,102 +414,123 @@ class SyncOutbox @Inject constructor(
                     break
                 }
             }
-            if (ready.isEmpty() || !canEmit()) return@withLock ReplayProgress(resolved, false)
+            if (ready.isEmpty() || !canEmit()) return ReplayProgress(resolved, false)
             val request = SyncIntentsRequest(deviceId = deviceId, intents = ready.map { it.toWire() })
             val response = try {
                 val http = api.syncIntents(venueId, request)
                 if (!http.isSuccessful) {
                     Timber.w("⚠️ [Tables] Replay interrumpido — HTTP %d (venue=%s)", http.code(), venueId)
-                    return@withLock ReplayProgress(resolved, false)
+                    return ReplayProgress(resolved, false)
                 }
                 http.body()
             } catch (cancelled: CancellationException) { throw cancelled }
               catch (error: Exception) {
                 Timber.w(error, "⚠️ [Tables] Replay interrumpido — conserva el prefijo (venue=%s)", venueId)
-                return@withLock ReplayProgress(resolved, false)
-            } ?: return@withLock ReplayProgress(resolved, false)
+                return ReplayProgress(resolved, false)
+            } ?: return ReplayProgress(resolved, false)
 
-            var next = 0
-            // D6: rechazos por número que se renumeran en vez de guardarse, y si esta respuesta los deja renumerar.
-            val porNumero = mutableListOf<Pair<Int, SyncIntentAck>>()
-            var piso: Long? = null
-            var renumerable: Boolean? = null
-            var entraronEnEstaRespuesta = 0
-            // D6 (Codex r3): sólo si este envío llevó TODA la cola en espera (el lote no se llenó ni se cortó esperando el
-            // mapa de la caja): así, si algo de la cola ya estaba en el servidor, su respuesta viene en ESTA misma respuesta.
-            val todaLaCola = !waitingForMapping && batch.size < BATCH_SIZE
-            for (ack in response.data) {
-                // Sólo el siguiente id solicitado: no aplicar ACK ajeno, duplicado o fuera de FIFO.
-                val intent = ready.getOrNull(next)
-                if (intent == null || ack.id != intent.id) return@withLock ReplayProgress(resolved, false)
-                val ultimoDelServidor = if (yaRenumerada) null else ack.latestSeqDelRechazoDeNumero(intent.seq)
-                if (ultimoDelServidor != null) {
-                    // D6: sólo si el servidor vio un número MAYOR que todos los de esta base (es de la instalación vieja)
-                    // y nada de esta respuesta entró antes: entonces nada de esta base se aplicó ni se apartó.
-                    if (renumerable == null) {
-                        renumerable = todaLaCola && entraronEnEstaRespuesta == 0 &&
-                            ultimoDelServidor > (dao.maxSeq(venueId) ?: 0L)
-                    }
-                    if (renumerable == true) {
-                        // Rechaza por número ANTES de reservar: no aplicó nada. Se queda en espera sin avisar a nadie, y
-                        // abajo se renumera y se reenvía.
-                        porNumero += next to ack
-                        piso = maxOf(piso ?: ultimoDelServidor, ultimoDelServidor)
-                        next++
-                        continue
-                    }
-                }
-                if (porNumero.isNotEmpty()) {
-                    // Algo de esta base entra DESPUÉS de un rechazo por número (sólo con otra instalación del mismo serial
-                    // a la vez): reenviar lo rechazado lo ejecutaría tarde. Se guarda como el rechazo que es, y ANTES que
-                    // lo que entra, en orden: si el proceso muere en medio, nunca queda lo nuevo aplicado y lo viejo en
-                    // espera (Codex r3).
-                    for ((indice, rechazo) in porNumero) {
-                        if (!applyAckChecked(rechazo.id, rechazo.status, rechazo.errorCode, rechazo.message, null)) {
-                            return@withLock ReplayProgress(resolved, false)
+            // D19: el acuse del intent que se vigila se toma de la respuesta COMPLETA, aunque una fila anterior no se pueda
+            // guardar y el bucle de abajo salga antes de llegar a él.
+            vigia?.alRecibir(response.data)
+            // D19: el recorrido de la respuesta es el de siempre (cada acuse se guarda y se avisa en orden; un `0` o una falla
+            // cortan; la cancelación sale donde salía). Las rondas r3–r6 de Codex mostraron que cambiarlo para el caso raro (otro
+            // reproductor cancelado, o una fila ya descartada, con la red caída al decidir) rompía otros flujos: queda declarado.
+            val paso = run procesar@{
+                var next = 0
+                // D6: rechazos por número que se renumeran en vez de guardarse, y si esta respuesta los deja renumerar.
+                val porNumero = mutableListOf<Pair<Int, SyncIntentAck>>()
+                var piso: Long? = null
+                var renumerable: Boolean? = null
+                var entraronEnEstaRespuesta = 0
+                // D6 (Codex r3): sólo si este envío llevó TODA la cola en espera (el lote no se llenó ni se cortó esperando el
+                // mapa de la caja): así, si algo de la cola ya estaba en el servidor, su respuesta viene en ESTA misma respuesta.
+                val todaLaCola = !waitingForMapping && batch.size < BATCH_SIZE
+                for (ack in response.data) {
+                    // Sólo el siguiente id solicitado: no aplicar ACK ajeno, duplicado o fuera de FIFO.
+                    val intent = ready.getOrNull(next)
+                    if (intent == null || ack.id != intent.id) return@procesar Paso.Termina
+                    val ultimoDelServidor = if (yaRenumerada) null else ack.latestSeqDelRechazoDeNumero(intent.seq)
+                    if (ultimoDelServidor != null) {
+                        // D6: sólo si el servidor vio un número MAYOR que todos los de esta base (es de la instalación vieja)
+                        // y nada de esta respuesta entró antes: entonces nada de esta base se aplicó ni se apartó.
+                        if (renumerable == null) {
+                            renumerable = todaLaCola && entraronEnEstaRespuesta == 0 &&
+                                ultimoDelServidor > (dao.maxSeq(venueId) ?: 0L)
                         }
-                        resolved++
-                        onAck(batch[indice], rechazo)
+                        if (renumerable == true) {
+                            // Rechaza por número ANTES de reservar: no aplicó nada. Se queda en espera sin avisar a nadie, y
+                            // abajo se renumera y se reenvía.
+                            porNumero += next to ack
+                            piso = maxOf(piso ?: ultimoDelServidor, ultimoDelServidor)
+                            next++
+                            continue
+                        }
                     }
-                    porNumero.clear()
-                    piso = null
-                    renumerable = false
+                    if (porNumero.isNotEmpty()) {
+                        // Algo de esta base entra DESPUÉS de un rechazo por número (sólo con otra instalación del mismo serial
+                        // a la vez): reenviar lo rechazado lo ejecutaría tarde. Se guarda como el rechazo que es, y ANTES que
+                        // lo que entra, en orden: si el proceso muere en medio, nunca queda lo nuevo aplicado y lo viejo en
+                        // espera (Codex r3).
+                        for ((indice, rechazo) in porNumero) {
+                            if (applyAckChecked(rechazo.id, rechazo.status, rechazo.errorCode, rechazo.message, null, vigia) != Guardado.SI) {
+                                return@procesar Paso.Termina
+                            }
+                            // D19 (Codex r4 #4): un rechazo por número cuenta sólo si quedó GUARDADO: si no, la fila sigue en
+                            // espera y la siguiente pasada puede renumerarla y registrarla.
+                            vigia?.alGuardar(rechazo)
+                            resolved++
+                            onAck(batch[indice], rechazo)
+                        }
+                        porNumero.clear()
+                        piso = null
+                        renumerable = false
+                    }
+                    val guardado = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) }, vigia)
+                    if (ack.isRetry) {
+                        onAck(batch[next], ack)
+                        return@procesar Paso.Termina
+                    }
+                    if (guardado != Guardado.SI) return@procesar Paso.Termina
+                    vigia?.alGuardar(ack)
+                    resolved++
+                    entraronEnEstaRespuesta++
+                    onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
+                    next++
                 }
-                val persisted = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) })
-                if (ack.isRetry) {
-                    onAck(batch[next], ack)
-                    return@withLock ReplayProgress(resolved, false)
+                if (piso != null && porNumero.isNotEmpty()) {
+                    // Si la base no deja renumerar, todo sigue en espera con su número viejo: la próxima pasada lo vuelve a
+                    // intentar. `replay` nunca lanza salvo cancelación (ver KDoc de [replayNow]).
+                    val renumeradas = try {
+                        dao.renumerarPendientesSobre(venueId, piso!!)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                      catch (error: Exception) {
+                        Timber.e(error, "❌ [Tables] No se pudo renumerar la cola sobre seq=%d — queda en espera (venue=%s)", piso, venueId)
+                        return@procesar Paso.Termina
+                    }
+                    yaRenumerada = true
+                    Timber.w(
+                        "🔢 [Tables] El servidor ya vio hasta seq=%d de este aparato, más que toda esta base (¿se reinstaló?): %d en espera renumeradas arriba, se reenvían (venue=%s)",
+                        piso, renumeradas, venueId,
+                    )
+                    return@procesar Paso.OtraVuelta
                 }
-                if (!persisted) return@withLock ReplayProgress(resolved, false)
-                resolved++
-                entraronEnEstaRespuesta++
-                onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
-                next++
+                Paso.Sigue(next)
             }
-            if (piso != null && porNumero.isNotEmpty()) {
-                // Si la base no deja renumerar, todo sigue en espera con su número viejo: la próxima pasada lo vuelve a
-                // intentar. `replay` nunca lanza salvo cancelación (ver KDoc de [replayNow]).
-                val renumeradas = try {
-                    dao.renumerarPendientesSobre(venueId, piso)
-                } catch (cancelled: CancellationException) { throw cancelled }
-                  catch (error: Exception) {
-                    Timber.e(error, "❌ [Tables] No se pudo renumerar la cola sobre seq=%d — queda en espera (venue=%s)", piso, venueId)
-                    return@withLock ReplayProgress(resolved, false)
+            when (paso) {
+                Paso.Termina -> return ReplayProgress(resolved, false)
+                Paso.OtraVuelta -> {
+                    otraVuelta = true
+                    continue
                 }
-                yaRenumerada = true
-                Timber.w(
-                    "🔢 [Tables] El servidor ya vio hasta seq=%d de este aparato, más que toda esta base (¿se reinstaló?): %d en espera renumeradas arriba, se reenvían (venue=%s)",
-                    piso, renumeradas, venueId,
-                )
-                otraVuelta = true
-                continue
+                is Paso.Sigue -> {
+                    // Sin ACK de todo el prefijo no volver a consultar el mismo PENDING en un hot-loop.
+                    if (paso.next != ready.size || waitingForMapping) return ReplayProgress(resolved, false)
+                }
             }
-            // Sin ACK de todo el prefijo no volver a consultar el mismo PENDING en un hot-loop.
-            if (next != ready.size || waitingForMapping) return@withLock ReplayProgress(resolved, false)
-            if (singleBatch) return@withLock ReplayProgress(resolved,
+            if (singleBatch) return ReplayProgress(resolved,
                 batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
         } while (otraVuelta)
-        ReplayProgress(resolved, false)
+        return ReplayProgress(resolved, false)
     }
 
     // MARK: - Cuarentena

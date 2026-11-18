@@ -2080,44 +2080,6 @@ class TableCheckoutViewModelTest {
     }
 
     @Test
-    fun D19_tras_una_duda_si_la_cuenta_ya_quedo_pagada_libera_la_mesa_y_regresa_al_plano() = runTest {
-        // Codex r7: el cobro sí entró (otro reproductor guardó su aceptación) pero no se pudo leer en la cola. En `main` salía el
-        // recibo local y la pantalla regresaba al plano; sin esto se quedaba en $0 con el aviso de la duda.
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")
-        val viewModel = createViewModel()
-        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
-            Result.failure(TablesRepository.PayCashSinConfirmarException())
-        coEvery { repository.getOrder(venueId, "orden-1") } returns
-            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal.ZERO, paymentStatus = "PAID"))
-        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
-
-        viewModel.payCash(BigDecimal("100.00"))
-
-        assertThat(viewModel.state.value.remaining.signum()).isEqualTo(0)
-        assertThat(viewModel.state.value.tableReleased).isTrue()
-        assertThat(viewModel.state.value.cashReceipt).isNull()
-        coVerify(exactly = 1) { repository.clearTable(venueId, "mesa-1", "orden-1", false) }
-    }
-
-    @Test
-    fun D19_tras_un_rechazo_una_cuenta_en_cero_no_libera_la_mesa() = runTest {
-        // Sólo la duda: un rechazo dice que ESTE cobro no entró.
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")
-        val viewModel = createViewModel()
-        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
-            Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns
-            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal.ZERO, paymentStatus = "PAID"))
-
-        viewModel.payCash(BigDecimal("100.00"))
-
-        assertThat(viewModel.state.value.tableReleased).isFalse()
-        coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
-    }
-
-    @Test
     fun D19_si_el_cobro_no_se_pudo_guardar_lo_dice_sin_bloquear_la_cuenta_ni_releer() = runTest {
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
         coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("100.00")

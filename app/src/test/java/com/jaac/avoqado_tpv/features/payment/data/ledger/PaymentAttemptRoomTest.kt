@@ -90,7 +90,7 @@ class PaymentAttemptRoomTest {
      * apaga la terminal») una obligación pendiente SIN dinero conocido tampoco cerca su venta: se
      * avisa, y la misma cuenta se puede volver a cobrar. Sólo el DINERO en juego cerca la venta.
      */
-    @Test fun `P1 una venta incierta sin dinero ya no cerca su venta - se avisa y el negocio sigue cobrando`() = runTest {
+    @Test fun `P1 una venta incierta sin dinero frena SOLO la tarjeta de su cuenta - el negocio sigue cobrando`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), AvoqadoDatabase::class.java)
             .allowMainThreadQueries().build()
         try {
@@ -109,11 +109,9 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markKernelEntered("otra-cuenta"))
             assertTrue(ledger.markKernelRefused("otra-cuenta", "DENIED_BY_KERNEL"))
 
-            // 🔴 Founder, 25-sep: la duda SIN dinero se AVISA — la misma cuenta se puede volver a cobrar (el aviso la nombra)
-            // y la duda sigue guardada para el aviso y la recuperación.
-            assertTrue("la cuenta con el cobro sin desenlace se puede volver a cobrar",
+            // F1 (17-nov): reemplaza la regla del 25-sep. Otra TARJETA de la cuenta en duda espera al gerente; la duda sigue guardada.
+            assertFalse("otra tarjeta de la cuenta con el cobro sin desenlace no entra",
                 ledger.openAttempt("recobro", "venue", "ANGELPAY", 1200, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
-            assertTrue(ledger.markDiscardedBeforeCharge("recobro", "fin de la prueba"))
             assertEquals("INDETERMINADO", db.paymentAttemptDao().getById("incierta")?.state)
 
             // Y la solicitud del POS cerca igual aunque la cuenta sea otra.
@@ -533,7 +531,7 @@ class PaymentAttemptRoomTest {
     // Si SÍ hay dinero (Avoqado lo confirmó, o hay veto), no es duda: esa venta sigue cercada.
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @Test fun `P1 en la PAX una venta de Cobrar sin veredicto avisa pero se puede volver a cobrar`() = runTest {
+    @Test fun `P1 en la PAX una venta de Cobrar sin veredicto avisa y su tarjeta espera al gerente`() = runTest {
         val (db, ledger) = ledgerEnMemoria()
         try {
             val dao = db.paymentAttemptDao()
@@ -541,10 +539,10 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.markAuthorizing("dudoso"))
             ledger.markIndeterminate("dudoso", "Blumon sin veredicto: MomentumFailure · NO AUTORIZADO")
 
-            assertNull("una duda sin dinero ya no cerca su venta", ledger.retencionDeLaVenta("cuenta-1"))
-            assertTrue("la misma venta se puede volver a cobrar",
+            // F1 (17-nov): la duda frena otra TARJETA de su cuenta (antes, 25-sep, se volvía a cobrar).
+            assertEquals("dudoso", ledger.retencionDeLaVenta("cuenta-1")?.attemptId)
+            assertFalse("otra tarjeta de la misma venta espera al gerente",
                 ledger.openAttempt("recobro", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
-            assertTrue("y llega al lector", ledger.markKernelEntered("recobro"))
 
             // El cinturón: la duda sigue guardada y en el aviso del mostrador.
             assertEquals("INDETERMINADO", dao.getById("dudoso")?.state)

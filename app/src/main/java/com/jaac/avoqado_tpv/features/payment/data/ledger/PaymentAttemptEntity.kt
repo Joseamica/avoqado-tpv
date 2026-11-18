@@ -357,6 +357,16 @@ data class PaymentAttemptEntity(
             "OR (state = 'DESCARTADA' AND (server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
 
         /**
+         * 🔴 F1 (17-nov, plan mínimo tarea 2; reemplaza para la TARJETA la regla del 25-sep «decide el cajero»): otra TARJETA de una
+         * cuenta se frena antes del lector si esa cuenta tiene dinero en juego ([SQL_CERCA_LA_VENTA]) o CUALQUIER venta en duda, de
+         * cualquier proceso y tras reiniciar. Sólo esa cuenta espera al gerente; otra cuenta, aunque sea del mismo importe, entra.
+         * La usan la admisión ([PaymentAttemptDao.reserveTerminal]), su lectura gemela y el CAS antes del banco y del lector. El SALDO
+         * (efectivo de Mesas, «Pedidos por pagar») sigue con [SQL_CERCA_LA_VENTA]: una duda sin dinero no cambia lo que se debe.
+         */
+        const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
+            " OR (legacy_shadow = 0 AND kind = 'SALE' AND state = 'INDETERMINADO'))"
+
+        /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el
          * servidor acredita dinero de ESTE intento (lo mismo que `VeredictoDeIntento.desdeConsultaS6` devuelve como veredicto).
          * Una fila con cualquiera de ellos que NO esté en REGISTRADO es «Avoqado tiene evidencia de cobro»: nunca «se puede

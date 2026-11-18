@@ -315,7 +315,7 @@ class PaymentAttemptLedgerTest {
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 180_000L)
 
-        assertThat(motivo).contains("Esta venta ya tiene un cobro sin confirmar")
+        assertThat(motivo).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
         assertThat(motivo).contains("\$120.00")
         assertThat(motivo).contains("hace 3 min")
         assertThat(motivo).doesNotContain("No se pudo guardar el intento")

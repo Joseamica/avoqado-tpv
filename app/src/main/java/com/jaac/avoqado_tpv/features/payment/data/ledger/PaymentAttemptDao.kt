@@ -140,7 +140,8 @@ interface PaymentAttemptDao {
      *
      * Son TRES cercas distintas y cada una protege algo distinto:
      *  1. **El aparato**: sólo un cobro corriendo en ESTE proceso; ver [PaymentAttemptEntity.SQL_APARTA_EL_APARATO].
-     *  2. **La venta**, por `orderId`, sólo con DINERO en juego; ver [PaymentAttemptEntity.SQL_CERCA_LA_VENTA] — el MISMO
+     *  2. **La venta**, por `orderId`: desde F1 (17-nov) la TARJETA de una cuenta con dinero en juego o con una duda; ver
+     *     [PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]. Lo de abajo es la regla del dinero ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]), el MISMO
      *     fragmento que leen [retencionDeLaVenta] y el CAS a AUTORIZANDO/KERNEL_ACTIVO, así que no pueden divergir. Cerca un
      *     cobro corriendo o ya respondido (de cualquier proceso), la evidencia del servidor o su veto y la cuarentena por reloj
      *     de ESTE proceso. 🔴 Founder, 25-sep: una duda sin dinero conocido ya no cerca nada, ni en la PAX ni en la Nexgo: se
@@ -174,7 +175,7 @@ interface PaymentAttemptDao {
             WHERE venue_id = :venueId AND local_session_id = :localShiftSessionId AND local_status = 'OPEN'))
         AND NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """)
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
-            SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
+            SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
             AND instr(payment_context_json, :orderJsonFragment) > 0))
         AND (:terminalPaymentRequestId IS NULL OR NOT EXISTS (
             SELECT 1 FROM remote_payment_requests cerca
@@ -314,9 +315,15 @@ interface PaymentAttemptDao {
      * que SÍ está cercada (founder, 21-sep). Sin filtro de venue a propósito. 🔴 [findUnresolvedOrder] NO sirve para esto:
      * filtra por venue y deja fuera PREPARANDO y DESCARTADA.
      */
-    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_VENTA +
+    // F1 (17-nov): la gemela de la cerca 2, que desde F1 es la de la TARJETA ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA +
         " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
     suspend fun retencionDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
+
+    /** F1: sólo el DINERO en juego de la venta ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]); una duda sin dinero no cuenta. */
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_VENTA +
+        " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
+    suspend fun dineroEnJuegoDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
 
     /**
      * D9 (Mesas, Codex r3, 16-nov): ¿esta terminal tiene dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma?
@@ -432,7 +439,7 @@ interface PaymentAttemptDao {
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                            AND """ + PaymentAttemptEntity.SQL_EJECUCION_VIVA + """)
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
-                   AND """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
+                   AND """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
                    AND instr(payment_attempts.payment_context_json, '"orderId":"') > 0
                    AND instr(payment_attempts.payment_context_json, '"orderId":""') = 0
                    AND instr(other.payment_context_json,
@@ -809,6 +816,8 @@ interface PaymentAttemptDao {
            WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
              AND terminal_payment_request_id IS NULL AND state = 'INDETERMINADO' AND host_approved IS NOT 1
              AND server_outcome IS NULL AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
+             -- F1 (17-nov): la duda de una cuenta (folio) no se libera por silencio: la revisa el gerente.
+             AND NOT (instr(payment_context_json, '"orderId":"') > 0 AND instr(payment_context_json, '"orderId":""') = 0)
              -- Ronda 22 (Codex r20, P2-1): la página siguiente va DESPUÉS de la última leída. Con un LIMIT fijo, 100 dudas que no
              -- se pueden liberar tapaban para siempre a la 101 (las saltadas por su reintento se descartaban DESPUÉS del LIMIT).
              AND (updated_at > :trasActualizada OR (updated_at = :trasActualizada AND attempt_id > :trasId))

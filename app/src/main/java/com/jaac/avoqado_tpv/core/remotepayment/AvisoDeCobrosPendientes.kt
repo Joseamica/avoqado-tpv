@@ -141,9 +141,10 @@ object AvisoDeCobrosPendientes {
             "Esta venta ya se cobró ($apartaLaVenta): Avoqado lo registró. NO se inició otro cobro. " +
                 "Toca «Entendido» en el aviso de arriba."
         // La venta primero: es la más específica y la que de verdad puede cobrarse dos veces.
+        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide.
         apartaLaVenta != null ->
-            "Esta venta ya tiene un cobro sin confirmar ($apartaLaVenta). NO se inició otro cobro. " +
-                "Revísalo en Transacciones antes de volver a cobrarla."
+            "Esta cuenta tiene un cobro con tarjeta por confirmar ($apartaLaVenta). NO se inició otro cobro. " +
+                "No la repitas: avísale al gerente."
         // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
             "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +

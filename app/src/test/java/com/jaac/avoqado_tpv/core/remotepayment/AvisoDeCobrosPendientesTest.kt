@@ -171,7 +171,7 @@ class AvisoDeCobrosPendientesTest {
             apartaLaVenta = "\$120.00, hace 3 min", apartaElAparato = "\$50.00, hace 1 h",
         )
 
-        assertThat(texto).contains("Esta venta ya tiene un cobro sin confirmar (\$120.00, hace 3 min)")
+        assertThat(texto).contains("Esta cuenta tiene un cobro con tarjeta por confirmar (\$120.00, hace 3 min)")
         assertThat(texto).doesNotContain("\$50.00")
     }
 

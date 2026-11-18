@@ -152,21 +152,33 @@ class LiberacionSolaRoomTest {
         assertThat(dao.getById("h2")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
     }
 
-    // Founder, 25-sep («ninguna duda apaga la terminal»): el huérfano de un proceso muerto SIN dinero conocido ya no cerca ni su
-    // venta — se avisa, y la misma cuenta se puede volver a cobrar (el aviso la nombra). La duda sigue guardada.
-    @Test fun `con orden, el huerfano sin dinero ya no cerca su venta - se avisa y la misma cuenta entra`() = runTest {
+    // F1 (17-nov, reemplaza la regla del 25-sep): el huérfano de un proceso muerto no aparta el aparato, pero su duda frena otra
+    // TARJETA de su misma cuenta hasta que el gerente la revise. Otra cuenta entra. La duda sigue guardada.
+    @Test fun `con orden, el huerfano sin dinero frena la tarjeta de SU cuenta - otra cuenta entra`() = runTest {
         filaDeOtroProceso("o", PaymentAttemptEntity.STATE_AUTORIZANDO, orderId = "venta-1")
-        assertWithMessage("antes: lo que dejó un proceso muerto ya no aparta el aparato (founder, 25-sep)").that(ledger.retencionDelAparato()).isNull()
+        assertWithMessage("lo que dejó un proceso muerto no aparta el aparato (founder, 25-sep)").that(ledger.retencionDelAparato()).isNull()
 
         ledger.cuarentenaDeHuerfanos(now)
 
-        assertWithMessage("la MISMA venta entra: la duda no es dinero").that(otroCobroEntra("misma", orderId = "venta-1")).isTrue()
-        // Codex r19 (P3-1): un sabotaje que borrara la duda también dejaría entrar la venta; esto lo caza.
+        assertWithMessage("la MISMA cuenta no entra con tarjeta").that(otroCobroEntra("misma", orderId = "venta-1")).isFalse()
         assertWithMessage("y la duda sigue guardada para el aviso").that(dao.getById("o")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
-        // La reserva de «misma» (PREPARANDO de este mismo token) aparta el aparato: se descarta, y otra venta entra.
-        assertWithMessage("precondición: la reserva de «misma» se descarta")
-            .that(ledger.markDiscardedBeforeCharge("misma", "fin de la prueba")).isTrue()
-        assertWithMessage("otra venta ya entra").that(otroCobroEntra("otra", orderId = "venta-2")).isTrue()
+        assertWithMessage("otra cuenta entra").that(otroCobroEntra("otra", orderId = "venta-2")).isTrue()
+    }
+
+    // F1 (17-nov, plan mínimo tarea 2): en una cuenta (folio) el silencio no resuelve la duda. La liberación sola sigue para el Pago
+    // rápido; la duda de un folio se queda para el gerente, sin pedirle nada al servidor.
+    @Test fun `F1 la duda LOCAL de un folio no se libera sola - se queda en duda sin POST`() = runTest {
+        filaDeOtroProceso("l", PaymentAttemptEntity.STATE_INDETERMINADO, orderId = "venta-1", lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso("l")
+        val api = api(declaracionSola())
+        val recuperacion = LedgerServerRecovery(dao, ledger, api)
+
+        assertThat(recuperacion.liberarSinRastroDelBanco(venue, "l", now)).isEqualTo(LedgerServerRecovery.SinRastro.NO_ELEGIBLE)
+        recuperacion.recover(venue, now)
+
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        assertThat(dao.getById("l")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertWithMessage("la tarjeta de esa cuenta sigue esperando").that(otroCobroEntra("misma", orderId = "venta-1")).isFalse()
     }
 
     // Founder, 25-sep: la duda sin orden de un proceso muerto se AVISA; el aparato sigue cobrando y la recuperación la cierra.

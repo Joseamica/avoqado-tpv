@@ -127,10 +127,18 @@ class PaymentAttemptLedger(
     fun puedeLiberarseSola(fila: PaymentAttemptEntity, venueId: String): Boolean =
         fila.venueId == venueId && !fila.legacyShadow && fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY &&
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.terminalPaymentRequestId == null &&
+            // F1 (17-nov): sólo el Pago rápido. La duda de una cuenta (folio) no la cierra el silencio: espera al gerente.
+            !tieneCuenta(fila) &&
             fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.hostApproved != true && fila.serverOutcome == null &&
             fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED && fila.serverVeto == null &&
             !hayDineroSinEscribir(fila.attemptId) &&
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+
+    /** F1: la fila es de una cuenta — la misma regla que el SQL (`"orderId":"…"` no vacío; un orderId de espacios cuenta). */
+    private fun tieneCuenta(fila: PaymentAttemptEntity): Boolean = runCatching {
+        com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("orderId")
+            ?.takeIf { it.isJsonPrimitive }?.asString?.isNotEmpty() == true
+    }.getOrDefault(true) // ilegible: no se libera sola (el lado seguro)
 
     /** PAX operator recovery is never offered for a call still alive in this process. */
     fun puedeConciliarBlumon(fila: PaymentAttemptEntity, venueId: String): Boolean =
@@ -1261,7 +1269,8 @@ class PaymentAttemptLedger(
      * A diferencia de [retencionDeLaVenta], un fallo de lectura SE LANZA: quien pregunta para no cobrar dos veces falla cerrado.
      */
     suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean =
-        dao.retencionDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
+        // F1: el DINERO de la venta, no la cerca de la tarjeta: una duda sin dinero no impide abrir el folio ni cobrar su saldo.
+        dao.dineroEnJuegoDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
 
     /**
      * D9 (Mesas, Codex r3): [PaymentAttemptDao.dineroDeTarjetaDeLaCuenta] —cola y libreta de ESTA cuenta en una sola

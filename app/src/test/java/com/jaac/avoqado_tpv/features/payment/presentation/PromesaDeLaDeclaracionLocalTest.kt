@@ -28,17 +28,7 @@ class PromesaDeLaDeclaracionLocalTest {
         assertThat(texto).doesNotContain("quién")
     }
 
-    /** D22: ANTES de declarar no se sabe si habrá red: se dicen los dos casos, sin prometer que llega. */
-    private fun dosCasos(texto: String) {
-        assertThat(texto).contains("Con internet queda en Avoqado con tu nombre y la hora")
-        assertThat(texto).contains("sin internet, sólo en esta terminal")
-        assertThat(texto).doesNotContain("registrado")
-        assertThat(texto).doesNotContain("avis")
-    }
-
-    @Test fun `P1 antes de declarar un cobro local dice los dos casos - con internet en Avoqado, sin internet sólo aquí (D22)`() {
-        dosCasos(INVITACION_A_DECLARAR_EN_LA_TERMINAL)
-    }
+    // F1 (tarea 5): la PAX ya no invita al cajero a declarar; la firma es del gerente en «Por revisar».
 
     @Test fun `P1 tras declarar un cobro local que no llegó a Avoqado lo dice y no promete un aviso`() {
         promesaHonesta(textoDelIntentoCerrado("declarado_sin_cobro:staff-1"))

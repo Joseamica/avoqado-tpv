@@ -189,6 +189,8 @@ sealed class AngelPayPaymentState {
         val pidePin: Boolean = false,
         val error: String? = null,
         val declarando: Boolean = false,
+        /** F1 (tarea 5): el total (importe + propina) del intento ORIGINAL, el que la pantalla dice; null si no se conoce. */
+        val totalDelIntento: java.math.BigDecimal? = null,
     ) : AngelPayPaymentState()
 
     /**

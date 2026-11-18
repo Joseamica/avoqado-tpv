@@ -110,6 +110,37 @@ class NoSeCobroCableadoTest {
         com.google.common.truth.Truth.assertThat(fuente).contains("imeAction = ImeAction.Done")
         com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin)) onIdentificar(pin) }")
     }
+    // ── F1 mínimo, tarea 5 (17-nov): en la PAX el resultado incierto sólo muestra el importe y [Seguir] ──────────────────────
+
+    private val recuperacionPax = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/BlumonRecoveryContent.kt").readText()
+    private val pantallaPax = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
+
+    @Test fun `F1 el texto de la tarjeta en duda lleva el total con propina y dice que no se repita`() {
+        assertThat(tarjetaPorConfirmar(java.math.BigDecimal("105.00"))).isEqualTo("Tarjeta $105.00 por confirmar. No la repitas. Avisa al gerente.")
+        assertThat(tarjetaPorConfirmar(null)).isEqualTo("Tarjeta por confirmar. No la repitas. Avisa al gerente.")
+        assertThat(totalDelIntento(com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+            attemptId = "a", venueId = "v", processor = "BLUMON", state = "INDETERMINADO", amountCents = 10_000, tipCents = 500,
+            recordingRoute = "ORDER", paymentContextJson = "{}", createdAt = 1, updatedAt = 2,
+        ))).isEqualTo(java.math.BigDecimal("105.00"))
+    }
+
+    @Test fun `F1 la recuperacion de la PAX no ofrece ninguna decision al cajero - solo Seguir, siempre activo y una sola vez`() {
+        for (fuera in listOf("Ya revisé la terminal", "El cliente no presentó tarjeta", "Consultar de nuevo", "\"Regresar\"", "onDeclare", "onConsult"))
+            assertThat(recuperacionPax).doesNotContain(fuera)
+        val boton = recuperacionPax.substring(recuperacionPax.indexOf("Text(\"Seguir\")") - 300, recuperacionPax.indexOf("Text(\"Seguir\")"))
+        assertThat(boton).doesNotContain("enabled")
+        // Un doble toque sale UNA vez.
+        assertThat(recuperacionPax).contains("if (!salio) { salio = true; onSeguir() }")
+        assertThat(recuperacionPax).contains("tarjetaPorConfirmar(")
+    }
+
+    @Test fun `F1 la PaymentScreen monta la recuperacion con Seguir = la salida de siempre, sin cancelar el intento`() {
+        val montaje = pantallaPax.substring(pantallaPax.indexOf("BlumonRecoveryContent("), pantallaPax.indexOf("} else PaymentErrorContent("))
+        assertThat(montaje).contains("onSeguir = { viewModel.resetPayment(); navigateBack() }")
+        assertThat(montaje).doesNotContain("declare")
+        assertThat(montaje).doesNotContain("consultAgain")
+    }
+
     // D8: la solicitud no admitida se contesta en el acto, con el motivo, en vez de callar.
     @Test fun `el cobro que la terminal no admite se le contesta al POS`() {
         val rama = navegacion.substringAfter("is com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted ->")

@@ -3981,6 +3981,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = "$motivo\n\nCobro sin confirmar: NO vuelvas a cobrar hasta verificar. " +
                 "Estamos consultando con AngelPay si el pago pasó.",
             verificando = true,
+            totalDelIntento = pendingAmount.add(pendingTip),
         )
 
         val attemptId = currentPaymentAttemptId
@@ -4094,6 +4095,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = "No se pudo confirmar si el cobro pasó ($motivo).\n\n" +
                     "NO vuelvas a cobrar: revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
                 verificando = false,
+                totalDelIntento = pendingAmount.add(pendingTip),
             )
             return
         }
@@ -4103,6 +4105,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             // El último aviso de la declaración (409, «no se pudo confirmar en este aparato»…) sobrevive a la consulta nueva:
             // es lo que explica POR QUÉ se vuelve a consultar. Una declaración nueva lo limpia.
             error = previo?.takeIf { !it.verificando }?.error,
+            totalDelIntento = pendingAmount.add(pendingTip),
         )
         esperaAlServidorJob?.cancel()
         esperaAlServidorJob = viewModelScope.launch {

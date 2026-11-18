@@ -5,45 +5,30 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver
 import java.math.BigDecimal
 
-/** Qué salida ofrece la pantalla para un intento pendiente, ya pasada la ventana de confirmación. */
-internal enum class SalidaDelCobro { REVISE_LA_TERMINAL, NO_PRESENTO_TARJETA, FALTA_PERMISO_CAJERO, FALTA_PERMISO_GERENCIA, FALTA_CONSULTAR, EN_EL_AVISO_O_EL_POS }
-
-internal fun salidaDelCobro(
-    result: BlumonAttemptResolver.Result,
-    puedeRevisar: Boolean,
-    puedeDeclararSinTarjeta: Boolean,
-): SalidaDelCobro {
-    val row = result.row
-    // D5 (533d77, Codex r1 #4): si el banco aprobó y el chip rechazó el cierre, la tarjeta SÍ se presentó: «no presentó tarjeta»
-    // sería falso. La declaración de un cobro del POS («revisé y no se cobró») vive en el aviso verde del Inicio y en el POS.
-    if (row?.terminalPaymentRequestId != null && chipRechazoTrasAprobacion(row.lastError)) return SalidaDelCobro.EN_EL_AVISO_O_EL_POS
-    // El cobro que mandó el POS tiene su propio camino, y su propia declaración de gerencia.
-    if (row?.terminalPaymentRequestId != null)
-        return if (puedeDeclararSinTarjeta) SalidaDelCobro.NO_PRESENTO_TARJETA else SalidaDelCobro.FALTA_PERMISO_GERENCIA
-    // Cobro local (founder, 25-sep): el cajero dice lo que sí pasó — «revisé y no se cobró» —, con o sin red.
-    if (!puedeRevisar) return SalidaDelCobro.FALTA_PERMISO_CAJERO
-    // La libreta exige que Avoqado haya contestado alguna vez por este cobro (server_answered_at).
-    return if (result.serverAnswered || row?.serverAnsweredAt != null) SalidaDelCobro.REVISE_LA_TERMINAL
-        else SalidaDelCobro.FALTA_CONSULTAR
-}
-
 /**
- * D12 (16-nov): «Ya revisé la terminal: no se cobró» en un cobro LOCAL cambiaba sólo la libreta de ESTA terminal
- * (`declarado_sin_cobro:<staffId>`). 🔴 D22 (founder, 17-nov: «Sí, A1»): con red, además queda en Avoqado; sin red, sólo aquí. Antes
- * de tocar no se sabe cuál de los dos pasará: la invitación dice los dos, y «Intento cerrado» dice cuál pasó ([textoDelIntentoCerrado]).
- * Codex r1: «no aparece en Avoqado» y no «no sale del aparato» (los diagnósticos llevan la línea de la libreta). Codex r1 y r2:
- * el aviso de un cobro que aparezca después caduca con la poda (`pruneTerminalOlderThan`) y se apaga si la terminal cambia de
- * negocio o pierde la activación, y la libreta puede guardar `declarado_sin_cobro:sin_identificar`: sin promesa de aviso ni de
- * «quién». Que la declaración llegue a Avoqado lo decide el founder (camino (a), `docs/audit/2026-11-16-d12-…/promesa.md`).
+ * 🔴 F1 mínimo, tarea 5 (17-nov): lo que ve el cajero de una tarjeta en duda, en la PAX y en la N86. Sólo el importe del intento
+ * (con propina) y qué hacer; ninguna decisión: la revisa el gerente con su PIN en «Por revisar». null = la fila todavía no se lee.
  */
-internal const val INVITACION_A_DECLARAR_EN_LA_TERMINAL =
-    "Si ya revisaste que no se cobró (por ejemplo, en la app del banco del cliente), déjalo anotado. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal."
+internal fun tarjetaPorConfirmar(total: BigDecimal?): String =
+    "Tarjeta ${total?.let { CurrencyFormatter.format(it) + " " }.orEmpty()}por confirmar. No la repitas. Avisa al gerente."
+
+/** F1: el total del intento guardado (importe + propina), nunca el de la pantalla que esté abierta. */
+internal fun totalDelIntento(row: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity): BigDecimal =
+    BigDecimal.valueOf(row.amountCents + row.tipCents, 2)
+
+/** K19a: mientras se consulta. */
+internal const val CONFIRMANDO_CON_EL_BANCO = "Confirmando con el banco… No pases la tarjeta otra vez."
 
 /**
  * «Intento cerrado»: con `declarado_sin_cobro:` lo declaró el cajero (D12) — y con la marca de D22, Avoqado lo guardó; si no, lo
@@ -63,21 +48,19 @@ internal fun textoDelIntentoCerrado(lastError: String?): String =
 internal fun chipRechazoTrasAprobacion(lastError: String?): Boolean =
     lastError == com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION
 
-/** The amount belongs to the saved attempt, which may predate the payment screen currently open. */
+/**
+ * The amount belongs to the saved attempt, which may predate the payment screen currently open.
+ * 🔴 F1 (tarea 5): una sola acción, [Seguir], siempre activa (también durante una consulta lenta) y que sale UNA vez: deja atender la
+ * siguiente venta; la duda sigue guardada y sólo espera su cuenta. La consulta sigue sola en el ViewModel mientras la pantalla vive.
+ */
 @Composable
 internal fun BlumonRecoveryContent(
     result: BlumonAttemptResolver.Result,
     busy: Boolean,
     secondsRemaining: Int,
-    hasPermission: Boolean,
-    onConsult: () -> Unit,
-    onDeclare: () -> Unit,
-    onDeclareChecked: () -> Unit,
-    onBack: () -> Unit,
-    hasCheckPermission: Boolean = false,
+    onSeguir: () -> Unit,
 ) {
-    val pending = result.state == BlumonAttemptResolver.State.PENDING ||
-        result.state == BlumonAttemptResolver.State.PERMISSION_REQUIRED
+    var salio by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -86,54 +69,21 @@ internal fun BlumonRecoveryContent(
             BlumonAttemptResolver.State.RECORDED -> "Cobro registrado"
             BlumonAttemptResolver.State.RELEASED -> "Intento cerrado"
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "Hay evidencia de cobro"
-            else -> "Estamos confirmando el cobro"
+            else -> "Tarjeta por confirmar"
         }, style = MaterialTheme.typography.headlineSmall)
-        result.row?.let { row ->
-            Text("Importe: $${BigDecimal.valueOf(row.amountCents, 2).toPlainString()} · Propina: $${BigDecimal.valueOf(row.tipCents, 2).toPlainString()}")
-        }
-        // Lo que contestó Blumon es un dato, no un veredicto: sin código del banco no dice si hubo cargo.
-        if (pending) blumonRespuestaGuardada(result.row?.lastError)?.let { respuesta ->
-            Text("Blumon contestó «$respuesta», pero sin un código del banco no se puede confirmar si hubo cargo.")
-        }
-        // D5 (533d77): el banco aprobó y la tarjeta rechazó el cierre. Es un dato, no un veredicto: no se sabe si el cargo quedó.
-        if (pending && chipRechazoTrasAprobacion(result.row?.lastError)) {
-            Text("El banco aprobó, pero la tarjeta rechazó el cierre de la operación: no se sabe si el cargo quedó. Antes de declarar, revisa con el cliente (por ejemplo, en la app de su banco).")
-        }
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Avoqado confirmó este pago. No vuelvas a cobrar esta venta."
             BlumonAttemptResolver.State.RELEASED -> textoDelIntentoCerrado(result.row?.lastError)
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."
-            BlumonAttemptResolver.State.UNAVAILABLE -> "No se pudo leer este intento o todavía está en curso. No vuelvas a pasar la tarjeta."
-            else -> "No vuelvas a pasar la tarjeta. Estamos consultando el intento guardado; que aún no aparezca no significa que el banco lo rechazó."
+            else -> tarjetaPorConfirmar(result.row?.let(::totalDelIntento))
         })
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (pending && secondsRemaining > 0) Text("Esperando confirmación: $secondsRemaining s")
-        if (pending && secondsRemaining == 0) when (salidaDelCobro(result, puedeRevisar = hasCheckPermission, puedeDeclararSinTarjeta = hasPermission)) {
-            SalidaDelCobro.REVISE_LA_TERMINAL -> {
-                Text(INVITACION_A_DECLARAR_EN_LA_TERMINAL)
-                Button(onClick = onDeclareChecked, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Text("Ya revisé la terminal: no se cobró")
-                }
-            }
-            SalidaDelCobro.NO_PRESENTO_TARJETA -> {
-                Text("Declara sólo si el cliente no presentó tarjeta, celular ni reloj para este intento.")
-                Button(onClick = onDeclare, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Text("El cliente no presentó tarjeta")
-                }
-            }
-            SalidaDelCobro.FALTA_PERMISO_CAJERO ->
-                Text("Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente.")
-            SalidaDelCobro.FALTA_PERMISO_GERENCIA ->
-                Text("Para declarar que no se cobró, debe entrar un gerente con permiso para resolver cobros pendientes.")
-            SalidaDelCobro.EN_EL_AVISO_O_EL_POS ->
-                Text("Este cobro lo mandó el POS. Si ya revisaste que no se cobró, decláralo con «No se cobró» en el aviso verde del Inicio o desde el POS.")
-            SalidaDelCobro.FALTA_CONSULTAR ->
-                Text("Primero hay que consultar a Avoqado: conéctate a internet y toca «Consultar de nuevo».")
+        if (busy || secondsRemaining > 0) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(CONFIRMANDO_CON_EL_BANCO)
         }
-        if (result.state != BlumonAttemptResolver.State.RECORDED && result.state != BlumonAttemptResolver.State.RELEASED) {
-            OutlinedButton(onClick = onConsult, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Consultar de nuevo") }
+        Button(onClick = { if (!salio) { salio = true; onSeguir() } }, modifier = Modifier.fillMaxWidth()) {
+            Text("Seguir")
         }
-        TextButton(onClick = onBack, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Regresar") }
     }
 }
 
@@ -147,8 +97,7 @@ private fun BlumonRecoveryPreview() {
             }
             BlumonRecoveryContent(
                 result = BlumonAttemptResolver.Result(BlumonAttemptResolver.State.PENDING),
-                busy = false, secondsRemaining = 10, hasPermission = false,
-                onConsult = {}, onDeclare = {}, onDeclareChecked = {}, onBack = {},
+                busy = true, secondsRemaining = 10, onSeguir = {},
             )
         }
     }

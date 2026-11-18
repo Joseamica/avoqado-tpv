@@ -85,6 +85,28 @@ class AngelPayPaymentScreenSalidaTest {
         )
     }
 
+    // ── F1 mínimo, tarea 5 (17-nov): en la N86 el resultado incierto sólo muestra el importe y [Seguir] ─────────────────────
+
+    private val contenidoIncierto: String by lazy {
+        val inicio = pantalla.indexOf("private fun ResultadoInciertoContent(")
+        require(inicio >= 0) { "No encontré ResultadoInciertoContent en AngelPayPaymentScreen.kt" }
+        pantalla.substring(inicio, pantalla.indexOf("private fun ErrorContent(", inicio))
+    }
+
+    @Test
+    fun `F1 el resultado incierto de la N86 no ofrece ninguna decision al cajero - solo Seguir con el total del intento`() {
+        for (fuera in listOf("El cliente no presentó tarjeta", "Código de supervisor", "Consultar de nuevo", "Confirmar con código", "onDeclarar"))
+            assertFalse("El resultado incierto ya no ofrece «$fuera» (F1: decide el gerente en «Por revisar»).", contenidoIncierto.contains(fuera))
+        assertTrue("Muestra el total del intento original.", contenidoIncierto.contains("tarjetaPorConfirmar(state.totalDelIntento)"))
+        assertTrue("Un doble toque sale UNA vez.", contenidoIncierto.contains("if (!salio) { salio = true; onSeguir() }"))
+        val boton = contenidoIncierto.substring(contenidoIncierto.indexOf("Text(\"Seguir\")") - 300, contenidoIncierto.indexOf("Text(\"Seguir\")"))
+        assertFalse("[Seguir] nunca se apaga, ni durante una consulta lenta.", boton.contains("enabled"))
+        assertTrue(
+            "[Seguir] es la salida de siempre (onNavigateBack): no cancela el intento.",
+            pantalla.contains("ResultadoInciertoContent(state = currentState, onSeguir = onNavigateBack)"),
+        )
+    }
+
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(

@@ -4000,6 +4000,9 @@ class AngelPayPaymentViewModelTest {
 
             // La pantalla NO puede decir "rechazado": no se sabe.
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            // F1 (tarea 5): el estado incierto lleva el total del intento ORIGINAL (importe + propina).
+            assertThat((vm.state.value as AngelPayPaymentState.ResultadoIncierto).totalDelIntento)
+                .isEqualToIgnoringScale(java.math.BigDecimal("100.00"))
             // 🔴 Lo que de verdad guarda esta prueba: `failed` es lo que hace que el POS
             // ofrezca Reintentar sobre un cobro que quiza ya paso.
             verify(exactly = 0) {

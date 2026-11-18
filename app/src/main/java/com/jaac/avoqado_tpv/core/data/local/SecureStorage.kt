@@ -176,6 +176,23 @@ class SecureStorage @Inject constructor(
         private const val KEY_ANGELPAY_AFFILIATION = "angelpay_affiliation"
         private const val KEY_ANGELPAY_COMMERCE_TOKEN = "angelpay_commerce_token"
 
+        /** na7522fd (Codex mac r3): las tres llaves fiscales, juntas en el editor que le pasen (lo confirma quien llama, una vez). */
+        internal fun escribirTrioFiscal(editor: SharedPreferences.Editor, legalName: String?, rfc: String?, de: String?): SharedPreferences.Editor {
+            if (legalName != null) editor.putString(KEY_VENUE_LEGAL_NAME, legalName) else editor.remove(KEY_VENUE_LEGAL_NAME)
+            if (rfc != null) editor.putString(KEY_VENUE_RFC, rfc) else editor.remove(KEY_VENUE_RFC)
+            if (de != null) editor.putString(KEY_VENUE_FISCAL_DE, de) else editor.remove(KEY_VENUE_FISCAL_DE)
+            return editor
+        }
+
+        /**
+         * na7522fd (Codex mac r3): el negocio de la terminal y, si CAMBIA, se olvida el trío fiscal del anterior en la misma
+         * edición (también el que guardó una versión anterior sin marca). El ticket sale sin RFC hasta que lleguen los datos del
+         * negocio nuevo: nunca con los del anterior.
+         */
+        internal fun escribirVenueId(editor: SharedPreferences.Editor, anterior: String?, nuevo: String): SharedPreferences.Editor {
+            editor.putString(KEY_VENUE_ID, nuevo)
+            return if (anterior != null && anterior != nuevo) escribirTrioFiscal(editor, null, null, null) else editor
+        }
     }
 
     /**
@@ -316,7 +333,7 @@ class SecureStorage @Inject constructor(
      * @param venueId Venue identifier
      */
     fun saveVenueId(venueId: String) {
-        encryptedPrefs.edit().putString(KEY_VENUE_ID, venueId).apply()
+        escribirVenueId(encryptedPrefs.edit(), anterior = getVenueId(), nuevo = venueId).apply()
     }
 
     /**
@@ -454,15 +471,16 @@ class SecureStorage @Inject constructor(
     }
 
     /**
-     * Save venue legal name (razon social)
-     * @param legalName Venue legal name
+     * na7522fd (Codex mac r3): razón social, RFC y de qué negocio son, en UNA sola edición. Con tres `apply()` separados, un
+     * proceso que moría entre ellos dejaba en disco «RFC de B con la marca de A». Es la única escritura de esas tres llaves.
+     *
+     * `apply()` y no `commit()`: la edición es atómica en memoria y Android escribe el archivo entero desde una foto de la
+     * memoria, así que el disco sólo puede quedar en el trío de antes o en el nuevo (y el `venueId` vive en el mismo archivo:
+     * cada estado en disco es un prefijo de las ediciones). Un `commit()` que falle dejaría memoria y disco distintos, pero cada
+     * uno con un trío coherente, y el lector lo compara contra la sesión: no hace falta fail-stop (ver promesa.md).
      */
-    fun saveVenueLegalName(legalName: String?) {
-        if (legalName != null) {
-            encryptedPrefs.edit().putString(KEY_VENUE_LEGAL_NAME, legalName).apply()
-        } else {
-            encryptedPrefs.edit().remove(KEY_VENUE_LEGAL_NAME).apply()
-        }
+    fun guardarDatosFiscales(legalName: String?, rfc: String?, de: String?) {
+        escribirTrioFiscal(encryptedPrefs.edit(), legalName, rfc, de).apply()
     }
 
     /**
@@ -474,18 +492,6 @@ class SecureStorage @Inject constructor(
     }
 
     /**
-     * Save venue RFC
-     * @param rfc Venue tax ID (RFC)
-     */
-    fun saveVenueRfc(rfc: String?) {
-        if (rfc != null) {
-            encryptedPrefs.edit().putString(KEY_VENUE_RFC, rfc).apply()
-        } else {
-            encryptedPrefs.edit().remove(KEY_VENUE_RFC).apply()
-        }
-    }
-
-    /**
      * Get venue RFC
      * @return Venue RFC or null if not set
      */
@@ -494,17 +500,9 @@ class SecureStorage @Inject constructor(
     }
 
     /**
-     * na7522fd (encargo 1df453): de qué negocio son la razón social y el RFC guardados cuando vinieron del emisor de Facturación
-     * (null = vinieron de las columnas de siempre). Así una respuesta sin `receiptInfo` no pisa el emisor de ESTE negocio.
+     * na7522fd (encargo 1df453): de qué negocio son la razón social y el RFC guardados (null = los guardó una versión anterior
+     * de la app, sin marca). Lo escribe sólo [guardarDatosFiscales].
      */
-    fun saveVenueFiscalDe(venueId: String?) {
-        if (venueId != null) {
-            encryptedPrefs.edit().putString(KEY_VENUE_FISCAL_DE, venueId).apply()
-        } else {
-            encryptedPrefs.edit().remove(KEY_VENUE_FISCAL_DE).apply()
-        }
-    }
-
     fun getVenueFiscalDe(): String? {
         return encryptedPrefs.getString(KEY_VENUE_FISCAL_DE, null)
     }

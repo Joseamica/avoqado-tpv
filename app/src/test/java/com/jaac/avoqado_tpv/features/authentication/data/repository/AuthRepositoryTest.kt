@@ -556,8 +556,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify { secureStorage.saveVenueRfc("EMI010101AB1") }
-        verify { secureStorage.saveVenueLegalName("EMISORA SA DE CV") }
+        verify { secureStorage.guardarDatosFiscales("EMISORA SA DE CV", "EMI010101AB1", testVenueId) }
     }
 
     @Test
@@ -571,8 +570,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify { secureStorage.saveVenueRfc("VIE010101AB1") }
-        verify { secureStorage.saveVenueLegalName("VIEJA SA") }
+        verify { secureStorage.guardarDatosFiscales("VIEJA SA", "VIE010101AB1", null) }
     }
 
     @Test
@@ -585,8 +583,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify(exactly = 0) { secureStorage.saveVenueRfc(any()) }
-        verify(exactly = 0) { secureStorage.saveVenueLegalName(any()) }
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any(), any()) }
     }
 
     @Test
@@ -598,7 +595,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify { secureStorage.saveVenueFiscalDe(testVenueId) }
+        verify { secureStorage.guardarDatosFiscales(any(), any(), testVenueId) }
     }
 
     @Test
@@ -610,8 +607,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify { secureStorage.saveVenueRfc("VIE010101AB1") }
-        verify { secureStorage.saveVenueLegalName("VIEJA SA") }
+        verify { secureStorage.guardarDatosFiscales("VIEJA SA", "VIE010101AB1", null) }
     }
 
     // Codex mac r1 #1 / r2 #1: que el emisor guardado de OTRO negocio no se imprima lo decide la LECTURA
@@ -624,9 +620,7 @@ class AuthRepositoryTest {
 
         authRepository.loginWithPin(testPin, testVenueId)
 
-        verify(exactly = 0) { secureStorage.saveVenueRfc(any()) }
-        verify(exactly = 0) { secureStorage.saveVenueLegalName(any()) }
-        verify(exactly = 0) { secureStorage.saveVenueFiscalDe(any()) }
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any(), any()) }
     }
 
     /**

@@ -260,9 +260,8 @@ class AuthRepository @Inject constructor(
                 // las columnas de siempre. null = la respuesta no trajo el encabezado y se conserva el emisor ya guardado.
                 val fiscal = com.jaac.avoqado_tpv.core.data.network.dto.datosFiscalesDelTicket(venue, venueId, secureStorage.getVenueFiscalDe())
                 if (fiscal != null) {
-                    secureStorage.saveVenueLegalName(fiscal.legalName)
-                    secureStorage.saveVenueRfc(fiscal.rfc)
-                    secureStorage.saveVenueFiscalDe(fiscal.emisorDe)
+                    // Codex mac r3: los tres en UNA sola escritura (nunca «RFC de B con la marca de A» en disco).
+                    secureStorage.guardarDatosFiscales(fiscal.legalName, fiscal.rfc, fiscal.emisorDe)
                 } else {
                     Timber.w("⚠️ El negocio no mandó el encabezado del ticket: se conserva el emisor ya guardado")
                 }

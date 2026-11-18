@@ -536,6 +536,58 @@ class AuthRepositoryTest {
     // HELPER FUNCTIONS
     // ═════════════════════════════════════════════════════════════════════════
 
+    // ═════════════════════════════════════════════════════════════════════════
+    // na7522fd · encargo 1df453 (18-nov-2026): el ticket de la TPV salía sin el RFC del emisor de Facturación. El SERVIDOR
+    // ya manda `receiptInfo` (el emisor principal) en GET /tpv/venues/:id, pero la TPV sólo guardaba las columnas viejas.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private fun detallesDelNegocio(json: String) =
+        com.google.gson.Gson().fromJson(json, com.jaac.avoqado_tpv.core.data.network.dto.VenueDetailsDto::class.java)
+
+    @Test
+    fun `P2 con emisor de Facturacion el ticket guarda su RFC y razon social, no las columnas viejas vacias`() = runTest {
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio("""
+            {"id":"venue-123","name":"Tienda","legalName":null,"rfc":null,
+             "receiptInfo":{"legalName":"EMISORA SA DE CV","rfc":"EMI010101AB1","lugarExpedicion":"06600",
+               "fiscalEmisors":[{"id":"e1","legalName":"EMISORA SA DE CV","rfc":"EMI010101AB1","merchantAccountIds":[]}],
+               "principalEmisorId":"e1","legacy":{"legalName":null,"rfc":null}}}
+        """))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueRfc("EMI010101AB1") }
+        verify { secureStorage.saveVenueLegalName("EMISORA SA DE CV") }
+    }
+
+    @Test
+    fun `control sin emisor sigue imprimiendo las columnas de siempre`() = runTest {
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio("""
+            {"id":"venue-123","name":"Tienda","legalName":"VIEJA SA","rfc":"VIE010101AB1",
+             "receiptInfo":{"legalName":null,"rfc":null,"fiscalEmisors":[],"principalEmisorId":null,
+               "legacy":{"legalName":"VIEJA SA","rfc":"VIE010101AB1"}}}
+        """))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueRfc("VIE010101AB1") }
+        verify { secureStorage.saveVenueLegalName("VIEJA SA") }
+    }
+
+    @Test
+    fun `control un servidor viejo sin receiptInfo sigue imprimiendo las columnas de siempre`() = runTest {
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio(
+            """{"id":"venue-123","name":"Tienda","legalName":"VIEJA SA","rfc":"VIE010101AB1"}"""
+        ))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueRfc("VIE010101AB1") }
+        verify { secureStorage.saveVenueLegalName("VIEJA SA") }
+    }
+
     /**
      * Create a mock AuthResponseDto for successful login
      */

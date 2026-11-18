@@ -77,7 +77,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashCo
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
-import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
@@ -957,12 +957,8 @@ fun PaymentScreen(
                                 isPortabilidad = isPortabilidadState,
                                 proofOfSaleComplete = proofOfSaleComplete,
                                 // 📸 Bloque 0: el estado de cada ranura, o a «Pendientes» si la venta quedó en cola sin paymentId.
-                                proofOfSaleMessage = when {
-                                    !showProofOfSale -> null
-                                    proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
-                                    // D13: el aviso de «no se pudo guardar» no es una venta en cola (Codex r2 #4).
-                                    currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE
-                                    else -> null
+                                proofOfSaleMessage = mensajeDePruebaDeVenta(showProofOfSale, currentState) {
+                                    proofOfSaleMessage(proofSlotStates, isPortabilidadState)
                                 },
                                 onProofOfSalePhotoTaken = { photoPath, slot, number ->
                                     // Se encola con el número de su ranura (archivo y fila antes de la red); la sube PaymentSyncWorker.

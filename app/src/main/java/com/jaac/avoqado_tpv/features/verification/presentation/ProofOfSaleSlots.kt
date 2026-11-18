@@ -41,6 +41,22 @@ const val PROOF_SAVE_FAILED_MESSAGE = "No se pudo guardar la foto en la terminal
 const val PROOF_SALE_QUEUED_MESSAGE = "La venta quedó en cola; sube la foto y el número desde \"Pendientes\" cuando se registre"
 
 /**
+ * El texto bajo la cámara de la prueba de venta en la pantalla de éxito de la PAX: el estado de cada ranura si la venta ya está
+ * registrada, o a «Pendientes» si todavía no. `mensajeDeRanuras` sólo se pide cuando hay `paymentId`.
+ */
+fun mensajeDePruebaDeVenta(
+    mostrar: Boolean,
+    exito: com.jaac.avoqado_tpv.features.payment.domain.PaymentState.Success,
+    mensajeDeRanuras: () -> String?,
+): String? = when {
+    !mostrar -> null
+    proofOfSalePaymentId(exito.receipt) != null -> mensajeDeRanuras()
+    // D13: el aviso de «no se pudo guardar» no es una venta en cola (Codex r2 #4).
+    exito.pendingSyncMessage != null && !exito.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE
+    else -> null
+}
+
+/**
  * El `paymentId` con el que se puede encolar la foto, o null si la venta todavía no está registrada. Un id vacío cuenta
  * como ausente: el S6 de la Nexgo arma el recibo con `serverPaymentId ?: ""`, y esa fila el servidor la rechazaría.
  */

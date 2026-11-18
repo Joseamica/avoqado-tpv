@@ -133,6 +133,22 @@ fun LocalCajaContent(
     }
 }
 
+/**
+ * Lo que dice cada renglón de «Registros de esta caja» (lo que el cierre espera).
+ *
+ * D24 (soporte por WhatsApp, 18-nov): el efectivo de Mesas que el cierre espera puede estar EN ESPERA (sube solo al volver la conexión)
+ * o RECHAZADO por el SERVIDOR (el billete está en el cajón y no se registró: la caja se queda detenida a propósito,
+ * `LocalShiftObligation`, hasta que un gerente lo resuelve en Mesas › «Acciones rechazadas»). El renglón no distingue los dos casos,
+ * así que el texto sirve para ambos y dice dónde se resuelve; antes sólo decía «pendiente de registro» y la cajera no sabía qué hacer.
+ */
+internal fun textoDelPendienteDelCierre(owner: String): String = when (owner) {
+    "CRYPTO" -> "Pago cripto pendiente de confirmación"
+    "ATTEMPT", "REMOTE" -> "Operación pendiente de resolver; no vuelvas a cobrarla"
+    "REFUND" -> "Devolución pendiente de registro o revisión"
+    "TABLE_CASH" -> "Efectivo de Mesas sin registrar: si no sube solo al volver la conexión, lo resuelve un gerente en Mesas › «Acciones rechazadas»"
+    else -> "Pago pendiente de registro o revisión"
+}
+
 @Composable
 fun LocalCajaReviewDialog(review: LocalCajaReview, onDismiss: () -> Unit, onPage: (Int) -> Unit,
     onCash: (Long) -> Unit, onCrypto: (String) -> Unit, onRetry: () -> Unit) {
@@ -141,13 +157,7 @@ fun LocalCajaReviewDialog(review: LocalCajaReview, onDismiss: () -> Unit, onPage
             item { Text(if (review.busy) "Consultando…" else review.page?.let { "${it.total} registros que el cierre espera" } ?: "Lista pendiente de confirmar") }
             review.error?.let { item { Text(it) } }
             review.page?.rows?.forEach { row -> item(key = "${row.owner}:${row.ownerId}") {
-                Text(when (row.owner) {
-                    "CRYPTO" -> "Pago cripto pendiente de confirmación"
-                    "ATTEMPT", "REMOTE" -> "Operación pendiente de resolver; no vuelvas a cobrarla"
-                    "REFUND" -> "Devolución pendiente de registro o revisión"
-                    "TABLE_CASH" -> "Efectivo de Mesas pendiente de registro"
-                    else -> "Pago pendiente de registro o revisión"
-                })
+                Text(textoDelPendienteDelCierre(row.owner))
                 Text("Folio: ${row.ownerId}", style = MaterialTheme.typography.bodySmall)
                 if (row.owner == "PAYMENT" && row.ownerId.toLongOrNull()?.let { it in review.cashEligible } == true)
                     TextButton(enabled = !review.busy, onClick = { row.ownerId.toLongOrNull()?.let(onCash) }) { Text("Efectivo: ya lo revisé") }

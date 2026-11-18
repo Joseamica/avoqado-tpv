@@ -385,6 +385,21 @@ class SyncOutboxDesenlaceDelCobroTest {
         assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_PENDING)
     }
 
+    @Test
+    fun `cada acuse se avisa antes de guardar el siguiente, como siempre`() = runTest {
+        // Codex r5 #1: avisar todos al final dejaba que un aviso viejo (la versión 11 de una mesa) pisara la que la pantalla
+        // acababa de leer (12), y la siguiente ronda rebotaba con 409.
+        servidor { request -> request.intents.map { acepta(it.id) } }
+        val ronda = encola(SyncIntentTypes.ADD_ITEMS)
+        val cobro = encola()
+        val estadoDelCobroAlAvisarLaRonda = mutableListOf<String>()
+
+        outbox.replayNow(VENUE) { intent, _ -> if (intent.id == ronda) estadoDelCobroAlAvisarLaRonda += fila(cobro).status }
+
+        assertThat(estadoDelCobroAlAvisarLaRonda).containsExactly(SyncIntentEntity.STATUS_PENDING)
+        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
+    }
+
     // endregion
 
     private companion object {

@@ -243,18 +243,6 @@ fun TableCheckoutScreen(
             viewModel.consumeError()
         }
     }
-    // D19: el desenlace de un cobro en efectivo que no entró, una vez, aunque la cuenta se relea mientras se enseña. Se queda
-    // hasta que la cajera toca «Entendido» (Codex r4 #3: con un tiempo, se agotaba debajo del bloqueo remoto sin verse).
-    LaunchedEffect(state.avisoDelCobro) {
-        state.avisoDelCobro?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                actionLabel = "Entendido",
-                duration = androidx.compose.material3.SnackbarDuration.Indefinite,
-            )
-            viewModel.consumeAvisoDelCobro()
-        }
-    }
 
     val chargeableAmount = viewModel.chargeableAmount()
 
@@ -269,6 +257,7 @@ fun TableCheckoutScreen(
             onNavigateBack()
         },
         onRetryLoad = viewModel::reintentar,
+        onEntendidoAvisoDelCobro = viewModel::consumeAvisoDelCobro,
         onSelectSplitType = viewModel::selectSplitType,
         onCustomAmountChanged = viewModel::setCustomAmountInput,
         onEqualPartsChanged = viewModel::setEqualParts,
@@ -335,6 +324,7 @@ private fun TableCheckoutScreenContent(
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
     onRetryLoad: () -> Unit,
+    onEntendidoAvisoDelCobro: () -> Unit = {},
     onSelectSplitType: (CheckoutSplitType) -> Unit,
     onCustomAmountChanged: (String) -> Unit,
     onEqualPartsChanged: (Int) -> Unit,
@@ -374,6 +364,7 @@ private fun TableCheckoutScreenContent(
                 onPayCash = onPayCash,
                 onPayCard = onPayCard,
                 onRetryLoad = onRetryLoad,
+                onEntendidoAvisoDelCobro = onEntendidoAvisoDelCobro,
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -874,6 +865,7 @@ private fun CheckoutBottomBar(
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
     onRetryLoad: () -> Unit = {},
+    onEntendidoAvisoDelCobro: () -> Unit = {},
 ) {
     // 🔴 Contrato verificado, no asumido (Task 8): la pantalla de pago con
     // tarjeta de Nexgo (`AngelPayPaymentScreen`) NO expone `splitType` /
@@ -900,6 +892,22 @@ private fun CheckoutBottomBar(
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
+        // D19: el desenlace de un cobro en efectivo que no entró. En el pie y no en un aviso pasajero: se queda hasta «Entendido»
+        // (Codex r4 #3: con tiempo, se agotaba debajo del bloqueo remoto sin verse) y no tapa los demás avisos (Codex r5 #2).
+        state.avisoDelCobro?.let { avisoDelCobro ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = avisoDelCobro,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onEntendidoAvisoDelCobro) { Text("Entendido") }
+            }
+        }
         val pie = avisosDelPie(state, cardSupportsThisSplit)
         val aviso = pie.aviso
         if (aviso != null) {

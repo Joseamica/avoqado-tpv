@@ -13,8 +13,6 @@ import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -434,12 +432,12 @@ class SyncOutbox @Inject constructor(
             // D19: el acuse del intent que se vigila se toma de la respuesta COMPLETA, aunque una fila anterior no se pueda
             // guardar y el bucle de abajo salga antes de llegar a él.
             vigia?.alRecibir(response.data)
-            // D19 (Codex r3 #1): una respuesta que YA llegó se GUARDA completa aunque cancelen a quien la pidió (WorkManager
-            // detiene al trabajador cuando la red parpadea). Antes, el rechazo de un cobro que venía detrás quedaba sin escribir
-            // y «Cobrar», ya sin red, leía la fila en espera y decía «guardado». Los avisos ([onAck]) salen DESPUÉS, en el mismo
-            // orden y todavía cancelables: un trabajador detenido no toca la sesión ni el carrito (Task6 F3).
-            val avisos = mutableListOf<Pair<SyncIntentEntity, SyncIntentAck>>()
-            val paso = withContext(NonCancellable) procesar@{
+            // Cada acuse se guarda y se avisa ([onAck]) en orden, uno por uno, como siempre (Codex r5 #1: avisar todos al final
+            // dejaba que un aviso viejo pisara la versión que la pantalla acababa de leer). D19 (Codex r3 #1): si cancelan a quien
+            // pidió el lote (WorkManager detiene al trabajador cuando la red parpadea) con la respuesta YA en la mano, lo que falta
+            // se guarda sin avisar a nadie y la cancelación sale igual (un trabajador detenido no toca la sesión, Task6 F3). Antes,
+            // el rechazo de un cobro que venía detrás quedaba sin escribir y «Cobrar», ya sin red, decía «guardado».
+            val paso = try { run procesar@{
                 var next = 0
                 // D6: rechazos por número que se renumeran en vez de guardarse, y si esta respuesta los deja renumerar.
                 val porNumero = mutableListOf<Pair<Int, SyncIntentAck>>()
@@ -482,7 +480,7 @@ class SyncOutbox @Inject constructor(
                                     // sigue en espera y la siguiente pasada puede renumerarla y registrarla.
                                     vigia?.alGuardar(rechazo)
                                     resolved++
-                                    avisos += batch[indice] to rechazo
+                                    onAck(batch[indice], rechazo)
                                 }
                                 Guardado.YA_NO_ESTABA -> Unit // ya no estaba en espera: nada que avisar, sigue la respuesta
                                 Guardado.FALLO, Guardado.NO_SE_GUARDA -> return@procesar Paso.Termina
@@ -494,7 +492,7 @@ class SyncOutbox @Inject constructor(
                     }
                     val guardado = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) }, vigia)
                     if (ack.isRetry) {
-                        avisos += batch[next] to ack
+                        onAck(batch[next], ack)
                         return@procesar Paso.Termina
                     }
                     when (guardado) {
@@ -502,7 +500,7 @@ class SyncOutbox @Inject constructor(
                             vigia?.alGuardar(ack)
                             resolved++
                             entraronEnEstaRespuesta++
-                            avisos += batch[next] to ack // La transición CAS ya fue duradera; entrega la entidad original.
+                            onAck(batch[next], ack) // La transición CAS ya fue duradera; entrega la entidad original.
                         }
                         // D19 (Codex r4 #1): la fila ya no estaba en espera (su ruta en línea la descartó mientras viajaba el lote):
                         // no es una falla. Antes la pasada se cortaba aquí y el rechazo de un cobro que venía detrás quedaba sin
@@ -530,13 +528,9 @@ class SyncOutbox @Inject constructor(
                     return@procesar Paso.OtraVuelta
                 }
                 Paso.Sigue(next)
-            }
-            // D19 (Codex r4 #5): la respuesta ya se guardó completa; si cancelaron a quien la pidió, se nota AQUÍ, como antes
-            // (no se le devuelve un progreso normal a un trabajador ya detenido, y no se avisa a nadie).
-            currentCoroutineContext().ensureActive()
-            for ((entidad, ack) in avisos) {
-                currentCoroutineContext().ensureActive() // si un aviso detuvo a quien pidió, los siguientes ya no salen
-                onAck(entidad, ack)
+            } } catch (cancelled: CancellationException) {
+                withContext(NonCancellable) { guardarLoQueYaContesto(ready, response.data, vigia) }
+                throw cancelled
             }
             when (paso) {
                 Paso.Termina -> return ReplayProgress(resolved, false)
@@ -553,6 +547,21 @@ class SyncOutbox @Inject constructor(
                 batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
         } while (otraVuelta)
         return ReplayProgress(resolved, false)
+    }
+
+    /**
+     * D19 (Codex r3 #1, r5 #1): cancelaron a quien pidió el lote cuando su respuesta YA había llegado. Se guarda lo que el
+     * SERVIDOR contestó, en orden y sin avisar a nadie, hasta el primer RETRY, rechazo por número (D6 decide eso en la pasada
+     * siguiente), acuse fuera de orden o falla de la base. Guardar otra vez un acuse ya guardado no hace nada (`resolve` sólo
+     * toca filas en espera).
+     */
+    private suspend fun guardarLoQueYaContesto(ready: List<SyncIntentEntity>, acuses: List<SyncIntentAck>, vigia: VigiaDelIntent?) {
+        for ((indice, ack) in acuses.withIndex()) {
+            if (ready.getOrNull(indice)?.id != ack.id) break
+            if (!(ack.isAcked || ack.isRejected) || ack.errorCode == SyncIntentAck.STALE_DEVICE_SEQUENCE) break
+            val guardado = applyAckChecked(ack.id, ack.status, ack.errorCode, ack.message, ack.result?.let { gson.toJson(it) }, vigia)
+            if (guardado == Guardado.FALLO) break
+        }
     }
 
     // MARK: - Cuarentena

@@ -226,9 +226,10 @@ data class LiberacionDelServidor(
             if (requestIdCrudo == null && respuesta.request == null) {
                 val declaracion = respuesta.attempt?.resolution ?: return null
                 val evidencia = evidenciaDeLaDeclaracion(runCatching { declaracion.get("kind")?.asString }.getOrNull()) ?: return null
-                // 🔴 F1 (tarea 3 y Codex código r1 #3): «revisé y no se cobró» cuenta con el acuse que Avoqado guardó, a nombre de quien
-                // lo declaró ([quienDeclaroElAcuse]).
-                if (evidencia == CAJERO_REVISO) {
+                // 🔴 F1 (tarea 3, Codex código r1 #3 y r2 #8): las dos declaraciones de una PERSONA —«revisé y no se cobró» y «no
+                // presentó tarjeta»— cuentan con el acuse que Avoqado guardó, a nombre de quien lo declaró ([quienDeclaroElAcuse]): sin
+                // `by` o con `AUTOMATIC` no liberan. La automática (la ventana del banco) es de la terminal y sigue igual.
+                if (evidencia == CAJERO_REVISO || evidencia == "OPERATOR_RECONCILED") {
                     val quien = quienDeclaroElAcuse(declaracion) ?: return null
                     return LiberacionDelServidor(venueId, attemptId, null, evidencia, quien)
                 }
@@ -289,7 +290,8 @@ data class LiberacionDelServidor(
         fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String?, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
             if (acreditaDinero(respuesta?.attempt) || hayEvidenciaSinDueno(respuesta?.attempt) || hayContradiccion(respuesta?.attempt)) null
             // F1: una revisada sin quien la declaró (ni por la sesión ni por el PIN) no libera nada, venga por donde venga.
-            else if (respuesta?.attempt?.resolution.let { r -> textoDe(r, "kind") == "UNCHARGED_VERIFIED" && quienDeclaroElAcuse(r) == null }) null
+            else if (respuesta?.attempt?.resolution.let { r ->
+                    textoDe(r, "kind") in DECLARACIONES_DE_UNA_PERSONA && quienDeclaroElAcuse(r) == null }) null
             // Ronda 20: la declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
             // Sin clase (un servidor anterior) o con la del cajero, lo de siempre.
             else LiberacionDelServidor(
@@ -305,6 +307,8 @@ data class LiberacionDelServidor(
          * única que va a volver a contestar (replay). Rechazarla no protege nada y deja la cuenta sin salida. Lo automático
          * (`AUTOMATIC`) o un acuse sin `by` no cuentan. Que sea de ESTE intento y de esta declaración lo comprueba quien llama.
          */
+        private val DECLARACIONES_DE_UNA_PERSONA = setOf("UNCHARGED_VERIFIED", "NO_INSTRUMENT_PRESENTED")
+
         fun quienDeclaroElAcuse(declaracion: JsonObject?): String? =
             declaracion?.takeIf { textoDe(it, "by") == "SUPERVISOR_PIN" || textoDe(it, "by") == "SESSION" }?.let { quienDeclaro(it) }
 

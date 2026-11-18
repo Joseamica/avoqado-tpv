@@ -181,6 +181,9 @@ class DeclaracionDesdeElAvisoTest {
             ResultadoDeLaDeclaracion.HayEvidencia to "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
             // F1 (Codex código r1 #11): una revisión de una persona no es la respuesta del banco.
             ResultadoDeLaDeclaracion.YaResuelto to "Este cobro ya lo revisó otra persona: ya no está por revisar.",
+            // F1 (Codex código r2 #5 y #6).
+            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Ya estaba declarado en Avoqado; ya se puede volver a cobrar.",
+            ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado to "Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
             ResultadoDeLaDeclaracion.Rechazado("lo que dijo el servidor") to "lo que dijo el servidor",
         )
         for ((resultado, texto) in textos) assertThat(resultado.texto()).isEqualTo(texto)

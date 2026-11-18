@@ -41,6 +41,10 @@ sealed interface ResultadoDeLaDeclaracion {
     data object Declarado : ResultadoDeLaDeclaracion
     /** D22: un Pago rápido declarado ahora, y Avoqado lo guardó (con el nombre de la sesión, la hora y el monto). */
     data object DeclaradoEnAvoqado : ResultadoDeLaDeclaracion
+    /** F1 (Codex código r2 #5): al firmar resultó que ya estaba declarado en Avoqado por otra persona (p. ej. la cajera, por la sesión). */
+    data object YaDeclaradoEnAvoqado : ResultadoDeLaDeclaracion
+    /** F1 (Codex código r2 #6): Avoqado tiene evidencia que contradice «no se cobró» pero no es del banco para ESTE intento (un veto). */
+    data object HayEvidenciaEnAvoqado : ResultadoDeLaDeclaracion
     /** D22: un Pago rápido declarado ahora, pero Avoqado no lo recibió (sin red, sin respuesta o un servidor anterior). */
     data object DeclaradoSoloEnLaTerminal : ResultadoDeLaDeclaracion
     data object PidePin : ResultadoDeLaDeclaracion
@@ -64,6 +68,10 @@ sealed interface ResultadoDeLaDeclaracion {
         SinRed -> "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva."
         // F1 (Codex código r1 #9): también la lee el gerente en una fila «sólo consulta» (el banco aprobó después de cerrarla).
         HayEvidencia -> "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado."
+        // Codex código r2 #6: un veto (evidencia de otra terminal, un pago que no se puede atribuir) no se presenta como del banco.
+        HayEvidenciaEnAvoqado -> "Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado."
+        // Codex código r2 #5: no firmó este gerente; la declaración ya estaba (no hay un nombre que mostrar: el acuse trae un id).
+        YaDeclaradoEnAvoqado -> "Ya estaba declarado en Avoqado; ya se puede volver a cobrar."
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
@@ -180,7 +188,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
         }
         return when {
             cuerpo.released == true ->
-                if (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro)) ResultadoDeLaDeclaracion.HayEvidencia
+                if (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro))
+                    evidenciaDe(cobro.attemptId?.let { ledger.leerIntento(it) }, sinGuardar = lectura?.evidenciaPositivaSinRegistro == true)
                 else {
                     // Sin sonda de por medio la bandeja seguiría PROCESSING y Caja la contaría. Nunca dice «no se cobró»: lo que certifica es
                     // que nada de esta solicitud sigue corriendo, y que no vuelve a empezar.
@@ -200,6 +209,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
         // acuse firmado, o algo cambió entre leer y escribir y el CAS no aplicó.
         return when {
             resultado.state == BlumonAttemptResolver.State.SIGNATURE_REQUIRED -> ResultadoDeLaDeclaracion.PidePin
+            resultado.state == BlumonAttemptResolver.State.RELEASED && resultado.yaEstabaDeclarado -> ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado
             resultado.state == BlumonAttemptResolver.State.PENDING -> when {
                 resultado.row?.serverAnsweredAt == null -> ResultadoDeLaDeclaracion.FaltaConsultar
                 !resultado.serverAnswered -> ResultadoDeLaDeclaracion.SinRed
@@ -216,7 +226,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
 
     private fun desenlaceEnLaLibreta(resultado: BlumonAttemptResolver.Result): ResultadoDeLaDeclaracion = when (resultado.state) {
         BlumonAttemptResolver.State.RELEASED -> ResultadoDeLaDeclaracion.Declarado
-        BlumonAttemptResolver.State.RECORDED, BlumonAttemptResolver.State.MONEY_EVIDENCE -> ResultadoDeLaDeclaracion.HayEvidencia
+        BlumonAttemptResolver.State.RECORDED -> ResultadoDeLaDeclaracion.HayEvidencia
+        BlumonAttemptResolver.State.MONEY_EVIDENCE -> evidenciaDe(resultado.row)
         BlumonAttemptResolver.State.PERMISSION_REQUIRED -> ResultadoDeLaDeclaracion.SinPermiso
         BlumonAttemptResolver.State.SIGNATURE_REQUIRED -> ResultadoDeLaDeclaracion.PidePin
         BlumonAttemptResolver.State.PENDING, BlumonAttemptResolver.State.UNAVAILABLE -> GENERICO
@@ -230,7 +241,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
         val fila = cobro.attemptId?.let { ledger.leerIntento(it) }?.takeIf { it.venueId == venueId }
         when {
             fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
-            tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
+            tieneDinero(cobro) -> evidenciaDe(fila)
             fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             // Codex código r1 #11: «lo revisó otra persona» sólo si fue una persona (su firma o «no presentó tarjeta»); lo que soltó
             // la ventana del banco o el silencio no lo revisó nadie.
@@ -271,6 +282,19 @@ class DeclaracionDesdeElAviso @Inject constructor(
             tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
             else -> GENERICO
         }
+    }
+
+    /**
+     * F1 (Codex código r2 #6): qué evidencia es. Del banco para ESTE intento (aprobó el host, Avoqado tiene la aprobación o un
+     * desenlace con dinero) ⇒ «El banco sí registró algo»; sólo un veto (evidencia de otra terminal, pago no atribuible, evidencia
+     * sin dueño) ⇒ «Avoqado tiene evidencia». Lo que no se pudo leer cuenta como del banco (el lado que no invita a cobrar).
+     */
+    private fun evidenciaDe(fila: PaymentAttemptEntity?, sinGuardar: Boolean = false): ResultadoDeLaDeclaracion {
+        val delBanco = sinGuardar || fila == null || fila.hostApproved == true ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || ledger.tieneEvidenciaSinGuardar(fila.attemptId)
+        return if (delBanco || fila?.serverVeto.isNullOrBlank()) ResultadoDeLaDeclaracion.HayEvidencia
+        else ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado
     }
 
     private suspend fun tieneDinero(cobro: CobroDeclarable): Boolean {

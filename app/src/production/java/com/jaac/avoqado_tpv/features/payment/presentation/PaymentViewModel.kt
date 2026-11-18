@@ -5688,6 +5688,13 @@ class PaymentViewModel @Inject constructor(
             Timber.e(e, "❌ [CONTACTLESS] Unexpected error in contactless payment flow")
             // ⭐ Clean up SDK state and release guard to allow retry
             try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            // 🔴 F1 (Codex código r2 #3): si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al
+            // leer los datos de la tarjeta), nada salió al banco: la entrada al lector se suelta y otra cuenta cobra en esta
+            // terminal. Sólo aplica desde `KERNEL_ACTIVO`/`PREPARANDO`; con la autorización pedida (`AUTORIZANDO`) no toca nada. Una
+            // cancelación no: la llamada nativa puede seguir dentro del lector.
+            if (e !is CancellationException) sessionSnapshot.paymentAttemptId?.let { id ->
+                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(id, "excepcion_antes_del_banco") }
+            }
             _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(
                 message = "Error inesperado en pago contactless: ${e.message}",
@@ -5910,6 +5917,13 @@ class PaymentViewModel @Inject constructor(
             Timber.e(e, "❌ [CONTACTLESS ONLINE] Unexpected error")
             // ⭐ Clean up SDK state and release guard to allow retry
             try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            // 🔴 F1 (Codex código r2 #3): si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al
+            // leer los datos de la tarjeta), nada salió al banco: la entrada al lector se suelta y otra cuenta cobra en esta
+            // terminal. Sólo aplica desde `KERNEL_ACTIVO`/`PREPARANDO`; con la autorización pedida (`AUTORIZANDO`) no toca nada. Una
+            // cancelación no: la llamada nativa puede seguir dentro del lector.
+            if (e !is CancellationException) sessionSnapshot.paymentAttemptId?.let { id ->
+                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(id, "excepcion_antes_del_banco") }
+            }
             _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(
                 message = "Error inesperado: ${e.message}",

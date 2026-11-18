@@ -98,7 +98,8 @@ class FlujoDeNoSeCobroTest {
 
     @Test fun `el paso del PIN dice que se firma, por cuanto y a que hora - el cajero no ve otra decision`() {
         val texto = textoDeLaFirma(CobroDeclarable("a-1", null, 12_000, 0, 1), java.time.ZoneOffset.UTC)
-        assertThat(texto).isEqualTo("Gerente: escribe tu PIN para marcar \$120.00 de las 00:00 (ref A1) como no cobrado.")
+        // Codex código r2 #7: lo que firma, completo — lo mismo que Avoqado le atribuye después.
+        assertThat(texto).isEqualTo("Gerente: revisé la terminal y este cobro de \$120.00 de las 00:00 (ref A1) no aparece. Escribe tu PIN para firmarlo.")
     }
 
     @Test fun `P1 F1 - dos filas del mismo importe y minuto, aparece B y la lista cambia de orden mientras teclea - solo se firma A`() = runTest {

@@ -356,13 +356,14 @@ private fun ListaDeCobrosDialog(
 }
 
 /**
- * F1 (tarea 4 y Codex código r1 #10): lo que firma el gerente, en el mismo paso del PIN. Es SU marca de lo que revisó: en la PAX, que el
- * banco dijo «no» sólo lo afirma el reverso de Blumon, así que el texto nunca dice «no se cobró» ni presenta la firma como respuesta del
- * banco. La referencia distingue dos cobros del mismo importe y minuto.
+ * F1 (tarea 4, Codex código r1 #10 y r2 #7): lo que firma el gerente, COMPLETO, en el mismo paso del PIN: que revisó la terminal y ese
+ * cobro no aparece — exactamente lo que Avoqado le atribuye después. En la PAX, que el banco dijo «no» sólo lo afirma el reverso de
+ * Blumon, así que el texto nunca dice «no se cobró» ni presenta la firma como respuesta del banco. La referencia distingue dos cobros
+ * del mismo importe y minuto.
  */
 internal fun textoDeLaFirma(cobro: CobroDeclarable, zona: java.time.ZoneId): String =
-    "Gerente: escribe tu PIN para marcar ${AvisoDeCobrosPendientes.pesosYHora(cobro.totalCentavos, cobro.desdeMillis, zona)} " +
-        "(ref ${cobro.referenciaCorta}) como no cobrado."
+    "Gerente: revisé la terminal y este cobro de ${AvisoDeCobrosPendientes.pesosYHora(cobro.totalCentavos, cobro.desdeMillis, zona)} " +
+        "(ref ${cobro.referenciaCorta}) no aparece. Escribe tu PIN para firmarlo."
 
 /** K31 en un solo paso (Codex código r1 #10): qué se firma, el PIN y [Firmar]. Avoqado decide si ese PIN firma. */
 @Composable

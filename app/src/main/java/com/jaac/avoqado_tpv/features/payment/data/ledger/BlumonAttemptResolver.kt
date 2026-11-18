@@ -28,6 +28,11 @@ class BlumonAttemptResolver @Inject constructor(
         val row: PaymentAttemptEntity? = null,
         val serverAnswered: Boolean = false,
         val resultJson: String? = null,
+        /**
+         * F1 (Codex código r2 #5): la duda ya estaba declarada en Avoqado ANTES de esta firma (la consulta trajo el acuse, o el replay
+         * devolvió el de otra persona, p. ej. el de la cajera por la sesión): la pantalla no dice «la firma del gerente».
+         */
+        val yaEstabaDeclarado: Boolean = false,
     )
 
     private val mutex = Mutex()
@@ -152,7 +157,7 @@ class BlumonAttemptResolver @Inject constructor(
     suspend fun declareChecked(venueId: String, attemptId: String, supervisorPin: String? = null): Result = mutex.withLock {
         if (supervisorPin.isNullOrBlank()) return@withLock Result(State.SIGNATURE_REQUIRED)
         val reading = consultLocked(venueId, attemptId, LOS_DOS)
-        if (reading.state != State.PENDING) return@withLock reading
+        if (reading.state != State.PENDING) return@withLock reading.copy(yaEstabaDeclarado = reading.state == State.RELEASED)
         val row = reading.row ?: return@withLock Result(State.UNAVAILABLE)
         if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeDeclararseEnDuda(row, venueId)) return@withLock reading
         // F1: la firma necesita conexión. Si la consulta de ESTA llamada no tuvo respuesta, ni se intenta: A se conserva.
@@ -167,9 +172,12 @@ class BlumonAttemptResolver @Inject constructor(
             val filaJustoAntes = justoAntes.row
             if (justoAntes.state != State.PENDING || filaJustoAntes == null || filaJustoAntes.terminalPaymentRequestId != null ||
                 !ledger.puedeDeclararseEnDuda(filaJustoAntes, venueId))
-                return@withLock justoAntes.copy(serverAnswered = true, resultJson = reading.resultJson)
+                return@withLock justoAntes.copy(
+                    serverAnswered = true, resultJson = reading.resultJson, yaEstabaDeclarado = justoAntes.state == State.RELEASED,
+                )
         }
-        val gerente = when (val envio = enviarDeclaracionRevisada(venueId, attemptId, row, staffId, supervisorPin)) {
+        val envio = enviarDeclaracionRevisada(venueId, attemptId, row, staffId, supervisorPin)
+        val gerente = when (envio) {
             is EnvioRevisado.Firmado -> envio.gerente
             // Sin respuesta: A se conserva y la pantalla dice que la firma necesita conexión.
             EnvioRevisado.SIN_RESPUESTA -> return@withLock reading.copy(serverAnswered = false)
@@ -182,7 +190,11 @@ class BlumonAttemptResolver @Inject constructor(
         }
         val cerrada = ledger.declararSinCobroLocal(attemptId, venueId, gerente, enAvoqado = true)
         // Avoqado sí contestó (firmó): si el CAS no aplicó, la pantalla no debe decir «sin conexión».
-        val despues = inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true, resultJson = reading.resultJson)
+        val despues = inspect(venueId, attemptId, LOS_DOS).copy(
+            serverAnswered = true, resultJson = reading.resultJson,
+            // Codex código r2 #5: el replay devolvió el acuse de OTRA persona (la sesión de la cajera): no firmó este gerente.
+            yaEstabaDeclarado = (envio as? EnvioRevisado.Firmado)?.porElGerente == false,
+        )
         // na1bd1b1: el único hueco que la terminal no puede cerrar sin arriesgar el dinero — la aprobación llegó con el envío en
         // camino. La libreta la conserva (el cierre no aplicó) y Avoqado se quedó con la declaración: se deja el rastro para medirlo.
         // El arreglo de fondo es del SERVIDOR (marcar la declaración contradicha cuando llega el cobro).
@@ -200,7 +212,7 @@ class BlumonAttemptResolver @Inject constructor(
     /** D22: lo que pasó con el envío de la declaración revisada. */
     private sealed interface EnvioRevisado {
         /** F1: Avoqado la guardó FIRMADA: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó y su gerente. */
-        data class Firmado(val gerente: String) : EnvioRevisado
+        data class Firmado(val gerente: String, val porElGerente: Boolean = true) : EnvioRevisado
         /** Sin red, sin respuesta o 5xx: no se sabe si llegó. A se conserva; repetir manda la MISMA declaración. */
         data object SIN_RESPUESTA : EnvioRevisado
         /** Contestó sin el acuse firmado de ESTA declaración (otro 4xx, un servidor anterior, sin firmante): A se conserva. */
@@ -278,7 +290,8 @@ class BlumonAttemptResolver @Inject constructor(
                 declaracion?.get("tipCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.tipCents }
         }.getOrDefault(false)
         val quien = LiberacionDelServidor.quienDeclaroElAcuse(declaracion)
-        return if (esLaNuestra && mismoImporte && quien != null) EnvioRevisado.Firmado(quien) else EnvioRevisado.NO_FIRMADO
+        val porElGerente = runCatching { declaracion?.get("by")?.asString == "SUPERVISOR_PIN" }.getOrDefault(false)
+        return if (esLaNuestra && mismoImporte && quien != null) EnvioRevisado.Firmado(quien, porElGerente) else EnvioRevisado.NO_FIRMADO
     }
 
     /**

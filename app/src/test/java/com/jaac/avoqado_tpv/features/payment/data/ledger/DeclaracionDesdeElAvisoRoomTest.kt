@@ -880,8 +880,69 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.resolveNoInstrument(venue, "a-2", any()) } answers {
             s6Firmada("a-2", thirdArg<NoInstrumentResolutionRequest>().resolutionId, gerente = "cajera", by = "SESSION")
         }
-        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        // Codex código r2 #5: no firmó este gerente: la pantalla dice que ya estaba declarado, no «la firma del gerente».
+        val dijo = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertThat(dijo).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
+        assertThat(dijo!!.texto()).isEqualTo("Ya estaba declarado en Avoqado; ya se puede volver a cobrar.")
+        assertThat(dijo.texto()).doesNotContain("gerente")
         assertThat(dao.getById("a-2")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
+
+        // Y si la consulta de ANTES de mandar el PIN ya trae el acuse viejo, tampoco se le atribuye al gerente.
+        val otro = duda("a-3", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-3") } returns s6Firmada("a-3", idDeLaRevisada("a-3"), gerente = "cajera", by = "SESSION")
+        assertThat(declaracion.declarar(venue, otro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
+        coVerify(exactly = 0) { api.resolveNoInstrument(venue, "a-3", any()) }
+    }
+
+    /**
+     * Codex código r2 #8: «no presentó tarjeta» también exige quién la declaró (`by` = SESSION o SUPERVISOR_PIN). Un acuse sin `by` o
+     * `AUTOMATIC` no cierra A por la consulta.
+     */
+    @Test fun `F1 Codex r2 8 - no presento tarjeta sin by o AUTOMATIC no cierra A`() = runBlocking<Unit> {
+        for ((id, by) in listOf("a-1" to null, "a-2" to "AUTOMATIC")) {
+            duda(id, processor = "BLUMON", serverAnsweredAt = 1L)
+            val conBy = if (by == null) "" else ""","by":"$by""""
+            coEvery { api.getAttemptStatus(venue, id) } returns s6(
+                """{"success":true,"attemptId":"$id","requestId":null,"attempt":{"attemptId":"$id","outcome":"NOT_RECORDED","paymentId":null,""" +
+                    """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+                    """"resolution":{"id":"x","kind":"NO_INSTRUMENT_PRESENTED","staffId":"cajera"$conBy}},"request":null}""",
+            )
+            LedgerServerRecovery(dao, ledger, api).recoverOne(venue, id, System.currentTimeMillis(), estampar = false)
+            assertThat(dao.getById(id)!!.state).isEqualTo("INDETERMINADO")
+        }
+    }
+
+    /** Codex código r2 #6: un veto (evidencia de otra terminal) no se presenta como del banco. */
+    @Test fun `F1 Codex r2 6 - un veto con datos de otra terminal dice que Avoqado tiene evidencia, no que el banco registro algo`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_veto = 'EVIDENCE_CONTRADICTION' WHERE attempt_id = 'a-1'")
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        val texto = declaracion.resultadoDe(venue, cobro).texto()
+        assertThat(texto).isEqualTo("Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.")
+        assertThat(texto).doesNotContain("banco")
+        // Con la aprobación del banco para ESTE intento, sí.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_processor_evidence = 'APPROVED' WHERE attempt_id = 'a-1'")
+        assertThat(declaracion.resultadoDe(venue, cobro)).isEqualTo(HayEvidencia)
+    }
+
+    /**
+     * Codex código r2 #4 (**POS → TPV**): el primer intento de la solicitud quedó «no se cobró», el reintento se registró y después
+     * llegó evidencia bancaria del primero. El cierre de caja lo cuenta: «Por revisar» también lo muestra (sólo para consultar).
+     */
+    @Test fun `F1 Codex r2 4 - un intento con dinero se ve aunque otro de su misma solicitud ya se registro`() = runBlocking<Unit> {
+        val creado = System.currentTimeMillis() - 60_000
+        for ((id, estado) in listOf("a-1" to "DESCARTADA", "a-2" to "REGISTRADO")) dao.insert(
+            PaymentAttemptEntity(
+                attemptId = id, venueId = venue, processor = "ANGELPAY", state = estado, amountCents = 10_000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"r-1"}""", terminalPaymentRequestId = "r-1",
+                createdAt = creado, updatedAt = creado,
+            ),
+        )
+        assertThat(ledger.marcarEvidenciaPositivaDelServidor(venue, "a-1").getOrThrow()).isTrue()
+
+        val fila = declarables().single()
+        assertThat(fila.attemptId).isEqualTo("a-1")
+        assertThat(fila.declarable).isFalse()
     }
 
     /** Las dos declaraciones humanas, por la consulta: «no presentó tarjeta» también se acepta por la sesión (decisión de F1). */
@@ -922,13 +983,134 @@ class DeclaracionDesdeElAvisoRoomTest {
 
         LedgerUnknownRecovery(dao, ledger, verificador).recover(venue, System.currentTimeMillis() + 600_000)
 
+        // Codex código r2 #1: no sólo la marca — la fila se REABRE con la referencia y la autorización, para registrar la venta.
         val fila = dao.getById("a-1")!!
-        assertThat(fila.state).isEqualTo("DESCARTADA")
-        assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
+        assertThat(fila.state).isEqualTo("HOST_RESPONDIO")
+        assertThat(fila.hostApproved).isTrue()
+        assertThat(fila.referenceNumber).isEqualTo("REF")
+        assertThat(fila.authCode).isEqualTo("AUTH")
         assertThat(ledger.retencionDeLaVenta("orden-7")?.attemptId).isEqualTo("a-1")
         assertThat(ledger.openAttempt("a-2", venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-7"}""")).isFalse()
-        assertThat(declarables().single { it.identidad == "a-1" }.declarable).isFalse()
-        assertThat(declaracion.consultarYDecir(venue, declarables().single { it.identidad == "a-1" })).isEqualTo(HayEvidencia)
+    }
+
+    /** El contexto completo, como lo guarda la N86 (Gson del contexto + la afiliación): la recuperación de aprobaciones lo reconstruye. */
+    private fun contextoTpvSola(id: String): String = Gson().toJsonTree(
+        com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.AngelPayPayment(
+            venueId = venue, staffId = "cajera", amount = BigDecimal("100.00"), tip = BigDecimal.ZERO, merchantAccountId = "merchant",
+            deviceSerialNumber = "terminal", idempotencyKey = id, orderId = "orden-7",
+        ),
+    ).asJsonObject.apply { addProperty("processorAffiliation", "afiliacion") }.toString()
+
+    /**
+     * Codex código r2 #1, orden O1 con reinicio (`pasada-aprobado-tardio.md`, E1 × O1): la app se reinicia tras el resultado incierto y el
+     * gerente firma ANTES de la primera consulta a AngelPay. Antes la fila declarada ya no se consultaba: otra tarjeta de la cuenta
+     * entraba y, si el banco sí había cobrado, nadie registraba la venta (en TPV SOLA el aviso de AngelPay no crea nada). Ahora la
+     * recuperación la sigue consultando; con «cobrado» la reabre con referencia y autorización, la cuenta queda frenada y
+     * `LedgerApprovalRecovery` registra UNA venta con la llave del intento (el SERVIDOR deduplica por esa llave).
+     */
+    @Test fun `F1 Codex r2 1 - O1 con reinicio - AngelPay sigue consultando la fila firmada, la reabre y se registra UNA venta`() = runBlocking<Unit> {
+        val creado = System.currentTimeMillis() - 10 * 60_000
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "a-1", venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
+                recordingRoute = "ORDER", paymentContextJson = contextoTpvSola("a-1"), serverAnsweredAt = 1L, createdAt = creado, updatedAt = creado,
+            ),
+        )
+        val reiniciada = libreta()
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
+        assertThat(declaracionCon(reiniciada).declarar(venue, declarables(reiniciada).single(), pinDelGerente))
+            .isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(reiniciada.retencionDeLaVenta("orden-7")).isNull() // lo decidió una persona
+
+        val verificador = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
+        coEvery { verificador.verificar("a-1", "terminal", any(), any(), any(), "afiliacion") } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro.Cobrado("AUTH", "REF", null)
+        LedgerUnknownRecovery(dao, reiniciada, verificador).recover(venue, System.currentTimeMillis() + 600_000)
+
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("HOST_RESPONDIO")
+        assertThat(fila.hostApproved).isTrue()
+        assertThat(fila.referenceNumber).isEqualTo("REF")
+        assertThat(fila.authCode).isEqualTo("AUTH")
+        assertThat(fila.serverOutcome).isNull()
+        assertThat(fila.lastError).isEqualTo("aprobado_tras_declaracion:declarado_sin_cobro:gerente-1:avoqado")
+        assertThat(reiniciada.retencionDeLaVenta("orden-7")?.attemptId).isEqualTo("a-1")
+        assertThat(reiniciada.openAttempt("a-2", venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-7"}""")).isFalse()
+        assertThat(reiniciada.retencionDelAparato()).isNull() // la fila reabierta no aparta la terminal
+
+        // El camino de siempre: una venta, con la llave del intento, la referencia y la autorización. La segunda pasada no repite.
+        val fast = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder>()
+        val order = mockk<com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder>()
+        val llaves = mutableListOf<String?>()
+        coEvery { order.recordPayment(any(), any(), "AUTH", "REF") } answers {
+            llaves += firstArg<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>().idempotencyKey
+            Result.success(com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt("payment", "url", "key", BigDecimal("100.00"), BigDecimal("0.00")))
+        }
+        val despues = System.currentTimeMillis() + 900_000
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover(venue, despues)).isEqualTo(1)
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover(venue, despues + 1)).isEqualTo(0)
+        assertThat(llaves).containsExactly("a-1")
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("REGISTRADO")
+    }
+
+    /** E1: lo que no cerró una persona (la ventana, «no salió al banco», un rechazo) no se vuelve a consultar. */
+    @Test fun `F1 Codex r2 1 - lo que no cerro una persona no se vuelve a consultar en AngelPay`() = runBlocking<Unit> {
+        val creado = System.currentTimeMillis() - 10 * 60_000
+        for ((id, ajuste) in listOf(
+            "v" to "server_outcome = 'RELEASED_NO_EVIDENCE'",
+            "s" to "last_error = 'sin_autorizacion:sdk'",
+            "r" to "host_approved = 0, last_error = 'declarado_sin_cobro:gerente-1:avoqado'",
+        )) {
+            dao.insert(
+                PaymentAttemptEntity(
+                    attemptId = id, venueId = venue, processor = "ANGELPAY", state = "DESCARTADA", amountCents = 10_000, tipCents = 0,
+                    recordingRoute = "ORDER", paymentContextJson = contextoTpvSola(id), createdAt = creado, updatedAt = creado,
+                ),
+            )
+            db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET $ajuste WHERE attempt_id = '$id'")
+        }
+        val verificador = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
+        LedgerUnknownRecovery(dao, ledger, verificador).recover(venue, System.currentTimeMillis() + 600_000)
+        coVerify(exactly = 0) { verificador.verificar(any(), any(), any(), any(), any(), any()) }
+        for (id in listOf("v", "s", "r")) assertThat(dao.getById(id)!!.state).isEqualTo("DESCARTADA")
+    }
+
+    /**
+     * Codex código r2 #1, rama `nad53a00` (E2): la respuesta del banco EN ESTE PROCESO llega para una venta de la PAX que una persona
+     * ya declaró. Se reabre con lo que dijo el banco (cuenta frenada, la pantalla la registra). Si después el chip revierte, pasa a la
+     * duda de D5, que el gerente vuelve a ver y firmar: no queda la marca que trababa el cierre sin salida (Codex r19).
+     */
+    @Test fun `F1 Codex r2 1 - E2 la aprobacion del banco sobre una venta declarada la reabre, y si el chip revierte vuelve a la duda`() = runBlocking<Unit> {
+        val creado = System.currentTimeMillis() - 60_000
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "a-1", venueId = venue, processor = "BLUMON", state = "DESCARTADA", amountCents = 10_000, tipCents = 0,
+                recordingRoute = "ORDER", paymentContextJson = """{"orderId":"orden-7"}""", serverAnsweredAt = 1L,
+                lastError = "declarado_sin_cobro:gerente-1:avoqado", createdAt = creado, updatedAt = creado,
+            ),
+        )
+        assertThat(ledger.markHostResponded("a-1", approved = true, operationId = "op-1", referenceNumber = "REF", authCode = "AUTH")).isTrue()
+        val reabierta = dao.getById("a-1")!!
+        assertThat(reabierta.state).isEqualTo("HOST_RESPONDIO")
+        assertThat(reabierta.referenceNumber).isEqualTo("REF")
+        assertThat(ledger.retencionDeLaVenta("orden-7")?.attemptId).isEqualTo("a-1")
+
+        assertThat(ledger.markChipRechazoTrasAprobacion("a-1")).isEqualTo(PaymentAttemptLedger.ChipRechazo.EN_DUDA)
+        val duda = dao.getById("a-1")!!
+        assertThat(duda.state).isEqualTo("INDETERMINADO")
+        assertThat(duda.hostApproved).isNull()
+        assertThat(declarables().single { it.identidad == "a-1" }.declarable).isTrue() // el gerente la vuelve a firmar
+
+        // Un rechazo explícito del banco no se reabre con una aprobación: se queda como estaba.
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = "a-2", venueId = venue, processor = "BLUMON", state = "DESCARTADA", amountCents = 10_000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = "{}", hostApproved = false, createdAt = creado, updatedAt = creado,
+            ),
+        )
+        assertThat(ledger.markHostResponded("a-2", approved = true, operationId = "op-2", referenceNumber = "REF2", authCode = "AUTH2")).isFalse()
+        assertThat(dao.getById("a-2")!!.state).isEqualTo("DESCARTADA")
     }
 
     /**

@@ -71,6 +71,8 @@ class LiberacionLocalDelServidorRoomTest {
         addProperty("kind", kind)
         addProperty("acceptedAt", "2026-09-22T12:00:00.000Z")
         addProperty("by", "SESSION")
+        // F1 (Codex código r2 #8): una declaración de una persona trae quién la declaró, como el acuse real del servidor.
+        addProperty("staffId", "cajera")
     }
 
     /** Respuesta de S6 para un cobro LOCAL: sin `requestId` y sin `request` — el servidor no tiene solicitud que proyectar. */

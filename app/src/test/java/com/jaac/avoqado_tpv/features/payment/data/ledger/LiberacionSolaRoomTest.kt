@@ -964,16 +964,26 @@ class LiberacionSolaRoomTest {
     // ── 4 · Lo que publica el servidor ─────────────────────────────────────────────────────────
 
     @Test fun `S6 con la declaracion AUTOMATICA se lee como liberacion por ventana · una clase desconocida no libera`() {
-        val conKind = { kind: String ->
+        // F1 (Codex código r2 #8): una declaración de una PERSONA lleva quién la declaró (`by`); la automática, `AUTOMATIC`.
+        val conKind = { kind: String, by: String? ->
             TerminalAttemptStatusResponse(
                 success = true, attemptId = "l",
-                attempt = TerminalAttemptResultDto(attemptId = "l", outcome = "NOT_RECORDED", resolution = JsonObject().apply { addProperty("kind", kind) }),
+                attempt = TerminalAttemptResultDto(attemptId = "l", outcome = "NOT_RECORDED", resolution = JsonObject().apply {
+                    addProperty("kind", kind)
+                    addProperty("staffId", "s1")
+                    if (by != null) addProperty("by", by)
+                }),
             )
         }
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_BANK_TRACE_AFTER_WINDOW"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("OTRA_COSA"))).isNull()
-        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_BANK_TRACE_AFTER_WINDOW"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
-        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_BANK_TRACE_AFTER_WINDOW", "AUTOMATIC"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED", "SESSION"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("OTRA_COSA", "SESSION"))).isNull()
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_BANK_TRACE_AFTER_WINDOW", "AUTOMATIC"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED", "SUPERVISOR_PIN"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        // Codex código r2 #8: «no presentó tarjeta» sin `by` o con `AUTOMATIC` no libera, ni por S6 ni por el POST.
+        for (by in listOf(null, "AUTOMATIC")) {
+            assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED", by))).isNull()
+            assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED", by))).isNull()
+        }
     }
 }

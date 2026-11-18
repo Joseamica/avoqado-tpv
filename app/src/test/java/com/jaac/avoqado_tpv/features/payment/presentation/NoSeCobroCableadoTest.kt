@@ -79,7 +79,8 @@ class NoSeCobroCableadoTest {
         // F1 (Codex código r1 #10): un solo paso — el PIN del gerente y [Firmar] juntos; sin «Continuar» ni pantalla de decisión aparte.
         for (texto in listOf(
             "¿Cuál vas a revisar?",
-            "Gerente: escribe tu PIN para marcar",
+            "Gerente: revisé la terminal y este cobro de",
+            "no aparece. Escribe tu PIN para firmarlo.",
             "PIN de gerente",
             "Ese PIN no es de un gerente con permiso.",
             "Queda en Avoqado con tu nombre y la hora. Necesita internet.",

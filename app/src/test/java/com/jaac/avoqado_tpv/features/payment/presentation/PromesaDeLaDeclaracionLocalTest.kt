@@ -57,8 +57,9 @@ class PromesaDeLaDeclaracionLocalTest {
             val texto = textoDeLaFirma(cobro, zona)
             assertThat(texto).contains("$10.00")
             assertThat(texto).contains("18:00")
-            assertThat(texto).contains("Gerente: escribe tu PIN para marcar")
-            assertThat(texto).contains("como no cobrado")
+            // Codex código r2 #7: la declaración exacta que firma.
+            assertThat(texto).contains("Gerente: revisé la terminal y este cobro de")
+            assertThat(texto).contains("no aparece. Escribe tu PIN para firmarlo.")
             assertThat(texto).doesNotContain("sólo en esta terminal")
             assertThat(texto).doesNotContain("no se cobró")
         }

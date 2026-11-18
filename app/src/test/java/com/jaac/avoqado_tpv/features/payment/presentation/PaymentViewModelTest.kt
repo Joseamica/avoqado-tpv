@@ -2405,6 +2405,7 @@ class PaymentViewModelTest {
         val viewModel = createViewModel()
         try {
             coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            cobroEnPantalla(viewModel, "idem-1")
             estadoDe(viewModel).value = PaymentState.PrintError(
                 message = "Sin papel",
                 previousState = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null),
@@ -2420,7 +2421,9 @@ class PaymentViewModelTest {
 
             viewModel.handleOfflineQueueOutcome(
                 queuedPayment = enCola,
-                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a"),
+                // Codex mac r2 #3: el cobro real lleva su llave en el contexto, y es la del cobro en pantalla.
+                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a")
+                    .copy(idempotencyKey = "idem-1"),
                 recordError = RuntimeException("HTTP 502"),
                 referenceNumber = "873257481453",
                 orderIdForFlow = null,
@@ -2580,6 +2583,7 @@ class PaymentViewModelTest {
         val viewModel = createViewModel()
         try {
             coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            cobroEnPantalla(viewModel, "idem-1")
             estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = reciboRegistrado)
             val enCola = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
                 queueId = 0, referenceNumber = "873257481453", venueId = testVenueId, staffId = testStaffId,
@@ -2592,7 +2596,9 @@ class PaymentViewModelTest {
 
             viewModel.handleOfflineQueueOutcome(
                 queuedPayment = enCola,
-                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a"),
+                // Codex mac r2 #3: el cobro real lleva su llave en el contexto, y es la del cobro en pantalla.
+                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a")
+                    .copy(idempotencyKey = "idem-1"),
                 recordError = RuntimeException("HTTP 502"),
                 referenceNumber = "873257481453",
                 orderIdForFlow = null,

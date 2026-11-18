@@ -470,7 +470,7 @@ class SecureStorage @Inject constructor(
      * @return Venue legal name or null if not set
      */
     fun getVenueLegalName(): String? {
-        return encryptedPrefs.getString(KEY_VENUE_LEGAL_NAME, null)
+        return datoFiscalDelNegocio(encryptedPrefs.getString(KEY_VENUE_LEGAL_NAME, null), getVenueFiscalDe(), getVenueId())
     }
 
     /**
@@ -490,7 +490,7 @@ class SecureStorage @Inject constructor(
      * @return Venue RFC or null if not set
      */
     fun getVenueRfc(): String? {
-        return encryptedPrefs.getString(KEY_VENUE_RFC, null)
+        return datoFiscalDelNegocio(encryptedPrefs.getString(KEY_VENUE_RFC, null), getVenueFiscalDe(), getVenueId())
     }
 
     /**
@@ -1791,3 +1791,10 @@ class SecureStorage @Inject constructor(
         Timber.d("🔶 [AngelPay] Credentials cleared")
     }
 }
+
+/**
+ * na7522fd (Codex mac r2 #1): la razón social y el RFC guardados sólo se leen si son de ESTE negocio. `fiscalDe` es el negocio
+ * cuyo emisor de Facturación se guardó (null = las columnas de siempre, como antes del encargo 1df453).
+ */
+fun datoFiscalDelNegocio(guardado: String?, fiscalDe: String?, negocioActual: String?): String? =
+    if (fiscalDe != null && fiscalDe != negocioActual) null else guardado

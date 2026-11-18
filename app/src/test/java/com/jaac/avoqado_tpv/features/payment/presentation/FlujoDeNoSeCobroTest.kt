@@ -6,7 +6,6 @@ import com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
 import com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDeLaDeclaracion
 import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.Aviso
 import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.Cerrado
-import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.Confirmar
 import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.Consultando
 import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.Elegir
 import com.jaac.avoqado_tpv.features.payment.presentation.PasoDeNoSeCobro.PedirPin
@@ -20,8 +19,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 /**
- * F1 mínimo, tarea 4 (17-nov): «Por revisar» es la entrada del GERENTE. Elige la fila exacta, se identifica con su PIN y sólo
- * después ve la decisión; la firma va atada a ESA fila aunque la lista cambie. Sin Compose: las pruebas de JVM del repo no tienen
+ * F1 mínimo, tarea 4 (17-nov): «Por revisar» es la entrada del GERENTE. Elige la fila exacta y firma con su PIN en UN solo paso
+ * (Codex código r1 #10): el paso dice qué se firma y [Firmar] manda el PIN; la firma va atada a ESA fila aunque la lista cambie. Sin Compose: las pruebas de JVM del repo no tienen
  * `createComposeRule` (ver `AngelPayPaymentScreenSalidaTest`), así que los diálogos sólo pintan [PasoDeNoSeCobro].
  */
 class FlujoDeNoSeCobroTest {
@@ -41,11 +40,10 @@ class FlujoDeNoSeCobroTest {
         coEvery { declaracion.declarar(venue, cobro, conPin) } returns resultado
     }
 
-    /** Hasta el paso de la decisión: elegir, consultar e identificarse. */
-    private fun TestScope.hastaConfirmar(flujo: FlujoDeNoSeCobro, cobro: CobroDeclarable) {
+    /** Hasta el paso del PIN: elegir y consultar. */
+    private fun TestScope.hastaElPin(flujo: FlujoDeNoSeCobro, cobro: CobroDeclarable) {
         flujo.tocar(listOf(cobro))
         runCurrent()
-        flujo.identificar(pin)
     }
 
     @Test fun `con un cobro, tras consultar pide PRIMERO el PIN del gerente`() = runTest {
@@ -72,23 +70,35 @@ class FlujoDeNoSeCobroTest {
         assertThat(flujo.paso.value).isEqualTo(PedirPin(otro))
     }
 
-    @Test fun `el PIN precede a la decision - con PIN valido se ve la decision, y firmar manda ESE PIN por ESA fila`() = runTest {
+    @Test fun `Codex r1 10 - un solo paso - Firmar manda ESE PIN por ESA fila, sin pantalla de decision aparte`() = runTest {
         prepara(uno, null)
         declara(uno, ResultadoDeLaDeclaracion.Declarado)
         val flujo = flujo()
 
-        hastaConfirmar(flujo, uno)
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(uno, pin = pin))
+        hastaElPin(flujo, uno)
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(uno))
         coVerify(exactly = 0) { declaracion.declarar(any(), any(), any()) }
 
-        flujo.confirmar()
+        flujo.firmar(pin)
         runCurrent()
         assertThat(flujo.paso.value).isEqualTo(Cerrado)
         coVerify(exactly = 1) { declaracion.declarar(venue, uno, pin) }
     }
 
-    @Test fun `el PIN no se ve en el texto del paso`() {
-        assertThat(Confirmar(uno, pin = pin).toString()).doesNotContain(pin)
+    @Test fun `el PIN no vive en el paso`() = runTest {
+        prepara(uno, null)
+        val puerta = CompletableDeferred<ResultadoDeLaDeclaracion?>()
+        coEvery { declaracion.declarar(venue, uno, pin) } coAnswers { puerta.await() }
+        val flujo = flujo()
+        hastaElPin(flujo, uno)
+        flujo.firmar(pin)
+        runCurrent()
+        assertThat(flujo.paso.value.toString()).doesNotContain(pin)
+    }
+
+    @Test fun `el paso del PIN dice que se firma, por cuanto y a que hora - el cajero no ve otra decision`() {
+        val texto = textoDeLaFirma(CobroDeclarable("a-1", null, 12_000, 0, 1), java.time.ZoneOffset.UTC)
+        assertThat(texto).isEqualTo("Gerente: escribe tu PIN para marcar \$120.00 de las 00:00 (ref A1) como no cobrado.")
     }
 
     @Test fun `P1 F1 - dos filas del mismo importe y minuto, aparece B y la lista cambia de orden mientras teclea - solo se firma A`() = runTest {
@@ -103,12 +113,11 @@ class FlujoDeNoSeCobroTest {
         flujo.vigentesCambiaron(listOf(b, a))
         assertThat(flujo.paso.value).isEqualTo(PedirPin(a))
 
-        flujo.identificar(pin)
         flujo.vigentesCambiaron(listOf(a, b))
         flujo.vigentesCambiaron(listOf(b, a))
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(a, pin = pin))
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(a))
 
-        flujo.confirmar()
+        flujo.firmar(pin)
         runCurrent()
         coVerify(exactly = 1) { declaracion.declarar(venue, a, pin) }
         coVerify(exactly = 0) { declaracion.declarar(venue, b, any()) }
@@ -182,17 +191,17 @@ class FlujoDeNoSeCobroTest {
         val puerta = CompletableDeferred<ResultadoDeLaDeclaracion?>()
         coEvery { declaracion.declarar(venue, uno, pin) } coAnswers { puerta.await() }
         val flujo = flujo()
-        hastaConfirmar(flujo, uno)
+        hastaElPin(flujo, uno)
 
-        flujo.confirmar()
+        flujo.firmar(pin)
         runCurrent()
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(uno, enviando = true, pin = pin))
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(uno, enviando = true))
 
         // Un segundo toque y Cancelar no hacen nada con el envío en vuelo.
-        flujo.confirmar()
+        flujo.firmar(pin)
         flujo.cerrar()
         runCurrent()
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(uno, enviando = true, pin = pin))
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(uno, enviando = true))
         coVerify(exactly = 1) { declaracion.declarar(venue, uno, pin) }
 
         puerta.complete(ResultadoDeLaDeclaracion.Declarado)
@@ -208,13 +217,11 @@ class FlujoDeNoSeCobroTest {
         flujo.tocar(listOf(uno))
         runCurrent()
 
-        flujo.identificar("0000")
-        flujo.confirmar()
+        flujo.firmar("0000")
         runCurrent()
         assertThat(flujo.paso.value).isEqualTo(PedirPin(uno, pinRechazado = true))
 
-        flujo.identificar(pin)
-        flujo.confirmar()
+        flujo.firmar(pin)
         runCurrent()
         assertThat(flujo.paso.value).isEqualTo(Cerrado)
     }
@@ -225,7 +232,7 @@ class FlujoDeNoSeCobroTest {
         flujo.tocar(listOf(uno))
         runCurrent()
 
-        for (malo in listOf("", "123", "12345678901", "12a4", " 1234")) flujo.identificar(malo)
+        for (malo in listOf("", "123", "12345678901", "12a4", " 1234")) flujo.firmar(malo)
 
         assertThat(flujo.paso.value).isEqualTo(PedirPin(uno))
         coVerify(exactly = 0) { declaracion.declarar(any(), any(), any()) }
@@ -241,15 +248,15 @@ class FlujoDeNoSeCobroTest {
         val casos = mapOf(
             ResultadoDeLaDeclaracion.SinRed to "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva.",
             ResultadoDeLaDeclaracion.UsaElPos to "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS.",
-            ResultadoDeLaDeclaracion.HayEvidencia to "Avoqado tiene evidencia de este cobro: no lo declares ni lo vuelvas a cobrar.",
+            ResultadoDeLaDeclaracion.HayEvidencia to "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
             ResultadoDeLaDeclaracion.SinPermiso to "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente.",
             ResultadoDeLaDeclaracion.Rechazado("Lo que dijo el servidor") to "Lo que dijo el servidor",
         )
         for ((resultado, texto) in casos) {
             declara(uno, resultado)
             val flujo = flujo()
-            hastaConfirmar(flujo, uno)
-            flujo.confirmar()
+            hastaElPin(flujo, uno)
+            flujo.firmar(pin)
             runCurrent()
             assertThat(flujo.paso.value).isEqualTo(Aviso(texto))
 
@@ -262,18 +269,18 @@ class FlujoDeNoSeCobroTest {
         prepara(uno, null)
         declara(uno, null)
         val flujo = flujo()
-        hastaConfirmar(flujo, uno)
+        hastaElPin(flujo, uno)
 
-        flujo.confirmar()
+        flujo.firmar(pin)
         runCurrent()
 
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(uno, pin = pin))
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(uno))
     }
 
     @Test fun `cancelar cierra sin declarar y olvida el PIN`() = runTest {
         prepara(uno, null)
         val flujo = flujo()
-        hastaConfirmar(flujo, uno)
+        hastaElPin(flujo, uno)
 
         flujo.cerrar()
 
@@ -296,20 +303,20 @@ class FlujoDeNoSeCobroTest {
         prepara(uno, null)
         coEvery { declaracion.declarar(venue, uno, pin) } coAnswers { CompletableDeferred<ResultadoDeLaDeclaracion?>().await() }
         val flujo = flujo()
-        hastaConfirmar(flujo, uno)
-        flujo.confirmar()
+        hastaElPin(flujo, uno)
+        flujo.firmar(pin)
         runCurrent()
 
         flujo.vigentesCambiaron(emptyList())
-        assertThat(flujo.paso.value).isEqualTo(Confirmar(uno, enviando = true, pin = pin))
+        assertThat(flujo.paso.value).isEqualTo(PedirPin(uno, enviando = true))
     }
 
     @Test fun `el aviso no se va por la lista - hay que leerlo`() = runTest {
         prepara(uno, null)
         declara(uno, ResultadoDeLaDeclaracion.HayEvidencia)
         val flujo = flujo()
-        hastaConfirmar(flujo, uno)
-        flujo.confirmar()
+        hastaElPin(flujo, uno)
+        flujo.firmar(pin)
         runCurrent()
 
         flujo.vigentesCambiaron(emptyList())

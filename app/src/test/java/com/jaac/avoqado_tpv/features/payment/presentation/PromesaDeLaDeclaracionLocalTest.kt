@@ -47,18 +47,18 @@ class PromesaDeLaDeclaracionLocalTest {
         assertThat(textoDelIntentoCerrado(null)).isEqualTo("Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar.")
     }
 
-    // F1 (tarea 4): la firma del gerente va siempre a Avoqado y necesita internet; ya no hay «sólo en esta terminal».
-    @Test fun `F1 la confirmacion del gerente dice que firma, que queda en Avoqado y que necesita internet - en los dos caminos`() {
+    // F1 (tarea 4 y Codex código r1 #10): lo que firma el gerente es SU marca, en el mismo paso del PIN; nunca «el banco dijo no».
+    @Test fun `F1 el paso del gerente dice que el marca el cobro, por cuanto y a que hora - en los dos caminos`() {
         val zona = java.time.ZoneOffset.ofHours(-6)
         for (cobro in listOf(
             CobroDeclarable("a1", requestId = null, totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1),
             CobroDeclarable("a1", requestId = "req-1", totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1),
         )) {
-            val texto = textoDeLaConfirmacion(cobro, zona)
+            val texto = textoDeLaFirma(cobro, zona)
             assertThat(texto).contains("$10.00")
-            assertThat(texto).contains("Firmas que revisaste la terminal")
-            assertThat(texto).contains("queda en Avoqado con tu nombre y la hora")
-            assertThat(texto).contains("necesita internet")
+            assertThat(texto).contains("18:00")
+            assertThat(texto).contains("Gerente: escribe tu PIN para marcar")
+            assertThat(texto).contains("como no cobrado")
             assertThat(texto).doesNotContain("sólo en esta terminal")
             assertThat(texto).doesNotContain("no se cobró")
         }
@@ -71,6 +71,6 @@ class PromesaDeLaDeclaracionLocalTest {
      */
     @Test fun `P1 el aviso del Inicio en un cobro del POS ya no promete que el aviso del banco lo registra`() {
         val remoto = CobroDeclarable("a1", requestId = "req-1", totalCentavos = 1000, desdeMillis = 0, serverAnsweredAt = 1)
-        assertThat(textoDeLaConfirmacion(remoto, java.time.ZoneOffset.ofHours(-6))).doesNotContain("se registra como cobrado")
+        assertThat(textoDeLaFirma(remoto, java.time.ZoneOffset.ofHours(-6))).doesNotContain("se registra como cobrado")
     }
 }

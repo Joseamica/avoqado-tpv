@@ -76,17 +76,17 @@ class NoSeCobroCableadoTest {
     }
 
     @Test fun `los textos de los dialogos son los acordados`() {
-        // F1 (tarea 4): primero el PIN del gerente (K31), después la decisión: «Firmar».
+        // F1 (Codex código r1 #10): un solo paso — el PIN del gerente y [Firmar] juntos; sin «Continuar» ni pantalla de decisión aparte.
         for (texto in listOf(
             "¿Cuál vas a revisar?",
-            "Gerente: escribe tu PIN",
+            "Gerente: escribe tu PIN para marcar",
             "PIN de gerente",
-            "Continuar",
-            "Firma del gerente",
+            "Ese PIN no es de un gerente con permiso.",
+            "Queda en Avoqado con tu nombre y la hora. Necesita internet.",
             "Firmar",
             "Cancelar",
         )) assertThat(dialogos).contains(texto)
-        assertThat(dialogos).doesNotContain("Sí, no se cobró")
+        for (texto in listOf("Sí, no se cobró", "\"Continuar\"", "Firma del gerente", "ConfirmacionDialog")) assertThat(dialogos).doesNotContain(texto)
     }
 
     @Test fun `el campo del PIN acepta lo mismo que el servidor y se escribe como contrasena`() {
@@ -100,15 +100,15 @@ class NoSeCobroCableadoTest {
         val previas = Regex("""@Preview\([^)]*widthDp = 360, heightDp = 640[^)]*\)\s*@Composable\s*private fun (\w+)\(""")
             .findAll(dialogos).map { it.groupValues[1] }.toList()
         assertThat(previas).containsAtLeast(
-            "BannerConBotonPreview", "ListaPreview", "ConfirmacionPreview", "PinPreview", "AvisoPreview",
+            "BannerConBotonPreview", "ListaPreview", "PinPreview", "AvisoPreview",
         )
     }
 
-    @Test fun `el PIN se confirma tambien con la palomita del teclado - con el teclado abierto no se ve Confirmar`() {
+    @Test fun `el PIN se firma tambien con la palomita del teclado - con el teclado abierto no se ve Firmar`() {
         // QA en la N86, 3-nov: la palomita no hacía nada y el gerente tenía que cerrar el teclado para encontrar el botón.
         val fuente = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/NoSeCobroDesdeElAviso.kt").readText()
         com.google.common.truth.Truth.assertThat(fuente).contains("imeAction = ImeAction.Done")
-        com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin)) onIdentificar(pin) }")
+        com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin)) onFirmar(pin) }")
     }
     // ── F1 mínimo, tarea 5 (17-nov): en la PAX el resultado incierto sólo muestra el importe y [Seguir] ──────────────────────
 

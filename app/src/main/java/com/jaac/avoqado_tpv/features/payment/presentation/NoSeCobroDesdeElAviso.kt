@@ -63,17 +63,17 @@ internal fun pinDeGerenteValido(pin: String): Boolean = pin.length in PIN_MINIMO
 
 /**
  * Lo que pinta la revisión del gerente (F1 mínimo, tarea 4). Los diálogos sólo dibujan esto: lo que decide vive en [FlujoDeNoSeCobro].
- * Orden: elegir la fila → consultar → PIN del gerente (identificación) → la decisión («Firmar») → la respuesta.
+ * Orden: elegir la fila → consultar → UN paso con el PIN del gerente y [Firmar] (Codex código r1 #10) → la respuesta.
  */
 internal sealed interface PasoDeNoSeCobro {
     data object Cerrado : PasoDeNoSeCobro
     data object Consultando : PasoDeNoSeCobro
     data class Elegir(val cobros: List<CobroDeclarable>) : PasoDeNoSeCobro
-    data class PedirPin(val cobro: CobroDeclarable, val pinRechazado: Boolean = false) : PasoDeNoSeCobro
-    /** La decisión, con el gerente ya identificado. [pin] vive sólo en memoria y nunca sale en el texto del paso. */
-    data class Confirmar(val cobro: CobroDeclarable, val enviando: Boolean = false, val pin: String? = null) : PasoDeNoSeCobro {
-        override fun toString(): String = "Confirmar(cobro=$cobro, enviando=$enviando)"
-    }
+    /**
+     * El paso del gerente: dice qué se firma ([textoDeLaFirma]) y [Firmar] manda el PIN. Avoqado decide si ese PIN firma; si no, se
+     * vuelve aquí con [pinRechazado]. El PIN nunca vive en el paso: sólo viaja en la llamada.
+     */
+    data class PedirPin(val cobro: CobroDeclarable, val pinRechazado: Boolean = false, val enviando: Boolean = false) : PasoDeNoSeCobro
     data class Aviso(val mensaje: String) : PasoDeNoSeCobro
 }
 
@@ -107,23 +107,20 @@ internal class FlujoDeNoSeCobro(
         }
     }
 
-    /** El gerente se identifica con su PIN; sólo entonces ve la decisión. Un PIN fuera de la regla del servidor no avanza. */
-    fun identificar(pin: String) {
+    /**
+     * [Firmar] (Codex código r1 #10): la declaración de ESA fila con ESE PIN, en el mismo paso del PIN. Un PIN fuera de la regla del
+     * servidor no se manda; con un envío en vuelo no hace nada (un segundo toque no manda otro). Si Avoqado dice que ese PIN no firma,
+     * se vuelve al mismo paso con el aviso.
+     */
+    fun firmar(pin: String) {
         val paso = _paso.value as? PasoDeNoSeCobro.PedirPin ?: return
-        if (!pinDeGerenteValido(pin)) return
-        _paso.value = PasoDeNoSeCobro.Confirmar(paso.cobro, pin = pin)
-    }
-
-    /** «Firmar»: la declaración de ESA fila con ESE PIN. Con un envío en vuelo no hace nada: un segundo toque no se manda. */
-    fun confirmar() {
-        val paso = _paso.value as? PasoDeNoSeCobro.Confirmar ?: return
-        val pin = paso.pin ?: return
-        if (paso.enviando) return
-        _paso.value = paso.copy(enviando = true)
+        if (paso.enviando || !pinDeGerenteValido(pin)) return
+        val enviando = PasoDeNoSeCobro.PedirPin(paso.cobro, enviando = true)
+        _paso.value = enviando
         alcance.launch {
             _paso.value = when (val resultado = declaracion.declarar(venueId, paso.cobro, pin)) {
                 // Otro envío seguía en vuelo: no se afirma nada y se puede volver a tocar.
-                null -> paso.copy(enviando = false)
+                null -> PasoDeNoSeCobro.PedirPin(paso.cobro)
                 ResultadoDeLaDeclaracion.Declarado -> PasoDeNoSeCobro.Cerrado
                 ResultadoDeLaDeclaracion.PidePin -> PasoDeNoSeCobro.PedirPin(paso.cobro, pinRechazado = true)
                 else -> PasoDeNoSeCobro.Aviso(resultado.texto())
@@ -131,10 +128,10 @@ internal class FlujoDeNoSeCobro(
         }
     }
 
-    /** Cancelar olvida el PIN (vivía sólo en el paso). Con una consulta o un envío en vuelo no se cierra. */
+    /** Cancelar cierra (el PIN vivía sólo en el campo). Con una consulta o un envío en vuelo no se cierra. */
     fun cerrar() {
         val paso = _paso.value
-        val ocupado = paso is PasoDeNoSeCobro.Consultando || (paso is PasoDeNoSeCobro.Confirmar && paso.enviando)
+        val ocupado = paso is PasoDeNoSeCobro.Consultando || (paso is PasoDeNoSeCobro.PedirPin && paso.enviando)
         if (!ocupado) _paso.value = PasoDeNoSeCobro.Cerrado
     }
 
@@ -146,8 +143,7 @@ internal class FlujoDeNoSeCobro(
         fun sigue(cobro: CobroDeclarable) = vigentes.any { it.identidad == cobro.identidad && it.declarable }
         when (val paso = _paso.value) {
             is PasoDeNoSeCobro.Elegir -> _paso.value = if (vigentes.isEmpty()) PasoDeNoSeCobro.Cerrado else PasoDeNoSeCobro.Elegir(vigentes)
-            is PasoDeNoSeCobro.PedirPin -> if (!sigue(paso.cobro)) mostrarResultado(paso.cobro)
-            is PasoDeNoSeCobro.Confirmar -> if (!paso.enviando && !sigue(paso.cobro)) mostrarResultado(paso.cobro)
+            is PasoDeNoSeCobro.PedirPin -> if (!paso.enviando && !sigue(paso.cobro)) mostrarResultado(paso.cobro)
             else -> Unit
         }
     }
@@ -256,9 +252,7 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
             }
         }
     }
-    DialogoDeNoSeCobro(
-        paso, zona, onElegir = flujo::elegir, onIdentificar = flujo::identificar, onConfirmar = flujo::confirmar, onCerrar = flujo::cerrar,
-    )
+    DialogoDeNoSeCobro(paso, zona, onElegir = flujo::elegir, onFirmar = flujo::firmar, onCerrar = flujo::cerrar)
 }
 
 /** El texto arriba y los botones abajo: los tres no caben junto al texto en los 360 dp de la PAX. */
@@ -301,16 +295,15 @@ private fun DialogoDeNoSeCobro(
     paso: PasoDeNoSeCobro,
     zona: java.time.ZoneId,
     onElegir: (CobroDeclarable) -> Unit,
-    onIdentificar: (String) -> Unit,
-    onConfirmar: () -> Unit,
+    onFirmar: (String) -> Unit,
     onCerrar: () -> Unit,
 ) {
     when (paso) {
         PasoDeNoSeCobro.Cerrado -> Unit
         PasoDeNoSeCobro.Consultando -> ConsultandoDialog()
         is PasoDeNoSeCobro.Elegir -> ListaDeCobrosDialog(paso.cobros, zona, onElegir, onCerrar)
-        is PasoDeNoSeCobro.PedirPin -> PinDeGerenteDialog(renglon(paso.cobro, zona), paso.pinRechazado, onIdentificar, onCerrar)
-        is PasoDeNoSeCobro.Confirmar -> ConfirmacionDialog(paso.cobro, zona, paso.enviando, onConfirmar, onCerrar)
+        is PasoDeNoSeCobro.PedirPin ->
+            PinDeGerenteDialog(textoDeLaFirma(paso.cobro, zona), paso.pinRechazado, paso.enviando, onFirmar, onCerrar)
         is PasoDeNoSeCobro.Aviso -> AvisoDialog(paso.mensaje, onCerrar)
     }
 }
@@ -363,47 +356,21 @@ private fun ListaDeCobrosDialog(
 }
 
 /**
- * F1 (tarea 4): la decisión del gerente, ya identificado. Lo que acredita la firma es lo que él revisó; en la PAX, que el banco dijo «no»
- * sólo lo afirma el reverso de Blumon, así que el texto no dice «no se cobró». La firma siempre va a Avoqado y necesita internet.
+ * F1 (tarea 4 y Codex código r1 #10): lo que firma el gerente, en el mismo paso del PIN. Es SU marca de lo que revisó: en la PAX, que el
+ * banco dijo «no» sólo lo afirma el reverso de Blumon, así que el texto nunca dice «no se cobró» ni presenta la firma como respuesta del
+ * banco. La referencia distingue dos cobros del mismo importe y minuto.
  */
-internal fun textoDeLaConfirmacion(cobro: CobroDeclarable, zona: java.time.ZoneId): String =
-    renglon(cobro, zona) + ". Firmas que revisaste la terminal y este cobro no aparece; queda en Avoqado con tu nombre y la hora. " +
-        "La firma necesita internet."
+internal fun textoDeLaFirma(cobro: CobroDeclarable, zona: java.time.ZoneId): String =
+    "Gerente: escribe tu PIN para marcar ${AvisoDeCobrosPendientes.pesosYHora(cobro.totalCentavos, cobro.desdeMillis, zona)} " +
+        "(ref ${cobro.referenciaCorta}) como no cobrado."
 
-@Composable
-private fun ConfirmacionDialog(
-    cobro: CobroDeclarable,
-    zona: java.time.ZoneId,
-    enviando: Boolean,
-    onConfirmar: () -> Unit,
-    onCerrar: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onCerrar,
-        title = {
-            ImmersiveSystemUiEffect()
-            Text("Firma del gerente")
-        },
-        text = {
-            Text(textoDeLaConfirmacion(cobro, zona), modifier = Modifier.verticalScroll(rememberScrollState()))
-        },
-        confirmButton = {
-            AvoqadoButton(text = "Firmar", onClick = onConfirmar, loading = enviando)
-        },
-        dismissButton = {
-            TextButton(onClick = onCerrar, enabled = !enviando) {
-                Text("Cancelar")
-            }
-        },
-    )
-}
-
-/** K31: primero se identifica el gerente; la decisión viene después. */
+/** K31 en un solo paso (Codex código r1 #10): qué se firma, el PIN y [Firmar]. Avoqado decide si ese PIN firma. */
 @Composable
 private fun PinDeGerenteDialog(
-    cobro: String,
+    queSeFirma: String,
     pinRechazado: Boolean,
-    onIdentificar: (String) -> Unit,
+    enviando: Boolean,
+    onFirmar: (String) -> Unit,
     onCerrar: () -> Unit,
 ) {
     // En memoria, nunca en el estado guardado: el PIN no sobrevive a la pantalla.
@@ -413,34 +380,33 @@ private fun PinDeGerenteDialog(
     }
     AlertDialog(
         onDismissRequest = onCerrar,
-        title = {
-            ImmersiveSystemUiEffect()
-            Text("Gerente: escribe tu PIN")
-        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(cobro, style = MaterialTheme.typography.bodyMedium)
+            ImmersiveSystemUiEffect()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(queSeFirma, style = MaterialTheme.typography.bodyMedium)
                 AvoqadoTextField(
                     value = pin,
-                    onValueChange = { nuevo -> if (nuevo.length <= PIN_MAXIMO && nuevo.all { it in '0'..'9' }) pin = nuevo },
+                    onValueChange = { nuevo -> if (!enviando && nuevo.length <= PIN_MAXIMO && nuevo.all { it in '0'..'9' }) pin = nuevo },
                     label = "PIN de gerente",
-                    errorMessage = if (pinRechazado) "Ese PIN no puede firmar este cobro." else null,
-                    // Con el teclado abierto no se ve «Continuar» (QA en la N86): la palomita del teclado también avanza.
+                    errorMessage = if (pinRechazado) "Ese PIN no es de un gerente con permiso." else null,
+                    // Con el teclado abierto no se ve «Firmar» (QA en la N86): la palomita del teclado también firma.
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { if (pinDeGerenteValido(pin)) onIdentificar(pin) }),
+                    keyboardActions = KeyboardActions(onDone = { if (pinDeGerenteValido(pin)) onFirmar(pin) }),
                     isPassword = true,
                 )
+                Text("Queda en Avoqado con tu nombre y la hora. Necesita internet.", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
             AvoqadoButton(
-                text = "Continuar",
-                onClick = { onIdentificar(pin) },
+                text = "Firmar",
+                onClick = { onFirmar(pin) },
                 enabled = pinDeGerenteValido(pin),
+                loading = enviando,
             )
         },
         dismissButton = {
-            TextButton(onClick = onCerrar) {
+            TextButton(onClick = onCerrar, enabled = !enviando) {
                 Text("Cancelar")
             }
         },
@@ -510,17 +476,9 @@ private fun ListaPreview() {
 
 @Preview(showBackground = true, widthDp = 360, heightDp = 640)
 @Composable
-private fun ConfirmacionPreview() {
-    AvoqadoTheme(darkTheme = false) {
-        ConfirmacionDialog(cobroDeEjemplo, ZONA_DE_EJEMPLO, enviando = false, onConfirmar = {}, onCerrar = {})
-    }
-}
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 640)
-@Composable
 private fun PinPreview() {
     AvoqadoTheme(darkTheme = false) {
-        PinDeGerenteDialog(renglon(cobroDeEjemplo, ZONA_DE_EJEMPLO), pinRechazado = true, onIdentificar = {}, onCerrar = {})
+        PinDeGerenteDialog(textoDeLaFirma(cobroDeEjemplo, ZONA_DE_EJEMPLO), pinRechazado = true, enviando = false, onFirmar = {}, onCerrar = {})
     }
 }
 

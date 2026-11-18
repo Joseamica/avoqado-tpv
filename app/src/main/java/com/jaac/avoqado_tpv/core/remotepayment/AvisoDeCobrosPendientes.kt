@@ -111,6 +111,10 @@ object AvisoDeCobrosPendientes {
     fun renglonParaElGerente(totalCentavos: Long, desdeMillis: Long, referencia: String, zona: java.time.ZoneId): String =
         "${pesos(totalCentavos)} · ${java.time.Instant.ofEpochMilli(desdeMillis).atZone(zona).format(HORA)} · ref $referencia"
 
+    /** F1 (Codex código r1 #10): «$120.00 de las 13:05», lo que el gerente firma en el paso del PIN. */
+    fun pesosYHora(totalCentavos: Long, desdeMillis: Long, zona: java.time.ZoneId): String =
+        "${pesos(totalCentavos)} de las ${java.time.Instant.ofEpochMilli(desdeMillis).atZone(zona).format(HORA)}"
+
     private val HORA = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
 
     /** «$120.00 · hace 3 min»: el renglón de la lista del botón «No se cobró». */

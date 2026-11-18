@@ -284,6 +284,69 @@ class BlumonAttemptResolverTest {
         assertThat(row.state).isEqualTo("INDETERMINADO")
     }
 
+    /**
+     * hz:nube0000:na1bd1b1 (Codex r1 #1): Avoqado contestó «sin evidencia» y, antes de mandar la declaración, el historial de
+     * AngelPay confirmó el cobro y lo escribió DIRECTO en Room (sin pasar por el candado de la libreta). Antes se mandaba igual
+     * con la copia vieja de la fila y Avoqado anotaba «no se cobró» sobre un cobro que la terminal ya tenía aprobado.
+     */
+    @Test fun `P1 na1bd1b1 an approval written right after the consultation stops the checked declaration from leaving`() = runTest {
+        cajeroQueRevisa()
+        row = row.copy(processor = "ANGELPAY")
+        var consultaHecha = false
+        var lecturasTrasConsulta = 0
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } answers {
+            consultaHecha = true
+            LedgerServerRecovery.LecturaDelIntento(null, servidorContesto = true)
+        }
+        coEvery { ledger.leerIntento("pax") } answers {
+            if (consultaHecha) lecturasTrasConsulta++
+            // La lectura de la consulta todavía la ve en duda; la siguiente ya ve lo que escribió el historial.
+            if (lecturasTrasConsulta >= 2) row.copy(state = "HOST_RESPONDIO", hostApproved = true) else row
+        }
+        guardadaEnAvoqado(mutableListOf())
+
+        val r = resolver.declareChecked("venue", "pax")
+
+        assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+    }
+
+    /**
+     * na1bd1b1 (Codex r2 #3 y r3 #4): Avoqado guardó la declaración y el cierre local no aplicó. El rastro «la declaración quedó
+     * contradicha» sólo sale con dinero de ESTE intento; un veto por evidencia de otra terminal no lo es.
+     */
+    @Test fun `na1bd1b1 the contradiction trace needs this attempt's own money, not a foreign veto`() = runTest {
+        cajeroQueRevisa()
+        guardadaEnAvoqado(mutableListOf())
+        val errores = mutableListOf<String>()
+        val arbol = object : timber.log.Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                if (priority >= android.util.Log.ERROR) errores += message
+            }
+        }
+        timber.log.Timber.plant(arbol)
+        try {
+            val enDuda = row
+            coEvery { ledger.declararSinCobroLocal("pax", "venue", "cajero", any()) } coAnswers {
+                row = row.copy(serverVeto = "LINK_VENUE_MISMATCH") // evidencia de OTRA terminal
+                false
+            }
+            resolver.declareChecked("venue", "pax")
+            assertThat(errores.filter { "contradicha" in it }).isEmpty()
+
+            row = enDuda
+            coEvery { ledger.declararSinCobroLocal("pax", "venue", "cajero", any()) } coAnswers {
+                row = row.copy(state = "HOST_RESPONDIO", hostApproved = true) // la aprobación del banco llegó con el envío en camino
+                false
+            }
+            resolver.declareChecked("venue", "pax")
+            assertThat(errores.filter { "contradicha" in it }).hasSize(1)
+        } finally {
+            timber.log.Timber.uproot(arbol)
+        }
+    }
+
     @Test fun `D22 if Avoqado has money evidence the declaration is refused and the evidence saved`() = runTest {
         cajeroQueRevisa()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(409,

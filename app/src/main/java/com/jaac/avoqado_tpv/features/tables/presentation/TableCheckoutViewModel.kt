@@ -1014,7 +1014,11 @@ class TableCheckoutViewModel @Inject constructor(
                         // tarjeta aún no se refleja) — no es un error para el mesero, es el
                         // server protegiendo contra liberar una mesa que en realidad debe.
                         Timber.w(e, "⚠️ [TableCheckout] clearTable no liberó la mesa todavía (venue=%s, table=%s)", vId, session.tableId)
-                        if (e is BackendHttpException && e.statusCode in 400..499) {
+                        // na286b5f: también tras un 500 o un error inesperado (antes sólo tras un 4xx): si no, «Tu mesa» quedaba
+                        // pegada a una cuenta ya pagada. Un fallo de red nunca llega aquí (`clearTable` lo encola y contesta
+                        // éxito). Una sola pregunta, de inmediato: reintentar más tarde podía soltar la sesión mientras el mesero
+                        // ya abre la siguiente mesa (Codex r3 #5).
+                        if (e !is java.io.IOException) {
                             soltarSesionSiSuCuentaYaNoDebe(vId, session, epocaDelCobro)
                         }
                     },

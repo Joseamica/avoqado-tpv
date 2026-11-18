@@ -325,6 +325,7 @@ fun PaymentScreen(
         }
         // 🥝 KIOSK: Cash confirmation shows different title
         is PaymentState.AwaitingCashConfirmation -> "Pago en Efectivo" to null
+        is PaymentState.Processing -> tituloAlProcesar(currentState, isRefundMode) to null
         // 💸 Different title for refund mode vs regular payment
         else -> if (isRefundMode) "Reembolso con Tarjeta" to null else "Pago con Tarjeta" to null
     }
@@ -1287,6 +1288,13 @@ private data class SuccessRouting(
     val text: String,
     val onClick: () -> Unit
 )
+
+/** D96: mientras se registra un cobro en efectivo la barra no dice «Pago con Tarjeta» (visto en la PAX, 17-nov). */
+internal fun tituloAlProcesar(estado: PaymentState.Processing, esReembolso: Boolean): String = when {
+    estado.esEfectivo -> "Pago en Efectivo"
+    esReembolso -> "Reembolso con Tarjeta"
+    else -> "Pago con Tarjeta"
+}
 
 private fun resolveBackNavigation(
     flowOrigin: PaymentFlowOrigin,

@@ -365,7 +365,9 @@ sealed class PaymentState {
         // Aviso del vigilante de autorizacion (Task 2, riel Blumon/PAX). Por defecto
         // NONE: en el camino feliz nadie lo ve y el comportamiento queda byte-identico.
         // El vigilante NUNCA cancela la autorizacion, solo publica este aviso.
-        val watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE
+        val watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE,
+        // D96: el cobro que se está registrando es en EFECTIVO; la barra dice «Pago en Efectivo», no «Pago con Tarjeta».
+        val esEfectivo: Boolean = false
     ) : PaymentState()
     data class Success(
         val authCode: String,

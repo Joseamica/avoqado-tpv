@@ -49,13 +49,15 @@ sealed interface ResultadoDeLaDeclaracion {
     /** [Declarado] y [PidePin] no se avisan: uno cierra el diálogo y el otro abre el del PIN. */
     fun texto(): String = when (this) {
         is Rechazado -> mensaje
-        SinRed -> "Sin conexión: esto necesita internet. Cuando vuelva, inténtalo otra vez."
+        // F1: la firma del gerente va a Avoqado; sin red nada se cierra.
+        SinRed -> "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva."
         HayEvidencia -> "Avoqado tiene evidencia de este cobro: no lo declares ni lo vuelvas a cobrar."
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
-        DeclaradoEnAvoqado -> "Listo: quedó anotado en Avoqado que revisaste y no se cobró, con tu nombre y la hora. Puedes volver a cobrar."
+        // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
+        DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
         DeclaradoSoloEnLaTerminal ->
             "Listo, pero Avoqado no lo recibió: quedó anotado sólo en esta terminal y no aparece en Avoqado. Puedes volver a cobrar."
         Declarado, PidePin -> ""
@@ -106,7 +108,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
             return sinTumbarLaApp {
                 val requestId = cobro.requestId
                 if (requestId != null) declararPorElServidor(venueId, requestId, cobro, supervisorPin)
-                else declararEnLaLibreta(venueId, cobro)
+                else declararEnLaLibreta(venueId, cobro, supervisorPin)
             }
         } finally {
             envio.unlock()
@@ -174,14 +176,19 @@ class DeclaracionDesdeElAviso @Inject constructor(
         }
     }
 
-    private suspend fun declararEnLaLibreta(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion {
+    private suspend fun declararEnLaLibreta(venueId: String, cobro: CobroDeclarable, supervisorPin: String?): ResultadoDeLaDeclaracion {
         val attemptId = cobro.attemptId ?: return GENERICO
-        val resultado = resolver.declareChecked(venueId, attemptId)
+        val resultado = resolver.declareChecked(venueId, attemptId, supervisorPin)
         resultado.resultJson?.let(socket.get()::emitDurableTerminalPaymentResult)
-        // PENDING = no se cerró: nunca contestó Avoqado, o algo cambió entre leer y escribir y el CAS no aplicó.
+        // PENDING = no se cerró: nunca contestó Avoqado, no hubo respuesta (F1: la firma necesita conexión), Avoqado no devolvió el
+        // acuse firmado, o algo cambió entre leer y escribir y el CAS no aplicó.
         return when {
-            resultado.state == BlumonAttemptResolver.State.PENDING ->
-                if (resultado.row?.serverAnsweredAt == null) ResultadoDeLaDeclaracion.FaltaConsultar else GENERICO
+            resultado.state == BlumonAttemptResolver.State.SIGNATURE_REQUIRED -> ResultadoDeLaDeclaracion.PidePin
+            resultado.state == BlumonAttemptResolver.State.PENDING -> when {
+                resultado.row?.serverAnsweredAt == null -> ResultadoDeLaDeclaracion.FaltaConsultar
+                !resultado.serverAnswered -> ResultadoDeLaDeclaracion.SinRed
+                else -> GENERICO
+            }
             // D22: la declaración del cajero de ESTA libreta dice si quedó en Avoqado; otra liberación (del servidor) se cierra como antes.
             resultado.state == BlumonAttemptResolver.State.RELEASED &&
                 resultado.row?.lastError?.startsWith(PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO) == true ->
@@ -195,6 +202,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
         BlumonAttemptResolver.State.RELEASED -> ResultadoDeLaDeclaracion.Declarado
         BlumonAttemptResolver.State.RECORDED, BlumonAttemptResolver.State.MONEY_EVIDENCE -> ResultadoDeLaDeclaracion.HayEvidencia
         BlumonAttemptResolver.State.PERMISSION_REQUIRED -> ResultadoDeLaDeclaracion.SinPermiso
+        BlumonAttemptResolver.State.SIGNATURE_REQUIRED -> ResultadoDeLaDeclaracion.PidePin
         BlumonAttemptResolver.State.PENDING, BlumonAttemptResolver.State.UNAVAILABLE -> GENERICO
     }
 

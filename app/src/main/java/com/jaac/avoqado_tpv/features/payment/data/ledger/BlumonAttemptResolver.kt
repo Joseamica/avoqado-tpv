@@ -21,7 +21,8 @@ class BlumonAttemptResolver @Inject constructor(
     private val api: TerminalAttemptApiService,
     private val storage: SecureStorage,
 ) {
-    enum class State { PENDING, RELEASED, RECORDED, MONEY_EVIDENCE, PERMISSION_REQUIRED, UNAVAILABLE }
+    /** F1 (tarea 3): [SIGNATURE_REQUIRED] = falta el PIN del gerente, o Avoqado dijo que ese PIN no firma (403). */
+    enum class State { PENDING, RELEASED, RECORDED, MONEY_EVIDENCE, PERMISSION_REQUIRED, UNAVAILABLE, SIGNATURE_REQUIRED }
     data class Result(
         val state: State,
         val row: PaymentAttemptEntity? = null,
@@ -142,28 +143,24 @@ class BlumonAttemptResolver @Inject constructor(
     }
 
     /**
-     * El cajero deja constancia de que revisó la terminal y no se cobró, con o sin red (founder, 25-sep; antes sólo sin red
-     * y sólo gerencia). Sólo cobros LOCALES: los del POS tienen su propio camino. Primero se consulta a Avoqado; con
-     * evidencia de dinero no se declara, y la libreta exige que Avoqado haya contestado alguna vez por ese cobro. Queda
-     * quién y cuándo; si después aparece el cobro, la terminal avisa. D22 (17-nov): con red, además, la declaración queda en
-     * Avoqado ([enviarDeclaracionRevisada]) y la libreta lo marca ([PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO]). También en la Nexgo, desde el botón del banner verde
-     * (founder, 3-nov): con las mismas condiciones, y lo demás de esta clase sigue siendo sólo de la pantalla de la PAX.
+     * 🔴 F1 (17-nov, plan mínimo tarea 3): el GERENTE firma con su PIN que revisó la terminal y este cobro LOCAL no aparece. Ya no
+     * decide el permiso de la sesión (la cajera ya no lo trae): decide Avoqado con el PIN. Primero se consulta a Avoqado; con
+     * evidencia de dinero no se declara. La libreta sólo se cierra con el acuse FIRMADO de Avoqado (D22: `UNCHARGED_VERIFIED`, ahora
+     * con `by = SUPERVISOR_PIN`), a nombre del gerente; sin respuesta A sigue en duda y repetir manda la MISMA declaración. Nunca
+     * se cierra sólo en esta terminal. El PIN viaja en el cuerpo y no se guarda. PAX y Nexgo; los cobros del POS tienen su camino.
      */
-    suspend fun declareChecked(venueId: String, attemptId: String): Result = mutex.withLock {
-        if (!hasCheckPermission()) return@withLock Result(State.PERMISSION_REQUIRED)
+    suspend fun declareChecked(venueId: String, attemptId: String, supervisorPin: String? = null): Result = mutex.withLock {
+        if (supervisorPin.isNullOrBlank()) return@withLock Result(State.SIGNATURE_REQUIRED)
         val reading = consultLocked(venueId, attemptId, LOS_DOS)
         if (reading.state != State.PENDING) return@withLock reading
         val row = reading.row ?: return@withLock Result(State.UNAVAILABLE)
         if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeDeclararseEnDuda(row, venueId)) return@withLock reading
-        // Recheck session and effective permission AFTER the network suspension as well as in the UI.
-        if (!hasCheckPermission()) return@withLock reading.copy(state = State.PERMISSION_REQUIRED)
+        // F1: la firma necesita conexión. Si la consulta de ESTA llamada no tuvo respuesta, ni se intenta: A se conserva.
+        if (!reading.serverAnswered) return@withLock reading
         val staffId = storage.getStaffId()
-        // 🔴 D22 (founder, 17-nov: «Sí, A1»): con red, la declaración también llega a Avoqado — quién (la sesión, nunca el cuerpo),
-        // cuándo, el monto según la libreta y la terminal —, y el dueño la ve en la Bitácora. Sin respuesta se anota sólo aquí,
-        // como antes. El CAS local va DESPUÉS del envío: la evidencia que llegue en medio gana (salidaNegativa).
-        // Si la consulta de ESTA misma llamada no tuvo respuesta (sin red, WiFi sin salida), no se intenta el envío: fallaría igual y
-        // haría esperar al cajero otro tope de red. Se anota sólo aquí y la pantalla lo dice.
-        if (reading.serverAnswered) {
+        // D22: la declaración llega a Avoqado con el monto de la libreta y el dueño la ve en la Bitácora. El CAS local va DESPUÉS del
+        // envío: la evidencia que llegue en medio gana (salidaNegativa).
+        run {
             // 🔴 hz:nube0000:na1bd1b1 (Codex r1 #1): justo antes de mandarla, la libreta se vuelve a leer. El historial de AngelPay
             // escribe la aprobación directo en Room (no pasa por el candado): si ya quedó escrita, no sale «no se cobró».
             val justoAntes = inspect(venueId, attemptId, LOS_DOS)
@@ -172,16 +169,20 @@ class BlumonAttemptResolver @Inject constructor(
                 !ledger.puedeDeclararseEnDuda(filaJustoAntes, venueId))
                 return@withLock justoAntes.copy(serverAnswered = true, resultJson = reading.resultJson)
         }
-        val envio = if (!reading.serverAnswered) EnvioRevisado.NO_LLEGO else enviarDeclaracionRevisada(venueId, attemptId, row, staffId)
-        val enAvoqado = when (envio) {
-            EnvioRevisado.GUARDADO -> true
-            EnvioRevisado.NO_LLEGO -> false
+        val gerente = when (val envio = enviarDeclaracionRevisada(venueId, attemptId, row, staffId, supervisorPin)) {
+            is EnvioRevisado.Firmado -> envio.gerente
+            // Sin respuesta: A se conserva y la pantalla dice que la firma necesita conexión.
+            EnvioRevisado.SIN_RESPUESTA -> return@withLock reading.copy(serverAnswered = false)
+            // Contestó, pero no es el acuse firmado de ESTA declaración (otro rechazo, un servidor anterior, sin firmante).
+            EnvioRevisado.NO_FIRMADO -> return@withLock inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true)
+            EnvioRevisado.PIN_RECHAZADO -> return@withLock reading.copy(state = State.SIGNATURE_REQUIRED, serverAnswered = true)
             EnvioRevisado.HAY_DINERO -> return@withLock inspect(venueId, attemptId, LOS_DOS).copy(state = State.MONEY_EVIDENCE, serverAnswered = true)
             EnvioRevisado.SIN_PERMISO -> return@withLock reading.copy(state = State.PERMISSION_REQUIRED, serverAnswered = true)
             is EnvioRevisado.ConVeto -> return@withLock envio.resultado
         }
-        val cerrada = ledger.declararSinCobroLocal(attemptId, venueId, staffId, enAvoqado)
-        val despues = inspect(venueId, attemptId, LOS_DOS).copy(resultJson = reading.resultJson)
+        val cerrada = ledger.declararSinCobroLocal(attemptId, venueId, gerente, enAvoqado = true)
+        // Avoqado sí contestó (firmó): si el CAS no aplicó, la pantalla no debe decir «sin conexión».
+        val despues = inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true, resultJson = reading.resultJson)
         // na1bd1b1: el único hueco que la terminal no puede cerrar sin arriesgar el dinero — la aprobación llegó con el envío en
         // camino. La libreta la conserva (el cierre no aplicó) y Avoqado se quedó con la declaración: se deja el rastro para medirlo.
         // El arreglo de fondo es del SERVIDOR (marcar la declaración contradicha cuando llega el cobro).
@@ -191,17 +192,21 @@ class BlumonAttemptResolver @Inject constructor(
         val dineroPropio = fila != null && (fila.hostApproved == true || fila.serverPaymentId != null ||
             fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
             fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO)
-        if (enAvoqado && !cerrada && dineroPropio)
+        if (!cerrada && dineroPropio)
             Timber.e("🚨 [Libreta] Avoqado guardó «no se cobró» y en medio llegó dinero de este intento: la declaración quedó contradicha | attemptId=%s", attemptId)
         despues
     }
 
     /** D22: lo que pasó con el envío de la declaración revisada. */
     private sealed interface EnvioRevisado {
-        /** Avoqado la guardó: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó. */
-        data object GUARDADO : EnvioRevisado
-        /** Sin red, sin respuesta, 5xx o un rechazo que no habla de dinero ni de permiso (p. ej. un servidor viejo): sólo aquí. */
-        data object NO_LLEGO : EnvioRevisado
+        /** F1: Avoqado la guardó FIRMADA: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó y su gerente. */
+        data class Firmado(val gerente: String) : EnvioRevisado
+        /** Sin red, sin respuesta o 5xx: no se sabe si llegó. A se conserva; repetir manda la MISMA declaración. */
+        data object SIN_RESPUESTA : EnvioRevisado
+        /** Contestó sin el acuse firmado de ESTA declaración (otro 4xx, un servidor anterior, sin firmante): A se conserva. */
+        data object NO_FIRMADO : EnvioRevisado
+        /** 403 SUPERVISOR_AUTHORIZATION_REQUIRED: ese PIN no firma (de otro local, de un cajero o sin el permiso). */
+        data object PIN_RECHAZADO : EnvioRevisado
         /** 409 POSITIVE_EVIDENCE_EXISTS: Avoqado tiene evidencia de cobro. No se declara. */
         data object HAY_DINERO : EnvioRevisado
         /** 401/403: Avoqado dice que esta sesión no puede declararlo. No se anota en ningún lado. */
@@ -210,7 +215,9 @@ class BlumonAttemptResolver @Inject constructor(
         data class ConVeto(val resultado: Result) : EnvioRevisado
     }
 
-    private suspend fun enviarDeclaracionRevisada(venueId: String, attemptId: String, row: PaymentAttemptEntity, staffId: String?): EnvioRevisado {
+    private suspend fun enviarDeclaracionRevisada(
+        venueId: String, attemptId: String, row: PaymentAttemptEntity, staffId: String?, supervisorPin: String,
+    ): EnvioRevisado {
         // UNA declaración lógica por intento, en reintentos, pantalla recreada y muerte del proceso; el monto sale de la libreta, así
         // que el cuerpo es idéntico cada vez y el servidor contesta el replay sin escribir otra vez.
         val resolutionId = UUID.nameUUIDFromBytes("tpv:checked:$venueId:$attemptId".toByteArray(Charsets.UTF_8)).toString()
@@ -219,13 +226,13 @@ class BlumonAttemptResolver @Inject constructor(
                 venueId, attemptId,
                 NoInstrumentResolutionRequest(
                     requestId = null, resolutionId = resolutionId, statement = "UNCHARGED_VERIFIED",
-                    amountCents = row.amountCents, tipCents = row.tipCents,
+                    amountCents = row.amountCents, tipCents = row.tipCents, supervisorPin = supervisorPin,
                 ),
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            return EnvioRevisado.NO_LLEGO
+            return EnvioRevisado.SIN_RESPUESTA
         }
         if (!response.isSuccessful) {
             val code = runCatching {
@@ -236,11 +243,14 @@ class BlumonAttemptResolver @Inject constructor(
                     saveMoney(venueId, attemptId)
                     EnvioRevisado.HAY_DINERO
                 }
+                // F1: con PIN, este 403 habla del PIN, no de la sesión: no se toca la lista de permisos de quien opera.
+                response.code() == 403 && code == "SUPERVISOR_AUTHORIZATION_REQUIRED" -> EnvioRevisado.PIN_RECHAZADO
                 response.code() == 401 || response.code() == 403 -> {
                     PermissionsRepository.invalidarListaTrasRechazo(storage, venueId, staffId)
                     EnvioRevisado.SIN_PERMISO
                 }
-                else -> EnvioRevisado.NO_LLEGO
+                response.code() >= 500 -> EnvioRevisado.SIN_RESPUESTA
+                else -> EnvioRevisado.NO_FIRMADO
             }
         }
         val body = response.body()
@@ -261,15 +271,17 @@ class BlumonAttemptResolver @Inject constructor(
             val after = inspect(venueId, attemptId, LOS_DOS).copy(serverAnswered = true)
             return EnvioRevisado.ConVeto(if (after.state == State.RECORDED && veto == null) after else after.copy(state = State.MONEY_EVIDENCE))
         }
-        return if (esLaNuestra) EnvioRevisado.GUARDADO else EnvioRevisado.NO_LLEGO
+        // F1: además de ser la nuestra, tiene que venir FIRMADA por un PIN (una respuesta antigua o de la sesión no cierra A).
+        val gerente = LiberacionDelServidor.firmante(declaracion)
+        return if (esLaNuestra && gerente != null) EnvioRevisado.Firmado(gerente) else EnvioRevisado.NO_FIRMADO
     }
 
     /**
      * La misma consulta de [declareChecked], ANTES de ofrecer confirmar (Codex plan r1 #2): el banner no ofrece lo que no se puede cumplir.
      * PENDING = se puede ofrecer si [PaymentAttemptEntity.serverAnsweredAt] ya existe; UNAVAILABLE = la llamada puede seguir viva en este proceso.
      */
+    // F1: sin el gate del permiso de la sesión — la firma la decide Avoqado con el PIN del gerente.
     suspend fun prepareChecked(venueId: String, attemptId: String): Result = mutex.withLock {
-        if (!hasCheckPermission()) return@withLock Result(State.PERMISSION_REQUIRED)
         val reading = consultLocked(venueId, attemptId, LOS_DOS)
         val row = reading.row
         if (reading.state == State.PENDING && (row == null || !ledger.puedeDeclararseEnDuda(row, venueId))) reading.copy(state = State.UNAVAILABLE)

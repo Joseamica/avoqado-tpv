@@ -59,11 +59,12 @@ class DeclaracionRevisadaEnAvoqadoRoomTest {
         ),
     )
 
-    private fun revisada(staffId: String? = "cajero-1"): JsonObject = JsonObject().apply {
+    // F1 (tarea 3): la revisada cuenta FIRMADA por el PIN de un gerente; `staffId` es entonces el gerente.
+    private fun revisada(staffId: String? = "cajero-1", by: String = "SUPERVISOR_PIN"): JsonObject = JsonObject().apply {
         addProperty("id", "res-d22")
         addProperty("kind", "UNCHARGED_VERIFIED")
         addProperty("acceptedAt", "2026-11-17T18:00:00.000Z")
-        addProperty("by", "SESSION")
+        addProperty("by", by)
         if (staffId != null) addProperty("staffId", staffId)
         addProperty("amountCents", 1250)
         addProperty("tipCents", 100)
@@ -84,6 +85,10 @@ class DeclaracionRevisadaEnAvoqadoRoomTest {
         val porElPost = LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada()))!!
         assertThat(porElPost.evidencia).isEqualTo(LiberacionDelServidor.CAJERO_REVISO)
         assertThat(porElPost.evidencia).isNotEqualTo("OPERATOR_RECONCILED")
+        // F1: sin firmante (la sesión, o una respuesta antigua sin `by`) no libera, ni por S6 ni por el POST.
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada(by = "SESSION")))).isNull()
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "a1", null, s6Local(revisada(by = "SESSION")))).isNull()
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "a1", s6Local(revisada().apply { remove("by") }))).isNull()
     }
 
     @Test fun `P1 la app murio despues del envio - la consulta cierra la duda marcada en Avoqado (PAX y Nexgo)`() = runTest {

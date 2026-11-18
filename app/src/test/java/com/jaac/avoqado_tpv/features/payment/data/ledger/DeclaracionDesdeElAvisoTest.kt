@@ -173,7 +173,7 @@ class DeclaracionDesdeElAvisoTest {
 
     @Test fun `el texto de cada resultado es el acordado`() {
         val textos = mapOf(
-            ResultadoDeLaDeclaracion.SinRed to "Sin conexión: esto necesita internet. Cuando vuelva, inténtalo otra vez.",
+            ResultadoDeLaDeclaracion.SinRed to "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva.",
             ResultadoDeLaDeclaracion.UsaElPos to "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS.",
             ResultadoDeLaDeclaracion.FaltaConsultar to "Primero hay que consultar a Avoqado: conéctate a internet.",
             ResultadoDeLaDeclaracion.SinPermiso to "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente.",

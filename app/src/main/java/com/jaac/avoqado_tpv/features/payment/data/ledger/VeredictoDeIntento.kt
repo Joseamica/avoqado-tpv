@@ -226,6 +226,11 @@ data class LiberacionDelServidor(
             if (requestIdCrudo == null && respuesta.request == null) {
                 val declaracion = respuesta.attempt?.resolution ?: return null
                 val evidencia = evidenciaDeLaDeclaracion(runCatching { declaracion.get("kind")?.asString }.getOrNull()) ?: return null
+                // 🔴 F1 (tarea 3): «revisé y no se cobró» sólo cuenta FIRMADA por el PIN de un gerente, y queda a su nombre.
+                if (evidencia == CAJERO_REVISO) {
+                    val gerente = firmante(declaracion) ?: return null
+                    return LiberacionDelServidor(venueId, attemptId, null, evidencia, gerente)
+                }
                 // `requestId` nulo = «sin solicitud»: es lo que manda la fila local al CAS, que exige IS NULL.
                 return LiberacionDelServidor(venueId, attemptId, null, evidencia, quienDeclaro(declaracion))
             }
@@ -272,8 +277,8 @@ data class LiberacionDelServidor(
             return LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
         }
 
-        private fun textoDe(objeto: JsonObject, campo: String): String? =
-            runCatching { objeto.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
+        private fun textoDe(objeto: JsonObject?, campo: String): String? =
+            runCatching { objeto?.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
 
         /**
          * El 2xx de la declaración del cajero (`POST …/no-instrument-resolution`): por contrato el servidor sólo contesta 200
@@ -282,6 +287,8 @@ data class LiberacionDelServidor(
          */
         fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String?, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
             if (acreditaDinero(respuesta?.attempt) || hayEvidenciaSinDueno(respuesta?.attempt) || hayContradiccion(respuesta?.attempt)) null
+            // F1: una revisada SIN firmante no libera nada, venga por donde venga.
+            else if (respuesta?.attempt?.resolution.let { r -> textoDe(r, "kind") == "UNCHARGED_VERIFIED" && firmante(r) == null }) null
             // Ronda 20: la declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
             // Sin clase (un servidor anterior) o con la del cajero, lo de siempre.
             else LiberacionDelServidor(
@@ -289,6 +296,13 @@ data class LiberacionDelServidor(
                 evidenciaDeLaDeclaracion(runCatching { respuesta?.attempt?.resolution?.get("kind")?.asString }.getOrNull()) ?: "OPERATOR_RECONCILED",
                 respuesta?.attempt?.resolution?.let(::quienDeclaro),
             )
+
+        /**
+         * 🔴 F1 (tarea 3): el GERENTE que firmó con su PIN (`by = SUPERVISOR_PIN`), o null. Una declaración de la sesión, la automática
+         * o una respuesta antigua sin `by` no tienen firmante.
+         */
+        fun firmante(declaracion: JsonObject?): String? =
+            declaracion?.takeIf { textoDe(it, "by") == "SUPERVISOR_PIN" }?.let { quienDeclaro(it) }
 
         /** D22: el `staffId` del testimonio publicado (el servidor lo toma de la sesión, nunca del cuerpo). */
         private fun quienDeclaro(declaracion: JsonObject): String? = textoDe(declaracion, "staffId")?.takeIf { it.isNotBlank() }

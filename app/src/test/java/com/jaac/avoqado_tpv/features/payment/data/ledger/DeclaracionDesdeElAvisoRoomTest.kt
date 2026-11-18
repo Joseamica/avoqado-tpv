@@ -512,22 +512,20 @@ class DeclaracionDesdeElAvisoRoomTest {
 
     // ── Sin solicitud (Pago rápido): la declaración de la libreta, con sus defensas ────────────────────────────────────
 
-    @Test fun `P1 Pago rapido en la Nexgo ya contestado - sin red se declara y queda quien, igual que en la PAX`() = runBlocking<Unit> {
+    // F1 (tarea 3): reemplaza «sin red se declara y queda quien»: la firma del gerente necesita internet y A se conserva.
+    @Test fun `F1 Pago rapido en la Nexgo y en la PAX ya contestado - sin red no se firma y A sigue por revisar`() = runBlocking<Unit> {
         for ((id, procesador) in listOf("a-nexgo" to "ANGELPAY", "a-pax" to "BLUMON")) {
             val cobro = duda(id, processor = procesador, serverAnsweredAt = 1L)
             coEvery { api.getAttemptStatus(venue, id) } throws java.io.IOException("sin red")
-            // D22: sin red el envío a Avoqado tampoco sale; se anota sólo aquí, y el aviso lo dice.
             coEvery { api.resolveNoInstrument(venue, id, any()) } throws java.io.IOException("sin red")
 
             assertThat(declaracion.preparar(venue, cobro)).isNull()
-            assertThat(declaracion.declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal)
+            assertThat(declaracion.declarar(venue, cobro, "918273")).isEqualTo(SinRed)
 
-            val fila = dao.getById(id)!!
-            assertThat(fila.state).isEqualTo("DESCARTADA")
-            assertThat(fila.lastError).isEqualTo("declarado_sin_cobro:cajera")
+            assertThat(dao.getById(id)!!.state).isEqualTo("INDETERMINADO")
         }
-        assertThat(declarables()).isEmpty()
-        assertThat(obligaciones()).isEmpty()
+        assertThat(declarables().map { it.identidad }).containsExactly("a-nexgo", "a-pax")
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
         coVerify(exactly = 0) { api.declararSinCobro(any(), any(), any()) }
     }
 
@@ -536,7 +534,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.getAttemptStatus(venue, "a-1") } throws java.io.IOException("sin red")
 
         assertThat(declaracion.preparar(venue, cobro)).isEqualTo(FaltaConsultar)
-        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(FaltaConsultar)
+        assertThat(declaracion.declarar(venue, cobro, "918273")).isEqualTo(FaltaConsultar)
 
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
     }
@@ -553,15 +551,14 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
         // D22: con red, Avoqado guarda la declaración y la libreta lo marca; el aviso dice que quedó en Avoqado.
         val cuerpo = slot<NoInstrumentResolutionRequest>()
-        coEvery { api.resolveNoInstrument(venue, "a-1", capture(cuerpo)) } answers { s6Revisada("a-1", cuerpo.captured.resolutionId) }
+        coEvery { api.resolveNoInstrument(venue, "a-1", capture(cuerpo)) } answers { s6Firmada("a-1", cuerpo.captured.resolutionId) }
 
         assertThat(declaracion.preparar(venue, cobro)).isNull()
         assertThat(dao.getById("a-1")!!.serverAnsweredAt).isNotNull()
-        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
-        assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
+        assertThat(declaracion.declarar(venue, cobro, "918273")).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
         assertThat(cuerpo.captured.amountCents).isEqualTo(10_000)
-        assertThat(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado.texto()).contains("quedó anotado en Avoqado")
-        assertThat(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal.texto()).contains("no aparece en Avoqado")
+        assertThat(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado.texto()).contains("la firma del gerente")
     }
 
     @Test fun `P1 Codex 1 - falla SOLO la escritura del veto y la siguiente escritura funciona - no se declara y dice hay evidencia`() = runBlocking<Unit> {
@@ -572,7 +569,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Contradiccion("a-1")
 
         assertThat(conFalla.preparar(venue, cobro)).isEqualTo(HayEvidencia)
-        assertThat(conFalla.declarar(venue, cobro)).isEqualTo(HayEvidencia)
+        assertThat(conFalla.declarar(venue, cobro, "918273")).isEqualTo(HayEvidencia)
 
         val fila = dao.getById("a-1")!!
         assertThat(fila.serverVeto).isNull() // el veto no quedó escrito…
@@ -581,7 +578,7 @@ class DeclaracionDesdeElAvisoRoomTest {
 
         // Se recuerda: sin red, y con la fila limpia, sigue sin poder declararse.
         coEvery { api.getAttemptStatus(venue, "a-1") } throws java.io.IOException("sin red")
-        assertThat(conFalla.declarar(venue, cobro)).isEqualTo(HayEvidencia)
+        assertThat(conFalla.declarar(venue, cobro, "918273")).isEqualTo(HayEvidencia)
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
     }
 
@@ -596,7 +593,7 @@ class DeclaracionDesdeElAvisoRoomTest {
 
         coEvery { api.getAttemptStatus(venue, "a-1") } throws java.io.IOException("sin red")
         assertThat(conFalla.preparar(venue, cobro)).isEqualTo(HayEvidencia)
-        assertThat(conFalla.declarar(venue, cobro)).isEqualTo(HayEvidencia)
+        assertThat(conFalla.declarar(venue, cobro, "918273")).isEqualTo(HayEvidencia)
 
         val fila = dao.getById("a-1")!!
         assertThat(fila.state).isEqualTo("INDETERMINADO")
@@ -609,29 +606,32 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { sinDisco.marcarEvidenciaPositivaDelServidor(venue, "a-1", any()) } returns Result.failure(java.io.IOException("disco lleno"))
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Aprobada("a-1")
 
-        assertThat(declaracionCon(sinDisco).declarar(venue, cobro)).isEqualTo(HayEvidencia)
+        assertThat(declaracionCon(sinDisco).declarar(venue, cobro, "918273")).isEqualTo(HayEvidencia)
 
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
     }
 
-    @Test fun `P1 sin el permiso de conciliar no consulta ni declara - sale antes de confirmar`() = runBlocking<Unit> {
+    // F1 (tarea 3): reemplaza «sin el permiso de conciliar no consulta ni declara»: ya no decide el permiso de la sesión sino el PIN.
+    @Test fun `F1 sin el permiso de conciliar la consulta se ofrece igual, y sin PIN no se declara`() = runBlocking<Unit> {
         conPermisos("payments:create")
         val cobro = duda("a-1", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
 
-        assertThat(declaracion.preparar(venue, cobro)).isEqualTo(SinPermiso)
-        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(SinPermiso)
+        assertThat(declaracion.preparar(venue, cobro)).isNull()
+        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(PidePin)
 
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
-        coVerify(exactly = 0) { api.getAttemptStatus(any(), any()) }
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
     }
 
     @Test fun `si el CAS ya no aplica no afirma nada`() = runBlocking<Unit> {
         val cobro = duda("a-1", serverAnsweredAt = 1L)
         val conCasPerdido = spyk(ledger)
-        coEvery { conCasPerdido.declararSinCobroLocal("a-1", venue, any()) } returns false
+        coEvery { conCasPerdido.declararSinCobroLocal("a-1", venue, any(), any()) } returns false
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
 
-        assertThat(declaracionCon(conCasPerdido).declarar(venue, cobro)).isEqualTo(Rechazado(generico))
+        assertThat(declaracionCon(conCasPerdido).declarar(venue, cobro, "918273")).isEqualTo(Rechazado(generico))
     }
 
     @Test fun `si mientras tanto el servidor ya libero la duda, ya no hay nada que declarar`() = runBlocking<Unit> {
@@ -716,9 +716,12 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(1)
 
         coEvery { api.getAttemptStatus(venue, "a-local") } returns s6Limpia("a-local")
-        coEvery { api.resolveNoInstrument(venue, "a-local", any()) } throws java.io.IOException("sin red")
-        assertThat(declaracionCon(libreta2).declarar(venue, declarables(libreta2).single()))
-            .isEqualTo(ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal)
+        // F1: con la firma del gerente en Avoqado (antes, también sin red).
+        coEvery { api.resolveNoInstrument(venue, "a-local", any()) } answers {
+            s6Firmada("a-local", thirdArg<NoInstrumentResolutionRequest>().resolutionId)
+        }
+        assertThat(declaracionCon(libreta2).declarar(venue, declarables(libreta2).single(), "918273"))
+            .isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
 
         assertThat(turno.intentosSinRepresentar(venue, sesion.localSessionId)).isEqualTo(0)
         assertThat(shifts.guardarCierreLocal(venue, sesion.localSessionId)).isInstanceOf(AppResult.Success::class.java)
@@ -756,10 +759,10 @@ class DeclaracionDesdeElAvisoRoomTest {
     @Test fun `P1 Retrofit real D22 - un Pago rapido manda la clase nueva con el monto de la libreta y nada mas`() = runBlocking<Unit> {
         val transporte = apiReal()
         servidor!!.enqueue(json(200, """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","processorEvidence":"NONE","resolution":null},"request":null}"""))
-        servidor!!.enqueue(json(200, """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","processorEvidence":"NONE","resolution":{"id":"${UUID.nameUUIDFromBytes("tpv:checked:$venue:a-1".toByteArray(Charsets.UTF_8))}","kind":"UNCHARGED_VERIFIED","staffId":"cajera"}},"request":null,"resolution":{"id":"x","acceptedAt":"y","by":"SESSION"}}"""))
+        servidor!!.enqueue(json(200, """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","processorEvidence":"NONE","resolution":{"id":"${UUID.nameUUIDFromBytes("tpv:checked:$venue:a-1".toByteArray(Charsets.UTF_8))}","kind":"UNCHARGED_VERIFIED","staffId":"gerente-1","by":"SUPERVISOR_PIN"}},"request":null,"resolution":{"id":"x","acceptedAt":"y","by":"SUPERVISOR_PIN"}}"""))
         val cobro = duda("a-1", serverAnsweredAt = 1L)
 
-        assertThat(declaracionCon(ledger, transporte).declarar(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(declaracionCon(ledger, transporte).declarar(venue, cobro, "918273")).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
 
         servidor!!.takeRequest() // la consulta S6 de antes
         val post = servidor!!.takeRequest()
@@ -769,6 +772,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(cuerpo).containsExactly(
             "resolutionId", UUID.nameUUIDFromBytes("tpv:checked:$venue:a-1".toByteArray(Charsets.UTF_8)).toString(),
             "statement", "UNCHARGED_VERIFIED", "statementVersion", 1.0, "amountCents", 10_000.0, "tipCents", 0.0,
+            "supervisorPin", "918273", // F1: la firma del gerente
         )
     }
 
@@ -781,5 +785,124 @@ class DeclaracionDesdeElAvisoRoomTest {
 
         val cuerpo = Gson().fromJson(servidor!!.takeRequest().body.readUtf8(), Map::class.java)
         assertThat(cuerpo["supervisorPin"]).isEqualTo("9182737465")
+    }
+
+    // ── F1 mínimo, tarea 3 (17-nov): la firma del gerente llega a Avoqado con su PIN; hasta el acuse, A sigue pendiente ──────────
+
+    /** El 2xx de la declaración revisada FIRMADA: el testimonio de Avoqado dice que lo firmó un PIN y de quién es. */
+    private fun s6Firmada(id: String, resolutionId: String, gerente: String = "gerente-1", by: String = "SUPERVISOR_PIN") = s6(
+        """{"success":true,"attemptId":"$id","requestId":null,"attempt":{"attemptId":"$id","outcome":"NOT_RECORDED","paymentId":null,""" +
+            """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+            """"resolution":{"id":"$resolutionId","kind":"UNCHARGED_VERIFIED","staffId":"$gerente","by":"$by"}},"request":null}""",
+    )
+
+    private val pinDelGerente = "918273"
+
+    private fun idDeLaRevisada(attemptId: String) =
+        UUID.nameUUIDFromBytes("tpv:checked:$venue:$attemptId".toByteArray(Charsets.UTF_8)).toString()
+
+    @Test fun `F1 la firma del gerente viaja con su PIN y cierra A a nombre del gerente - aunque la cajera no tenga el permiso`() = runBlocking<Unit> {
+        conPermisos("payments:create") // F1: la cajera ya no trae «conciliar»; firma el gerente con su PIN
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        val cuerpo = slot<NoInstrumentResolutionRequest>()
+        coEvery { api.resolveNoInstrument(venue, "a-1", capture(cuerpo)) } answers { s6Firmada("a-1", cuerpo.captured.resolutionId) }
+
+        assertThat(declaracion.preparar(venue, cobro)).isNull()
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+
+        assertThat(cuerpo.captured.supervisorPin).isEqualTo(pinDelGerente)
+        assertThat(cuerpo.captured.resolutionId).isEqualTo(idDeLaRevisada("a-1"))
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("DESCARTADA")
+        assertThat(fila.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
+    }
+
+    @Test fun `F1 sin PIN no se consulta ni se manda nada - se pide el PIN`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+
+        assertThat(declaracion.declarar(venue, cobro)).isEqualTo(PidePin)
+
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+    }
+
+    @Test fun `F1 firmar, perder la respuesta y reiniciar - A sigue pendiente hasta su acuse, y repetir deja una sola declaracion del gerente`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        val cuerpos = mutableListOf<NoInstrumentResolutionRequest>()
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } coAnswers {
+            cuerpos += thirdArg<NoInstrumentResolutionRequest>()
+            throw java.net.SocketTimeoutException("la respuesta se perdió")
+        }
+
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(SinRed)
+        assertThat(SinRed.texto()).contains("firma del gerente necesita internet")
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+
+        // Reinicio: otro proceso, la misma base. A sigue pendiente; repetir manda la MISMA declaración (replay en Avoqado).
+        val otroProceso = libreta()
+        val trasReiniciar = declaracionCon(otroProceso)
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } coAnswers {
+            cuerpos += thirdArg<NoInstrumentResolutionRequest>()
+            s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId)
+        }
+        assertThat(trasReiniciar.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        assertThat(cuerpos.map { it.resolutionId }.distinct()).containsExactly(idDeLaRevisada("a-1"))
+        assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
+    }
+
+    @Test fun `F1 el acuse tambien llega por la consulta - la recuperacion cierra A con la firma, nunca sin ella`() = runBlocking<Unit> {
+        duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        // Una declaración SIN firmante (un servidor anterior, o la de una sesión) no cierra A.
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Firmada("a-1", idDeLaRevisada("a-1"), gerente = "cajera", by = "SESSION")
+        LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Firmada("a-1", idDeLaRevisada("a-1"))
+        LedgerServerRecovery(dao, ledger, api).recoverOne(venue, "a-1", System.currentTimeMillis(), estampar = false)
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("DESCARTADA")
+        assertThat(fila.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
+    }
+
+    @Test fun `F1 un 403, una respuesta sin firmante o una aprobacion simultanea nunca cierran A`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+
+        // 1 · El PIN no firma (de otro local, de un cajero o sin el permiso): se vuelve a pedir.
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } returns
+            Response.error(403, """{"success":false,"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""".toResponseBody("application/json".toMediaTypeOrNull()))
+        assertThat(declaracion.declarar(venue, cobro, "0000")).isEqualTo(PidePin)
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+
+        // 2 · Un 2xx sin firmante (por la sesión): no se cierra.
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers {
+            s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId, gerente = "cajera", by = "SESSION")
+        }
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(Rechazado(generico))
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+
+        // 3 · El banco aprueba mientras viaja la firma: la libreta conserva A con su dinero.
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } coAnswers {
+            db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_processor_evidence = 'APPROVED' WHERE attempt_id = 'a-1'")
+            s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId)
+        }
+        assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isNotEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.serverProcessorEvidence).isEqualTo("APPROVED")
+    }
+
+    @Test fun `F1 el PIN nunca se guarda - ni en la libreta ni en el almacen`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
+
+        declaracion.declarar(venue, cobro, pinDelGerente)
+
+        assertThat(Gson().toJson(dao.getById("a-1"))).doesNotContain(pinDelGerente)
+        verify(exactly = 0) { storage.putString(any(), match { it.contains(pinDelGerente) }) }
     }
 }

@@ -262,6 +262,40 @@ class TableCheckoutViewModelTest {
         coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
     }
 
+    /**
+     * na78d478 (Codex r1 #8): el rechazo llegó porque OTRO reproductor mandó la cola mientras este cobro esperaba su turno; ese
+     * cambio de la cola pidió releer la cuenta, y la relectura —que espera a que termine el cobro— borraba el aviso al cargar
+     * bien: la pantalla lo quitaba antes de que la cajera lo leyera.
+     */
+    @Test
+    fun P1_el_aviso_del_efectivo_rechazado_no_lo_borra_la_relectura_que_esperaba_al_cobro() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } answers {
+            lecturas++
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        }
+        val viewModel = createViewModel()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } coAnswers {
+            respuesta.await()
+            Result.failure(TablesRepository.PayCashRejectedException("La cuenta ya está pagada", "ORDER_ALREADY_PAID"))
+        }
+
+        viewModel.payCash(BigDecimal("150.00"))
+        val lecturasAntes = lecturas
+        cambiosDeLaCola.value = 1 // el otro reproductor guardó el rechazo en la cola
+        testDispatcher.scheduler.advanceTimeBy(com.jaac.avoqado_tpv.features.tables.data.CALMA_DE_LA_COLA_MS + 1)
+        respuesta.complete(Unit)
+
+        assertThat(lecturas).isGreaterThan(lecturasAntes) // la relectura sí ocurrió, después del cobro
+        assertThat(viewModel.state.value.error).isEqualTo("La cuenta ya está pagada")
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
+        assertThat(viewModel.state.value.tableReleased).isFalse()
+        viewModel.consumeError()
+        assertThat(viewModel.state.value.error).isNull()
+    }
+
     @Test
     fun un_efectivo_rechazado_por_numero_le_dice_a_la_cajera_que_no_se_cobro_y_donde_verlo() = runTest {
         // D6: el texto del servidor («La secuencia del dispositivo ya fue utilizada…») no le dice nada a la cajera.

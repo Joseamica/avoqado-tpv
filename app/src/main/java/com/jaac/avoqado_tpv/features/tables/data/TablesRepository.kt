@@ -596,13 +596,21 @@ class TablesRepository @Inject constructor(
             if (intent.id == intentId) capturedAck = ack
         }
 
-        val ack = capturedAck
+        // hz:nube0000:na78d478: sin acuse propio, OTRO reproductor pudo mandarlo mientras éste esperaba su turno y el SERVIDOR ya
+        // contestó: la fila de la cola lo dice. Sólo una fila leída EN ESPERA acredita «guardado» (Codex r1 #7). Un RETRY propio
+        // tampoco es la última palabra: al soltar la cola, otro reproductor pudo guardar ya el rechazo definitivo (Codex r2 #4).
+        val ack = capturedAck?.takeUnless { it.isRetry } ?: try {
+            syncOutbox.acuseGuardado(venueId, intentId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] No se pudo leer en la cola el cobro %s después de reproducirla", intentId)
+            return Result.failure(PayCashRejectedException(COBRO_SIN_CONFIRMAR, COBRO_SIN_CONFIRMAR_CODIGO))
+        }
         return when {
-            // Sin ack para NUESTRO intent: o no hay red (replayNow no lanzó,
-            // solo no llegó a mandar nada), o un intent más viejo en el
-            // mismo batch cortó en RETRY antes de llegar al nuestro. En
-            // ambos casos el efecto es el mismo: sigue PENDING, se verá
-            // como "guardado" — NUNCA como error (regla de oro offline).
+            // Sin ack para NUESTRO intent y la fila sigue en espera: o no hay red (replayNow no lanzó, solo no llegó a mandar
+            // nada), o un intent más viejo en el mismo batch cortó en RETRY antes de llegar al nuestro. En ambos casos el
+            // efecto es el mismo: sigue PENDING, se verá como "guardado" — NUNCA como error (regla de oro offline).
             ack == null -> Result.success(PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
             ack.isAcked -> Result.success(
                 PayCashOutcome(
@@ -1754,6 +1762,11 @@ class TablesRepository @Inject constructor(
         const val PERMISSION_PAY_ANY = "tables:pay-any"
 
         private const val OPTIMISTIC_ITEM_ID_PREFIX = "pending-"
+
+        /** na78d478: la fila del cobro no se pudo leer después de reproducir la cola: no se sabe si quedó en espera o rechazada. */
+        private const val COBRO_SIN_CONFIRMAR_CODIGO = "COBRO_SIN_CONFIRMAR"
+        private const val COBRO_SIN_CONFIRMAR =
+            "No se pudo confirmar si este cobro quedó guardado. NO lo vuelvas a cobrar: revisa la cuenta en un momento."
 
         /**
          * True si [detail] es el `OrderDetail` OPTIMISTA que [addItems] arma

@@ -284,6 +284,34 @@ class BlumonAttemptResolverTest {
         assertThat(row.state).isEqualTo("INDETERMINADO")
     }
 
+    /**
+     * hz:nube0000:na1bd1b1 (Codex r1 #1): Avoqado contestó «sin evidencia» y, antes de mandar la declaración, el historial de
+     * AngelPay confirmó el cobro y lo escribió DIRECTO en Room (sin pasar por el candado de la libreta). Antes se mandaba igual
+     * con la copia vieja de la fila y Avoqado anotaba «no se cobró» sobre un cobro que la terminal ya tenía aprobado.
+     */
+    @Test fun `P1 na1bd1b1 an approval written right after the consultation stops the checked declaration from leaving`() = runTest {
+        cajeroQueRevisa()
+        row = row.copy(processor = "ANGELPAY")
+        var consultaHecha = false
+        var lecturasTrasConsulta = 0
+        coEvery { recovery.recoverOne("venue", "pax", any(), false) } answers {
+            consultaHecha = true
+            LedgerServerRecovery.LecturaDelIntento(null, servidorContesto = true)
+        }
+        coEvery { ledger.leerIntento("pax") } answers {
+            if (consultaHecha) lecturasTrasConsulta++
+            // La lectura de la consulta todavía la ve en duda; la siguiente ya ve lo que escribió el historial.
+            if (lecturasTrasConsulta >= 2) row.copy(state = "HOST_RESPONDIO", hostApproved = true) else row
+        }
+        guardadaEnAvoqado(mutableListOf())
+
+        val r = resolver.declareChecked("venue", "pax")
+
+        assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+    }
+
     @Test fun `D22 if Avoqado has money evidence the declaration is refused and the evidence saved`() = runTest {
         cajeroQueRevisa()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(409,

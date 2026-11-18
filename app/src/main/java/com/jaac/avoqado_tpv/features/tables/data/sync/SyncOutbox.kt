@@ -406,6 +406,26 @@ class SyncOutbox @Inject constructor(
         val createdAt: Long,
     )
 
+    /**
+     * hz:nube0000:na78d478: el acuse que la cola YA guardó para [id] cuando quien lo encoló no lo vio en su `onAck`: otro
+     * reproductor (el trabajador, el coordinador de Mesas, la recuperación) lo mandó mientras éste esperaba el `replayMutex`.
+     * `null` = sigue en espera. Un rechazo que una persona ya marcó resuelto (DISMISSED) sigue siendo un rechazo (Codex r1 #7).
+     * Lanza si la fila no se puede leer o ya no está en espera por otra razón: entonces nadie puede decir «guardado».
+     */
+    suspend fun acuseGuardado(venueId: String, id: String): SyncIntentAck? {
+        val fila = dao.leer(venueId, id) ?: error("El intent $id no está en la cola")
+        return when (fila.status) {
+            SyncIntentEntity.STATUS_PENDING -> null
+            SyncIntentEntity.STATUS_ACKED -> SyncIntentAck(
+                id = fila.id, status = fila.status, errorCode = fila.errorCode, message = fila.message,
+                result = fila.resultJson?.let { runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull() },
+            )
+            SyncIntentEntity.STATUS_REJECTED, SyncIntentEntity.STATUS_DISMISSED ->
+                SyncIntentAck(id = fila.id, status = SyncIntentEntity.STATUS_REJECTED, errorCode = fila.errorCode, message = fila.message)
+            else -> error("El intent $id ya no está en espera (${fila.status})")
+        }
+    }
+
     suspend fun rejectedIntents(venueId: String): List<RejectedIntent> =
         dao.rejectedForVenue(venueId).map {
             RejectedIntent(id = it.id, type = it.type, errorCode = it.errorCode, message = it.message, createdAt = it.createdAt)

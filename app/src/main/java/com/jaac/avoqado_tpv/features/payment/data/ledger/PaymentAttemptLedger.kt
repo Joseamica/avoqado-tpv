@@ -160,7 +160,13 @@ class PaymentAttemptLedger(
     ): Boolean = try {
         val json = com.google.gson.JsonParser.parseString(contextJson).asJsonObject
         val requestId = json.get("terminalPaymentRequestId")?.takeUnless { it.isJsonNull }?.asString
-        candadoDeEvidencia.withLock { shiftRepository.guardarNuevaObligacionDeCaja(venueId, kind == PaymentAttemptEntity.KIND_REFUND, requestId) { belonging ->
+        candadoDeEvidencia.withLock {
+            // 🔴 hz:nube0000:naa0a0de (Codex r4 H3 / r19 del PR #75): LA PUERTA corre AQUÍ, ANTES de la transacción de Caja, y cada
+            // escritura suya confirma sola. Dentro de esa transacción, si se revertía (la sesión cambió en la última comprobación,
+            // se canceló), Room deshacía la marca de dinero y la memoria ya la había soltado. Dentro, la reserva sólo MIRA la memoria
+            // ([abrirIntento] con `evidenceLockHeld`): con el candado tomado de punta a punta, nadie la cambia en medio.
+            puertaBajoCandado()
+            shiftRepository.guardarNuevaObligacionDeCaja(venueId, kind == PaymentAttemptEntity.KIND_REFUND, requestId) { belonging ->
             json.addProperty("shiftMembership", belonging.kind)
             json.addProperty("localShiftSessionId", belonging.localSessionId)
             json.addProperty("cashDrawerSessionId", belonging.cashDrawerSessionId)
@@ -226,7 +232,9 @@ class PaymentAttemptLedger(
                     // ponytail: todo el aparato y no sólo su venta, porque cercar sólo la venta exigiría leer la fila, que es
                     // justo lo que está fallando; dura hasta la siguiente pasada de la recuperación (≤ 31 s), que la reescribe.
                     // Codex final-2: primero LA PUERTA — si la base ya puede, lo pendiente se escribe aquí y el cobro sigue.
-                    if (puertaBajoCandado()) {
+                    // naa0a0de: con el candado ya tomado ([openAttemptForShift]) la puerta ya corrió FUERA de la transacción de Caja;
+                    // aquí, dentro de ella, sólo se mira la memoria: una escritura aquí se podía deshacer después de soltar la memoria.
+                    if (if (evidenceLockHeld) evidenciaSinGuardar.isNotEmpty() else puertaBajoCandado()) {
                         Timber.w("📒 [Libreta] reserva RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                         -1L
                     } else dao.reserveTerminal(
@@ -960,14 +968,21 @@ class PaymentAttemptLedger(
                     escribirChipRechazoBajoCandado(attemptId).also {
                         // Codex r2 #2 (D13): la duda escrita sustituye a la aprobación que faltaba guardar.
                         if (it == ChipRechazo.EN_DUDA) soltarAprobacion(attemptId)
+                        // naa0a0de (Codex r1 #3): la duda sin escribir se anota DENTRO del candado: si no, una reserva podía pasar por
+                        // la puerta entre el fallo y la anotación y no reintentarla.
+                        if (it == ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.add(attemptId)
                     }
                 }
             }
         } catch (error: Exception) {
             Timber.e(error, "📒 [Libreta] markChipRechazoTrasAprobacion failed — la duda no quedó escrita | attemptId=%s", attemptId)
+            // Sólo si el candado ni siquiera se alcanzó a usar (no debería pasar: nada aquí lanza).
+            chipRechazoSinEscribir.add(attemptId)
             ChipRechazo.SIN_ESCRIBIR
         }
-        if (desenlace == ChipRechazo.SIN_ESCRIBIR) chipRechazoSinEscribir.add(attemptId) else soltarChipRechazoEscrito(attemptId)
+        // Codex r2 #1: el SIN_ESCRIBIR ya se anotó dentro del candado; volver a anotarlo aquí resucitaba una duda que otra puerta
+        // acababa de escribir y soltar.
+        if (desenlace != ChipRechazo.SIN_ESCRIBIR) soltarChipRechazoEscrito(attemptId)
         return desenlace
     }
 

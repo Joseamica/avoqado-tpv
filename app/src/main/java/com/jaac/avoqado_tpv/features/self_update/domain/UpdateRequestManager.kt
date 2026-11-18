@@ -178,6 +178,13 @@ class UpdateRequestManager @Inject constructor(
                 is DownloadResult.Success -> {
                     downloadedApkPath = downloadResult.filePath
                     Timber.i("✅ [$TAG] Download complete: ${downloadResult.filePath}")
+                    // naaa0db5 (Codex r1 #5): la descarga tarda; justo antes de instalar se vuelve a preguntar.
+                    if (esBajarDeVersion(updateInfo.versionCode) && runCatching { db.hayAlgoQueBajarDeVersionBorraria() }
+                            .getOrElse { if (it is CancellationException) throw it; true }) {
+                        _updateRequestState.value = UpdateRequestState.Error(
+                            com.jaac.avoqado_tpv.features.remote_command.domain.MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+                        return
+                    }
 
                     // Install APK
                     installUpdate(downloadResult.filePath, updateInfo.versionName)

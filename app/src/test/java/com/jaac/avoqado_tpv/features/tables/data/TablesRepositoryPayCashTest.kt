@@ -59,6 +59,9 @@ class TablesRepositoryPayCashTest {
     @Before
     fun setUp() {
         clearMocks(api, outbox)
+        // na78d478: sin acuse propio, el cobro lee su fila en la cola; aquí sigue EN ESPERA (el caso de otro reproductor que ya
+        // lo mandó vive en `PayCashConOtroReproductorRoomTest`, con Room real).
+        coEvery { outbox.acuseGuardado(venueId, any()) } returns null
         repo = TablesRepository(api, outbox, permissions)
     }
 
@@ -122,6 +125,20 @@ class TablesRepositoryPayCashTest {
 
         assertThat(result.isSuccess).isTrue()
         assertThat(result.getOrThrow().queued).isTrue()
+    }
+
+    /** na78d478 (Codex r1 #7): sólo una fila leída EN ESPERA acredita «guardado»; si no se puede leer, no se promete nada. */
+    @Test
+    fun sin_ack_propio_y_sin_poder_leer_la_cola_no_dice_guardado_y_pide_no_cobrar_otra_vez() = runTest {
+        coEvery { outbox.enqueue(any(), any(), any(), any()) } returns "intent-1"
+        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+        coEvery { outbox.acuseGuardado(venueId, any()) } throws IllegalStateException("error de E/S")
+
+        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
+
+        val error = result.exceptionOrNull() as TablesRepository.PayCashRejectedException
+        assertThat(error.errorCode).isEqualTo("COBRO_SIN_CONFIRMAR")
+        assertThat(error.message).contains("NO lo vuelvas a cobrar")
     }
 
     @Test

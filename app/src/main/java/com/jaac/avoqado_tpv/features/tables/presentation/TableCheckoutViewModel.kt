@@ -368,6 +368,12 @@ class TableCheckoutViewModel @Inject constructor(
     /** D86 (Codex r1 #1): una lectura de la cuenta llegó durante un cobro en efectivo y se tiró: se repite al terminarlo. */
     private var releerAlTerminarElCobro = false
 
+    /**
+     * na78d478 (Codex r1 #8): el aviso de un cobro en efectivo que NO entró (rechazado o sin confirmar). La relectura que esperaba
+     * a que terminara el cobro lo borraba al cargar bien la cuenta y la pantalla quitaba el aviso antes de que se leyera.
+     */
+    private var avisoDelCobro: String? = null
+
     /** D86 (Codex r1 #4): la relectura periódica mientras hay algo propio sin subir. */
     private var relectura: kotlinx.coroutines.Job? = null
 
@@ -522,7 +528,7 @@ class TableCheckoutViewModel @Inject constructor(
                             isLoading = false,
                             check = detail,
                             remaining = freshRemaining,
-                            errorMessage = null,
+                            errorMessage = it.errorMessage?.takeIf { aviso -> aviso == avisoDelCobro },
                             pendienteSinSubir = pendiente,
                             // D9: sólo una lectura que empezó con la pantalla ya de vuelta confirma (Codex r2).
                             saldoPorConfirmar = it.saldoPorConfirmar && !confirmaElSaldo,
@@ -555,7 +561,8 @@ class TableCheckoutViewModel @Inject constructor(
                             current.copy(
                                 isLoading = false,
                                 revisandoSaldo = revisando,
-                                errorMessage = "No se pudo cargar la cuenta",
+                                // Codex r2 #5: el aviso de un efectivo que no entró no lo tapa un «no se pudo cargar».
+                                errorMessage = avisoDelCobro?.takeIf { aviso -> aviso == current.errorMessage } ?: "No se pudo cargar la cuenta",
                                 pendienteSinSubir = pendienteAntes ?: current.pendienteSinSubir,
                             )
                         }
@@ -963,16 +970,13 @@ class TableCheckoutViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e
-                    _state.update {
-                        it.copy(
-                            isProcessingCash = false,
-                            errorMessage = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
-                                // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
-                                // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
-                                if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
-                            } ?: "No se pudo registrar el cobro",
-                        )
-                    }
+                    val aviso = (e as? TablesRepository.PayCashRejectedException)?.let { rechazo ->
+                        // D6: la cola ya reintenta sola con un número nuevo cuando es seguro; si aun así llega
+                        // aquí, el texto del servidor («La secuencia del dispositivo…») no le dice nada a la cajera.
+                        if (rechazo.errorCode == "STALE_DEVICE_SEQUENCE") RECHAZO_POR_NUMERO else rechazo.message
+                    } ?: "No se pudo registrar el cobro"
+                    avisoDelCobro = aviso
+                    _state.update { it.copy(isProcessingCash = false, errorMessage = aviso) }
                     alTerminarElCobro()
                 },
             )
@@ -1044,6 +1048,7 @@ class TableCheckoutViewModel @Inject constructor(
     }
 
     fun consumeError() {
+        avisoDelCobro = null
         _state.update { it.copy(errorMessage = null) }
     }
 

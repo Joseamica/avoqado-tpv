@@ -116,6 +116,16 @@ interface PaymentAttemptDao {
     suspend fun countUnresolvedCharges(): Int
 
     /**
+     * hz:nube0000:naaa0db5 (Codex r1 #4): la libreta que sólo existe en la terminal — cobros Y devoluciones sin desenlace, y los
+     * cerrados con dinero o veto del servidor (la cerca contra cobrar o devolver otra vez). Lo lee
+     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
+     */
+    @Query("""SELECT COUNT(*) FROM payment_attempts WHERE legacy_shadow = 0
+        AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+             OR (state = 'DESCARTADA' AND (host_approved IS 1 OR server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL)))""")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
+
+    /**
      * 🔴 Founder, 29-sep-2026: una devolución SIN RESOLVER de ESTE pago —la llamada salió y no se supo el desenlace, o
      * AngelPay la aprobó y falta registrarla— impide intentar OTRA devolución del MISMO pago: sería devolver dos veces.
      * Nunca detiene una venta ni la devolución de otro pago. El fragmento lo arma [PaymentAttemptLedger.devolucionSinResolver].

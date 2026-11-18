@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -162,6 +163,15 @@ class BlumonAttemptResolver @Inject constructor(
         // como antes. El CAS local va DESPUÉS del envío: la evidencia que llegue en medio gana (salidaNegativa).
         // Si la consulta de ESTA misma llamada no tuvo respuesta (sin red, WiFi sin salida), no se intenta el envío: fallaría igual y
         // haría esperar al cajero otro tope de red. Se anota sólo aquí y la pantalla lo dice.
+        if (reading.serverAnswered) {
+            // 🔴 hz:nube0000:na1bd1b1 (Codex r1 #1): justo antes de mandarla, la libreta se vuelve a leer. El historial de AngelPay
+            // escribe la aprobación directo en Room (no pasa por el candado): si ya quedó escrita, no sale «no se cobró».
+            val justoAntes = inspect(venueId, attemptId, LOS_DOS)
+            val filaJustoAntes = justoAntes.row
+            if (justoAntes.state != State.PENDING || filaJustoAntes == null || filaJustoAntes.terminalPaymentRequestId != null ||
+                !ledger.puedeDeclararseEnDuda(filaJustoAntes, venueId))
+                return@withLock justoAntes.copy(serverAnswered = true, resultJson = reading.resultJson)
+        }
         val envio = if (!reading.serverAnswered) EnvioRevisado.NO_LLEGO else enviarDeclaracionRevisada(venueId, attemptId, row, staffId)
         val enAvoqado = when (envio) {
             EnvioRevisado.GUARDADO -> true
@@ -170,8 +180,20 @@ class BlumonAttemptResolver @Inject constructor(
             EnvioRevisado.SIN_PERMISO -> return@withLock reading.copy(state = State.PERMISSION_REQUIRED, serverAnswered = true)
             is EnvioRevisado.ConVeto -> return@withLock envio.resultado
         }
-        ledger.declararSinCobroLocal(attemptId, venueId, staffId, enAvoqado)
-        inspect(venueId, attemptId, LOS_DOS).copy(resultJson = reading.resultJson)
+        val cerrada = ledger.declararSinCobroLocal(attemptId, venueId, staffId, enAvoqado)
+        val despues = inspect(venueId, attemptId, LOS_DOS).copy(resultJson = reading.resultJson)
+        // na1bd1b1: el único hueco que la terminal no puede cerrar sin arriesgar el dinero — la aprobación llegó con el envío en
+        // camino. La libreta la conserva (el cierre no aplicó) y Avoqado se quedó con la declaración: se deja el rastro para medirlo.
+        // El arreglo de fondo es del SERVIDOR (marcar la declaración contradicha cuando llega el cobro).
+        // Codex r2 #3: sólo con dinero de ESTE intento (aprobación del banco, evidencia del servidor o el cobro ya registrado); un veto
+        // por evidencia de otra terminal no es «llegó dinero de este intento».
+        val fila = despues.row
+        val dineroPropio = fila != null && (fila.hostApproved == true || fila.serverPaymentId != null ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO)
+        if (enAvoqado && !cerrada && dineroPropio)
+            Timber.e("🚨 [Libreta] Avoqado guardó «no se cobró» y en medio llegó dinero de este intento: la declaración quedó contradicha | attemptId=%s", attemptId)
+        despues
     }
 
     /** D22: lo que pasó con el envío de la declaración revisada. */

@@ -842,6 +842,14 @@ class CommandExecutor @Inject constructor(
                     is DownloadResult.Success -> {
                         Timber.i("✅ [$TAG] APK downloaded: ${downloadResult.filePath}")
 
+                        // naaa0db5 (Codex r1 #5): la descarga tarda; con la versión que de verdad se va a instalar, se vuelve a
+                        // preguntar justo antes. Un fallo de lectura no da permiso de borrar.
+                        if (isDowngrade && runCatching { databaseProvider.get().hayAlgoQueBajarDeVersionBorraria() }
+                                .getOrElse { if (it is CancellationException) throw it; true }) {
+                            Timber.w("⚠️ [$TAG] Retroceso frenado tras descargar: hay algo que la base perdería")
+                            return CommandResult.rejected(MENSAJE_BAJAR_DE_VERSION_BORRARIA)
+                        }
+
                         // 3. Install APK
                         try {
                             // Try shell install first (allows downgrades with -d flag)

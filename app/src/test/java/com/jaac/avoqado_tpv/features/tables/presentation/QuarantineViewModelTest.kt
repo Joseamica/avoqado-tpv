@@ -146,6 +146,15 @@ class QuarantineViewModelTest {
         assertThat(hint).doesNotContain("efectivo")
     }
 
+    @Test
+    fun nab0e38e_un_Liberar_mesa_rechazado_por_saldo_dice_que_la_mesa_se_libera_sola_si_ya_se_cobro() {
+        val hint = resolutionHintFor(errorCode = "BUSINESS_RULE", type = SyncIntentTypes.CLEAR_TABLE)
+        assertThat(hint).contains("se libera sola")
+        assertThat(hint).contains("márcala como resuelta")
+        // TABLE_OWNED_BY_OTHER conserva su propia guía.
+        assertThat(resolutionHintFor("TABLE_OWNED_BY_OTHER", SyncIntentTypes.CLEAR_TABLE)).contains("Otro mesero")
+    }
+
     // endregion
 
     // region — load/dismiss: literal del plan + no-op seguro

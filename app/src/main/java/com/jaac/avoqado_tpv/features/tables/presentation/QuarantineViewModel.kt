@@ -216,6 +216,10 @@ fun resolutionHintFor(errorCode: String?, type: String): String = when (errorCod
     "UNKNOWN_INTENT_TYPE" -> "Esta versión de la app no reconoce esta acción. Actualiza la terminal."
     else -> if (type == SyncIntentTypes.PAY_CASH) {
         "El cobro no se registró. El efectivo sigue en caja: vuelve a cobrarlo desde la terminal y luego márcalo como resuelto."
+    } else if (type == SyncIntentTypes.CLEAR_TABLE) {
+        // nab0e38e: el «Liberar mesa» sin red suele llegar antes que el cobro con tarjeta de su cuenta; al registrarse ese cobro,
+        // el SERVIDOR libera la mesa solo (`releaseTableIfSettled`).
+        "La cuenta todavía tenía saldo cuando llegó. Si ya se cobró, la mesa se libera sola: márcala como resuelta."
     } else {
         "El servidor rechazó esta acción. Revísala y repítela a mano si sigue aplicando."
     }

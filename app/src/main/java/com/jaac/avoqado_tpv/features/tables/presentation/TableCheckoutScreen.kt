@@ -243,10 +243,15 @@ fun TableCheckoutScreen(
             viewModel.consumeError()
         }
     }
-    // D19: el desenlace de un cobro en efectivo que no entró, una vez, aunque la cuenta se relea mientras se enseña.
+    // D19: el desenlace de un cobro en efectivo que no entró, una vez, aunque la cuenta se relea mientras se enseña. Se queda
+    // hasta que la cajera toca «Entendido» (Codex r4 #3: con un tiempo, se agotaba debajo del bloqueo remoto sin verse).
     LaunchedEffect(state.avisoDelCobro) {
         state.avisoDelCobro?.let {
-            snackbarHostState.showSnackbar(it, duration = androidx.compose.material3.SnackbarDuration.Long)
+            snackbarHostState.showSnackbar(
+                message = it,
+                actionLabel = "Entendido",
+                duration = androidx.compose.material3.SnackbarDuration.Indefinite,
+            )
             viewModel.consumeAvisoDelCobro()
         }
     }

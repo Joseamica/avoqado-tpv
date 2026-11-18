@@ -293,12 +293,22 @@ class SyncOutboxDesenlaceDelCobroTest {
         val cobro = encola()
 
         lateinit var trabajador: Job
+        val avisados = mutableListOf<String>()
+        var siguio = false
         trabajador = launch {
-            outbox.replayNow(VENUE) { intent, _ -> if (intent.id == ronda) trabajador.cancel() } // WorkManager lo detiene
+            outbox.replayNow(VENUE) { intent, _ ->
+                avisados += intent.id
+                if (intent.id == ronda) trabajador.cancel() // WorkManager lo detiene
+            }
+            siguio = true
         }
         trabajador.join()
 
+        // La respuesta se guardó completa; los avisos ya no siguieron y la cancelación salió (Codex r4 #5, Task6 F3).
         assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
+        assertThat(avisados).containsExactly(ronda)
+        assertThat(siguio).isFalse()
+        assertThat(trabajador.isCancelled).isTrue()
         coEvery { api.syncIntents(VENUE, any()) } throws IOException("sin red") // «Cobrar» ya sin red
         assertThat(outbox.reproducirYResolver(VENUE, cobro))
             .isEqualTo(SyncOutbox.DesenlaceDelIntent.Rechazado("BUSINESS_RULE", "Order not found"))
@@ -309,7 +319,7 @@ class SyncOutboxDesenlaceDelCobroTest {
     // region — el replay de siempre no cambia
 
     @Test
-    fun `los demas acuses siguen yendo al callback de siempre y la cola se drena en orden`() = runTest {
+    fun `resolver el cobro drena toda la cola en orden`() = runTest {
         servidor { request -> request.intents.map { acepta(it.id) } }
         val abrir = encola(SyncIntentTypes.OPEN_TABLE)
         val ronda = encola(SyncIntentTypes.ADD_ITEMS)
@@ -319,6 +329,60 @@ class SyncOutboxDesenlaceDelCobroTest {
 
         assertThat(enviados.single().intents.map { it.id }).containsExactly(abrir, ronda, cobro).inOrder()
         assertThat(listOf(abrir, ronda, cobro).map { fila(it).status }.distinct()).containsExactly(SyncIntentEntity.STATUS_ACKED)
+    }
+
+    // endregion
+
+    // region — Codex r4
+
+    @Test
+    fun `P1 el trabajador sigue guardando la respuesta aunque una fila anterior ya se haya descartado`() = runTest {
+        // r4 #1: la ronda salió por su ruta en línea mientras el lote del trabajador viajaba; el `0` de esa fila ya no corta la
+        // pasada y el rechazo del cobro que venía detrás queda escrito.
+        val ronda = encola(SyncIntentTypes.ADD_ITEMS)
+        val cobro = encola()
+        coEvery { api.syncIntents(VENUE, any()) } coAnswers {
+            val request = secondArg<SyncIntentsRequest>()
+            db.syncIntentDao().discardPending(ronda)
+            Response.success(SyncIntentsResponse(data = request.intents.map {
+                if (it.type == SyncIntentTypes.PAY_CASH) rechaza(it.id) else acepta(it.id)
+            }))
+        }
+        outbox.replayNow(VENUE) // el trabajador, antes que «Cobrar»
+
+        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_REJECTED)
+        coEvery { api.syncIntents(VENUE, any()) } throws IOException("sin red")
+        assertThat(outbox.reproducirYResolver(VENUE, cobro))
+            .isEqualTo(SyncOutbox.DesenlaceDelIntent.Rechazado("BUSINESS_RULE", "Order not found"))
+    }
+
+    @Test
+    fun `una fila anterior ya descartada no avisa al callback y lo de detras si`() = runTest {
+        val ronda = encola(SyncIntentTypes.ADD_ITEMS)
+        val cobro = encola()
+        coEvery { api.syncIntents(VENUE, any()) } coAnswers {
+            val request = secondArg<SyncIntentsRequest>()
+            db.syncIntentDao().discardPending(ronda)
+            Response.success(SyncIntentsResponse(data = request.intents.map { acepta(it.id) }))
+        }
+        val avisados = mutableListOf<String>()
+
+        outbox.replayNow(VENUE) { intent, _ -> avisados += intent.id }
+
+        assertThat(avisados).containsExactly(cobro)
+        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
+        assertThat(fila(ronda).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
+    }
+
+    @Test
+    fun `P1 D6 un rechazo por numero que la base no deja guardar NO se anuncia como rechazo - no se sabe`() = runTest {
+        // r4 #4: la fila sigue en espera; la siguiente pasada puede renumerarla y registrarla.
+        servidor { request -> request.intents.map { stale(it.id, 1000) } }
+        val cobro = encola()
+        coEvery { dao.resolve(cobro, any(), any(), any(), any()) } throws SQLiteFullException("disco lleno")
+
+        assertThat(outbox.reproducirYResolver(VENUE, cobro)).isInstanceOf(SyncOutbox.DesenlaceDelIntent.NoSeSabe::class.java)
+        assertThat(fila(cobro).status).isEqualTo(SyncIntentEntity.STATUS_PENDING)
     }
 
     // endregion

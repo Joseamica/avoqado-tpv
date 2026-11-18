@@ -27,14 +27,13 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import java.io.IOException
 import java.math.BigDecimal
 
 /**
  * hz:nube0000:na286b5f (encargo 64000e, 18-nov-2026), parte del EFECTIVO: «Tu mesa» se quedaba pegada a una cuenta ya
- * pagada si el «Liberar mesa» en línea contestaba 500 (no se preguntaba por la cuenta) o si la pregunta por la cuenta fallaba
- * (sin red, timeout): no se volvía a intentar. Ahora se pregunta también tras un 500 y, si la pregunta no contesta, se repite
- * (a los 5 s y a los 30 s) sólo sobre la MISMA sesión. Si la cuenta todavía debe, la sesión se queda, como antes.
+ * pagada si el «Liberar mesa» en línea contestaba 500 o un error inesperado: sólo se preguntaba por la cuenta tras un 4xx.
+ * Ahora se pregunta tras cualquier respuesta que no es de red (una vez, de inmediato). Si la cuenta todavía debe o la pregunta
+ * no contesta, la sesión se queda, como antes (reintentar más tarde podía pisar la siguiente mesa: Codex r3 #5).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class TableCheckoutSesionNoQuedaPegadaTest {
@@ -92,21 +91,6 @@ class TableCheckoutSesionNoQuedaPegadaTest {
         val viewModel = createViewModel()
 
         viewModel.onPaymentCompleted(BigDecimal("20.00"))
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        assertThat(tableSession.current()).isNull()
-    }
-
-    @Test
-    fun na286b5f_si_la_pregunta_por_la_cuenta_falla_se_vuelve_a_preguntar_y_suelta_la_sesion() = runTest {
-        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
-        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(porCobrar, Result.failure(IOException("sin red")), pagada)
-        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
-            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
-        val viewModel = createViewModel()
-
-        viewModel.onPaymentCompleted(BigDecimal("20.00"))
-        testDispatcher.scheduler.advanceUntilIdle()
 
         assertThat(tableSession.current()).isNull()
     }
@@ -123,39 +107,19 @@ class TableCheckoutSesionNoQuedaPegadaTest {
         val viewModel = createViewModel()
 
         viewModel.onPaymentCompleted(BigDecimal("20.00"))
-        testDispatcher.scheduler.advanceUntilIdle()
 
         assertThat(tableSession.current()?.orderId).isEqualTo("b")
     }
 
     @Test
-    fun na286b5f_la_pregunta_que_nunca_contesta_se_repite_tres_veces_y_la_sesion_se_queda() = runTest {
+    fun na286b5f_un_error_inesperado_al_liberar_tambien_pregunta_por_la_cuenta() = runTest {
         tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
-        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(porCobrar, Result.failure(IOException("sin red")))
-        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
-            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
+        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(porCobrar, pagada)
+        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns Result.failure(IllegalStateException("respuesta rara"))
         val viewModel = createViewModel()
 
         viewModel.onPaymentCompleted(BigDecimal("20.00"))
-        testDispatcher.scheduler.advanceUntilIdle()
 
-        assertThat(tableSession.current()?.orderId).isEqualTo("b")
-        // La primera lectura de la cuenta + 3 preguntas, nunca un bucle sin fin.
-        coVerify(exactly = 4) { repository.getOrder(venueId, "b") }
-    }
-
-    @Test
-    fun control_un_reintento_tardio_no_toca_la_sesion_de_otra_mesa() = runTest {
-        tableSession.start(TableSession.Active(tableId = "m8", orderId = "b", total = BigDecimal("20.00")))
-        coEvery { repository.getOrder(venueId, "b") } returnsMany listOf(porCobrar, Result.failure(IOException("sin red")), pagada)
-        coEvery { repository.clearTable(venueId, "m8", "b", false) } returns
-            Result.failure(BackendHttpException(statusCode = 400, message = "Cannot clear table with unpaid order ORD-A"))
-        val viewModel = createViewModel()
-
-        viewModel.onPaymentCompleted(BigDecimal("20.00"))
-        tableSession.start(TableSession.Active(tableId = "m3", orderId = "otra"))
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        assertThat(tableSession.current()?.orderId).isEqualTo("otra")
+        assertThat(tableSession.current()).isNull()
     }
 }

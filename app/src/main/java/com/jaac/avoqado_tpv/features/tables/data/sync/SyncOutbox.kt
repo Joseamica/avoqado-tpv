@@ -75,12 +75,6 @@ class SyncOutbox @Inject constructor(
     private val secureStorage: SecureStorage,
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
-    /**
-     * nab0e38e (encargo 64000e): libreta + cola de cobros, para no mandar un «Liberar mesa» cuya cuenta tiene un cobro con
-     * tarjeta de esta terminal que todavía no sube ([loLiberaSuCobro]). Último y con default porque las pruebas construyen por
-     * posición.
-     */
-    private val libreta: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger? = null,
 ) {
     private val replayMutex = Mutex()
     private val gson = Gson()
@@ -292,19 +286,7 @@ class SyncOutbox @Inject constructor(
             if (batch.isEmpty()) return@withLock ReplayProgress(resolved, false)
             val ready = mutableListOf<SyncIntentEntity>()
             var waitingForMapping = false
-            var sinMandar = 0
             for (intent in batch) {
-                // nab0e38e: un «Liberar mesa» cuya cuenta tiene un cobro con tarjeta de esta terminal que todavía no sube NO se
-                // manda: el SERVIDOR lo rechazaría para siempre (ve la cuenta sin pagar) y, cuando ese cobro se registre, él
-                // mismo libera la mesa (`releaseTableIfSettled`). Se marca descartado (como el write-ahead) y la cola sigue.
-                if (intent.type == SyncIntentTypes.CLEAR_TABLE && loLiberaSuCobro(venueId, intent)) {
-                    // Con su razón escrita en la fila y en el log: nunca se descarta en silencio.
-                    if (dao.discardPendingConRazon(intent.id, RAZON_LO_LIBERA_SU_COBRO, MENSAJE_LO_LIBERA_SU_COBRO) != 1) break
-                    Timber.w("🪑 [Tables] CLEAR_TABLE %s no se manda (%s): lo libera el cobro con tarjeta de su cuenta (venue=%s)",
-                        intent.id, RAZON_LO_LIBERA_SU_COBRO, venueId)
-                    sinMandar++
-                    continue
-                }
                 try {
                     ready += if (intent.type == SyncIntentTypes.PAY_CASH && intent.shiftMembership == "MANAGED")
                         (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException()).table(intent)
@@ -315,14 +297,6 @@ class SyncOutbox @Inject constructor(
                     break
                 }
             }
-            if (ready.isEmpty() && sinMandar > 0 && !waitingForMapping) {
-                // El lote sólo traía «Liberar mesa» que no se mandan: lo que sigue en espera sale en la siguiente vuelta.
-                resolved += sinMandar
-                if (singleBatch) return@withLock ReplayProgress(resolved, batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
-                otraVuelta = true
-                continue
-            }
-            resolved += sinMandar
             if (ready.isEmpty() || !canEmit()) return@withLock ReplayProgress(resolved, false)
             val request = SyncIntentsRequest(deviceId = deviceId, intents = ready.map { it.toWire() })
             val response = try {
@@ -421,31 +395,6 @@ class SyncOutbox @Inject constructor(
         ReplayProgress(resolved, false)
     }
 
-    /**
-     * nab0e38e: ¿el cobro con tarjeta de la cuenta de este «Liberar mesa» lo vuelve innecesario? Sí, si la cuenta que nombra
-     * (`orderId` o `localOrderId`, D79) tiene dinero de tarjeta de esta terminal que el SERVIDOR todavía no tiene: en la cola
-     * subiendo (`SUBIENDO`) o en la libreta aprobado y sin registrar (`LIBRETA`: la PAX enseña «Aprobado» antes de escribir la
-     * cola). Es la MISMA pregunta, en una sola lectura, que usa «Cobrar» de Mesas (D9, `DineroDeTarjetaDeLaCuenta`). Si ese
-     * cobro se registra, el SERVIDOR libera la mesa; si nunca se registra, la cuenta sigue debiendo y el «Liberar mesa» se
-     * habría rechazado igual. Un cobro sin registrar y sin revisar (`SIN_REGISTRAR`), sin cuenta (intents de antes del D79) o
-     * si no se puede leer: se manda como antes.
-     */
-    private suspend fun loLiberaSuCobro(venueId: String, intent: SyncIntentEntity): Boolean {
-        val cobros = libreta ?: return false
-        return try {
-            val payload = com.google.gson.JsonParser.parseString(intent.payloadJson).asJsonObject
-            val cuentas = listOf("orderId", "localOrderId").mapNotNull { campo ->
-                payload.get(campo)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotBlank() }
-            }
-            cuentas.any { cobros.dineroDeTarjetaSinConfirmarDeLaCuenta(venueId, it) in COBRO_QUE_TODAVIA_SUBE }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            Timber.w(error, "⚠️ [Tables] No se pudo revisar la cola de cobros para CLEAR_TABLE %s — se manda como antes", intent.id)
-            false
-        }
-    }
-
     // MARK: - Cuarentena
 
     /** Un intent rechazado, ya legible para la pantalla de resolución (Task 9). */
@@ -492,6 +441,14 @@ class SyncOutbox @Inject constructor(
         dao.dismiss(id, venueId)
     }
 
+    /** nab0e38e: los «Liberar mesa» rechazados de este venue (los más viejos primero), para ver si ya se resolvieron solos. */
+    suspend fun liberarMesaRechazados(venueId: String, tope: Int): List<SyncIntentEntity> =
+        dao.rejectedForVenue(venueId).filter { it.type == SyncIntentTypes.CLEAR_TABLE }.take(tope)
+
+    /** nab0e38e: quita de la cuarentena un rechazo que ya no hace falta resolver, dejando su razón escrita. */
+    suspend fun resueltoSolo(venueId: String, intent: SyncIntentEntity, razon: String): Boolean =
+        dao.dismissConRazon(intent.id, venueId, razon + (intent.message?.let { " Rechazo original: $it" } ?: "")) == 1
+
     private fun SyncIntentEntity.toWire(): SyncIntentInput = SyncIntentInput(
         id = id,
         seq = seq,
@@ -502,13 +459,6 @@ class SyncOutbox @Inject constructor(
 
     private companion object {
         const val BATCH_SIZE = 50
-        /** nab0e38e: lo que `dineroDeTarjetaSinConfirmarDeLaCuenta` contesta cuando el cobro todavía va a llegar al SERVIDOR. */
-        val COBRO_QUE_TODAVIA_SUBE = setOf("SUBIENDO", "LIBRETA")
-        /** nab0e38e: la razón que queda en la fila de un «Liberar mesa» que no se mandó. */
-        const val RAZON_LO_LIBERA_SU_COBRO = "LO_LIBERA_SU_COBRO"
-        const val MENSAJE_LO_LIBERA_SU_COBRO =
-            "No se mandó: el cobro con tarjeta de esta cuenta todavía no sube; al registrarse, el servidor libera la mesa. " +
-                "Si ese cobro no se registra, la cuenta sigue debiendo y la mesa sigue ocupada.
 
         /**
          * NO vive en [SyncIntentEntity] porque `RETRY` nunca se persiste — no es

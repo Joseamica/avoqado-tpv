@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe
 import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
@@ -683,6 +684,53 @@ class TablesRepository @Inject constructor(
 
             else -> onlineResult
         }
+    }
+
+    /**
+     * hz:nube0000:nab0e38e (encargo 64000e): un «Liberar mesa» sin red puede llegar al SERVIDOR antes que el cobro con tarjeta
+     * de su cuenta (el trabajador reproduce Mesas antes que los cobros, y la PAX enseña «Aprobado» antes de registrar). El
+     * SERVIDOR lo rechaza con razón (la cuenta todavía debía) y quedaba en «Acciones rechazadas» para siempre, aunque segundos
+     * después el cobro entrara y el SERVIDOR liberara la mesa solo (`releaseTableIfSettled`). Aquí la terminal pregunta por la
+     * cuenta de cada «Liberar mesa» rechazado y, si ya está pagada o cerrada, lo quita de la cuarentena con la razón escrita
+     * (no en silencio). La cola de Mesas no se toca: el rechazo pasa como siempre y su orden FIFO sigue igual.
+     *
+     * Sólo con la cuenta del SERVIDOR (`orderId`): un id local no se puede preguntar. Si no se puede preguntar, se queda. A lo
+     * más [TOPE_LIBERAR_MESA_POR_REVISAR] por vuelta. Nunca lanza salvo cancelación. @return cuántos se resolvieron solos.
+     */
+    suspend fun resolverLiberarMesaQueYaNoHaceFalta(venueId: String): Int {
+        val rechazados = try {
+            syncOutbox.liberarMesaRechazados(venueId, TOPE_LIBERAR_MESA_POR_REVISAR)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Tables] No se pudo leer la cuarentena para «Liberar mesa» (venue=%s)", venueId)
+            return 0
+        }
+        var resueltos = 0
+        for (intent in rechazados) {
+            val cuenta = try {
+                JsonParser.parseString(intent.payloadJson).asJsonObject.get("orderId")
+                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotBlank() }
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            val detalle = getOrder(venueId, cuenta).getOrNull() ?: continue
+            if (detalle.paymentStatus != "PAID" && detalle.status != "COMPLETED") continue
+            val hecho = try {
+                syncOutbox.resueltoSolo(venueId, intent, RAZON_LIBERAR_MESA_YA_NO_HACE_FALTA)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Tables] No se pudo marcar resuelto el CLEAR_TABLE %s", intent.id)
+                false
+            }
+            if (hecho) {
+                resueltos++
+                Timber.w("🪑 [Tables] CLEAR_TABLE %s rechazado (%s) ya no hace falta: la cuenta %s ya está pagada — resuelto solo",
+                    intent.id, intent.errorCode, cuenta)
+            }
+        }
+        return resueltos
     }
 
     /** D79: `tableId` y, si se conoce, la cuenta que se soltó (`localOrderId` mientras la sesión siga provisional). */
@@ -1793,3 +1841,10 @@ internal fun ProductCatalogDto.toMenuProduct(): MenuProduct = MenuProduct(
     },
     familia = datosDeFamiliaDeDto(productGroupId, productGroupName, productGroupImageUrl, variantOptions),
 )
+
+/** nab0e38e: cuántos «Liberar mesa» rechazados se revisan por vuelta (cada uno es una pregunta al SERVIDOR). */
+internal const val TOPE_LIBERAR_MESA_POR_REVISAR = 10
+
+/** nab0e38e: la razón que queda escrita en un «Liberar mesa» que la terminal quitó sola de «Acciones rechazadas». */
+internal const val RAZON_LIBERAR_MESA_YA_NO_HACE_FALTA =
+    "Se resolvió solo: la cuenta ya está pagada (al registrar su cobro, el servidor libera la mesa)."

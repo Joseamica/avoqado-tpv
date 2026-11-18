@@ -75,6 +75,8 @@ class QuarantineViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     private val permissionsRepository: PermissionsRepository,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    /** nab0e38e: para quitar solos los «Liberar mesa» que ya no hacen falta. Último y con default por las pruebas. */
+    private val tablesRepository: com.jaac.avoqado_tpv.features.tables.data.TablesRepository? = null,
 ) : ViewModel() {
 
     /** La hora que se le enseña al mesero es la del negocio, no la del aparato. */
@@ -114,6 +116,8 @@ class QuarantineViewModel @Inject constructor(
         this.venueId = venueId
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true) }
+            // nab0e38e: un «Liberar mesa» rechazado cuya cuenta ya está pagada se quita solo, con su razón escrita.
+            tablesRepository?.resolverLiberarMesaQueYaNoHaceFalta(venueId)
             val rejected = outbox.rejectedIntents(venueId)
             _state.update {
                 it.copy(

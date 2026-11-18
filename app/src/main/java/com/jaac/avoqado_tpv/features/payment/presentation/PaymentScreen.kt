@@ -165,7 +165,7 @@ fun PaymentScreen(
     onNavigateHome: () -> Unit = onNavigateBack,
     // 🪑 na286b5f: «Inicio» tras un cobro que SALDÓ la cuenta de una mesa (sin saldo pendiente, no reembolso) suelta la mesa
     // como «Nueva Orden». null = «Inicio» de siempre (todo lo que no es Mesas).
-    onNavigateHomeTrasSaldarLaMesa: (() -> Unit)? = null,
+    onNavigateHomeTrasSaldarLaMesa: ((saldoConfirmadoEnCero: Boolean) -> Unit)? = null,
     onRefundComplete: () -> Unit = onNavigateBack,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
@@ -1674,7 +1674,7 @@ private fun PaymentSuccessContent(
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateHome: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
-    onInicioTrasSaldarLaMesa: (() -> Unit)? = null,  // 🪑 na286b5f: «Inicio» cuando el cobro saldó la cuenta de una mesa
+    onInicioTrasSaldarLaMesa: ((saldoConfirmadoEnCero: Boolean) -> Unit)? = null,  // 🪑 na286b5f: «Inicio» tras un cobro de una mesa
     onRefundComplete: () -> Unit = onNavigateHome,  // 💸 Navigate after refund success
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Serialized sale: return to scanner flow
@@ -1796,7 +1796,9 @@ private fun PaymentSuccessContent(
                     if (flowOrigin != PaymentFlowOrigin.SERIALIZED) {
                         IconButton(
                             // 🪑 na286b5f: si el cobro saldó la mesa, «Inicio» la suelta igual que «Nueva Orden».
-                            onClick = onInicioTrasSaldarLaMesa?.takeIf { !isRefund && !hasRemainingBalance } ?: onNavigateHome,
+                            onClick = onInicioTrasSaldarLaMesa?.takeIf { !isRefund && !hasRemainingBalance }
+                                ?.let { inicio -> { inicio(remainingBalance != null && remainingBalance.signum() == 0) } }
+                                ?: onNavigateHome,
                             modifier = Modifier
                                 .size(48.dp)
                                 .border(

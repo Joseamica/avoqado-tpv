@@ -614,6 +614,45 @@ class AuthRepositoryTest {
         verify { secureStorage.saveVenueLegalName("VIEJA SA") }
     }
 
+    @Test
+    fun `P1 Codex mac r1 1 si los datos del negocio no llegan, el emisor guardado de OTRO negocio no se imprime`() = runTest {
+        // La terminal pasó del negocio A al B sin borrar lo guardado y el GET de B falló: el ticket de B no lleva el RFC de A.
+        every { secureStorage.getVenueFiscalDe() } returns "venue-A"
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.error(500, "{}".toResponseBody(null))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueRfc(null) }
+        verify { secureStorage.saveVenueLegalName(null) }
+        verify { secureStorage.saveVenueFiscalDe(null) }
+    }
+
+    @Test
+    fun `P1 Codex mac r1 1 sin red al pedir los datos del negocio, el emisor de OTRO negocio tampoco se imprime`() = runTest {
+        every { secureStorage.getVenueFiscalDe() } returns "venue-A"
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } throws java.io.IOException("sin red")
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueRfc(null) }
+        verify { secureStorage.saveVenueFiscalDe(null) }
+    }
+
+    @Test
+    fun `control si los datos no llegan, el emisor de ESTE negocio y las columnas de siempre se conservan`() = runTest {
+        every { secureStorage.getVenueFiscalDe() } returns testVenueId
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.error(500, "{}".toResponseBody(null))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify(exactly = 0) { secureStorage.saveVenueRfc(any()) }
+        verify(exactly = 0) { secureStorage.saveVenueLegalName(any()) }
+        verify(exactly = 0) { secureStorage.saveVenueFiscalDe(any()) }
+    }
+
     /**
      * Create a mock AuthResponseDto for successful login
      */

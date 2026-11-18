@@ -310,7 +310,7 @@ fun PaymentScreen(
             val total = subtotal.add(tipAmount)
 
             if (tipAmount > java.math.BigDecimal.ZERO) {
-                "Propina" to "Paso $step de $prePaymentSteps · Total: $$total MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Total: $${importeConDosDecimales(total.toPlainString())} MXN"
             } else {
                 "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${importeConDosDecimales(currentState.amount)} MXN"
             }

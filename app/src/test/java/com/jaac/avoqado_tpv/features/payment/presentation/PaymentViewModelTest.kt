@@ -2539,6 +2539,8 @@ class PaymentViewModelTest {
 
             val error = viewModel.state.value as PaymentState.PrintError
             assertThat(error.previousState.receipt).isEqualTo(reciboRegistrado)
+            // Codex mac r1 #4: se ve el SEGUNDO fallo (sin papel), no el aviso de comanda de antes, ignorado.
+            assertThat(error.message).startsWith("Sin papel en la impresora")
         } finally {
             candado.countDown()
             viewModel.viewModelScope.cancel()

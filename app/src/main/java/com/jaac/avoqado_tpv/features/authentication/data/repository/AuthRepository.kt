@@ -273,10 +273,24 @@ class AuthRepository @Inject constructor(
                 Timber.d("✅ Venue details cached for receipts: ${venue.id}")
             } else {
                 Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
+                olvidarEmisorDeOtroNegocio(venueId)
             }
         } catch (e: Exception) {
             Timber.w(e, "⚠️ Failed to fetch venue details")
+            olvidarEmisorDeOtroNegocio(venueId)
         }
+    }
+
+    /**
+     * na7522fd (Codex mac r1 #1): si los datos de ESTE negocio no llegaron y lo guardado es el emisor de OTRO (la terminal
+     * cambió de negocio sin borrar lo guardado), el ticket sale sin RFC ni razón social antes que con los de otro negocio.
+     */
+    private fun olvidarEmisorDeOtroNegocio(venueId: String) {
+        val de = secureStorage.getVenueFiscalDe() ?: return
+        if (de == venueId) return
+        secureStorage.saveVenueLegalName(null)
+        secureStorage.saveVenueRfc(null)
+        secureStorage.saveVenueFiscalDe(null)
     }
 
     /**

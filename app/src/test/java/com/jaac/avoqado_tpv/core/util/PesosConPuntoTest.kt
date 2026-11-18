@@ -50,7 +50,8 @@ class PesosConPuntoTest {
     fun `P2 los encabezados del cobro no pintan el importe crudo`() {
         // «Paso 1 de 3 · $10.0»: el importe de la calificación (y de propina, cuenta y verificación) se pintaba tal cual llegaba.
         val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
-        val crudos = Regex("""\$\$\{currentState\.(amount|totalAmount)\}""").findAll(pantalla).map { it.value }.toList()
+        // Codex mac r1 #3: también el total con propina («Total: $11.5 MXN» cuando el importe llega como «10»).
+        val crudos = Regex("""\$\$(\{currentState\.(amount|totalAmount)\}|total\b)""").findAll(pantalla).map { it.value }.toList()
         assertEquals("encabezados con el importe sin formatear", emptyList<String>(), crudos)
     }
 

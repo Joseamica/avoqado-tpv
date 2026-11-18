@@ -110,34 +110,4 @@ class BajarDeVersionBorrariaRoomTest {
         criptos.insertar(cripto("sin-respuesta", "v3", financial = null, recorded = null))
         assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isTrue()
     }
-
-    private fun intento(id: String, state: String, kind: String = "SALE") = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
-        attemptId = id, venueId = "v1", processor = "ANGELPAY", state = state, kind = kind, amountCents = 1000, tipCents = 0,
-        recordingRoute = "FAST", paymentContextJson = "{}", createdAt = 1, updatedAt = 1)
-
-    /** Codex r1 #4: la libreta (cobros Y devoluciones) y la bandeja del POS también sólo existen en la terminal. */
-    @Test fun `cobros o devoluciones con tarjeta sin resolver y solicitudes del POS en curso tambien frenan el retroceso`() = runTest {
-        val libreta = db.paymentAttemptDao()
-        libreta.insert(intento("registrado", "REGISTRADO"))
-        libreta.insert(intento("descartado", "DESCARTADA"))
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isFalse()
-
-        libreta.insert(intento("devolucion-en-duda", "INDETERMINADO", kind = "REFUND"))
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isTrue()
-        db.openHelper.writableDatabase.execSQL("DELETE FROM payment_attempts WHERE attempt_id = 'devolucion-en-duda'")
-
-        libreta.insert(intento("cerrado-con-dinero", "DESCARTADA").copy(serverProcessorEvidence = "APPROVED"))
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isTrue()
-        db.openHelper.writableDatabase.execSQL("DELETE FROM payment_attempts WHERE attempt_id = 'cerrado-con-dinero'")
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isFalse()
-
-        db.openHelper.writableDatabase.execSQL(
-            "INSERT INTO remote_payment_requests (request_id, venue_id, amount_cents, tip_cents, skip_review, source_timestamp, status, created_at, updated_at) " +
-                "VALUES ('pos-1', 'v1', 1000, 0, 0, '2026-11-17T10:00:00Z', 'RESOLVED', 1, 1)")
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isFalse()
-        db.openHelper.writableDatabase.execSQL(
-            "INSERT INTO remote_payment_requests (request_id, venue_id, amount_cents, tip_cents, skip_review, source_timestamp, status, created_at, updated_at) " +
-                "VALUES ('pos-2', 'v1', 1000, 0, 0, '2026-11-17T10:00:00Z', 'PROCESSING', 1, 1)")
-        assertThat(db.hayAlgoQueBajarDeVersionBorraria()).isTrue()
-    }
 }

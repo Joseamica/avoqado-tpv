@@ -29,14 +29,6 @@ data class ObligacionPendiente(
 
 @Dao
 interface RemotePaymentRequestDao {
-    /**
-     * hz:nube0000:naaa0db5 (Codex r1 #4): solicitudes del POS que esta terminal ya tomó y todavía puede estar ejecutando (su
-     * dinero lo cuentan la libreta, la cola de pagos y cripto; esto cubre la que aún no tiene otro dueño). Lo lee
-     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
-     */
-    @Query("SELECT COUNT(*) FROM remote_payment_requests WHERE status = 'PROCESSING' AND execution_closed_at IS NULL")
-    suspend fun contarQueBajarDeVersionBorraria(): Int
-
     /** Una sola consulta y una sola verdad: no hay doble conteo mientras una fila del buzón gana
      * su fila de libreta. PREPARANDO por sí solo no resuelve un cobro remoto reclamado: sigue
      * visible. Gson escribe la identidad exacta de la solicitud; `instr` no tiene comodines.

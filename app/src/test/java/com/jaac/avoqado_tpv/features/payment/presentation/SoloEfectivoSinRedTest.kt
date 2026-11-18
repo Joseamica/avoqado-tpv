@@ -310,6 +310,37 @@ class SoloEfectivoSinRedTest {
     }
 
     @Test
+    fun `D96 mientras registra el efectivo la pantalla sabe que es efectivo (el título no dice «Pago con Tarjeta»)`() = runTest {
+        val viewModel = blumon()
+        try {
+            viewModel.setSoloEfectivo(true)
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarMetodoDePago(viewModel)
+
+            var estadoAlRegistrar: PaymentState? = null
+            coEvery {
+                registrarPago(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } coAnswers {
+                estadoAlRegistrar = viewModel.state.value
+                Result.success(recibo())
+            }
+            viewModel.processCashPayment("100.00")
+
+            coVerify(timeout = 5000) {
+                registrarPago(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+            val procesando = estadoAlRegistrar as PaymentState.Processing
+            assertThat(procesando.message).isEqualTo("Registrando pago en efectivo...")
+            assertThat(procesando.esEfectivo).isTrue()
+            assertThat(tituloAlProcesar(procesando, esReembolso = false)).isEqualTo("Pago en Efectivo")
+            assertThat(tituloAlProcesar(PaymentState.Processing("Autorizando con banco..."), esReembolso = false))
+                .isEqualTo("Pago con Tarjeta")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `entra sin red con sólo efectivo y al volver la red la tarjeta se vuelve a encender`() = runTest {
         sinRed()
         val viewModel = blumon()

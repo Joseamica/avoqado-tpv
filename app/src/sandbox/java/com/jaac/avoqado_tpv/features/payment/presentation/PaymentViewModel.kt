@@ -6626,7 +6626,7 @@ class PaymentViewModel @Inject constructor(
         }
         val propina = seleccion.tipAmount.toBigDecimal().movePointRight(2).intValueExact()
         check(propina >= 0) { "La propina no puede ser negativa" }
-        _state.value = PaymentState.Processing("Guardando venta en la terminal...")
+        _state.value = PaymentState.Processing("Guardando venta en la terminal...", esEfectivo = true)
         val guardada = ventaLocalRepository.guardar(
             venta, com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.PROCESSOR_BLUMON,
             blumonSerialNumber = "", deviceSerialNumber = secureStorage.getSerialNumber(), reclamada = true, propinaCents = propina,
@@ -6732,7 +6732,7 @@ class PaymentViewModel @Inject constructor(
                 // de SelectingMerchant. Fijar «Procesando» sólo DESPUÉS de resolver el turno
                 // (que con el socket medio muerto tarda hasta 30 s) dejaba el botón tocable
                 // durante toda la espera — la ventana exacta de la ráfaga de SN00396.
-                _state.value = PaymentState.Processing("Verificando turno...")
+                _state.value = PaymentState.Processing("Verificando turno...", esEfectivo = true)
 
                 // 🧾 Keep snapshot aligned with UI state before cash processing
                 updateSessionSnapshot(
@@ -6880,7 +6880,7 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 // Now change state to Processing
-                _state.value = PaymentState.Processing("Registrando pago en efectivo...")
+                _state.value = PaymentState.Processing("Registrando pago en efectivo...", esEfectivo = true)
 
                 Timber.d("💵 [Cash Payment] Context: Venue=$currentVenueId, Staff=$currentStaffId, Shift=$currentShiftId")
                 Timber.d("💵 [Cash Payment] Details: Subtotal=${currentState.subtotal}, Tip=${currentState.tipAmount}, Total=${currentState.totalAmount}, Rating=${currentState.rating}")
@@ -7387,7 +7387,7 @@ class PaymentViewModel @Inject constructor(
                     ratingOverride = currentState.rating
                 )
 
-                _state.value = PaymentState.Processing("Registrando pago confirmado...")
+                _state.value = PaymentState.Processing("Registrando pago confirmado...", esEfectivo = true)
 
                 // 🥝 KIOSK CASH ATTRIBUTION LOGIC:
                 // - If kiosk session exists → commission/tip goes to SESSION user

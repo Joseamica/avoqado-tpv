@@ -94,6 +94,14 @@ interface ProofOfSaleQueueDao {
     suspend fun savePhotoUrl(key: String, token: String, url: String): Int
 
     /** Los archivos que todavía tienen fila (el barrido de huérfanos no los toca). */
+    /**
+     * hz:nube0000:naaa0db5: fotos y números que el SERVIDOR todavía no tiene o que esperan a una persona (por subir, subiendo,
+     * fallidos con «Descartar» o por corregir). Lo lee
+     * [com.jaac.avoqado_tpv.features.remote_command.domain.hayAlgoQueBajarDeVersionBorraria].
+     */
+    @Query("SELECT COUNT(*) FROM proof_of_sale_queue WHERE sync_status != 'SUCCESS'")
+    suspend fun contarQueBajarDeVersionBorraria(): Int
+
     @Query("SELECT local_path FROM proof_of_sale_queue WHERE local_path IS NOT NULL")
     suspend fun localPaths(): List<String>
 

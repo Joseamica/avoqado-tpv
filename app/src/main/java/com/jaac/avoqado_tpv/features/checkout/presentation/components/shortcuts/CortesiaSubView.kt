@@ -177,7 +177,7 @@ private fun CortesiaRow(item: CartItem, canCompItems: Boolean, onTap: () -> Unit
         }
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = "$${String.format("%.2f", item.unitPriceCents / 100.0)}",
+            text = "$${String.format(java.util.Locale.US, "%.2f", item.unitPriceCents / 100.0)}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textDecoration = if (item.isCortesia) TextDecoration.LineThrough else TextDecoration.None,

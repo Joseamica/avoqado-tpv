@@ -84,7 +84,7 @@ fun ProductDetailSheet(
             .sumOf { it.priceAdjustment.multiply(BigDecimal(100)).toInt() }
     }
     val totalCents = basePriceCents + modifierTotalCents
-    val formattedTotal = "$${String.format("%.2f", totalCents / 100.0)}"
+    val formattedTotal = "$${String.format(java.util.Locale.US, "%.2f", totalCents / 100.0)}"
 
     // Groups sorted by displayOrder — same order the UI renders them.
     val orderedGroups = remember(product.id) {

@@ -78,7 +78,7 @@ data class Product(
      * Used in ProductCard: "$12.00"
      */
     val formattedPrice: String
-        get() = String.format("$%.2f", price)
+        get() = String.format(java.util.Locale.US, "$%.2f", price)
 
     /**
      * Convenience property: Is product currently orderable?
@@ -226,8 +226,8 @@ data class ProductModifier(
     val formattedPrice: String
         get() = when {
             priceAdjustment == BigDecimal.ZERO -> "Gratis"
-            priceAdjustment > BigDecimal.ZERO -> String.format("+$%.2f", priceAdjustment)
-            else -> String.format("-$%.2f", priceAdjustment.abs())  // Discount (rare)
+            priceAdjustment > BigDecimal.ZERO -> String.format(java.util.Locale.US, "+$%.2f", priceAdjustment)
+            else -> String.format(java.util.Locale.US, "-$%.2f", priceAdjustment.abs())  // Discount (rare)
         }
 }
 

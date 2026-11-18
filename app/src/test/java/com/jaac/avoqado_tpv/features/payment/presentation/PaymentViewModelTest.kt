@@ -2312,6 +2312,325 @@ class PaymentViewModelTest {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // na16c21f · encargo 1df453 (18-nov-2026): lo que llega mientras se ve «No se pudo imprimir» se perdía al cerrarlo.
+    // na783d44: con la sesión cerrada, la prueba de venta decía «quedó en cola» sin nada en la cola.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun estadoDe(viewModel: PaymentViewModel): kotlinx.coroutines.flow.MutableStateFlow<PaymentState> {
+        val campo = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        return campo.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+    }
+
+    private val tarjetaDePrueba = com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails(
+        maskedPan = "**** 4242",
+        cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA,
+        entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP,
+    )
+
+    private val reciboRegistrado = PaymentReceipt(
+        paymentId = "pay-1", receiptUrl = "https://avoqado.io/r/abc", accessKey = "abc",
+        amount = BigDecimal("25.00"), tipAmount = BigDecimal.ZERO,
+    )
+
+    /** El reintento del registro que deja `handlePaymentSuccess` cuando la red falló (lo usa la reconexión). */
+    private fun dejarReintentoDelRecibo(viewModel: PaymentViewModel) {
+        val clase = PaymentViewModel::class.java.declaredClasses.first { it.simpleName == "PendingReceiptRetry" }
+        val constructor = clase.declaredConstructors.first { it.parameterCount == 5 }.apply { isAccessible = true }
+        val reintento = constructor.newInstance(
+            PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a"),
+            tarjetaDePrueba, "F628CL", "873257481453", null,
+        )
+        PaymentViewModel::class.java.getDeclaredField("pendingReceiptRetry").apply { isAccessible = true }.set(viewModel, reintento)
+        coEvery { mockRecordPaymentUseCase(any(), any(), any(), any(), any()) } returns Result.success(reciboRegistrado)
+    }
+
+    private fun esperar(limiteMs: Long = 5_000, condicion: () -> Boolean) {
+        val fin = System.currentTimeMillis() + limiteMs
+        while (!condicion() && System.currentTimeMillis() < fin) Thread.sleep(20)
+    }
+
+    @Test
+    fun `P1 na16c21f el recibo que se registra mientras se ve No se pudo imprimir aparece al cerrar el aviso`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            dejarReintentoDelRecibo(viewModel)
+            estadoDe(viewModel).value = PaymentState.PrintError(
+                message = "Sin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
+                previousState = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null, pendingSyncMessage = "quedó en cola"),
+            )
+
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+            viewModel.dismissPrintError()
+
+            val regreso = viewModel.state.value as PaymentState.Success
+            assertThat(regreso.receipt).isEqualTo(reciboRegistrado)
+            assertThat(regreso.pendingSyncMessage).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 na16c21f el recibo que llega mientras se revisa la impresora no se pierde si despues sale No se pudo imprimir`() = runTest(testDispatcher) {
+        val candado = java.util.concurrent.CountDownLatch(1)
+        val impresora = mockk<com.jaac.avoqado_tpv.core.printer.PrinterManager>(relaxed = true)
+        every { impresora.checkPrinterStatus() } answers {
+            candado.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            com.jaac.avoqado_tpv.core.printer.PrinterStatusResult(code = 2, isReady = false, hasPaper = false, message = "Sin papel")
+        }
+        val viewModel = createViewModel(printerManager = impresora)
+        try {
+            dejarReintentoDelRecibo(viewModel)
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+
+            viewModel.printReceipt() // toma la copia del éxito SIN recibo y espera a la impresora
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+            assertThat((viewModel.state.value as PaymentState.Success).receipt).isEqualTo(reciboRegistrado)
+            candado.countDown()
+            esperar { viewModel.state.value is PaymentState.PrintError }
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.PrintError::class.java)
+            viewModel.dismissPrintError()
+            assertThat((viewModel.state.value as PaymentState.Success).receipt).isEqualTo(reciboRegistrado)
+        } finally {
+            candado.countDown()
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 na16c21f el aviso de cola que llega mientras se ve No se pudo imprimir sigue ahi al cerrar el aviso`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            cobroEnPantalla(viewModel, "idem-1")
+            estadoDe(viewModel).value = PaymentState.PrintError(
+                message = "Sin papel",
+                previousState = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null),
+            )
+            val enCola = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0, referenceNumber = "873257481453", venueId = testVenueId, staffId = testStaffId,
+                amount = BigDecimal("25.00"), tip = BigDecimal.ZERO, rating = null, merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417", maskedPan = "**** 4242", cardBrand = "VISA", entryMode = "CHIP",
+                isInternational = false, authorizationNumber = "F628CL", idempotencyKey = "idem-1",
+                createdAt = System.currentTimeMillis(), retryCount = 0, lastError = "HTTP 502",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING,
+            )
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = enCola,
+                // Codex mac r2 #3: el cobro real lleva su llave en el contexto, y es la del cobro en pantalla.
+                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a")
+                    .copy(idempotencyKey = "idem-1"),
+                recordError = RuntimeException("HTTP 502"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null,
+            )
+            viewModel.dismissPrintError()
+
+            val regreso = viewModel.state.value as PaymentState.Success
+            assertThat(regreso.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            assertThat(regreso.referenceNumber).isEqualTo("873257481453")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    /** El attemptId del cobro que está en pantalla (`sessionSnapshot.paymentAttemptId`). */
+    private fun cobroEnPantalla(viewModel: PaymentViewModel, attemptId: String?) {
+        val campo = PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }
+        val sesion = campo.get(viewModel) as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession
+        campo.set(viewModel, sesion.copy(paymentAttemptId = attemptId))
+    }
+
+    /** Como [dejarReintentoDelRecibo], pero el reintento es del cobro `llave`. */
+    private fun dejarReintentoDelReciboDe(viewModel: PaymentViewModel, llave: String) {
+        val clase = PaymentViewModel::class.java.declaredClasses.first { it.simpleName == "PendingReceiptRetry" }
+        val constructor = clase.declaredConstructors.first { it.parameterCount == 5 }.apply { isAccessible = true }
+        val reintento = constructor.newInstance(
+            PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a")
+                .copy(idempotencyKey = llave),
+            tarjetaDePrueba, "F628CL", "873257481453", null,
+        )
+        PaymentViewModel::class.java.getDeclaredField("pendingReceiptRetry").apply { isAccessible = true }.set(viewModel, reintento)
+        coEvery { mockRecordPaymentUseCase(any(), any(), any(), any(), any()) } returns Result.success(reciboRegistrado)
+    }
+
+    @Test
+    fun `P1 Codex r1 1 el recibo tardio de OTRO cobro no se pega al que esta en pantalla`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            dejarReintentoDelReciboDe(viewModel, "intento-A")
+            cobroEnPantalla(viewModel, "intento-B") // el kiosco ya empezó y cobró B
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "B00001", amount = "25.00", receipt = null)
+
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+
+            assertThat((viewModel.state.value as PaymentState.Success).receipt).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `control Codex r1 1 el recibo del MISMO cobro si llega aunque se vea No se pudo imprimir`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            dejarReintentoDelReciboDe(viewModel, "intento-A")
+            cobroEnPantalla(viewModel, "intento-A")
+            estadoDe(viewModel).value = PaymentState.PrintError(
+                message = "Sin papel", previousState = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null),
+            )
+
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+
+            val error = viewModel.state.value as PaymentState.PrintError // el aviso sigue abierto
+            assertThat(error.previousState.receipt).isEqualTo(reciboRegistrado)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 Codex r1 1 un error de impresion del cobro anterior no reabre su pantalla encima del siguiente`() = runTest(testDispatcher) {
+        val candado = java.util.concurrent.CountDownLatch(1)
+        val impresora = mockk<com.jaac.avoqado_tpv.core.printer.PrinterManager>(relaxed = true)
+        every { impresora.checkPrinterStatus() } answers {
+            candado.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            com.jaac.avoqado_tpv.core.printer.PrinterStatusResult(code = 2, isReady = false, hasPaper = false, message = "Sin papel")
+        }
+        val viewModel = createViewModel(printerManager = impresora)
+        try {
+            cobroEnPantalla(viewModel, "intento-A")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+            viewModel.printReceipt()
+
+            cobroEnPantalla(viewModel, "intento-B") // reset y otro cobro mientras la impresora contestaba
+            val siguiente = PaymentState.Success(authCode = "B00001", amount = "25.00", receipt = null)
+            estadoDe(viewModel).value = siguiente
+            candado.countDown()
+            esperar { !viewModel.isPrinting.value }
+            Thread.sleep(100)
+
+            assertThat(viewModel.state.value).isEqualTo(siguiente)
+        } finally {
+            candado.countDown()
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 Codex r1 2 una segunda impresion fallida no regresa la copia sin recibo`() = runTest(testDispatcher) {
+        val candado = java.util.concurrent.CountDownLatch(1)
+        val impresora = mockk<com.jaac.avoqado_tpv.core.printer.PrinterManager>(relaxed = true)
+        every { impresora.checkPrinterStatus() } answers {
+            candado.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            com.jaac.avoqado_tpv.core.printer.PrinterStatusResult(code = 2, isReady = false, hasPaper = false, message = "Sin papel")
+        }
+        val viewModel = createViewModel(printerManager = impresora)
+        try {
+            cobroEnPantalla(viewModel, "intento-A")
+            val sinRecibo = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+            estadoDe(viewModel).value = sinRecibo
+            viewModel.printReceipt() // espera a la impresora con la copia SIN recibo
+            // Mientras tanto: otro «No se pudo imprimir» ya abierto, cuyo éxito guardado YA trae el recibo.
+            estadoDe(viewModel).value = PaymentState.PrintError(message = "Comanda", previousState = sinRecibo.copy(receipt = reciboRegistrado))
+            candado.countDown()
+            esperar { !viewModel.isPrinting.value }
+
+            val error = viewModel.state.value as PaymentState.PrintError
+            assertThat(error.previousState.receipt).isEqualTo(reciboRegistrado)
+            // Codex mac r1 #4: se ve el SEGUNDO fallo (sin papel), no el aviso de comanda de antes, ignorado.
+            assertThat(error.message).startsWith("Sin papel en la impresora")
+        } finally {
+            candado.countDown()
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 Codex r2 1 el reintento viejo de otro cobro no borra el reintento del cobro en pantalla`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            dejarReintentoDelReciboDe(viewModel, "intento-A")
+            cobroEnPantalla(viewModel, "intento-A")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+            val campo = PaymentViewModel::class.java.getDeclaredField("pendingReceiptRetry").apply { isAccessible = true }
+            val reintentoDeA = campo.get(viewModel)
+            // El registro de A tarda; mientras tanto el kiosco ya va en B y B dejó su propio reintento.
+            val respuestaDeA = CompletableDeferred<Result<PaymentReceipt>>()
+            coEvery { mockRecordPaymentUseCase(any(), any(), any(), any(), any()) } coAnswers { respuestaDeA.await() }
+            connectionRestoredFlow.emit(com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1))
+            cobroEnPantalla(viewModel, "intento-B")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "B00001", amount = "25.00", receipt = null)
+            dejarReintentoDelReciboDe(viewModel, "intento-B")
+            val reintentoDeB = campo.get(viewModel)
+            assertThat(reintentoDeB).isNotSameInstanceAs(reintentoDeA)
+
+            respuestaDeA.complete(Result.success(reciboRegistrado))
+
+            assertThat(campo.get(viewModel)).isSameInstanceAs(reintentoDeB)
+            assertThat((viewModel.state.value as PaymentState.Success).receipt).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 Codex r2 2 el aviso de cola que llega despues del recibo no lo tapa`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            cobroEnPantalla(viewModel, "idem-1")
+            estadoDe(viewModel).value = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = reciboRegistrado)
+            val enCola = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0, referenceNumber = "873257481453", venueId = testVenueId, staffId = testStaffId,
+                amount = BigDecimal("25.00"), tip = BigDecimal.ZERO, rating = null, merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417", maskedPan = "**** 4242", cardBrand = "VISA", entryMode = "CHIP",
+                isInternational = false, authorizationNumber = "F628CL", idempotencyKey = "idem-1",
+                createdAt = System.currentTimeMillis(), retryCount = 0, lastError = "HTTP 502",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING,
+            )
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = enCola,
+                // Codex mac r2 #3: el cobro real lleva su llave en el contexto, y es la del cobro en pantalla.
+                context = PaymentContext.FastPayment(venueId = testVenueId, staffId = testStaffId, amount = BigDecimal("25.00"), merchantAccountId = "merchant_a")
+                    .copy(idempotencyKey = "idem-1"),
+                recordError = RuntimeException("HTTP 502"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null,
+            )
+
+            val exito = viewModel.state.value as PaymentState.Success
+            assertThat(exito.receipt).isEqualTo(reciboRegistrado)
+            assertThat(exito.pendingSyncMessage).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P2 na783d44 con la sesion cerrada la prueba de venta no dice que la venta quedo en cola`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            val exito = PaymentState.Success(authCode = "F628CL", amount = "25.00", receipt = null)
+            val sinSesion = viewModel.buildPendingLoginState(exito, "873257481453")!!
+            val enCola = viewModel.buildPendingSyncState(exito, "873257481453")!!
+
+            val textoSinSesion = com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta(true, sinSesion) { null }
+            assertThat(textoSinSesion).isNotEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE)
+            assertThat(textoSinSesion).contains("vuelva a entrar")
+            // Control: con la venta de verdad en la cola, sí lo dice.
+            assertThat(com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta(true, enCola) { null })
+                .isEqualTo(com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // 🔴 Hueco 2 (2026-09-07): el registro del cobro se cortó (timeout de 25 s con la red VIVA, o
     // caída de red) y el cobro entró a la cola — pero en el camino Blumon nadie pedía el sync
     // inmediato: la fila esperaba al periódico de 15 min mientras el servidor mantenía la

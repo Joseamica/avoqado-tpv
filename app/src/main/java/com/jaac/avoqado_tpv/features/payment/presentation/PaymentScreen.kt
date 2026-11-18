@@ -77,7 +77,8 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashCo
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
-import com.jaac.avoqado_tpv.features.verification.presentation.PROOF_SALE_QUEUED_MESSAGE
+import com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta
+import com.jaac.avoqado_tpv.core.util.importeConDosDecimales
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
@@ -300,7 +301,7 @@ fun PaymentScreen(
     val (topBarTitle, topBarSubtitle) = when (val currentState = state) {
         is PaymentState.CollectingRating -> {
             val step = getCurrentStep(currentState)
-            "Calificación" to "Paso $step de $prePaymentSteps · $${currentState.amount}"
+            "Calificación" to "Paso $step de $prePaymentSteps · $${importeConDosDecimales(currentState.amount)}"
         }
         is PaymentState.CollectingTip -> {
             val step = getCurrentStep(currentState)
@@ -309,18 +310,18 @@ fun PaymentScreen(
             val total = subtotal.add(tipAmount)
 
             if (tipAmount > java.math.BigDecimal.ZERO) {
-                "Propina" to "Paso $step de $prePaymentSteps · Total: $$total MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Total: $${importeConDosDecimales(total.toPlainString())} MXN"
             } else {
-                "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${currentState.amount} MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${importeConDosDecimales(currentState.amount)} MXN"
             }
         }
         is PaymentState.SelectingMerchant -> {
             val step = getCurrentStep(currentState)
-            "Seleccionar Cuenta" to "Paso $step de $prePaymentSteps · Total: $${currentState.totalAmount}"
+            "Seleccionar Cuenta" to "Paso $step de $prePaymentSteps · Total: $${importeConDosDecimales(currentState.totalAmount)}"
         }
         is PaymentState.Verifying -> {
             // Post-payment verification - separate from pre-payment steps
-            "Verificación" to "Post-pago · $${currentState.amount}"
+            "Verificación" to "Post-pago · $${importeConDosDecimales(currentState.amount)}"
         }
         // 🥝 KIOSK: Cash confirmation shows different title
         is PaymentState.AwaitingCashConfirmation -> "Pago en Efectivo" to null
@@ -958,12 +959,8 @@ fun PaymentScreen(
                                 isPortabilidad = isPortabilidadState,
                                 proofOfSaleComplete = proofOfSaleComplete,
                                 // 📸 Bloque 0: el estado de cada ranura, o a «Pendientes» si la venta quedó en cola sin paymentId.
-                                proofOfSaleMessage = when {
-                                    !showProofOfSale -> null
-                                    proofOfSalePaymentId(currentState.receipt) != null -> proofOfSaleMessage(proofSlotStates, isPortabilidadState)
-                                    // D13: el aviso de «no se pudo guardar» no es una venta en cola (Codex r2 #4).
-                                    currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE
-                                    else -> null
+                                proofOfSaleMessage = mensajeDePruebaDeVenta(showProofOfSale, currentState) {
+                                    proofOfSaleMessage(proofSlotStates, isPortabilidadState)
                                 },
                                 onProofOfSalePhotoTaken = { photoPath, slot, number ->
                                     // Se encola con el número de su ranura (archivo y fila antes de la red); la sube PaymentSyncWorker.
@@ -2147,8 +2144,8 @@ private fun PaymentSuccessContent(
                         recordingLostMessage != null -> Unit
                         pendingSyncMessage != null -> {
                             Text(
-                                text = if (aprobacionSinGuardar) "El recibo estará disponible en cuanto Avoqado registre el pago"
-                                    else "El recibo estará disponible en cuanto el pago se sincronice",
+                                // na783d44 (Codex r1 #5): cierto en los tres casos (en cola, sesión cerrada o sin guardar).
+                                text = "El recibo estará disponible en cuanto Avoqado registre el pago",
                                 textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -2421,7 +2418,7 @@ private fun PaymentSuccessContent(
             if (receiptActionsAwaitingSync) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Email y WhatsApp estarán disponibles cuando el pago se sincronice",
+                    text = "Email y WhatsApp estarán disponibles en cuanto Avoqado registre el pago",
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

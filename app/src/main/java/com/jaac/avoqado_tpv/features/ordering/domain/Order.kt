@@ -158,14 +158,14 @@ data class OrderItem(
      * Used in item card: "$180.00 c/u"
      */
     val formattedUnitPrice: String
-        get() = String.format("$%.2f c/u", unitPrice)
+        get() = String.format(java.util.Locale.US, "$%.2f c/u", unitPrice)
 
     /**
      * Convenience property: Display total
      * Used in item card: "$360.00"
      */
     val formattedTotalPrice: String
-        get() = String.format("$%.2f", totalPrice)
+        get() = String.format(java.util.Locale.US, "$%.2f", totalPrice)
 
     /**
      * Convenience property: Formatted modifiers for display

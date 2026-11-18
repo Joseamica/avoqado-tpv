@@ -228,7 +228,8 @@ class SocketManagerTest {
         )
 
         verify(timeout = 2_000) { ack.call(any()) }
-        assertThat(markers).containsExactly("persist", "queue", "ack").inOrder()
+        // MockK anota la llamada antes de correr su respuesta: «ack» puede entrar a la lista un instante DESPUÉS del verify.
+        assertThat(esperarEn(markers) { "ack" in it }).containsExactly("persist", "queue", "ack").inOrder()
     }
 
     @Test
@@ -255,7 +256,7 @@ class SocketManagerTest {
             ack,
         )
         verify(timeout = 2000, exactly = 3) { ack.call(any()) }
-        assertThat(recibidos.map { it.requestId to it.attemptLinkVersion })
+        assertThat(copia(recibidos).map { it.requestId to it.attemptLinkVersion })
             .containsExactly("req-con-bandera" to 1, "req-sin-bandera" to 0, "req-negativa" to 0)
     }
 
@@ -272,7 +273,7 @@ class SocketManagerTest {
                 com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, resuelto, false))
         }
         every { mockSocket.emit("terminal:payment_result", any<JSONObject>()) } answers { orden += "emit"; mockSocket }
-        val eventos = mutableListOf<SocketEvent>()
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
         val recoleccion = launch { socketManager.events.collect { eventos += it } }
 
         capturedListeners["terminal:payment_confirmed"]?.call(
@@ -280,15 +281,16 @@ class SocketManagerTest {
                 .put("amountCents", 10000).put("tipCents", 500).put("via", "webhook"),
         )
         verify(timeout = 2000) { mockSocket.emit("terminal:payment_result", match<JSONObject> { it.optString("paymentId") == "pay-s5" }) }
-        assertThat(orden).containsExactly("libreta", "emit").inOrder()
-        val v = veredictos.single()
+        assertThat(esperarEn(orden) { "emit" in it }).containsExactly("libreta", "emit").inOrder()
+        val v = copia(veredictos).single()
         assertThat(v.attemptId).isEqualTo("att-s5")
         assertThat(v.requestId).isEqualTo("req-s5")
         assertThat(v.ganadorAcreditado).isEqualTo("pay-s5")
         assertThat(v.recordedVia).isEqualTo("webhook")
         assertThat(v.fuente).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.Fuente.SOCKET_S5)
-        kotlinx.coroutines.delay(200)
-        val confirmado = eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().singleOrNull()
+        // El aviso a la pantalla sale DESPUÉS del emit, en el hilo de IO: un `delay` del reloj virtual no lo espera.
+        val confirmado = esperarEn(eventos) { vistos -> vistos.any { it is SocketEvent.TerminalPaymentConfirmed } }
+            .filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().singleOrNull()
         assertThat(confirmado).isNotNull()
         assertThat(confirmado!!.registrado).isTrue()
         recoleccion.cancel()
@@ -332,11 +334,9 @@ class SocketManagerTest {
             JSONObject().put("requestId", "req-mf").put("attemptId", "att-mf").put("paymentId", "pay-mf")
                 .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
         )
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            kotlinx.coroutines.withTimeout(3000) { while (eventos.none { it is SocketEvent.TerminalPaymentConfirmed }) kotlinx.coroutines.delay(20) }
-        }
+        val vistos = esperarEn(eventos) { v -> v.any { it is SocketEvent.TerminalPaymentConfirmed } }
         coVerify(exactly = 0) { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
-        assertThat(eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().single().registrado).isFalse()
+        assertThat(vistos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().single().registrado).isFalse()
         recoleccion.cancel()
     }
 
@@ -356,11 +356,7 @@ class SocketManagerTest {
             JSONObject().put("requestId", "req-ok").put("attemptId", "att-ok").put("paymentId", "pay-ok")
                 .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
         )
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            kotlinx.coroutines.withTimeout(3000) {
-                while (eventos.none { it is SocketEvent.TerminalPaymentConfirmed }) kotlinx.coroutines.delay(20)
-            }
-        }
+        esperarEn(eventos) { v -> v.any { it is SocketEvent.TerminalPaymentConfirmed } }
         coVerifyOrder {
             mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-ok", any())
             mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any())
@@ -369,14 +365,31 @@ class SocketManagerTest {
     }
 
     @Test
-    fun `S5 payment_confirmed trae la liga del recibo a la pantalla, y sin receipt en el payload llega nula`() = runTest(testDispatcher) {
+    fun `S5 payment_confirmed trae la liga del recibo a la pantalla, y sin receipt en el payload llega nula`() =
+        s5LigaDelRecibo(lecturaLenta = false)
+
+    /**
+     * La misma, con la ventana del cruce ABIERTA a propósito: la lista se recorre despacio y el segundo aviso llega a media
+     * lectura (CI del PR #75, corrida 44160547325: `ConcurrentModificationException at ArrayList.java:1013`). Leer la lista
+     * viva sin su candado truena siempre; leer una copia tomada bajo el candado, nunca.
+     */
+    @Test
+    fun `S5 la liga del recibo llega aunque el segundo aviso caiga a media lectura de la lista`() =
+        s5LigaDelRecibo(lecturaLenta = true)
+
+    private fun s5LigaDelRecibo(lecturaLenta: Boolean) = runTest(testDispatcher) {
         // Testarudo 21-sep: cuando el webhook gana la carrera la pantalla verde nacía con `receiptUrl = ""` y el ticket de la
         // terminal salía sin QR hasta que el REST propio rellenaba la liga (2-3 s). El servidor ya manda `receipt` en el aviso.
         every { mockSecureStorage.getVenueId() } returns "venue-1"
-        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.success(
-            com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
-                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))
-        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } answers {
+            if (lecturaLenta && firstArg<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>().requestId == "req-s5s") {
+                Thread.sleep(300)   // el segundo aviso llega después, mientras la prueba ya está leyendo
+            }
+            Result.success(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
+                    com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, true, null, false))
+        }
+        val eventos = java.util.Collections.synchronizedList(if (lecturaLenta) LentaAlRecorrer() else mutableListOf<SocketEvent>())
         val recoleccion = launch { socketManager.events.collect { eventos += it } }
 
         capturedListeners["terminal:payment_confirmed"]?.call(
@@ -389,12 +402,8 @@ class SocketManagerTest {
                 .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
         )
         // El listener despacha en `Dispatchers.IO` (tiempo real): un `delay` del reloj virtual de runTest no espera nada.
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            kotlinx.coroutines.withTimeout(3000) {
-                while (eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().size < 2) kotlinx.coroutines.delay(20)
-            }
-        }
-        val confirmados = eventos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().associateBy { it.requestId }
+        val confirmados = esperarEn(eventos) { v -> v.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().size >= 2 }
+            .filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().associateBy { it.requestId }
         assertThat(confirmados.keys).containsExactly("req-s5r", "req-s5s")
         assertThat(confirmados.getValue("req-s5r").receiptUrl).isEqualTo("https://dashboard.avoqado.io/receipts/public/key-s5r")
         assertThat(confirmados.getValue("req-s5r").receiptAccessKey).isEqualTo("key-s5r")
@@ -668,7 +677,7 @@ class SocketManagerTest {
                     it.optString("requestId") == "req-a-medias" && it.opt("executionAlive") == true && it.opt("closedForExecution") == false
                 })
             }
-            assertThat(avisos.count { "req-a-medias" in it && "executionAlive" in it }).isEqualTo(2)
+            assertThat(copia(avisos).count { "req-a-medias" in it && "executionAlive" in it }).isEqualTo(2)
         } finally {
             timber.log.Timber.uproot(arbol)
         }
@@ -696,7 +705,7 @@ class SocketManagerTest {
                     it.optString("requestId") == "req-completa" && it.opt("executionAlive") == false && it.opt("closedForExecution") == true
                 })
             }
-            assertThat(avisos.filter { "req-completa" in it }).isEmpty()
+            assertThat(copia(avisos).filter { "req-completa" in it }).isEmpty()
         } finally {
             timber.log.Timber.uproot(arbol)
         }
@@ -981,6 +990,43 @@ class SocketManagerTest {
     // ========================================
     // RENOVACIÓN DE LA SESIÓN DEL SOCKET (misma regla que TokenAuthenticator)
     // ========================================
+
+    /**
+     * Las listas de estas pruebas las llena OTRO hilo: el listener despacha en `Dispatchers.IO` y, con `UnconfinedTestDispatcher`,
+     * la recolección de `events` corre en ese mismo hilo. Recorrer una `synchronizedList` (`none`, `filterIsInstance`, `map`,
+     * Truth) sin su candado mientras ese hilo agrega da `ConcurrentModificationException` (S5 en el CI del PR #75, corrida
+     * 44160547325, 17-nov-2026). Siempre se lee una copia tomada BAJO el candado.
+     */
+    private fun <T> copia(lista: MutableList<T>): List<T> = synchronized(lista) { lista.toList() }
+
+    /**
+     * Espera en tiempo REAL (el reloj virtual de `runTest` no espera al hilo de IO), hasta 3 s, a que la copia de [lista] cumpla
+     * [condicion], y la devuelve: lo que se comprueba después es esa misma copia, nunca la lista viva.
+     */
+    private suspend fun <T> esperarEn(lista: MutableList<T>, condicion: (List<T>) -> Boolean): List<T> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(3000) {
+                var vista = copia(lista)
+                while (!condicion(vista)) {
+                    kotlinx.coroutines.delay(20)
+                    vista = copia(lista)
+                }
+                vista
+            }
+        }
+
+    /** Una lista que tarda 100 ms en dar cada elemento al RECORRERLA (no al copiarla con `toArray`): abre la ventana del cruce. */
+    private class LentaAlRecorrer : ArrayList<SocketEvent>() {
+        override fun iterator(): MutableIterator<SocketEvent> {
+            val real = super.iterator()
+            return object : MutableIterator<SocketEvent> by real {
+                override fun next(): SocketEvent {
+                    Thread.sleep(100)
+                    return real.next()
+                }
+            }
+        }
+    }
 
     private fun dispararErrorDeAuthDelSocket(errorDelRefresh: ApiException) {
         val authRepository = mockk<AuthRepository>()

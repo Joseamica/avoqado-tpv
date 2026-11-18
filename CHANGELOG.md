@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Mesas · el aviso de un cobro con tarjeta que todavía no sube ya no sale dos veces en «Cobrar» (D17, tarjeta hz:72be07e6:D17; visto en la PAX el 17-nov)**: el pie de `TableCheckoutScreen` pintaba el aviso (con «Reintentar») y debajo la misma frase como razón de «Tarjeta no disponible», porque las dos salen de `pendienteSinSubir`. Ahora la razón de la tarjeta no se pinta cuando es igual al aviso (también con los demás motivos de algo sin subir y con «La cuenta se está actualizando»); textos y cuándo se apagan Efectivo y Tarjeta, igual que antes. Prueba: `TableCheckoutAvisosDelPieTest`.
+
 ---
 
 ## [2.22.0] - 2026-11-17

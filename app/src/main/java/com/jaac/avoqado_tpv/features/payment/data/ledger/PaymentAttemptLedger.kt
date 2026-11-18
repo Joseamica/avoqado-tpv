@@ -1262,6 +1262,22 @@ class PaymentAttemptLedger(
     }
 
     /**
+     * 🔴 F1 (Codex código r1 #5): ¿OTRO intento frena la tarjeta de esta cuenta? La pantalla lo pregunta antes de encender el lector y
+     * cuando la barrera rechaza después de leer. Un fallo de lectura contesta «sí»: quien pregunta para no cobrar dos veces falla cerrado.
+     */
+    suspend fun otraCercaDeLaTarjeta(orderId: String, attemptIdPropio: String): Boolean = try {
+        orderId.isNotEmpty() && filaQueFrenaLaTarjeta(orderId, attemptIdPropio) != null
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer si la cuenta %s tiene otra tarjeta por confirmar", orderId)
+        true
+    }
+
+    private suspend fun filaQueFrenaLaTarjeta(orderId: String, attemptIdPropio: String?): PaymentAttemptEntity? =
+        dao.otraCercaDeLaTarjeta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), attemptIdPropio.orEmpty(), processToken)
+
+    /**
      * 🧾 Tienda híbrida (R89): ¿la libreta tiene DINERO EN JUEGO de esta venta que el SERVIDOR todavía no confirma? Es la MISMA
      * cerca 2 de `reserveTerminal` ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]) con el mismo fragmento que [retencionDeLaVenta]:
      * un cobro con tarjeta corriendo, aprobado y sin registrar (AUTORIZADO, REGISTRO_FALLIDO…) o con evidencia del servidor.
@@ -1333,7 +1349,16 @@ class PaymentAttemptLedger(
         fun describir(fila: PaymentAttemptEntity?): String? = fila
             ?.takeUnless { it.attemptId == attemptIdPropio }
             ?.let { AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, ahoraMillis) }
-        val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let { retencionDeLaVenta(it) }
+        // F1 (Codex código r1 #5): la de OTRO intento. Con la reserva propia viva, `LIMIT 1` podía devolver la propia y no nombrar nada.
+        val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let {
+            try {
+                filaQueFrenaLaTarjeta(it, attemptIdPropio)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                null
+            }
+        }
         val filaAparato = retencionDelAparato()
         val laVenta = describir(filaVenta)
         val elAparato = describir(filaAparato)

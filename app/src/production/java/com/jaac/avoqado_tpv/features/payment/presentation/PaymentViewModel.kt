@@ -3942,6 +3942,19 @@ class PaymentViewModel @Inject constructor(
                     }
                     return@launch
                 }
+                // 🔴 F1 (Codex código r1 #5): la cerca de la CUENTA, ANTES de encender el lector. La evidencia de otra tarjeta de esta
+                // cuenta pudo llegar después de reservar; antes el lector se encendía, leía la tarjeta y recién entonces frenaba, con la
+                // reserva apartando la terminal. Ahora no se pide tarjeta y la reserva se suelta (otra cuenta cobra en esta terminal).
+                if (preparationAttemptId != null && sessionSnapshot.mode != PaymentMode.REFUND &&
+                    getOrderIdForFlow()?.let { paymentAttemptLedger.otraCercaDeLaTarjeta(it, preparationAttemptId) } == true
+                ) {
+                    Timber.w("📒 [Libreta] La cuenta tiene otra tarjeta por confirmar — no se abre el lector | attemptId=$preparationAttemptId")
+                    showPreparationError(preparationAttemptId, PaymentState.Error(
+                        message = paymentAttemptLedger.motivoDeLaBarrera(getOrderIdForFlow(), preparationAttemptId),
+                        context = createPaymentContext(), canRetry = false,
+                    ))
+                    return@launch
+                }
 
                 stopCardPollingBeforeEmv("sale")
 
@@ -4411,6 +4424,21 @@ class PaymentViewModel @Inject constructor(
         attemptId?.let { paymentAttemptLedger.marcarSdkRegreso(it) }
     }
 
+    /**
+     * 🔴 F1 (Codex código r1 #5): una barrera de la libreta rechazó ESTE intento después de leer la tarjeta (otra tarjeta de la cuenta
+     * quedó por confirmar, o la escritura falló) y el banco NO se llamó. La reserva o la entrada al lector (`PREPARANDO`/`KERNEL_ACTIVO`
+     * → `DESCARTADA`) se suelta: si no, se quedaba apartando la terminal y la siguiente cuenta no podía cobrar. Devuelve qué decir: la
+     * cuenta que espera, o el texto de siempre. Nunca toca un intento que ya pidió autorización (`AUTORIZANDO`).
+     */
+    private suspend fun soltarLaReservaRechazada(attemptId: String?): String {
+        if (attemptId == null) return "No se pudo guardar el intento. No se inició el cobro."
+        val laCuentaEspera = getOrderIdForFlow()?.let { paymentAttemptLedger.otraCercaDeLaTarjeta(it, attemptId) } == true
+        val motivo = if (laCuentaEspera) paymentAttemptLedger.motivoDeLaBarrera(getOrderIdForFlow(), attemptId)
+            else "No se pudo guardar el intento. No se inició el cobro."
+        withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(attemptId, "barrera_antes_del_banco") }
+        return motivo
+    }
+
     /** A failed read never reached SaleIcc. Persist that fact BEFORE enabling retry/navigation. */
     private suspend fun showPreparationError(attemptId: String?, error: PaymentState.Error) {
         val discarded = attemptId != null && withContext(NonCancellable) {
@@ -4611,6 +4639,18 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 F1 (Codex código r1 #6): el lector sin contacto regresó SIN veredicto y la duda quedó guardada (`INDETERMINADO`). Sale la
+     * pantalla de la duda de la tarea 5 (el importe y [Seguir]), con el ID del intento: sin él, la pantalla ofrecía «Reintentar» y
+     * «Cancelar» sobre un cobro que pudo haber pasado. [mensaje] sólo queda para el registro.
+     */
+    private fun mostrarDudaDelLector(attemptId: String?, mensaje: String) {
+        _state.value = PaymentState.Error(
+            message = mensaje, context = createPaymentContext(), canRetry = false,
+            unresolvedAttemptId = attemptId.takeIf { sessionSnapshot.refundContext == null },
+        )
+    }
+
     private fun showUnresolvedAuthorization() {
         _state.value = PaymentState.Error(
             message = if (authorizationApproved) "Cobrado. Sincronización pendiente. No vuelvas a pasar la tarjeta."
@@ -4674,7 +4714,7 @@ class PaymentViewModel @Inject constructor(
             if (traducirCercaDeSolicitud()) {
                 return AuthorizationResult(null, CobroRemotoDelPos.CANCELADO_POR_EL_POS, canceladoPorElPos = true)
             }
-            return AuthorizationResult(null, "No se pudo guardar el intento. No se inició el cobro.")
+            return AuthorizationResult(null, soltarLaReservaRechazada(durableAttemptId))
         }
         authorizationUnresolved = true
         // 🔴 Fase ONLINE_AUTH: el ÚNICO tramo que sale a la red y al banco. Se marca
@@ -5510,7 +5550,7 @@ class PaymentViewModel @Inject constructor(
                 // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
                 if (!traducirCercaDeSolicitud()) {
                     _state.value = PaymentState.Error(
-                        message = "No se pudo guardar el intento. No se inició el cobro.",
+                        message = soltarLaReservaRechazada(intentoDelKernel),
                         context = createPaymentContext(), canRetry = false,
                     )
                 }
@@ -5549,8 +5589,9 @@ class PaymentViewModel @Inject constructor(
                 // 🔴 El kernel rechazó ANTES de autorizar: nunca llegó al procesador, así que la
                 // terminal se libera. Sólo con negativa EXPLÍCITA — un TIMEOUT o un fallo
                 // desconocido pueden esconder una transacción que sí avanzó, y ésos se retienen.
+                val sinVeredicto = verdict.outcome !in KERNEL_REFUSALS_WITHOUT_CHARGE
                 sessionSnapshot.paymentAttemptId?.let { durableId ->
-                    if (verdict.outcome in KERNEL_REFUSALS_WITHOUT_CHARGE) {
+                    if (!sinVeredicto) {
                         paymentAttemptLedger.markKernelRefused(durableId, verdict.outcome.name)
                     } else {
                         paymentAttemptLedger.markIndeterminate(durableId, verdict.outcome.name)
@@ -5558,6 +5599,7 @@ class PaymentViewModel @Inject constructor(
                 }
                 // 🔒 B1: `StartCtlssTrans` REGRESÓ (rechazo o sin veredicto) y este intento no vuelve al SDK.
                 marcarFinDelSdk(intentoDelKernel)
+                if (sinVeredicto) { mostrarDudaDelLector(intentoDelKernel, verdict.userMessage); return }
                 _state.value = PaymentState.Error(
                     message = verdict.userMessage,
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
@@ -5575,10 +5617,7 @@ class PaymentViewModel @Inject constructor(
                 // 🔴 Codex H4: el kernel YA regresó, sin veredicto — nada corre. En duda ANTES del error, no KERNEL_ACTIVO.
                 sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:transResult_nulo") }
                 marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto y no se vuelve a él
-                _state.value = PaymentState.Error(
-                    message = "Error procesando resultado contactless",
-                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                )
+                mostrarDudaDelLector(intentoDelKernel, "Error procesando resultado contactless")
                 return
             }
             val transResultEnum = transResult.transResult
@@ -5586,10 +5625,7 @@ class PaymentViewModel @Inject constructor(
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResultEnum is null (resultCode=${transResult.resultCode})")
                 sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:resultado_nulo") }
                 marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto y no se vuelve a él
-                _state.value = PaymentState.Error(
-                    message = "Error procesando resultado contactless",
-                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                )
+                mostrarDudaDelLector(intentoDelKernel, "Error procesando resultado contactless")
                 return
             }
             Timber.i(
@@ -5644,10 +5680,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.e("❌ [CONTACTLESS PHASE 3] Unknown transaction result: $transResultEnum")
                     sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markIndeterminate(it, "kernel_sin_veredicto:$transResultEnum") }
                     marcarFinDelSdk(intentoDelKernel) // 🔒 B1: el kernel regresó sin veredicto conocido y no se vuelve a él
-                    _state.value = PaymentState.Error(
-                        message = "Resultado desconocido: $transResultEnum",
-                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
-                    )
+                    mostrarDudaDelLector(intentoDelKernel, "Resultado desconocido: $transResultEnum")
                 }
             }
 

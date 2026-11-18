@@ -320,6 +320,15 @@ interface PaymentAttemptDao {
         " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
     suspend fun retencionDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
 
+    /**
+     * 🔴 F1 (Codex código r1 #5): la cerca de la TARJETA de esta cuenta que pone OTRO intento, nunca el propio (su reserva PREPARANDO
+     * también entra en [PaymentAttemptEntity.SQL_CERCA_LA_VENTA]). Es la misma condición del CAS ([casTransitionRow]), leída ANTES de
+     * encender el lector: la evidencia de otra tarjeta de la cuenta puede llegar después de reservar.
+     */
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA +
+        " AND instr(payment_context_json, :orderJsonFragment) > 0 AND attempt_id != :attemptIdPropio LIMIT 1")
+    suspend fun otraCercaDeLaTarjeta(orderJsonFragment: String, attemptIdPropio: String, processToken: String): PaymentAttemptEntity?
+
     /** F1: sólo el DINERO en juego de la venta ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]); una duda sin dinero no cuenta. */
     @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_VENTA +
         " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
@@ -658,7 +667,11 @@ interface PaymentAttemptDao {
                          OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
                     AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """ THEN 1 ELSE 0 END AS declarable
             FROM payment_attempts d
-            WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0 AND d.state = 'INDETERMINADO'
+            WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0
+            -- F1 (Codex código r1 #9): también la DESCARTADA con dinero (el banco aprobó después, o Avoqado trajo evidencia o un veto):
+            -- frena la tarjeta de su cuenta y el cierre de caja (`LocalShiftObligation`), así que se ve aquí, sólo para consultarla.
+            AND (d.state = 'INDETERMINADO'
+                 OR (d.state = 'DESCARTADA' AND (d.host_approved IS 1 OR d.server_processor_evidence IS 'APPROVED' OR d.server_veto IS NOT NULL)))
             AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
             -- Dentro de este FROM los nombres sin prefijo son los del hermano.
             AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano

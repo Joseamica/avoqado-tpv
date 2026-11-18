@@ -1014,8 +1014,19 @@ class TableCheckoutViewModel @Inject constructor(
                         // tarjeta aún no se refleja) — no es un error para el mesero, es el
                         // server protegiendo contra liberar una mesa que en realidad debe.
                         Timber.w(e, "⚠️ [TableCheckout] clearTable no liberó la mesa todavía (venue=%s, table=%s)", vId, session.tableId)
-                        if (e is BackendHttpException && e.statusCode in 400..499) {
-                            soltarSesionSiSuCuentaYaNoDebe(vId, session, epocaDelCobro)
+                        // na286b5f: también tras un 500 o un error inesperado (antes sólo tras un 4xx), y con reintentos si
+                        // la pregunta no contesta: si no, «Tu mesa» quedaba pegada a una cuenta ya pagada. Un fallo de red
+                        // nunca llega aquí: `clearTable` lo encola y contesta éxito.
+                        if (e !is CancellationException) {
+                            for ((intento, espera) in ESPERAS_PARA_PREGUNTAR_POR_LA_CUENTA.withIndex()) {
+                                if (espera > 0) kotlinx.coroutines.delay(espera)
+                                // La MISMA sesión, con su cuenta de AHORA (Codex r1 #7): si la apertura sin red se confirmó en
+                                // medio, la sesión ya trae el id del SERVIDOR (promover no cambia la época).
+                                val vigente = tableSession.current()?.takeIf { tableSession.epoch == epocaDelCobro } ?: break
+                                val contesto = soltarSesionSiSuCuentaYaNoDebe(vId, vigente, epocaDelCobro)
+                                if (contesto) break
+                                Timber.w("⚠️ [TableCheckout] no se pudo preguntar por %s (intento %d)", vigente.orderId, intento + 1)
+                            }
                         }
                     },
                 )
@@ -1030,13 +1041,15 @@ class TableCheckoutViewModel @Inject constructor(
      * SERVIDOR, que manda: si su cuenta todavía debe (p. ej. la propina de una tarjeta aún no se refleja) o no se puede
      * preguntar, la sesión se queda como antes. Sólo suelta la MISMA sesión que se cobró.
      */
-    private suspend fun soltarSesionSiSuCuentaYaNoDebe(vId: String, session: TableSession.Active, epocaDelCobro: Long) {
-        val detalle = repository.getOrder(vId, session.orderId).getOrNull() ?: return
+    /** @return `false` sólo si no se pudo preguntar (sin red, timeout): quien llama puede volver a intentarlo. */
+    private suspend fun soltarSesionSiSuCuentaYaNoDebe(vId: String, session: TableSession.Active, epocaDelCobro: Long): Boolean {
+        val detalle = repository.getOrder(vId, session.orderId).getOrNull() ?: return false
         val yaNoDebe = detalle.paymentStatus == "PAID" || detalle.status == "COMPLETED"
-        if (!yaNoDebe) return
-        if (tableSession.epoch != epocaDelCobro || tableSession.current()?.orderId != session.orderId) return
+        if (!yaNoDebe) return true
+        if (tableSession.epoch != epocaDelCobro || tableSession.current()?.orderId != session.orderId) return true
         Timber.i("🪑 [TableCheckout] %s ya no debe; la mesa sigue con otra cuenta — se suelta la sesión", session.orderId)
         tableSession.clear()
+        return true
     }
 
     fun consumeNotice() {
@@ -1373,6 +1386,12 @@ class TableCheckoutViewModel @Inject constructor(
         }
     }
 }
+
+/**
+ * na286b5f: cuándo se pregunta por la cuenta tras un «Liberar mesa» que no liberó (la primera de inmediato). Tres preguntas
+ * y se rinde: la sesión se queda como antes y el mesero la suelta al entrar a otra cuenta.
+ */
+internal val ESPERAS_PARA_PREGUNTAR_POR_LA_CUENTA = listOf(0L, 5_000L, 30_000L)
 
 /** D6: lo que ve la cajera si el efectivo de Mesas se rechaza por número (la cola no pudo renumerarlo con seguridad). */
 internal const val RECHAZO_POR_NUMERO =

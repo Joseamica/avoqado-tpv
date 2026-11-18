@@ -75,6 +75,11 @@ class SyncOutbox @Inject constructor(
     private val secureStorage: SecureStorage,
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val shiftReplayGate: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftReplayGate? = null,
+    /**
+     * nab0e38e (encargo 64000e): libreta + cola de cobros, para que un «Liberar mesa» espere al cobro con tarjeta de SU cuenta
+     * que todavía no sube ([liberarMesaEsperaUnCobro]). Último y con default porque las pruebas construyen por posición.
+     */
+    private val libreta: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger? = null,
 ) {
     private val replayMutex = Mutex()
     private val gson = Gson()
@@ -254,8 +259,12 @@ class SyncOutbox @Inject constructor(
         replay(venueId, singleBatch = false, onAck = onAck, canEmit = { true })
     }
 
-    /** Un lote del MISMO replayer para recuperación fuera de Mesas. No crea otro emisor. */
-    data class ReplayProgress(val resolved: Int, val moreAfterLimit: Boolean)
+    /**
+     * Un lote del MISMO replayer para recuperación fuera de Mesas. No crea otro emisor.
+     * [esperaUnCobro]: el lote se cortó en un «Liberar mesa» cuya cuenta tiene un cobro de este aparato todavía subiéndose
+     * (nab0e38e); quien sube ese cobro vuelve a reproducir la cola cuando entre.
+     */
+    data class ReplayProgress(val resolved: Int, val moreAfterLimit: Boolean, val esperaUnCobro: Boolean = false)
 
     suspend fun replayCurrentVenueBatch(
         onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { _, _ -> },
@@ -286,7 +295,14 @@ class SyncOutbox @Inject constructor(
             if (batch.isEmpty()) return@withLock ReplayProgress(resolved, false)
             val ready = mutableListOf<SyncIntentEntity>()
             var waitingForMapping = false
+            var esperaUnCobro = false
             for (intent in batch) {
+                // nab0e38e: lo que cierra una etapa es barrera. Un «Liberar mesa» no sale antes que el cobro de su cuenta: el
+                // SERVIDOR vería la cuenta sin pagar y lo rechazaría para siempre. Lo de detrás también espera (FIFO).
+                if (intent.type == SyncIntentTypes.CLEAR_TABLE && liberarMesaEsperaUnCobro(venueId, intent)) {
+                    esperaUnCobro = true
+                    break
+                }
                 try {
                     ready += if (intent.type == SyncIntentTypes.PAY_CASH && intent.shiftMembership == "MANAGED")
                         (shiftReplayGate ?: throw com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException()).table(intent)
@@ -297,7 +313,7 @@ class SyncOutbox @Inject constructor(
                     break
                 }
             }
-            if (ready.isEmpty() || !canEmit()) return@withLock ReplayProgress(resolved, false)
+            if (ready.isEmpty() || !canEmit()) return@withLock ReplayProgress(resolved, false, esperaUnCobro)
             val request = SyncIntentsRequest(deviceId = deviceId, intents = ready.map { it.toWire() })
             val response = try {
                 val http = api.syncIntents(venueId, request)
@@ -320,12 +336,19 @@ class SyncOutbox @Inject constructor(
             var entraronEnEstaRespuesta = 0
             // D6 (Codex r3): sólo si este envío llevó TODA la cola en espera (el lote no se llenó ni se cortó esperando el
             // mapa de la caja): así, si algo de la cola ya estaba en el servidor, su respuesta viene en ESTA misma respuesta.
-            val todaLaCola = !waitingForMapping && batch.size < BATCH_SIZE
+            val todaLaCola = !waitingForMapping && !esperaUnCobro && batch.size < BATCH_SIZE
             for (ack in response.data) {
                 // Sólo el siguiente id solicitado: no aplicar ACK ajeno, duplicado o fuera de FIFO.
                 val intent = ready.getOrNull(next)
                 if (intent == null || ack.id != intent.id) return@withLock ReplayProgress(resolved, false)
                 val ultimoDelServidor = if (yaRenumerada) null else ack.latestSeqDelRechazoDeNumero(intent.seq)
+                if (ultimoDelServidor != null && esperaUnCobro && renumerable == null && entraronEnEstaRespuesta == 0) {
+                    // nab0e38e (Codex r1 #5): este envío se cortó en un «Liberar mesa» que espera su cobro, así que no llevó toda
+                    // la cola y D6 no puede decidir si renumerar. No se guarda el rechazo: todo sigue en espera y, cuando el
+                    // cobro suba, el envío con la cola completa decide como siempre. Nada de esta respuesta se aplicó antes.
+                    Timber.w("🔢 [Tables] Rechazo por número con la cola cortada por un cobro: se decide al mandar la cola completa (venue=%s)", venueId)
+                    return@withLock ReplayProgress(resolved, false, esperaUnCobro = true)
+                }
                 if (ultimoDelServidor != null) {
                     // D6: sólo si el servidor vio un número MAYOR que todos los de esta base (es de la instalación vieja)
                     // y nada de esta respuesta entró antes: entonces nada de esta base se aplicó ni se apartó.
@@ -388,11 +411,38 @@ class SyncOutbox @Inject constructor(
                 continue
             }
             // Sin ACK de todo el prefijo no volver a consultar el mismo PENDING en un hot-loop.
-            if (next != ready.size || waitingForMapping) return@withLock ReplayProgress(resolved, false)
+            if (next != ready.size || waitingForMapping || esperaUnCobro) return@withLock ReplayProgress(resolved, false, esperaUnCobro)
             if (singleBatch) return@withLock ReplayProgress(resolved,
                 batch.size == BATCH_SIZE && canEmit() && dao.hasPendingForVenue(venueId))
         } while (otraVuelta)
         ReplayProgress(resolved, false)
+    }
+
+    /**
+     * nab0e38e: ¿este «Liberar mesa» tiene que esperar? Sí, si la cuenta que nombra (`orderId` o `localOrderId`, D79) tiene
+     * dinero de tarjeta de esta terminal que el SERVIDOR todavía no tiene: en la cola subiendo (`SUBIENDO`) o en la libreta
+     * aprobado y registrándose (`LIBRETA`; Codex r1 #3: la PAX enseña «Aprobado» antes de escribir la cola). Es la MISMA
+     * pregunta, en una sola lectura, que usa «Cobrar» de Mesas (D9, `DineroDeTarjetaDeLaCuenta`). Sin él, el SERVIDOR ve la
+     * cuenta sin pagar y rechaza el «Liberar mesa» para siempre. Un cobro que ya no sube solo (`SIN_REGISTRAR`: rechazado o
+     * por revisar) no lo detiene, y sin cuenta (intents de antes del D79) sale como antes. Si no se puede leer, sale como
+     * antes: esperar a ciegas detendría todo Mesas.
+     */
+    private suspend fun liberarMesaEsperaUnCobro(venueId: String, intent: SyncIntentEntity): Boolean {
+        val cobros = libreta ?: return false
+        return try {
+            val payload = com.google.gson.JsonParser.parseString(intent.payloadJson).asJsonObject
+            val cuentas = listOf("orderId", "localOrderId").mapNotNull { campo ->
+                payload.get(campo)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotBlank() }
+            }
+            cuentas.any { cobros.dineroDeTarjetaSinConfirmarDeLaCuenta(venueId, it) in ESPERAN_AL_COBRO }.also { espera ->
+                if (espera) Timber.i("⏸️ [Tables] CLEAR_TABLE %s espera al cobro de su cuenta que sigue en la cola (venue=%s)", intent.id, venueId)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.w(error, "⚠️ [Tables] No se pudo revisar la cola de cobros para CLEAR_TABLE %s — sale como antes", intent.id)
+            false
+        }
     }
 
     // MARK: - Cuarentena
@@ -451,6 +501,8 @@ class SyncOutbox @Inject constructor(
 
     private companion object {
         const val BATCH_SIZE = 50
+        /** nab0e38e: lo que `dineroDeTarjetaSinConfirmarDeLaCuenta` contesta cuando el cobro todavía va a llegar al SERVIDOR. */
+        val ESPERAN_AL_COBRO = setOf("SUBIENDO", "LIBRETA")
 
         /**
          * NO vive en [SyncIntentEntity] porque `RETRY` nunca se persiste — no es

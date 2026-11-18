@@ -179,7 +179,7 @@ class PaymentSyncWorker @AssistedInject constructor(
             Timber.d("💾 [Payment Sync] Worker started")
 
             var sessionProgress = shiftRepository?.sincronizarAperturasLocales() ?: 0
-            val tableProgress = tableSyncCoordinator.replayCurrentVenueBatch()
+            var tableProgress = tableSyncCoordinator.replayCurrentVenueBatch()
             shiftRepository?.consultarCriptosPendientes()
             var paymentProgress = 0
 
@@ -222,6 +222,14 @@ class PaymentSyncWorker @AssistedInject constructor(
                     "✅ [Payment Sync] Worker completed | " +
                             "success=$successCount | failed=$failedCount | batch=${batch.size}"
                 )
+            }
+
+            // nab0e38e: un «Liberar mesa» espera al cobro de su cuenta (barrera en `SyncOutbox`). Si esta pasada movió cobros
+            // (subieron, o uno quedó sin registrar y ya no detiene a nadie), la cola de Mesas sale otra vez ahora y no hasta la
+            // siguiente pasada (puede tardar 15 min). Sin esperar a que la primera lectura viera la barrera (Codex r1 #4): el
+            // «Liberar mesa» pudo encolarse mientras esta pasada subía el cobro. Sin nada en espera, la lectura no manda nada.
+            if (batch.isNotEmpty()) {
+                tableProgress = tableSyncCoordinator.replayCurrentVenueBatch()
             }
 
             // 💸 Los reembolsos van DESPUÉS de los cobros: un reembolso apunta al pago original

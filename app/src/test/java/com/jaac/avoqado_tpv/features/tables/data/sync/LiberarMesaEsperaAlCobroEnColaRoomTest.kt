@@ -81,6 +81,8 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
     private val llegadas = CopyOnWriteArrayList<String>()
     private val cuentasPagadas = mutableSetOf<String>()
     private var cobrosSinRed = false
+    /** Lo que hace el cajero MIENTRAS el trabajador sube el cobro (Codex r1 #4). */
+    private var mientrasSubeElCobro: suspend () -> Unit = {}
 
     @Before fun setUp() {
         every { storage.getVenueId() } returns VENUE
@@ -88,7 +90,8 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
         every { storage.getToken() } returns "token"
         every { storage.getSerialNumber() } returns "PAX-1"
         db = Room.inMemoryDatabaseBuilder(context, AvoqadoDatabase::class.java).allowMainThreadQueries().build()
-        outbox = SyncOutbox(db.syncIntentDao(), tableApi, storage, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
+        outbox = SyncOutbox(db.syncIntentDao(), tableApi, storage, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(),
+            libreta = PaymentAttemptLedger(db.paymentAttemptDao(), mockk(relaxed = true)))
         coordinator = TableSyncCoordinator(outbox, TableSession(), PendingRoundCart())
 
         coEvery { tableApi.syncIntents(VENUE, any()) } coAnswers {
@@ -105,6 +108,7 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
         }
         coEvery { record(any(), any(), any(), any(), true) } coAnswers {
             if (cobrosSinRed) return@coAnswers Result.failure(IOException("sin red"))
+            mientrasSubeElCobro()
             val cuenta = (firstArg<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
                 as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.OrderPayment).orderId
             llegadas += "COBRO:$cuenta"
@@ -152,6 +156,18 @@ class LiberarMesaEsperaAlCobroEnColaRoomTest {
         assertThat(llegadas).doesNotContain(SyncIntentTypes.CLEAR_TABLE)
         assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_PENDING)
         assertThat(outbox.rejectedIntents(VENUE)).isEmpty()
+    }
+
+    @Test
+    fun `Codex r1 4 - el Liberar mesa que se encola MIENTRAS sube el cobro sale en la misma pasada`() = runTest {
+        db.pendingPaymentDao().insertRow(cobroConTarjeta(CUENTA))
+        var liberar: String? = null
+        mientrasSubeElCobro = { liberar = liberarMesa(MESA, CUENTA) }
+
+        trabajador().doWork()
+
+        assertThat(llegadas).containsExactly("COBRO:$CUENTA", SyncIntentTypes.CLEAR_TABLE).inOrder()
+        assertThat(fila(checkNotNull(liberar)).status).isEqualTo(SyncIntentEntity.STATUS_ACKED)
     }
 
     @Test

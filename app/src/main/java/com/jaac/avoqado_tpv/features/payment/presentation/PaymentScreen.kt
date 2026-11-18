@@ -163,6 +163,9 @@ fun PaymentScreen(
     folio: com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio? = null,  // 🧾 el cobro es de este folio (mockup 2d)
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
+    // 🪑 na286b5f: «Inicio» tras un cobro que SALDÓ la cuenta de una mesa (sin saldo pendiente, no reembolso) suelta la mesa
+    // como «Nueva Orden». null = «Inicio» de siempre (todo lo que no es Mesas).
+    onNavigateHomeTrasSaldarLaMesa: (() -> Unit)? = null,
     onRefundComplete: () -> Unit = onNavigateBack,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
@@ -915,6 +918,7 @@ fun PaymentScreen(
                                     }
                                 },
                                 onNavigateHome = onNavigateHome,
+                                onInicioTrasSaldarLaMesa = onNavigateHomeTrasSaldarLaMesa,
                                 onRefundComplete = onRefundComplete,
                                 onNewOrder = {
                                     viewModel.resetPayment()
@@ -1670,6 +1674,7 @@ private fun PaymentSuccessContent(
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateHome: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
+    onInicioTrasSaldarLaMesa: (() -> Unit)? = null,  // 🪑 na286b5f: «Inicio» cuando el cobro saldó la cuenta de una mesa
     onRefundComplete: () -> Unit = onNavigateHome,  // 💸 Navigate after refund success
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Serialized sale: return to scanner flow
@@ -1790,7 +1795,8 @@ private fun PaymentSuccessContent(
                     // Hidden in SERIALIZED_INVENTORY mode (staff must use "Nueva Venta" flow)
                     if (flowOrigin != PaymentFlowOrigin.SERIALIZED) {
                         IconButton(
-                            onClick = onNavigateHome,
+                            // 🪑 na286b5f: si el cobro saldó la mesa, «Inicio» la suelta igual que «Nueva Orden».
+                            onClick = onInicioTrasSaldarLaMesa?.takeIf { !isRefund && !hasRemainingBalance } ?: onNavigateHome,
                             modifier = Modifier
                                 .size(48.dp)
                                 .border(

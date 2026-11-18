@@ -37,7 +37,7 @@ data class Discount(
     val formattedValue: String
         get() = when (type) {
             DiscountType.PERCENTAGE -> "${value.toInt()}%"
-            DiscountType.FIXED -> String.format("$%.2f", value)
+            DiscountType.FIXED -> String.format(java.util.Locale.US, "$%.2f", value)
         }
 
     /**
@@ -245,14 +245,14 @@ data class CouponCode(
     val formattedValue: String
         get() = when (type) {
             DiscountType.PERCENTAGE -> "${value.toInt()}%"
-            DiscountType.FIXED -> String.format("$%.2f", value)
+            DiscountType.FIXED -> String.format(java.util.Locale.US, "$%.2f", value)
         }
 
     /**
      * Formatted estimated savings display
      */
     val formattedEstimatedSavings: String
-        get() = estimatedSavings?.let { String.format("-$%.2f", it) } ?: ""
+        get() = estimatedSavings?.let { String.format(java.util.Locale.US, "-$%.2f", it) } ?: ""
 
     /**
      * Display status for coupon
@@ -299,7 +299,7 @@ data class OrderDiscount(
      * Formatted applied amount
      */
     val formattedAmount: String
-        get() = String.format("-$%.2f", amount)
+        get() = String.format(java.util.Locale.US, "-$%.2f", amount)
 
     /**
      * Is this a manual/manager discount?

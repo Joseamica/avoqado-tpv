@@ -53,7 +53,7 @@ fun NumericKeypadView(
     modifier: Modifier = Modifier,
     useCompactSizing: Boolean = false,
 ) {
-    val formattedAmount = String.format("$%.2f", amountCents / 100.0)
+    val formattedAmount = String.format(java.util.Locale.US, "$%.2f", amountCents / 100.0)
     val screenHeight = LocalConfiguration.current.screenHeightDp
     val isCompact = useCompactSizing || screenHeight < 700
 

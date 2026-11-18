@@ -78,6 +78,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentAppr
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.verification.data.ProofSlot
 import com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta
+import com.jaac.avoqado_tpv.core.util.importeConDosDecimales
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.proofOfSaleMessage
 import com.jaac.avoqado_tpv.features.verification.presentation.NumberCaptureController
@@ -300,7 +301,7 @@ fun PaymentScreen(
     val (topBarTitle, topBarSubtitle) = when (val currentState = state) {
         is PaymentState.CollectingRating -> {
             val step = getCurrentStep(currentState)
-            "Calificación" to "Paso $step de $prePaymentSteps · $${currentState.amount}"
+            "Calificación" to "Paso $step de $prePaymentSteps · $${importeConDosDecimales(currentState.amount)}"
         }
         is PaymentState.CollectingTip -> {
             val step = getCurrentStep(currentState)
@@ -311,16 +312,16 @@ fun PaymentScreen(
             if (tipAmount > java.math.BigDecimal.ZERO) {
                 "Propina" to "Paso $step de $prePaymentSteps · Total: $$total MXN"
             } else {
-                "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${currentState.amount} MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${importeConDosDecimales(currentState.amount)} MXN"
             }
         }
         is PaymentState.SelectingMerchant -> {
             val step = getCurrentStep(currentState)
-            "Seleccionar Cuenta" to "Paso $step de $prePaymentSteps · Total: $${currentState.totalAmount}"
+            "Seleccionar Cuenta" to "Paso $step de $prePaymentSteps · Total: $${importeConDosDecimales(currentState.totalAmount)}"
         }
         is PaymentState.Verifying -> {
             // Post-payment verification - separate from pre-payment steps
-            "Verificación" to "Post-pago · $${currentState.amount}"
+            "Verificación" to "Post-pago · $${importeConDosDecimales(currentState.amount)}"
         }
         // 🥝 KIOSK: Cash confirmation shows different title
         is PaymentState.AwaitingCashConfirmation -> "Pago en Efectivo" to null
@@ -2135,8 +2136,8 @@ private fun PaymentSuccessContent(
                         recordingLostMessage != null -> Unit
                         pendingSyncMessage != null -> {
                             Text(
-                                text = if (aprobacionSinGuardar) "El recibo estará disponible en cuanto Avoqado registre el pago"
-                                    else "El recibo estará disponible en cuanto el pago se sincronice",
+                                // na783d44 (Codex r1 #5): cierto en los tres casos (en cola, sesión cerrada o sin guardar).
+                                text = "El recibo estará disponible en cuanto Avoqado registre el pago",
                                 textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -2409,7 +2410,7 @@ private fun PaymentSuccessContent(
             if (receiptActionsAwaitingSync) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Email y WhatsApp estarán disponibles cuando el pago se sincronice",
+                    text = "Email y WhatsApp estarán disponibles en cuanto Avoqado registre el pago",
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

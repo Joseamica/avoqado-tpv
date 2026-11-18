@@ -534,7 +534,7 @@ private fun CartItemRow(
         }
 
         Text(
-            text = "$${String.format("%.2f", item.totalPriceCents / 100.0)}",
+            text = "$${String.format(java.util.Locale.US, "%.2f", item.totalPriceCents / 100.0)}",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,

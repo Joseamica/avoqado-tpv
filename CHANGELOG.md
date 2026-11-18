@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **PAX · el recibo, su QR y los avisos ya no se pierden si llegan mientras se ve «No se pudo imprimir» (na16c21f, encargo 1df453)**: `PaymentViewModel` (production y sandbox) aplicaba el recibo registrado, el aviso de cola, la alarma de «no quedó registrado», el de sesión cerrada, el de D13 y los de devolución sólo si la pantalla era el éxito; con el error de la impresora abierto se perdían y «Cerrar» regresaba la copia vieja (sin QR). Ahora van al éxito que guarda ese aviso (`alExitoVisible`), la reconexión reintenta también ahí, «No se pudo imprimir» guarda el éxito vigente (también si ya había otro abierto) y el recibo de una devolución entra igual. Cada uno se aplica sólo si su cobro sigue en pantalla (Codex r1: un resultado tardío de otro cobro, p. ej. en kiosco, no se pega al siguiente, y un error de impresión de un cobro que ya se fue no reabre su pantalla). Pruebas: `PaymentViewModelTest` (`na16c21f …`, `Codex r1 …`).
+- **PAX · la prueba de venta ya no dice «quedó en cola» con la sesión cerrada (na783d44)**: el cobro estaba sólo en la libreta y lo registra el siguiente PIN. Marca `PaymentState.Success.sesionCerradaSinRegistrar` (sólo la pone `buildPendingLoginState`) y el texto dice «La venta se registrará cuando alguien vuelva a entrar con su PIN; después sube la foto y el número desde "Pendientes"». El pie del recibo y el de Email/WhatsApp dicen «en cuanto Avoqado registre el pago», cierto en los tres casos.
+- **PAX y Nexgo · el ticket sale con el RFC y la razón social del emisor de Facturación (na7522fd)**: la TPV sólo guardaba las columnas viejas del negocio. Ahora lee el `receiptInfo` que el SERVIDOR ya manda en `GET /tpv/venues/:id` (emisor principal) y, sin emisor, las de siempre; una respuesta sin `receiptInfo` no pisa el emisor ya guardado de ese negocio (Codex r1). Todavía no elige el emisor por comercio (ANDROID sí). Sin migración (una llave nueva en SecureStorage).
+- **Cobrar · «$10.00» con punto en el teclado, el carrito y los encabezados del cobro (na6094ff)**: 18 importes se formateaban con el idioma del aparato (`String.format` sin `Locale`, «$10,00» en la PAX del laboratorio) y la calificación pintaba «$10.0». Ahora `Locale.US` y `importeConDosDecimales`; una prueba de fuente impide que vuelva (`PesosConPuntoTest`).
+
 ---
 
 ## [2.22.0] - 2026-11-17

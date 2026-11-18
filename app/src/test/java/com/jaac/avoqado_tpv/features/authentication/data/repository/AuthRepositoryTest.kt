@@ -576,6 +576,32 @@ class AuthRepositoryTest {
     }
 
     @Test
+    fun `P2 Codex r1 6 una respuesta sin receiptInfo no pisa el emisor ya guardado de este negocio`() = runTest {
+        every { secureStorage.getVenueFiscalDe() } returns testVenueId
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio(
+            """{"id":"venue-123","name":"Tienda","legalName":"VIEJA SA","rfc":"VIE010101AB1"}"""
+        ))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify(exactly = 0) { secureStorage.saveVenueRfc(any()) }
+        verify(exactly = 0) { secureStorage.saveVenueLegalName(any()) }
+    }
+
+    @Test
+    fun `control con emisor se recuerda de que negocio vino`() = runTest {
+        coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
+        coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio("""
+            {"id":"venue-123","name":"Tienda","receiptInfo":{"legalName":"EMISORA SA DE CV","rfc":"EMI010101AB1"}}
+        """))
+
+        authRepository.loginWithPin(testPin, testVenueId)
+
+        verify { secureStorage.saveVenueFiscalDe(testVenueId) }
+    }
+
+    @Test
     fun `control un servidor viejo sin receiptInfo sigue imprimiendo las columnas de siempre`() = runTest {
         coEvery { apiService.loginWithPin(testVenueId, any()) } returns Response.success(createAuthResponseDto())
         coEvery { apiService.getVenueDetails(any()) } returns Response.success(detallesDelNegocio(

@@ -117,7 +117,7 @@ private fun ManualDiscountFormBody(
             // Current state banner
             cartState.manualDiscountCents.takeIf { it > 0 }?.let { current ->
                 CurrentDiscountBanner(
-                    amountText = "−$${String.format("%.2f", current / 100.0)}",
+                    amountText = "−$${String.format(java.util.Locale.US, "%.2f", current / 100.0)}",
                     reason = cartState.manualDiscountReason,
                     onClear = onClear,
                 )
@@ -180,7 +180,7 @@ private fun ManualDiscountFormBody(
             val computedCents = computeManualDiscountCents(mode, input, cartState.subtotalCents)
             if (computedCents > 0) {
                 Text(
-                    text = "Descuento: −$${String.format("%.2f", computedCents / 100.0)}",
+                    text = "Descuento: −$${String.format(java.util.Locale.US, "%.2f", computedCents / 100.0)}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = Color(0xFFE61F6B),

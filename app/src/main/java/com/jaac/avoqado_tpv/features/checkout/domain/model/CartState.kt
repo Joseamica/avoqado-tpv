@@ -108,7 +108,7 @@ data class CartState(
 }
 
 private fun formatCents(cents: Int): String =
-    "$${String.format("%.2f", cents / 100.0)}"
+    "$${String.format(java.util.Locale.US, "%.2f", cents / 100.0)}"
 
 /**
  * Bridges TPV's BigDecimal-based [Discount.calculateAmount] (which works in

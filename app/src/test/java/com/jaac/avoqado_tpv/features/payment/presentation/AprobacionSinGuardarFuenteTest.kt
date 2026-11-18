@@ -85,9 +85,12 @@ class AprobacionSinGuardarFuenteTest {
 
     @Test
     fun `P2 Codex r2-4 la prueba de venta no confunde el aviso de D13 con una venta en cola`() {
-        val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
-        assertTrue("la pantalla manda a «Pendientes» con el aviso de D13",
-            pantalla.contains("currentState.pendingSyncMessage != null && !currentState.aprobacionSinGuardar -> PROOF_SALE_QUEUED_MESSAGE"))
+        // Encargo 1df453: el texto salió de la pantalla a `mensajeDePruebaDeVenta`; se prueba su comportamiento.
+        val d13 = com.jaac.avoqado_tpv.features.payment.domain.PaymentState.Success(
+            authCode = "A1", amount = "85.00", pendingSyncMessage = "no se pudo guardar", aprobacionSinGuardar = true,
+        )
+        assertEquals("la pantalla manda a «Pendientes» con el aviso de D13", null,
+            com.jaac.avoqado_tpv.features.verification.presentation.mensajeDePruebaDeVenta(true, d13) { null })
     }
 
     @Test
@@ -106,8 +109,10 @@ class AprobacionSinGuardarFuenteTest {
         assertTrue("el error de impresión esconde «NO vuelvas a cobrar»", error.contains("previousState.takeIf { it.aprobacionSinGuardar }?.pendingSyncMessage"))
         assertTrue("el aviso del error de impresión no va en ámbar (Codex r11)",
             entre(pantalla, "is PaymentState.PrintError -> {", "onCancel = viewModel::dismissPrintError", "PaymentScreen").contains("aviso = avisoD13"))
+        // Encargo 1df453 (Codex r1 #5): un solo texto, cierto también con el aviso de D13 y con la sesión cerrada.
         assertTrue("el recibo dice «se sincronice» con el aviso de D13",
-            pantalla.contains("if (aprobacionSinGuardar) \"El recibo estará disponible en cuanto Avoqado registre el pago\""))
+            pantalla.contains("text = \"El recibo estará disponible en cuanto Avoqado registre el pago\"") &&
+                !pantalla.contains("en cuanto el pago se sincronice"))
     }
 
     @Test
@@ -115,8 +120,12 @@ class AprobacionSinGuardarFuenteTest {
         for ((nombre, archivo) in variantes) {
             val fuente = fuente(archivo)
             assertEquals("[$nombre] queda un PrintError con la copia sin revisar", 0, fuente.split("previousState = currentState\n").size - 1)
-            assertEquals("[$nombre] los 7 PrintError pasan por exitoParaElErrorDeImpresion", 7,
-                fuente.split("previousState = exitoParaElErrorDeImpresion(currentState)").size - 1)
+            // Encargo 1df453 (na16c21f): los 7 pasan por mostrarErrorDeImpresion, que guarda el éxito vigente y lo revisa aquí.
+            assertEquals("[$nombre] los 7 PrintError pasan por mostrarErrorDeImpresion", 7,
+                fuente.split(", currentState, llaveDelCobro)").size - 1)
+            val cuerpo = entre(fuente, "private fun mostrarErrorDeImpresion(", "\n    }\n", nombre)
+            assertTrue("[$nombre] mostrarErrorDeImpresion no revisa el aviso de D13",
+                cuerpo.contains("previousState = exitoParaElErrorDeImpresion(base)"))
         }
     }
 

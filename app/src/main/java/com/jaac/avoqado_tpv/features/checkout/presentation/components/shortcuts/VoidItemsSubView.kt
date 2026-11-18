@@ -148,7 +148,7 @@ private fun VoidRow(item: CartItem, onTap: () -> Unit) {
         }
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = "$${String.format("%.2f", item.totalPriceCents / 100.0)}",
+            text = "$${String.format(java.util.Locale.US, "%.2f", item.totalPriceCents / 100.0)}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

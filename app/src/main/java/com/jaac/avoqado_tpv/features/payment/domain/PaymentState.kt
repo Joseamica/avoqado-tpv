@@ -446,6 +446,13 @@ sealed class PaymentState {
          */
         val aprobacionSinGuardar: Boolean = false,
         /**
+         * na783d44 (encargo 1df453): [pendingSyncMessage] es el aviso de «se cerró la sesión antes de registrarlo»: el cobro está
+         * en la libreta, NO en la cola, y lo registra la recuperación cuando alguien vuelve a entrar con su PIN. La prueba de venta
+         * no debe decir «la venta quedó en cola». Lo prende sólo `buildPendingLoginState`; cualquier otro aviso o el recibo
+         * registrado lo apagan.
+         */
+        val sesionCerradaSinRegistrar: Boolean = false,
+        /**
          * La animación de «Pago aprobado» ya se vio para ESTE cobro. Sólo `dismissPrintError`
          * lo prende: al volver de «No se pudo imprimir» la pantalla del recibo se arma de nuevo
          * (su `remember` murió mientras se veía el error) y, sin esto, repetía la animación como

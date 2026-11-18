@@ -68,6 +68,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_NAME = "venue_name"
         private const val KEY_VENUE_LEGAL_NAME = "venue_legal_name"
         private const val KEY_VENUE_RFC = "venue_rfc"
+        private const val KEY_VENUE_FISCAL_DE = "venue_fiscal_de"
         private const val KEY_VENUE_ADDRESS = "venue_address"
         private const val KEY_VENUE_CITY = "venue_city"
         private const val KEY_VENUE_STATE = "venue_state"
@@ -490,6 +491,22 @@ class SecureStorage @Inject constructor(
      */
     fun getVenueRfc(): String? {
         return encryptedPrefs.getString(KEY_VENUE_RFC, null)
+    }
+
+    /**
+     * na7522fd (encargo 1df453): de qué negocio son la razón social y el RFC guardados cuando vinieron del emisor de Facturación
+     * (null = vinieron de las columnas de siempre). Así una respuesta sin `receiptInfo` no pisa el emisor de ESTE negocio.
+     */
+    fun saveVenueFiscalDe(venueId: String?) {
+        if (venueId != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_FISCAL_DE, venueId).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_FISCAL_DE).apply()
+        }
+    }
+
+    fun getVenueFiscalDe(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_FISCAL_DE, null)
     }
 
     /**

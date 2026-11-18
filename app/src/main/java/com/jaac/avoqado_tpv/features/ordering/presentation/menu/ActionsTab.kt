@@ -1244,7 +1244,7 @@ private fun CortesiaDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "-\$${String.format("%.2f", orderSubtotal)}",
+                            text = "-\$${String.format(java.util.Locale.US, "%.2f", orderSubtotal)}",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = greenColor

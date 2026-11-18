@@ -53,4 +53,15 @@ class PesosConPuntoTest {
         val crudos = Regex("""\$\$\{currentState\.(amount|totalAmount)\}""").findAll(pantalla).map { it.value }.toList()
         assertEquals("encabezados con el importe sin formatear", emptyList<String>(), crudos)
     }
+
+    @Test
+    fun `importe de texto con dos decimales y punto, y lo que no es numero se deja como llego`() {
+        Locale.setDefault(Locale("es", "ES"))
+        assertEquals("10.00", importeConDosDecimales("10.0"))
+        assertEquals("25.00", importeConDosDecimales("25"))
+        assertEquals("11.50", importeConDosDecimales(" 11.5 "))
+        assertEquals("1500.00", importeConDosDecimales("1500"))
+        assertEquals("", importeConDosDecimales(null))
+        assertEquals("N/D", importeConDosDecimales("N/D"))
+    }
 }

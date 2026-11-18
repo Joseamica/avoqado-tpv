@@ -818,6 +818,40 @@ internal fun montoDelBotonEfectivo(
     cashSupportsThisSplit: Boolean,
 ): BigDecimal? = chargeableAmount.takeIf { cashSupportsThisSplit && !(state.check == null && state.efectivoBloqueadoPor != null) }
 
+/** Lo que el pie enseña arriba de los botones: el [aviso] (con «Reintentar» si [puedeReintentar]) y la [razonDeLaTarjeta]. */
+internal data class AvisosDelPie(
+    val aviso: String?,
+    val puedeReintentar: Boolean,
+    val razonDeLaTarjeta: String?,
+)
+
+/**
+ * Una sola razón a la vez. Primero D9 (encargo 49276c): tras entregar una tarjeta, los dos botones esperan a releer la
+ * cuenta. Si no, la de D86/D92 (sin cuenta leída, algo propio sin subir, un cambio por confirmar).
+ */
+internal fun avisosDelPie(state: TableCheckoutState, cardSupportsThisSplit: Boolean): AvisosDelPie {
+    val avisoDeLaTarjeta = state.avisoDeSaldoPorConfirmar
+    val aviso = avisoDeLaTarjeta ?: state.efectivoBloqueadoPor?.takeIf { !state.isLoading }
+    val puedeReintentar = aviso != null && if (avisoDeLaTarjeta != null) {
+        !state.revisandoSaldo
+    } else {
+        // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
+        state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)
+    }
+    val razonDeLaTarjeta = when {
+        !state.cardPaymentEnabled -> state.cardPaymentDisabledReason
+        !cardSupportsThisSplit -> "División no disponible en este equipo — cobra el total o usa efectivo"
+        else -> null
+    }
+    // D17 (PAX, 17-nov): con algo propio sin subir (p. ej. una tarjeta en la cola) o un cambio en camino, la razón de la
+    // tarjeta es la MISMA frase que el aviso de arriba y salía dos veces seguidas: si ya se dijo, no se repite.
+    return AvisosDelPie(
+        aviso = aviso,
+        puedeReintentar = puedeReintentar,
+        razonDeLaTarjeta = razonDeLaTarjeta?.takeIf { it != aviso },
+    )
+}
+
 @Composable
 private fun CheckoutBottomBar(
     chargeableAmount: BigDecimal,
@@ -841,11 +875,6 @@ private fun CheckoutBottomBar(
     val cobroEnCurso = state.isProcessingCash || state.isHandingOffToCard || state.saldoPorConfirmar
     val cardAvailable = state.cardPaymentEnabled && cardSupportsThisSplit && chargeableAmount > BigDecimal.ZERO
     val cardEnabled = cardAvailable && !cobroEnCurso
-    val cardReason = when {
-        !state.cardPaymentEnabled -> state.cardPaymentDisabledReason
-        !cardSupportsThisSplit -> "División no disponible en este equipo — cobra el total o usa efectivo"
-        else -> null
-    }
     // EFECTIVO + "por artículo" no existe hoy — PAY_CASH no acepta
     // paidProductsId (ver KDoc de TablesRepository.payCash). Hueco de
     // producto documentado, no un olvido.
@@ -856,10 +885,8 @@ private fun CheckoutBottomBar(
 
     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         HorizontalDivider()
-        // Una sola razón a la vez. Primero D9 (encargo 49276c): tras entregar una tarjeta, los dos botones esperan a releer
-        // la cuenta. Si no, la de D86/D92 (sin cuenta leída, algo propio sin subir, un cambio por confirmar).
-        val avisoDeLaTarjeta = state.avisoDeSaldoPorConfirmar
-        val aviso = avisoDeLaTarjeta ?: efectivoBloqueadoPor?.takeIf { !state.isLoading }
+        val pie = avisosDelPie(state, cardSupportsThisSplit)
+        val aviso = pie.aviso
         if (aviso != null) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
@@ -871,17 +898,12 @@ private fun CheckoutBottomBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                val puedeReintentar = if (avisoDeLaTarjeta != null) {
-                    !state.revisandoSaldo
-                } else {
-                    // D86: con algo propio sin subir (o sin cuenta), se puede volver a leer a mano.
-                    state.pendienteSinSubir != null || (state.check == null && !state.isProvisional)
-                }
-                if (puedeReintentar) {
+                if (pie.puedeReintentar) {
                     TextButton(onClick = onRetryLoad) { Text("Reintentar") }
                 }
             }
         }
+        val cardReason = pie.razonDeLaTarjeta
         if (cardReason != null) {
             Text(
                 text = cardReason,

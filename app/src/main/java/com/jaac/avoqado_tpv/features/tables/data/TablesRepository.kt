@@ -1777,7 +1777,7 @@ class TablesRepository @Inject constructor(
 
         /** D19: la duda — el cobro pudo entrar. */
         const val COBRO_SIN_CONFIRMAR =
-            "No se pudo confirmar este cobro. NO lo vuelvas a cobrar: revisa la cuenta en un momento. La propina se quitó para no cobrarla dos veces."
+            "No se pudo confirmar este cobro. NO lo vuelvas a cobrar: revisa la cuenta en un momento (si ya quedó en $0, sal con la flecha). La propina se quitó para no cobrarla dos veces."
 
         /** D19: nada se escribió y no hay otra razón que decir. */
         const val COBRO_NO_GUARDADO = "No se pudo guardar el cobro en esta terminal: no se cobró. Intenta otra vez."

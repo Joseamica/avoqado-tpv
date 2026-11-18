@@ -108,7 +108,8 @@ class CobrosDeclarablesRoomTest {
         assertThat(declarables()).isEmpty()
     }
 
-    @Test fun `no entra lo que trae evidencia de dinero o una contradiccion`() = runTest {
+    // F1 (tarea 4): reemplaza «no entra»: una fila con dinero o contradicción queda en la lista para CONSULTARLA, sin poder declararse.
+    @Test fun `F1 lo que trae evidencia de dinero o una contradiccion entra sólo para consulta`() = runTest {
         val conDinero = mapOf<String, (PaymentAttemptEntity) -> PaymentAttemptEntity>(
             "host aprobado" to { it.copy(hostApproved = true) },
             "banco aprobado" to { it.copy(serverProcessorEvidence = "APPROVED") },
@@ -121,8 +122,11 @@ class CobrosDeclarablesRoomTest {
         for ((nombre, marca) in conDinero) {
             db.clearAllTables()
             dao.insert(marca(duda("a")))
-            assertWithMessage(nombre).that(declarables()).isEmpty()
+            assertWithMessage(nombre).that(declarables().map { it.attemptId to it.declarable }).containsExactly("a" to false)
         }
+        db.clearAllTables()
+        dao.insert(duda("limpia"))
+        assertWithMessage("una duda limpia sí se declara").that(declarables().single().declarable).isTrue()
     }
 
     @Test fun `no entra una devolucion, una fila heredada ni otro negocio`() = runTest {
@@ -170,7 +174,9 @@ class CobrosDeclarablesRoomTest {
             db.clearAllTables()
             dao.insert(duda("limpio", "r-1"))
             dao.insert(marca(duda("hermano", "r-1")))
-            assertWithMessage(nombre).that(declarables()).isEmpty()
+            // F1 (tarea 4): la solicitud no se ofrece para declarar; un hermano EN DUDA con dinero sale sólo para consulta.
+            assertWithMessage(nombre).that(declarables().filter { it.declarable }).isEmpty()
+            assertWithMessage(nombre).that(declarables().map { it.attemptId }).doesNotContain("limpio")
         }
     }
 
@@ -252,6 +258,15 @@ class CobrosDeclarablesRoomTest {
 
         assertThat(declarables().map { it.totalCentavos to it.desdeMillis })
             .containsExactlyElementsIn(bandeja.observePendingObligations(venue).first().map { it.totalCentavos to it.desdeMillis })
+    }
+
+    @Test fun `F1 el renglon del gerente dice importe, hora del negocio y referencia corta`() {
+        val zona = java.time.ZoneOffset.ofHours(-6)
+        val alas1432 = java.time.ZonedDateTime.of(2026, 11, 17, 14, 32, 0, 0, zona).toInstant().toEpochMilli()
+        val cobro = CobroDeclarable("6f1c2a9e-77b3-4d1e-9a2f-03c4d5e6a1b2", null, 12_000, alas1432, null)
+        assertThat(cobro.referenciaCorta).isEqualTo("E6A1B2")
+        assertThat(AvisoDeCobrosPendientes.renglonParaElGerente(cobro.totalCentavos, cobro.desdeMillis, cobro.referenciaCorta, zona))
+            .isEqualTo("$120.00 · 14:32 · ref E6A1B2")
     }
 
     @Test fun `el renglon de la lista dice el importe y la antiguedad`() {

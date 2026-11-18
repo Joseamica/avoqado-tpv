@@ -19,19 +19,13 @@ class NoSeCobroCableadoTest {
         assertThat(navegacion).contains("BannerDeCobrosPendientes(")
     }
 
-    /**
-     * D22 (QA en la PAX, 17-nov): al declarar el ÚLTIMO cobro en duda el banner se va; si el diálogo vivía dentro del banner, el aviso
-     * «quedó en Avoqado» / «sólo en esta terminal» desaparecía antes de leerse. El banner queda montado siempre y sólo pinta el aviso si hay.
-     */
-    @Test fun `D22 el dialogo del banner sobrevive a que el banner se vaya`() {
+    /** F1 (tarea 4): el Inicio ya no declara nada: su aviso lleva a «Revisar» (Pagos), donde entra el gerente con su PIN. */
+    @Test fun `F1 el banner del Inicio ya no ofrece declarar - sin dialogo ni flujo, solo Revisar y Ayuda`() {
         val banner = dialogos.substring(dialogos.indexOf("internal fun BannerDeCobrosPendientes("), dialogos.indexOf("internal fun CobrosPorRevisar("))
         assertThat(banner).contains("aviso: String?,")
-        val condicion = banner.indexOf("if (aviso != null) {")
-        val dialogo = banner.indexOf("DialogoDeNoSeCobro(paso")
-        assertThat(condicion).isAtLeast(0)
-        assertThat(dialogo).isGreaterThan(banner.indexOf("}", banner.indexOf("AvisoConBotones(", condicion)))
-        val llamada = navegacion.substring(navegacion.indexOf("val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)"))
-        assertThat(llamada.substring(0, llamada.indexOf("BannerDeCobrosPendientes("))).doesNotContain("if (aviso != null)")
+        assertThat(banner).doesNotContain("DialogoDeNoSeCobro(")
+        assertThat(banner).doesNotContain("FlujoDeNoSeCobro(")
+        assertThat(banner).contains("onRevisar = onRevisar")
     }
 
     @Test fun `D20 Pagos lleva el recuadro Por revisar con la misma declaracion, sin la ventana de 10 min`() {
@@ -64,31 +58,35 @@ class NoSeCobroCableadoTest {
         assertThat(dialogos).contains("REFRESCO_DEL_BANNER_MS = 15_000L")
         assertThat(dialogos).doesNotContain("ConsultaDelCierreDeCaja")
         assertThat(dialogos).doesNotContain("liberarDudasLocales")
-        assertThat(dialogos).contains("if (!hayDeclarables) return@LaunchedEffect")
+        assertThat(dialogos).contains("if (!hayPorRevisar) return@LaunchedEffect")
     }
 
-    @Test fun `el boton sale sólo con declarables, junto a Revisar y Ayuda, con el texto arriba y los botones abajo`() {
-        val banner = dialogos.substring(dialogos.indexOf("internal fun AvisoConBotones("))
+    @Test fun `F1 el aviso del Inicio lleva Revisar y Ayuda, con el texto arriba y los botones abajo - sin No se cobro`() {
+        val banner = dialogos.substring(dialogos.indexOf("internal fun AvisoConBotones("), dialogos.indexOf("private fun DialogoDeNoSeCobro("))
         val texto = banner.indexOf("text = aviso")
         val fila = banner.indexOf("Row(")
         assertThat(texto).isAtLeast(0)
         assertThat(fila).isGreaterThan(texto)
-        assertThat(banner).contains("if (mostrarNoSeCobro)")
-        for (boton in listOf("\"No se cobró\"", "\"Revisar\"", "\"Ayuda\"")) assertThat(banner).contains(boton)
+        assertThat(banner).doesNotContain("\"No se cobró\"")
+        for (boton in listOf("\"Revisar\"", "\"Ayuda\"")) assertThat(banner).contains(boton)
+        // Y en Pagos, el recuadro «Por revisar» abre la revisión del gerente.
+        val recuadro = dialogos.substring(dialogos.indexOf("internal fun CobrosPorRevisar("), dialogos.indexOf("internal fun AvisoConBotones("))
+        assertThat(recuadro).contains("Text(\"Revisar\")")
+        assertThat(recuadro).doesNotContain("\"No se cobró\"")
     }
 
     @Test fun `los textos de los dialogos son los acordados`() {
+        // F1 (tarea 4): primero el PIN del gerente (K31), después la decisión: «Firmar».
         for (texto in listOf(
-            "¿Cuál no se cobró?",
-            "¿No se cobró este cobro?",
-            ". Revísalo antes de confirmar: queda tu nombre y la hora.\"",
-            ". Revísalo antes de confirmar. Con internet queda en Avoqado con tu nombre y la hora; sin internet, sólo en esta terminal.",
-            "Sí, no se cobró",
-            "Cancelar",
-            "Pide a un gerente que ingrese su PIN",
+            "¿Cuál vas a revisar?",
+            "Gerente: escribe tu PIN",
             "PIN de gerente",
-            "Confirmar",
+            "Continuar",
+            "Firma del gerente",
+            "Firmar",
+            "Cancelar",
         )) assertThat(dialogos).contains(texto)
+        assertThat(dialogos).doesNotContain("Sí, no se cobró")
     }
 
     @Test fun `el campo del PIN acepta lo mismo que el servidor y se escribe como contrasena`() {
@@ -110,7 +108,7 @@ class NoSeCobroCableadoTest {
         // QA en la N86, 3-nov: la palomita no hacía nada y el gerente tenía que cerrar el teclado para encontrar el botón.
         val fuente = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/NoSeCobroDesdeElAviso.kt").readText()
         com.google.common.truth.Truth.assertThat(fuente).contains("imeAction = ImeAction.Done")
-        com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin) && !enviando) onConfirmar(pin) }")
+        com.google.common.truth.Truth.assertThat(fuente).contains("onDone = { if (pinDeGerenteValido(pin)) onIdentificar(pin) }")
     }
     // D8: la solicitud no admitida se contesta en el acto, con el motivo, en vez de callar.
     @Test fun `el cobro que la terminal no admite se le contesta al POS`() {

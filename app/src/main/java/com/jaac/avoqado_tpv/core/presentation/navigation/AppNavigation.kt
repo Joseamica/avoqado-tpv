@@ -1027,11 +1027,11 @@ fun AppNavigation(
                     }
                 }
                 val aviso = AvisoDeCobrosPendientes.texto(pendientes, ahora)
-                // D22: montado siempre (sin aviso no pinta nada), para que el resultado de declarar el último cobro se alcance a leer.
+                // Montado siempre (sin aviso no pinta nada): su refresco de uno en uno sigue mientras haya dudas a la vista.
                 run {
                     // 🔴 El aviso se TOCA y lleva al historial de pagos (founder, 21-sep). Antes sólo ofrecía «Ayuda»: le decía al
                     // cajero que hay un cobro sin confirmar y lo dejaba sin ningún sitio donde comprobar si entró. Sigue sin poder
-                    // taparse: se resuelve declarando («No se cobró», founder, 3-nov) o cuando la obligación se resuelve, nunca
+                    // taparse: se resuelve declarando (F1, 17-nov: el gerente, con su PIN, en «Revisar») o cuando la obligación se resuelve, nunca
                     // porque alguien lo esconda. Además se quita solo a los 10 min, en toda terminal (founder: 24-sep la PAX, 25-sep todas).
                     com.jaac.avoqado_tpv.features.payment.presentation.BannerDeCobrosPendientes(
                         aviso = aviso,
@@ -2444,7 +2444,9 @@ fun AppNavigation(
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
                 encabezado = {
                     if (!venuePorRevisar.isNullOrBlank()) {
-                        com.jaac.avoqado_tpv.features.payment.presentation.CobrosPorRevisar(venuePorRevisar, declaracionPorRevisar)
+                        com.jaac.avoqado_tpv.features.payment.presentation.CobrosPorRevisar(
+                            venuePorRevisar, declaracionPorRevisar, com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage),
+                        )
                     }
                 },
                 refreshAfterRefund = refreshAfterRefund,

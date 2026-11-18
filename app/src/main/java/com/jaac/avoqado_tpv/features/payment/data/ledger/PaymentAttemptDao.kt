@@ -651,13 +651,14 @@ interface PaymentAttemptDao {
     @Query(
         """SELECT * FROM (
             SELECT d.attempt_id AS attempt_id, d.terminal_payment_request_id AS request_id,
-                (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at
+                (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at,
+                -- F1 (tarea 4): con dinero o contradicción la fila sale para CONSULTARLA, pero no admite declaración.
+                CASE WHEN d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
+                    AND (d.server_outcome IS NULL
+                         OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+                    AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """ THEN 1 ELSE 0 END AS declarable
             FROM payment_attempts d
             WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0 AND d.state = 'INDETERMINADO'
-            AND d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
-            AND (d.server_outcome IS NULL
-                 OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
-            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
             AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
             -- Dentro de este FROM los nombres sin prefijo son los del hermano.
             AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
@@ -668,7 +669,7 @@ interface PaymentAttemptDao {
         UNION ALL
         SELECT * FROM (
             SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
-                r.created_at AS desde_millis, NULL AS server_answered_at
+                r.created_at AS desde_millis, NULL AS server_answered_at, 1 AS declarable
             FROM remote_payment_requests r
             WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM payment_attempts p

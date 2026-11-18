@@ -26,9 +26,14 @@ data class CobroDeclarable(
     @ColumnInfo(name = "total_centavos") val totalCentavos: Long,
     @ColumnInfo(name = "desde_millis") val desdeMillis: Long,
     @ColumnInfo(name = "server_answered_at") val serverAnsweredAt: Long?,
+    /** F1 (tarea 4): false = trae dinero o una contradicción; se puede CONSULTAR, pero no admite declaración. */
+    @ColumnInfo(name = "declarable") val declarable: Boolean = true,
 ) {
     /** Una declaración por solicitud: dos intentos de la misma son el mismo cobro para el cajero. */
     val identidad: String get() = requestId ?: attemptId.orEmpty()
+
+    /** F1: los últimos 6 caracteres de la identidad, para distinguir dos filas del mismo importe y minuto. */
+    val referenciaCorta: String get() = identidad.filter { it.isLetterOrDigit() }.takeLast(6).uppercase()
 }
 
 /** Lo que le pasó a la declaración, con el texto que lee el cajero. */
@@ -45,6 +50,12 @@ sealed interface ResultadoDeLaDeclaracion {
     data object FaltaConsultar : ResultadoDeLaDeclaracion
     data object SinPermiso : ResultadoDeLaDeclaracion
     data object UsaElPos : ResultadoDeLaDeclaracion
+    /** F1: la fila elegida ya se resolvió sin cobro (Avoqado, el POS u otra pantalla). */
+    data object YaResuelto : ResultadoDeLaDeclaracion
+    /** F1: la fila elegida resultó cobrada: Avoqado la registró. */
+    data object YaCobrado : ResultadoDeLaDeclaracion
+    /** F1: la fila elegida ya no está por revisar y la terminal no sabe cómo quedó (una solicitud del POS). */
+    data object YaNoEstaPorRevisar : ResultadoDeLaDeclaracion
 
     /** [Declarado] y [PidePin] no se avisan: uno cierra el diálogo y el otro abre el del PIN. */
     fun texto(): String = when (this) {
@@ -55,6 +66,9 @@ sealed interface ResultadoDeLaDeclaracion {
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
+        YaResuelto -> "Este cobro ya quedó resuelto como no cobrado: ya no está por revisar."
+        YaCobrado -> "Este cobro SÍ pasó: Avoqado ya lo registró. No lo vuelvas a cobrar."
+        YaNoEstaPorRevisar -> "Este cobro ya no está por revisar: se resolvió en el POS o en Avoqado. Revisa Pagos para ver cómo quedó."
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
         // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
         DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
@@ -206,6 +220,27 @@ class DeclaracionDesdeElAviso @Inject constructor(
         BlumonAttemptResolver.State.PENDING, BlumonAttemptResolver.State.UNAVAILABLE -> GENERICO
     }
 
+    /**
+     * F1 (tarea 4): cómo quedó la fila ELEGIDA, para decírselo al gerente en vez de cerrar en silencio. Sólo lee la libreta: nunca afirma
+     * «no se cobró» de algo que sigue en duda.
+     */
+    suspend fun resultadoDe(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion = sinTumbarLaApp {
+        val fila = cobro.attemptId?.let { ledger.leerIntento(it) }?.takeIf { it.venueId == venueId }
+        when {
+            fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
+            tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
+            fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
+            fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> ResultadoDeLaDeclaracion.YaResuelto
+            else -> GENERICO
+        }
+    } ?: GENERICO
+
+    /** F1: la consulta de una fila que no admite declaración (dinero o contradicción): se pregunta a Avoqado y se dice cómo quedó. */
+    suspend fun consultarYDecir(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion {
+        sinTumbarLaApp { consultar(venueId, cobro); null }
+        return resultadoDe(venueId, cobro)
+    }
+
     /** Lo que deja una consulta: el intento por S6, o esa sola solicitud de la bandeja. Lo que resolvió la bandeja se emite, como el trigger. */
     private suspend fun consultar(venueId: String, cobro: CobroDeclarable): LedgerServerRecovery.LecturaDelIntento? {
         val attemptId = cobro.attemptId
@@ -223,7 +258,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
     private suspend fun yaNoEsDeclarable(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion? {
         // D20 (Codex r2): sin el tope de la lista. «Ver anteriores» ofrece cobros fuera de los 50 más recientes, y buscar sólo ahí
         // diría «no se puede» de uno que sí. ponytail: una lectura local sin tope al declarar; Room, no el servidor.
-        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad }
+        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad && it.declarable }
         return when {
             sigue -> null
             tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia

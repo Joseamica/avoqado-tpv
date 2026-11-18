@@ -202,4 +202,11 @@ interface SyncIntentDao {
      */
     @Query("UPDATE sync_intents SET status = 'DISCARDED' WHERE id = :id AND status = 'PENDING'")
     suspend fun discardPending(id: String): Int
+
+    /**
+     * nab0e38e: como [discardPending], pero deja escrita la RAZÓN (`error_code` + `message`) en la fila: un intent que no se
+     * manda nunca se descarta en silencio. Sólo sobre `PENDING`.
+     */
+    @Query("UPDATE sync_intents SET status = 'DISCARDED', error_code = :razon, message = :mensaje WHERE id = :id AND status = 'PENDING'")
+    suspend fun discardPendingConRazon(id: String, razon: String, mensaje: String): Int
 }

@@ -130,6 +130,9 @@ class LiberarMesaConSuCobroEnColaRoomTest {
         // El cobro sube (y en el SERVIDOR real libera la mesa al registrarse); el «Liberar mesa» nunca sale.
         assertThat(llegadas).containsExactly("COBRO:$CUENTA")
         assertThat(fila(liberar).status).isEqualTo(SyncIntentEntity.STATUS_DISCARDED)
+        // Nunca en silencio: la fila dice por qué no salió.
+        assertThat(fila(liberar).errorCode).isEqualTo("LO_LIBERA_SU_COBRO")
+        assertThat(fila(liberar).message).contains("el servidor libera la mesa")
         assertThat(outbox.rejectedIntents(VENUE)).isEmpty()
     }
 

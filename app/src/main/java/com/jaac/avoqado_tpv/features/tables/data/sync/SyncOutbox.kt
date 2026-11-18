@@ -298,8 +298,10 @@ class SyncOutbox @Inject constructor(
                 // manda: el SERVIDOR lo rechazaría para siempre (ve la cuenta sin pagar) y, cuando ese cobro se registre, él
                 // mismo libera la mesa (`releaseTableIfSettled`). Se marca descartado (como el write-ahead) y la cola sigue.
                 if (intent.type == SyncIntentTypes.CLEAR_TABLE && loLiberaSuCobro(venueId, intent)) {
-                    if (dao.discardPending(intent.id) != 1) break // ya no está en espera: esta pasada no decide nada más
-                    Timber.i("🪑 [Tables] CLEAR_TABLE %s no se manda: lo libera el cobro con tarjeta de su cuenta (venue=%s)", intent.id, venueId)
+                    // Con su razón escrita en la fila y en el log: nunca se descarta en silencio.
+                    if (dao.discardPendingConRazon(intent.id, RAZON_LO_LIBERA_SU_COBRO, MENSAJE_LO_LIBERA_SU_COBRO) != 1) break
+                    Timber.w("🪑 [Tables] CLEAR_TABLE %s no se manda (%s): lo libera el cobro con tarjeta de su cuenta (venue=%s)",
+                        intent.id, RAZON_LO_LIBERA_SU_COBRO, venueId)
                     sinMandar++
                     continue
                 }
@@ -502,6 +504,11 @@ class SyncOutbox @Inject constructor(
         const val BATCH_SIZE = 50
         /** nab0e38e: lo que `dineroDeTarjetaSinConfirmarDeLaCuenta` contesta cuando el cobro todavía va a llegar al SERVIDOR. */
         val COBRO_QUE_TODAVIA_SUBE = setOf("SUBIENDO", "LIBRETA")
+        /** nab0e38e: la razón que queda en la fila de un «Liberar mesa» que no se mandó. */
+        const val RAZON_LO_LIBERA_SU_COBRO = "LO_LIBERA_SU_COBRO"
+        const val MENSAJE_LO_LIBERA_SU_COBRO =
+            "No se mandó: el cobro con tarjeta de esta cuenta todavía no sube; al registrarse, el servidor libera la mesa. " +
+                "Si ese cobro no se registra, la cuenta sigue debiendo y la mesa sigue ocupada.
 
         /**
          * NO vive en [SyncIntentEntity] porque `RETRY` nunca se persiste — no es

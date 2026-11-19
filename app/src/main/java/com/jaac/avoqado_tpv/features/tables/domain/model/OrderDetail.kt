@@ -107,6 +107,11 @@ data class OrderDiscountLine(
     val id: String = "",
     val name: String = "",
     val amount: BigDecimal = BigDecimal.ZERO,
+    /**
+     * D15 (18-nov): la rebaja quedó FIJA al cobrar los vales (la del vale y la del suelto de esa venta): el SERVIDOR no la deja quitar.
+     * Mesas enseña su «Quitar» en gris con la razón. Un SERVIDOR viejo no lo manda y Gson lo deja en `false` (la fila queda como hoy).
+     */
+    val congeladoPorVales: Boolean = false,
 )
 
 /** Espejo del modelo Prisma `OrderServiceCharge` completo (`include: true`, ver schema.prisma:6351). */

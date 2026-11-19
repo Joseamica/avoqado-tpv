@@ -638,7 +638,7 @@ private fun SummaryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (onClickFila != null) Modifier.clickable(onClick = onClickFila) else Modifier)
+            .then(if (onClickFila != null) Modifier.clickable(onClickLabel = "Ver por qué está fija", onClick = onClickFila) else Modifier)
             .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -1238,6 +1238,15 @@ private fun TableCheckoutScreenPaxPreview() {
             onPayCash = {},
             onPayCard = {},
         )
+    }
+}
+
+/** D15 (Codex r4 #2): la PAX real mide 360 × 640 dp; la rebaja fija junto a una normal, con «Quitar» en gris y su nota. */
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX 360x640 — rebaja fija del cobro de vales (D15)")
+@Composable
+private fun RebajaFijaPaxPreview() {
+    AvoqadoTheme {
+        CheckSummaryCard(check = previewCheck(), remaining = BigDecimal("845.50"))
     }
 }
 

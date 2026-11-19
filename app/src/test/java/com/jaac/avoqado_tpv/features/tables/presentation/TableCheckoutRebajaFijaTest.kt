@@ -50,3 +50,32 @@ class TableCheckoutRebajaFijaTest {
         assertThat(viejo.orderDiscounts.single().congeladoPorVales).isFalse()
     }
 }
+
+/**
+ * D15 (Codex r4 #1): el CABLEADO de la fila en «Cobrar», que aquí no se puede ejecutar (`createComposeRule` sólo está en `androidTest`).
+ * Se lee la fuente, como en `NoSeCobroCableadoTest`: cada descuento de la cuenta pasa por [quitarDeLaRebaja] y la fila usa su `activo`
+ * (el botón), su `nota` y su `razon` (tocar la fila abre la explicación).
+ */
+class TableCheckoutRebajaFijaCableadoTest {
+    private val pantalla = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/tables/presentation/TableCheckoutScreen.kt").readText()
+
+    @Test
+    fun D15_cada_descuento_de_la_cuenta_usa_la_regla_y_la_fila_la_respeta() {
+        val bucle = pantalla.substring(pantalla.indexOf("check.orderDiscounts.forEach { discount ->"))
+        val fila = bucle.substring(0, bucle.indexOf("if (check.orderDiscounts.isEmpty()"))
+        assertThat(fila).contains("quitarDeLaRebaja(discount, quitandoOtra = isRemovingDiscount)")
+        assertThat(fila).contains("removeEnabled = quitar.activo")
+        assertThat(fila).contains("nota = quitar.nota")
+        assertThat(fila).contains("onClickFila = quitar.razon?.let { razon -> { razonDeRebajaFija = razon } }")
+        assertThat(fila).doesNotContain("removeEnabled = !isRemovingDiscount")
+
+        val renglon = pantalla.substring(pantalla.indexOf("private fun SummaryRow("), pantalla.indexOf("private fun SplitTypeChips("))
+        assertThat(renglon).contains("enabled = removeEnabled")
+        assertThat(renglon).contains("Modifier.clickable(onClickLabel = \"Ver por qué está fija\", onClick = onClickFila)")
+        assertThat(renglon).contains("if (nota != null)")
+
+        val tarjeta = pantalla.substring(pantalla.indexOf("private fun CheckSummaryCard("), pantalla.indexOf("private fun SummaryRow("))
+        assertThat(tarjeta).contains("razonDeRebajaFija?.let { razon ->")
+        assertThat(tarjeta).contains("text = { Text(razon) }")
+    }
+}

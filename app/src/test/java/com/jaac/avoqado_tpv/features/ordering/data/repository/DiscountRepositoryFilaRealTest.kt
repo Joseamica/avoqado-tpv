@@ -82,6 +82,20 @@ class DiscountRepositoryFilaRealTest {
             .isEqualTo("Este descuento no aplica a esta cuenta.")
     }
 
+    @Test fun `del catalogo con un 403 sin permiso conocido el texto sale en espanol`() = runTest {
+        coEvery { api.applyPredefinedDiscount(any(), any(), any()) } returns
+            Response.error(403, """{"success":false,"error":"Forbidden"}""".toResponseBody())
+        val mensaje = repo.applyPredefinedDiscount("v-1", "o-1", "d-1").exceptionOrNull()?.message
+        assertThat(mensaje).isEqualTo("Para esto hace falta el permiso de un gerente.")
+    }
+
+    @Test fun `manual con un 403 sin permiso conocido el texto sale en espanol`() = runTest {
+        coEvery { api.applyManualDiscount(any(), any(), any(), any()) } returns
+            Response.error(403, """{"success":false,"error":"Forbidden"}""".toResponseBody())
+        val mensaje = repo.applyManualDiscount("v-1", "o-1", DiscountType.FIXED, 10.0, "x").exceptionOrNull()?.message
+        assertThat(mensaje).isEqualTo("Para esto hace falta el permiso de un gerente.")
+    }
+
     // --- Quitar ---
 
     @Test fun `quitar una rebaja fija de vales da la razon de D15, sin mandar a cancelar`() = runTest {

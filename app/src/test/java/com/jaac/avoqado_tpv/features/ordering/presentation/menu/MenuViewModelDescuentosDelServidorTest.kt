@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.repository.ID_DE_FILA_SIN_CON
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_APLICAR_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_CUENTA_SIN_SUBIR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_DESCUENTO_YA_APLICADO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ESPERA_EL_COBRO
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ESPERA_EL_DESCUENTO
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_NO_SE_PUDO_APLICAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_QUITAR_SIN_CONFIRMAR
@@ -199,15 +200,17 @@ class MenuViewModelDescuentosDelServidorTest {
         assertThat(ids(vm)).containsExactly("od-1")
     }
 
-    @Test fun `abrir en caliente no escribe la cuenta en Room ni cambia su total`() {
+    @Test fun `abrir en caliente - la relectura entra a Room por la puerta y la cabecera sigue siendo la de Room`() {
+        // v4.2 · Regla A: la puerta (`cacheBackendOrder`) no borra renglones en cola; la pantalla toma la cabecera de Room (aquí no emite).
         val copia = orden(descuentos = "10.00")
+        val leida = orden(descuentos = "30.00", filas = listOf(fila("od-1")))
         coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns copia
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(descuentos = "30.00", filas = listOf(fila("od-1"))))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(leida)
         val vm = crear(estado = null)
         vm.loadOrder("o-1")
         assertThat(ids(vm)).containsExactly("od-1")
         assertThat((vm.state.value as MenuState.Success).order.total).isEqualTo(copia.total)
-        coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
+        coVerify(exactly = 1) { orderSyncCoordinator.cacheBackendOrder(leida) }
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -350,7 +353,7 @@ class MenuViewModelDescuentosDelServidorTest {
         assertThat(ids(vm)).containsExactly("od-x")
     }
 
-    @Test fun `SERVIDOR viejo sin id y lecturas caidas - el total baja por los dos descuentos y no sale ninguna fila inventada`() {
+    @Test fun `SERVIDOR viejo sin id y lecturas caidas - el total no se mueve con los acuses y no sale ninguna fila inventada`() {
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returnsMany listOf(
             Result.success(acuse(fila(ID_DE_FILA_SIN_CONFIRMAR, "10.00"))),
             Result.success(acuse(fila(ID_DE_FILA_SIN_CONFIRMAR, "5.00"))),
@@ -359,13 +362,17 @@ class MenuViewModelDescuentosDelServidorTest {
         vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
         vm.applyManualDiscount(DiscountType.FIXED, 5.0, "y")
         assertThat(ids(vm)).isEmpty()
-        assertThat((vm.state.value as MenuState.Success).order.total).isEqualTo(BigDecimal("85.00"))
+        // v4.2 · Regla A: la cabecera la escribe sólo Room (con la siguiente lectura buena), igual que la lista.
+        assertThat((vm.state.value as MenuState.Success).order.total).isEqualTo(BigDecimal("100.00"))
     }
 
-    @Test fun `con la lectura final el total es el del SERVIDOR si los renglones no cambiaron`() {
+    @Test fun `con la lectura final la cabecera llega por Room`() {
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-x")))
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(descuentos = "10.00", total = "88.00", filas = listOf(fila("od-x"))))
+        // Room toma la lectura (sin cola) y emite: es lo que pinta la pantalla.
+        coEvery { orderSyncCoordinator.cacheBackendOrder(any()) } coAnswers { room.emit(firstArg()); true }
         val vm = crear()
+        ponerCuentaAbierta(vm, "o-1")
         vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
         val cuenta = (vm.state.value as MenuState.Success).order
         assertThat(cuenta.total).isEqualTo(BigDecimal("88.00"))
@@ -376,7 +383,7 @@ class MenuViewModelDescuentosDelServidorTest {
     // Sin confirmar y la llave del envío (D21)
     // ------------------------------------------------------------------------------------------------
 
-    @Test fun `aplicar sin respuesta y sin PIN avisa, relee sin tocar Room y no se reenvia`() {
+    @Test fun `aplicar sin respuesta y sin PIN avisa, relee por la puerta de Room y no se reenvia`() {
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(DescuentoSinConfirmarException(IOException("timeout")))
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-llego"))))
@@ -386,10 +393,11 @@ class MenuViewModelDescuentosDelServidorTest {
         assertThat(avisos).contains(TEXTO_APLICAR_SIN_CONFIRMAR)
         assertThat(ids(vm)).containsExactly("od-llego")
         coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
+        // v4.2 · Regla A: la lectura entra a Room por la puerta, que no borra renglones en cola (ya no por `refreshOrderFromBackend`).
+        coVerify(exactly = 1) { orderSyncCoordinator.cacheBackendOrder(any()) }
     }
 
-    @Test fun `cortesia con PIN sin confirmar toma las filas de la lectura y no reescribe Room`() {
+    @Test fun `cortesia con PIN sin confirmar toma las filas de la lectura y entra a Room por la puerta`() {
         coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
         coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1", any()) } returns
             Result.failure(IOException("timeout"))
@@ -400,7 +408,7 @@ class MenuViewModelDescuentosDelServidorTest {
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "Cortesía")
         assertThat(avisos).contains("No pudimos confirmar la cortesía. Revisa la cuenta")
         assertThat(ids(vm)).containsExactly("od-cortesia")
-        coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
+        coVerify(exactly = 1) { orderSyncCoordinator.cacheBackendOrder(any()) }  // v4.2: por la puerta
     }
 
     @Test fun `volver a dar el mismo descuento tras sin confirmar manda la misma llave, otro descuento una nueva`() {
@@ -572,10 +580,204 @@ class MenuViewModelDescuentosDelServidorTest {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // D16 v4.2 · Regla A: la cabecera sale sólo de Room y una lectura entra a Room sólo por la puerta (Codex r5 #1 y #6)
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `la lectura final de un cambio entra a Room por la puerta`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(acuse(fila("od-x"), total = "90.00"))
+        val leida = orden(descuentos = "10.00", filas = listOf(fila("od-x")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(leida)
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        coVerify(exactly = 1) { orderSyncCoordinator.cacheBackendOrder(leida) }
+        assertThat(ids(vm)).containsExactly("od-x")
+    }
+
+    @Test fun `si la lectura final falla, el acuse no mueve el total de arriba`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(acuse(fila("od-x"), total = "90.00"))
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat((vm.state.value as MenuState.Success).order.total).isEqualTo(BigDecimal("100.00"))
+    }
+
+    @Test fun `la relectura tras sincronizar entra a Room por la puerta`() {
+        val leida = orden(filas = listOf(fila("od-de-otra-caja")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(leida)
+        val vm = crear()
+        ponerCuentaAbierta(vm, "o-1")
+        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }
+        coVerify(exactly = 1) { orderSyncCoordinator.cacheBackendOrder(leida) }
+    }
+
+    @Test fun `tras sincronizar con descuento se lee una sola vez, por la fila`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(descuentos = "10.00", filas = listOf(fila("od-1"))))
+        val vm = crear(descuentos = "10.00")
+        ponerCuentaAbierta(vm, "o-1")
+        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }
+        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
+    }
+
+    @Test fun `actualizar los datos del cliente no cambia los productos ni el total de la pantalla`() {
+        coEvery { orderRepository.updateGuest(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(orden(renglones = emptyList(), subtotal = "0.00").copy(customerName = "Ana", covers = 3))
+        val vm = crear(renglones = listOf(renglon()))
+        vm.updateGuest(3, "Ana", null, null)
+        val cuenta = (vm.state.value as MenuState.Success).order
+        assertThat(cuenta.items.map { it.id }).containsExactly("i-1")
+        assertThat(cuenta.total).isEqualTo(BigDecimal("100.00"))
+        assertThat(cuenta.customerName).isEqualTo("Ana")
+        assertThat(cuenta.covers).isEqualTo(3)
+    }
+
+    @Test fun `la respuesta de anular entra a Room por la puerta`() {
+        val otro = renglon().copy(id = "i-2", productId = "p-2")
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(renglones = listOf(renglon(), otro)))
+        val respuesta = orden(renglones = listOf(otro))
+        coEvery { orderRepository.voidItems(any(), any(), any(), any(), any(), any()) } returns Result.success(respuesta)
+        val vm = crear(renglones = listOf(renglon(), otro))
+        vm.voidItems(listOf("i-1"), "x")
+        coVerify { orderSyncCoordinator.cacheBackendOrder(respuesta) }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // D16 v4.2 · Regla B: llaves y dudas (Codex r5 #2, #3 y #5)
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `dos descuentos en duda se recuerdan los dos y el reintento del primero lleva su llave`() {
+        val llaves = mutableListOf<String?>()
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returnsMany listOf(
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout"))),
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout"))),
+            Result.success(acuse(fila("od-10"))),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "demora")
+        vm.applyManualDiscount(DiscountType.FIXED, 5.0, "demora")
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "demora")
+        assertThat(llaves).hasSize(3)
+        assertThat(llaves[2]).isEqualTo(llaves[0])
+        assertThat(llaves[1]).isNotEqualTo(llaves[0])
+    }
+
+    @Test fun `dos descuentos iguales con distinto motivo son dos descuentos aunque el primero siga en duda`() {
+        val llaves = mutableListOf<String?>()
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returnsMany listOf(
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout"))),
+            Result.success(acuse(fila("od-danado"))),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "demora")
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "producto dañado")
+        assertThat(llaves).hasSize(2)
+        assertThat(llaves[1]).isNotEqualTo(llaves[0])
+    }
+
+    @Test fun `quitar en duda se sigue vigilando aunque las lecturas traigan la fila, hasta que una ya no la trae`() {
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns
+            Result.failure(DescuentoSinConfirmarException(IOException("sin red")))
+        var lecturas = 0
+        coEvery { orderRepository.getOrder(venueId, "o-1") } coAnswers {
+            lecturas++
+            Result.success(orden(filas = if (lecturas < 5) listOf(fila("od-1")) else emptyList()))
+        }
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-1")))
+        vm.removeDiscount("od-1")            // lectura final: todavía la trae
+        avanzar(6_000)                       // 5 s
+        avanzar(11_000)                      // 15 s
+        assertThat(lecturas).isEqualTo(3)
+        avanzar(31_000)                      // 45 s: un 200 con la fila no cortó nada
+        assertThat(lecturas).isEqualTo(4)
+        avanzar(76_000)                      // 2 min: ya no la trae
+        assertThat(lecturas).isEqualTo(5)
+        assertThat(ids(vm)).isEmpty()
+        avanzar(30 * 60_000L)                // confirmada: se deja de vigilar
+        assertThat(lecturas).isEqualTo(5)
+    }
+
+    @Test fun `tras un cambio en duda, si las relecturas de 5 y 15 s fallan, se sigue a los 45 s`() {
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns
+            Result.failure(DescuentoSinConfirmarException(IOException("sin red")))
+        var lecturas = 0
+        coEvery { orderRepository.getOrder(venueId, "o-1") } coAnswers {
+            lecturas++
+            when (lecturas) {
+                1 -> Result.success(orden(filas = listOf(fila("od-1"))))
+                2, 3 -> Result.failure(IOException("sin red"))
+                else -> Result.success(orden(filas = emptyList()))
+            }
+        }
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-1")))
+        vm.removeDiscount("od-1")
+        avanzar(48_000)
+        assertThat(lecturas).isEqualTo(4)
+        assertThat(ids(vm)).isEmpty()
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // D16 v4.2 · #4 «Pagar» y «Dividir» hasta que el cobro sale · #7 textos
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `tras Pagar un descuento espera hasta que la cuenta deja la pantalla`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden())
+        val vm = crear()
+        escucha(vm)
+        var listo = false
+        vm.onPaymentRequested(onReady = { listo = true }, onError = {})
+        assertThat(listo).isTrue()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(avisos).contains(TEXTO_ESPERA_EL_COBRO)
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+        vm.setOrderingActive(false)          // la cuenta se fue de la pantalla (salió el cobro)
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `mientras Dividir sincroniza un descuento espera`() {
+        val subida = CompletableDeferred<String>()
+        coEvery { orderSyncCoordinator.syncOrderImmediately("o-1") } coAnswers { subida.await() }
+        val vm = crear()
+        escucha(vm)
+        var fue = false
+        vm.syncBeforeNavigate(haciaUnCobro = true) { fue = true }
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(avisos).contains(TEXTO_ESPERA_EL_COBRO)
+        subida.complete("o-1")
+        assertThat(fue).isTrue()
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `un permiso que falta con texto en ingles sale en espanol`() {
+        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), any(), any(), any()) } returns
+            Result.failure(PermisoRequeridoException(null, false, "Manager authorization required"))
+        val vm = crear()
+        escucha(vm)
+        vm.applyPredefinedDiscount("d-1")
+        assertThat(avisos.none { it.contains("Manager") || it.contains("authorization") }).isTrue()
+        assertThat(avisos).isNotEmpty()
+    }
+
+    @Test fun `el cupon que pide aprobacion lo dice en espanol`() {
+        coEvery { discountRepository.applyCoupon(any(), any(), any()) } returns
+            Result.failure(Exception("This discount requires manager approval"))
+        val vm = crear()
+        vm.applyCoupon("VIP")
+        assertThat(vm.couponValidationState.value).isEqualTo(CouponValidationState.Invalid("Este cupón necesita la aprobación de un gerente."))
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // Ayudantes
     // ------------------------------------------------------------------------------------------------
 
     private fun ids(vm: MenuViewModel) = vm.appliedDiscounts.value.map { it.id }
+
+    private fun avanzar(ms: Long) {
+        testDispatcher.scheduler.advanceTimeBy(ms)
+        testDispatcher.scheduler.runCurrent()
+    }
 
     private fun escucha(vm: MenuViewModel) {
         escuchas += CoroutineScope(Dispatchers.Unconfined).launch {

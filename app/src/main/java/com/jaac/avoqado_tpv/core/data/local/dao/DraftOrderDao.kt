@@ -8,6 +8,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderWithItems
 import kotlinx.coroutines.flow.Flow
 
@@ -273,4 +274,87 @@ interface DraftOrderDao {
         version: Int,
         updatedAt: Long = System.currentTimeMillis()
     )
+
+    // ============================================================================
+    // D16 v4.2 · Regla A (hz:e82938e1:D16, Codex r5 #1 y #6): la ÚNICA puerta de una lectura del SERVIDOR a Room
+    // ============================================================================
+
+    /** Renglones de la cuenta que la cola todavía no sube (altas o cambios `PENDING`, retiros `DELETED`). */
+    @Query("SELECT COUNT(*) FROM draft_order_items WHERE order_id = :orderId AND sync_status IN ('PENDING', 'DELETED')")
+    suspend fun contarRenglonesEnCola(orderId: String): Int
+
+    @Query("SELECT * FROM draft_order_items WHERE order_id = :orderId")
+    suspend fun renglonesDeLaCuenta(orderId: String): List<DraftOrderItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertarRenglones(renglones: List<DraftOrderItemEntity>)
+
+    /** Con renglones en cola: toma del SERVIDOR lo que la caja no puede calcular, sin tocar renglones, versión ni estado de sincronización. */
+    @Query("""
+        UPDATE draft_orders
+        SET discount_amount = :descuento, total = :total, paid_amount = :pagado, payment_status = :estadoDePago,
+            remaining_balance = :falta, updated_at = :ahora
+        WHERE id = :orderId
+    """)
+    suspend fun tomarDelServidorSinTocarRenglones(
+        orderId: String,
+        descuento: String,
+        total: String,
+        pagado: String,
+        estadoDePago: String,
+        falta: String,
+        ahora: Long,
+    )
+
+    /** Datos del cliente de la cuenta (personas, nombre, teléfono, notas), sin tocar renglones ni totales. */
+    @Query("""
+        UPDATE draft_orders
+        SET covers = :personas, customer_name = :nombre, customer_phone = :telefono, special_requests = :notas, updated_at = :ahora
+        WHERE id = :orderId
+    """)
+    suspend fun guardarDatosDelCliente(orderId: String, personas: Int, nombre: String?, telefono: String?, notas: String?, ahora: Long)
+
+    /**
+     * Una lectura del SERVIDOR entra a Room SÓLO por aquí, en una transacción (nadie más escribe Room entre la pregunta y la escritura):
+     *  1. **Lectura vieja** (la versión de Room ya es mayor): no se toca nada.
+     *  2. **Con renglones en cola:** renglones, versión y estado de sincronización de Room se quedan; del SERVIDOR se toman lo pagado, el
+     *     estado de pago y el descuento, y el total es el del SERVIDOR más lo que suman los renglones que el SERVIDOR todavía no tiene.
+     *     Antes, el `insert` REPLACE borraba en cascada el renglón que la caja aún no subía (Codex r3 #1, r4 #1, r5 #1).
+     *  3. **Sin cola:** Room queda igual al SERVIDOR (REPLACE + sus renglones), conservando la hora de cocina y la posición locales.
+     *
+     * @return true si Room quedó igual a la cuenta del SERVIDOR (paso 3).
+     */
+    @Transaction
+    suspend fun guardarCuentaDelServidor(cuenta: DraftOrderEntity, renglones: List<DraftOrderItemEntity>): Boolean {
+        val enRoom = getOrder(cuenta.id)
+        if (enRoom != null && enRoom.version > cuenta.version) return false
+        if (enRoom != null && contarRenglonesEnCola(cuenta.id) > 0) {
+            val subtotalLocal = renglonesDeLaCuenta(cuenta.id)
+                .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+                .fold(java.math.BigDecimal.ZERO) { suma, r -> suma + (r.totalPrice.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO) }
+            val subtotalDelServidor = cuenta.subtotal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val totalDelServidor = cuenta.total.toBigDecimalOrNull() ?: subtotalDelServidor
+            val total = (totalDelServidor + (subtotalLocal - subtotalDelServidor)).max(java.math.BigDecimal.ZERO)
+            val pagado = cuenta.paidAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            tomarDelServidorSinTocarRenglones(
+                orderId = cuenta.id,
+                descuento = cuenta.discountAmount,
+                total = total.toPlainString(),
+                pagado = cuenta.paidAmount,
+                estadoDePago = cuenta.paymentStatus,
+                falta = (total - pagado).max(java.math.BigDecimal.ZERO).toPlainString(),
+                ahora = System.currentTimeMillis(),
+            )
+            return false
+        }
+        val previos = renglonesDeLaCuenta(cuenta.id)
+        val cocina = previos.associate { it.id to it.sentToKitchenAt }
+        val posicion = previos.associate { it.id to it.linePosition }
+        insert(cuenta)  // REPLACE: borra en cascada los renglones viejos; ninguno está en cola (paso 2)
+        insertarRenglones(renglones.map { r ->
+            val conCocina = if (r.sentToKitchenAt == null && cocina[r.id] != null) r.copy(sentToKitchenAt = cocina[r.id]) else r
+            posicion[r.id]?.let { conCocina.copy(linePosition = it) } ?: conCocina
+        })
+        return true
+    }
 }

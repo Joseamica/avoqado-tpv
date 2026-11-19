@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -475,57 +476,39 @@ class OrderSyncCoordinator @Inject constructor(
      *
      * @param order Order fetched from backend
      */
-    suspend fun cacheBackendOrder(order: Order) = withContext(Dispatchers.IO) {
+    suspend fun cacheBackendOrder(order: Order): Boolean = withContext(Dispatchers.IO) {
+        // D16 v4.2 · Regla A (hz:e82938e1:D16): la lectura entra a Room por UNA puerta, en una transacción
+        // (`DraftOrderDao.guardarCuentaDelServidor`): una lectura vieja no toca nada; con renglones en cola no se reemplaza la cuenta (antes
+        // el `insert` REPLACE los borraba en cascada) y sólo se toman lo pagado y el descuento; sin cola, Room queda igual al SERVIDOR.
         try {
-            Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
-
-            // ⭐ PRESERVE LOCAL sentToKitchenAt TIMESTAMPS
-            // Backend doesn't have this field, so we must preserve local values
-            val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
-            val localSentTimestamps = existingItems.associate { it.id to it.sentToKitchenAt }
-            val localLinePositions = existingItems.associate { it.id to it.linePosition }
-            Timber.d("💾 [Cache] Preserving ${localSentTimestamps.count { it.value != null }} local sentToKitchenAt timestamps")
-
-            // Convert order to entity (marked as SYNCED since it came from backend)
-            val draftOrderEntity = order.toEntity(
-                syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
+            Timber.d("💾 [Cache] Lectura del SERVIDOR a Room | id=${order.id} | items=${order.items.size} | version=${order.version}")
+            val tomada = draftOrderDao.guardarCuentaDelServidor(
+                cuenta = order.toEntity(syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED, isServerCreated = true),
+                renglones = order.items.toEntities(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = true),
             )
-
-            // Convert items to entities (also marked as SYNCED)
-            val draftItemEntities = order.items.toEntities(
-                syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
-            ).map { item ->
-                // Preserve local sentToKitchenAt if it exists
-                val localTimestamp = localSentTimestamps[item.id]
-                val localLinePosition = localLinePositions[item.id]
-                val withSentAt = if (localTimestamp != null && item.sentToKitchenAt == null) {
-                    item.copy(sentToKitchenAt = localTimestamp)
-                } else {
-                    item
-                }
-                if (localLinePosition != null) {
-                    withSentAt.copy(linePosition = localLinePosition)
-                } else {
-                    withSentAt
-                }
-            }
-
-            // Insert order first (parent)
-            draftOrderDao.insert(draftOrderEntity)
-
-            // Then insert items (children with foreign key to order)
-            draftItemEntities.forEach { item ->
-                draftOrderItemDao.insert(item)
-            }
-
-            Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
+            if (tomada) Timber.i("✅ [Cache] Room quedó igual al SERVIDOR | id=${order.id}")
+            else Timber.i("🛡️ [Cache] Room conserva sus renglones (en cola o lectura vieja) | id=${order.id}")
+            tomada
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "❌ [Cache] Failed to cache backend order: ${order.id}")
             // Don't throw - caching is a nice-to-have, order still loaded in memory
+            false
         }
     }
+
+    /** D16 v4.2: los datos del cliente que confirmó el SERVIDOR, sin tocar renglones ni totales (Room es la fuente de la pantalla). */
+    suspend fun guardarDatosDelCliente(orderId: String, personas: Int, nombre: String?, telefono: String?, notas: String?) =
+        withContext(Dispatchers.IO) {
+            try {
+                draftOrderDao.guardarDatosDelCliente(orderId, personas, nombre, telefono, notas, System.currentTimeMillis())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Cache] No se guardaron los datos del cliente | id=$orderId")
+            }
+        }
 
     /**
      * Add item to local order (instant UI).
@@ -1086,6 +1069,8 @@ class OrderSyncCoordinator @Inject constructor(
             }
 
             cacheBackendOrder(backendOrder)
+            // D16 v4.2: con cola, la puerta no toca la versión de Room; la cola reintenta sobre la versión que dio el SERVIDOR.
+            withContext(NonCancellable) { draftOrderDao.updateVersion(orderId, backendOrder.version) }
 
             val hasPending =
                 draftOrderItemDao.getPendingItemsByOrder(orderId).isNotEmpty() ||
@@ -1129,8 +1114,11 @@ class OrderSyncCoordinator @Inject constructor(
     private suspend fun handlePermanentSyncFailure(orderId: String, reason: String) {
         withContext(NonCancellable) {
             // 1. Drop un-syncable local pending items (they were never accepted by the server).
-            val pending = draftOrderItemDao.getPendingItemsByOrder(orderId)
-            pending.forEach { draftOrderItemDao.markAsDeleted(it.id) }
+            // D16 v4.2: se vacía la cola de esta cuenta (altas y retiros que el SERVIDOR ya no aceptará) para que la lectura de abajo
+            // entre completa por la puerta (con cola, la puerta no reemplaza nada). Antes se marcaban como borrados y el REPLACE los
+            // quitaba en cascada: el resultado es el mismo.
+            val pending = draftOrderItemDao.getPendingItemsByOrder(orderId) + draftOrderItemDao.getDeletedItemsByOrder(orderId)
+            if (pending.isNotEmpty()) draftOrderItemDao.deleteAll(pending)
             if (pending.isNotEmpty()) {
                 Timber.w("🛑 [Sync] Dropped ${pending.size} un-syncable pending item(s) | order=$orderId")
             }
@@ -1552,9 +1540,13 @@ class OrderSyncCoordinator @Inject constructor(
 
         val subtotal = items.sumOf { it.totalPrice.toBigDecimal() }
         val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
-        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
 
         val order = draftOrderDao.getOrder(effectiveOrderId) ?: return
+        // D16 v4.2 · Regla A: un cambio local de productos mueve el total exactamente por lo que cambia el subtotal. Antes lo igualaba al
+        // subtotal y la cabecera perdía el descuento hasta la siguiente lectura. Cuenta nueva: subtotal y total en 0, total = subtotal.
+        val subtotalAnterior = order.subtotal.toBigDecimalOrNull() ?: BigDecimal.ZERO
+        val totalAnterior = order.total.toBigDecimalOrNull() ?: subtotalAnterior
+        val total = (totalAnterior + (subtotal - subtotalAnterior)).max(BigDecimal.ZERO)
 
         // ✅ P0 FIX: Calculate remainingBalance = total - paidAmount
         // Without this, payment buttons stay disabled because canProcessPayment requires remainingBalance > 0

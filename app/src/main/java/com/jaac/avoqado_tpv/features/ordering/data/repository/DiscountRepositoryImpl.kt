@@ -119,7 +119,7 @@ class DiscountRepositoryImpl @Inject constructor(
                 }
             } else {
                 if (response.code() == 403) {
-                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
+                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), TEXTO_HACE_FALTA_PERMISO)
                     if (permiso != null) return@withContext Result.failure(permiso)
                 }
                 // D16 (Codex r1 #7): un 5xx no dice si se guardó
@@ -205,7 +205,7 @@ class DiscountRepositoryImpl @Inject constructor(
                 }
             } else {
                 if (response.code() == 403) {
-                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
+                    val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), TEXTO_HACE_FALTA_PERMISO)
                     if (permiso != null) return@withContext Result.failure(permiso)
                 }
                 // D16 (Codex r1 #7): un 5xx no dice si se guardó
@@ -420,6 +420,8 @@ const val TEXTO_ESPERA_EL_DESCUENTO = "Espera a que termine el descuento en curs
 const val TEXTO_ESPERA_EL_COBRO = "Espera a que termine de preparar el cobro."
 const val TEXTO_DESCUENTO_YA_APLICADO = "Ese descuento ya está aplicado en esta cuenta."
 const val TEXTO_NO_SE_PUDO_APLICAR = "No se pudo aplicar el descuento."
+// D16 v4.2 · #7: un 403 sin permiso conocido ya no llega en inglés («Manager authorization required») a la caja.
+const val TEXTO_HACE_FALTA_PERMISO = "Para esto hace falta el permiso de un gerente."
 const val TEXTO_ENVIO_YA_HECHO = "Ese descuento ya había quedado aplicado. Si quieres otro igual, vuelve a darlo."
 
 private fun acuse(fila: OrderDiscount, data: com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountDataDto) =

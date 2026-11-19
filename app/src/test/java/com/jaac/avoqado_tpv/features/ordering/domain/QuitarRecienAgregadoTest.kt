@@ -205,7 +205,7 @@ class QuitarRecienAgregadoTest {
         assertThat(db.draftOrderDao().getOrder(cuenta)!!.syncStatus).isEqualTo("SYNCED")
     }
 
-    @Test fun `T7 respuesta perdida - lo encuentra por su llave, el 409 recarga la cuenta, vuelve a verse y al quitarlo otra vez sale`() = runTest {
+    @Test fun `T7 respuesta perdida - lo encuentra por su llave y tras el 409 el retiro sigue en cola y sale con la version nueva`() = runTest {
         abrirCuentaConTacos() // la TPV cree que va en la versión 2; el alta perdida ya subió al SERVIDOR a la 3
         val llave = sembrarCafe(DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false)
         alReleerLaCuenta(cafeConLlave = llave)
@@ -216,11 +216,12 @@ class QuitarRecienAgregadoTest {
         quitarCafeDesdeLaPantalla()
         coordinator.syncOrderImmediately(cuenta)
 
-        // Como hoy con cualquier artículo tras un 409: la cuenta se recarga del SERVIDOR y el café vuelve a verse.
-        assertThat(loQueVeLaCajera().items.map { it.id }).contains("renglon-srv-cafe")
+        // D16 v4.2 · Regla A: la lectura del 409 entra a Room por la puerta y, con el retiro en cola, no reemplaza la cuenta: el café
+        // NO vuelve a verse (antes reaparecía y la cajera tenía que quitarlo otra vez), y la cola toma la versión del SERVIDOR.
+        assertThat(loQueVeLaCajera().items.map { it.id }).doesNotContain("renglon-srv-cafe")
+        assertThat(db.draftOrderDao().getOrder(cuenta)!!.version).isEqualTo(3)
 
-        quitarCafeDesdeLaPantalla()
-        coordinator.syncOrderImmediately(cuenta)
+        coordinator.syncOrderImmediately(cuenta)  // la cola reintenta sola
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")

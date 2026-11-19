@@ -193,6 +193,11 @@ sealed class AngelPayPaymentState {
         val totalDelIntento: java.math.BigDecimal? = null,
         /** Codex final r1 #9: venció la espera de un Pago rápido sin NINGUNA respuesta de Avoqado: la pantalla dice que se revisa al volver la red. */
         val sinConexion: Boolean = false,
+        /**
+         * 🔴 Codex final r2 #3 (familia «el texto miente»): la ventana liberó este cobro, pero la lectura del historial de AngelPay sigue sin
+         * respuesta y frena su tarjeta: la pantalla lo dice en vez de «Se puede volver a cobrar». La fila se sigue consultando sola.
+         */
+        val historialPendiente: Boolean = false,
     ) : AngelPayPaymentState()
 
     /**

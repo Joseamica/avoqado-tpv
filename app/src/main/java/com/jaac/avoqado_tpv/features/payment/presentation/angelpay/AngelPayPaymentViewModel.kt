@@ -4267,10 +4267,35 @@ class AngelPayPaymentViewModel @Inject constructor(
             // salida acreditada), pero tampoco puede dejar la pantalla invitando a cobrar otra vez: va ANTES de los dos
             // `mostrarLiberada`. Sobrevive a recrear el ViewModel, que es de lo que se trataba r5-4.
             !fila.serverVeto.isNullOrBlank() -> { vetoDeDineroDelIntento = attemptId; mostrarContradiccion(); true }
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> { mostrarLiberada("OPERATOR_RECONCILED"); true }
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> { mostrarLiberada("NO_EVIDENCE_AFTER_WINDOW"); true }
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT || fila.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> {
+                // 🔴 Codex final r2 #3 (familia «el texto miente»): la liberación no se anuncia mientras el MISMO predicado que frena la
+                // tarjeta diga que algo de este cobro sigue abierto (dinero de un intento de su solicitud, la lectura del historial de
+                // AngelPay pendiente, otra tarjeta de su cuenta): se queda como duda, con [Seguir].
+                val freno = paymentAttemptLedger.loQueFrenaElResuelto(attemptId, fila.terminalPaymentRequestId?.takeIf { it.isNotBlank() })
+                when {
+                    // La lectura SUSPENDE (como la de arriba, Fix 3): un Success o un veto que llegó en ese hueco no se pisa.
+                    _state.value is AngelPayPaymentState.Success -> Unit
+                    vetoDeDineroDelIntento != null -> mostrarContradiccion()
+                    freno != null -> mostrarDudaFrenada(fila, freno)
+                    fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> mostrarLiberada("OPERATOR_RECONCILED")
+                    else -> mostrarLiberada("NO_EVIDENCE_AFTER_WINDOW")
+                }
+                true
+            }
             else -> false
         }
+    }
+
+    /** Familia «el texto miente»: el servidor liberó, pero la libreta todavía frena la tarjeta de este cobro: la duda, nunca «volver a cobrar». */
+    private fun mostrarDudaFrenada(fila: PaymentAttemptEntity, freno: com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto) {
+        esperaAlServidorJob?.cancel()
+        clearChargingOnTerminal()
+        _state.value = AngelPayPaymentState.ResultadoIncierto(
+            message = freno.freno.texto,
+            verificando = false,
+            totalDelIntento = java.math.BigDecimal.valueOf(fila.amountCents + fila.tipCents, 2),
+            historialPendiente = freno.freno == com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE,
+        )
     }
 
     /**

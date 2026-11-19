@@ -118,6 +118,16 @@ class AngelPayPaymentScreenSalidaTest {
         assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))
     }
 
+    /** Codex final r2 #3: con la lectura del historial de AngelPay pendiente, la duda de la N86 lo dice (además del importe y [Seguir]). */
+    @Test
+    fun `N86 la duda con el historial de AngelPay pendiente lo dice`() {
+        val linea = Regex(
+            """if \(state\.historialPendiente\) \{[^}]*text = com\.jaac\.avoqado_tpv\.features\.payment\.data\.ledger\.FrenoDelResuelto\.HISTORIAL_PENDIENTE\.texto""",
+        )
+        assertTrue("La duda con el historial pendiente lo dice.", linea.containsMatchIn(contenidoIncierto))
+        assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))
+    }
+
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(

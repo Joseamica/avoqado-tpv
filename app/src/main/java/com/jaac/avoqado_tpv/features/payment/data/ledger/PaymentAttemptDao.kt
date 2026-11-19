@@ -852,6 +852,25 @@ interface PaymentAttemptDao {
              OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""")
     suspend fun intentosDeLaSolicitud(requestId: String): List<PaymentAttemptEntity>
 
+    /** Familia «el texto miente»: la cuenta de una solicitud del POS (la de la bandeja, aunque no tenga intento). */
+    @Query("SELECT order_id FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun cuentaDeLaSolicitud(requestId: String): String?
+
+    /**
+     * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): la fila que frena la tarjeta
+     * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA], la MISMA regla de la admisión y del CAS) del intento, de su solicitud o de su cuenta.
+     * Primero la que tiene una lectura del historial de AngelPay despachada. Usa `:processToken`.
+     */
+    @Query("""SELECT * FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
+        AND (attempt_id = :attemptId
+             OR (:requestId IS NOT NULL AND (terminal_payment_request_id = :requestId
+                 OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0))
+             OR (:orderJsonFragment IS NOT NULL AND instr(payment_context_json, :orderJsonFragment) > 0))
+        ORDER BY (history_read_at IS NULL) LIMIT 1""")
+    suspend fun filaQueFrenaLaTarjetaDelCobro(
+        attemptId: String?, requestId: String?, orderJsonFragment: String?, processToken: String,
+    ): PaymentAttemptEntity?
+
     /**
      * 🔴 D22 (Codex plan r1, bloqueante 1): la respuesta del envío se perdió, la terminal cerró la duda SÓLO en la libreta (sin
      * la marca) y después S6 trae la declaración que Avoqado sí guardó. El cierre ya no aplica (la fila no está INDETERMINADO):

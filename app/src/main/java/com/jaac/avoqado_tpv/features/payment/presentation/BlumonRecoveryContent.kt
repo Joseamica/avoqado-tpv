@@ -38,8 +38,13 @@ internal const val SIN_CONEXION_SE_REVISA_AL_VOLVER = "Sin conexión con Avoqado
  * liberó el servidor. Sin la marca se dice «no aparece en Avoqado» aunque una respuesta perdida lo haya guardado: la pantalla dice
  * de menos, nunca de más, y la siguiente consulta agrega la marca (`marcarDeclaracionEnAvoqado`).
  */
-internal fun textoDelIntentoCerrado(lastError: String?): String =
-    if (com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.declaradoEnAvoqado(lastError))
+internal fun textoDelIntentoCerrado(
+    lastError: String?,
+    /** 🔴 Familia «el texto miente» (Codex final r2): si algo de este cobro todavía frena su tarjeta, eso se dice en vez de «volver a cobrar». */
+    freno: com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto? = null,
+): String =
+    if (freno != null) freno.freno.texto
+    else if (com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.declaradoEnAvoqado(lastError))
         "Quedó anotado en Avoqado que se revisó y no se cobró, con el nombre de quien lo declaró y la hora. Puedes volver a cobrar esta venta."
     else if (lastError?.startsWith("declarado_sin_cobro:") == true)
         "Quedó anotado sólo en esta terminal que revisaste y no se cobró: Avoqado no lo recibió y no aparece ahí. Puedes volver a cobrar esta venta."
@@ -70,13 +75,17 @@ internal fun BlumonRecoveryContent(
     ) {
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Cobro registrado"
-            BlumonAttemptResolver.State.RELEASED -> "Intento cerrado"
+            BlumonAttemptResolver.State.RELEASED -> when (result.freno?.freno) {
+                null -> "Intento cerrado"
+                com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.DINERO -> "Hay evidencia de cobro"
+                else -> "Tarjeta por confirmar"
+            }
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "Hay evidencia de cobro"
             else -> "Tarjeta por confirmar"
         }, style = MaterialTheme.typography.headlineSmall)
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Avoqado confirmó este pago. No vuelvas a cobrar esta venta."
-            BlumonAttemptResolver.State.RELEASED -> textoDelIntentoCerrado(result.row?.lastError)
+            BlumonAttemptResolver.State.RELEASED -> textoDelIntentoCerrado(result.row?.lastError, result.freno)
             BlumonAttemptResolver.State.MONEY_EVIDENCE -> "No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."
             else -> tarjetaPorConfirmar(result.row?.let(::totalDelIntento))
         })

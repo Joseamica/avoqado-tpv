@@ -185,10 +185,45 @@ class PaymentAttemptLedger(
     }
 
     private fun impideDeclarar(fila: PaymentAttemptEntity): Boolean =
-        fila.legacyShadow || fila.hostApproved == true || hayDineroSinEscribir(fila.attemptId) || fila.attemptId in chipRechazoSinEscribir ||
-            fila.serverPaymentId != null || fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
-            !fila.serverVeto.isNullOrBlank() || fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO ||
+        fila.legacyShadow || tieneDinero(fila) || fila.attemptId in chipRechazoSinEscribir ||
             fila.state !in setOf(PaymentAttemptEntity.STATE_INDETERMINADO, PaymentAttemptEntity.STATE_DESCARTADA, PaymentAttemptEntity.STATE_PREPARANDO)
+
+    /** Dinero o un aprobado de ESTA fila: en Room, sólo en memoria (lo que no se pudo escribir) o de Avoqado (evidencia, veto, Payment). */
+    private fun tieneDinero(fila: PaymentAttemptEntity): Boolean =
+        fila.hostApproved == true || hayDineroSinEscribir(fila.attemptId) || fila.serverPaymentId != null ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED || !fila.serverVeto.isNullOrBlank() ||
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || fila.state in ESTADOS_CON_DINERO
+
+    /**
+     * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): el ÚNICO predicado del que salen todos los «ya se puede
+     * volver a cobrar», «ya se resolvió / ya no está por revisar» y «declaración guardada» (PAX y N86). null = se puede decir. Lo impide:
+     *  1. [FrenoDelResuelto.DINERO]: CUALQUIER intento de la solicitud (Reintentar crea varios; [PaymentAttemptDao.intentosDeLaSolicitud],
+     *     sin tope) o el propio, con dinero o aprobado ([tieneDinero], el mismo del certificado [impideDeclarar]);
+     *  2. la regla que frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) en el intento, su solicitud o su cuenta: con una
+     *     lectura del historial de AngelPay despachada, [FrenoDelResuelto.HISTORIAL_PENDIENTE]; si no, [FrenoDelResuelto.TARJETA_FRENADA].
+     * Una lectura fallida falla cerrado (nunca invita a cobrar).
+     */
+    suspend fun loQueFrenaElResuelto(attemptId: String?, requestId: String?): LoQueFrenaElResuelto? = try {
+        withContext(Dispatchers.IO) {
+            val filas = (listOfNotNull(attemptId?.let { dao.getById(it) }) + (requestId?.let { dao.intentosDeLaSolicitud(it) }.orEmpty()))
+                .distinctBy { it.attemptId }
+            val conDinero = filas.firstOrNull(::tieneDinero)
+            if (conDinero != null) return@withContext LoQueFrenaElResuelto(FrenoDelResuelto.DINERO, conDinero)
+            val cuenta = filas.firstNotNullOfOrNull(::cuentaDe) ?: requestId?.let { dao.cuentaDeLaSolicitud(it) }?.takeIf { it.isNotEmpty() }
+            dao.filaQueFrenaLaTarjetaDelCobro(attemptId, requestId, cuenta?.let { "\"orderId\":" + com.google.gson.Gson().toJson(it) }, processToken)
+                ?.let { LoQueFrenaElResuelto(if (it.historyReadAt != null) FrenoDelResuelto.HISTORIAL_PENDIENTE else FrenoDelResuelto.TARJETA_FRENADA, it) }
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo saber si %s / %s ya se puede dar por resuelto: no se dice", attemptId, requestId)
+        LoQueFrenaElResuelto(FrenoDelResuelto.TARJETA_FRENADA, null)
+    }
+
+    /** La cuenta (orderId) del contexto guardado; null sin cuenta o ilegible. */
+    private fun cuentaDe(fila: PaymentAttemptEntity): String? = runCatching {
+        com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("orderId")?.takeIf { it.isJsonPrimitive }?.asString
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     /** Lo que el banner verde puede ofrecer declarar: con el token de ESTE proceso, que sabe qué cuarentena por reloj sigue viva. */
     fun observarCobrosDeclarables(
@@ -1725,6 +1760,29 @@ private val EJECUCION_POSIBLE = setOf(
     PaymentAttemptEntity.STATE_HOST_RESPONDIO, PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
     PaymentAttemptEntity.STATE_INDETERMINADO,
 )
+
+/** Familia «el texto miente»: estados en que la fila ya tiene un aprobado (registrado, en la cola o por registrar). */
+private val ESTADOS_CON_DINERO = setOf(
+    PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_REGISTRADO,
+    PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, PaymentAttemptEntity.STATE_CERRADA,
+)
+
+/**
+ * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3; tabla en `docs/audit/2026-11-17-f1-pantallas/pasada-r2-tpv.md`
+ * del workspace): por qué todavía NO se puede decir de un cobro «ya se puede volver a cobrar», «ya se resolvió» ni «hay una declaración
+ * guardada». Lo decide [PaymentAttemptLedger.loQueFrenaElResuelto]; [texto] es lo que se dice en su lugar (R5: sin afirmar de más).
+ */
+enum class FrenoDelResuelto(val texto: String) {
+    /** Un intento de la MISMA solicitud (o el propio) tiene dinero o un aprobado: en Room, en memoria o de Avoqado. */
+    DINERO("No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."),
+    /** Una lectura del historial de AngelPay despachada sin respuesta escrita: frena la tarjeta en la N86 y se sigue consultando. */
+    HISTORIAL_PENDIENTE("Historial de AngelPay pendiente: no vuelvas a cobrar esta tarjeta todavía. Si sigue así, avisa a soporte."),
+    /** Otra fila de este cobro o de su cuenta todavía frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). */
+    TARJETA_FRENADA("Todavía falta confirmar un cobro con tarjeta de esta venta: no la vuelvas a cobrar con tarjeta todavía. Vuelve a consultar en un momento."),
+}
+
+/** [fila] = la que lo impide (null si la libreta no se pudo leer: se falla cerrado). */
+data class LoQueFrenaElResuelto(val freno: FrenoDelResuelto, val fila: PaymentAttemptEntity?)
 
 /** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */
 private val ESPERANDO_AL_BANCO = setOf(

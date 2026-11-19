@@ -231,6 +231,8 @@ class AngelPayPaymentViewModelTest {
             coEvery { marcarEvidenciaPositivaDelServidor(any(), any(), any()) } returns Result.success(true)
             // Codex r7 (P1-1): el veto durable también se escribe desde la declaración (un relajado devolvería un `Result` roto).
             coEvery { marcarVetoDelServidor(any(), any(), any(), any()) } returns Result.success(true)
+            // Familia «el texto miente» (Codex final r2 #3): por defecto nada frena la tarjeta (un relajado devolvería un freno FALSO).
+            coEvery { loQueFrenaElResuelto(any(), any()) } returns null
         }
         authAttemptTelemetryStore = mockk(relaxed = true)
         chargeVerifier = mockk(relaxed = true)
@@ -4316,6 +4318,31 @@ class AngelPayPaymentViewModelTest {
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
             assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
             verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /**
+     * 🔴 Codex final r2 #3 · TPV (N86): la ventana liberó el cobro, pero la quinta consulta al historial de AngelPay falló y la fila sigue
+     * pendiente (frena la tarjeta). La pantalla NO dice «Se puede volver a cobrar»: queda la duda, con el historial pendiente.
+     */
+    @Test fun `N86_liberacion_con_el_historial_de_AngelPay_pendiente_no_dice_volver_a_cobrar`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val fila = filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW")
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen fila
+        coEvery { paymentAttemptLedger.loQueFrenaElResuelto(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE, fila,
+            )
+        val vm = vmConCobroDelPos("REQ-H1")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.historialPendiente).isTrue()
+            assertThat(s.message).doesNotContain("Se puede volver a cobrar")
+            advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)   // sin reinicio automático
         } finally { vm.viewModelScope.cancel() }
     }
 

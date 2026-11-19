@@ -1002,7 +1002,10 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
         val verificador = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
         coEvery { verificador.verificar("a-1", "terminal", any(), any(), any(), "afiliacion") } coAnswers {
-            assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
+            // 🔴 Codex final r2 #3: la firma queda guardada, pero con la lectura del historial EN VUELO no se dice «Ya se puede volver a
+            // cobrar» (antes esta prueba lo exigía, y el historial contesta «cobrado» justo después).
+            assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.HistorialPendiente)
+            assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
             com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro.Cobrado("AUTH", "REF", null)
         }
 
@@ -1317,6 +1320,121 @@ class DeclaracionDesdeElAvisoRoomTest {
         val fila = dao.getById("a-1")!!
         assertWithMessage("no queda la marca «hubo dinero» de otra solicitud").that(fila.serverProcessorEvidence).isNull()
         assertThat(fila.serverPaymentId).isNull()
+    }
+
+    // ── 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3, `pasada-r2-tpv.md` del workspace) ────────────────
+
+    private val historialPendiente =
+        "Historial de AngelPay pendiente: no vuelvas a cobrar esta tarjeta todavía. Si sigue así, avisa a soporte."
+
+    /** Otro intento físico de una solicitud del POS («Reintentar»), insertado tal cual. */
+    private suspend fun hermano(id: String, requestId: String, estado: String, processor: String = "ANGELPAY") {
+        val creado = System.currentTimeMillis() - 120_000
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = id, venueId = venue, processor = processor, state = estado, amountCents = 10_000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"$requestId"}""",
+                terminalPaymentRequestId = requestId, createdAt = creado, updatedAt = creado,
+            ),
+        )
+    }
+
+    /** El 2xx de la firma de una solicitud con el comprobante que Avoqado YA tenía guardado (la primera respuesta se perdió). */
+    private fun liberadaConComprobanteRepetido(requestId: String): Response<DeclaracionSinCobroResponse> = Response.success(
+        Gson().fromJson(
+            """{"success":true,"released":true,"status":"FAILED","requestId":"$requestId","paymentId":null,"outcome":"NOT_CHARGED",""" +
+                """"message":"Terminal liberada.","declarationReceipt":{"id":"${idDe(requestId)}","kind":"UNCHARGED_VERIFIED",""" +
+                """"by":"SUPERVISOR_PIN","staffId":"gerente-1","acceptedAt":"2026-11-19T12:00:00.000Z","scope":"REQUEST",""" +
+                """"attemptId":null,"requestId":"$requestId","humanSignature":true,"alreadyStored":true}}""",
+            DeclaracionSinCobroResponse::class.java,
+        ),
+    )
+
+    /** r2 #2 · POS → TPV: el aprobado entra en OTRO intento de la misma solicitud mientras vuelve el comprobante repetido. */
+    @Test fun `comprobante_repetido_con_aprobado_en_un_intento_hermano_no_dice_volver_a_cobrar`() = runBlocking<Unit> {
+        val cobro = duda("a-1", requestId = "r-1")
+        hermano("a-0", "r-1", estado = "DESCARTADA")
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } coAnswers {
+            // AngelPay contesta tarde por a-0 (el intento anterior de «Reintentar»): su aprobado queda escrito en SU fila.
+            db.openHelper.writableDatabase.execSQL(
+                "UPDATE payment_attempts SET host_approved = 1, reference_number = 'REF', auth_code = 'AUTH' WHERE attempt_id = 'a-0'")
+            liberadaConComprobanteRepetido("r-1")
+        }
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Declarada("a-1", "r-1")
+
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+
+        assertWithMessage("el aprobado del hermano manda sobre el comprobante").that(resultado)
+            .isNotEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
+        assertThat(resultado).isEqualTo(HayEvidencia)
+        assertThat(resultado!!.texto()).doesNotContain("volver a cobrar")
+    }
+
+    /** r2 #2 · POS → TPV: una solicitud sin intento local; lo que contesta Avoqado de ella ya no se tira antes de elegir el mensaje. */
+    @Test fun `solicitud_sin_intento_con_cobro_en_la_consulta_no_dice_volver_a_cobrar`() = runBlocking<Unit> {
+        val cobro = enBandeja("r-sola")
+        coEvery { api.declararSinCobro(venue, "r-sola", any()) } returns liberadaConComprobanteRepetido("r-sola")
+        coEvery { api.getRequestStatus(venue, "r-sola") } returns Response.success(
+            Gson().fromJson(
+                """{"success":true,"requestId":"r-sola","resuelta":true,"request":{"requestId":"r-sola","venueId":"$venue",""" +
+                    """"status":"COMPLETED","paymentId":"pay-1"}}""",
+                TerminalRequestStatusResponse::class.java,
+            ),
+        )
+
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+
+        assertThat(resultado).isEqualTo(HayEvidencia)
+        assertThat(resultado!!.texto()).doesNotContain("volver a cobrar")
+    }
+
+    /** r2 #3 · TPV · PAGO RÁPIDO (N86): la ventana cerró la fila, pero la lectura del historial sigue pendiente y frena la tarjeta. */
+    @Test fun `N86_historial_pendiente_consultar_no_dice_que_ya_se_resolvio`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "ANGELPAY", serverAnsweredAt = 1L)
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', server_outcome = 'RELEASED_NO_EVIDENCE', " +
+                "last_error = 'liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW', history_read_at = ${System.currentTimeMillis()} " +
+                "WHERE attempt_id = 'a-1'")
+
+        assertThat(declaracion.resultadoDe(venue, cobro).texto()).isEqualTo(historialPendiente)
+
+        // Con la respuesta del historial escrita (la lectura terminó), ya se dice cómo quedó.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET history_read_at = NULL WHERE attempt_id = 'a-1'")
+        assertThat(declaracion.resultadoDe(venue, cobro)).isEqualTo(ResultadoDeLaDeclaracion.YaNoEstaPorRevisar)
+    }
+
+    /** r2 #3 · el gerente firma y la consulta previa encuentra la ventana cerrada CON la lectura del historial pendiente. */
+    @Test fun `N86_firma_con_la_ventana_y_el_historial_pendiente_no_dice_que_se_resolvio`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "ANGELPAY", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } coAnswers {
+            assertThat(ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venue, "a-1", null, "NO_EVIDENCE_AFTER_WINDOW")).getOrThrow())
+                .isTrue()
+            db.openHelper.writableDatabase.execSQL(
+                "UPDATE payment_attempts SET history_read_at = ${System.currentTimeMillis()} WHERE attempt_id = 'a-1'")
+            s6Limpia("a-1")
+        }
+
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+
+        assertThat(resultado!!.texto()).isEqualTo(historialPendiente)
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+    }
+
+    /** PAX · POS → TPV: la pantalla de la duda no dice «Puedes volver a cobrar» de un intento cerrado si un hermano tiene el aprobado. */
+    @Test fun `PAX_intento_cerrado_con_un_hermano_aprobado_no_dice_volver_a_cobrar`() = runBlocking<Unit> {
+        hermano("a-1", "r-1", estado = "DESCARTADA", processor = "BLUMON")
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET server_outcome = 'OPERATOR_NO_INSTRUMENT', " +
+                "last_error = 'liberada_por_el_servidor:OPERATOR_RECONCILED' WHERE attempt_id = 'a-1'")
+        hermano("a-2", "r-1", estado = "HOST_RESPONDIO", processor = "BLUMON")
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET host_approved = 1 WHERE attempt_id = 'a-2'")
+        val resolver = BlumonAttemptResolver(ledger, LedgerServerRecovery(dao, ledger, api), api, storage)
+
+        val r = resolver.current(venue, "a-1")
+
+        assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.RELEASED)
+        assertThat(com.jaac.avoqado_tpv.features.payment.presentation.textoDelIntentoCerrado(r.row?.lastError, r.freno))
+            .doesNotContain("volver a cobrar")
     }
 
     /** Lo que firma una persona dice eso: que una persona revisó; nunca «el banco dijo que no». */

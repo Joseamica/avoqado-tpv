@@ -84,6 +84,10 @@ sealed interface ResultadoDeLaDeclaracion {
     data object EnLaCola : ResultadoDeLaDeclaracion
     /** F1 bloque 7: el banco aprobó ESTE intento y falta que Avoqado lo registre (no se firma). */
     data object AprobadoSinRegistro : ResultadoDeLaDeclaracion
+    /** Familia «el texto miente» (Codex final r2 #3): una lectura del historial de AngelPay de este cobro sigue sin respuesta. */
+    data object HistorialPendiente : ResultadoDeLaDeclaracion
+    /** Familia «el texto miente»: otra fila de este cobro o de su cuenta todavía frena la tarjeta. */
+    data object TarjetaPorConfirmar : ResultadoDeLaDeclaracion
 
     /** [Declarado] y [PidePin] no se avisan: uno cierra el diálogo y el otro abre el del PIN. */
     fun texto(): String = when (this) {
@@ -109,6 +113,8 @@ sealed interface ResultadoDeLaDeclaracion {
         EsDevolucion -> "Es una devolución: se revisa en Devoluciones, no aquí."
         EnLaCola -> "Este cobro ya está en la cola para subir a Avoqado. No lo vuelvas a cobrar."
         AprobadoSinRegistro -> "El banco autorizó este intento. Falta confirmar el registro."
+        HistorialPendiente -> FrenoDelResuelto.HISTORIAL_PENDIENTE.texto
+        TarjetaPorConfirmar -> FrenoDelResuelto.TARJETA_FRENADA.texto
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
         // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
         DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
@@ -164,8 +170,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
         try {
             return sinTumbarLaApp {
                 val requestId = cobro.requestId
-                if (requestId != null) declararPorElServidor(venueId, requestId, cobro, supervisorPin)
-                else declararEnLaLibreta(venueId, cobro, supervisorPin)
+                sinMentir(cobro, if (requestId != null) declararPorElServidor(venueId, requestId, cobro, supervisorPin)
+                    else declararEnLaLibreta(venueId, cobro, supervisorPin))
             }
         } finally {
             envio.unlock()
@@ -224,12 +230,15 @@ class DeclaracionDesdeElAviso @Inject constructor(
         // ponytail: sin la llave `declarationReceipt` sigue la regla de antes. La manda el SERVIDOR desde F1 bloque 7 (avoqado-server
         // `fix/f1-minimo` 70ca51c5f); sin ella contesta el de hoy en producción. Se quita cuando ese SERVIDOR ya esté publicado.
         if (cuerpo.released == true && comprobante != null && !comprobante.acreditaPersona(null, requestId)) return resultadoDe(venueId, cobro)
+        // 🔴 Codex final r2 #2: el dinero de CUALQUIER intento de la solicitud (no sólo el elegido), también antes de un «Declarado».
+        val dinero = dineroDe(cobro)
         return when {
             // 🔴 Codex final r1 #6: lo recién leído manda — dinero/aprobado e impedimento (los separa [evidenciaDe]) ANTES que el
             // comprobante: un comprobante repetido con un aprobado tardío nunca dice «Ya se puede volver a cobrar».
-            cuerpo.released == true &&
-                (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro)) ->
+            cuerpo.released == true && (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null) ->
                 evidenciaDe(cobro.attemptId?.let { ledger.leerIntento(it) }, sinGuardar = lectura?.evidenciaPositivaSinRegistro == true)
+            cuerpo.released == true && dinero != null -> evidenciaDeLaSolicitud(cobro, dinero.fila)
+            // Pasa por [sinMentir] al salir de [declarar].
             cuerpo.released == true && comprobante?.alreadyStored == true -> ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado
             cuerpo.released == true -> {
                 // Sin sonda de por medio la bandeja seguiría PROCESSING y Caja la contaría. Nunca dice «no se cobró»: lo que certifica es
@@ -283,14 +292,15 @@ class DeclaracionDesdeElAviso @Inject constructor(
      */
     suspend fun resultadoDe(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion = sinTumbarLaApp {
         val fila = cobro.attemptId?.let { ledger.leerIntento(it) }?.takeIf { it.venueId == venueId }
-        when {
+        val dinero = dineroDe(cobro)
+        sinMentir(cobro, when {
             // F1 bloque 5: ver, firmar y reconocer son acciones distintas; cada renglón ofrece lo de su dueño.
             fila?.kind == PaymentAttemptEntity.KIND_REFUND -> ResultadoDeLaDeclaracion.EsDevolucion
             fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
             fila?.state == PaymentAttemptEntity.STATE_ENTREGADA_A_COLA -> ResultadoDeLaDeclaracion.EnLaCola
             fila?.state in setOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
                 PaymentAttemptEntity.STATE_AUTORIZANDO) -> ResultadoDeLaDeclaracion.SigueTrabajando
-            tieneDinero(cobro) -> evidenciaDe(fila)
+            dinero != null -> evidenciaDeLaSolicitud(cobro, dinero.fila)
             // Codex final r1 #8: una solicitud del POS que «Por revisar» enseña sólo para consultar (su intento quedó descartado, o el
             // efectivo ya arrancó) y que sigue ahí tras consultar: no se dice que ya no está por revisar.
             fila == null && !cobro.declarable && ledger.renglonPorRevisar(venueId, cobro.clase, cobro.clave) != null -> GENERICO
@@ -302,7 +312,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
             PaymentAttemptEntity.cerradaPorUnaPersona(fila) -> ResultadoDeLaDeclaracion.YaResuelto
             fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             else -> GENERICO
-        }
+        })
     } ?: GENERICO
 
     /** F1: la consulta de una fila que no admite declaración (dinero o contradicción): se pregunta a Avoqado y se dice cómo quedó. */
@@ -316,8 +326,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
     private suspend fun consultar(venueId: String, cobro: CobroDeclarable): LedgerServerRecovery.LecturaDelIntento? {
         val attemptId = cobro.attemptId
         if (attemptId == null) {
-            bandeja.conciliar(venueId, soloLaSolicitud = cobro.requestId)
-            return null
+            // 🔴 Codex final r2 #2: lo que Avoqado contestó de ESA solicitud ya no se tira antes de elegir el mensaje.
+            val respuesta = bandeja.conciliar(venueId, soloLaSolicitud = cobro.requestId)
+            return LedgerServerRecovery.LecturaDelIntento(null, evidenciaPositivaSinRegistro = respuesta.conDinero)
         }
         val lectura = recuperacion.recoverOne(venueId, attemptId, estampar = false)
         lectura.bandejaResueltaJson?.let(socket.get()::emitDurableTerminalPaymentResult)
@@ -335,7 +346,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
             cobro.attemptId?.let { ledger.tieneEvidenciaSinGuardar(it) } != true
         return when {
             sigue -> null
-            tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
+            dineroDe(cobro) != null -> ResultadoDeLaDeclaracion.HayEvidencia
             else -> GENERICO
         }
     }
@@ -359,12 +370,30 @@ class DeclaracionDesdeElAviso @Inject constructor(
         else ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado
     }
 
-    private suspend fun tieneDinero(cobro: CobroDeclarable): Boolean {
-        val attemptId = cobro.attemptId ?: return false
-        val fila = ledger.leerIntento(attemptId) ?: return false
-        return fila.hostApproved == true || fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
-            !fila.serverVeto.isNullOrBlank() || fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO ||
-            ledger.tieneEvidenciaSinGuardar(attemptId)
+    /** Codex final r2 #2: el dinero de CUALQUIER intento de su solicitud, o del propio ([PaymentAttemptLedger.loQueFrenaElResuelto]). */
+    private suspend fun dineroDe(cobro: CobroDeclarable): LoQueFrenaElResuelto? =
+        ledger.loQueFrenaElResuelto(cobro.attemptId, cobro.requestId)?.takeIf { it.freno == FrenoDelResuelto.DINERO }
+
+    /** [evidenciaDe] de la fila con dinero; «el banco autorizó ESTE intento» sólo si es el elegido (si es un hermano, «de este cobro»). */
+    private fun evidenciaDeLaSolicitud(cobro: CobroDeclarable, fila: PaymentAttemptEntity?): ResultadoDeLaDeclaracion =
+        evidenciaDe(fila).let {
+            if (it == ResultadoDeLaDeclaracion.AprobadoSinRegistro && fila?.attemptId != cobro.attemptId) ResultadoDeLaDeclaracion.HayEvidencia else it
+        }
+
+    /**
+     * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): ningún «ya se puede volver a cobrar», «ya se resolvió /
+     * ya no está por revisar» ni «declaración guardada» sale de aquí sin pasar por [PaymentAttemptLedger.loQueFrenaElResuelto], el mismo
+     * predicado que frena la tarjeta. Un «Declarado» recién firmado no es texto (cierra el diálogo y la fila sigue en «Por revisar» si
+     * algo la frena): su dinero lo mira [declararPorElServidor].
+     */
+    private suspend fun sinMentir(cobro: CobroDeclarable, resultado: ResultadoDeLaDeclaracion): ResultadoDeLaDeclaracion {
+        if (resultado !in DAN_POR_RESUELTO) return resultado
+        val freno = ledger.loQueFrenaElResuelto(cobro.attemptId, cobro.requestId) ?: return resultado
+        return when (freno.freno) {
+            FrenoDelResuelto.DINERO -> evidenciaDeLaSolicitud(cobro, freno.fila)
+            FrenoDelResuelto.HISTORIAL_PENDIENTE -> ResultadoDeLaDeclaracion.HistorialPendiente
+            FrenoDelResuelto.TARJETA_FRENADA -> ResultadoDeLaDeclaracion.TarjetaPorConfirmar
+        }
     }
 
     /**
@@ -424,6 +453,12 @@ class DeclaracionDesdeElAviso @Inject constructor(
         /** F1 bloque 2 (R1): el texto exacto de una fila cuyo SDK puede regresar todavía. */
         const val TEXTO_SIGUE_TRABAJANDO = "La terminal sigue trabajando en este cobro. Si no avanza, apaga y prende la terminal."
         private val GENERICO = ResultadoDeLaDeclaracion.Rechazado(TEXTO_GENERICO)
+
+        /** Los resultados que dicen «se resolvió» o invitan a volver a cobrar: todos pasan por [sinMentir]. */
+        private val DAN_POR_RESUELTO = setOf(
+            ResultadoDeLaDeclaracion.DeclaradoEnAvoqado, ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal,
+            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado, ResultadoDeLaDeclaracion.YaResuelto, ResultadoDeLaDeclaracion.YaNoEstaPorRevisar,
+        )
 
         /** Lo que se ofrece ahora: la ventana del aviso, y una por solicitud (la lista viene de la más reciente a la más vieja). */
         // F1 bloque 5: sin `distinctBy` por solicitud — cada intento es su propio renglón. El aviso del Inicio sigue con lo de siempre

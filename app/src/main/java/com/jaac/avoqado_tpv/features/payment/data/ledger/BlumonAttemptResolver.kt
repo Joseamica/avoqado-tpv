@@ -34,6 +34,11 @@ class BlumonAttemptResolver @Inject constructor(
          * PERSONA declara: lo que cerró la ventana automática llega RELEASED con esto en false (Codex final r1 #7).
          */
         val yaEstabaDeclarado: Boolean = false,
+        /**
+         * 🔴 Familia «el texto miente» (Codex final r2): con [State.RELEASED], lo que todavía impide decir «puedes volver a cobrar» (dinero
+         * de un hermano, la lectura del historial pendiente, otra tarjeta de la cuenta frenada). El estado no cambia; cambia el texto.
+         */
+        val freno: LoQueFrenaElResuelto? = null,
     )
 
     private val mutex = Mutex()
@@ -282,7 +287,7 @@ class BlumonAttemptResolver @Inject constructor(
     private suspend fun inspect(venueId: String, attemptId: String, procesadores: Set<String> = SOLO_PAX): Result =
         classify(venueId, attemptId, scopedRow(venueId, attemptId, procesadores), procesadores)
 
-    private fun classify(venueId: String, attemptId: String, row: PaymentAttemptEntity?, procesadores: Set<String> = SOLO_PAX): Result {
+    private suspend fun classify(venueId: String, attemptId: String, row: PaymentAttemptEntity?, procesadores: Set<String> = SOLO_PAX): Result {
         if (row == null || storage.getVenueId() != venueId || row.venueId != venueId || row.attemptId != attemptId ||
             row.processor !in procesadores || row.kind != PaymentAttemptEntity.KIND_SALE || row.legacyShadow)
             return Result(State.UNAVAILABLE)
@@ -307,7 +312,9 @@ class BlumonAttemptResolver @Inject constructor(
             row.state == PaymentAttemptEntity.STATE_INDETERMINADO -> State.PENDING
             else -> State.UNAVAILABLE
         }
-        return Result(state, row)
+        // Familia «el texto miente»: el mismo predicado que frena la tarjeta decide si un intento cerrado puede decir «volver a cobrar».
+        val freno = if (state == State.RELEASED) ledger.loQueFrenaElResuelto(attemptId, row.terminalPaymentRequestId) else null
+        return Result(state, row, freno = freno)
     }
 
     private companion object {

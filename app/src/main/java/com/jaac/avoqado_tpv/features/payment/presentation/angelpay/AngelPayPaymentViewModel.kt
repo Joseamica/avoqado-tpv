@@ -4562,12 +4562,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                         }
                     }
                 }
-                // 🔴 Ronda 23 (Codex r21, P1-2): el servidor YA dijo que hay evidencia de dinero de ESTE intento: veta desde aquí y
-                // deja la marca durable, sin depender de la consulta siguiente (si falla, el respaldo sin red quedaba a la mano).
+                // 🔴 Ronda 23 (Codex r21, P1-2): el servidor YA dijo que algo impide declarar: veta desde aquí y deja la marca durable,
+                // sin depender de la consulta siguiente. F1 bloque 7 (I4): el 409 es GENÉRICO: la marca es el IMPEDIMENTO, no la aprobación.
                 codigo == "POSITIVE_EVIDENCE_EXISTS" -> {
                     vetoDeDineroDelIntento = attemptId
                     if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
-                    withContext(NonCancellable) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId) }
+                    withContext(NonCancellable) { paymentAttemptLedger.marcarImpedimentoDelServidor(venueId, attemptId) }
                     currentCoroutineContext().ensureActive()
                     aplicarLoQueDigaLaLibreta(attemptId)
                 }

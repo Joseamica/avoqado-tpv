@@ -4269,6 +4269,18 @@ class AngelPayPaymentViewModelTest {
         every { it.serverPaymentId } returns "pay-tardio"
     }
     private fun respuestaDeclaracionOk() = Response.success(TerminalAttemptStatusResponse(success = true))
+    /**
+     * F1 bloque 7 (I4): el 2xx de «no presentó tarjeta» con su acuse — clase y quién la declaró (`by` + `staffId`). Desde el bloque 7 un 2xx
+     * sin clase ya no se vuelve acuse (antes se sintetizaba `OPERATOR_RECONCILED` de [respuestaDeclaracionOk]).
+     */
+    private fun acuseSinTarjeta(by: String? = "SESSION") = com.google.gson.JsonObject().apply {
+        addProperty("id", "res-1"); addProperty("kind", "NO_INSTRUMENT_PRESENTED"); addProperty("staffId", "cajera")
+        if (by != null) addProperty("by", by)
+    }
+    private fun respuestaDeclaracionConAcuse(requestId: String, by: String? = "SESSION") = Response.success(TerminalAttemptStatusResponse(
+        success = true, attemptId = "att", requestId = requestId,
+        attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", resolution = acuseSinTarjeta(by)),
+    ))
     private fun respuesta403() = Response.error<TerminalAttemptStatusResponse>(403, """{"success":false,"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""".toResponseBody("application/json".toMediaType()))
     // Ronda 23: un 409 GENÉRICO. `POSITIVE_EVIDENCE_EXISTS` ya no es genérico — veta desde que llega (ver «R23 la declaracion…»).
     private fun respuesta409() = Response.error<TerminalAttemptStatusResponse>(409, """{"success":false,"code":"RESOLUTION_CONFLICT"}""".toResponseBody("application/json".toMediaType()))
@@ -4802,20 +4814,39 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // F1 bloque 7 (I4): antes liberaba con un 2xx VACÍO (se sintetizaba el acuse). Ahora libera el 2xx que trae el acuse con clase y autor;
+    // el vacío no libera (abajo, «…un 2xx sin clase no libera»). Se conserva lo que protegía: el cuerpo exacto y una sola liberación.
     @Test fun `declarar sin tarjeta con sesion con permiso libera sin PIN`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen filaLiberada("att", "OPERATOR_RECONCILED")   // null al entrar en espera; tras el CAS de la declaración la fila YA es la liberada
-        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionOk()
+        coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuestaDeclaracionConAcuse("REQ-W4")
         coEvery { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(true)
         val vm = vmConCobroDelPos("REQ-W4")
         try {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             vm.declararSinTarjeta(); runCurrent()
             coVerify { attemptApi.resolveNoInstrument("v1", any(), match { it.supervisorPin == null && it.statement == "NO_INSTRUMENT_PRESENTED" && it.requestId == "REQ-W4" }) }
-            coVerify { paymentAttemptLedger.aplicarLiberacionDelServidor(match { it.evidencia == "OPERATOR_RECONCILED" && it.requestId == "REQ-W4" }, any()) }
+            coVerify { paymentAttemptLedger.aplicarLiberacionDelServidor(match { it.evidencia == "OPERATOR_RECONCILED" && it.requestId == "REQ-W4" && it.quien == "cajera" }, any()) }
             assertThat((vm.state.value as AngelPayPaymentState.Error).canRetry).isFalse()
         } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** F1 bloque 7 (I4): un 2xx sin clase, o con la clase pero sin quién la declaró (o `AUTOMATIC`), ya no libera nada. */
+    @Test fun `declarar sin tarjeta - un 2xx sin clase o sin autor no libera`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null
+        for ((i, respuesta) in listOf(respuestaDeclaracionOk(), respuestaDeclaracionConAcuse("REQ-W4b", by = null),
+                respuestaDeclaracionConAcuse("REQ-W4b", by = "AUTOMATIC")).withIndex()) {
+            coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns respuesta
+            val vm = vmConCobroDelPos("REQ-W4b-$i")
+            try {
+                vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+                vm.declararSinTarjeta(); runCurrent()
+            } finally { vm.viewModelScope.cancel() }
+        }
+        coVerify(exactly = 0) { paymentAttemptLedger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `declarar sin permiso pide PIN y con el PIN vuelve a intentar con el MISMO resolutionId`() = runTest(testDispatcher) {
@@ -5087,7 +5118,9 @@ class AngelPayPaymentViewModelTest {
             vm.declararSinTarjeta(); runCurrent()
             val s = vm.state.value
             assertWithMessage("estado=%s", s).that(s is AngelPayPaymentState.Error && s.message.contains("evidencia de cobro")).isTrue()
-            coVerify(exactly = 1) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
+            // F1 bloque 7 (I4): la marca durable del 409 es el IMPEDIMENTO; nunca la aprobación del banco.
+            coVerify(exactly = 1) { paymentAttemptLedger.marcarImpedimentoDelServidor(any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -6820,8 +6853,9 @@ class AngelPayPaymentViewModelTest {
     @Test fun `r7 P1-1 control - un 2xx limpio de la declaracion no escribe ningun veto`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        // F1 bloque 7 (I4): el 2xx limpio trae su acuse (clase y autor); sin él ya no se sintetiza la liberación.
         val cuerpo = TerminalAttemptStatusResponse(success = true, attemptId = "att", requestId = "REQ-R7C",
-            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED"),
+            attempt = TerminalAttemptResultDto(attemptId = "att", outcome = "NOT_RECORDED", resolution = acuseSinTarjeta()),
             request = com.google.gson.JsonParser.parseString("""{"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"}""").asJsonObject)
         coEvery { attemptApi.resolveNoInstrument(any(), any(), any()) } returns Response.success(cuerpo)
         val vm = vmConCobroDelPos("REQ-R7C")

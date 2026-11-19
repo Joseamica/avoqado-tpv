@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -394,7 +395,6 @@ class DeclaracionDesdeElAvisoRoomTest {
     @Test fun `P1 409 con mensaje viaja tal cual y la fila no se mueve`() = runBlocking<Unit> {
         val cobro = duda("a-1", "r-1")
         val casos = mapOf(
-            "POSITIVE_EVIDENCE_EXISTS" to "Este cobro sí tiene señales de haber pasado. No lo declares: consulta su resultado.",
             "EXECUTION_STILL_ACTIVE" to "La terminal dice que este cobro sigue en curso. Espera unos segundos y vuelve a consultar.",
             "RESOLUTION_CONFLICT" to "Esta declaración ya se registró con otros datos. Vuelve a consultar el cobro.",
         )
@@ -404,6 +404,27 @@ class DeclaracionDesdeElAvisoRoomTest {
             assertThat(declaracion.declarar(venue, cobro)).isEqualTo(Rechazado(mensaje))
         }
         assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+        assertThat(dao.getById("a-1")!!.serverVeto).isNull()
+    }
+
+    /**
+     * F1 bloque 7 (I4, R5): el `409 POSITIVE_EVIDENCE_EXISTS` es GENÉRICO (puede ser evidencia de otra terminal). Antes su mensaje
+     * («este cobro sí tiene señales de haber pasado») viajaba tal cual; ahora la terminal dice el impedimento neutro, deja el
+     * impedimento en el intento (cerca la cuenta) y consulta. La fila no se mueve y nunca queda la aprobación del banco.
+     */
+    @Test fun `409 POSITIVE_EVIDENCE_EXISTS del POS es un impedimento - texto neutro, cerca la cuenta y consulta`() = runBlocking<Unit> {
+        val cobro = duda("a-1", "r-1")
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } returns error(409,
+            """{"success":false,"released":false,"code":"POSITIVE_EVIDENCE_EXISTS","message":"Este cobro sí tiene señales de haber pasado."}""")
+        val dijo = declaracion.declarar(venue, cobro)
+        assertThat(dijo).isEqualTo(ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado)
+        assertThat(dijo!!.texto()).isEqualTo("Avoqado encontró información que impide liberar este cobro.")
+        val fila = dao.getById("a-1")!!
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+        assertThat(fila.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
+        assertThat(fila.serverProcessorEvidence).isNull()
+        coVerify { api.getAttemptStatus(venue, "a-1") }
     }
 
     @Test fun `un rechazo sin mensaje legible usa el generico - y nunca Validation error`() = runBlocking<Unit> {
@@ -884,7 +905,8 @@ class DeclaracionDesdeElAvisoRoomTest {
         // Codex código r2 #5: no firmó este gerente: la pantalla dice que ya estaba declarado, no «la firma del gerente».
         val dijo = declaracion.declarar(venue, cobro, pinDelGerente)
         assertThat(dijo).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
-        assertThat(dijo!!.texto()).isEqualTo("Ya estaba declarado en Avoqado; ya se puede volver a cobrar.")
+        // F1 bloque 7 (R5): el comprobante guardado se dice neutro: «Avoqado tiene guardada una declaración».
+        assertThat(dijo!!.texto()).isEqualTo("Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.")
         assertThat(dijo.texto()).doesNotContain("gerente")
         assertThat(dao.getById("a-2")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
 
@@ -919,7 +941,8 @@ class DeclaracionDesdeElAvisoRoomTest {
         db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_veto = 'EVIDENCE_CONTRADICTION' WHERE attempt_id = 'a-1'")
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
         val texto = declaracion.resultadoDe(venue, cobro).texto()
-        assertThat(texto).isEqualTo("Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.")
+        // F1 bloque 7 (I4): el veto ajeno es un impedimento de Avoqado, no «evidencia de este cobro».
+        assertThat(texto).isEqualTo("Avoqado encontró información que impide liberar este cobro.")
         assertThat(texto).doesNotContain("banco")
         // Con la aprobación del banco para ESTE intento, sí.
         db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_processor_evidence = 'APPROVED' WHERE attempt_id = 'a-1'")
@@ -1180,5 +1203,75 @@ class DeclaracionDesdeElAvisoRoomTest {
 
         assertThat(Gson().toJson(dao.getById("a-1"))).doesNotContain(pinDelGerente)
         verify(exactly = 0) { storage.putString(any(), match { it.contains(pinDelGerente) }) }
+    }
+
+    // ═══════════════════ F1 bloque 7 (I4): el comprobante y el veto ═══════════════════
+
+    /** Dos gerentes con el MISMO id: el segundo recibe el comprobante guardado del primero (`alreadyStored`), nunca «quedó tu firma». */
+    @Test fun `dos_gerentes_mismo_id_se_muestra_el_acuse_del_primero`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers {
+            val id = thirdArg<NoInstrumentResolutionRequest>().resolutionId
+            s6(
+                """{"success":true,"attemptId":"a-1","requestId":null,"attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","paymentId":null,""" +
+                    """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+                    """"resolution":{"id":"$id","kind":"UNCHARGED_VERIFIED","staffId":"gerente-1","by":"SUPERVISOR_PIN"}},"request":null,""" +
+                    """"declarationReceipt":{"id":"$id","kind":"UNCHARGED_VERIFIED","by":"SUPERVISOR_PIN","staffId":"gerente-1",""" +
+                    """"acceptedAt":"2026-11-18T19:02:11.481Z","scope":"ATTEMPT","attemptId":"a-1","requestId":null,""" +
+                    """"humanSignature":true,"alreadyStored":true}}""",
+            )
+        }
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertThat(resultado).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
+        assertThat(resultado!!.texto()).isEqualTo("Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.")
+        assertThat(resultado.texto()).doesNotContain("firma del gerente")
+    }
+
+    /** El 409 genérico (evidencia de OTRA terminal entre la consulta y la firma) es un impedimento, nunca una aprobación del banco. */
+    @Test fun `409_ajeno_entre_consulta_y_firma_local_no_es_APPROVED`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
+        coEvery { api.resolveNoInstrument(venue, "a-1", any()) } returns
+            Response.error(409, """{"success":false,"code":"POSITIVE_EVIDENCE_EXISTS","message":"x"}""".toResponseBody("application/json".toMediaTypeOrNull()))
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertThat(resultado!!.texto()).isEqualTo("Avoqado encontró información que impide liberar este cobro.")
+        val fila = dao.getById("a-1")!!
+        assertWithMessage("no se escribe la aprobación del banco").that(fila.serverProcessorEvidence).isNull()
+        assertThat(fila.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
+        assertThat(fila.state).isEqualTo("INDETERMINADO")
+    }
+
+    /** POS → TPV: Avoqado libera, pero la relectura trae un veto (pago de otra terminal): no se afirma que el banco cobró. */
+    @Test fun `veto_remoto_en_relectura_no_afirma_cobro`() = runBlocking<Unit> {
+        val cobro = duda("a-1", requestId = "r-1")
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } returns liberada("r-1")
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Contradiccion("a-1")
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertThat(resultado!!.texto()).isEqualTo("Avoqado encontró información que impide liberar este cobro.")
+        assertThat(resultado.texto()).doesNotContain("banco")
+        assertThat(dao.getById("a-1")!!.serverProcessorEvidence).isNull()
+    }
+
+    /** Un aviso S5 de OTRA solicitud no marca este intento antes de validar a quién pertenece. */
+    @Test fun `S5_de_otra_solicitud_no_marca_el_intento_antes_de_validar`() = runBlocking<Unit> {
+        duda("a-1", requestId = "r-1")
+        val ajeno = VeredictoDeIntento.desdeAvisoS5(
+            venueId = venue, requestId = "r-OTRA", attemptId = "a-1", paymentId = "pay-x", via = "webhook", amountCents = 10_000, tipCents = 0,
+        )
+        val r = ledger.aplicarVeredictoDelServidor(ajeno).getOrThrow()
+        assertThat(r.decision).isEqualTo(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA)
+        val fila = dao.getById("a-1")!!
+        assertWithMessage("no queda la marca «hubo dinero» de otra solicitud").that(fila.serverProcessorEvidence).isNull()
+        assertThat(fila.serverPaymentId).isNull()
+    }
+
+    /** Lo que firma una persona dice eso: que una persona revisó; nunca «el banco dijo que no». */
+    @Test fun `firma_humana_no_dice_negativa_del_banco`() {
+        for (r in listOf(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado, ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado,
+                ResultadoDeLaDeclaracion.YaResuelto, ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal)) {
+            assertWithMessage(r.toString()).that(r.texto()).doesNotContain("banco")
+            assertWithMessage(r.toString()).that(r.texto().lowercase()).doesNotContain("no se cobró")
+        }
     }
 }

@@ -1276,18 +1276,20 @@ interface PaymentAttemptDao {
         // intento, y bastaba con que UN llamador olvidara marcar antes (el respaldo de S5 de la pantalla) para dejar una
         // DESCARTADA con RECORDED que no apartaba nada. Aquí nadie la salta y no hay ventana entre las dos escrituras: si falla,
         // falla todo. Su propio WHERE la acota (AngelPay/Blumon · SALE · no heredada · ESTE venue); sin atribuir el Payment.
-        marcarEvidenciaPositivaDelServidor(v.attemptId, v.venueId, now)
-        // 🔴 Ronda 21 (Codex r19, P1-1): el VETO que trajo la MISMA respuesta, en la MISMA transacción. Aplicado sin él, un
-        // RECORDED con `evidenceContradiction` dejaba la fila limpia y el aviso ofrecía «Entendido» (confirmar y volver a cobrar).
-        v.veto?.let { marcarVetoDelServidor(v.attemptId, v.venueId, it, now) }
         val requestId = v.requestId ?: fila.terminalPaymentRequestId
         // Codex (código, P1-2/P1-6): fuera del checkpoint (heredada, procesador desconocido, devolución) NO es un rechazo — quien llama
         // sigue su camino anterior; un venue o una solicitud ajenos SÍ lo son (anomalía: no se pisa nada).
         if (fila.legacyShadow || fila.processor !in setOf(PaymentAttemptEntity.PROCESSOR_ANGELPAY, PaymentAttemptEntity.PROCESSOR_BLUMON) || fila.kind != PaymentAttemptEntity.KIND_SALE)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE, false, null, false)
+        // 🔴 F1 bloque 7 (I4): la PERTENENCIA se verifica ANTES de marcar nada. Antes la marca «hubo dinero» iba primero, y un aviso
+        // (S5) de OTRA solicitud dejaba este intento cercado con una aprobación que no era suya.
         if (fila.venueId != v.venueId ||
             (v.requestId != null && fila.terminalPaymentRequestId != null && fila.terminalPaymentRequestId != v.requestId)
         ) return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false)
+        marcarEvidenciaPositivaDelServidor(v.attemptId, v.venueId, now)
+        // 🔴 Ronda 21 (Codex r19, P1-1): el VETO que trajo la MISMA respuesta, en la MISMA transacción. Aplicado sin él, un
+        // RECORDED con `evidenceContradiction` dejaba la fila limpia y el aviso ofrecía «Entendido» (confirmar y volver a cobrar).
+        v.veto?.let { marcarVetoDelServidor(v.attemptId, v.venueId, it, now) }
         if (fila.serverPaymentId != null && v.paymentId != null && fila.serverPaymentId != v.paymentId) {
             estamparConsultaAlServidor(v.attemptId, now)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT, false, null, esContradiccion(v.attemptId) == true)

@@ -953,7 +953,7 @@ class PaymentAttemptLedger(
                     if (it is kotlinx.coroutines.CancellationException) throw it
                     // 🔴 Ronda 24 (Codex r22, P1-2): el servidor YA dijo que hay dinero; que la escritura falle no lo desdice. Se
                     // recuerda en memoria —bloquea las salidas negativas y la reserva— y la pasada siguiente la vuelve a escribir.
-                    evidenciaSinGuardar[attemptId] = venueId
+                    evidenciaSinGuardar[attemptId] = Pendiente(venueId, impedimento = false)
                     Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
                 }
             }
@@ -965,7 +965,39 @@ class PaymentAttemptLedger(
      * la tocan; [reintentarEvidenciaSinGuardar] la vuelve a escribir en cada pasada. ⚠️ Residual declarado: si además el proceso
      * muere antes del reintento, se pierde — el servidor la conserva y la vuelve a dar en la consulta siguiente.
      */
-    private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, Pendiente>()
+
+    /** Lo que quedó por escribir: dinero del servidor o (F1 bloque 7) el impedimento genérico del `409`. Los dos frenan igual. */
+    private data class Pendiente(val venueId: String, val impedimento: Boolean)
+
+    /**
+     * 🔴 F1 bloque 7 (I4): el `409 POSITIVE_EVIDENCE_EXISTS` es GENÉRICO (puede ser evidencia de OTRA terminal): se guarda como
+     * IMPEDIMENTO ([PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR]: cerca la cuenta, cuenta en Caja y sale en «Por revisar»), nunca
+     * como aprobación del banco. Como la evidencia (Ronda 24, Codex r22 P1-2): si la escritura falla se recuerda en memoria —frena las
+     * salidas «no se cobró», la reserva y la autorización— y la puerta la reescribe. Nunca lanza (salvo cancelación).
+     */
+    suspend fun marcarImpedimentoDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> =
+        withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val n = dao.marcarVetoDelServidor(attemptId, venueId, PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR, at)
+                        if (n == 1) Timber.w("📒 [Libreta] IMPEDIMENTO del servidor (409) durable | attemptId=%s", attemptId)
+                        n == 1
+                    }
+                }.onSuccess {
+                    evidenciaSinGuardar.remove(attemptId, Pendiente(venueId, impedimento = true))
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    // Si ya había DINERO pendiente de este intento, se conserva: es lo más fuerte.
+                    evidenciaSinGuardar.putIfAbsent(attemptId, Pendiente(venueId, impedimento = true))
+                    Timber.e(it, "📒 [Libreta] no se pudo guardar el impedimento del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
+                }
+            }
+        }
+
+    /** F1 bloque 7: lo pendiente de este intento es sólo el impedimento del `409` (la pantalla no lo presenta como del banco). */
+    fun tieneImpedimentoSinGuardar(attemptId: String): Boolean = evidenciaSinGuardar[attemptId]?.impedimento == true
 
     /**
      * 🔴 Codex, pasada final (P1-1): [evidenciaSinGuardar] frenaba sólo la oferta del botón, la declaración y el inicio de la
@@ -1009,10 +1041,14 @@ class PaymentAttemptLedger(
         for (attemptId in chipRechazoSinEscribir.toList()) {
             if (escribirChipRechazoBajoCandado(attemptId) != ChipRechazo.SIN_ESCRIBIR) soltarChipRechazoEscrito(attemptId)
         }
-        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) {
+        for ((attemptId, pendiente) in evidenciaSinGuardar.entries.toList()) {
             try {
-                withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, now) }
-                evidenciaSinGuardar.remove(attemptId)
+                withContext(Dispatchers.IO) {
+                    if (pendiente.impedimento)
+                        dao.marcarVetoDelServidor(attemptId, pendiente.venueId, PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR, now)
+                    else dao.marcarEvidenciaPositivaDelServidor(attemptId, pendiente.venueId, now)
+                }
+                evidenciaSinGuardar.remove(attemptId, pendiente)
                 Timber.w("📒 [Libreta] la puerta escribió el dinero pendiente del servidor | attemptId=%s", attemptId)
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -1025,7 +1061,10 @@ class PaymentAttemptLedger(
 
     /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */
     suspend fun reintentarEvidenciaSinGuardar(now: Long = System.currentTimeMillis()): Int {
-        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
+        for ((attemptId, pendiente) in evidenciaSinGuardar.entries.toList()) {
+            if (pendiente.impedimento) marcarImpedimentoDelServidor(pendiente.venueId, attemptId, now)
+            else marcarEvidenciaPositivaDelServidor(pendiente.venueId, attemptId, now)
+        }
         return evidenciaSinGuardar.size
     }
 

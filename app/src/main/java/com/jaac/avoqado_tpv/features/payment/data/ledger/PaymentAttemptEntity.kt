@@ -414,6 +414,12 @@ data class PaymentAttemptEntity(
          * en el MISMO UPDATE: sin él la fila reabierta era una duda más, y muerto el proceso [SQL_CERCA_LA_VENTA] dejaba pasar su venta.
          */
         const val VETO_SDK_CONTRADICTION = "SDK_CONTRADICTION"
+        /**
+         * 🔴 F1 bloque 7 (I4): el `409 POSITIVE_EVIDENCE_EXISTS` es GENÉRICO: Avoqado tiene algo que impide liberar ese cobro, pero no
+         * dice si es dinero de ESTE intento (puede ser de otra terminal). Se guarda como impedimento (cerca la cuenta y sale en «Por
+         * revisar») y se consulta; nunca se escribe como aprobación del banco (`server_processor_evidence`).
+         */
+        const val VETO_IMPEDIMENTO_DEL_SERVIDOR = "SERVER_IMPEDIMENT"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

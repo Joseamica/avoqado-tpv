@@ -57,79 +57,215 @@ class BlumonAttemptResolverTest {
         assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
     }
 
-    @Test fun `declaration rechecks effective permission before posting`() = runTest {
+    // ── F1 bloque 7: `declare` (la salida «no presentó tarjeta» sin PIN) ya no existe. Sus 13 pruebas, rehechas sobre `declareChecked` ──
+    // (el gerente tiene UNA sola opción, «No se cobró», con su PIN). Las de la caché de permisos siguen: la cuida el 401/403 genérico.
+
+    private fun httpError(code: Int, cuerpo: String) = Response.error<TerminalAttemptStatusResponse>(code, okhttp3.ResponseBody.create(null, cuerpo))
+
+    /** Era «declaration rechecks effective permission before posting»: la puerta es el PIN del gerente; sin él no sale nada. */
+    @Test fun `B7 sin PIN no sale nada aunque la sesion no tenga el permiso, y con PIN decide Avoqado`() = runTest {
         every { storage.getString("permissions_cache", null) } returns "venue|manager\npayments:read"
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
+        row = row.copy(serverAnsweredAt = 3)
+        assertThat(resolver.declareChecked("venue", "pax", null).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""") }
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
+        coVerify(exactly = 1) { api.resolveNoInstrument("venue", "pax", any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
-    @Test fun `declaration refuses a live SDK attempt`() = runTest {
-        row = row.copy(state = "AUTORIZANDO")
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+    /** Era «declaration refuses a live SDK attempt»: con el SDK dentro (o que puede regresar) no se firma ni se manda nada. */
+    @Test fun `B7 la firma rechaza un intento con el SDK vivo o que todavia puede regresar`() = runTest {
+        row = row.copy(state = "AUTORIZANDO", serverAnsweredAt = 3)
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        row = row.copy(state = "INDETERMINADO")
+        every { ledger.puedeDeclararseEnDuda(any(), any()) } returns false
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
-    @Test fun `declaration never announces release when the durable write failed`() = runTest {
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.success(
-            TerminalAttemptStatusResponse(success = true, attemptId = "pax", attempt = TerminalAttemptResultDto(
-                attemptId = "pax", outcome = "NOT_RECORDED",
-            )),
-        )
-        coEvery { ledger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(false)
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+    /** Era «declaration never announces release when the durable write failed»: un acuse firmado sin CAS local no es «liberada». */
+    @Test fun `B7 con el acuse firmado pero sin escritura local no se anuncia la liberacion`() = runTest {
+        cajeroQueRevisa()
+        guardadaEnAvoqado(mutableListOf())
+        coEvery { ledger.declararSinCobroLocal("pax", "venue", any(), any()) } returns false
+        val r = resolver.declareChecked("venue", "pax", pin)
+        assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+        assertThat(r.serverAnswered).isTrue()
         assertThat(row.state).isEqualTo("INDETERMINADO")
     }
 
-    @Test fun `local and POS declarations preserve their saved request identity and stable replay id`() = runTest {
+    /** Era «local and POS declarations preserve their saved request identity and stable replay id». */
+    @Test fun `B7 la firma conserva un solo id tras recrear el resolvedor y nunca sale para una solicitud del POS`() = runTest {
+        cajeroQueRevisa()
         val bodies = mutableListOf<NoInstrumentResolutionRequest>()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
             bodies += thirdArg<NoInstrumentResolutionRequest>()
             throw java.io.IOException("connection lost")
         }
-        resolver.declare("venue", "pax")
+        resolver.declareChecked("venue", "pax", pin)
         resolver = BlumonAttemptResolver(ledger, recovery, api, storage)
-        resolver.declare("venue", "pax")
+        resolver.declareChecked("venue", "pax", pin)
         assertThat(bodies).hasSize(2)
-        assertThat(bodies[0].requestId).isNull()
-        assertThat(bodies[1].resolutionId).isEqualTo(bodies[0].resolutionId)
+        assertThat(bodies.map { it.requestId }).containsExactly(null, null)
+        assertThat(bodies[1]).isEqualTo(bodies[0])
         row = row.copy(terminalPaymentRequestId = "pos-request")
-        resolver.declare("venue", "pax")
-        assertThat(bodies.last().requestId).isEqualTo("pos-request")
+        resolver.declareChecked("venue", "pax", pin)
+        assertThat(bodies).hasSize(2)
     }
-    @Test fun `positive evidence in a declaration vetoes release and is saved`() = runTest {
+
+    /** Era «positive evidence in a declaration vetoes release and is saved»: el dinero del CUERPO sí es aprobación y se guarda. */
+    @Test fun `B7 un 2xx con dinero del intento no libera y guarda la evidencia`() = runTest {
+        cajeroQueRevisa()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "pax", attempt = TerminalAttemptResultDto(
                 attemptId = "pax", outcome = "NOT_RECORDED", processorEvidence = "APPROVED",
             )),
         )
         coEvery { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) } returns Result.success(true)
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         coVerify { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
         coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
-    @Test fun `an unrelated successful response cannot release the PAX`() = runTest {
+    /** Era «an unrelated successful response cannot release the PAX». */
+    @Test fun `B7 un 2xx de otro intento o de otra solicitud no libera`() = runTest {
+        cajeroQueRevisa()
         for ((topId, nestedId, requestId) in listOf(
             Triple("other", "pax", null), Triple("pax", "other", null), Triple("pax", "pax", "other-request"),
         )) {
-            coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.success(
-                TerminalAttemptStatusResponse(success = true, attemptId = topId, requestId = requestId,
-                    attempt = TerminalAttemptResultDto(attemptId = nestedId, outcome = "NOT_RECORDED")),
-            )
-            assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+            coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
+                val id = thirdArg<NoInstrumentResolutionRequest>().resolutionId
+                val resolution = com.google.gson.JsonObject().apply {
+                    addProperty("kind", "UNCHARGED_VERIFIED"); addProperty("id", id); addProperty("staffId", "gerente-1"); addProperty("by", "SUPERVISOR_PIN")
+                }
+                Response.success(TerminalAttemptStatusResponse(success = true, attemptId = topId, requestId = requestId,
+                    attempt = TerminalAttemptResultDto(attemptId = nestedId, outcome = "NOT_RECORDED", resolution = resolution)))
+            }
+            assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         }
-        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
-    @Test fun `a bank veto in the HTTP conflict stays blocked if the followup query fails`() = runTest {
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(409,
-            okhttp3.ResponseBody.create(null, """{"code":"POSITIVE_EVIDENCE_EXISTS"}"""))
-        coEvery { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) } returns Result.failure(java.io.IOException())
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+    /** Era «a bank veto in the HTTP conflict stays blocked if the followup query fails»: ahora el 409 es un impedimento. */
+    @Test fun `B7 el 409 sigue frenando aunque su impedimento no se pueda escribir`() = runTest {
+        cajeroQueRevisa()
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(409, """{"code":"POSITIVE_EVIDENCE_EXISTS"}""") }
+        coEvery { ledger.marcarImpedimentoDelServidor("venue", "pax", any()) } returns Result.failure(java.io.IOException())
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         row = row.copy(state = "DESCARTADA", serverOutcome = "OPERATOR_NO_INSTRUMENT")
         assertThat(resolver.current("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
+        coVerify(exactly = 0) { ledger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
         coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
+    }
+
+    /** Era «server denial cannot be bypassed by the checked declaration»: el 403 del PIN pide otra firma y no toca la caché. */
+    @Test fun `B7 el 403 del PIN no se salta y no borra la lista de permisos de quien opera`() = runTest {
+        cajeroQueRevisa()
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""") }
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
+        io.mockk.verify(exactly = 0) { storage.remove("permissions_cache") }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+    }
+
+    /** Era «a server permission denial invalidates the cached grant across resolver recreation». */
+    @Test fun `B7 un 403 de la sesion invalida la lista guardada tambien tras recrear el resolvedor`() = runTest {
+        var cached: String? = "venue|manager\npayments:resolve-no-instrument,payments:reconcile-uncharged"
+        every { storage.getString("permissions_cache", null) } answers { cached }
+        every { storage.remove("permissions_cache") } answers { cached = null }
+        every { storage.remove("permissions_cache_timestamp") } returns Unit
+        row = row.copy(serverAnsweredAt = 3)
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, """{"code":"SESSION_NOT_IN_VENUE"}""") }
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
+        resolver = BlumonAttemptResolver(ledger, recovery, api, storage)
+        assertThat(resolver.hasPermission()).isFalse()
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isNotEqualTo(BlumonAttemptResolver.State.RELEASED)
+        io.mockk.verify { storage.remove("permissions_cache") }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+    }
+
+    /** Era «a delayed denial for the old staff preserves the new staff permission cache». */
+    @Test fun `B7 un 403 tardio de quien operaba antes no borra la lista de quien opera ahora`() = runTest {
+        var staff = "manager"
+        var cached = "venue|manager\npayments:resolve-no-instrument"
+        every { storage.getStaffId() } answers { staff }
+        every { storage.getString("permissions_cache", null) } answers { cached }
+        row = row.copy(serverAnsweredAt = 3)
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
+            staff = "new-manager"
+            cached = "venue|new-manager\npayments:resolve-no-instrument"
+            httpError(403, "{}")
+        }
+        resolver.declareChecked("venue", "pax", pin)
+        assertThat(resolver.hasPermission()).isTrue()
+        io.mockk.verify(exactly = 0) { storage.remove("permissions_cache") }
+    }
+
+    /** Era «a fresh permission download restores a grant denied earlier». */
+    @Test fun `B7 una lista nueva de permisos devuelve lo que un 403 anterior quito`() = runTest {
+        var cached: String? = "venue|manager\npayments:resolve-no-instrument"
+        every { storage.getString("permissions_cache", null) } answers { cached }
+        every { storage.remove("permissions_cache") } answers { cached = null }
+        every { storage.remove("permissions_cache_timestamp") } returns Unit
+        every { storage.putString("permissions_cache", any()) } answers { cached = secondArg() }
+        every { storage.putLong(any(), any()) } returns Unit
+        row = row.copy(serverAnsweredAt = 3)
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, "{}") }
+        resolver.declareChecked("venue", "pax", pin)
+        assertThat(resolver.hasPermission()).isFalse()
+        val permissionsApi = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        coEvery { permissionsApi.getStaffPermissions() } returns Response.success(
+            com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsResponse(true,
+                com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsData(
+                    "manager", "venue", "MANAGER", listOf("payments:resolve-no-instrument"))))
+        com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository(permissionsApi, storage)
+            .getPermissions(forceRefresh = true)
+        assertThat(resolver.hasPermission()).isTrue()
+    }
+
+    /** Era «the PAX screen does not change - it still only sees PAX attempts» (la firma revisada sí ve la Nexgo, a propósito). */
+    @Test fun `B7 la pantalla de la PAX sigue viendo solo intentos de la PAX`() = runTest {
+        row = row.copy(processor = "ANGELPAY", serverAnsweredAt = 3)
+        assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        assertThat(resolver.current("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+        coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        every { ledger.observarIntento("pax", "venue") } returns kotlinx.coroutines.flow.flowOf(row)
+        assertThat(resolver.observe("venue", "pax").first().state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
+    }
+
+    /** Era «a permission response started before denial cannot restore the stale grant». */
+    @Test fun `B7 una descarga de permisos que empezo antes del 403 no devuelve la lista vieja`() = runTest {
+        var cached: String? = "venue|manager\npayments:resolve-no-instrument"
+        every { storage.getString("permissions_cache", null) } answers { cached }
+        every { storage.remove("permissions_cache") } answers { cached = null }
+        every { storage.remove("permissions_cache_timestamp") } returns Unit
+        every { storage.putString("permissions_cache", any()) } answers { cached = secondArg() }
+        every { storage.putLong(any(), any()) } returns Unit
+        row = row.copy(serverAnsweredAt = 3)
+        val permissionsApi = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
+        val pending = CompletableDeferred<Unit>()
+        coEvery { permissionsApi.getStaffPermissions() } coAnswers {
+            pending.await()
+            Response.success(com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsResponse(true,
+                com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsData(
+                    "manager", "venue", "MANAGER", listOf("payments:resolve-no-instrument"))))
+        }
+        val download = async {
+            com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository(permissionsApi, storage)
+                .getPermissions(forceRefresh = true)
+        }
+        runCurrent()
+        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, "{}") }
+        resolver.declareChecked("venue", "pax", pin)
+        pending.complete(Unit)
+        assertThat(download.await().isFailure).isTrue()
+        assertThat(com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+            .enLaUltimaListaEfectiva(storage, "payments:resolve-no-instrument")).isFalse()
     }
 
     @Test fun `the checked declaration never releases a POS request or an attempt Avoqado never answered`() = runTest {
@@ -353,13 +489,17 @@ class BlumonAttemptResolverTest {
         }
     }
 
+    // F1 bloque 7 (I4): antes el 409 se guardaba como aprobación del banco (`marcarEvidenciaPositivaDelServidor`). El 409 es GENÉRICO
+    // (puede ser evidencia de otra terminal): se rechaza igual y se guarda como IMPEDIMENTO; la aprobación sólo con dinero en el cuerpo.
     @Test fun `D22 if Avoqado has money evidence the declaration is refused and the evidence saved`() = runTest {
         cajeroQueRevisa()
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(409,
             okhttp3.ResponseBody.create(null, """{"code":"POSITIVE_EVIDENCE_EXISTS"}"""))
+        coEvery { ledger.marcarImpedimentoDelServidor("venue", "pax", any()) } returns Result.success(true)
         coEvery { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) } returns Result.success(true)
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
-        coVerify { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) }
+        coVerify { ledger.marcarImpedimentoDelServidor("venue", "pax", any()) }
+        coVerify(exactly = 0) { ledger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
         // A 2xx that carries money (the bank approved meanwhile) also refuses, and saves it.
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "pax", attempt = TerminalAttemptResultDto(
@@ -401,77 +541,11 @@ class BlumonAttemptResolverTest {
         coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
-    @Test fun `server denial cannot be bypassed by the checked declaration`() = runTest {
-        every { storage.getString("permissions_cache", null) } returns
-            "venue|manager\npayments:resolve-no-instrument,payments:reconcile-uncharged"
-        row = row.copy(serverAnsweredAt = 3)
-        // Un cuerpo nuevo por llamada: el de error sólo se puede leer una vez.
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers {
-            Response.error(403, okhttp3.ResponseBody.create(null, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}"""))
-        }
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
-        // F1: en la revisada el 403 habla del PIN del gerente.
-        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
-    }
-
     @Test fun `a session from another venue cannot query or resolve the old PAX attempt`() = runTest {
         every { storage.getVenueId() } returns "another-venue"
         assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
         coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-    }
-
-    @Test fun `a server permission denial invalidates the cached grant across resolver recreation`() = runTest {
-        var cached: String? = "venue|manager\npayments:resolve-no-instrument,payments:reconcile-uncharged"
-        every { storage.getString("permissions_cache", null) } answers { cached }
-        every { storage.remove("permissions_cache") } answers { cached = null }
-        every { storage.remove("permissions_cache_timestamp") } returns Unit
-        row = row.copy(serverAnsweredAt = 3)
-        coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns LedgerServerRecovery.LecturaDelIntento(null)
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(403,
-            okhttp3.ResponseBody.create(null, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}"""))
-        resolver.declare("venue", "pax")
-        resolver = BlumonAttemptResolver(ledger, recovery, api, storage)
-        // F1: la revisada ya no depende de la lista de la sesión (firma el gerente); aun así, nada se cierra.
-        assertThat(resolver.declareChecked("venue", "pax", pin).state).isNotEqualTo(BlumonAttemptResolver.State.RELEASED)
-        io.mockk.verify { storage.remove("permissions_cache") }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
-    }
-
-    @Test fun `a delayed denial for the old staff preserves the new staff permission cache`() = runTest {
-        var staff = "manager"
-        var cached = "venue|manager\npayments:resolve-no-instrument"
-        every { storage.getStaffId() } answers { staff }
-        every { storage.getString("permissions_cache", null) } answers { cached }
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
-            staff = "new-manager"
-            cached = "venue|new-manager\npayments:resolve-no-instrument"
-            Response.error(403, okhttp3.ResponseBody.create(null, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}"""))
-        }
-        resolver.declare("venue", "pax")
-        assertThat(resolver.hasPermission()).isTrue()
-        io.mockk.verify(exactly = 0) { storage.remove("permissions_cache") }
-    }
-
-    @Test fun `a fresh permission download restores a grant denied earlier`() = runTest {
-        var cached: String? = "venue|manager\npayments:resolve-no-instrument"
-        every { storage.getString("permissions_cache", null) } answers { cached }
-        every { storage.remove("permissions_cache") } answers { cached = null }
-        every { storage.remove("permissions_cache_timestamp") } returns Unit
-        every { storage.putString("permissions_cache", any()) } answers { cached = secondArg() }
-        every { storage.putLong(any(), any()) } returns Unit
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(403,
-            okhttp3.ResponseBody.create(null, "{}"))
-        resolver.declare("venue", "pax")
-        val permissionsApi = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
-        coEvery { permissionsApi.getStaffPermissions() } returns Response.success(
-            com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsResponse(true,
-                com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsData(
-                    "manager", "venue", "MANAGER", listOf("payments:resolve-no-instrument"))))
-        com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository(permissionsApi, storage)
-            .getPermissions(forceRefresh = true)
-        assertThat(resolver.hasPermission()).isTrue()
     }
 
     // ── El banner «No se cobró» (founder, 3-nov): la declaración revisada se abre a la Nexgo, y nada más cambia ─────────────
@@ -545,48 +619,6 @@ class BlumonAttemptResolverTest {
         declaraEnLaNexgo()
         row = row.copy(state = "DESCARTADA", serverOutcome = "RELEASED_NO_EVIDENCE")
         assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.RELEASED)
-    }
-
-    @Test fun `the PAX screen does not change - it still only sees PAX attempts`() = runTest {
-        every { storage.getString("permissions_cache", null) } returns
-            "venue|manager\npayments:resolve-no-instrument,payments:reconcile-uncharged"
-        row = row.copy(processor = "ANGELPAY", serverAnsweredAt = 3)
-        assertThat(resolver.consult("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
-        assertThat(resolver.current("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
-        assertThat(resolver.declare("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
-        coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        every { ledger.observarIntento("pax", "venue") } returns kotlinx.coroutines.flow.flowOf(row)
-        assertThat(resolver.observe("venue", "pax").first().state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
-    }
-
-    @Test fun `a permission response started before denial cannot restore the stale grant`() = runTest {
-        var cached: String? = "venue|manager\npayments:resolve-no-instrument"
-        every { storage.getString("permissions_cache", null) } answers { cached }
-        every { storage.remove("permissions_cache") } answers { cached = null }
-        every { storage.remove("permissions_cache_timestamp") } returns Unit
-        every { storage.putString("permissions_cache", any()) } answers { cached = secondArg() }
-        every { storage.putLong(any(), any()) } returns Unit
-        val permissionsApi = mockk<com.jaac.avoqado_tpv.core.data.network.ApiService>()
-        val pending = CompletableDeferred<Unit>()
-        coEvery { permissionsApi.getStaffPermissions() } coAnswers {
-            pending.await()
-            Response.success(com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsResponse(true,
-                com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsData(
-                    "manager", "venue", "MANAGER", listOf("payments:resolve-no-instrument"))))
-        }
-        val download = async {
-            com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository(permissionsApi, storage)
-                .getPermissions(forceRefresh = true)
-        }
-        runCurrent()
-        coEvery { api.resolveNoInstrument("venue", "pax", any()) } returns Response.error(403,
-            okhttp3.ResponseBody.create(null, "{}"))
-        resolver.declare("venue", "pax")
-        pending.complete(Unit)
-        assertThat(download.await().isFailure).isTrue()
-        assertThat(com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
-            .enLaUltimaListaEfectiva(storage, "payments:resolve-no-instrument")).isFalse()
     }
 
 }

@@ -181,9 +181,12 @@ class DeclaracionDesdeElAvisoTest {
             ResultadoDeLaDeclaracion.HayEvidencia to "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
             // F1 (Codex código r1 #11): una revisión de una persona no es la respuesta del banco.
             ResultadoDeLaDeclaracion.YaResuelto to "Este cobro ya lo revisó otra persona: ya no está por revisar.",
-            // F1 (Codex código r2 #5 y #6).
-            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Ya estaba declarado en Avoqado; ya se puede volver a cobrar.",
-            ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado to "Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
+            // F1 (Codex código r2 #5 y #6) → F1 bloque 7 (I4, R5): el comprobante guardado es neutro (nunca «quedó tu firma») y un 409,
+            // un veto ajeno o evidencia sin dueño es un impedimento de Avoqado, no «evidencia de este cobro».
+            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.",
+            ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado to "Avoqado encontró información que impide liberar este cobro.",
+            // F1 bloque 7: la aprobación propia sin registro (tabla de I4).
+            ResultadoDeLaDeclaracion.AprobadoSinRegistro to "El banco autorizó este intento. Falta confirmar el registro.",
             ResultadoDeLaDeclaracion.Rechazado("lo que dijo el servidor") to "lo que dijo el servidor",
         )
         for ((resultado, texto) in textos) assertThat(resultado.texto()).isEqualTo(texto)

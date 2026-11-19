@@ -93,9 +93,11 @@ sealed interface ResultadoDeLaDeclaracion {
         // F1 (Codex código r1 #9): también la lee el gerente en una fila «sólo consulta» (el banco aprobó después de cerrarla).
         HayEvidencia -> "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado."
         // Codex código r2 #6: un veto (evidencia de otra terminal, un pago que no se puede atribuir) no se presenta como del banco.
-        HayEvidenciaEnAvoqado -> "Avoqado tiene evidencia de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado."
+        // F1 bloque 7: un 409, un veto ajeno o evidencia sin dueño: no se afirma dinero de ESTE cobro.
+        HayEvidenciaEnAvoqado -> "Avoqado encontró información que impide liberar este cobro."
         // Codex código r2 #5: no firmó este gerente; la declaración ya estaba (no hay un nombre que mostrar: el acuse trae un id).
-        YaDeclaradoEnAvoqado -> "Ya estaba declarado en Avoqado; ya se puede volver a cobrar."
+        // F1 bloque 7: la declaración que ya estaba guardada (otra persona, o la respuesta perdida): nunca «quedó tu firma».
+        YaDeclaradoEnAvoqado -> "Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar."
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
@@ -207,7 +209,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
             return ResultadoDeLaDeclaracion.SinRed
         }
         if (respuesta.code() >= 500) return ResultadoDeLaDeclaracion.SinRed
-        if (!respuesta.isSuccessful) return rechazo(respuesta)
+        if (!respuesta.isSuccessful) return rechazo(respuesta, alImpedir = { impedidoPorAvoqado(venueId, cobro) })
         val cuerpo = respuesta.body() ?: return ResultadoDeLaDeclaracion.SinRed
         val lectura = try {
             consultar(venueId, cobro)
@@ -217,7 +219,13 @@ class DeclaracionDesdeElAviso @Inject constructor(
             Timber.w(error, "🧾 [NoSeCobro] declarado, pero no se pudo consultar %s: lo termina el refresco", requestId)
             null
         }
+        // F1 bloque 7 (I4): un `released` sin el comprobante de una PERSONA de ESTA solicitud no acredita nada (no se sintetiza el acuse).
+        val comprobante = cuerpo.declarationReceipt
+        // ponytail: sin la llave `declarationReceipt` sigue la regla de antes. La manda el SERVIDOR desde F1 bloque 7 (avoqado-server
+        // `fix/f1-minimo` 70ca51c5f); sin ella contesta el de hoy en producción. Se quita cuando ese SERVIDOR ya esté publicado.
+        if (cuerpo.released == true && comprobante != null && !comprobante.acreditaPersona(null, requestId)) return resultadoDe(venueId, cobro)
         return when {
+            cuerpo.released == true && comprobante?.alreadyStored == true -> ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado
             cuerpo.released == true ->
                 if (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro))
                     evidenciaDe(cobro.attemptId?.let { ledger.leerIntento(it) }, sinGuardar = lectura?.evidenciaPositivaSinRegistro == true)
@@ -332,6 +340,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
      * sin dueño) ⇒ «Avoqado tiene evidencia». Lo que no se pudo leer cuenta como del banco (el lado que no invita a cobrar).
      */
     private fun evidenciaDe(fila: PaymentAttemptEntity?, sinGuardar: Boolean = false): ResultadoDeLaDeclaracion {
+        // F1 bloque 7 (I4): el impedimento del 409 que la libreta no pudo escribir todavía: no se atribuye al banco.
+        if (fila != null && fila.hostApproved != true && ledger.tieneImpedimentoSinGuardar(fila.attemptId))
+            return ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado
         // F1 bloque 7: la aprobación PROPIA (el banco contestó a esta terminal) que Avoqado todavía no registra.
         if (fila != null && (fila.hostApproved == true || ledger.tieneEvidenciaSinGuardar(fila.attemptId)) && fila.serverPaymentId == null &&
             fila.serverVeto.isNullOrBlank()) return ResultadoDeLaDeclaracion.AprobadoSinRegistro
@@ -350,7 +361,23 @@ class DeclaracionDesdeElAviso @Inject constructor(
             ledger.tieneEvidenciaSinGuardar(attemptId)
     }
 
-    private fun rechazo(respuesta: Response<*>): ResultadoDeLaDeclaracion {
+    /**
+     * F1 bloque 7 (I4): el `409 POSITIVE_EVIDENCE_EXISTS` de una solicitud deja el IMPEDIMENTO en su intento (cerca la cuenta y sale en
+     * «Por revisar») y dispara la consulta, que guarda lo que Avoqado sí pueda atribuir. Nunca escribe la aprobación del banco.
+     */
+    private suspend fun impedidoPorAvoqado(venueId: String, cobro: CobroDeclarable) {
+        val attemptId = cobro.attemptId ?: return
+        ledger.marcarImpedimentoDelServidor(venueId, attemptId)
+        try {
+            consultar(venueId, cobro)
+        } catch (cancelada: CancellationException) {
+            throw cancelada
+        } catch (error: Exception) {
+            Timber.w(error, "🧾 [NoSeCobro] 409 de %s: no se pudo consultar, lo termina el refresco", attemptId)
+        }
+    }
+
+    private suspend fun rechazo(respuesta: Response<*>, alImpedir: suspend () -> Unit = {}): ResultadoDeLaDeclaracion {
         // 404: un servidor anterior a esta ruta. 🔴 Nunca se vuelve declaración local: se contesta en el POS.
         if (respuesta.code() == 404) return ResultadoDeLaDeclaracion.UsaElPos
         // 401: su texto («Token has been revoked») no es para el cajero.
@@ -358,6 +385,11 @@ class DeclaracionDesdeElAviso @Inject constructor(
         val cuerpo = runCatching { JsonParser.parseString(respuesta.errorBody()?.string().orEmpty()).asJsonObject }.getOrNull()
         fun texto(campo: String) = runCatching { cuerpo?.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
         return when {
+            // F1 bloque 7: el 409 genérico es un impedimento de Avoqado, nunca «el banco cobró».
+            respuesta.code() == 409 && texto("code") == "POSITIVE_EVIDENCE_EXISTS" -> {
+                alImpedir()
+                ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado
+            }
             respuesta.code() == 403 && texto("code") == "SUPERVISOR_AUTHORIZATION_REQUIRED" -> ResultadoDeLaDeclaracion.PidePin
             // La negación de la puerta (`checkPermission`): sin ninguno de los dos permisos. Su texto es técnico, y en inglés.
             respuesta.code() == 403 && texto("required") != null -> ResultadoDeLaDeclaracion.SinPermiso

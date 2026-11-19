@@ -89,9 +89,36 @@ data class DeclaracionSinCobroRequest(
 )
 
 /** Lo que contesta el 2xx de la declaración. Todo nulo por defecto: Gson no respeta la no-nulabilidad. */
+/**
+ * 🔴 F1 bloque 7 (contrato del SERVIDOR §6): el comprobante de una declaración, el mismo en el POST, S6 y el GET por solicitud.
+ * [humanSignature] = clase humana, por la sesión histórica o el PIN, con autor y hora. [alreadyStored] = false sólo en el POST que la
+ * escribió; en un replay (respuesta perdida, otro gerente con el mismo id) trae el firmante y la hora DEL GUARDADO.
+ */
+data class ComprobanteDeDeclaracion(
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("kind") val kind: String? = null,
+    @SerializedName("by") val by: String? = null,
+    @SerializedName("staffId") val staffId: String? = null,
+    @SerializedName("acceptedAt") val acceptedAt: String? = null,
+    @SerializedName("scope") val scope: String? = null,
+    @SerializedName("attemptId") val attemptId: String? = null,
+    @SerializedName("requestId") val requestId: String? = null,
+    @SerializedName("humanSignature") val humanSignature: Boolean? = null,
+    @SerializedName("alreadyStored") val alreadyStored: Boolean? = null,
+) {
+    /** ¿Acredita la firma de una PERSONA para ESTE alcance? (`ATTEMPT` con el intento, `REQUEST` con la solicitud.) */
+    fun acreditaPersona(attemptId: String?, requestId: String?): Boolean = humanSignature == true && !staffId.isNullOrBlank() && when (scope) {
+        "ATTEMPT" -> attemptId != null && this.attemptId == attemptId
+        "REQUEST" -> requestId != null && this.requestId == requestId
+        else -> false
+    }
+}
+
 data class DeclaracionSinCobroResponse(
     @SerializedName("success") val success: Boolean? = null,
     @SerializedName("released") val released: Boolean? = null,
+    /** F1 bloque 7: el comprobante de la declaración (null = nadie declaró; un `released` sin comprobante no acredita nada). */
+    @SerializedName("declarationReceipt") val declarationReceipt: ComprobanteDeDeclaracion? = null,
     @SerializedName("status") val status: String? = null,
     @SerializedName("requestId") val requestId: String? = null,
     @SerializedName("paymentId") val paymentId: String? = null,
@@ -101,6 +128,8 @@ data class DeclaracionSinCobroResponse(
 /** Respuesta de la consulta por SOLICITUD (pieza D). Todo nulo por defecto: Gson no respeta la no-nulabilidad. */
 data class TerminalRequestStatusResponse(
     @SerializedName("success") val success: Boolean? = null,
+    /** F1 bloque 7: el comprobante de la declaración de la solicitud (o, si no tiene, del intento vinculado). */
+    @SerializedName("declarationReceipt") val declarationReceipt: ComprobanteDeDeclaracion? = null,
     @SerializedName("requestId") val requestId: String? = null,
     @JsonAdapter(ObjetoJsonONulo::class)
     @SerializedName("request") val request: JsonObject? = null,
@@ -144,6 +173,8 @@ data class NoInstrumentResolutionRequest(
 /** Espejo tolerante de `TerminalAttemptStatus` del servidor: todo nulo por defecto (Gson no respeta la no-nulabilidad). */
 data class TerminalAttemptStatusResponse(
     @SerializedName("success") val success: Boolean? = null,
+    /** F1 bloque 7: el comprobante de la declaración del intento (o de su solicitud). */
+    @SerializedName("declarationReceipt") val declarationReceipt: ComprobanteDeDeclaracion? = null,
     @SerializedName("attemptId") val attemptId: String? = null,
     @SerializedName("requestId") val requestId: String? = null,
     @SerializedName("attempt") val attempt: TerminalAttemptResultDto? = null,

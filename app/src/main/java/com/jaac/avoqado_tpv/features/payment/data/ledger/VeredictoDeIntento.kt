@@ -276,6 +276,11 @@ data class LiberacionDelServidor(
             if (textoDe(solicitud, "requestId") != requestId) return null
             if (solicitud.get("venueId")?.isJsonNull == false && textoDe(solicitud, "venueId") != venueId) return null
             if (textoDe(solicitud, "outcome") != "NOT_CHARGED" || textoDe(solicitud, "outcomeEvidence") != "OPERATOR_RECONCILED") return null
+            // F1 bloque 7 (I4): un `OPERATOR_RECONCILED` aislado no acredita a nadie: hace falta el comprobante de una PERSONA de ESTA solicitud.
+            // ponytail: sin la llave `declarationReceipt` (el SERVIDOR de hoy en producción, anterior a avoqado-server 70ca51c5f, F1 bloque
+            // 7) sigue la regla de antes; con comprobante, manda él. Se quita cuando ese SERVIDOR ya esté publicado.
+            val comprobante = respuesta.declarationReceipt
+            if (comprobante != null && !comprobante.acreditaPersona(null, requestId)) return null
             return LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
         }
 
@@ -294,11 +299,10 @@ data class LiberacionDelServidor(
                     textoDe(r, "kind") in DECLARACIONES_DE_UNA_PERSONA && quienDeclaroElAcuse(r) == null }) null
             // Ronda 20: la declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
             // Sin clase (un servidor anterior) o con la del cajero, lo de siempre.
-            else LiberacionDelServidor(
-                venueId, attemptId, requestId,
-                evidenciaDeLaDeclaracion(runCatching { respuesta?.attempt?.resolution?.get("kind")?.asString }.getOrNull()) ?: "OPERATOR_RECONCILED",
-                respuesta?.attempt?.resolution?.let(::quienDeclaro),
-            )
+            // F1 bloque 7 (I4): sin clase no hay acuse (antes se sintetizaba `OPERATOR_RECONCILED` de un 2xx sin más).
+            else evidenciaDeLaDeclaracion(textoDe(respuesta?.attempt?.resolution, "kind"))?.let { evidencia ->
+                LiberacionDelServidor(venueId, attemptId, requestId, evidencia, respuesta?.attempt?.resolution?.let(::quienDeclaro))
+            }
 
         /**
          * 🔴 F1 (Codex código r1 #2 y #3): quién declaró, en el acuse que Avoqado YA guardó — por la sesión (`SESSION`) o con el PIN de

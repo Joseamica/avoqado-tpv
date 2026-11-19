@@ -569,7 +569,8 @@ class LiberacionSolaRoomTest {
         assertWithMessage("sale en el aviso de Inicio como contradicción").that(aviso.count { it.contradiccion == 1 }).isEqualTo(1)
     }
 
-    @Test fun `r21 P1-2 · un 409 POSITIVE_EVIDENCE_EXISTS veta DESDE que llega aunque la consulta siguiente falle — el cierre sin red ya no pasa`() = runTest {
+    // F1 bloque 7 (I4): el 409 es GENÉRICO: veta desde que llega como IMPEDIMENTO, sin inventar dinero de este intento.
+    @Test fun `409_en_liberacion_automatica_no_inventa_dinero`() = runTest {
         filaDeOtroProceso("e", PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
         yaEsperoElAviso("e")
         // 🔴 Codex r22 (P3): la fila tiene que ser DECLARABLE antes (el servidor ya contestó limpio alguna vez), o «el cierre sin
@@ -584,7 +585,8 @@ class LiberacionSolaRoomTest {
         val r = LedgerServerRecovery(dao, ledger, api).liberarSinRastroDelBanco(venue, "e", now)
 
         assertThat(r).isEqualTo(LedgerServerRecovery.SinRastro.CON_EVIDENCIA)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertWithMessage("sin dinero inventado").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
+        assertThat(dao.getById("e")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
         assertWithMessage("el cierre sin red del gerente ya no pasa").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
@@ -611,29 +613,51 @@ class LiberacionSolaRoomTest {
         )
     }
 
+    /**
+     * F1 bloque 7 (I4): desde que el `409` se guarda como IMPEDIMENTO (`server_veto`) y no como aprobación, «la marca del 409 rota» es
+     * la escritura de `server_veto`. Disparador propio: el de la evidencia (`marca_rota`) lo siguen usando las pruebas «final».
+     */
+    private suspend fun dudaDeclarableConImpedimentoRoto(id: String) {
+        filaDeOtroProceso(id, PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso(id)
+        dao.estamparRespuestaDelServidor(id, now - 60_000)
+        gemelaSinMarcaSeDeclara(id)
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER impedimento_roto BEFORE UPDATE OF server_veto ON payment_attempts BEGIN SELECT RAISE(ABORT, 'escritura rota'); END",
+        )
+    }
+
     private fun api409SinConsulta() = mockk<TerminalAttemptApiService> {
         coEvery { resolveNoInstrument(any(), any(), any()) } returns error(409, "POSITIVE_EVIDENCE_EXISTS")
         coEvery { getAttemptStatus(any(), any()) } throws java.io.IOException("se cortó la conexión")
     }
 
+    // F1 bloque 7: la MARCA del 409 es el impedimento (`server_veto`); su escritura rota se recuerda en memoria igual que antes la evidencia.
     @Test fun `r22 P1-2 a · si la MARCA del 409 no se puede escribir, el cierre sin red sigue bloqueado`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         assertThat(LedgerServerRecovery(dao, ledger, api409SinConsulta()).liberarSinRastroDelBanco(venue, "e", now)).isEqualTo(LedgerServerRecovery.SinRastro.CON_EVIDENCIA)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isNull()   // la escritura sí falló…
+        assertThat(dao.getById("e")!!.serverVeto).isNull()   // la escritura sí falló…
+        assertWithMessage("…y nunca se inventa la aprobación del banco").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
         assertWithMessage("…pero el cierre sin red sigue bloqueado").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
+    // F1 bloque 7 (I4): antes la pasada siguiente escribía `APPROVED` (el 409 se leía como dinero de este intento). Ahora escribe el
+    // IMPEDIMENTO, que cerca la cuenta y sale en «Por revisar» igual, sin atribuirle un cobro al banco.
     @Test fun `r22 P1-2 c · la marca que no se pudo escribir se escribe en la pasada siguiente, cuando la base se recupera`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         val recuperacion = LedgerServerRecovery(dao, ledger, api409SinConsulta())
         recuperacion.liberarSinRastroDelBanco(venue, "e", now)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+        assertThat(ledger.tieneImpedimentoSinGuardar("e")).isTrue()
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER impedimento_roto")
         recuperacion.recover(venue, now + 1_000)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(dao.getById("e")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
+        assertWithMessage("sin dinero inventado").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
+        assertThat(ledger.tieneEvidenciaSinGuardar("e")).isFalse()
+        assertWithMessage("escrito, el impedimento sigue frenando el cierre").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
     @Test fun `r22 P1-2 d · con la marca sin escribir, la liberacion sola no vuelve a pedir aunque el servidor ahora la aceptara`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         LedgerServerRecovery(dao, ledger, api409SinConsulta()).liberarSinRastroDelBanco(venue, "e", now)
         val aceptaria = api(declaracionSola(id = "e"))
 

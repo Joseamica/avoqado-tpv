@@ -91,67 +91,6 @@ class BlumonAttemptResolver @Inject constructor(
         if (runCatching { ledger.leerIntento(attemptId)?.serverVeto }.getOrNull() == null) unsavedVetoes.add(attemptId)
     }
 
-    suspend fun declare(venueId: String, attemptId: String): Result = mutex.withLock {
-        if (!hasPermission()) return@withLock Result(State.PERMISSION_REQUIRED)
-        val before = inspect(venueId, attemptId)
-        if (before.state != State.PENDING) return@withLock before
-        val row = before.row ?: return@withLock Result(State.UNAVAILABLE)
-        if (!ledger.puedeConciliarBlumon(row, venueId)) return@withLock before.copy(state = State.UNAVAILABLE)
-        val staffId = storage.getStaffId()
-        // One logical declaration across retries, screen recreation and process death. No extra database migration.
-        val resolutionId = UUID.nameUUIDFromBytes("pax:no-instrument:$venueId:$attemptId".toByteArray(Charsets.UTF_8)).toString()
-        val response = try {
-            // F1 bloque 2 (R1): la PAX dueña acredita que terminó con ese cobro y que se puede declarar (sólo con solicitud del POS).
-            val clearance = row.terminalPaymentRequestId
-                ?.takeIf { row.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && ledger.solicitudDeclarable(it) }
-                ?.let { EXECUTION_CLEARANCE_DECLARABLE }
-            api.resolveNoInstrument(venueId, attemptId, NoInstrumentResolutionRequest(row.terminalPaymentRequestId, resolutionId,
-                executionClearance = clearance))
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            return@withLock inspect(venueId, attemptId)
-        }
-        if (!response.isSuccessful) {
-            val code = runCatching {
-                com.google.gson.JsonParser.parseString(response.errorBody()?.string().orEmpty()).asJsonObject.get("code")?.asString
-            }.getOrNull()
-            if (response.code() == 409 && code == "POSITIVE_EVIDENCE_EXISTS") {
-                saveMoney(venueId, attemptId)
-                return@withLock inspect(venueId, attemptId).copy(state = State.MONEY_EVIDENCE, serverAnswered = true)
-            }
-            if (response.code() == 401 || response.code() == 403) {
-                PermissionsRepository.invalidarListaTrasRechazo(storage, venueId, staffId)
-                return@withLock before.copy(state = State.PERMISSION_REQUIRED, serverAnswered = true)
-            }
-            return@withLock before.copy(serverAnswered = true)
-        }
-        val body = response.body()
-        // A 2xx alone is not evidence for this row. Check both identities and the original POS request.
-        if (body?.success != true || body.attemptId != attemptId || body.attempt?.attemptId != attemptId ||
-            body.requestId != row.terminalPaymentRequestId) return@withLock before.copy(serverAnswered = true)
-        val money = LiberacionDelServidor.acreditaDinero(body.attempt)
-        val veto = LiberacionDelServidor.motivoDelVeto(body.attempt)
-        var resultJson: String? = null
-        withContext(NonCancellable) {
-            // Save all evidence from THIS response before any possible release or cancelled-screen return.
-            val moneySaved = !money || saveMoney(venueId, attemptId)
-            if (veto != null && !ledger.marcarVetoDelServidor(venueId, attemptId, veto).getOrDefault(false)) unsavedVetoes.add(attemptId)
-            if (moneySaved) VeredictoDeIntento.desdeConsultaS6(venueId, attemptId, body)?.let {
-                resultJson = ledger.aplicarVeredictoDelServidor(it).getOrNull()?.bandejaResueltaJson
-            }
-            if (!money && veto == null) {
-                val kind = runCatching { body.attempt?.resolution?.get("kind")?.asString }.getOrNull()
-                if (kind == null || kind == "NO_INSTRUMENT_PRESENTED") {
-                    ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venueId, attemptId, row.terminalPaymentRequestId, "OPERATOR_RECONCILED"))
-                }
-            }
-        }
-        val after = inspect(venueId, attemptId).copy(serverAnswered = true, resultJson = resultJson)
-        // A successful POST is not a successful local CAS. Only the freshly read row can announce release.
-        if (veto != null || (money && after.state != State.RECORDED)) after.copy(state = State.MONEY_EVIDENCE) else after
-    }
-
     /**
      * 🔴 F1 (17-nov, plan mínimo tarea 3): el GERENTE firma con su PIN que revisó la terminal y este cobro LOCAL no aparece. Ya no
      * decide el permiso de la sesión (la cajera ya no lo trae): decide Avoqado con el PIN. Primero se consulta a Avoqado; con
@@ -224,7 +163,7 @@ class BlumonAttemptResolver @Inject constructor(
         data object NO_FIRMADO : EnvioRevisado
         /** 403 SUPERVISOR_AUTHORIZATION_REQUIRED: ese PIN no firma (de otro local, de un cajero o sin el permiso). */
         data object PIN_RECHAZADO : EnvioRevisado
-        /** 409 POSITIVE_EVIDENCE_EXISTS: Avoqado tiene evidencia de cobro. No se declara. */
+        /** 409 POSITIVE_EVIDENCE_EXISTS: Avoqado tiene algo que impide liberarlo (genérico: no dice que sea dinero de ESTE intento). */
         data object HAY_DINERO : EnvioRevisado
         /** 401/403: Avoqado dice que esta sesión no puede declararlo. No se anota en ningún lado. */
         data object SIN_PERMISO : EnvioRevisado
@@ -256,8 +195,10 @@ class BlumonAttemptResolver @Inject constructor(
                 com.google.gson.JsonParser.parseString(response.errorBody()?.string().orEmpty()).asJsonObject.get("code")?.asString
             }.getOrNull()
             return when {
+                // F1 bloque 7 (I4): el 409 es genérico (puede ser evidencia de OTRA terminal): impedimento, nunca «aprobado». Si no se
+                // pudo escribir, la libreta lo recuerda y frena (como la evidencia).
                 response.code() == 409 && code == "POSITIVE_EVIDENCE_EXISTS" -> {
-                    saveMoney(venueId, attemptId)
+                    if (ledger.marcarImpedimentoDelServidor(venueId, attemptId).isFailure) unsavedVetoes.add(attemptId)
                     EnvioRevisado.HAY_DINERO
                 }
                 // F1: con PIN, este 403 habla del PIN, no de la sesión: no se toca la lista de permisos de quien opera.
@@ -279,7 +220,7 @@ class BlumonAttemptResolver @Inject constructor(
         val money = LiberacionDelServidor.acreditaDinero(body?.attempt)
         val veto = LiberacionDelServidor.motivoDelVeto(body?.attempt)
         if (body?.attemptId == attemptId && body.attempt?.attemptId == attemptId && (money || veto != null)) {
-            // Lo que trae la respuesta se guarda ANTES de devolver, aunque la pantalla se cierre (el mismo orden que [declare]).
+            // Lo que trae la respuesta se guarda ANTES de devolver, aunque la pantalla se cierre.
             withContext(NonCancellable) {
                 val moneySaved = !money || saveMoney(venueId, attemptId)
                 if (veto != null && !ledger.marcarVetoDelServidor(venueId, attemptId, veto).getOrDefault(false)) unsavedVetoes.add(attemptId)
@@ -295,7 +236,13 @@ class BlumonAttemptResolver @Inject constructor(
                 declaracion?.get("tipCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.tipCents }
         }.getOrDefault(false)
         val quien = LiberacionDelServidor.quienDeclaroElAcuse(declaracion)
-        val porElGerente = runCatching { declaracion?.get("by")?.asString == "SUPERVISOR_PIN" }.getOrDefault(false)
+        // F1 bloque 7: con el comprobante del SERVIDOR, manda él: tiene que acreditar a una persona en ESTE intento, y la firma es de
+        // ESTE gerente sólo si este POST la escribió (`alreadyStored = false`). Un replay (otro gerente con el mismo id, respuesta
+        // perdida) es la declaración guardada, con su firmante y su hora: nunca «quedó tu firma».
+        val comprobante = body?.declarationReceipt
+        if (comprobante != null && !comprobante.acreditaPersona(attemptId, null)) return EnvioRevisado.NO_FIRMADO
+        val porElGerente = if (comprobante != null) comprobante.alreadyStored == false && comprobante.by == "SUPERVISOR_PIN"
+            else runCatching { declaracion?.get("by")?.asString == "SUPERVISOR_PIN" }.getOrDefault(false)
         return if (esLaNuestra && mismoImporte && quien != null) EnvioRevisado.Firmado(quien, porElGerente) else EnvioRevisado.NO_FIRMADO
     }
 
@@ -355,8 +302,6 @@ class BlumonAttemptResolver @Inject constructor(
     }
 
     private companion object {
-        /** F1 bloque 2: el certificado que la PAX dueña manda con «no presentó tarjeta» (contrato del SERVIDOR §2). */
-        const val EXECUTION_CLEARANCE_DECLARABLE = "DECLARABLE"
         val SOLO_PAX = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON)
         val LOS_DOS = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON, PaymentAttemptEntity.PROCESSOR_ANGELPAY)
     }

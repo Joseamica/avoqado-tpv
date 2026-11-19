@@ -1722,7 +1722,12 @@ class SocketManager @Inject constructor(
                 // (El scope del socket nunca se cancela; el tramo es defensivo.)
                 val r = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                     // Codex r15 (P1): sin la marca, el veredicto NO se guarda — lo retoma la consulta siguiente, que sí puede protegerlo.
-                    if (paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId).isFailure) null
+                    // 🔴 F1 bloque 7 (I4): la marca sólo después de comprobar que el intento es de ESA solicitud y de este negocio.
+                    val fila = paymentAttemptLedger.leerIntento(attemptId)
+                    val esSuyo = fila != null && fila.venueId == venueId &&
+                        (fila.terminalPaymentRequestId == null || fila.terminalPaymentRequestId == requestId)
+                    if (!esSuyo) null
+                    else if (paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId).isFailure) null
                     else paymentAttemptLedger.aplicarVeredictoDelServidor(veredicto).getOrNull()
                 }
                 r?.bandejaResueltaJson?.let(::emitPersistedTerminalPaymentResult)

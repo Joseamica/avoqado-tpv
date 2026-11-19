@@ -675,8 +675,9 @@ class LedgerServerRecovery @Inject constructor(
                 codigo == "WEBHOOK_NOT_CONFIRMED" -> SinRastro.SIN_AVISO_COMPROBADO
                 // 🔴 Ronda 23 (Codex r21, P1-2): el servidor YA dijo que hay evidencia de dinero. Eso veta DESDE aquí, durable y
                 // antes de depender de otra petición: si la consulta siguiente falla, el cierre sin red del gerente pasaba.
+                // F1 bloque 7 (I4): el 409 es genérico: se guarda como IMPEDIMENTO (cerca y se ve), nunca como aprobación del banco.
                 codigo == "POSITIVE_EVIDENCE_EXISTS" -> {
-                    ledger.marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
+                    ledger.marcarImpedimentoDelServidor(venueId, attemptId, now)
                     // …y se consulta igual, para guardar el veredicto (el Payment) si el servidor lo da. Si la consulta falla, la
                     // marca ya quedó: el desenlace no depende de ella.
                     recoverOne(venueId, attemptId, now, estampar = false)

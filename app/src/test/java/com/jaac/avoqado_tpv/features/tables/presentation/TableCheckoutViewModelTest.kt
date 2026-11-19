@@ -287,6 +287,293 @@ class TableCheckoutViewModelTest {
 
     // endregion
 
+    // region — D49: otro aparato cambió la cuenta mientras «Cobrar» seguía abierto
+
+    private fun cuentaCon(saldo: String): Result<OrderDetail> =
+        Result.success(OrderDetail(id = "orden-1", total = BigDecimal(saldo), amountLeft = BigDecimal(saldo)))
+
+    private fun cobroRegistrado(): Result<TablesRepository.PayCashOutcome> =
+        Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false, receiptUrl = "https://avoqado.io/r/1"))
+
+    @Test
+    fun D49_si_otro_aparato_agrego_una_ronda_el_efectivo_no_cobra_el_saldo_viejo_y_ensena_el_nuevo() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("25.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaCon("25.00"), cuentaCon("75.00"))
+        val viewModel = createViewModel()
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("25.00"))
+
+        viewModel.payCash(BigDecimal("25.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.clearTable(any(), any(), any(), any()) }
+        val s = viewModel.state.value
+        assertThat(s.remaining).isEqualTo(BigDecimal("75.00"))
+        // Codex r1 #4: en el aviso del cobro (se queda hasta «Entendido»), no en el error que una relectura borra.
+        assertThat(s.avisoDelCobro).isEqualTo("La cuenta cambió: ahora falta \$75.00. Revisa antes de cobrar.")
+        assertThat(s.cashReceipt).isNull()
+        assertThat(s.isProcessingCash).isFalse()
+        assertThat(s.tableReleased).isFalse()
+        assertThat(tableSession.current()?.total).isEqualTo(BigDecimal("75.00"))
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_si_otro_aparato_ya_cobro_una_parte_el_efectivo_no_cobra_de_mas() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaCon("100.00"), cuentaCon("40.00"))
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("40.00"))
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("La cuenta cambió: ahora falta \$40.00. Revisa antes de cobrar.")
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_una_cuenta_anulada_en_otro_aparato_no_se_cobra() = runTest {
+        // Codex r1 #1: la anulación conserva los importes; comparar sólo el saldo la dejaba cobrar (y PAY_CASH la reabría).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            cuentaCon("100.00"),
+            Result.success(OrderDetail(id = "orden-1", status = "CANCELLED", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00"))),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("Esta cuenta se anuló en otro aparato: no se cobró.")
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal.ZERO)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_una_cuenta_que_otro_aparato_ya_cobro_no_se_cobra_otra_vez() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            cuentaCon("100.00"),
+            Result.success(OrderDetail(id = "orden-1", paymentStatus = "PAID", total = BigDecimal("100.00"), amountLeft = BigDecimal.ZERO)),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("Esta cuenta ya se cobró en otro aparato: no se cobró otra vez.")
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal.ZERO)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_un_importe_mayor_a_lo_que_falta_no_se_cobra_ni_sin_red() = runTest {
+        // Codex r1 #3: el botón pudo dibujarse con el saldo anterior ($100) cuando la pantalla ya tenía $60.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("60.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaCon("60.00")
+        val viewModel = createViewModel()
+        viewModel.onConnectivityChanged(online = false)
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("La cuenta cambió: ahora falta \$60.00. Revisa antes de cobrar.")
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_si_el_cajero_sale_de_la_cuenta_mientras_se_relee_no_se_cobra_ni_se_toca_la_otra_sesion() = runTest {
+        // Codex r1 #2: la respuesta tardía no escribe sobre la sesión que quedó activa ni cobra la cuenta que se dejó.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            if (lecturas == 2) tableSession.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2", total = BigDecimal("30.00")))
+            cuentaCon(if (lecturas == 2) "90.00" else "75.00")
+        }
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("75.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(tableSession.current()?.orderId).isEqualTo("orden-2")
+        assertThat(tableSession.current()?.total).isEqualTo(BigDecimal("30.00"))
+        assertThat(viewModel.state.value.isProcessingCash).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_si_otro_cobro_de_la_cuenta_esta_en_curso_no_cobra_y_dice_que_vuelva_a_abrirla() = runTest {
+        // Codex r4 #2: otra TPV abrió un QR por los $100; el SERVIDOR los aparta (D4) y la cuenta lee $0 sin estar cobrada.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(
+            cuentaCon("100.00"),
+            Result.success(OrderDetail(id = "orden-1", paymentStatus = "PENDING", total = BigDecimal("100.00"), amountLeft = BigDecimal.ZERO)),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo(OTRO_COBRO_EN_CURSO)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_una_cuenta_anulada_que_llega_en_una_lectura_normal_queda_en_cero() = runTest {
+        // Codex r2 #1: la recarga pendiente copiaba los $100 que el SERVIDOR conserva en la cuenta anulada y volvía a ofrecerlos.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", status = "CANCELLED", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal.ZERO)
+        assertThat(viewModel.chargeableAmount()).isEqualTo(BigDecimal.ZERO)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_un_segundo_toque_del_boton_viejo_no_cobra_aunque_sea_menor_que_el_saldo_nuevo() = runTest {
+        // Codex r2 #2: el botón quedó en $25; la pantalla ya tiene $75. Antes pasaban los $25 como abono.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaCon("75.00")
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("25.00"), restanteDeLaPantalla = BigDecimal("25.00"))
+        assertThat(viewModel.prepararCobroConTarjeta(BigDecimal("25.00"), restanteDeLaPantalla = BigDecimal("25.00"))).isNull()
+
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isEqualTo("La cuenta cambió: ahora falta \$75.00. Revisa antes de cobrar.")
+        assertThat(viewModel.state.value.isHandingOffToCard).isFalse()
+        // El botón ya repintado (mismo saldo) sí cobra.
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) } returns cobroRegistrado()
+        coEvery { repository.clearTable(any(), any(), any(), any()) } returns Result.success(Unit)
+        viewModel.payCash(BigDecimal("75.00"), restanteDeLaPantalla = BigDecimal("75.00"))
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_una_lectura_de_la_cuenta_que_se_dejo_no_escribe_en_la_sesion_nueva() = runTest {
+        // Codex r2 #3: la recarga que vuelve después de salir de la cuenta no toca la que quedó activa.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            if (lecturas == 2) tableSession.start(TableSession.Active(tableId = "mesa-2", orderId = "orden-2", total = BigDecimal("30.00")))
+            cuentaCon(if (lecturas == 2) "90.00" else "75.00")
+        }
+        val viewModel = createViewModel()
+
+        viewModel.loadCheck()
+
+        assertThat(tableSession.current()?.total).isEqualTo(BigDecimal("30.00"))
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("75.00"))
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_un_abono_propio_con_fraccion_de_centavo_no_dispara_un_falso_cambio() = runTest {
+        // Codex r1 #5: «Monto libre» acepta $10.004; la cola manda $10.00 y la pantalla queda en 89.996 (se ve $90.00).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturas++; cuentaCon(if (lecturas <= 2) "100.00" else "90.00") }
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } returns cobroRegistrado()
+        coEvery { repository.clearTable(any(), any(), any(), any()) } returns Result.success(Unit)
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("10.004"))
+        assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("89.996"))
+        viewModel.payCash(viewModel.state.value.remaining)
+
+        coVerify(exactly = 2) { repository.payCash(venueId, "orden-1", false, any(), any(), any()) }
+        assertThat(viewModel.state.value.avisoDelCobro).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_con_red_relee_la_cuenta_justo_antes_de_cobrar_y_si_no_cambio_cobra_y_dice_saldada() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        var lecturas = 0
+        var lecturasAlCobrar = -1
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturas++; cuentaCon("75.00") }
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) } coAnswers {
+            lecturasAlCobrar = lecturas
+            cobroRegistrado()
+        }
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+        val viewModel = createViewModel()
+        assertThat(lecturas).isEqualTo(1)
+
+        viewModel.payCash(BigDecimal("75.00"))
+
+        assertWithMessage("la cuenta se volvió a leer antes de cobrar").that(lecturasAlCobrar).isEqualTo(2)
+        assertThat(viewModel.state.value.cashReceipt?.isSettlingPayment).isTrue()
+        assertThat(viewModel.state.value.error).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_si_la_relectura_falla_el_efectivo_cobra_como_siempre() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returnsMany listOf(cuentaCon("75.00"), Result.failure(IOException("sin datos")))
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) } returns cobroRegistrado()
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("75.00"))
+
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) }
+        assertThat(viewModel.state.value.error).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_si_la_relectura_tarda_mas_de_3_segundos_el_efectivo_no_espera_y_cobra() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        var lecturas = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            lecturas++
+            if (lecturas == 2) kotlinx.coroutines.delay(10_000)
+            cuentaCon("75.00")
+        }
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) } returns cobroRegistrado()
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+        val viewModel = createViewModel()
+
+        viewModel.payCash(BigDecimal("75.00"))
+        testScheduler.advanceTimeBy(2_999)
+        coVerify(exactly = 0) { repository.payCash(any(), any(), any(), any(), any(), any()) }
+        testScheduler.advanceTimeBy(2)
+        testScheduler.runCurrent()
+
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun D49_sin_red_no_se_relee_la_cuenta_y_el_efectivo_cobra_como_siempre() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("75.00")))
+        var lecturas = 0
+        var lecturasAlCobrar = -1
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { lecturas++; cuentaCon("75.00") }
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("75.00"), any(), any()) } coAnswers {
+            lecturasAlCobrar = lecturas
+            Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+        }
+        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+        val viewModel = createViewModel()
+        viewModel.onConnectivityChanged(online = false)
+
+        viewModel.payCash(BigDecimal("75.00"))
+
+        assertThat(lecturasAlCobrar).isEqualTo(1)
+        assertThat(viewModel.state.value.notice).contains("Sin conexión")
+        viewModel.viewModelScope.cancel()
+    }
+
+    // endregion
+
     // region — 🧾 recibo de EFECTIVO: cierra la asimetría con TARJETA (propina ya
     // viajaba; lo nuevo es receiptUrl/autofactura + el gate de "invitar a
     // calificar SOLO al saldar la cuenta"). Ver KDoc de [CashReceiptSummary].
@@ -1174,12 +1461,17 @@ class TableCheckoutViewModelTest {
     @Test
     fun d9_un_cobro_en_EFECTIVO_exitoso_vacia_la_casilla_y_la_siguiente_parte_no_repite_la_propina() = runTest {
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns
-            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
+        // D49: el SERVIDOR simulado descuenta lo cobrado, como el real (la terminal relee la cuenta antes de cada efectivo).
+        var cobrado = BigDecimal.ZERO
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00") - cobrado))
+        }
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
-        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } returns
+        coEvery { repository.payCash(venueId, "orden-1", false, any(), any(), any()) } coAnswers {
+            cobrado += arg<BigDecimal>(3)
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
+        }
 
         viewModel.payCash(BigDecimal("100.00"))
         assertThat(viewModel.state.value.cashReceipt!!.tipAmount).isEqualTo(BigDecimal("20.00"))
@@ -1659,17 +1951,21 @@ class TableCheckoutViewModelTest {
     fun D86_r2_1_una_lectura_que_salio_antes_de_un_cobro_no_vuelve_a_ofrecer_lo_cobrado() = runTest {
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
         val lenta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var cobrado = BigDecimal.ZERO
         var lecturas = 0
         coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
             lecturas++
             when (lecturas) {
                 1 -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
                 2 -> { lenta.await(); Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00"))) }
-                else -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("60.00")))
+                // D49: el SERVIDOR simulado sólo descuenta el cobro DESPUÉS de recibirlo (la relectura antes de cobrar ve $100).
+                else -> Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00") - cobrado))
             }
         }
-        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } coAnswers {
+            cobrado += arg<BigDecimal>(3)
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = null, queued = false))
+        }
         val viewModel = createViewModel()
 
         viewModel.loadCheck() // sale con el saldo de antes del cobro y tarda
@@ -1768,18 +2064,17 @@ class TableCheckoutViewModelTest {
     @Test
     fun D86_r5_1_una_lectura_que_nace_durante_un_cobro_espera_su_turno_y_ve_el_cobro() = runTest {
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        var cobrado = BigDecimal.ZERO
         var lecturas = 0
         coEvery { repository.getOrder(venueId, "orden-1") } coAnswers {
             lecturas++
-            if (lecturas == 1) {
-                Result.success(OrderDetail(id = "orden-1", total = BigDecimal("110.00"), amountLeft = BigDecimal("110.00")))
-            } else {
-                Result.success(OrderDetail(id = "orden-1", total = BigDecimal("110.00"), amountLeft = BigDecimal("70.00")))
-            }
+            // D49: el SERVIDOR simulado descuenta el cobro sólo cuando lo recibe (la relectura antes de cobrar ve $110).
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("110.00"), amountLeft = BigDecimal("110.00") - cobrado))
         }
         val cobro = kotlinx.coroutines.CompletableDeferred<Unit>()
         coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } coAnswers {
             cobro.await()
+            cobrado += arg<BigDecimal>(3)
             Result.success(TablesRepository.PayCashOutcome(paymentId = "p1", orderNumber = null, queued = false))
         }
         val viewModel = createViewModel()
@@ -1788,10 +2083,10 @@ class TableCheckoutViewModelTest {
         viewModel.payCash(viewModel.chargeableAmount()) // espera al procesador
 
         viewModel.loadCheck() // p. ej. la relectura tras quitar un descuento: nace durante el cobro
-        assertThat(lecturas).isEqualTo(1) // espera su turno en la fila
+        assertThat(lecturas).isEqualTo(2) // la carga y la relectura antes de cobrar (D49); la nueva espera su turno en la fila
         cobro.complete(Unit)
 
-        assertThat(lecturas).isEqualTo(2)
+        assertThat(lecturas).isEqualTo(3)
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("70.00"))
     }
 
@@ -2007,7 +2302,9 @@ class TableCheckoutViewModelTest {
         coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("203.00")
         val viewModel = createViewModel()
         val relectura = CompletableDeferred<Result<OrderDetail>>()
-        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { relectura.await() }
+        // D49: la relectura antes de cobrar contesta; la de después del rechazo es la que espera.
+        var tras = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { if (++tras == 1) cuentaD19("203.00") else relectura.await() }
         coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("203.00"), any(), any()) } returns
             Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
 
@@ -2043,10 +2340,14 @@ class TableCheckoutViewModelTest {
         val viewModel = createViewModel()
         coEvery { repository.payCash(any(), any(), any(), any(), any(), any()) } returns
             Result.failure(TablesRepository.PayCashRejectedException("Order not found", "BUSINESS_RULE"))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns cuentaD19("150.00") // otra caja abonó
+        // D49 (Codex r2 #4): la relectura ANTES de cobrar todavía ve $203 (si no, D49 frena antes del rechazo y esta prueba no lo
+        // ejercita); la de DESPUÉS del rechazo trae el abono de otra caja.
+        var tras = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { if (++tras == 1) cuentaD19("203.00") else cuentaD19("150.00") }
 
         viewModel.payCash(BigDecimal("203.00"))
 
+        coVerify(exactly = 1) { repository.payCash(any(), any(), any(), any(), any(), any()) }
         assertThat(viewModel.state.value.remaining).isEqualTo(BigDecimal("150.00"))
         assertThat(viewModel.state.value.efectivoBloqueadoPor).isNull()
         assertThat(viewModel.state.value.cardPaymentEnabled).isTrue()
@@ -2059,7 +2360,9 @@ class TableCheckoutViewModelTest {
         val viewModel = createViewModel()
         viewModel.setTip(BigDecimal("20.00"))
         val relectura = CompletableDeferred<Result<OrderDetail>>()
-        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { relectura.await() }
+        // D49: la relectura antes de cobrar contesta; la de después de la duda es la que espera.
+        var tras = 0
+        coEvery { repository.getOrder(venueId, "orden-1") } coAnswers { if (++tras == 1) cuentaD19("100.00") else relectura.await() }
         coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), BigDecimal("20.00"), any()) } returns
             Result.failure(TablesRepository.PayCashSinConfirmarException())
 
@@ -2097,7 +2400,8 @@ class TableCheckoutViewModelTest {
         assertThat(s.cardPaymentEnabled).isTrue()
         assertThat(s.tipAmount).isEqualTo(BigDecimal("10.00"))
         assertThat(s.remaining).isEqualTo(BigDecimal("100.00"))
-        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") } // sólo la carga inicial
+        // La carga inicial y la relectura antes de cobrar (D49); ninguna después del fallo.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
     }
 
     @Test

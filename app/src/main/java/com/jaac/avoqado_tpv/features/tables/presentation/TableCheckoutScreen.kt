@@ -244,7 +244,12 @@ fun TableCheckoutScreen(
         }
     }
 
-    val chargeableAmount = viewModel.chargeableAmount()
+    // D49 (Codex r2 #2, r3 #1; rediseño por la regla de parada): el toque lleva la FOTO de la pantalla que vio el cajero. El importe y
+    // el saldo salen del MISMO estado pintado y la lambda los usa tal cual: leer `state.remaining` al tocar (el delegado ya trae el
+    // estado nuevo antes de repintar) emparejaba el importe viejo con el saldo nuevo y dejaba pasar el botón viejo.
+    val pantalla = state
+    val chargeableAmount = viewModel.chargeableAmount(pantalla)
+    val restanteDelBoton = pantalla.remaining
 
     TableCheckoutScreenContent(
         modifier = modifier,
@@ -264,10 +269,10 @@ fun TableCheckoutScreen(
         onEqualPartsPayingForChanged = viewModel::setEqualPartsPayingFor,
         onToggleItem = viewModel::toggleItemSelected,
         onTipChanged = viewModel::setTip,
-        onPayCash = { viewModel.payCash(chargeableAmount) },
+        onPayCash = { viewModel.payCash(chargeableAmount, restanteDeLaPantalla = restanteDelBoton) },
         onPayCard = {
             // D9: null = ya hay un cobro en curso (efectivo o una tarjeta abriéndose); el toque no hace nada.
-            viewModel.prepararCobroConTarjeta(chargeableAmount)?.let { request ->
+            viewModel.prepararCobroConTarjeta(chargeableAmount, restanteDeLaPantalla = restanteDelBoton)?.let { request ->
                 onProceedToCardPayment(request, viewModel::cobroConTarjetaEntregado, viewModel::cobroConTarjetaNoSalio)
             }
         },

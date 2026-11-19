@@ -155,6 +155,27 @@ class QuarantineViewModelTest {
         assertThat(resolutionHintFor("TABLE_OWNED_BY_OTHER", SyncIntentTypes.CLEAR_TABLE)).contains("Otro mesero")
     }
 
+    @Test
+    fun D49_la_guia_del_Liberar_mesa_rechazado_dice_que_sola_solo_si_no_tiene_otra_cuenta_abierta() {
+        val hint = resolutionHintFor(errorCode = "BUSINESS_RULE", type = SyncIntentTypes.CLEAR_TABLE)
+        assertThat(hint).contains("no tiene otra cuenta abierta")
+        // Codex r1 #7: sin mandar a cobrar «lo que falta»: la mesa pudo quedar con la cuenta del siguiente cliente.
+        assertThat(hint).doesNotContain("cobra")
+    }
+
+    @Test
+    fun D49_el_motivo_en_ingles_del_Liberar_mesa_con_saldo_sale_en_espanol_y_lo_demas_pasa_igual() {
+        assertThat(describirMotivo(SyncIntentTypes.CLEAR_TABLE, "Cannot clear table with unpaid order ORD-1042"))
+            .isEqualTo("La mesa sigue ocupada: la cuenta ORD-1042 todavía debe.")
+        assertThat(describirMotivo(SyncIntentTypes.CLEAR_TABLE, "Cannot clear table with unpaid order"))
+            .isEqualTo("La mesa sigue ocupada: la cuenta todavía debe.")
+        // Otro tipo, u otro texto: tal cual.
+        assertThat(describirMotivo(SyncIntentTypes.ADD_ITEMS, "Cannot clear table with unpaid order ORD-1"))
+            .isEqualTo("Cannot clear table with unpaid order ORD-1")
+        assertThat(describirMotivo(SyncIntentTypes.CLEAR_TABLE, "Otro motivo")).isEqualTo("Otro motivo")
+        assertThat(describirMotivo(SyncIntentTypes.CLEAR_TABLE, null)).isNull()
+    }
+
     // endregion
 
     // region — load/dismiss: literal del plan + no-op seguro

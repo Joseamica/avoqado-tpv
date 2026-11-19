@@ -31,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -475,6 +476,8 @@ class TableCheckoutViewModel @Inject constructor(
         }
         val marcaDeEntrega = marcaDeSaldo
         val confirmaElSaldo = alFrenteDesdeLaEntrega
+        // D49 (Codex r2 #3): una lectura de una sesión que el cajero ya dejó no escribe en la que quedó activa.
+        val epocaDeLaLectura = tableSession.epoch
         viewModelScope.launch {
             // D9 (encargo 49276c): tras una tarjeta, la lectura que sale con la pantalla ya de vuelta dice «Revisando…» desde
             // que se pide, aunque espere turno en la fila detrás de otra lectura (D86); no «No se pudo confirmar».
@@ -521,8 +524,13 @@ class TableCheckoutViewModel @Inject constructor(
                         if (_state.value.isProcessingCash) releerAlTerminarElCobro = true else loadCheck()
                         return@fold
                     }
+                    if (tableSession.epoch != epocaDeLaLectura) {
+                        _state.update { it.copy(isLoading = false) }
+                        return@fold
+                    }
                     tableSession.updateVersion(detail.version)
-                    val freshRemaining = detail.amountLeft ?: detail.total
+                    // D49 (Codex r2 #1): una cuenta anulada (o ya cobrada) no debe nada aunque el SERVIDOR conserve sus importes.
+                    val freshRemaining = saldoDeLaCuenta(detail)
                     tableSession.updateTotal(freshRemaining)
                     _state.update {
                         it.copy(
@@ -707,6 +715,64 @@ class TableCheckoutViewModel @Inject constructor(
         SALDO_NO_RECUPERADO
     }
 
+    /**
+     * D49 (18-nov): el último filtro antes de encolar un efectivo de una cuenta del SERVIDOR. `null` = se cobra.
+     * - Nunca más de lo que falta (Codex r1 #3): el botón pudo dibujarse con el saldo anterior. Con o sin red.
+     * - Con red, la cuenta se vuelve a leer: otro aparato pudo agregar una ronda, cobrar una parte, cobrarla toda o anularla después
+     *   de la última lectura. Cobrar con el saldo viejo dejaba el recibo en «Cuenta saldada» con la cuenta todavía debiendo. Si
+     *   cambió, se pinta lo nuevo y no se cobra. Se compara en centavos, como sube a la cola (Codex r1 #5).
+     * - Si la lectura falla o no llega en [RELECTURA_ANTES_DE_COBRAR_MS], se cobra con lo último que se vio: el efectivo nunca espera
+     *   a la red. Si el cajero salió de la cuenta mientras se leía, no se cobra ni se toca la sesión nueva (Codex r1 #2).
+     * Sólo se llama dentro de la [fila] y sin nada propio sin subir de esta cuenta (lo que el SERVIDOR todavía no cuenta).
+     */
+    private suspend fun cuentaCambioAntesDeCobrar(
+        venueId: String,
+        session: TableSession.Active,
+        amount: BigDecimal,
+        restanteMostrado: BigDecimal,
+        epocaAlTocar: Long,
+    ): String? {
+        if (session.isProvisional) return null
+        if (amount.enCentavos() > restanteMostrado.enCentavos()) return cuentaCambio(restanteMostrado)
+        val s = _state.value
+        if (!s.isOnline || !s.letreroConInternet) return null
+        val leida = withTimeoutOrNull(RELECTURA_ANTES_DE_COBRAR_MS) { repository.getOrder(venueId, session.orderId) }
+        if (tableSession.epoch != epocaAlTocar || tableSession.current()?.orderId != session.orderId) return SALISTE_DE_LA_CUENTA
+        val detalle = leida?.getOrNull() ?: return null
+        val anulada = detalle.anulada()
+        val cobrada = !anulada && detalle.cobrada()
+        // Sin `amountLeft` el total no dice cuánto queda tras un abono (Codex r1): se cobra como siempre.
+        if (!anulada && !cobrada && detalle.amountLeft == null) return null
+        val saldo = saldoDeLaCuenta(detalle)
+        if (!anulada && !cobrada && saldo.enCentavos() == restanteMostrado.enCentavos() && amount.enCentavos() <= saldo.enCentavos()) {
+            return null
+        }
+        // Es la lectura más nueva: una que viajaba antes ya no manda (D86).
+        lecturasIniciadas++
+        tableSession.updateVersion(detalle.version)
+        tableSession.updateTotal(saldo)
+        _state.update { it.copy(check = detalle, remaining = saldo) }
+        return when {
+            anulada -> CUENTA_ANULADA_EN_OTRO_APARATO
+            cobrada -> CUENTA_COBRADA_EN_OTRO_APARATO
+            // Codex r4 #2: el SERVIDOR aparta lo que otro cobro todavía en curso está cobrando (un QR de cripto, D4): «falta $0.00»
+            // confundía, y si ese cobro se cancela la pantalla no se entera sola.
+            saldo.signum() == 0 -> OTRO_COBRO_EN_CURSO
+            else -> cuentaCambio(saldo)
+        }
+    }
+
+    private fun cuentaCambio(saldo: BigDecimal) = "La cuenta cambió: ahora falta ${moneyEnTexto(saldo)}. Revisa antes de cobrar."
+
+    /** D49 (Codex r2 #2): `true` (y el aviso) si el saldo con que se dibujó el botón ya no es el de la cuenta. `null` = sin dato. */
+    private fun botonViejo(restanteDeLaPantalla: BigDecimal?): Boolean {
+        val vigente = _state.value.remaining
+        if (restanteDeLaPantalla == null || restanteDeLaPantalla.enCentavos() == vigente.enCentavos()) return false
+        // Codex r3 #2: no reemplaza un aviso que el cajero todavía no ha visto («Esta cuenta se anuló» no pasa a «falta $0.00»).
+        _state.update { it.copy(avisoDelCobro = it.avisoDelCobro ?: cuentaCambio(vigente)) }
+        return true
+    }
+
     /** [SaldoDeMesaSinRed.pendienteDeSubir] sin lanzar: si la cola no se puede leer, cuenta como «no se sabe» (en gris). */
     private suspend fun pendienteDeSubirSeguro(venueId: String, session: TableSession.Active): String? = try {
         saldoDeMesaSinRed.pendienteDeSubir(venueId, session.orderId, listOfNotNull(session.localOrderId))
@@ -770,8 +836,7 @@ class TableCheckoutViewModel @Inject constructor(
      * [TableCheckoutState.remaining] (nunca se puede cobrar más de lo que se
      * debe, sin importar lo que el mesero haya tecleado).
      */
-    fun chargeableAmount(): BigDecimal {
-        val s = _state.value
+    fun chargeableAmount(s: TableCheckoutState = _state.value): BigDecimal {
         val remaining = s.remaining
         if (remaining <= BigDecimal.ZERO) return BigDecimal.ZERO
         return when (s.splitType) {
@@ -819,7 +884,9 @@ class TableCheckoutViewModel @Inject constructor(
      * misma propina no sale en dos pagos (Codex r1 #2). La navegación avisa después cómo terminó:
      * [cobroConTarjetaEntregado] o [cobroConTarjetaNoSalio].
      */
-    fun prepararCobroConTarjeta(amount: BigDecimal): CardChargeRequest? {
+    fun prepararCobroConTarjeta(amount: BigDecimal, restanteDeLaPantalla: BigDecimal? = null): CardChargeRequest? {
+        // D49 (Codex r2 #2): lo mismo que el efectivo: no sale una tarjeta con el importe de un saldo anterior.
+        if (botonViejo(restanteDeLaPantalla)) return null
         val s = _state.value
         // D90: se revalida al tocar, no sólo al pintar el botón (un toque que llegó en el cuadro anterior a la gris).
         // D9 (encargo 49276c): tras entregar una tarjeta, no sale otra con el saldo de antes de releer.
@@ -868,7 +935,7 @@ class TableCheckoutViewModel @Inject constructor(
      * mecanismo write-ahead + replay inmediato. Funciona offline a propósito
      * (regla dura de la Task 8: "cash *can* go offline; card cannot").
      */
-    fun payCash(amount: BigDecimal) {
+    fun payCash(amount: BigDecimal, restanteDeLaPantalla: BigDecimal? = null) {
         val session = tableSession.current()
         if (session == null) {
             _state.update { it.copy(errorMessage = "No hay mesa activa") }
@@ -892,6 +959,9 @@ class TableCheckoutViewModel @Inject constructor(
         if (_state.value.isProcessingCash || _state.value.isHandingOffToCard) return
         // D9 (encargo 49276c): tras entregar una tarjeta, el saldo de aquí puede ser el de antes: no se cobra hasta releerlo.
         if (_state.value.saldoPorConfirmar) return
+        // D49 (Codex r2 #2): el botón se dibujó con el saldo de SU pantalla; si una lectura ya lo cambió, no se cobra con el importe
+        // viejo, sea mayor o menor (un segundo toque antes de repintar cobraba $25 sobre una cuenta que ya debía $75).
+        if (botonViejo(restanteDeLaPantalla)) return
 
         // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
         // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se
@@ -901,6 +971,8 @@ class TableCheckoutViewModel @Inject constructor(
         val remainingBeforeThisPayment = _state.value.remaining
         val tipAtChargeTime = _state.value.tipAmount
         val willSettle = amount >= remainingBeforeThisPayment
+        // D49 (Codex r1 #2): la sesión que se cobra; si el cajero sale mientras se relee la cuenta, no se cobra.
+        val epocaAlTocar = tableSession.epoch
 
         _state.update { it.copy(isProcessingCash = true, errorMessage = null, avisoDelCobro = null) }
         cobrosIniciados++
@@ -913,6 +985,15 @@ class TableCheckoutViewModel @Inject constructor(
             if (motivo != null) {
                 _state.update { it.copy(isProcessingCash = false, errorMessage = motivo) }
                 alTerminarElCobro()
+                return@launch
+            }
+            // D49: otro aparato pudo cambiar la cuenta después de la última lectura. El aviso va en `avisoDelCobro` (Codex r1 #4): una
+            // relectura que viajaba borra `errorMessage` antes de que se vea.
+            val cambio = cuentaCambioAntesDeCobrar(vId, session, amount, remainingBeforeThisPayment, epocaAlTocar)
+            if (cambio != null) {
+                _state.update { it.copy(isProcessingCash = false, avisoDelCobro = cambio) }
+                // Codex r2 #3: si el cajero salió de la cuenta, lo pospuesto no corre sobre la sesión que quedó activa.
+                if (cambio == SALISTE_DE_LA_CUENTA) releerAlTerminarElCobro = false else alTerminarElCobro()
                 return@launch
             }
             repository.payCash(
@@ -1421,6 +1502,28 @@ internal const val RELECTURA_MS = 5_000L
 
 /** D86: tope de relecturas automáticas seguidas (2 min); después, «Reintentar» o la vuelta de la red. */
 internal const val MAX_RELECTURAS = 24
+
+/** D49: lo más que el efectivo espera la relectura de la cuenta antes de cobrar con lo último que vio. */
+internal const val RELECTURA_ANTES_DE_COBRAR_MS = 3_000L
+
+internal const val CUENTA_ANULADA_EN_OTRO_APARATO = "Esta cuenta se anuló en otro aparato: no se cobró."
+internal const val CUENTA_COBRADA_EN_OTRO_APARATO = "Esta cuenta ya se cobró en otro aparato: no se cobró otra vez."
+internal const val SALISTE_DE_LA_CUENTA = "Saliste de la cuenta antes de cobrar: no se cobró."
+internal const val OTRO_COBRO_EN_CURSO =
+    "Otro cobro de esta cuenta está en curso (por ejemplo, un QR): no se cobró. Cuando termine, vuelve a abrir la cuenta."
+
+/** D49: anulada en el SERVIDOR (conserva sus importes). */
+internal fun OrderDetail.anulada(): Boolean = status == "CANCELLED" || status == "DELETED"
+
+/** D49: ya cobrada por completo. */
+internal fun OrderDetail.cobrada(): Boolean = paymentStatus == "PAID" || status == "COMPLETED"
+
+/** D49 (Codex r2 #1): lo que de verdad falta: nada si está anulada o cobrada, aunque el SERVIDOR conserve sus importes. */
+internal fun saldoDeLaCuenta(detail: OrderDetail): BigDecimal =
+    if (detail.anulada() || detail.cobrada()) BigDecimal.ZERO else detail.amountLeft ?: detail.total
+
+/** D49: pesos a centavos con el mismo redondeo con que el efectivo sube a la cola (`TablesRepository.toCents`). */
+private fun BigDecimal.enCentavos(): Long = movePointRight(2).setScale(0, RoundingMode.HALF_UP).toLong()
 
 /** Pesos con dos decimales y signo, para los avisos (`$45.00`). */
 private fun moneyEnTexto(monto: BigDecimal): String = "$" + monto.setScale(2, RoundingMode.HALF_UP).toPlainString()

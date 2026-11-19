@@ -158,7 +158,7 @@ class QuarantineViewModel @Inject constructor(
         type = type,
         label = labelFor(type),
         resolutionHint = resolutionHintFor(errorCode, type),
-        message = message,
+        message = describirMotivo(type, message),
         createdAt = createdAt,
     )
 }
@@ -202,6 +202,19 @@ fun labelFor(type: String): String = when (type) {
  * `UNKNOWN_INTENT_TYPE`. `VERSION_CONFLICT`/`INTENT_IN_PROGRESS` NUNCA
  * llegan aquí — son `RETRY`, no `REJECTED` (ver KDoc de la clase).
  */
+/** Prefijo con que el SERVIDOR rechaza un «Liberar mesa» con saldo (`table.tpv.service.ts`); ANDROID lo traduce igual. */
+private const val RECHAZO_MESA_CON_SALDO = "Cannot clear table with unpaid order"
+
+/**
+ * D49: el motivo del SERVIDOR, legible. El «Liberar mesa» rechazado por saldo llega en inglés y sin código propio (`BUSINESS_RULE`):
+ * se traduce por tipo y texto, como `describeMessage` de ANDROID. Lo demás pasa igual.
+ */
+fun describirMotivo(type: String, message: String?): String? {
+    if (type != SyncIntentTypes.CLEAR_TABLE || message?.startsWith(RECHAZO_MESA_CON_SALDO) != true) return message
+    val cuenta = message.removePrefix(RECHAZO_MESA_CON_SALDO).trim()
+    return "La mesa sigue ocupada: la cuenta ${if (cuenta.isEmpty()) "" else "$cuenta "}todavía debe."
+}
+
 fun resolutionHintFor(errorCode: String?, type: String): String = when (errorCode) {
     "TABLE_OWNED_BY_OTHER" -> "Otro mesero ya tenía esta mesa abierta. Revisa con él antes de repetir la acción."
     // D6: la terminal ya reintenta sola con un número nuevo; si llega aquí, otra instalación con el mismo serial sigue adelante.
@@ -219,7 +232,9 @@ fun resolutionHintFor(errorCode: String?, type: String): String = when (errorCod
     } else if (type == SyncIntentTypes.CLEAR_TABLE) {
         // nab0e38e: el «Liberar mesa» sin red suele llegar antes que el cobro con tarjeta de su cuenta; al registrarse ese cobro,
         // el SERVIDOR libera la mesa solo (`releaseTableIfSettled`).
-        "La cuenta todavía tenía saldo cuando llegó. Si ya se cobró, la mesa se libera sola: márcala como resuelta."
+        // D49: el SERVIDOR no libera la mesa si tiene OTRA cuenta abierta. Sin «cobra lo que falta» (Codex r1 #7): la mesa pudo quedar
+        // con la cuenta del siguiente cliente.
+        "La cuenta todavía tenía saldo cuando llegó. Si ya se cobró y la mesa no tiene otra cuenta abierta, se libera sola: márcala como resuelta."
     } else {
         "El servidor rechazó esta acción. Revísala y repítela a mano si sigue aplicando."
     }

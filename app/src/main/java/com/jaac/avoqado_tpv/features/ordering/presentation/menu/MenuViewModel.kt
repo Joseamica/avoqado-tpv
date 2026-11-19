@@ -2,10 +2,15 @@ package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
 import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
 import com.jaac.avoqado_tpv.features.ordering.data.repository.DescuentoSinConfirmarException
-import com.jaac.avoqado_tpv.features.ordering.data.repository.ID_DE_FILA_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_APLICAR_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_CUENTA_SIN_SUBIR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_QUITAR_SIN_CONFIRMAR
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_DESCUENTO_YA_APLICADO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ENVIO_YA_HECHO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ESPERA_EL_COBRO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ESPERA_EL_DESCUENTO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_NO_SE_PUDO_APLICAR
+import com.jaac.avoqado_tpv.features.ordering.domain.AcuseDeDescuento
 import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
@@ -42,6 +47,7 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -183,10 +189,16 @@ class MenuViewModel @Inject constructor(
     private val _appliedDiscounts = MutableStateFlow<List<OrderDiscount>>(emptyList())
     val appliedDiscounts: StateFlow<List<OrderDiscount>> = _appliedDiscounts.asStateFlow()
 
-    // D16 (hz:e82938e1:D16): turnos de la lista, sólo en el hilo principal. Una lectura del SERVIDOR toma el suyo al EMPEZAR; el
-    // acuse de aplicar o quitar, al LLEGAR. Ver «La lista de descuentos de la cuenta sale del SERVIDOR», abajo.
-    private var turnosDeDescuentos = 0L
-    private var ultimoTurnoDeDescuentos = 0L
+    // D16 v4 (hz:e82938e1:D16): UNA fila de operaciones de descuento por cuenta. Ver «La fila de descuentos de la cuenta», abajo.
+    private val filaDeDescuentos = Mutex()
+    private val _descuentoEnCurso = MutableStateFlow(false)
+    /** Un cambio de descuento va del toque a su lectura final: los botones de descuento van en gris y «Pagar» espera. */
+    val descuentoEnCurso: StateFlow<Boolean> = _descuentoEnCurso.asStateFlow()
+    private var generacionDeLaCuenta = 0L
+    private var lecturasDeLaLista = 0L
+    private var relecturaEnEspera = false
+    private var trabajoDeRelecturas: Job? = null
+    private var envioSinConfirmar: EnvioSinConfirmar? = null
 
     // Loading state for discounts
     private val _isLoadingDiscounts = MutableStateFlow(false)
@@ -484,7 +496,7 @@ class MenuViewModel @Inject constructor(
                 )
                 orderSyncCoordinator.syncPendingOrders(venueId)
                 // D16 (Codex r1 #6): sin nada que subir no llega ningún `Synced`; la lista de la cuenta abierta se relee igual.
-                cuentaAbiertaDelServidor()?.let { releerDescuentos(it) }
+                cuentaAbiertaDelServidor()?.let { pedirRelectura(it) }
             }
         }
     }
@@ -503,7 +515,6 @@ class MenuViewModel @Inject constructor(
             try {
                 val venueId = deviceInfoManager.getVenueId() ?: return@launch
 
-                val turno = tomarTurnoDeDescuentos()
                 val backendOrder = orderRepository.getOrder(
                     venueId = venueId,
                     orderId = orderId
@@ -522,9 +533,8 @@ class MenuViewModel @Inject constructor(
                 val currentState = _state.value
                 if (currentState is MenuState.Success) {
                     _state.value = currentState.copy(order = mergedOrder)
-                    // D16: las filas salen de la RESPUESTA. `mergedOrder` viene de Room, que no las guarda: antes vaciaba la lista
-                    // (cortesía sin confirmar) o la dejaba vieja (abono confirmado).
-                    adoptarDescuentosLeidos(turno, orderId, backendOrder.discounts)
+                    // D16 v4: la lista la escribe sólo una lectura de la fila (`mergedOrder` viene de Room, que no guarda las filas).
+                    pedirRelectura(orderId)
 
                     // 🔍 DEBUG: Detailed order state after payment
                     Timber.i("✅ [MenuViewModel] Order refreshed after payment")
@@ -575,9 +585,12 @@ class MenuViewModel @Inject constructor(
         if (currentState !is MenuState.Success) return
 
         // ⚡ OPTIMIZATION: Only fetch if order has discounts
+        // D16 v4 (Codex r4 #1): sólo el descuento de la cabecera, como antes de que la lista viniera del SERVIDOR. Con la lista llena
+        // por la lectura de apertura, este refresco (que reemplaza la cuenta en Room) se habría corrido más seguido. La lista se relee
+        // aparte, en la fila, tras cada `Synced` de esta cuenta.
         val appliedDiscountsCount = _appliedDiscounts.value.size
         val orderDiscountAmount = currentState.order.discountAmount
-        val hasDiscounts = appliedDiscountsCount > 0 || orderDiscountAmount > BigDecimal.ZERO
+        val hasDiscounts = orderDiscountAmount > BigDecimal.ZERO
 
         Timber.d("🔍 [Sync] Checking discounts | _appliedDiscounts.size=$appliedDiscountsCount | order.discountAmount=$orderDiscountAmount | hasDiscounts=$hasDiscounts")
 
@@ -593,7 +606,6 @@ class MenuViewModel @Inject constructor(
                 Timber.d("🔄 [Sync] Refreshing order to get recalculated discounts | orderId=$orderId")
 
                 // Fetch fresh order from backend (includes recalculated discounts)
-                val turno = tomarTurnoDeDescuentos()
                 val backendOrder = orderRepository.getOrder(
                     venueId = venueId,
                     orderId = orderId
@@ -608,9 +620,6 @@ class MenuViewModel @Inject constructor(
                 // Load merged order (preserves local-only fields like sentToKitchenAt)
                 val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
 
-                // D16: la respuesta manda, también vacía (`getOrder` de la TPV siempre trae `orderDiscounts`: vacía = sin filas, aunque
-                // la cabecera conserve un importe histórico). Una lectura más vieja que un acuse o que otra lectura no entra.
-                adoptarDescuentosLeidos(turno, orderId, backendOrder.discounts)
 
                 // Update state
                 val latestState = _state.value
@@ -670,7 +679,6 @@ class MenuViewModel @Inject constructor(
             val venueId = deviceInfoManager.getVenueId()
                 ?: return Result.failure(Exception("Venue not configured"))
 
-            val turno = tomarTurnoDeDescuentos()
             val backendOrder = orderRepository.getOrder(venueId, syncedOrderId).getOrElse { error ->
                 Timber.e(error, "❌ [Payment Prep] Failed to fetch order")
                 return Result.failure(error)
@@ -685,8 +693,6 @@ class MenuViewModel @Inject constructor(
             Timber.d("💳 [Payment Prep] Merged customers | backend=${backendOrder.orderCustomers.size} | snapshot=${customersSnapshot.size} | final=${mergedOrder.orderCustomers.size}")
 
             // Step 4: Update UI state with correct amounts
-            // D16: la lista también sale de esta respuesta (con su turno; vacía cuenta).
-            adoptarDescuentosLeidos(turno, syncedOrderId, backendOrder.discounts)
             val latestState = _state.value
             if (latestState is MenuState.Success) {
                 _state.value = latestState.copy(order = mergedOrder)
@@ -716,6 +722,11 @@ class MenuViewModel @Inject constructor(
      * @param onError Called with error message if preparation fails
      */
     fun onPaymentRequested(onReady: (Order) -> Unit, onError: (String) -> Unit) {
+        // D16 v4 (Codex r4 #4): con un descuento en curso, el cobro saldría con el saldo de antes. Se espera, con aviso.
+        if (_descuentoEnCurso.value) {
+            avisar(TEXTO_ESPERA_EL_DESCUENTO)
+            return
+        }
         // 🔒 CANDADO DE REENTRADA — bug real (Mindform, 17-18 jul 2026).
         //
         // El cajero picó `Pagar` varias veces porque el cobro se sentía congelado
@@ -962,13 +973,15 @@ class MenuViewModel @Inject constructor(
                         // Backend recalculates percentage discounts when items change
                         // Only fetches if order has discounts (optimization)
                         refreshOrderAfterSync(event.orderId)
+                        // D16 v4 (Codex r3 #4): la lista se relee SIEMPRE, aunque el atajo de arriba se salte su lectura.
+                        pedirRelectura(event.orderId)
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Error -> {
                         Timber.e("❌ [Sync] Sync error | order=${event.orderId} | error=${event.message}")
                         _isSyncing.value = false
                         // D16 (Codex r1 #5): tras un rechazo definitivo el coordinador relee la cuenta y la guarda en Room; sus filas no
                         // llegan a la pantalla por ahí, así que se releen.
-                        if (esLaCuentaAbierta(event.orderId)) releerDescuentos(event.orderId)
+                        if (esLaCuentaAbierta(event.orderId)) pedirRelectura(event.orderId)
 
                         // ✅ P0 FIX: Don't replace Success state with Error (user loses order!)
                         // Instead, preserve the order and show error via syncError field
@@ -1322,8 +1335,8 @@ class MenuViewModel @Inject constructor(
                 _state.value = MenuState.Loading
                 // D16: la lista de ESTA cuenta empieza de cero; una lectura de la anterior que llegue tarde ya no entra.
                 reiniciarDescuentos()
-                var turnoDeLectura = 0L
-                var filasDelServidor: List<OrderDiscount>? = null
+                val generacion = generacionDeLaCuenta
+                var leidaEnLaFila = false
 
                 val venueId = deviceInfoManager.getVenueId()
                 val waiterId = secureStorage.getStaffId()
@@ -1393,17 +1406,14 @@ class MenuViewModel @Inject constructor(
                         Timber.i("✅ Table assigned | orderId=${assignResult.orderId} | orderNumber=${assignResult.orderNumber} | isNew=${assignResult.isNewOrder}")
 
                         // Fetch the created order to get full order object
-                        turnoDeLectura = tomarTurnoDeDescuentos()
-                        val backendOrder = orderRepository.getOrder(
-                            venueId = venueId,
-                            orderId = assignResult.orderId
-                        ).getOrElse { error ->
+                        // D16 v4: la lectura de apertura va en la fila y es la que escribe la lista (Room no guarda las filas).
+                        val backendOrder = leerAlAbrir(venueId, assignResult.orderId, generacion).getOrElse { error ->
                             Timber.e(error, "❌ Failed to load order after assignment")
                             _state.value = MenuState.Error("Error cargando orden: ${error.message}")
                             return@launch
                         }
 
-                        filasDelServidor = backendOrder.discounts  // D16: una mesa ya abierta trae sus filas; Room las perdería
+                        leidaEnLaFila = true
 
                         // ✅ FIX: Cache to local DB to prevent FOREIGN KEY errors when adding items
                         // (Same fix as quick orders - ensures DraftOrder exists in Room before adding items)
@@ -1447,17 +1457,14 @@ class MenuViewModel @Inject constructor(
                             // STEP 2: Not in local DB - fallback to backend (300ms+)
                             Timber.d("⚠️ [Fallback] Order not in local DB, fetching from backend: $orderId")
 
-                            turnoDeLectura = tomarTurnoDeDescuentos()
-                            val backendOrder = orderRepository.getOrder(
-                                venueId = venueId,
-                                orderId = orderId
-                            ).getOrElse { error ->
+                            // D16 v4: la lectura de apertura va en la fila y es la que escribe la lista (Room no guarda las filas).
+                            val backendOrder = leerAlAbrir(venueId, orderId, generacion).getOrElse { error ->
                                 Timber.e(error, "❌ Failed to load order from backend")
                                 _state.value = MenuState.Error("Error cargando orden: ${error.message}")
                                 return@launch
                             }
 
-                            filasDelServidor = backendOrder.discounts  // D16: Room no guarda las filas; se pintan las de la respuesta
+                            leidaEnLaFila = true
 
                             // Cache to local DB to prevent FOREIGN KEY errors when adding items
                             orderSyncCoordinator.cacheBackendOrder(backendOrder)
@@ -1479,12 +1486,7 @@ class MenuViewModel @Inject constructor(
 
                 // 🎟️ D16: las filas salen del SERVIDOR, nunca de Room (que no las guarda). En frío, las de la respuesta; en caliente,
                 // se pinta Room y se releen (con reintentos: un corte breve puede no dar aviso de reconexión).
-                val filas = filasDelServidor
-                if (filas != null) {
-                    adoptarDescuentosLeidos(turnoDeLectura, order.id, filas)
-                } else if (!esIdSoloLocal(order.id)) {
-                    releerDescuentos(order.id, reintentar = true)
-                }
+                if (!leidaEnLaFila && !esIdSoloLocal(order.id)) pedirRelectura(order.id)
 
                 // 👥 Load order customers (multi-customer support)
                 loadOrderCustomers(order.id)
@@ -2055,7 +2057,7 @@ class MenuViewModel @Inject constructor(
                 ).fold(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)  // 🔄 CRITICAL: Comp adds discount!
-                        releerDescuentos(order.id)  // D16: las filas sólo las escribe una lectura de `getOrder`
+                        pedirRelectura(order.id)  // D16: las filas sólo las escribe una lectura de la fila
                         Timber.d("✅ Items comped successfully")
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar("Cortesía aplicada exitosamente", isError = false))
                     },
@@ -2121,7 +2123,6 @@ class MenuViewModel @Inject constructor(
                 // ⭐ FIX: Fetch order DIRECTLY from backend to get real item IDs (not local cache)
                 // Local DB still has local_item_ IDs even after sync
                 Timber.d("🔄 [VoidItems] Fetching order from backend to get real item IDs...")
-                val turnoDeLectura = tomarTurnoDeDescuentos()
                 val freshOrder = orderRepository.getOrder(venueId, syncedOrderId).getOrElse { error ->
                     Timber.e(error, "❌ Failed to fetch order from backend")
                     _uiEvents.emit(MenuUiEvent.ShowSnackbar(
@@ -2131,8 +2132,8 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
                 Timber.d("🔄 [VoidItems] Backend order loaded | items=${freshOrder.items.size}")
-                // D16 (Codex r2 #6): es una lectura buena del SERVIDOR; sus filas entran aunque anular no siga.
-                adoptarDescuentosLeidos(turnoDeLectura, syncedOrderId, freshOrder.discounts)
+                // D16 (Codex r2 #6): la lista se relee en la fila aunque anular no siga (esta lectura no la escribe).
+                pedirRelectura(syncedOrderId)
 
                 // ⭐ Guard: If order has no items, it was already voided
                 if (freshOrder.items.isEmpty()) {
@@ -2213,7 +2214,7 @@ class MenuViewModel @Inject constructor(
                         }
 
                         Timber.i("✅ [VoidItems] Items voided successfully | voidedAll=$isVoidingAllItems")
-                        if (!isVoidingAllItems) releerDescuentos(syncedOrderId)  // D16: el SERVIDOR re-reparte los % al anular
+                        if (!isVoidingAllItems) pedirRelectura(syncedOrderId)  // D16: el SERVIDOR re-reparte los % al anular
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar(
                             message = message,
                             isError = false
@@ -2292,7 +2293,7 @@ class MenuViewModel @Inject constructor(
                 ).fold(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)
-                        releerDescuentos(order.id)  // D16: las filas sólo las escribe una lectura de `getOrder`
+                        pedirRelectura(order.id)  // D16: las filas sólo las escribe una lectura de la fila
                         Timber.d("✅ Discount applied successfully")
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar("Descuento aplicado exitosamente", isError = false))
                     },
@@ -2361,64 +2362,28 @@ class MenuViewModel @Inject constructor(
         itemIds: List<String>? = null,
         reason: String? = null
     ) {
-        viewModelScope.launch {
-            val currentState = _state.value
-            if (currentState !is MenuState.Success) {
-                Timber.w("⚠️ Cannot apply discount - no order loaded")
-                return@launch
-            }
-
-            var order = currentState.order
-            val venueId = deviceInfoManager.getVenueId()
-
-            if (venueId == null) {
-                Timber.e("❌ Cannot apply discount: venueId is null")
-                return@launch
-            }
-
-            _isLoadingDiscounts.value = true
-            try {
-                // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
-                // Discount needs accurate totals from backend to calculate correctly
-                Timber.d("🔄 [Discount] Forcing sync before applying predefined discount...")
-                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
-                // Update order ID if it changed (local_ → server ID)
-                if (syncedOrderId != order.id) {
-                    order = order.copy(id = syncedOrderId)
-                    Timber.i("✅ [Discount] Order synced | original → $syncedOrderId")
+        cambiarDescuentos { _ ->
+            val (venueId, orderId) = cuentaParaEnviar() ?: return@cambiarDescuentos null
+            val renglones = renglonesDeLaPantalla()
+            val firma = "catalogo:$discountId"
+            val llave = llaveParaEnviar(orderId, firma)
+            Timber.d("🎟️ Applying predefined discount: $discountId")
+            val resultado = discountRepository.applyPredefinedDiscount(
+                venueId = venueId,
+                orderId = orderId,
+                discountId = discountId,
+                idempotencyKey = llave
+            )
+            val sinConfirmar = resultado.exceptionOrNull() is DescuentoSinConfirmarException
+            anotarEnvio(orderId, firma, llave, sinConfirmar)
+            resultado.fold(
+                onSuccess = { acuse -> cabeceraConElAcuse(acuse); if (acuse.repetida) avisar(TEXTO_ENVIO_YA_HECHO, isError = false) },
+                onFailure = { error ->
+                    Timber.e(error, "❌ Error applying predefined discount")
+                    avisar(textoDelFalloAlAplicar(error))
                 }
-
-                // D16 (Codex r2 #4): sin el id del SERVIDOR la cuenta no existe allá; no se manda.
-                if (esIdSoloLocal(order.id)) {
-                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(TEXTO_CUENTA_SIN_SUBIR, isError = true))
-                    return@launch
-                }
-
-                Timber.d("🎟️ Applying predefined discount: $discountId")
-
-                discountRepository.applyPredefinedDiscount(
-                    venueId = venueId,
-                    orderId = order.id,
-                    discountId = discountId
-                ).fold(
-                    onSuccess = { appliedDiscount ->
-                        // D16: la fila entra con su id real; los totales de la pantalla se recalculan con ella
-                        val paraTotales = adoptarFilaAplicada(order.id, appliedDiscount)
-                        val orderWithDiscounts = order.copy(discounts = paraTotales)
-                        val updatedOrder = recalculateOrder(orderWithDiscounts)
-                        _state.value = MenuState.Success(updatedOrder)
-                        Timber.i("✅ Predefined discount applied: ${appliedDiscount.name} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
-                    },
-                    onFailure = { error ->
-                        // D16: antes sólo iba al log; la caja no sabía si se aplicó.
-                        Timber.e(error, "❌ Error applying predefined discount")
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(textoDelFalloAlAplicar(error), isError = true))
-                    }
-                )
-                releerDescuentos(order.id)
-            } finally {
-                _isLoadingDiscounts.value = false
-            }
+            )
+            CambioDeDescuento(orderId, sinConfirmar, renglones)
         }
     }
 
@@ -2436,127 +2401,84 @@ class MenuViewModel @Inject constructor(
         reason: String? = null,
         itemIds: List<String>? = null
     ) {
-        viewModelScope.launch {
-            val currentState = _state.value
-            if (currentState !is MenuState.Success) {
-                Timber.w("⚠️ Cannot apply manual discount - no order loaded")
-                return@launch
+        var regalaLaCuenta = false
+        cambiarDescuentos(
+            alFallar = { if (regalaLaCuenta) "No se pudo aplicar la cortesía" else "No se pudo aplicar el descuento" }
+        ) { _ ->
+            val (venueId, orderId) = cuentaParaEnviar() ?: return@cambiarDescuentos null
+            val order = (_state.value as? MenuState.Success)?.order ?: return@cambiarDescuentos null
+            val renglones = renglonesDeLaPantalla()
+            Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
+
+            // PIN de gerente por adelantado sólo con 100 % o un fijo que cubre lo que queda (subtotal − descuentos, no `total`).
+            // El valor se compara TAL COMO SE ESCRIBIÓ, sin redondear ni predecir redondeos: si el servidor redondea a regalar la
+            // cuenta (99.999 % de $100, $1.009 de $1.01), contesta 403 `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca
+            // pide un PIN que el servidor no pediría ($1.005 de $1.01: el servidor deja $0.01).
+            val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
+            regalaLaCuenta = queda.signum() > 0 && ((type == DiscountType.PERCENTAGE && value >= 100) ||
+                (type == DiscountType.FIXED && java.math.BigDecimal(value.toString()) >= queda))
+            val motivoPin = "Para dar esta cortesía"
+            var token: String? = null
+            if (regalaLaCuenta) {
+                val auth = autorizacionDeGerente.paraCortesia(venueId, motivoPin)
+                if (auth is Autorizacion.Cancelada) return@cambiarDescuentos null
+                if (auth is Autorizacion.Negada) {
+                    avisar(auth.texto)
+                    return@cambiarDescuentos null
+                }
+                token = (auth as? Autorizacion.ConPin)?.token
             }
-
-            var order = currentState.order
-            val venueId = deviceInfoManager.getVenueId()
-
-            if (venueId == null) {
-                Timber.e("❌ Cannot apply manual discount: venueId is null")
-                return@launch
+            // D21: la llave se fija al tocar y viaja igual en el reenvío con el PIN forzado.
+            val firma = "manual:${type.name}:$value"
+            val llave = llaveParaEnviar(orderId, firma)
+            // Un fallo con token no es un permiso que falta: el POST pudo llegar (o OkHttp reenviarlo tras gastarse el token) y el
+            // descuento pudo aplicarse. Se trata como "no confirmada" (Codex D16 r4 #7: la llave se conserva).
+            var noConfirmada = false
+            suspend fun enviar(t: String?): Result<AcuseDeDescuento> {
+                val r = discountRepository.applyManualDiscount(
+                    venueId = venueId,
+                    orderId = orderId,
+                    type = type,
+                    value = value,
+                    reason = reason,
+                    overrideToken = t,
+                    idempotencyKey = llave
+                )
+                // Con token, cualquier fallo (403, IOException, timeout, 5xx) es dudoso. Sin token, sin respuesta o un 5xx también.
+                if (r.isFailure && (t != null || r.exceptionOrNull() is DescuentoSinConfirmarException)) noConfirmada = true
+                return r
             }
-
-            _isLoadingDiscounts.value = true
-            var regalaLaCuenta = false
-            try {
-                // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
-                // Discount needs accurate totals from backend to calculate correctly
-                Timber.d("🔄 [Discount] Forcing sync before applying manual discount...")
-                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
-                // Update order ID if it changed (local_ → server ID)
-                if (syncedOrderId != order.id) {
-                    order = order.copy(id = syncedOrderId)
-                    Timber.i("✅ [Discount] Order synced | original → $syncedOrderId")
+            var resultado = enviar(token)
+            val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
+            if (token == null && e403?.required == "orders:comp") {
+                val forzada = autorizacionDeGerente.paraCortesia(venueId, motivoPin, forzar = true)
+                if (forzada is Autorizacion.Cancelada) return@cambiarDescuentos null
+                if (forzada is Autorizacion.Negada) {
+                    avisar(forzada.texto)
+                    return@cambiarDescuentos null
                 }
-
-                // D16 (Codex r2 #4): sin el id del SERVIDOR la cuenta no existe allá; no se manda.
-                if (esIdSoloLocal(order.id)) {
-                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(TEXTO_CUENTA_SIN_SUBIR, isError = true))
-                    return@launch
-                }
-
-                Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
-
-                // PIN de gerente por adelantado sólo con 100 % o un fijo que cubre lo que queda (subtotal − descuentos, no `total`).
-                // El valor se compara TAL COMO SE ESCRIBIÓ, sin redondear ni predecir redondeos: si el servidor redondea a regalar la
-                // cuenta (99.999 % de $100, $1.009 de $1.01), contesta 403 `orders:comp` y abajo se pide el PIN forzado. Así la TPV nunca
-                // pide un PIN que el servidor no pediría ($1.005 de $1.01: el servidor deja $0.01).
-                val queda = (order.subtotal - order.discountAmount).setScale(2, java.math.RoundingMode.HALF_UP)
-                regalaLaCuenta = queda.signum() > 0 && ((type == DiscountType.PERCENTAGE && value >= 100) ||
-                    (type == DiscountType.FIXED && java.math.BigDecimal(value.toString()) >= queda))
-                val motivoPin = "Para dar esta cortesía"
-                var token: String? = null
-                if (regalaLaCuenta) {
-                    val auth = autorizacionDeGerente.paraCortesia(venueId, motivoPin)
-                    if (auth is Autorizacion.Cancelada) return@launch
-                    if (auth is Autorizacion.Negada) {
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(auth.texto, isError = true))
-                        return@launch
-                    }
-                    token = (auth as? Autorizacion.ConPin)?.token
-                }
-                // Un fallo con token no es un permiso que falta: el POST pudo llegar (o OkHttp reenviarlo tras gastarse el token) y el
-                // descuento pudo aplicarse. Se trata como "no confirmada".
-                var noConfirmada = false
-                suspend fun enviar(t: String?): Result<OrderDiscount> {
-                    val r = discountRepository.applyManualDiscount(
-                        venueId = venueId,
-                        orderId = order.id,
-                        type = type,
-                        value = value,
-                        reason = reason,
-                        overrideToken = t
-                    )
-                    // Con token, cualquier fallo (403, IOException, timeout, 5xx) es dudoso: /discounts/manual no tiene llave de idempotencia.
-                    // D16 (Codex r1 #7): sin token, sin respuesta o un 5xx también: el SERVIDOR pudo guardarla.
-                    if (r.isFailure && (t != null || r.exceptionOrNull() is DescuentoSinConfirmarException)) noConfirmada = true
-                    return r
-                }
-                var resultado = enviar(token)
-                val e403 = resultado.exceptionOrNull() as? PermisoRequeridoException
-                if (token == null && e403?.required == "orders:comp") {
-                    val forzada = autorizacionDeGerente.paraCortesia(venueId, motivoPin, forzar = true)
-                    if (forzada is Autorizacion.Cancelada) return@launch
-                    if (forzada is Autorizacion.Negada) {
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(forzada.texto, isError = true))
-                        return@launch
-                    }
-                    token = (forzada as? Autorizacion.ConPin)?.token
-                    resultado = enviar(token)
-                }
-                if (noConfirmada) {
-                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(
-                        if (token != null) "No pudimos confirmar la cortesía. Revisa la cuenta" else TEXTO_APLICAR_SIN_CONFIRMAR,
-                        isError = true
-                    ))
-                    refreshOrderFromBackend(order.id)
-                    return@launch
-                }
+                token = (forzada as? Autorizacion.ConPin)?.token
+                resultado = enviar(token)
+            }
+            anotarEnvio(orderId, firma, llave, noConfirmada)
+            if (noConfirmada) {
+                avisar(if (token != null) "No pudimos confirmar la cortesía. Revisa la cuenta" else TEXTO_APLICAR_SIN_CONFIRMAR)
+            } else {
                 resultado.fold(
-                    onSuccess = { appliedDiscount ->
-                        // D16: la fila entra con su id real (antes `manual_…`, que el SERVIDOR no reconoce al quitarla)
-                        val paraTotales = adoptarFilaAplicada(order.id, appliedDiscount)
-                        // 🔄 Recalculate totals with new discount
-                        val orderWithDiscounts = order.copy(discounts = paraTotales)
-                        val updatedOrder = recalculateOrder(orderWithDiscounts)
-                        _state.value = MenuState.Success(updatedOrder)
-                        Timber.i("✅ Manual discount applied: ${appliedDiscount.name} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Descuento aplicado", isError = false))
+                    onSuccess = { acuse ->
+                        cabeceraConElAcuse(acuse)
+                        Timber.i("✅ Manual discount applied: ${acuse.fila.name} | repetida=${acuse.repetida}")
+                        avisar(if (acuse.repetida) TEXTO_ENVIO_YA_HECHO else "Descuento aplicado", isError = false)
                     },
                     onFailure = { error ->
                         // Surface the backend error to the user — silent Timber-only logging
                         // hid 403/permission/validation failures and made the bug invisible.
                         Timber.e(error, "❌ Error applying manual discount")
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
-                            if (error is PermisoRequeridoException) error.message ?: "Sin permiso"
-                            else "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
-                            isError = true
-                        ))
+                        avisar(textoDelFalloAlAplicar(error))
                     }
                 )
-                releerDescuentos(order.id)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
-                    if (regalaLaCuenta) "No se pudo aplicar la cortesía" else "No se pudo aplicar el descuento", isError = true))
-            } finally {
-                _isLoadingDiscounts.value = false
             }
+            CambioDeDescuento(orderId, noConfirmada, renglones)
         }
     }
 
@@ -2566,52 +2488,29 @@ class MenuViewModel @Inject constructor(
      * @param orderDiscountId ID of the applied discount to remove
      */
     fun removeDiscount(orderDiscountId: String) {
-        viewModelScope.launch {
-            val currentState = _state.value
-            if (currentState !is MenuState.Success) {
-                Timber.w("⚠️ Cannot remove discount - no order loaded")
-                return@launch
-            }
-
-            val order = currentState.order
+        cambiarDescuentos { _ ->
+            val order = (_state.value as? MenuState.Success)?.order ?: return@cambiarDescuentos null
+            val venueId = deviceInfoManager.getVenueId() ?: return@cambiarDescuentos null
             // D16 (Codex r2 #4): si la cuenta acaba de cambiar su `local_…` por el id del SERVIDOR, se quita sobre ése.
             val orderId = orderSyncCoordinator.resolveOrderId(order.id)
-            val venueId = deviceInfoManager.getVenueId()
-
-            if (venueId == null) {
-                Timber.e("❌ Cannot remove discount: venueId is null")
-                return@launch
-            }
-
-            _isLoadingDiscounts.value = true
-            try {
-                Timber.d("🗑️ Removing discount: $orderDiscountId")
-
-                discountRepository.removeDiscount(
-                    venueId = venueId,
-                    orderId = orderId,
-                    orderDiscountId = orderDiscountId,
-                    expectedVersion = order.version
-                ).fold(
-                    onSuccess = {
-                        // D16: el acuse quita ESA fila (por su id) y gana a toda lectura empezada antes
-                        adoptarCambioDeDescuento(orderId) { filas -> filas.filter { it.id != orderDiscountId } }
-                        // 🔄 Recalculate totals without the removed discount
-                        val orderWithDiscounts = order.copy(discounts = _appliedDiscounts.value.filter { it.id != orderDiscountId })
-                        val updatedOrder = recalculateOrder(orderWithDiscounts)
-                        _state.value = MenuState.Success(updatedOrder)
-                        Timber.i("✅ Discount removed | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
-                    },
-                    onFailure = { error ->
-                        // D16: antes sólo iba al log y la fila seguía como si nada. Ahora la razón (o «sin conexión») y se relee.
-                        Timber.e(error, "❌ Error removing discount")
-                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(textoDelFalloAlQuitar(error), isError = true))
-                    }
-                )
-                releerDescuentos(orderId)
-            } finally {
-                _isLoadingDiscounts.value = false
-            }
+            val renglones = renglonesDeLaPantalla()
+            val fila = _appliedDiscounts.value.firstOrNull { it.id == orderDiscountId }
+            Timber.d("🗑️ Removing discount: $orderDiscountId")
+            val resultado = discountRepository.removeDiscount(
+                venueId = venueId,
+                orderId = orderId,
+                orderDiscountId = orderDiscountId,
+                expectedVersion = order.version
+            )
+            resultado.fold(
+                onSuccess = { totalNuevo -> cabeceraAlQuitar(fila?.amount, totalNuevo) },
+                onFailure = { error ->
+                    // D16: antes sólo iba al log y la fila seguía como si nada. Ahora la razón (o «sin conexión») y se relee.
+                    Timber.e(error, "❌ Error removing discount")
+                    avisar(textoDelFalloAlQuitar(error))
+                }
+            )
+            CambioDeDescuento(orderId, resultado.exceptionOrNull() is DescuentoSinConfirmarException, renglones)
         }
     }
 
@@ -2673,90 +2572,36 @@ class MenuViewModel @Inject constructor(
      * @param code Coupon code to apply (should be validated first)
      */
     fun applyCoupon(code: String) {
-        viewModelScope.launch {
-            val currentState = _state.value
-            if (currentState !is MenuState.Success) {
-                Timber.w("⚠️ Cannot apply coupon - no order loaded")
-                return@launch
-            }
-
-            var order = currentState.order
-            val venueId = deviceInfoManager.getVenueId()
-
-            if (venueId == null) {
-                Timber.e("❌ Cannot apply coupon: venueId is null")
-                return@launch
-            }
-
+        cambiarDescuentos { _ ->
             // Show loading state for spinner in button (Toast/Square UX)
+            // ⭐ FIX: Get validated coupon's type and value for local recalculation
+            val validatedCoupon = (_couponValidationState.value as? CouponValidationState.Valid)?.coupon
             _couponValidationState.value = CouponValidationState.Loading
-            _isLoadingDiscounts.value = true
-            try {
-                // D16 (Codex r1 #4): como el catálogo y la cortesía, el cupón sincroniza la cuenta antes; con `local_…` daba 400.
-                val syncedOrderId = try {
-                    orderSyncCoordinator.syncOrderImmediately(order.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Coupon] Sync before coupon failed")
-                    order.id
-                }
-                if (syncedOrderId != order.id) order = order.copy(id = syncedOrderId)
-                if (esIdSoloLocal(order.id)) {
-                    _couponValidationState.value = CouponValidationState.Invalid(TEXTO_CUENTA_SIN_SUBIR)
-                    return@launch
-                }
-
-                Timber.d("🎟️ Applying coupon: $code")
-
-                // ⭐ FIX: Get validated coupon's type and value for local recalculation
-                // Backend applyCoupon returns OrderDiscount with value=0, but we need the
-                // percentage value to recalculate discounts locally when items change.
-                val validatedCoupon = (_couponValidationState.value as? CouponValidationState.Valid)?.coupon
-
-                discountRepository.applyCoupon(
-                    venueId = venueId,
-                    orderId = order.id,
-                    code = code
-                ).fold(
-                    onSuccess = { appliedDiscount ->
-                        // ⭐ FIX: Copy type and value from validated coupon for local recalculation
-                        // This enables recalculateOrder() to correctly recalculate percentage discounts
-                        // when items are added/removed BEFORE backend sync.
-                        //
-                        // ⚠️ OPTIMISTIC UPDATE: This provides immediate UI feedback. Backend may apply
-                        // different rules (max discount cap, eligibility conditions, item exclusions).
-                        // refreshOrderAfterSync() fetches the authoritative amounts after sync completes.
-                        val discountWithValue = if (validatedCoupon != null) {
-                            appliedDiscount.copy(
-                                type = validatedCoupon.type,
-                                value = validatedCoupon.value
-                            )
-                        } else {
-                            appliedDiscount
-                        }
-
-                        // D16: la fila entra con su id real (antes el id del CUPÓN, que no es el de la fila)
-                        val paraTotales = adoptarFilaAplicada(order.id, discountWithValue)
-                        // 🔄 Recalculate totals with new discount
-                        val orderWithDiscounts = order.copy(discounts = paraTotales)
-                        val updatedOrder = recalculateOrder(orderWithDiscounts)
-                        _state.value = MenuState.Success(updatedOrder)
-                        // Reset validation state after successful application
-                        _couponValidationState.value = CouponValidationState.Idle
-                        Timber.i("✅ Coupon applied: ${discountWithValue.name} | type=${discountWithValue.type} | value=${discountWithValue.value} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
-                    },
-                    onFailure = { error ->
-                        // Map backend error to user-friendly Spanish message
-                        val userMessage = mapCouponErrorToSpanish(error.message)
-                        _couponValidationState.value = CouponValidationState.Invalid(userMessage)
-                        Timber.e(error, "❌ Error applying coupon: ${error.message} → $userMessage")
-                    }
-                )
-                releerDescuentos(order.id)
-            } finally {
-                _isLoadingDiscounts.value = false
+            val cuenta = cuentaParaEnviar(avisarSiNoSube = false)
+            if (cuenta == null) {
+                _couponValidationState.value = CouponValidationState.Invalid(TEXTO_CUENTA_SIN_SUBIR)
+                return@cambiarDescuentos null
             }
+            val (venueId, orderId) = cuenta
+            val renglones = renglonesDeLaPantalla()
+            Timber.d("🎟️ Applying coupon: $code")
+            val resultado = discountRepository.applyCoupon(venueId = venueId, orderId = orderId, code = code)
+            resultado.fold(
+                onSuccess = { acuse ->
+                    cabeceraConElAcuse(acuse)
+                    // Reset validation state after successful application
+                    _couponValidationState.value = CouponValidationState.Idle
+                    Timber.i("✅ Coupon applied: ${acuse.fila.name} | type=${validatedCoupon?.type} | value=${validatedCoupon?.value}")
+                },
+                onFailure = { error ->
+                    // D16 v4 (Codex r3 #5): sin respuesta o un 5xx no es «cupón inválido»: pudo quedar aplicado.
+                    val userMessage = if (error is DescuentoSinConfirmarException) TEXTO_APLICAR_SIN_CONFIRMAR
+                    else mapCouponErrorToSpanish(error.message)
+                    _couponValidationState.value = CouponValidationState.Invalid(userMessage)
+                    Timber.e(error, "❌ Error applying coupon: ${error.message} → $userMessage")
+                }
+            )
+            CambioDeDescuento(orderId, resultado.exceptionOrNull() is DescuentoSinConfirmarException, renglones)
         }
     }
 
@@ -3378,7 +3223,12 @@ class MenuViewModel @Inject constructor(
      *
      * @param onComplete Callback with synced order ID (may be different from local ID)
      */
-    fun syncBeforeNavigate(onComplete: (String) -> Unit) {
+    fun syncBeforeNavigate(haciaUnCobro: Boolean = false, onComplete: (String) -> Unit) {
+        // D16 v4 (Codex r4 #4): «Dividir» también es un cobro: con un descuento en curso saldría con el saldo de antes.
+        if (haciaUnCobro && _descuentoEnCurso.value) {
+            avisar(TEXTO_ESPERA_EL_DESCUENTO)
+            return
+        }
         viewModelScope.launch {
             val currentState = _state.value
             if (currentState !is MenuState.Success) {
@@ -3434,27 +3284,46 @@ class MenuViewModel @Inject constructor(
     }
 
     // ============================================================================
-    // D16 (hz:e82938e1:D16) · La lista de descuentos de la cuenta sale del SERVIDOR
+    // D16 v4 (hz:e82938e1:D16) · La fila de descuentos de la cuenta
     // ============================================================================
     //
-    // **TPV SOLA → ÓRDENES** (`ActionsTab` → «Descuentos Aplicados»). Room no guarda las filas de descuento (sólo el importe), así
-    // que la lista sólo la escriben:
-    //  - una LECTURA de `getOrder` (`adoptarDescuentosLeidos`): reemplaza la lista con la de la respuesta, también vacía. Toma su
-    //    turno al EMPEZAR y entra sólo si nada más nuevo entró desde entonces (otra lectura empezada después, o un acuse);
-    //  - un ACUSE de aplicar o quitar (`adoptarCambioDeDescuento`): agrega o quita UNA fila por su id real. Toma su turno al LLEGAR
-    //    y siempre entra: una lectura que empezó después de mandarlo puede no ver la fila todavía (Codex r2 #1), y una que empezó
-    //    antes queda vieja. Agregar reemplaza la fila del mismo id: nunca dos iguales.
-    // Todo es de la cuenta abierta (`esLaCuentaAbierta`). Sin red, una lectura fallida no toca nada ni avisa.
+    // **TPV SOLA → ÓRDENES** («Acciones» → «Descuentos Aplicados»). Room no guarda las filas de descuento (sólo el importe). Los cambios
+    // de descuento de una cuenta (catálogo, manual, cortesía, cupón, quitar) y las relecturas de su lista entran a UNA fila
+    // (`filaDeDescuentos`, `Mutex` justo: en orden de llegada), uno por uno. Cada cambio termina releyendo la cuenta en el SERVIDOR, y
+    // SÓLO una lectura hecha dentro de la fila escribe `_appliedDiscounts`: los acuses, Room, las copias locales y las demás lecturas
+    // (refresco tras cobrar o sincronizar, «Pagar», anular) no la tocan; piden una relectura.
+    //  - Mientras un cambio va del toque a su lectura final, `descuentoEnCurso` pone en gris los botones de descuento; otro toque, y
+    //    «Pagar» o «Dividir», esperan con aviso. Al cancelar el PIN, salir de la pantalla o fallar, la fila se suelta (`finally`).
+    //  - Lectura fallida (sin red): no se reintenta dentro de la fila; se relee a los 5, 15 y 45 s y al volver la red. Tras un cambio
+    //    sin confirmar se relee a los 5 y 15 s aunque la primera lectura haya contestado (el cambio pudo terminar después, Codex r4 #2).
+    //  - D21: cada envío de aplicar lleva una llave. Si quedó sin confirmar, volver a dar EL MISMO descuento en esta cuenta manda la
+    //    misma llave y el SERVIDOR contesta el envío ya hecho (`repetida`) en vez de crear otra fila. Se olvida al recibir respuesta.
     // Promesa y mapa de entradas: `docs/audit/2026-11-18-d16-tpv-ordenes-descuentos/promesa.md` (workspace).
+
+    /** Lo que deja un cambio de descuento para su lectura final. */
+    private data class CambioDeDescuento(
+        val orderId: String,
+        val sinConfirmar: Boolean,
+        /** Los renglones de la pantalla al empezar: si cambian, la cabecera del SERVIDOR no se copia (renglones sin subir). */
+        val renglones: Set<Pair<String, Int>>,
+    )
+
+    private data class EnvioSinConfirmar(val orderId: String, val firma: String, val llave: String)
 
     private fun esIdSoloLocal(id: String) =
         id.startsWith("local_") || id.startsWith("order_table") || id.startsWith("order_quick")
 
-    private fun tomarTurnoDeDescuentos(): Long = ++turnosDeDescuentos
+    private fun avisar(texto: String, isError: Boolean = true) {
+        viewModelScope.launch { _uiEvents.emit(MenuUiEvent.ShowSnackbar(texto, isError = isError)) }
+    }
 
-    /** Cuenta nueva en pantalla: lista vacía y toda lectura anterior queda vieja. */
+    /** Cuenta nueva en pantalla: lista vacía; lo que quede en vuelo de la anterior ya no escribe. */
     private fun reiniciarDescuentos() {
-        ultimoTurnoDeDescuentos = tomarTurnoDeDescuentos()
+        generacionDeLaCuenta++
+        relecturaEnEspera = false
+        trabajoDeRelecturas?.cancel()
+        trabajoDeRelecturas = null
+        envioSinConfirmar = null
         _appliedDiscounts.value = emptyList()
     }
 
@@ -3469,79 +3338,212 @@ class MenuViewModel @Inject constructor(
             ?.let { orderSyncCoordinator.resolveOrderId(it) }
             ?.takeUnless { esIdSoloLocal(it) }
 
-    private fun adoptarDescuentosLeidos(turno: Long, orderId: String, filas: List<OrderDiscount>): Boolean {
-        if (turno <= ultimoTurnoDeDescuentos) {
-            Timber.d("⏭️ [Descuentos] Lectura vieja descartada | turno=$turno | último=$ultimoTurnoDeDescuentos")
-            return false
-        }
-        if (!esLaCuentaAbierta(orderId)) return false
-        ultimoTurnoDeDescuentos = turno
-        _appliedDiscounts.value = filas
-        Timber.d("🔄 [Descuentos] Lista del SERVIDOR | orderId=$orderId | filas=${filas.size}")
-        return true
-    }
-
-    private fun adoptarCambioDeDescuento(orderId: String, cambio: (List<OrderDiscount>) -> List<OrderDiscount>) {
-        if (!esLaCuentaAbierta(orderId)) return
-        ultimoTurnoDeDescuentos = tomarTurnoDeDescuentos()
-        _appliedDiscounts.value = cambio(_appliedDiscounts.value)
-    }
+    private fun renglonesDeLaPantalla(): Set<Pair<String, Int>> =
+        (_state.value as? MenuState.Success)?.order?.items?.map { it.id to it.quantity }?.toSet() ?: emptySet()
 
     /**
-     * Acuse de aplicar. Con el id real, la fila entra (reemplaza la del mismo id). Sin él (SERVIDOR anterior a D16) no se agrega:
-     * llega con la relectura, nunca con un id que el SERVIDOR no reconoce. Devuelve la lista con la que se recalculan los totales.
+     * Un cambio de descuento, uno a la vez y en la fila. Del toque a la lectura final queda `descuentoEnCurso`. Si ya hay otro en curso
+     * o se está preparando el cobro, avisa y no manda nada. [cambio] devuelve null si no mandó nada (sin lectura).
      */
-    private fun adoptarFilaAplicada(orderId: String, fila: OrderDiscount): List<OrderDiscount> {
-        if (fila.id == ID_DE_FILA_SIN_CONFIRMAR) {
-            adoptarCambioDeDescuento(orderId) { it }
-            return _appliedDiscounts.value + fila
+    private fun cambiarDescuentos(
+        alFallar: () -> String = { "No se pudo aplicar el descuento" },
+        cambio: suspend (generacion: Long) -> CambioDeDescuento?,
+    ) {
+        if (_descuentoEnCurso.value) {
+            Timber.w("⏭️ [Descuentos] Otro cambio sigue en curso: este toque no se manda")
+            avisar(TEXTO_ESPERA_EL_DESCUENTO)
+            return
         }
-        adoptarCambioDeDescuento(orderId) { filas -> filas.filter { it.id != fila.id } + fila }
-        return _appliedDiscounts.value.filter { it.id != fila.id } + fila
-    }
-
-    /**
-     * Relee SÓLO la lista de la cuenta (no escribe Room ni cambia la cabecera: un `cacheBackendOrder` podía borrar renglones que
-     * siguen en cola, Codex r2 #7). Sin red no hace nada ni avisa; con `reintentar`, vuelve a intentar unas veces, porque un corte
-     * breve puede no dar aviso de reconexión (Codex r2 #5).
-     */
-    private fun releerDescuentos(orderId: String, reintentar: Boolean = false) {
-        val id = orderSyncCoordinator.resolveOrderId(orderId)
-        if (esIdSoloLocal(id)) return
+        if (_isPreparingPayment.value) {
+            avisar(TEXTO_ESPERA_EL_COBRO)
+            return
+        }
+        _descuentoEnCurso.value = true
+        _isLoadingDiscounts.value = true
+        val generacion = generacionDeLaCuenta
         viewModelScope.launch {
-            val venueId = deviceInfoManager.getVenueId() ?: return@launch
-            for (espera in if (reintentar) ESPERAS_DE_RELECTURA_MS else longArrayOf(0L)) {
-                if (espera > 0) delay(espera)
-                if (!esLaCuentaAbierta(id)) return@launch
-                val turno = tomarTurnoDeDescuentos()
-                // Una excepción aquí tumbaría la app (nadie la atrapa en `viewModelScope`): se trata como «sin respuesta».
-                val leida = try {
-                    orderRepository.getOrder(venueId, id).getOrNull()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Descuentos] Relectura falló | orderId=$id")
-                    null
+            try {
+                filaDeDescuentos.withLock {
+                    val hecho = cambio(generacion) ?: return@withLock
+                    val leida = leerLaListaEnLaFila(hecho.orderId, generacion)
+                    if (leida != null) cabeceraDelServidor(leida, hecho.renglones)
+                    if (leida == null) programarRelecturas(hecho.orderId, generacion, aunqueContesten = false)
+                    else if (hecho.sinConfirmar) programarRelecturas(hecho.orderId, generacion, aunqueContesten = true)
                 }
-                if (leida != null) {
-                    adoptarDescuentosLeidos(turno, id, leida.discounts)
-                    return@launch
-                }
-                if (ultimoTurnoDeDescuentos > turno) return@launch  // otra lectura o un acuse más nuevo ya entró
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Descuentos] El cambio falló")
+                avisar(alFallar())
+            } finally {
+                _descuentoEnCurso.value = false
+                _isLoadingDiscounts.value = false
             }
         }
     }
 
-    private fun textoDelFalloAlAplicar(error: Throwable): String = when (error) {
-        is DescuentoSinConfirmarException, is java.io.IOException -> TEXTO_APLICAR_SIN_CONFIRMAR
-        is PermisoRequeridoException -> error.message ?: "Sin permiso"
-        else -> error.message?.takeIf { it.isNotBlank() } ?: "No se pudo aplicar el descuento"
+    /** Sincroniza la cuenta y devuelve (venueId, id del SERVIDOR); null si la cuenta todavía es local (no se manda nada). */
+    private suspend fun cuentaParaEnviar(avisarSiNoSube: Boolean = true): Pair<String, String>? {
+        val order = (_state.value as? MenuState.Success)?.order ?: return null
+        val venueId = deviceInfoManager.getVenueId() ?: return null
+        // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce): the discount needs accurate totals from backend.
+        val orderId = try {
+            orderSyncCoordinator.syncOrderImmediately(order.id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Descuentos] No se pudo sincronizar antes del descuento")
+            order.id
+        }
+        // D16 (Codex r2 #4): sin el id del SERVIDOR la cuenta no existe allá; no se manda.
+        if (esIdSoloLocal(orderId)) {
+            if (avisarSiNoSube) avisar(TEXTO_CUENTA_SIN_SUBIR)
+            return null
+        }
+        return venueId to orderId
+    }
+
+    /** D21: la llave del envío. La misma si el envío anterior del MISMO descuento en esta cuenta quedó sin confirmar. */
+    private fun llaveParaEnviar(orderId: String, firma: String): String {
+        val pendiente = envioSinConfirmar
+        return if (pendiente != null && pendiente.orderId == orderId && pendiente.firma == firma) pendiente.llave
+        else java.util.UUID.randomUUID().toString()
+    }
+
+    private fun anotarEnvio(orderId: String, firma: String, llave: String, sinConfirmar: Boolean) {
+        if (sinConfirmar) envioSinConfirmar = EnvioSinConfirmar(orderId, firma, llave)
+        else if (envioSinConfirmar?.firma == firma && envioSinConfirmar?.orderId == orderId) envioSinConfirmar = null
+    }
+
+    /** La lectura de apertura (en frío o mesa): va en la fila y escribe la lista de la cuenta que se está abriendo. */
+    private suspend fun leerAlAbrir(venueId: String, orderId: String, generacion: Long): Result<Order> =
+        filaDeDescuentos.withLock {
+            val r = orderRepository.getOrder(venueId = venueId, orderId = orderId)
+            r.getOrNull()?.let { leida ->
+                if (generacion == generacionDeLaCuenta) {
+                    _appliedDiscounts.value = leida.discounts
+                    lecturasDeLaLista++
+                }
+            }
+            r
+        }
+
+    /**
+     * Lee la cuenta en el SERVIDOR y escribe la lista (también vacía: `getOrder` siempre trae `orderDiscounts`). Sólo se llama CON la
+     * fila tomada. Sin red devuelve null y no toca nada ni avisa. Nunca escribe Room (Codex r3 #1).
+     */
+    private suspend fun leerLaListaEnLaFila(orderId: String, generacion: Long): Order? {
+        val venueId = deviceInfoManager.getVenueId() ?: return null
+        val leida = try {
+            orderRepository.getOrder(venueId, orderId).getOrNull()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Una excepción aquí tumbaría la app (nadie la atrapa en `viewModelScope`): se trata como «sin respuesta».
+            Timber.w(e, "⚠️ [Descuentos] Lectura falló | orderId=$orderId")
+            null
+        } ?: return null
+        if (generacion != generacionDeLaCuenta || !esLaCuentaAbierta(orderId)) return null
+        _appliedDiscounts.value = leida.discounts
+        lecturasDeLaLista++
+        Timber.d("🔄 [Descuentos] Lista del SERVIDOR | orderId=$orderId | filas=${leida.discounts.size}")
+        return leida
+    }
+
+    /** Pide una relectura de la lista en la fila (se agrupa con otra que ya espera su turno). Sin red, reintenta sola. */
+    private fun pedirRelectura(orderId: String) {
+        val id = orderSyncCoordinator.resolveOrderId(orderId)
+        if (esIdSoloLocal(id) || relecturaEnEspera) return
+        relecturaEnEspera = true
+        val generacion = generacionDeLaCuenta
+        viewModelScope.launch {
+            val leida = filaDeDescuentos.withLock {
+                relecturaEnEspera = false
+                leerLaListaEnLaFila(id, generacion)
+            }
+            if (leida == null && generacion == generacionDeLaCuenta) programarRelecturas(id, generacion, aunqueContesten = false)
+        }
+    }
+
+    /**
+     * Relecturas a los 5, 15 y 45 s (un corte breve puede no dar aviso de reconexión, Codex r2 #5). Normalmente se detienen en cuanto
+     * una lectura escribe la lista; con [aunqueContesten] (tras un cambio sin confirmar) se hacen las de 5 y 15 s de todos modos.
+     */
+    private fun programarRelecturas(orderId: String, generacion: Long, aunqueContesten: Boolean) {
+        trabajoDeRelecturas?.cancel()
+        val lecturasAntes = lecturasDeLaLista
+        trabajoDeRelecturas = viewModelScope.launch {
+            val esperas = if (aunqueContesten) ESPERAS_TRAS_SIN_CONFIRMAR_MS else ESPERAS_DE_RELECTURA_MS
+            for (espera in esperas) {
+                delay(espera)
+                if (generacion != generacionDeLaCuenta) return@launch
+                if (!aunqueContesten && lecturasDeLaLista > lecturasAntes) return@launch  // otra lectura ya escribió
+                val leida = filaDeDescuentos.withLock { leerLaListaEnLaFila(orderId, generacion) }
+                if (leida != null && !aunqueContesten) return@launch
+            }
+        }
+    }
+
+    /** Tras la lectura final: el total del SERVIDOR, sólo si los renglones de la pantalla son los mismos que leyó (nada sin subir). */
+    private fun cabeceraDelServidor(leida: Order, renglonesAlEmpezar: Set<Pair<String, Int>>) {
+        val actual = (_state.value as? MenuState.Success)?.order ?: return
+        val renglonesDelServidor = leida.items.map { it.id to it.quantity }.toSet()
+        if (renglonesDeLaPantalla() != renglonesAlEmpezar || renglonesDelServidor != renglonesAlEmpezar) return
+        _state.value = MenuState.Success(
+            actual.copy(
+                discountAmount = leida.discountAmount,
+                total = leida.total,
+                remainingBalance = leida.remainingBalance,
+                paidAmount = leida.paidAmount,
+            )
+        )
+    }
+
+    /** Si la lectura final falla: el total que dio el SERVIDOR en el acuse; un reenvío (`repetida`) no vuelve a sumar su importe. */
+    private fun cabeceraConElAcuse(acuse: AcuseDeDescuento) {
+        val actual = (_state.value as? MenuState.Success)?.order ?: return
+        val monto = if (acuse.repetida) BigDecimal.ZERO else acuse.fila.amount
+        val total = acuse.totalDeLaCuenta ?: (actual.total - monto)
+        _state.value = MenuState.Success(
+            actual.copy(
+                discountAmount = actual.discountAmount + monto,
+                total = total,
+                remainingBalance = (total - actual.paidAmount).max(BigDecimal.ZERO),
+            )
+        )
+    }
+
+    private fun cabeceraAlQuitar(montoQuitado: BigDecimal?, totalNuevo: BigDecimal?) {
+        val actual = (_state.value as? MenuState.Success)?.order ?: return
+        val monto = montoQuitado ?: BigDecimal.ZERO
+        val total = totalNuevo ?: (actual.total + monto)
+        _state.value = MenuState.Success(
+            actual.copy(
+                discountAmount = (actual.discountAmount - monto).max(BigDecimal.ZERO),
+                total = total,
+                remainingBalance = (total - actual.paidAmount).max(BigDecimal.ZERO),
+            )
+        )
+    }
+
+    private fun textoDelFalloAlAplicar(error: Throwable): String {
+        if (error is DescuentoSinConfirmarException || error is java.io.IOException) return TEXTO_APLICAR_SIN_CONFIRMAR
+        if (error is PermisoRequeridoException) return error.message ?: "Sin permiso"
+        val texto = error.message?.takeIf { it.isNotBlank() } ?: return TEXTO_NO_SE_PUDO_APLICAR
+        return when {
+            texto.startsWith("Discount already applied") -> TEXTO_DESCUENTO_YA_APLICADO
+            pareceIngles(texto) -> TEXTO_NO_SE_PUDO_APLICAR
+            else -> texto
+        }
     }
 
     private fun textoDelFalloAlQuitar(error: Throwable): String = when (error) {
         is DescuentoSinConfirmarException, is java.io.IOException -> TEXTO_QUITAR_SIN_CONFIRMAR
-        else -> error.message?.takeIf { it.isNotBlank() } ?: "No se pudo quitar el descuento."
+        else -> error.message?.takeIf { it.isNotBlank() && !pareceIngles(it) } ?: "No se pudo quitar el descuento."
     }
+
+    /** Un rechazo del SERVIDOR en inglés no llega a la caja (Codex r3 #7). */
+    private fun pareceIngles(texto: String): Boolean = PALABRAS_EN_INGLES.containsMatchIn(texto)
 
     private fun normalizeOrderForUi(order: Order): Order {
         if (order.items.size <= 1) return order
@@ -3937,8 +3939,15 @@ sealed interface MenuState {
  */
 private const val PAYMENT_PREP_GUARD_MS = 15_000L
 
-/** D16: relectura de la lista al abrir en caliente (la primera de inmediato). */
-private val ESPERAS_DE_RELECTURA_MS = longArrayOf(0L, 5_000L, 15_000L, 45_000L)
+/** D16 v4: relecturas de la lista cuando una lectura falla (sin red). */
+private val ESPERAS_DE_RELECTURA_MS = longArrayOf(5_000L, 10_000L, 30_000L)
+
+/** D16 v4: tras un cambio sin confirmar, se relee a los 5 y 15 s aunque la primera lectura haya contestado. */
+private val ESPERAS_TRAS_SIN_CONFIRMAR_MS = longArrayOf(5_000L, 10_000L)
+
+/** Palabras que delatan un rechazo del SERVIDOR en inglés (ninguna es español). */
+private val PALABRAS_EN_INGLES =
+    Regex("""\b(the|this|not|cannot|already|order|discount|invalid|must|required|requires|failed|found|applied)\b""", RegexOption.IGNORE_CASE)
 
 /**
  * ¿Se debe ignorar este toque a `Pagar` porque ya hay una preparación de pago en vuelo?

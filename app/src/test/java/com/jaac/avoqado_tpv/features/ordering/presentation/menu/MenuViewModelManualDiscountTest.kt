@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.ordering.domain.AcuseDeDescuento
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
@@ -70,7 +71,7 @@ class MenuViewModelManualDiscountTest {
         every { orderSyncCoordinator.syncEvents } returns MutableSharedFlow<OrderSyncCoordinator.SyncEvent>()
         coEvery { orderSyncCoordinator.syncOrderImmediately(any()) } answers { firstArg() }
         coEvery { orderSyncCoordinator.getLocalOrder(any()) } returns null
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(descuento())
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(AcuseDeDescuento(descuento(), null))
     }
 
     @After fun limpiar() {
@@ -90,26 +91,26 @@ class MenuViewModelManualDiscountTest {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-1")
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "Cortesia")
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, false) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "Cortesia", null, "tok-1") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "Cortesia", null, "tok-1", any()) }
     }
 
     @Test fun `cien_por_ciento_con_permiso_no_pide_pin`() {
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "Cortesia")
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "Cortesia", null, null) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "Cortesia", null, null, any()) }
     }
 
     @Test fun `noventa_y_nueve_sin_permiso_no_pide_pin`() {
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 99.0, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.0, "x", null, null) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.0, "x", null, null, any()) }
     }
 
     @Test fun `99_95_por_ciento_de_10_pesos_no_pide_pin_por_adelantado`() {
         // El SERVIDOR deja $0.01: la TPV no adivina redondeos, sólo pide el PIN con 100 % o un fijo que cubre lo que queda.
         crear(subtotal = "10.00", total = "10.00").applyManualDiscount(DiscountType.PERCENTAGE, 99.95, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.95, "x", null, null) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.95, "x", null, null, any()) }
     }
 
     @Test fun `fijo_igual_a_lo_que_queda_pide_pin`() {
@@ -117,38 +118,38 @@ class MenuViewModelManualDiscountTest {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-2")
         crear(subtotal = "200.00", descuentos = "50.00", total = "190.00").applyManualDiscount(DiscountType.FIXED, 150.0, "x")
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, false) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 150.0, "x", null, "tok-2") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 150.0, "x", null, "tok-2", any()) }
     }
 
     @Test fun `fijo_1_005_sobre_1_01_no_pide_pin_por_adelantado`() {
         // El SERVIDOR lo redondea a $1.00 y deja $0.01: el valor se compara tal como se escribió, sin redondear.
         crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.005, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.005, "x", null, null) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.005, "x", null, null, any()) }
     }
 
     @Test fun `fijo_1_01_sobre_1_01_pide_pin`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-c")
         crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.01, "x")
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, false) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.01, "x", null, "tok-c") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.01, "x", null, "tok-c", any()) }
     }
 
     @Test fun `fijo_1_009_sobre_1_01_no_pide_pin_por_adelantado_y_con_el_403_del_servidor_pide_pin_y_reintenta`() {
         // El SERVIDOR lo redondea a $1.01 (regala la cuenta) y contesta 403 `orders:comp`: ahí se pide el PIN.
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-d")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null) } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null, any()) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         crear(subtotal = "1.01", total = "1.01").applyManualDiscount(DiscountType.FIXED, 1.009, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, false) }
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.009, "x", null, "tok-d") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 1.009, "x", null, "tok-d", any()) }
     }
 
     @Test fun `fijo_un_centavo_menos_no_pide_pin`() {
         crear(subtotal = "200.00", descuentos = "50.00", total = "190.00").applyManualDiscount(DiscountType.FIXED, 149.99, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(any(), any(), any()) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 149.99, "x", null, null) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.FIXED, 149.99, "x", null, null, any()) }
     }
 
     @Test fun `negada_avisa_con_su_texto_y_no_llama_al_repositorio`() {
@@ -157,34 +158,34 @@ class MenuViewModelManualDiscountTest {
         escucha(vm)
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         assertThat(avisos).contains("Esta cortesía la da un gerente con su sesión")
-        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test fun `cancelado_no_llama_al_repositorio`() {
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.Cancelada
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
-        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test fun `403_orders_comp_reintenta_una_vez_con_pin_forzado`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.NoHaceFalta
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-f")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null) } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null, any()) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         crear().applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "x", null, "tok-f") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 100.0, "x", null, "tok-f", any()) }
     }
 
     @Test fun `99_999_por_ciento_de_100_no_pide_pin_por_adelantado_y_con_el_403_del_servidor_pide_pin_y_reintenta`() {
         // El SERVIDOR lo redondea a $100 (regala la cuenta) y contesta 403 `orders:comp`: ahí, y sólo ahí, se pide el PIN.
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-r")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null) } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null, any()) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         crear(subtotal = "100.00", total = "100.00").applyManualDiscount(DiscountType.PERCENTAGE, 99.999, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, false) }
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.999, "x", null, "tok-r") }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(venueId, "o-1", DiscountType.PERCENTAGE, 99.999, "x", null, "tok-r", any()) }
     }
 
     private val avisos = mutableListOf<String>()
@@ -206,40 +207,40 @@ class MenuViewModelManualDiscountTest {
 
     @Test fun `403_con_token_no_pide_otro_pin_y_revisa_la_cuenta`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-1")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1") } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1", any()) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         val vm = crear()
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
         escucha(vm)
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
         verificaNoConfirmada(vm)
     }
 
     @Test fun `ConPin_y_IOException_es_no_confirmada_sin_segunda_llamada`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.ConPin("tok-1")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1") } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1", any()) } returns
             Result.failure(java.io.IOException("timeout"))
         val vm = crear()
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
         escucha(vm)
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         coVerify(exactly = 0) { autorizacion.paraCortesia(venueId, motivo, true) }
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
         verificaNoConfirmada(vm)
     }
 
     @Test fun `403_sin_token_luego_pin_forzado_y_otro_403_termina_en_no_confirmada_sin_tercera_llamada`() {
         coEvery { autorizacion.paraCortesia(venueId, motivo, false) } returns Autorizacion.NoHaceFalta
         coEvery { autorizacion.paraCortesia(venueId, motivo, true) } returns Autorizacion.ConPin("tok-f")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
         val vm = crear()
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(ordenConCortesia())
         escucha(vm)
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
-        coVerify(exactly = 2) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 2) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 1) { autorizacion.paraCortesia(venueId, motivo, true) }
         verificaNoConfirmada(vm)
     }
@@ -250,7 +251,7 @@ class MenuViewModelManualDiscountTest {
         escucha(vm)
         vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "x")
         assertThat(avisos).contains("No se pudo aplicar la cortesía")
-        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     private fun crear(subtotal: String = "100.00", descuentos: String = "0.00", total: String = "100.00"): MenuViewModel {

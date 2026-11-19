@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.network.PermisoRequeridoException
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
@@ -15,8 +16,12 @@ import com.jaac.avoqado_tpv.features.ordering.data.repository.DescuentoSinConfir
 import com.jaac.avoqado_tpv.features.ordering.data.repository.ID_DE_FILA_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_APLICAR_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_CUENTA_SIN_SUBIR
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_DESCUENTO_YA_APLICADO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_ESPERA_EL_DESCUENTO
+import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_NO_SE_PUDO_APLICAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_QUITAR_SIN_CONFIRMAR
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TEXTO_REBAJA_FIJA_DE_VALES
+import com.jaac.avoqado_tpv.features.ordering.domain.AcuseDeDescuento
 import com.jaac.avoqado_tpv.features.ordering.domain.AssignTableResult
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
@@ -60,9 +65,10 @@ import java.math.BigDecimal
 import java.time.Instant
 
 /**
- * D16 (hz:e82938e1:D16) · **TPV SOLA → ÓRDENES**: la lista de descuentos de la cuenta («Acciones» → «Descuentos Aplicados») sale de
- * lo último que contestó el SERVIDOR sobre ESA cuenta, nunca de Room (que no guarda las filas). Una lectura empezada antes de un
- * envío no lo borra; la respuesta tardía de un envío no pisa una lectura más nueva. Promesa y mapa:
+ * D16 v4 (hz:e82938e1:D16) · **TPV SOLA → ÓRDENES**: los descuentos de una cuenta se atienden UNO POR UNO (una fila por cuenta).
+ * Aplicar (catálogo, manual, cortesía, cupón), quitar y releer entran a la misma fila; cada cambio termina releyendo la cuenta en el
+ * SERVIDOR y SÓLO esa lectura escribe la lista («Descuentos Aplicados»). Room, las copias locales y los acuses nunca la escriben.
+ * D21: el mismo descuento reenviado tras «sin confirmar» lleva la MISMA llave. Promesa y mapa:
  * `docs/audit/2026-11-18-d16-tpv-ordenes-descuentos/promesa.md` (workspace).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -72,6 +78,7 @@ class MenuViewModelDescuentosDelServidorTest {
     private val testDispatcher = UnconfinedTestDispatcher()
     private val creados = mutableListOf<MenuViewModel>()
     private val avisos = mutableListOf<String>()
+    private val escuchas = mutableListOf<Job>()
 
     private lateinit var orderRepository: OrderRepository
     private lateinit var discountRepository: DiscountRepository
@@ -101,9 +108,10 @@ class MenuViewModelDescuentosDelServidorTest {
         coEvery { orderSyncCoordinator.syncOrderImmediately(any()) } answers { firstArg() }
         coEvery { orderSyncCoordinator.getLocalOrder(any()) } returns null
         coEvery { autorizacion.paraCortesia(any(), any(), any()) } returns Autorizacion.NoHaceFalta
-        // Sin esto, el `Result` (clase en línea) del mock relajado truena dentro de `loadOrderCustomers` y la excepción, que nadie
-        // atrapa, la reporta el `runTest` de la SIGUIENTE clase de pruebas (visto: `TableMenuFamiliasTest`, UncaughtExceptionsBeforeTest).
+        // El `Result` (clase en línea) de un mock relajado truena dentro de la app; la excepción, que nadie atrapa, la reportaría el
+        // `runTest` de OTRA clase de pruebas (visto: UncaughtExceptionsBeforeTest en `TableMenuFamiliasTest`).
         coEvery { orderRepository.getOrderCustomers(any(), any()) } returns Result.success(emptyList())
+        coEvery { orderRepository.getOrder(any(), any()) } returns Result.failure(IOException("sin stub"))
     }
 
     @After fun limpiar() {
@@ -125,12 +133,13 @@ class MenuViewModelDescuentosDelServidorTest {
     // Abrir la venta
     // ------------------------------------------------------------------------------------------------
 
-    @Test fun `abrir en frio pinta las filas de la respuesta y no las de la copia de Room`() {
+    @Test fun `abrir en frio pinta las filas de su lectura y no las de la copia de Room`() {
         coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returnsMany listOf(null, orden())
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-vale"), fila("od-suelto"))))
         val vm = crear(estado = null)
         vm.loadOrder("o-1")
         assertThat(ids(vm)).containsExactly("od-vale", "od-suelto").inOrder()
+        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
     }
 
     @Test fun `abrir una mesa ya abierta pinta sus filas del SERVIDOR`() {
@@ -153,13 +162,13 @@ class MenuViewModelDescuentosDelServidorTest {
 
     @Test fun `abrir en caliente sin red queda como hoy y no avisa nada`() {
         coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.failure(IOException("sin red"))
         val vm = crear(estado = null)
         escucha(vm)
         vm.loadOrder("o-1")
         assertThat(vm.state.value).isInstanceOf(MenuState.Success::class.java)
         assertThat(ids(vm)).isEmpty()
         assertThat(avisos).isEmpty()
+        assertThat(vm.descuentoEnCurso.value).isFalse()
     }
 
     @Test fun `al volver la red con Ordenes abierta llegan las filas solas`() {
@@ -176,129 +185,7 @@ class MenuViewModelDescuentosDelServidorTest {
         assertThat(ids(vm)).containsExactly("od-1")
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // Relecturas del SERVIDOR
-    // ------------------------------------------------------------------------------------------------
-
-    @Test fun `tras el abono la relectura toma las filas de la respuesta`() {
-        coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-a"), fila("od-b"))))
-        val vm = crear()
-        ponerLista(vm, listOf(fila("od-a")))
-        runBlocking { socketEvents.emit(pagoCompletado("o-1")) }
-        assertThat(ids(vm)).containsExactly("od-a", "od-b").inOrder()
-    }
-
-    @Test fun `cortesia con PIN sin confirmar conserva las filas de la respuesta aunque Room no las tenga`() {
-        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1") } returns
-            Result.failure(IOException("timeout"))
-        coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-cortesia"))))
-        val vm = crear()
-        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "Cortesía")
-        assertThat(ids(vm)).containsExactly("od-cortesia")
-    }
-
-    @Test fun `una lista vacia del SERVIDOR es la verdad y vacia la pantalla`() {
-        coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = emptyList()))
-        val vm = crear()
-        ponerLista(vm, listOf(fila("od-quitada-en-otra-caja")))
-        runBlocking { socketEvents.emit(pagoCompletado("o-1")) }
-        assertThat(ids(vm)).isEmpty()
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // Aplicar y quitar: id real, y los dos órdenes de llegada
-    // ------------------------------------------------------------------------------------------------
-
-    @Test fun `la cortesia aplicada trae su id real y se quita en seguida con ese id`() {
-        val lecturaLenta = CompletableDeferred<Result<Order>>()
-        coEvery { orderRepository.getOrder(venueId, "o-1") } coAnswers { lecturaLenta.await() }
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
-            Result.success(fila("od-real"))
-        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.success(Unit)
-        val vm = crear()
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        assertThat(ids(vm)).containsExactly("od-real")
-        vm.removeDiscount(ids(vm).single())
-        coVerify(exactly = 1) { discountRepository.removeDiscount(venueId, "o-1", "od-real", any()) }
-    }
-
-    @Test fun `con un SERVIDOR sin id la fila no sale con un id inventado y llega con la relectura`() {
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
-            Result.success(fila(ID_DE_FILA_SIN_CONFIRMAR))
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-real"))))
-        val vm = crear()
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        assertThat(ids(vm)).containsExactly("od-real")
-    }
-
-    @Test fun `una lectura empezada antes de aplicar no borra la fila nueva al llegar tarde`() {
-        val lecturaVieja = CompletableDeferred<Result<Order>>()
-        var llamadas = 0
-        coEvery { orderRepository.getOrder(venueId, "o-1") } coAnswers {
-            if (llamadas++ == 0) lecturaVieja.await() else Result.success(orden(filas = listOf(fila("od-a"), fila("od-x"))))
-        }
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
-            Result.success(fila("od-x"))
-        val vm = crear(descuentos = "10.00")
-        ponerLista(vm, listOf(fila("od-a")))
-        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }   // lectura vieja, en vuelo
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        lecturaVieja.complete(Result.success(orden(filas = listOf(fila("od-a")))))       // llega tarde, sin la fila nueva
-        assertThat(ids(vm)).containsExactly("od-a", "od-x").inOrder()
-    }
-
-    @Test fun `la respuesta tardia de aplicar no duplica la fila que una lectura mas nueva ya trajo`() {
-        val respuesta = CompletableDeferred<Result<OrderDiscount>>()
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-a"), fila("od-x"))))
-        val vm = crear(descuentos = "10.00")
-        ponerLista(vm, listOf(fila("od-a")))
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")                         // el envío espera su respuesta
-        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }   // lectura nueva: ya ve od-x
-        respuesta.complete(Result.success(fila("od-x")))
-        assertThat(ids(vm)).containsExactly("od-a", "od-x").inOrder()
-    }
-
-    @Test fun `el acuse de aplicar gana a una lectura que empezo despues y no la vio, aunque falle la relectura`() {
-        val respuesta = CompletableDeferred<Result<OrderDiscount>>()
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returnsMany listOf(
-            Result.success(orden(filas = emptyList())),      // lectura que llegó al SERVIDOR antes de guardar
-            Result.failure(IOException("sin red")),          // la relectura de después falla
-        )
-        val vm = crear(descuentos = "10.00")
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }
-        respuesta.complete(Result.success(fila("od-x")))
-        assertThat(ids(vm)).containsExactly("od-x")
-    }
-
-    @Test fun `sin el id del SERVIDOR para la cuenta no se manda el descuento`() {
-        coEvery { orderSyncCoordinator.syncOrderImmediately("local_1") } returns "local_1"
-        val vm = crear(id = "local_1")
-        escucha(vm)
-        vm.applyCoupon("PROMO")
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        vm.applyPredefinedDiscount("d-1")
-        coVerify(exactly = 0) { discountRepository.applyCoupon(any(), any(), any()) }
-        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { discountRepository.applyPredefinedDiscount(any(), any(), any(), any()) }
-        assertThat(avisos).contains(TEXTO_CUENTA_SIN_SUBIR)
-    }
-
-    @Test fun `la lectura previa a anular deja sus filas aunque anular no siga`() {
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns
-            Result.success(orden(renglones = listOf(renglon().copy(id = "i-otro", productId = "p-otro")), filas = listOf(fila("od-otra-caja"))))
-        val vm = crear(renglones = listOf(renglon()))
-        vm.voidItems(listOf("i-1"), "x")
-        assertThat(ids(vm)).containsExactly("od-otra-caja")
-    }
-
-    @Test fun `si la primera lectura falla, se reintenta sola aunque no llegue el aviso de reconexion`() {
+    @Test fun `si la primera lectura falla se reintenta sola aunque no llegue el aviso de reconexion`() {
         coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
         coEvery { orderRepository.getOrder(venueId, "o-1") } returnsMany listOf(
             Result.failure(IOException("sin red")),
@@ -315,8 +202,7 @@ class MenuViewModelDescuentosDelServidorTest {
     @Test fun `abrir en caliente no escribe la cuenta en Room ni cambia su total`() {
         val copia = orden(descuentos = "10.00")
         coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns copia
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns
-            Result.success(orden(descuentos = "30.00", filas = listOf(fila("od-1"))))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(descuentos = "30.00", filas = listOf(fila("od-1"))))
         val vm = crear(estado = null)
         vm.loadOrder("o-1")
         assertThat(ids(vm)).containsExactly("od-1")
@@ -324,87 +210,33 @@ class MenuViewModelDescuentosDelServidorTest {
         coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
     }
 
-    @Test fun `aplicar sin respuesta y sin PIN avisa, relee y no se reenvia`() {
-        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) } returns
-            Result.failure(DescuentoSinConfirmarException(IOException("timeout")))
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-llego"))))
-        val vm = crear()
-        escucha(vm)
-        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
-        assertThat(avisos).contains(TEXTO_APLICAR_SIN_CONFIRMAR)
-        assertThat(ids(vm)).containsExactly("od-llego")
-        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any()) }
-    }
-
-    @Test fun `aplicar del catalogo rechazado dice la razon`() {
-        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), any(), any()) } returns
-            Result.failure(Exception("Este descuento no aplica a esta cuenta."))
-        val vm = crear()
-        escucha(vm)
-        vm.applyPredefinedDiscount("d-1")
-        assertThat(avisos).contains("Este descuento no aplica a esta cuenta.")
-    }
-
-    @Test fun `el cupon sincroniza la cuenta antes de mandarse`() {
-        coEvery { orderSyncCoordinator.syncOrderImmediately("local_1") } returns "o-1"
-        every { orderSyncCoordinator.resolveOrderId("local_1") } returns "o-1"
-        coEvery { discountRepository.applyCoupon(any(), any(), any()) } returns Result.success(fila("od-cupon"))
-        val vm = crear(id = "local_1")
-        vm.applyCoupon("PROMO")
-        coVerify(exactly = 1) { discountRepository.applyCoupon(venueId, "o-1", "PROMO") }
-    }
-
-    @Test fun `quitar con exito quita la fila y relee`() {
-        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.success(Unit)
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-2"))))
-        val vm = crear()
-        ponerLista(vm, listOf(fila("od-1"), fila("od-2")))
-        vm.removeDiscount("od-1")
-        assertThat(ids(vm)).containsExactly("od-2")
-        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
-    }
-
-    @Test fun `quitar una rebaja fija de vales dice la razon y relee`() {
-        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.failure(Exception(TEXTO_REBAJA_FIJA_DE_VALES))
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-vale"))))
-        val vm = crear()
-        ponerLista(vm, listOf(fila("od-vale")))
-        escucha(vm)
-        vm.removeDiscount("od-vale")
-        assertThat(avisos).contains(TEXTO_REBAJA_FIJA_DE_VALES)
-        assertThat(ids(vm)).containsExactly("od-vale")
-        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
-    }
-
-    @Test fun `quitar sin respuesta lo dice y la fila sigue`() {
-        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns
-            Result.failure(DescuentoSinConfirmarException(IOException("sin red")))
-        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.failure(IOException("sin red"))
-        val vm = crear()
-        ponerLista(vm, listOf(fila("od-1")))
-        escucha(vm)
-        vm.removeDiscount("od-1")
-        assertThat(avisos).contains(TEXTO_QUITAR_SIN_CONFIRMAR)
-        assertThat(ids(vm)).containsExactly("od-1")
-    }
-
     // ------------------------------------------------------------------------------------------------
-    // Nadie más escribe la lista; sincronizar es de ESTA cuenta
+    // Relecturas que piden otros caminos
     // ------------------------------------------------------------------------------------------------
 
-    @Test fun `Room y las copias locales de la cuenta no tocan la lista`() {
-        val renglon = renglon()
-        val vm = crear(renglones = listOf(renglon), filasDeLaCopia = listOf(fila("od-vieja")))
-        ponerLista(vm, listOf(fila("od-nueva")))
-        // La copia local de la cuenta (imprimir un renglón) trae las filas que había al copiarla: no repone esas.
-        vm.printSingleItem(renglon)
-        coVerify(timeout = 3_000) { orderSyncCoordinator.markItemAsSentToKitchen(renglon.id, any()) }
-        Thread.sleep(200)
-        assertThat(ids(vm)).containsExactly("od-nueva")
-        // Room trae la cuenta sin filas: tampoco las borra.
+    @Test fun `tras el abono la relectura de la fila toma la lista aunque Room no tenga filas`() {
+        coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-a"), fila("od-b"))))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-a")))
+        runBlocking { socketEvents.emit(pagoCompletado("o-1")) }
+        assertThat(ids(vm)).containsExactly("od-a", "od-b").inOrder()
+    }
+
+    @Test fun `una lista vacia del SERVIDOR es la verdad y vacia la pantalla`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = emptyList()))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-quitada-en-otra-caja")))
+        runBlocking { socketEvents.emit(pagoCompletado("o-1")) }
+        assertThat(ids(vm)).isEmpty()
+    }
+
+    @Test fun `tras sincronizar esta cuenta se relee la lista aunque este vacia y sin descuento`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-de-otra-caja"))))
+        val vm = crear()
         ponerCuentaAbierta(vm, "o-1")
-        runBlocking { room.emit(orden(renglones = listOf(renglon))) }
-        assertThat(ids(vm)).containsExactly("od-nueva")
+        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }
+        assertThat(ids(vm)).containsExactly("od-de-otra-caja")
     }
 
     @Test fun `un Synced de OTRA cuenta no cambia la cuenta abierta ni lee sus filas`() {
@@ -433,13 +265,317 @@ class MenuViewModelDescuentosDelServidorTest {
         assertThat(ids(vm)).containsExactly("od-1")
     }
 
+    @Test fun `tras intentar anular se relee la lista aunque anular no siga`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns
+            Result.success(orden(renglones = listOf(renglon().copy(id = "i-otro", productId = "p-otro")), filas = listOf(fila("od-otra-caja"))))
+        val vm = crear(renglones = listOf(renglon()))
+        vm.voidItems(listOf("i-1"), "x")
+        assertThat(ids(vm)).containsExactly("od-otra-caja")
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // La fila: uno por uno, botones en gris, sólo la lectura final escribe
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `mientras un cambio sigue en curso los botones van en gris y otro toque no se manda`() {
+        val respuesta = CompletableDeferred<Result<AcuseDeDescuento>>()
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-x"))))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-a")))
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(vm.descuentoEnCurso.value).isTrue()
+        vm.removeDiscount("od-a")
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        vm.applyPredefinedDiscount("d-1")
+        coVerify(exactly = 0) { discountRepository.removeDiscount(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyPredefinedDiscount(any(), any(), any(), any(), any()) }
+        respuesta.complete(Result.success(acuse(fila("od-x"))))
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertThat(ids(vm)).containsExactly("od-x")
+        assertThat(vm.descuentoEnCurso.value).isFalse()
+    }
+
+    @Test fun `una relectura en la fila antes de aplicar termina primero y la lectura final del cambio manda`() {
+        val primera = CompletableDeferred<Result<Order>>()
+        var llamadas = 0
+        coEvery { orderRepository.getOrder(venueId, "o-1") } coAnswers {
+            if (llamadas++ == 0) primera.await() else Result.success(orden(filas = listOf(fila("od-a"), fila("od-x"))))
+        }
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-x")))
+        val vm = crear()
+        ponerCuentaAbierta(vm, "o-1")
+        runBlocking { syncEvents.emit(OrderSyncCoordinator.SyncEvent.Synced("o-1", 2)) }   // relectura en la fila, en vuelo
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")                               // espera su turno
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+        primera.complete(Result.success(orden(filas = listOf(fila("od-a")))))
+        assertThat(ids(vm)).containsExactly("od-a", "od-x").inOrder()
+    }
+
+    @Test fun `el acuse no escribe la lista - si la lectura final ya no trae la fila, no aparece`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-x")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = emptyList()))   // otra caja ya la quitó
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(ids(vm)).isEmpty()
+    }
+
+    @Test fun `la fila aplicada llega con la lectura final y se quita con su id real`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-real")))
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.success(null)
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returnsMany listOf(
+            Result.success(orden(filas = listOf(fila("od-real")))),
+            Result.success(orden(filas = emptyList())),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(ids(vm)).containsExactly("od-real")
+        vm.removeDiscount("od-real")
+        coVerify(exactly = 1) { discountRepository.removeDiscount(venueId, "o-1", "od-real", any()) }
+        assertThat(ids(vm)).isEmpty()
+    }
+
+    @Test fun `si la lectura final falla la fila llega con la relectura de los 5 segundos`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-x")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returnsMany listOf(
+            Result.failure(IOException("sin red")),
+            Result.success(orden(filas = listOf(fila("od-x")))),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(ids(vm)).isEmpty()
+        assertThat(vm.descuentoEnCurso.value).isFalse()
+        testDispatcher.scheduler.advanceTimeBy(6_000)
+        testDispatcher.scheduler.runCurrent()
+        assertThat(ids(vm)).containsExactly("od-x")
+    }
+
+    @Test fun `SERVIDOR viejo sin id y lecturas caidas - el total baja por los dos descuentos y no sale ninguna fila inventada`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            Result.success(acuse(fila(ID_DE_FILA_SIN_CONFIRMAR, "10.00"))),
+            Result.success(acuse(fila(ID_DE_FILA_SIN_CONFIRMAR, "5.00"))),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        vm.applyManualDiscount(DiscountType.FIXED, 5.0, "y")
+        assertThat(ids(vm)).isEmpty()
+        assertThat((vm.state.value as MenuState.Success).order.total).isEqualTo(BigDecimal("85.00"))
+    }
+
+    @Test fun `con la lectura final el total es el del SERVIDOR si los renglones no cambiaron`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(acuse(fila("od-x")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(descuentos = "10.00", total = "88.00", filas = listOf(fila("od-x"))))
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        val cuenta = (vm.state.value as MenuState.Success).order
+        assertThat(cuenta.total).isEqualTo(BigDecimal("88.00"))
+        assertThat(cuenta.discountAmount).isEqualTo(BigDecimal("10.00"))
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Sin confirmar y la llave del envío (D21)
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `aplicar sin respuesta y sin PIN avisa, relee sin tocar Room y no se reenvia`() {
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-llego"))))
+        val vm = crear()
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        assertThat(avisos).contains(TEXTO_APLICAR_SIN_CONFIRMAR)
+        assertThat(ids(vm)).containsExactly("od-llego")
+        coVerify(exactly = 1) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
+    }
+
+    @Test fun `cortesia con PIN sin confirmar toma las filas de la lectura y no reescribe Room`() {
+        coEvery { autorizacion.paraCortesia(venueId, any(), false) } returns Autorizacion.ConPin("tok-1")
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-1", any()) } returns
+            Result.failure(IOException("timeout"))
+        coEvery { orderSyncCoordinator.getLocalOrder("o-1") } returns orden()
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-cortesia"))))
+        val vm = crear()
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 100.0, "Cortesía")
+        assertThat(avisos).contains("No pudimos confirmar la cortesía. Revisa la cuenta")
+        assertThat(ids(vm)).containsExactly("od-cortesia")
+        coVerify(exactly = 0) { orderSyncCoordinator.cacheBackendOrder(any()) }
+    }
+
+    @Test fun `volver a dar el mismo descuento tras sin confirmar manda la misma llave, otro descuento una nueva`() {
+        val llaves = mutableListOf<String?>()
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returnsMany listOf(
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout"))),
+            Result.success(acuse(fila("od-x"))),
+            Result.success(acuse(fila("od-y"))),
+            Result.success(acuse(fila("od-z"))),
+        )
+        val vm = crear()
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")   // sin confirmar
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")   // el mismo: misma llave
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")   // ya tuvo respuesta: llave nueva
+        vm.applyManualDiscount(DiscountType.FIXED, 7.0, "x")    // otro: llave nueva
+        assertThat(llaves).hasSize(4)
+        assertThat(llaves.all { !it.isNullOrBlank() }).isTrue()
+        assertThat(llaves[1]).isEqualTo(llaves[0])
+        assertThat(llaves[2]).isNotEqualTo(llaves[1])
+        assertThat(llaves[3]).isNotEqualTo(llaves[2])
+    }
+
+    @Test fun `el reenvio con el PIN forzado lleva la misma llave`() {
+        val llaves = mutableListOf<String?>()
+        coEvery { autorizacion.paraCortesia(venueId, any(), true) } returns Autorizacion.ConPin("tok-f")
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), null, captureNullable(llaves)) } returns
+            Result.failure(PermisoRequeridoException("orders:comp", true, "x"))
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), "tok-f", captureNullable(llaves)) } returns
+            Result.success(acuse(fila("od-x")))
+        val vm = crear(subtotal = "100.00", total = "100.00")
+        vm.applyManualDiscount(DiscountType.PERCENTAGE, 99.999, "x")
+        assertThat(llaves).hasSize(2)
+        assertThat(llaves[1]).isEqualTo(llaves[0])
+    }
+
+    @Test fun `el catalogo repetido tras sin confirmar manda la misma llave`() {
+        val llaves = mutableListOf<String?>()
+        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), any(), any(), captureNullable(llaves)) } returnsMany listOf(
+            Result.failure(DescuentoSinConfirmarException(IOException("timeout"))),
+            Result.success(acuse(fila("od-c"))),
+        )
+        val vm = crear()
+        vm.applyPredefinedDiscount("d-1")
+        vm.applyPredefinedDiscount("d-1")
+        assertThat(llaves).hasSize(2)
+        assertThat(llaves[1]).isEqualTo(llaves[0])
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Textos
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `aplicar del catalogo rechazado dice la razon`() {
+        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), any(), any(), any()) } returns
+            Result.failure(Exception("Este descuento no aplica a esta cuenta."))
+        val vm = crear()
+        escucha(vm)
+        vm.applyPredefinedDiscount("d-1")
+        assertThat(avisos).contains("Este descuento no aplica a esta cuenta.")
+    }
+
+    @Test fun `un rechazo en ingles sale en espanol`() {
+        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), "d-1", any(), any()) } returns
+            Result.failure(Exception("Discount already applied to this order"))
+        coEvery { discountRepository.applyPredefinedDiscount(any(), any(), "d-2", any(), any()) } returns
+            Result.failure(Exception("This discount cannot be applied to this order"))
+        val vm = crear()
+        escucha(vm)
+        vm.applyPredefinedDiscount("d-1")
+        vm.applyPredefinedDiscount("d-2")
+        assertThat(avisos).doesNotContain(TEXTO_ESPERA_EL_DESCUENTO)
+        coVerify(exactly = 1) { discountRepository.applyPredefinedDiscount(any(), any(), "d-2", any(), any()) }
+        assertThat(avisos).containsAtLeast(TEXTO_DESCUENTO_YA_APLICADO, TEXTO_NO_SE_PUDO_APLICAR)
+        assertThat(avisos.none { it.contains("Discount") || it.contains("This discount") }).isTrue()
+    }
+
+    @Test fun `cupon sin respuesta dice sin confirmar y relee`() {
+        coEvery { discountRepository.applyCoupon(any(), any(), any()) } returns Result.failure(DescuentoSinConfirmarException(IOException("timeout")))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-cupon"))))
+        val vm = crear()
+        vm.applyCoupon("PROMO")
+        assertThat(vm.couponValidationState.value).isEqualTo(CouponValidationState.Invalid(TEXTO_APLICAR_SIN_CONFIRMAR))
+        assertThat(ids(vm)).containsExactly("od-cupon")
+    }
+
+    @Test fun `el cupon sincroniza la cuenta antes de mandarse`() {
+        coEvery { orderSyncCoordinator.syncOrderImmediately("local_1") } returns "o-1"
+        every { orderSyncCoordinator.resolveOrderId("local_1") } returns "o-1"
+        coEvery { discountRepository.applyCoupon(any(), any(), any()) } returns Result.success(acuse(fila("od-cupon")))
+        val vm = crear(id = "local_1")
+        vm.applyCoupon("PROMO")
+        coVerify(exactly = 1) { discountRepository.applyCoupon(venueId, "o-1", "PROMO") }
+    }
+
+    @Test fun `sin el id del SERVIDOR para la cuenta no se manda el descuento`() {
+        coEvery { orderSyncCoordinator.syncOrderImmediately("local_1") } returns "local_1"
+        val vm = crear(id = "local_1")
+        escucha(vm)
+        vm.applyCoupon("PROMO")
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        vm.applyPredefinedDiscount("d-1")
+        coVerify(exactly = 0) { discountRepository.applyCoupon(any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { discountRepository.applyPredefinedDiscount(any(), any(), any(), any(), any()) }
+        assertThat(avisos).contains(TEXTO_CUENTA_SIN_SUBIR)
+        assertThat(vm.descuentoEnCurso.value).isFalse()
+    }
+
+    @Test fun `quitar con exito toma la lista de la lectura final`() {
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.success(null)
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-2"))))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-1"), fila("od-2")))
+        vm.removeDiscount("od-1")
+        assertThat(ids(vm)).containsExactly("od-2")
+        coVerify(exactly = 1) { orderRepository.getOrder(venueId, "o-1") }
+    }
+
+    @Test fun `quitar una rebaja fija de vales dice la razon de D15 y relee`() {
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns Result.failure(Exception(TEXTO_REBAJA_FIJA_DE_VALES))
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden(filas = listOf(fila("od-vale"))))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-vale")))
+        escucha(vm)
+        vm.removeDiscount("od-vale")
+        assertThat(avisos).contains(TEXTO_REBAJA_FIJA_DE_VALES)
+        assertThat(ids(vm)).containsExactly("od-vale")
+    }
+
+    @Test fun `quitar sin respuesta lo dice y la fila sigue`() {
+        coEvery { discountRepository.removeDiscount(any(), any(), any(), any()) } returns
+            Result.failure(DescuentoSinConfirmarException(IOException("sin red")))
+        val vm = crear()
+        ponerLista(vm, listOf(fila("od-1")))
+        escucha(vm)
+        vm.removeDiscount("od-1")
+        assertThat(avisos).contains(TEXTO_QUITAR_SIN_CONFIRMAR)
+        assertThat(ids(vm)).containsExactly("od-1")
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Nadie más escribe la lista · «Pagar»
+    // ------------------------------------------------------------------------------------------------
+
+    @Test fun `Room y las copias locales de la cuenta no tocan la lista`() {
+        val renglon = renglon()
+        val vm = crear(renglones = listOf(renglon), filasDeLaCopia = listOf(fila("od-vieja")))
+        ponerLista(vm, listOf(fila("od-nueva")))
+        vm.printSingleItem(renglon)
+        coVerify(timeout = 3_000) { orderSyncCoordinator.markItemAsSentToKitchen(renglon.id, any()) }
+        Thread.sleep(200)
+        assertThat(ids(vm)).containsExactly("od-nueva")
+        ponerCuentaAbierta(vm, "o-1")
+        runBlocking { room.emit(orden(renglones = listOf(renglon))) }
+        assertThat(ids(vm)).containsExactly("od-nueva")
+    }
+
+    @Test fun `Pagar con un descuento en curso avisa y no prepara el cobro`() {
+        val respuesta = CompletableDeferred<Result<AcuseDeDescuento>>()
+        coEvery { discountRepository.applyManualDiscount(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
+        val vm = crear()
+        escucha(vm)
+        vm.applyManualDiscount(DiscountType.FIXED, 10.0, "x")
+        var listo = false
+        vm.onPaymentRequested(onReady = { listo = true }, onError = {})
+        assertThat(avisos).contains(TEXTO_ESPERA_EL_DESCUENTO)
+        assertThat(listo).isFalse()
+        assertThat(vm.isPreparingPayment.value).isFalse()
+    }
+
     // ------------------------------------------------------------------------------------------------
     // Ayudantes
     // ------------------------------------------------------------------------------------------------
 
     private fun ids(vm: MenuViewModel) = vm.appliedDiscounts.value.map { it.id }
-
-    private val escuchas = mutableListOf<Job>()
 
     private fun escucha(vm: MenuViewModel) {
         escuchas += CoroutineScope(Dispatchers.Unconfined).launch {
@@ -462,7 +598,9 @@ class MenuViewModelDescuentosDelServidorTest {
     private fun crear(
         estado: Unit? = Unit,
         id: String = "o-1",
+        subtotal: String = "100.00",
         descuentos: String = "0.00",
+        total: String? = null,
         renglones: List<OrderItem> = emptyList(),
         filasDeLaCopia: List<OrderDiscount> = emptyList(),
     ): MenuViewModel {
@@ -501,30 +639,38 @@ class MenuViewModelDescuentosDelServidorTest {
             autorizacionDeGerente = autorizacion,
         ).also { creados.add(it) }
         if (estado != null) {
-            campo<MenuState>(vm, "_state").value =
-                MenuState.Success(orden(id = id, descuentos = descuentos, renglones = renglones, filas = filasDeLaCopia))
+            campo<MenuState>(vm, "_state").value = MenuState.Success(
+                orden(id = id, subtotal = subtotal, descuentos = descuentos, total = total, renglones = renglones, filas = filasDeLaCopia),
+            )
         }
         return vm
     }
 
     private fun orden(
         id: String = "o-1",
+        subtotal: String = "100.00",
         descuentos: String = "0.00",
+        total: String? = null,
         renglones: List<OrderItem> = emptyList(),
         filas: List<OrderDiscount> = emptyList(),
-    ) = Order(
-        id = id, orderNumber = "1", venueId = venueId, tableId = null, tableName = null, covers = 1,
-        waiterId = null, waiterName = null, status = OrderStatus.OPEN, kitchenStatus = KitchenStatus.PENDING,
-        paymentStatus = PaymentStatus.PENDING, orderType = OrderType.DINE_IN, items = renglones,
-        subtotal = BigDecimal("100.00"), discountAmount = BigDecimal(descuentos), tax = BigDecimal.ZERO,
-        total = BigDecimal("100.00").subtract(BigDecimal(descuentos)), notes = null, createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
-        version = 1, discounts = filas,
+    ): Order {
+        val elTotal = total?.let { BigDecimal(it) } ?: BigDecimal(subtotal).subtract(BigDecimal(descuentos))
+        return Order(
+            id = id, orderNumber = "1", venueId = venueId, tableId = null, tableName = null, covers = 1,
+            waiterId = null, waiterName = null, status = OrderStatus.OPEN, kitchenStatus = KitchenStatus.PENDING,
+            paymentStatus = PaymentStatus.PENDING, orderType = OrderType.DINE_IN, items = renglones,
+            subtotal = BigDecimal(subtotal), discountAmount = BigDecimal(descuentos), tax = BigDecimal.ZERO,
+            total = elTotal, remainingBalance = elTotal, notes = null, createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+            version = 1, discounts = filas,
+        )
+    }
+
+    private fun fila(id: String, monto: String = "10.00") = OrderDiscount(
+        id = id, orderId = "o-1", discountId = null, couponCodeId = null, name = "Descuento $id", type = DiscountType.FIXED,
+        value = BigDecimal(monto), amount = BigDecimal(monto), reason = null, appliedBy = "", appliedAt = Instant.EPOCH,
     )
 
-    private fun fila(id: String) = OrderDiscount(
-        id = id, orderId = "o-1", discountId = null, couponCodeId = null, name = "Descuento $id", type = DiscountType.FIXED,
-        value = BigDecimal("10.00"), amount = BigDecimal("10.00"), reason = null, appliedBy = "", appliedAt = Instant.EPOCH,
-    )
+    private fun acuse(fila: OrderDiscount, total: String? = null) = AcuseDeDescuento(fila, total?.let { BigDecimal(it) })
 
     private fun renglon() = OrderItem(
         id = "i-1", orderId = "o-1", productId = "p-1", productName = "Café", productSku = null, quantity = 1,

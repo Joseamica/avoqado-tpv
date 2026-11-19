@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyPredefinedDiscountRe
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ValidateCouponRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toCouponCode
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toDiscount
+import com.jaac.avoqado_tpv.features.ordering.domain.AcuseDeDescuento
 import com.jaac.avoqado_tpv.features.ordering.domain.CouponCode
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
@@ -78,14 +79,16 @@ class DiscountRepositoryImpl @Inject constructor(
         venueId: String,
         orderId: String,
         discountId: String,
-        authorizedById: String?
-    ): Result<OrderDiscount> = withContext(Dispatchers.IO) {
+        authorizedById: String?,
+        idempotencyKey: String?,
+    ): Result<AcuseDeDescuento> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🏷️ [Discount] Applying predefined discount: $discountId to order: $orderId")
 
             val request = ApplyPredefinedDiscountRequest(
                 discountId = discountId,
-                authorizedById = authorizedById
+                authorizedById = authorizedById,
+                idempotencyKey = idempotencyKey,
             )
 
             val response = apiService.applyPredefinedDiscount(venueId, orderId, request)
@@ -108,7 +111,7 @@ class DiscountRepositoryImpl @Inject constructor(
                         appliedAt = java.time.Instant.now()
                     )
                     Timber.i("✅ Discount applied: -$${body.data.amount}, new total: $${body.data.newOrderTotal}")
-                    Result.success(discount)
+                    Result.success(acuse(discount, body.data))
                 } else {
                     val error = body.error ?: "Failed to apply discount"
                     Timber.e("❌ $error")
@@ -149,8 +152,9 @@ class DiscountRepositoryImpl @Inject constructor(
         value: Double,
         reason: String?,
         authorizedById: String?,
-        overrideToken: String?
-    ): Result<OrderDiscount> = withContext(Dispatchers.IO) {
+        overrideToken: String?,
+        idempotencyKey: String?,
+    ): Result<AcuseDeDescuento> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🏷️ [Discount] Applying manual discount: $type $value to order: $orderId")
 
@@ -164,7 +168,8 @@ class DiscountRepositoryImpl @Inject constructor(
                 type = backendType,
                 value = value,
                 reason = reason,
-                authorizedById = authorizedById
+                authorizedById = authorizedById,
+                idempotencyKey = idempotencyKey,
             )
 
             val response = apiService.applyManualDiscount(venueId, orderId, request, overrideToken)
@@ -192,7 +197,7 @@ class DiscountRepositoryImpl @Inject constructor(
                         appliedAt = Instant.now()
                     )
                     Timber.i("✅ Manual discount applied: -$${body.data.amount}, new total: $${body.data.newOrderTotal}")
-                    Result.success(discount)
+                    Result.success(acuse(discount, body.data))
                 } else {
                     val error = body.error ?: "Failed to apply manual discount"
                     Timber.e("❌ $error")
@@ -231,7 +236,7 @@ class DiscountRepositoryImpl @Inject constructor(
         orderId: String,
         orderDiscountId: String,
         expectedVersion: Int
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    ): Result<java.math.BigDecimal?> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🗑️ [Discount] Removing discount: $orderDiscountId from order: $orderId (version=$expectedVersion)")
 
@@ -239,7 +244,8 @@ class DiscountRepositoryImpl @Inject constructor(
 
             if (response.isSuccessful) {
                 Timber.i("✅ Discount removed successfully")
-                Result.success(Unit)
+                // D16 v4: el total de la cuenta según el SERVIDOR, para la cabecera si la lectura final no llega.
+                Result.success(response.body()?.data?.newOrderTotal?.let { BigDecimal.valueOf(it) })
             } else if (response.code() >= 500) {
                 Timber.e("❌ Remove discount: HTTP ${response.code()} (sin confirmar)")
                 Result.failure(DescuentoSinConfirmarException())
@@ -310,7 +316,7 @@ class DiscountRepositoryImpl @Inject constructor(
         venueId: String,
         orderId: String,
         code: String
-    ): Result<OrderDiscount> = withContext(Dispatchers.IO) {
+    ): Result<AcuseDeDescuento> = withContext(Dispatchers.IO) {
         try {
             Timber.d("🎟️ [Coupon] Applying code: $code to order: $orderId")
 
@@ -336,7 +342,7 @@ class DiscountRepositoryImpl @Inject constructor(
                         appliedAt = Instant.now()
                     )
                     Timber.i("✅ Coupon applied: ${body.data.discountName} (-$${body.data.amount}), new total: $${body.data.newOrderTotal}")
-                    Result.success(discount)
+                    Result.success(AcuseDeDescuento(discount, BigDecimal.valueOf(body.data.newOrderTotal)))
                 } else {
                     val error = body.error ?: "Failed to apply coupon"
                     Timber.e("❌ $error")
@@ -355,6 +361,8 @@ class DiscountRepositoryImpl @Inject constructor(
                     null
                 }
 
+                // D16 v4 (Codex r3 #5): un 5xx no dice si el cupón quedó aplicado.
+                if (response.code() >= 500) return@withContext Result.failure(DescuentoSinConfirmarException())
                 val error = when (response.code()) {
                     400 -> backendError ?: "Coupon already applied or invalid"
                     404 -> backendError ?: "Coupon code not found"
@@ -364,6 +372,11 @@ class DiscountRepositoryImpl @Inject constructor(
                 Timber.e("❌ $error")
                 Result.failure(Exception(error))
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.e(e, "❌ Sin respuesta al aplicar el cupón")
+            Result.failure(DescuentoSinConfirmarException(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ Error applying coupon")
             Result.failure(e)
@@ -401,6 +414,16 @@ const val TEXTO_REBAJA_FIJA_DE_VALES =
     "Esta rebaja quedó fija al cobrar los vales y no se quita desde la caja. Si hay que cambiarla, avisa a un encargado."
 const val TEXTO_DESCUENTO_YA_NO_ESTABA = "Ese descuento ya no estaba en la cuenta. Ya actualizamos la lista."
 const val TEXTO_NO_SE_PUDO_QUITAR = "No se pudo quitar el descuento."
+
+// D16 v4 (fila de descuentos) y D21 (llave por envío)
+const val TEXTO_ESPERA_EL_DESCUENTO = "Espera a que termine el descuento en curso."
+const val TEXTO_ESPERA_EL_COBRO = "Espera a que termine de preparar el cobro."
+const val TEXTO_DESCUENTO_YA_APLICADO = "Ese descuento ya está aplicado en esta cuenta."
+const val TEXTO_NO_SE_PUDO_APLICAR = "No se pudo aplicar el descuento."
+const val TEXTO_ENVIO_YA_HECHO = "Ese descuento ya había quedado aplicado. Si quieres otro igual, vuelve a darlo."
+
+private fun acuse(fila: OrderDiscount, data: com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountDataDto) =
+    AcuseDeDescuento(fila = fila, totalDeLaCuenta = BigDecimal.valueOf(data.newOrderTotal), repetida = data.repetida == true)
 /** La cuenta sigue con su id local (`local_…`): el SERVIDOR no la conoce todavía y el descuento no se manda. */
 const val TEXTO_CUENTA_SIN_SUBIR =
     "Sin conexión: esta cuenta todavía no llega al servidor. Aplica el descuento cuando vuelva la conexión."

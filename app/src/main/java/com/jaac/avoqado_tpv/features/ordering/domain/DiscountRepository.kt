@@ -16,6 +16,19 @@ package com.jaac.avoqado_tpv.features.ordering.domain
  *
  * @see avoqado-server/docs/clients&promotions/CUSTOMER_LOYALTY_PROMOTIONS_REFERENCE.md
  */
+/**
+ * D16 v4 (hz:e82938e1:D16): lo que contesta el SERVIDOR al aplicar un descuento. La lista de la pantalla NO sale de aquí (la escribe la
+ * lectura final de la fila); esto sólo sirve para el total mientras esa lectura no llegue.
+ */
+data class AcuseDeDescuento(
+    /** La fila creada (id real; vacío con un SERVIDOR anterior a D16). */
+    val fila: OrderDiscount,
+    /** `newOrderTotal` del SERVIDOR (null si no vino). */
+    val totalDeLaCuenta: java.math.BigDecimal?,
+    /** D21: el SERVIDOR ya tenía este envío (misma llave) y no creó otra fila. */
+    val repetida: Boolean = false,
+)
+
 interface DiscountRepository {
 
     // ==========================================
@@ -55,8 +68,10 @@ interface DiscountRepository {
         venueId: String,
         orderId: String,
         discountId: String,
-        authorizedById: String? = null
-    ): Result<OrderDiscount>
+        authorizedById: String? = null,
+        /** D21: llave del envío (la misma en el reintento). */
+        idempotencyKey: String? = null,
+    ): Result<AcuseDeDescuento>
 
     /**
      * Apply a manual discount to order
@@ -79,8 +94,10 @@ interface DiscountRepository {
         value: Double,
         reason: String?,
         authorizedById: String? = null,
-        overrideToken: String? = null
-    ): Result<OrderDiscount>
+        overrideToken: String? = null,
+        /** D21: llave del envío (la misma en el reintento y en el reenvío con PIN forzado). */
+        idempotencyKey: String? = null,
+    ): Result<AcuseDeDescuento>
 
     /**
      * Remove a discount from order
@@ -97,7 +114,7 @@ interface DiscountRepository {
         orderId: String,
         orderDiscountId: String,
         expectedVersion: Int
-    ): Result<Unit>
+    ): Result<java.math.BigDecimal?>  // D16 v4: el total de la cuenta según el SERVIDOR (null si no vino)
 
     // ==========================================
     // COUPON OPERATIONS
@@ -137,5 +154,5 @@ interface DiscountRepository {
         venueId: String,
         orderId: String,
         code: String
-    ): Result<OrderDiscount>
+    ): Result<AcuseDeDescuento>
 }

@@ -212,6 +212,8 @@ fun ActionsTab(
     availableDiscounts: List<Discount> = emptyList(),
     appliedDiscounts: List<OrderDiscount> = emptyList(),
     isLoadingDiscounts: Boolean = false,
+    // D16 v4 (hz:e82938e1:D16): un cambio de descuento va del toque a su lectura final; mientras, los botones de descuento van en gris.
+    descuentoEnCurso: Boolean = false,
     couponValidationState: CouponValidationState = CouponValidationState.Idle,
     // Customer search for Pay Later
     customerSearchState: com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle,
@@ -269,8 +271,8 @@ fun ActionsTab(
                 title = "Descuentos",
                 icon = Icons.Outlined.Percent,
                 backgroundColor = ActionColors.Discounts,
-                enabled = hasItems && canApplyDiscount,
-                disabledReason = if (!canApplyDiscount) "Sin permisos para descuentos" else null,
+                enabled = hasItems && canApplyDiscount && !descuentoEnCurso,
+                disabledReason = if (!canApplyDiscount) "Sin permisos para descuentos" else if (descuentoEnCurso) "Aplicando descuento…" else null,
                 onClick = { currentNav = ActionsNavigation.DiscountsSubNav }
             )
         )
@@ -314,7 +316,8 @@ fun ActionsTab(
                 title = "Cortesia",
                 icon = Icons.Default.Favorite,
                 backgroundColor = MaterialTheme.avoqadoColors.statusSuccess,
-                enabled = hasItems,
+                enabled = hasItems && !descuentoEnCurso,
+                disabledReason = if (descuentoEnCurso) "Aplicando descuento…" else null,
                 onClick = { dialogState = ActionsDialogState.Cortesia }
             )
         )
@@ -349,7 +352,7 @@ fun ActionsTab(
                 DiscountsSubNavScreen(
                     availableDiscounts = availableDiscounts,
                     isLoading = isLoadingDiscounts,
-                    hasItems = hasItems,
+                    hasItems = hasItems && !descuentoEnCurso,
                     onSelectDiscount = { discount ->
                         dialogState = ActionsDialogState.DiscountConfirmation(discount)
                     },
@@ -361,8 +364,9 @@ fun ActionsTab(
             ActionsNavigation.CouponsSubNav -> {
                 CouponsSubNavScreen(
                     validationState = couponValidationState,
-                    hasItems = hasItems,
+                    hasItems = hasItems && !descuentoEnCurso,
                     appliedDiscounts = appliedDiscounts,
+                    descuentoEnCurso = descuentoEnCurso,
                     onApplyCoupon = onApplyCoupon,
                     onRemoveDiscount = onRemoveDiscount,
                     onBack = { currentNav = ActionsNavigation.Grid }
@@ -891,7 +895,8 @@ private fun CouponsSubNavScreen(
     onApplyCoupon: (String) -> Unit,
     onRemoveDiscount: (String) -> Unit,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    descuentoEnCurso: Boolean = false,
 ) {
     val sizes = LocalResponsiveSizes.current
 
@@ -925,7 +930,8 @@ private fun CouponsSubNavScreen(
                 appliedDiscounts.forEach { discount ->
                     AppliedDiscountRow(
                         discount = discount,
-                        onRemove = { onRemoveDiscount(discount.id) }
+                        onRemove = { onRemoveDiscount(discount.id) },
+                        removeEnabled = !descuentoEnCurso
                     )
                 }
             }
@@ -1124,7 +1130,8 @@ private fun CouponErrorMessage(
 private fun AppliedDiscountRow(
     discount: OrderDiscount,
     onRemove: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    removeEnabled: Boolean = true,
 ) {
     val greenColor = MaterialTheme.avoqadoColors.statusSuccess
 
@@ -1179,6 +1186,7 @@ private fun AppliedDiscountRow(
             // Remove button
             IconButton(
                 onClick = onRemove,
+                enabled = removeEnabled,
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(
@@ -1742,6 +1750,35 @@ private fun CouponsSubNavPreview() {
             onApplyCoupon = {},
             onRemoveDiscount = {},
             onBack = {}
+        )
+    }
+}
+
+// D16 v4: un descuento en curso (PAX A910S, 360x640): tarjetas de descuento en gris y «Eliminar descuento» deshabilitado.
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun ActionsTabDescuentoEnCursoPreview() {
+    AvoqadoTheme {
+        ActionsTab(
+            order = createMockOrder(),
+            appliedDiscounts = listOf(createMockOrderDiscount()),
+            descuentoEnCurso = true
+        )
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun CouponsSubNavDescuentoEnCursoPreview() {
+    AvoqadoTheme {
+        CouponsSubNavScreen(
+            validationState = CouponValidationState.Idle,
+            hasItems = false,
+            appliedDiscounts = listOf(createMockOrderDiscount()),
+            onApplyCoupon = {},
+            onRemoveDiscount = {},
+            onBack = {},
+            descuentoEnCurso = true
         )
     }
 }

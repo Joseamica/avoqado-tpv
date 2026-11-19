@@ -138,6 +138,7 @@ fun MenuScreen(
     // 🎟️ Discount & Coupon state
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
     val appliedDiscounts by viewModel.appliedDiscounts.collectAsStateWithLifecycle()
+    val descuentoEnCurso by viewModel.descuentoEnCurso.collectAsStateWithLifecycle()
     val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
     val couponValidationState by viewModel.couponValidationState.collectAsStateWithLifecycle()
     // 🔐 Permission gates from backend — keep ActionsTab in sync with what the API allows
@@ -553,6 +554,7 @@ fun MenuScreen(
                                 availableDiscounts = availableDiscounts,
                                 appliedDiscounts = appliedDiscounts,
                                 isLoadingDiscounts = isLoadingDiscounts,
+                                descuentoEnCurso = descuentoEnCurso,
                                 couponValidationState = couponValidationState,
                                 // Customer search for Pay Later
                                 customerSearchState = customerSearchState,
@@ -686,7 +688,7 @@ fun MenuScreen(
                             showSplitOptions = false
                             val hasCustomers = order.orderCustomers.isNotEmpty()
                             Timber.d("📦 Split by products selected - syncing before navigation | orderId=${order.id} | hasCustomers=$hasCustomers")
-                            viewModel.syncBeforeNavigate { syncedOrderId ->
+                            viewModel.syncBeforeNavigate(haciaUnCobro = true) { syncedOrderId ->
                                 Timber.d("📦 Sync complete, navigating to SplitByProduct | orderId=$syncedOrderId")
                                 onNavigateToSplitByProduct(syncedOrderId, hasCustomers)
                             }
@@ -696,7 +698,7 @@ fun MenuScreen(
                             showSplitOptions = false
                             val hasCustomers = order.orderCustomers.isNotEmpty()
                             Timber.d("👥 Split by persons selected - syncing before navigation | orderId=${order.id} | hasCustomers=$hasCustomers")
-                            viewModel.syncBeforeNavigate { syncedOrderId ->
+                            viewModel.syncBeforeNavigate(haciaUnCobro = true) { syncedOrderId ->
                                 Timber.d("👥 Sync complete, navigating to SplitByPerson | orderId=$syncedOrderId")
                                 onNavigateToSplitByPerson(syncedOrderId, hasCustomers)
                             }

@@ -198,7 +198,11 @@ data class ApplyPredefinedDiscountRequest(
     val discountId: String,
 
     @SerializedName("authorizedById")
-    val authorizedById: String? = null
+    val authorizedById: String? = null,
+
+    // D21 (hz:e82938e1:D21): llave del envío; un SERVIDOR anterior la ignora. Gson no manda los null.
+    @SerializedName("idempotencyKey")
+    val idempotencyKey: String? = null,
 )
 
 /**
@@ -218,7 +222,11 @@ data class ApplyManualDiscountRequest(
     val reason: String?,
 
     @SerializedName("authorizedById")
-    val authorizedById: String? = null
+    val authorizedById: String? = null,
+
+    // D21 (hz:e82938e1:D21): llave del envío; un SERVIDOR anterior la ignora. Gson no manda los null.
+    @SerializedName("idempotencyKey")
+    val idempotencyKey: String? = null,
 )
 
 /**
@@ -308,6 +316,10 @@ data class ApplyDiscountDataDto(
     // D16 (hz:e82938e1:D16): la fila creada en la cuenta. Null con un SERVIDOR anterior: la fila espera a la relectura.
     @SerializedName("orderDiscountId")
     val orderDiscountId: String? = null,
+
+    // D21: el SERVIDOR ya tenía este envío (misma llave) y no creó otra fila.
+    @SerializedName("repetida")
+    val repetida: Boolean? = null,
 )
 
 /**

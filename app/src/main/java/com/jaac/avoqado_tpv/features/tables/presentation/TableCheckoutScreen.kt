@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -528,6 +529,16 @@ private fun CheckSummaryCard(
     isRemovingServiceCharge: Boolean = false,
     onRemoveServiceCharge: (String) -> Unit = {},
 ) {
+    // D15: la razón de una rebaja fija, al tocar su fila. Sólo explica: no manda a cancelar, cobrar ni reembolsar.
+    var razonDeRebajaFija by remember { mutableStateOf<String?>(null) }
+    razonDeRebajaFija?.let { razon ->
+        AlertDialog(
+            onDismissRequest = { razonDeRebajaFija = null },
+            title = { Text("Rebaja fija") },
+            text = { Text(razon) },
+            confirmButton = { TextButton(onClick = { razonDeRebajaFija = null }) { Text("Entendido") } },
+        )
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -554,16 +565,20 @@ private fun CheckSummaryCard(
             // (discountAmount sin desglose) no tiene un orderDiscountId
             // contra el cual llamar DELETE, así que no ofrece el control.
             check.orderDiscounts.forEach { discount ->
+                // D15: la rebaja fija del cobro de vales enseña su «Quitar» en gris con su nota; al tocar la fila, la razón.
+                val quitar = quitarDeLaRebaja(discount, quitandoOtra = isRemovingDiscount)
                 SummaryRow(
                     label = discount.name.ifBlank { "Descuento" },
                     amount = -discount.amount,
                     color = MaterialTheme.avoqadoColors.statusSuccess,
-                    onRemove = if (discount.id.isNotBlank()) {
+                    onRemove = if (quitar.ensenaQuitar) {
                         { onRemoveDiscount(discount.id) }
                     } else {
                         null
                     },
-                    removeEnabled = !isRemovingDiscount,
+                    removeEnabled = quitar.activo,
+                    nota = quitar.nota,
+                    onClickFila = quitar.razon?.let { razon -> { razonDeRebajaFija = razon } },
                 )
             }
             if (check.orderDiscounts.isEmpty() && check.discountAmount > BigDecimal.ZERO) {
@@ -615,19 +630,35 @@ private fun SummaryRow(
     /** No-null = fila removible (ej. un descuento aplicado); dispara [onRemoveDiscount]. */
     onRemove: (() -> Unit)? = null,
     removeEnabled: Boolean = true,
+    /** D15: texto corto debajo de la etiqueta (p. ej. «Fija: viene del cobro de vales»). */
+    nota: String? = null,
+    /** D15: tocar la fila (p. ej. para explicar por qué su «Quitar» está en gris). */
+    onClickFila: (() -> Unit)? = null,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClickFila != null) Modifier.clickable(onClickLabel = "Ver por qué está fija", onClick = onClickFila) else Modifier)
+            .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = if (emphasized) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-                fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Normal,
-                color = color ?: MaterialTheme.colorScheme.onSurface,
-            )
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Text(
+                    text = label,
+                    style = if (emphasized) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Normal,
+                    color = color ?: MaterialTheme.colorScheme.onSurface,
+                )
+                if (nota != null) {
+                    Text(
+                        text = nota,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             if (onRemove != null) {
                 FilledIconButton(
                     onClick = onRemove,
@@ -1210,16 +1241,53 @@ private fun TableCheckoutScreenPaxPreview() {
     }
 }
 
+/** D15 (Codex r4 #2): la PAX real mide 360 × 640 dp; la rebaja fija junto a una normal, con «Quitar» en gris y su nota. */
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX 360x640 — rebaja fija del cobro de vales (D15)")
+@Composable
+private fun RebajaFijaPaxPreview() {
+    AvoqadoTheme {
+        CheckSummaryCard(check = previewCheck(), remaining = BigDecimal("845.50"))
+    }
+}
+
 private fun previewCheck(): OrderDetail = OrderDetail(
     id = "order-1",
     subtotal = BigDecimal("900.00"),
     discountAmount = BigDecimal("100.00"),
     serviceChargeAmount = BigDecimal("45.50"),
     total = BigDecimal("845.50"),
-    orderDiscounts = listOf(OrderDiscountLine(id = "d1", name = "Cliente frecuente", amount = BigDecimal("100.00"))),
+    orderDiscounts = listOf(
+        OrderDiscountLine(id = "d1", name = "Cliente frecuente", amount = BigDecimal("100.00")),
+        // D15: la rebaja fija del cobro de vales (Quitar en gris + nota).
+        OrderDiscountLine(id = "d2", name = "10 % producto", amount = BigDecimal("10.00"), congeladoPorVales = true),
+    ),
     serviceCharges = listOf(OrderServiceChargeLine(id = "s1", name = "Propina automática 6 personas", amount = BigDecimal("45.50"))),
     items = listOf(
         OrderDetailItem(id = "i1", productName = "Café americano", quantity = 2, unitPrice = BigDecimal("45.00"), total = BigDecimal("90.00")),
         OrderDetailItem(id = "i2", productName = "Croissant", quantity = 1, unitPrice = BigDecimal("55.00"), total = BigDecimal("55.00")),
     ),
 )
+
+/** D15: cómo se enseña el «Quitar» de una rebaja de la cuenta en Mesas. `razon` no nula = tocar la fila la explica. */
+internal data class QuitarDeLaRebaja(
+    val ensenaQuitar: Boolean,
+    val activo: Boolean,
+    val nota: String? = null,
+    val razon: String? = null,
+)
+
+internal const val NOTA_REBAJA_FIJA = "Fija: viene del cobro de vales"
+internal const val RAZON_REBAJA_FIJA =
+    "Esta rebaja quedó fija al cobrar los vales y no se quita desde la caja. Si hay que cambiarla, avisa a un encargado."
+
+/**
+ * D15 (18-nov): la rebaja que quedó fija al cobrar vales (`congeladoPorVales`, del SERVIDOR) enseña su «Quitar» en GRIS con su nota, y
+ * tocar la fila dice sólo por qué (sin mandar a una acción que en ese estado podría estar bloqueada: abono, sin red, conciliación).
+ * Las demás siguen como hoy: «Quitar» sólo con id real, apagado mientras se quita otra, y el SERVIDOR decide al tocar.
+ */
+internal fun quitarDeLaRebaja(discount: OrderDiscountLine, quitandoOtra: Boolean): QuitarDeLaRebaja = when {
+    discount.id.isBlank() -> QuitarDeLaRebaja(ensenaQuitar = false, activo = false)
+    discount.congeladoPorVales ->
+        QuitarDeLaRebaja(ensenaQuitar = true, activo = false, nota = NOTA_REBAJA_FIJA, razon = RAZON_REBAJA_FIJA)
+    else -> QuitarDeLaRebaja(ensenaQuitar = true, activo = !quitandoOtra)
+}

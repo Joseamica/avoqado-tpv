@@ -80,6 +80,8 @@ import com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.cobrarSaltaElLector
+import com.jaac.avoqado_tpv.features.payment.domain.EntradaDePagoRapido
+import com.jaac.avoqado_tpv.features.payment.domain.decidirEntradaDePagoRapido
 import com.jaac.avoqado_tpv.features.payment.domain.rutaDePagoEsperaAlLector
 import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
@@ -357,6 +359,25 @@ fun AppNavigation(
                 conexionCompleta = connectionStateManager.isFullyConnected(),
             ),
         )
+    }
+    // 💵 D7: la entrada a «Pago rápido» (las dos: el monto del Inicio y la pantalla de monto). Devuelve si va en sólo
+    // efectivo, o null si no entra (el lector falló con la conexión completa: se avisa como antes). Codex r1 #1: si la
+    // espera del lector falla sin la conexión completa (arranque en frío, WiFi sin salida), entra en sólo efectivo.
+    val entrarAPagoRapido: suspend (Context, String) -> Boolean? = { ctx, origen ->
+        when (
+            decidirEntradaDePagoRapido(
+                saltaElLector = pagoRapidoVaEnSoloEfectivo,
+                esperarAlLector = { awaitPaxPaymentReady(ctx, initializationManager, origen, avisarSiFalla = false) },
+                conexionCompleta = { connectionStateManager.isFullyConnected() },
+            )
+        ) {
+            EntradaDePagoRapido.NORMAL -> false
+            EntradaDePagoRapido.SOLO_EFECTIVO -> true
+            EntradaDePagoRapido.BLOQUEADA -> {
+                avisarLectorNoListo(ctx, origen)
+                null
+            }
+        }
     }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
@@ -1319,10 +1340,7 @@ fun AppNavigation(
                 onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
                 onStartPaymentWithAmount = { amount ->
                     launchHomeAction action@ {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
-                            return@action
-                        }
+                        val soloEfectivo = entrarAPagoRapido(homeContext, "Welcome fast payment") ?: return@action
                         Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
                         navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
                             prepareManualPaymentArgs(handle, amount, soloEfectivo)
@@ -1564,10 +1582,7 @@ fun AppNavigation(
                 },
                 onAmountSubmit = { amount ->
                     fastPaymentScope.launch {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
-                            return@launch
-                        }
+                        val soloEfectivo = entrarAPagoRapido(context, "Fast payment entry") ?: return@launch
                         navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
                             prepareManualPaymentArgs(handle, amount, soloEfectivo)
                         }
@@ -3688,7 +3703,9 @@ private suspend fun awaitPaxPaymentReady(
     context: Context,
     initializationManager: InitializationManager,
     source: String,
-    showPreparingToast: Boolean = true
+    showPreparingToast: Boolean = true,
+    // 💵 D7: Pago rápido decide él mismo qué hacer si el lector no queda listo (sólo efectivo o el aviso de siempre).
+    avisarSiFalla: Boolean = true,
 ): Boolean {
     if (!BuildConfig.ENABLE_PAX_SDK) {
         return true
@@ -3714,16 +3731,21 @@ private suspend fun awaitPaxPaymentReady(
         return true
     }
 
-    Timber.e(
-        result.exceptionOrNull(),
-        "❌ [$source] Blumon SDK not ready; blocking payment navigation"
-    )
+    if (!avisarSiFalla) {
+        Timber.w(result.exceptionOrNull(), "⚠️ [$source] Blumon SDK not ready; caller decides (D7)")
+        return false
+    }
+    avisarLectorNoListo(context, source, result.exceptionOrNull())
+    return false
+}
+
+private fun avisarLectorNoListo(context: Context, source: String, causa: Throwable? = null) {
+    Timber.e(causa, "❌ [$source] Blumon SDK not ready; blocking payment navigation")
     Toast.makeText(
         context,
         "Sistema de pagos no inicializado. Toca Reintentar o reinicia la terminal.",
         Toast.LENGTH_LONG
     ).show()
-    return false
 }
 
 /**

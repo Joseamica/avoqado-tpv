@@ -567,12 +567,14 @@ class SocketManagerTest {
     // los dos campos viajan como booleanos de JSON, nunca como texto.
 
     @Test
-    fun `P1 el socket declara terminalPaymentExecutionVersion 1`() = runTest(testDispatcher) {
+    fun `P1 el socket declara terminalPaymentExecutionVersion 2 en la PAX y 1 en la Nexgo`() = runTest(testDispatcher) {
         val capturedOptions = slot<IO.Options>()
         every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
         socketManager.connect("https://test.socket.io", "test-token", terminalId = "AVQD-123")
         val authMap = capturedOptions.captured.auth as? Map<*, *>
-        assertThat(authMap?.get("terminalPaymentExecutionVersion")).isEqualTo("1")
+        // F1 bloque 2 (R1): la PAX además certifica si la solicitud se puede declarar; la N86 se queda en 1.
+        assertThat(authMap?.get("terminalPaymentExecutionVersion"))
+            .isEqualTo(if (com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK) "2" else "1")
         // Las capacidades de antes siguen igual: anunciar una más no le quita nada a un servidor viejo.
         assertThat(authMap?.get("terminalPaymentAckVersion")).isEqualTo("1")
         assertThat(authMap?.get("terminalPaymentCancelDispositionVersion")).isEqualTo("2")
@@ -585,11 +587,12 @@ class SocketManagerTest {
         coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-cerrada", any()) } returns
             com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
-                executionAlive = false, closedForExecution = true,
+                executionAlive = false, closedForExecution = true, declarable = false,
             )
         coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-viva", any()) } returns
             com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+                declarable = true, // F1 bloque 2: sin el cese que lo respalda no viaja
             )
         capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-cerrada").put("venueId", "venue-1"))
         capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-viva").put("venueId", "venue-1"))
@@ -598,14 +601,15 @@ class SocketManagerTest {
         verify(timeout = 2000) {
             mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
                 it.optString("requestId") == "req-cerrada" && it.optString("disposition") == "ACTIVE" &&
-                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true && !it.has("finalResult")
+                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true && !it.has("finalResult") &&
+                    it.opt("declarable") == false
             })
         }
         // Con la ejecución viva (lo de siempre) también viaja, explícito; para el servidor no es evidencia.
         verify(timeout = 2000) {
             mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
                 it.optString("requestId") == "req-viva" && it.optString("disposition") == "ACTIVE" &&
-                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false && !it.has("declarable")
             })
         }
         verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }

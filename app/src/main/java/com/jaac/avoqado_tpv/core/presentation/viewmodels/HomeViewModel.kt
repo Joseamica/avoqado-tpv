@@ -16,6 +16,7 @@ import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+import com.jaac.avoqado_tpv.features.authentication.data.repository.RefrescoDelNegocio
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
@@ -306,7 +307,8 @@ class HomeViewModel @Inject constructor(
     /**
      * D50: los datos del negocio para el ticket (el emisor de Facturación) al abrir Inicio y al volver la red, no sólo con el PIN:
      * tras actualizar la app, lo que dejó la versión anterior ya no se imprime (no dice de qué negocio es), y una sesión guardada
-     * no pasa por el PIN. Si el GET falla, se reintenta solo (30 s, luego el doble, hasta cada 10 min) mientras Inicio viva.
+     * no pasa por el PIN. Si el GET falla o llega sin `receiptInfo`, se reintenta solo (30 s, luego el doble, hasta cada 10 min)
+     * mientras Inicio viva; con 401 o 403 no (Codex r2 #4 y #7).
      * Uno a la vez (Codex r1 #5): al volver la red, el nuevo reemplaza al que esperaba su siguiente intento. El orden entre éste
      * y el del PIN lo cuida `AuthRepository`.
      */
@@ -317,7 +319,7 @@ class HomeViewModel @Inject constructor(
             var espera = 30_000L
             while (true) {
                 val venueId = secureStorage.getVenueId() ?: return@launch
-                if (authRepository.refrescarDatosDelNegocio(venueId)) return@launch
+                if (authRepository.refrescarDatosDelNegocio(venueId) != RefrescoDelNegocio.REINTENTAR) return@launch
                 delay(espera)
                 espera = (espera * 2).coerceAtMost(10 * 60_000L)
             }

@@ -660,11 +660,39 @@ class AuthRepositoryTest {
                 respuestaVieja.complete(Response.success(viejo)); runCurrent()
             }
 
-            assertTrue(elNuevo.await())
-            assertFalse(elViejo.await())
+            assertEquals(RefrescoDelNegocio.LISTO, elNuevo.await())
+            assertEquals(RefrescoDelNegocio.REINTENTAR, elViejo.await())
             verify(exactly = 1) { secureStorage.guardarDatosFiscales(any(), any()) }
             verify(exactly = 1) { secureStorage.guardarDatosFiscales(testVenueId, EMISOR) }
         }
+    }
+
+    @Test
+    fun `D50 Codex r2 4 un 200 sin receiptInfo guarda lo que trae pero no cuenta como refresco bueno`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        every { secureStorage.datosFiscalesDelTicket(testVenueId) } returns DatosFiscalesDelTicket.NINGUNO
+        respuesta(negocio(receiptInfo = null))
+
+        assertEquals(RefrescoDelNegocio.REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        verify(exactly = 1) { secureStorage.guardarDatosFiscales(testVenueId, COLUMNAS) }
+
+        respuesta(negocio())
+        assertEquals(RefrescoDelNegocio.LISTO, authRepository.refrescarDatosDelNegocio(testVenueId))
+    }
+
+    @Test
+    fun `D50 Codex r2 7 un 401 o un 403 no se reintenta y un 500 o sin red si`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        val cuerpo = "{}".toResponseBody("application/json".toMediaTypeOrNull())
+        for (codigo in listOf(401, 403)) {
+            coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(codigo, cuerpo)
+            assertEquals("HTTP $codigo", RefrescoDelNegocio.NO_REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        }
+        coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(500, cuerpo)
+        assertEquals(RefrescoDelNegocio.REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        coEvery { apiService.getVenueDetails(testVenueId) } throws java.io.IOException("sin red")
+        assertEquals(RefrescoDelNegocio.REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any()) }
     }
 
     // ═════════════════════════════════════════════════════════════════════════

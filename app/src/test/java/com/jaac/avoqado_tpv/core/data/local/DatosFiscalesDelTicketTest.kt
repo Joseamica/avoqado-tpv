@@ -150,6 +150,24 @@ class DatosFiscalesDelTicketTest {
     }
 
     @Test
+    fun `P1 D50 Codex r2 6 una entrada cifrada danada sale sin RFC y no truena el ticket, y una escritura nueva la repara`() {
+        val disco = Disco("venue_id" to "venue-A")
+        var danada = true
+        val prefs = mockk<SharedPreferences> {
+            // EncryptedSharedPreferences lanza al no poder descifrar ESA entrada (las demás se leen bien).
+            every { getString("datos_fiscales_del_ticket", any()) } answers {
+                if (danada) throw SecurityException("Could not decrypt value") else disco.datos[firstArg()]
+            }
+        }
+        assertEquals(DatosFiscalesDelTicket.NINGUNO, SecureStorage.leerDatosFiscales(prefs, "venue-A"))
+
+        // El refresco ya no truena al leer lo guardado antes de escribir: escribe sin leer, y queda legible.
+        disco.guardar("venue-A", "Emisor A SA", "AAA010101AA1")
+        danada = false
+        assertEquals("AAA010101AA1", SecureStorage.leerDatosFiscales(prefs, "venue-A").rfc)
+    }
+
+    @Test
     fun `D50 nadie fuera de SecureStorage toca las llaves fiscales`() {
         val prohibido = listOf(
             "\"datos_fiscales_del_ticket\"", "\"venue_rfc\"", "\"venue_legal_name\"", "\"venue_fiscal_de\"",

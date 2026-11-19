@@ -51,6 +51,9 @@ import javax.inject.Singleton
  * }
  * ```
  */
+/** D50: cómo terminó un refresco de los datos del negocio. Inicio sólo vuelve a intentar con [REINTENTAR]. */
+enum class RefrescoDelNegocio { LISTO, REINTENTAR, NO_REINTENTAR }
+
 @Singleton
 class AuthRepository @Inject constructor(
     private val apiService: ApiService,
@@ -255,29 +258,31 @@ class AuthRepository @Inject constructor(
      * cambiara entre esta comprobación y la escritura, los datos fiscales llevan su negocio adentro y ningún ticket de otro
      * negocio los acepta (`SecureStorage.leerDatosFiscales`).
      *
-     * Codex r1 #3 (D50): Inicio, la red que vuelve y el PIN pueden pedirlo a la vez. Sólo escribe el último que EMPEZÓ: uno
-     * atrasado ya no pisa al que llegó antes con datos más nuevos. La comprobación y la escritura van juntas bajo el candado.
+     * Codex r1 #3 y r2 #5 (D50): Inicio, la red que vuelve y el PIN pueden pedirlo a la vez. Un refresco que, al llegar, ve que
+     * ya empezó otro más nuevo no escribe, y la comprobación y la escritura van juntas bajo el candado: queda el estado del refresco
+     * más nuevo, nunca uno atrasado encima de él (si el más nuevo falla, queda lo de antes e Inicio reintenta).
      *
-     * @return true si quedaron guardados (o conservados) los datos de [venueId] de esta respuesta.
+     * @return si quedaron guardados (o conservados) los datos de [venueId], o si Inicio debe reintentar.
      */
-    suspend fun refrescarDatosDelNegocio(venueId: String): Boolean {
+    suspend fun refrescarDatosDelNegocio(venueId: String): RefrescoDelNegocio {
         val turno = turnoDelRefresco.incrementAndGet()
         try {
             val response = apiService.getVenueDetails(venueId)
             val venue = response.body()
             if (!response.isSuccessful || venue == null) {
                 Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
-                return false
+                // Codex r2 #7: sin sesión o sin permiso, volver a intentar cada 10 min no lo arregla.
+                return if (response.code() == 401 || response.code() == 403) RefrescoDelNegocio.NO_REINTENTAR else RefrescoDelNegocio.REINTENTAR
             }
             synchronized(turnoDelRefresco) {
                 val negocioDeLaTerminal = secureStorage.getVenueId()
                 if (venue.id != venueId || negocioDeLaTerminal != venueId) {
                     Timber.w("⚠️ Datos del negocio $venueId descartados: respuesta de ${venue.id}, terminal en $negocioDeLaTerminal")
-                    return false
+                    return RefrescoDelNegocio.REINTENTAR
                 }
                 if (turno != turnoDelRefresco.get()) {
                     Timber.d("Datos del negocio $venueId: ya va un refresco más nuevo, éste no escribe")
-                    return false
+                    return RefrescoDelNegocio.REINTENTAR
                 }
                 secureStorage.saveVenueName(venue.name)
                 secureStorage.saveVenueLogo(venue.logo)
@@ -293,11 +298,12 @@ class AuthRepository @Inject constructor(
                 secureStorage.saveVenueZipCode(venue.zipCode)
             }
             Timber.d("✅ Venue details cached for receipts: ${venue.id}")
-            return true
+            // Codex r2 #4: sin `receiptInfo` lo guardado puede ser viejo o las columnas de siempre: Inicio vuelve a intentar.
+            return if (venue.receiptInfo == null) RefrescoDelNegocio.REINTENTAR else RefrescoDelNegocio.LISTO
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             Timber.w(e, "⚠️ Failed to fetch venue details")
-            return false
+            return RefrescoDelNegocio.REINTENTAR
         }
     }
 

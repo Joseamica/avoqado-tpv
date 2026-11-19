@@ -198,7 +198,9 @@ class SecureStorage @Inject constructor(
 
         /** D50: UNA lectura; sólo se dan al ticket de ESE negocio. Sin negocio, de otro, o roto: no se imprime nada. */
         internal fun leerDatosFiscales(prefs: SharedPreferences, venueIdDelTicket: String?): DatosFiscalesDelTicket {
-            val guardado = prefs.getString(KEY_DATOS_FISCALES, null)
+            // Codex r2 #6: si esa entrada cifrada se dañó, EncryptedSharedPreferences lanza al descifrarla: el ticket sale sin
+            // razón social ni RFC (no truena) y el siguiente refresco la reemplaza.
+            val guardado = runCatching { prefs.getString(KEY_DATOS_FISCALES, null) }.getOrNull()
             if (guardado == null || venueIdDelTicket.isNullOrBlank()) return DatosFiscalesDelTicket.NINGUNO
             val json = runCatching { JsonParser.parseString(guardado).asJsonObject }.getOrNull() ?: return DatosFiscalesDelTicket.NINGUNO
             if (json.texto("venueId") != venueIdDelTicket) return DatosFiscalesDelTicket.NINGUNO

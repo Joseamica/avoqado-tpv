@@ -122,11 +122,14 @@ interface PaymentAttemptDao {
     // 🔴 F1 bloque 4 (I3): el tope cuenta RESPUESTAS escritas (`history_checks`), no consultas tomadas; y PRIMERO va la lectura
     // despachada que nadie terminó (`history_read_at`), en cualquier estado — aunque cerró la ventana o la firmó una persona —, en
     // cuanto vence la reserva de quien la despachó.
+    // 🔴 Codex final r2 #4: el turno va por el ÚLTIMO TOQUE (la toma escribe `history_read_at = :now`; lo nunca tomado, su
+    // `created_at`), como S6 (`candidatasDeConsultaAlServidor`). «Despachadas primero» dejaba que 50 lecturas con falla permanente
+    // (credenciales) ocuparan cada barrido y una venta B nueva no recibía ninguna consulta; ahora la recién reintentada va al final.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
         AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
         AND (lease_until IS NULL OR lease_until < :now)
         AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
-        ORDER BY (history_read_at IS NULL), created_at ASC LIMIT 50""")
+        ORDER BY COALESCE(history_read_at, created_at) ASC, attempt_id ASC LIMIT 50""")
     suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin

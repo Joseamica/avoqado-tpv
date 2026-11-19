@@ -222,6 +222,32 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
     }
 
+    /**
+     * 🔴 Codex final r2 #4 · TPV N86 (familia «turnos del barrido»): 50 lecturas despachadas que fallan para siempre (credenciales
+     * inválidas: pausa sin gastar turno) no pueden dejar sin consulta a una venta B cuyo aprobado sólo aparecería en el historial. Tres
+     * barridos separados por seis horas, como el del aparato (`LedgerSweepScheduler`): B entra a más tardar en el segundo.
+     */
+    @Test fun `N86_cincuenta_lecturas_que_fallan_siempre_no_dejan_sin_turno_a_B`() = runBlocking<Unit> {
+        val ahora = System.currentTimeMillis()
+        repeat(50) { i -> dudaN86("f-$i", orden = "orden-$i") }
+        // Las 50 ya se despacharon hace 3 h (la lectura sigue anotada: su fallo técnico nunca se escribe como respuesta).
+        sql("UPDATE payment_attempts SET history_read_at = ${ahora - 3 * 3_600_000L} WHERE attempt_id LIKE 'f-%'")
+        // B llegó DESPUÉS de esa vuelta y nadie la ha consultado.
+        dudaN86("b", orden = "orden-B")
+        sql("UPDATE payment_attempts SET created_at = ${ahora - 2 * 3_600_000L} WHERE attempt_id = 'b'")
+        var consultasDeB = 0
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers {
+            if (firstArg<String>() == "b") { consultasDeB++; VerificacionDelCobro.NoCobrado }
+            else VerificacionDelCobro.NoSePudoVerificar("credenciales inválidas")
+        }
+        var t = ahora
+        repeat(3) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 6 * 3_600_000L }
+        assertWithMessage("B recibe su turno aunque 50 filas fallen siempre").that(consultasDeB).isAtLeast(1)
+        assertWithMessage("las que fallan siguen despachadas (se retoman)").that(dao.getById("f-0")!!.historyReadAt).isNotNull()
+        assertWithMessage("y sin gastar turno").that(consultasGastadas("f-0")).isEqualTo(0)
+    }
+
     @Test fun `lease_viejo_con_aprobado_propio_conserva_dinero_sin_gastar_dos_turnos`() = runBlocking<Unit> {
         dudaN86("a1")
         val suelta = CompletableDeferred<Unit>()

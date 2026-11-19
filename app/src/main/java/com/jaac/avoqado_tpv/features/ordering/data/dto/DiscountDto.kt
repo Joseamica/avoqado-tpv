@@ -303,7 +303,11 @@ data class ApplyDiscountDataDto(
     val amount: Double,
 
     @SerializedName("newOrderTotal")
-    val newOrderTotal: Double
+    val newOrderTotal: Double,
+
+    // D16 (hz:e82938e1:D16): la fila creada en la cuenta. Null con un SERVIDOR anterior: la fila espera a la relectura.
+    @SerializedName("orderDiscountId")
+    val orderDiscountId: String? = null,
 )
 
 /**
@@ -341,7 +345,11 @@ data class ApplyCouponDataDto(
     val amount: Double,
 
     @SerializedName("newOrderTotal")
-    val newOrderTotal: Double
+    val newOrderTotal: Double,
+
+    // D16: la fila creada en la cuenta (`couponId` es el id del CUPÓN, no de la fila). Null con un SERVIDOR anterior.
+    @SerializedName("orderDiscountId")
+    val orderDiscountId: String? = null,
 )
 
 /**

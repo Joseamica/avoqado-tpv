@@ -19,7 +19,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
+import java.io.IOException
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -91,9 +93,9 @@ class DiscountRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
                 if (body.success && body.data != null) {
-                    // Backend returns { amount, newOrderTotal } - create placeholder OrderDiscount
+                    // D16: la fila lleva el id que da el SERVIDOR (`orderDiscountId`); antes el del catálogo, que no se podía quitar
                     val discount = OrderDiscount(
-                        id = discountId,  // Use discountId as placeholder
+                        id = body.data.orderDiscountId ?: ID_DE_FILA_SIN_CONFIRMAR,
                         orderId = orderId,
                         discountId = discountId,
                         couponCodeId = null,
@@ -117,8 +119,11 @@ class DiscountRepositoryImpl @Inject constructor(
                     val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
                     if (permiso != null) return@withContext Result.failure(permiso)
                 }
+                // D16 (Codex r1 #7): un 5xx no dice si se guardó
+                if (response.code() >= 500) return@withContext Result.failure(DescuentoSinConfirmarException())
                 val error = when (response.code()) {
-                    400 -> response.body()?.error ?: "Invalid discount or conditions not met"
+                    // D16: como en D20 (manual), el cuerpo de un 400 viene en `errorBody()`; `body()` siempre era null.
+                    400 -> textoDelRechazo(response, "No se pudo aplicar el descuento.")
                     404 -> "Order or discount not found"
                     409 -> "Order was modified. Please refresh and try again."
                     else -> "Failed to apply discount: HTTP ${response.code()}"
@@ -126,6 +131,11 @@ class DiscountRepositoryImpl @Inject constructor(
                 Timber.e("❌ $error")
                 Result.failure(Exception(error))
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.e(e, "❌ Sin respuesta al aplicar el descuento del catálogo")
+            Result.failure(DescuentoSinConfirmarException(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ Error applying predefined discount")
             Result.failure(e)
@@ -168,7 +178,8 @@ class DiscountRepositoryImpl @Inject constructor(
                         DiscountType.FIXED -> "Descuento $$value"
                     }
                     val discount = OrderDiscount(
-                        id = "manual_${System.currentTimeMillis()}",
+                        // D16: el id real de la fila; antes `manual_…`, que el SERVIDOR no reconoce al quitarla
+                        id = body.data.orderDiscountId ?: ID_DE_FILA_SIN_CONFIRMAR,
                         orderId = orderId,
                         discountId = null,
                         couponCodeId = null,
@@ -192,6 +203,8 @@ class DiscountRepositoryImpl @Inject constructor(
                     val permiso = permisoRequeridoDe(403, response.errorBody()?.string(), "Manager authorization required")
                     if (permiso != null) return@withContext Result.failure(permiso)
                 }
+                // D16 (Codex r1 #7): un 5xx no dice si se guardó
+                if (response.code() >= 500) return@withContext Result.failure(DescuentoSinConfirmarException())
                 val error = when (response.code()) {
                     // D20: el cuerpo de un 400 no llega en `body()` (Retrofit lo deja en `errorBody()`): sin esto nunca salía su motivo.
                     400 -> textoDelRechazo(response, "Descuento inválido. Verifica el valor ingresado.")
@@ -202,6 +215,11 @@ class DiscountRepositoryImpl @Inject constructor(
                 Timber.e("❌ $error")
                 Result.failure(Exception(error))
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.e(e, "❌ Sin respuesta al aplicar el descuento manual")
+            Result.failure(DescuentoSinConfirmarException(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ Error applying manual discount")
             Result.failure(e)
@@ -222,15 +240,20 @@ class DiscountRepositoryImpl @Inject constructor(
             if (response.isSuccessful) {
                 Timber.i("✅ Discount removed successfully")
                 Result.success(Unit)
+            } else if (response.code() >= 500) {
+                Timber.e("❌ Remove discount: HTTP ${response.code()} (sin confirmar)")
+                Result.failure(DescuentoSinConfirmarException())
             } else {
-                val error = when (response.code()) {
-                    404 -> "Order or discount not found"
-                    409 -> "Order was modified. Please refresh and try again."
-                    else -> "Failed to remove discount: HTTP ${response.code()}"
-                }
-                Timber.e("❌ $error")
+                // D16: antes «Failed to remove discount: HTTP 400» y sólo al log; ahora la razón en español para la caja.
+                val error = motivoDelRechazoAlQuitar(response.errorBody()?.string())
+                Timber.e("❌ Remove discount rejected: HTTP ${response.code()} → $error")
                 Result.failure(Exception(error))
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.e(e, "❌ Sin respuesta al quitar el descuento")
+            Result.failure(DescuentoSinConfirmarException(e))
         } catch (e: Exception) {
             Timber.e(e, "❌ Error removing discount")
             Result.failure(e)
@@ -299,7 +322,8 @@ class DiscountRepositoryImpl @Inject constructor(
                 if (body.success && body.data != null) {
                     // Backend returns { couponId, discountName, amount, newOrderTotal }
                     val discount = OrderDiscount(
-                        id = body.data.couponId,
+                        // D16: el id de la FILA (antes el del cupón, que no se podía quitar); `couponCodeId` sigue siendo el cupón
+                        id = body.data.orderDiscountId ?: ID_DE_FILA_SIN_CONFIRMAR,
                         orderId = orderId,
                         discountId = null,
                         couponCodeId = body.data.couponId,
@@ -356,3 +380,45 @@ internal fun mensajeDelRechazoDelCupon(codigoHttp: Int, cuerpo: String?): String
     return runCatching { Gson().fromJson(cuerpo, JsonObject::class.java)?.get("message")?.asString }.getOrNull()
         ?.takeIf { it.isNotBlank() } ?: TEXTO_NO_SE_PUDO_VALIDAR_EL_CUPON
 }
+
+// ==========================================
+// D16 (hz:e82938e1:D16): TPV SOLA → ÓRDENES toma la lista de descuentos del SERVIDOR
+// ==========================================
+
+/** Una fila nueva sin id del SERVIDOR (SERVIDOR anterior a D16): la pantalla no la agrega y espera a la relectura. */
+const val ID_DE_FILA_SIN_CONFIRMAR = ""
+
+/**
+ * Aplicar o quitar sin respuesta (sin red, se cortó, o un 5xx): no sabemos si el SERVIDOR lo guardó. La pantalla lo dice, relee la
+ * lista y no lo vuelve a mandar (dos toques crearían dos filas reales).
+ */
+class DescuentoSinConfirmarException(cause: Throwable? = null) : Exception("Sin confirmar", cause)
+
+const val TEXTO_APLICAR_SIN_CONFIRMAR = "No pudimos confirmar el descuento. Revisa la lista antes de volver a aplicarlo."
+const val TEXTO_QUITAR_SIN_CONFIRMAR = "No se pudo confirmar: quitar un descuento necesita conexión. Revisa la lista."
+/** El mismo texto de D15 en Mesas: sólo la razón, sin mandar a cancelar ni cobrar (Codex D16 r1 #8, D15 r3 #1). */
+const val TEXTO_REBAJA_FIJA_DE_VALES =
+    "Esta rebaja quedó fija al cobrar los vales y no se quita desde la caja. Si hay que cambiarla, avisa a un encargado."
+const val TEXTO_DESCUENTO_YA_NO_ESTABA = "Ese descuento ya no estaba en la cuenta. Ya actualizamos la lista."
+const val TEXTO_NO_SE_PUDO_QUITAR = "No se pudo quitar el descuento."
+/** La cuenta sigue con su id local (`local_…`): el SERVIDOR no la conoce todavía y el descuento no se manda. */
+const val TEXTO_CUENTA_SIN_SUBIR =
+    "Sin conexión: esta cuenta todavía no llega al servidor. Aplica el descuento cuando vuelva la conexión."
+
+/**
+ * D16: la razón de un «quitar» rechazado (4xx), en español. La rebaja fijada al cobrar vales da la razón de D15 (sólo la razón, sin
+ * mandar a cancelar ni cobrar: Codex D16 r1 #8). Lo que el SERVIDOR contesta en inglés se cambia por un texto llano.
+ */
+internal fun motivoDelRechazoAlQuitar(cuerpo: String?): String {
+    val json = runCatching { Gson().fromJson(cuerpo, JsonObject::class.java) }.getOrNull()
+    fun texto(llave: String) = json?.get(llave)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+    if (texto("code") == "AREA_TICKET_DISCOUNT_FROZEN") return TEXTO_REBAJA_FIJA_DE_VALES
+    val motivo = texto("message") ?: texto("error") ?: return TEXTO_NO_SE_PUDO_QUITAR
+    return when {
+        motivo.startsWith("Discount not found") -> TEXTO_DESCUENTO_YA_NO_ESTABA
+        RECHAZOS_EN_INGLES_AL_QUITAR.any { motivo.startsWith(it) } -> TEXTO_NO_SE_PUDO_QUITAR
+        else -> motivo
+    }
+}
+
+private val RECHAZOS_EN_INGLES_AL_QUITAR = listOf("Order not found", "Order was modified", "Failed", "Cannot ", "Validation", "Invalid")

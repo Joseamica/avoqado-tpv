@@ -349,7 +349,7 @@ class PaymentAttemptRoomTest {
             assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 12000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
             assertTrue(ledger.markKernelEntered("colgado"))
             // Pasa el plazo y el barrido lo pone en cuarentena SIN saber si el SDK salió.
-            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99, procesoVivo = ""))
             assertEquals("INDETERMINADO", dao.getById("colgado")?.state)
 
             assertFalse("nadie acreditó que la llamada nativa terminara: el lector sigue tomado",
@@ -380,7 +380,7 @@ class PaymentAttemptRoomTest {
 
             assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 12000, 0, "ORDER", """{"orderId":"cuenta-1"}"""))
             assertTrue(ledger.markKernelEntered("colgado"))
-            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 10))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 10, procesoVivo = ""))
             // La recuperación lo lleva a HOST_RESPONDIO y de ahí a REGISTRO_FALLIDO.
             assertEquals(1, dao.casTransition("colgado", listOf("INDETERMINADO"), "HOST_RESPONDIO", 20, "proceso-de-la-prueba"))
             assertEquals(1, dao.claimRecovery("colgado", "venue", now = 30, leaseUntil = 9_000))
@@ -519,7 +519,7 @@ class PaymentAttemptRoomTest {
             val dao = db.paymentAttemptDao()
             assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
             assertTrue(ledger.markKernelEntered("colgado"))
-            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99, procesoVivo = ""))
             assertNotNull("nadie acreditó que la llamada nativa terminara", ledger.retencionDelAparato())
             assertFalse(ledger.openAttempt("otra", "venue", "BLUMON", 1000, 0, "FAST", "{}"))
         } finally { db.close() }
@@ -584,7 +584,7 @@ class PaymentAttemptRoomTest {
             val dao = db.paymentAttemptDao()
             assertTrue(ledger.openAttempt("colgado", "venue", "BLUMON", 1000, 0, "ORDER", """{"orderId":"cuenta-4"}"""))
             assertTrue(ledger.markKernelEntered("colgado"))
-            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99))
+            assertEquals(1, dao.quarantineStaleKernel("venue", olderThan = Long.MAX_VALUE, now = 99, procesoVivo = ""))
             assertNotNull("nadie acreditó que el lector terminara", ledger.retencionDeLaVenta("cuenta-4"))
         } finally { db.close() }
     }

@@ -956,14 +956,21 @@ interface PaymentAttemptDao {
     /**
      * 🔴 KERNEL_ACTIVO colgado = el proceso murió DENTRO de una llamada capaz de aprobar.
      * Va a INDETERMINADO, jamás a DESCARTADA: el dinero pudo moverse.
+     *
+     * 🔴 F1 bloque 6 (I6): NUNCA la venta cuyo lector sigue en ESTE proceso ([procesoVivo]). `KERNEL_ACTIVO` es «lector activo sin
+     * envío» (la autorización se arma después, en `AUTORIZANDO`): ponerla en duda por reloj borraba esa distinción, y cuando el
+     * lector regresaba y fallaba la lectura de los datos, ya no se podía soltar (Codex código r3 #7: «Reintentar» con la terminal
+     * todavía apartada). Mientras el lector siga dentro, la fila ya aparta el aparato tal cual; ningún cobro sano se aborta por reloj.
+     * `""` = sin proceso que excluir (como antes).
      */
     @Query(
         """UPDATE payment_attempts
            SET state = 'INDETERMINADO', state_version = state_version + 1, updated_at = :now,
                last_error = 'cuarentena_por_antiguedad'
-           WHERE venue_id = :venueId AND state = 'KERNEL_ACTIVO' AND updated_at < :olderThan"""
+           WHERE venue_id = :venueId AND state = 'KERNEL_ACTIVO' AND updated_at < :olderThan
+             AND NOT (kind = 'SALE' AND process_token IS :procesoVivo)"""
     )
-    suspend fun quarantineStaleKernel(venueId: String, olderThan: Long, now: Long): Int
+    suspend fun quarantineStaleKernel(venueId: String, olderThan: Long, now: Long, procesoVivo: String): Int
 
     /**
      * 🔴 Ronda 20: lo que un proceso pudo dejar a medias (nunca las heredadas: en 2.9.2 el contactless entraba al kernel en

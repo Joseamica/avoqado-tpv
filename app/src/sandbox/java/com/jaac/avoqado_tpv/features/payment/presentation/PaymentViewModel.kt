@@ -6312,6 +6312,9 @@ class PaymentViewModel @Inject constructor(
      * Based on AvoqadoPOS/BlumonPaymentViewModel.kt:1105-1271
      */
     private suspend fun processContactlessPayment(amount: String) {
+        // 🔴 F1 bloque 6 (I6): el DUEÑO del lector —este proceso, esta pantalla y este intento—, fijado ANTES de tocar el SDK. La
+        // salida (también la del `catch`) se resuelve con él, nunca con la sesión mutable: a esa hora puede ser la de otro cobro.
+        val intentoDelLector = sessionSnapshot.paymentAttemptId
         try {
             Timber.i("═══════════════════════════════════════════════════════════")
             Timber.i("🌊 [CONTACTLESS] Starting contactless (NFC) payment flow")
@@ -6329,7 +6332,7 @@ class PaymentViewModel @Inject constructor(
             // fila diría PREPARANDO — el estado que autoriza a afirmar «no se cobró».
             // 🔒 B1: el intento que ENTRA al kernel, fijado aquí: el regreso del SDK se marca sobre ÉL, aunque la pantalla cambie.
             // 🔒 D6: sin id tampoco se entra. Con `?.let`, un id perdido (reset, cancel) se saltaba la barrera y llamaba al kernel.
-            val intentoDelKernel = sessionSnapshot.paymentAttemptId
+            val intentoDelKernel = intentoDelLector
             if (intentoDelKernel == null || !paymentAttemptLedger.markKernelEntered(intentoDelKernel)) {
                 Timber.e("📒 [Libreta] no se pudo comprometer la entrada al kernel — no se inicia el cobro")
                 // 🛑 Si la barrera falló porque el POS canceló (su CAS descartó la fila), se dice ESO.
@@ -6426,7 +6429,7 @@ class PaymentViewModel @Inject constructor(
                     // 💰 TIP FIX: Pass total (subtotal + tip) to SaleIcc
                     val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
                     Timber.d("💰 [Contactless Online] Passing total to SaleIcc: $totalAmount (subtotal=${getAmountForFlow()} + tip=${getTipForFlow()})")
-                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount))
+                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount), intentoDelKernel)
                 }
 
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
@@ -6438,7 +6441,7 @@ class PaymentViewModel @Inject constructor(
                     // capaz de autorizar), un reset a medias NO puede afirmar PRE_AUTHORIZATION al POS — sale «en duda».
                     financialOperationStarted = true
                     val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
-                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount))
+                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount), intentoDelKernel)
                 }
 
                 TransResultEnum.RESULT_OFFLINE_DENIED -> {
@@ -6474,19 +6477,24 @@ class PaymentViewModel @Inject constructor(
             Timber.e(e, "❌ [CONTACTLESS] Unexpected error in contactless payment flow")
             // ⭐ Clean up SDK state and release guard to allow retry
             try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
-            // 🔴 F1 (Codex código r2 #3): si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al
-            // leer los datos de la tarjeta), nada salió al banco: la entrada al lector se suelta y otra cuenta cobra en esta
-            // terminal. Sólo aplica desde `KERNEL_ACTIVO`/`PREPARANDO`; con la autorización pedida (`AUTORIZANDO`) no toca nada. Una
-            // cancelación no: la llamada nativa puede seguir dentro del lector.
-            if (e !is CancellationException) sessionSnapshot.paymentAttemptId?.let { id ->
-                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(id, "excepcion_antes_del_banco") }
-            }
+            // 🔴 F1 bloque 6 (I6, Codex código r3 #7): «Reintentar» sólo si el lector DE VERDAD se soltó, y con el dueño fijado al entrar
+            // (nunca la sesión mutable). Si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al leer los
+            // datos de la tarjeta), nada salió al banco: `PREPARANDO`/`KERNEL_ACTIVO` → DESCARTADA y otra cuenta cobra en esta terminal.
+            // Si ya se pidió (`AUTORIZANDO`) o la escritura no entró, pudo salir dinero: la pantalla recibe el ID y muestra la duda. Una
+            // cancelación no suelta nada (la llamada nativa puede seguir dentro). Nunca marca el regreso del SDK: soltar el LECTOR no
+            // acredita el cese de la FIRMA (bloque 2).
+            val soltado = e !is CancellationException && (intentoDelLector == null ||
+                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(intentoDelLector, "excepcion_antes_del_banco") })
             _isPaymentInProgress.value = false
-            _state.value = PaymentState.Error(
-                message = "Error inesperado en pago contactless: ${e.message}",
-                context = createPaymentContext(),
-                canRetry = true
-            )
+            if (soltado) {
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado en pago contactless: ${e.message}",
+                    context = createPaymentContext(),
+                    canRetry = true
+                )
+            } else {
+                mostrarDudaDelLector(intentoDelLector, "Error inesperado en pago contactless: ${e.message}")
+            }
         }
     }
 
@@ -6495,7 +6503,7 @@ class PaymentViewModel @Inject constructor(
      *
      * Called when StartCtlssTransUseCase returns RESULT_REQ_ONLINE
      */
-    private suspend fun processContactlessOnlineAuthorization(amount: String) {
+    private suspend fun processContactlessOnlineAuthorization(amount: String, intentoDelLector: String?) {
         try {
             Timber.i("[CONTACTLESS ONLINE] Starting online authorization flow...")
 
@@ -6705,19 +6713,24 @@ class PaymentViewModel @Inject constructor(
             Timber.e(e, "❌ [CONTACTLESS ONLINE] Unexpected error")
             // ⭐ Clean up SDK state and release guard to allow retry
             try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
-            // 🔴 F1 (Codex código r2 #3): si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al
-            // leer los datos de la tarjeta), nada salió al banco: la entrada al lector se suelta y otra cuenta cobra en esta
-            // terminal. Sólo aplica desde `KERNEL_ACTIVO`/`PREPARANDO`; con la autorización pedida (`AUTORIZANDO`) no toca nada. Una
-            // cancelación no: la llamada nativa puede seguir dentro del lector.
-            if (e !is CancellationException) sessionSnapshot.paymentAttemptId?.let { id ->
-                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(id, "excepcion_antes_del_banco") }
-            }
+            // 🔴 F1 bloque 6 (I6, Codex código r3 #7): «Reintentar» sólo si el lector DE VERDAD se soltó, y con el dueño fijado al entrar
+            // (nunca la sesión mutable). Si la excepción salió ANTES de pedir la autorización (el lector regresó y el SDK lanzó al leer los
+            // datos de la tarjeta), nada salió al banco: `PREPARANDO`/`KERNEL_ACTIVO` → DESCARTADA y otra cuenta cobra en esta terminal.
+            // Si ya se pidió (`AUTORIZANDO`) o la escritura no entró, pudo salir dinero: la pantalla recibe el ID y muestra la duda. Una
+            // cancelación no suelta nada (la llamada nativa puede seguir dentro). Nunca marca el regreso del SDK: soltar el LECTOR no
+            // acredita el cese de la FIRMA (bloque 2).
+            val soltado = e !is CancellationException && (intentoDelLector == null ||
+                withContext(NonCancellable) { paymentAttemptLedger.markKernelRefused(intentoDelLector, "excepcion_antes_del_banco") })
             _isPaymentInProgress.value = false
-            _state.value = PaymentState.Error(
-                message = "Error inesperado: ${e.message}",
-                context = createPaymentContext(),
-                canRetry = true
-            )
+            if (soltado) {
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado: ${e.message}",
+                    context = createPaymentContext(),
+                    canRetry = true
+                )
+            } else {
+                mostrarDudaDelLector(intentoDelLector, "Error inesperado: ${e.message}")
+            }
         }
     }
 

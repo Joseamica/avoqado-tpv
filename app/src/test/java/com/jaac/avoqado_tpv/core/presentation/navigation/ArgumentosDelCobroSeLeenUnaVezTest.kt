@@ -107,55 +107,45 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
 
     /**
      * 💵 D7 (19-nov-2026): tras abrir la app sin red en la PAX, «Pago rápido» esperaba al lector de Blumon (que sin red no
-     * termina) y no dejaba cobrar ni en efectivo. Sus dos entradas (el monto del Inicio y la pantalla de monto) entran por
-     * `entrarAPagoRapido` (regla pura `decidirEntradaDePagoRapido`, probada en `EntradaDePagoRapidoTest`) y nunca llaman
-     * directo a la espera del lector, que trababa todo.
+     * termina) y no dejaba cobrar ni en efectivo. Sus dos entradas (el monto del Inicio y la pantalla de monto) deciden
+     * igual que Cobrar: sin red y con el lector sin preparar, sólo efectivo y sin esperar; con red, esperan como siempre.
      */
-    private fun cuerpoDelPagoRapidoDelInicio(): String {
-        val inicio = navegacion.indexOf("onStartPaymentWithAmount = { amount ->")
-        require(inicio >= 0) { "No encontré onStartPaymentWithAmount en AppNavigation.kt" }
-        return navegacion.substring(inicio, navegacion.indexOf("onNavigateToShifts", inicio))
-    }
-
-    private fun assertEntraPorLaReglaDePagoRapido(cuerpo: String, donde: String) {
+    @Test
+    fun `D7 Pago rapido desde la pantalla de monto no espera al lector en solo efectivo`() {
+        val cuerpo = cuerpoDe("NavRoute.FastPaymentEntry.route")
         assertTrue(
-            "$donde debe entrar con `val soloEfectivo = entrarAPagoRapido(…) ?: return` y pasarlo a prepareManualPaymentArgs.",
-            Regex("""val soloEfectivo = entrarAPagoRapido\([^)]*\) \?: return@""").containsMatchIn(cuerpo) &&
+            "La pantalla de monto de Pago rápido debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
+                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+            cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
+                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
                 cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
         )
-        assertEquals(
-            "$donde no debe esperar al lector directamente (eso trababa el efectivo sin red).",
-            0,
-            Regex("""awaitPaxPaymentReady\(""").findAll(cuerpo).count(),
+    }
+
+    @Test
+    fun `D7 Pago rapido desde el Inicio no espera al lector en solo efectivo`() {
+        val inicio = navegacion.indexOf("onStartPaymentWithAmount = { amount ->")
+        require(inicio >= 0) { "No encontré onStartPaymentWithAmount en AppNavigation.kt" }
+        val cuerpo = navegacion.substring(inicio, navegacion.indexOf("onNavigateToShifts", inicio))
+        assertTrue(
+            "El Pago rápido del Inicio debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
+                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+            cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
+                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
+                cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
         )
     }
 
     @Test
-    fun `D7 Pago rapido desde la pantalla de monto entra por la regla de Pago rapido`() {
-        assertEntraPorLaReglaDePagoRapido(cuerpoDe("NavRoute.FastPaymentEntry.route"), "La pantalla de monto de Pago rápido")
-    }
-
-    @Test
-    fun `D7 Pago rapido desde el Inicio entra por la regla de Pago rapido`() {
-        assertEntraPorLaReglaDePagoRapido(cuerpoDelPagoRapidoDelInicio(), "El Pago rápido del Inicio")
-    }
-
-    @Test
-    fun `D7 la regla de Pago rapido es la de Cobrar sin orden y no avisa dos veces si el lector falla`() {
+    fun `D7 la regla de Pago rapido es la misma de Cobrar sin orden`() {
         val inicio = navegacion.indexOf("val pagoRapidoVaEnSoloEfectivo")
         require(inicio >= 0) { "No encontré pagoRapidoVaEnSoloEfectivo en AppNavigation.kt" }
-        val fin = navegacion.indexOf("val remotePaymentCoordinator", inicio)
-        val cuerpo = navegacion.substring(inicio, fin)
+        val cuerpo = navegacion.substring(inicio, inicio + 1200)
         assertTrue(
-            "pagoRapidoVaEnSoloEfectivo debe usar cobrarSaltaElLector(…) con tarjetaSinRed(…, esCobro = true, …), la regla " +
-                "de un cobro de Cobrar sin orden (su comportamiento se prueba en SoloEfectivoSinRedTest).",
-            cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") && cuerpo.contains("esCobro = true"),
-        )
-        assertTrue(
-            "entrarAPagoRapido debe decidir con decidirEntradaDePagoRapido(…), esperar al lector SIN su aviso de falla " +
-                "(avisarSiFalla = false) y medir la conexión completa.",
-            cuerpo.contains("decidirEntradaDePagoRapido(") && cuerpo.contains("avisarSiFalla = false") &&
-                cuerpo.contains("isFullyConnected()"),
+            "pagoRapidoVaEnSoloEfectivo debe usar cobrarSaltaElLector(…) con tarjetaSinRed(…, esCobro = true, …), " +
+                "la regla de un cobro de Cobrar sin orden (su comportamiento se prueba en SoloEfectivoSinRedTest).",
+            cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") &&
+                cuerpo.contains("esCobro = true"),
         )
     }
 

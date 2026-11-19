@@ -51,33 +51,3 @@ fun rutaDePagoEsperaAlLector(hayLectorBlumon: Boolean, lectorListo: Boolean, sol
 /** El lector no debe impedir entrar a las funciones locales del Inicio. */
 internal fun inicioEsperaAlLector(hayLectorBlumon: Boolean, lectorPendiente: Boolean, sinConexion: Boolean): Boolean =
     hayLectorBlumon && lectorPendiente && !sinConexion
-
-/** 💵 D7: cómo entra «Pago rápido» al cobro. */
-enum class EntradaDePagoRapido {
-    /** Tarjeta y efectivo, como siempre (con red, o en la Nexgo, que no espera lector). */
-    NORMAL,
-    /** Sólo efectivo: la tarjeta sale en gris con su razón ([MOTIVO_SIN_TARJETA]). */
-    SOLO_EFECTIVO,
-    /** No entra: el lector falló con la conexión completa (el problema es el lector, no la red) y se avisa como antes. */
-    BLOQUEADA,
-}
-
-/**
- * 💵 D7 (19-nov-2026): «Pago rápido» en la PAX. Antes esperaba siempre al lector de Blumon, que sin red no termina de
- * prepararse, y no dejaba cobrar ni en efectivo tras abrir la app sin red.
- *  1. Si esperar no serviría ([cobrarSaltaElLector], la regla de Cobrar sin orden), sólo efectivo sin esperar.
- *  2. Si no, espera al lector como siempre: listo ⇒ normal.
- *  3. Si la espera falla y la conexión no está completa, sólo efectivo (Codex r1 #1: justo al arrancar la terminal
- *     cree unos segundos que hay red, y con WiFi sin salida la regla de la tarjeta puede seguir viendo «internet»).
- *     Con la conexión completa, el problema es el lector: no entra y se avisa como antes.
- */
-suspend fun decidirEntradaDePagoRapido(
-    saltaElLector: () -> Boolean,
-    esperarAlLector: suspend () -> Boolean,
-    conexionCompleta: () -> Boolean,
-): EntradaDePagoRapido = when {
-    saltaElLector() -> EntradaDePagoRapido.SOLO_EFECTIVO
-    esperarAlLector() -> EntradaDePagoRapido.NORMAL
-    conexionCompleta() -> EntradaDePagoRapido.BLOQUEADA
-    else -> EntradaDePagoRapido.SOLO_EFECTIVO
-}

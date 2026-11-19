@@ -42,6 +42,7 @@ class ImpresoraDeVentaGuardada @Inject constructor(
             printerManager: PrinterManager,
             secureStorage: SecureStorage,
         ): Result<Unit> = withContext(Dispatchers.IO) {
+            val fiscal = secureStorage.datosFiscalesDelTicket(venta.venueId) // D50: los del negocio de la venta
             printerManager.printReceipt(
                 receiptUrl = null,
                 amount = BigDecimal.valueOf(venta.totalCents.toLong() + propinaCents, 2).toPlainString(),
@@ -51,8 +52,8 @@ class ImpresoraDeVentaGuardada @Inject constructor(
                 referenceNumber = referenciaDeEfectivo(venta.llave),
                 venueName = secureStorage.getVenueName(),
                 venueLogoUrl = secureStorage.getVenueLogo(),
-                venueLegalName = secureStorage.getVenueLegalName(),
-                venueRfc = secureStorage.getVenueRfc(),
+                venueLegalName = fiscal.legalName,
+                venueRfc = fiscal.rfc,
                 venueAddress = secureStorage.getVenueAddress(),
                 venueCity = secureStorage.getVenueCity(),
                 venueState = secureStorage.getVenueState(),
@@ -75,14 +76,15 @@ class ImpresoraDeVentaGuardada @Inject constructor(
             if (BuildConfig.ENABLE_PAX_SDK) {
                 imprimirEnPax(venta, propinaCents, printerManager, secureStorage)
             } else {
+                val fiscal = secureStorage.datosFiscalesDelTicket(venta.venueId) // D50: los del negocio de la venta
                 val ticket = ticketBuilder.buildPaymentTicket(
                     amount = total,
                     tipAmount = BigDecimal.valueOf(propinaCents.toLong(), 2),
                     authCode = "EFECTIVO",
                     referenceNumber = referencia,
                     venueName = secureStorage.getVenueName(),
-                    venueLegalName = secureStorage.getVenueLegalName(),
-                    venueRfc = secureStorage.getVenueRfc(),
+                    venueLegalName = fiscal.legalName,
+                    venueRfc = fiscal.rfc,
                     venueAddress = secureStorage.getVenueAddress(),
                     venueCity = secureStorage.getVenueCity(),
                     venueState = secureStorage.getVenueState(),

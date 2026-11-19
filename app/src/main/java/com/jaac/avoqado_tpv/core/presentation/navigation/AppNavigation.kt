@@ -719,6 +719,7 @@ fun AppNavigation(
                     coroutineScopeForKiosk.launch {
                         Timber.i("🥝 [KIOSK] Printing receipt for order: $kioskSuccessOrderNumber")
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val fiscal = secureStorage.datosFiscalesDelTicket(secureStorage.getVenueId())
                             printerManager.printKioskReceipt(
                                 orderNumber = kioskSuccessOrderNumber ?: "",
                                 receiptUrl = receipt.receiptUrl,
@@ -726,8 +727,8 @@ fun AppNavigation(
                                 tipAmount = receipt.tipAmount.toString(),
                                 venueName = secureStorage.getVenueName(),
                                 venueLogoUrl = secureStorage.getVenueLogo(),
-                                venueLegalName = secureStorage.getVenueLegalName(),
-                                venueRfc = secureStorage.getVenueRfc(),
+                                venueLegalName = fiscal.legalName,
+                                venueRfc = fiscal.rfc,
                                 venueAddress = secureStorage.getVenueAddress(),
                                 venueCity = secureStorage.getVenueCity(),
                                 venueState = secureStorage.getVenueState(),

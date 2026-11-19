@@ -9575,6 +9575,8 @@ class PaymentViewModel @Inject constructor(
         val ventaGuardada = ventaLocal
         // na16c21f (Codex r1 #1): de qué VENTA es esta impresión; una devolución se compara por sus datos (su llave se borra al registrarla).
         val llaveDelCobro = if (currentState.isRefund) null else sessionSnapshot.paymentAttemptId
+        // D50: de qué NEGOCIO es este cobro, tomado junto con su pantalla; sin él, el ticket sale sin razón social ni RFC.
+        val negocioDelCobro = currentVenueId
         viewModelScope.launch {
             try {
                 Timber.i("🖨️ [Print] Starting receipt print")
@@ -9621,6 +9623,7 @@ class PaymentViewModel @Inject constructor(
                         secureStorage,
                     )
                 } else withContext(Dispatchers.IO) {
+                    val fiscal = secureStorage.datosFiscalesDelTicket(negocioDelCobro)  // D50: sólo los del negocio del cobro
                     printerManager.printReceipt(
                         receiptUrl = currentState.receipt?.receiptUrl,  // ✅ FIX: Can be null for generic receipt
                         amount = currentState.amount,  // ⚠️ TOTAL (already includes tip)
@@ -9630,8 +9633,8 @@ class PaymentViewModel @Inject constructor(
                         referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
                         venueName = secureStorage.getVenueName(),  // 🏪 Venue name for receipt header
                         venueLogoUrl = secureStorage.getVenueLogo(),  // 🏪 Venue logo (fallback to Avoqado)
-                        venueLegalName = secureStorage.getVenueLegalName(),  // 🧾 Razón social
-                        venueRfc = secureStorage.getVenueRfc(),  // 🧾 RFC
+                        venueLegalName = fiscal.legalName,  // 🧾 Razón social (D50: del negocio del cobro)
+                        venueRfc = fiscal.rfc,  // 🧾 RFC
                         venueAddress = secureStorage.getVenueAddress(),  // 📍 Address
                         venueCity = secureStorage.getVenueCity(),
                         venueState = secureStorage.getVenueState(),

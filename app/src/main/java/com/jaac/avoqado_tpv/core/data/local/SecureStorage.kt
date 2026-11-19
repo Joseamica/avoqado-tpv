@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.modules.data.dto.VenueModuleDto
@@ -47,6 +49,18 @@ import javax.inject.Singleton
  *
  * @param context Application context (injected by Hilt)
  */
+/**
+ * D50: razón social y RFC del encabezado del ticket. [vacio] = no se imprime ninguno de los dos. [delEmisor] = vinieron del emisor
+ * de Facturación (si no, de las columnas de siempre del negocio); no cambia lo que se imprime.
+ */
+data class DatosFiscalesDelTicket(val legalName: String?, val rfc: String?, val delEmisor: Boolean = false) {
+    val vacio: Boolean get() = legalName == null && rfc == null
+
+    companion object {
+        val NINGUNO = DatosFiscalesDelTicket(null, null)
+    }
+}
+
 @Singleton
 class SecureStorage @Inject constructor(
     @ApplicationContext private val context: Context
@@ -175,6 +189,45 @@ class SecureStorage @Inject constructor(
         private const val KEY_ANGELPAY_AFFILIATION = "angelpay_affiliation"
         private const val KEY_ANGELPAY_COMMERCE_TOKEN = "angelpay_commerce_token"
 
+        /**
+         * D50: la razón social y el RFC del ticket van en UN valor con el negocio al que pertenecen. En llaves separadas, un
+         * reinicio o una lectura a medias los cruzaba con la marca de otro negocio (Codex mac r3 y r4 del encargo 1df453).
+         * `venue_legal_name`/`venue_rfc` (main) y `venue_fiscal_de` (un APK del PR #79) no dicen de quién son: ya no se leen.
+         */
+        private const val KEY_DATOS_FISCALES = "datos_fiscales_del_ticket"
+
+        /** D50: UNA lectura; sólo se dan al ticket de ESE negocio. Sin negocio, de otro, o roto: no se imprime nada. */
+        internal fun leerDatosFiscales(prefs: SharedPreferences, venueIdDelTicket: String?): DatosFiscalesDelTicket {
+            val guardado = prefs.getString(KEY_DATOS_FISCALES, null)
+            if (guardado == null || venueIdDelTicket.isNullOrBlank()) return DatosFiscalesDelTicket.NINGUNO
+            val json = runCatching { JsonParser.parseString(guardado).asJsonObject }.getOrNull() ?: return DatosFiscalesDelTicket.NINGUNO
+            if (json.texto("venueId") != venueIdDelTicket) return DatosFiscalesDelTicket.NINGUNO
+            val delEmisor = json.get("delEmisor")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean == true
+            return DatosFiscalesDelTicket(json.texto("legalName"), json.texto("rfc"), delEmisor)
+        }
+
+        private fun JsonObject.texto(llave: String): String? =
+            get(llave)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotBlank() }
+
+        /** Codex r1 #2: un salto de línea en la razón social no puede inventar otro renglón en el papel (p. ej. otro «RFC: …»). */
+        private fun enUnRenglon(texto: String?): String? = texto?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
+
+        /**
+         * D50: UN `putString` con el negocio adentro; en el mismo editor se olvidan las llaves sin dueño de versiones anteriores.
+         * [delEmisor] = vino del emisor de Facturación (no de las columnas de siempre): sólo ése se conserva si el SERVIDOR no
+         * manda `receiptInfo` (Codex r1 #6).
+         */
+        internal fun escribirDatosFiscales(
+            editor: SharedPreferences.Editor, venueId: String, legalName: String?, rfc: String?, delEmisor: Boolean,
+        ): SharedPreferences.Editor {
+            val valor = JsonObject().apply {
+                addProperty("venueId", venueId)
+                addProperty("legalName", enUnRenglon(legalName))
+                addProperty("rfc", enUnRenglon(rfc))
+                addProperty("delEmisor", delEmisor)
+            }
+            return editor.putString(KEY_DATOS_FISCALES, valor.toString()).remove(KEY_VENUE_LEGAL_NAME).remove(KEY_VENUE_RFC)
+        }
     }
 
     /**
@@ -453,44 +506,17 @@ class SecureStorage @Inject constructor(
     }
 
     /**
-     * Save venue legal name (razon social)
-     * @param legalName Venue legal name
+     * D50: la razón social y el RFC del ticket del negocio [venueId], en UNA escritura. Sólo la llama `AuthRepository`.
+     * `apply()` basta: es una sola llave, así que en disco queda el valor de antes o el nuevo, entero, y cada uno dice de qué
+     * negocio es. Si el disco no alcanzara a guardarlo, sale el anterior (sólo si es del negocio del ticket) o nada.
      */
-    fun saveVenueLegalName(legalName: String?) {
-        if (legalName != null) {
-            encryptedPrefs.edit().putString(KEY_VENUE_LEGAL_NAME, legalName).apply()
-        } else {
-            encryptedPrefs.edit().remove(KEY_VENUE_LEGAL_NAME).apply()
-        }
+    fun guardarDatosFiscales(venueId: String, datos: DatosFiscalesDelTicket) {
+        escribirDatosFiscales(encryptedPrefs.edit(), venueId, datos.legalName, datos.rfc, datos.delEmisor).apply()
     }
 
-    /**
-     * Get venue legal name
-     * @return Venue legal name or null if not set
-     */
-    fun getVenueLegalName(): String? {
-        return encryptedPrefs.getString(KEY_VENUE_LEGAL_NAME, null)
-    }
-
-    /**
-     * Save venue RFC
-     * @param rfc Venue tax ID (RFC)
-     */
-    fun saveVenueRfc(rfc: String?) {
-        if (rfc != null) {
-            encryptedPrefs.edit().putString(KEY_VENUE_RFC, rfc).apply()
-        } else {
-            encryptedPrefs.edit().remove(KEY_VENUE_RFC).apply()
-        }
-    }
-
-    /**
-     * Get venue RFC
-     * @return Venue RFC or null if not set
-     */
-    fun getVenueRfc(): String? {
-        return encryptedPrefs.getString(KEY_VENUE_RFC, null)
-    }
+    /** D50: la razón social y el RFC que imprime un ticket del negocio [venueIdDelTicket]. Una llamada por ticket. */
+    fun datosFiscalesDelTicket(venueIdDelTicket: String?): DatosFiscalesDelTicket =
+        leerDatosFiscales(encryptedPrefs, venueIdDelTicket)
 
     /**
      * Save venue address

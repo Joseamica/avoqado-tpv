@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.authentication.data.repository
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.dto.datosFiscalesDeLaRespuesta
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.data.dto.MasterLoginRequestDto
@@ -126,7 +127,7 @@ class AuthRepository @Inject constructor(
                 tpvSettingsRepository.refreshSettings(authResponse.venueId)
 
                 // Cache venue details for receipt/header printing (non-blocking)
-                refreshVenueDetails(authResponse.venueId)
+                refrescarDatosDelNegocio(authResponse.venueId)
 
                 // 🔐 Fetch permissions from backend and cache (for permission-based UI)
                 try {
@@ -247,29 +248,61 @@ class AuthRepository @Inject constructor(
 
     /**
      * Fetch venue details and cache for receipt/header printing.
-     * Does not block login on failure.
+     * Does not block login on failure. Lo llaman el PIN (normal, maestro y checador) e Inicio al abrir y al volver la red (D50).
+     *
+     * D50: sólo escribe si la respuesta es del negocio pedido y la terminal SIGUE en él: un GET en vuelo puede llegar después de
+     * que el latido borró la activación o de que se activó otro negocio (Codex mac r4 #1 del encargo 1df453). Si la terminal
+     * cambiara entre esta comprobación y la escritura, los datos fiscales llevan su negocio adentro y ningún ticket de otro
+     * negocio los acepta (`SecureStorage.leerDatosFiscales`).
+     *
+     * Codex r1 #3 (D50): Inicio, la red que vuelve y el PIN pueden pedirlo a la vez. Sólo escribe el último que EMPEZÓ: uno
+     * atrasado ya no pisa al que llegó antes con datos más nuevos. La comprobación y la escritura van juntas bajo el candado.
+     *
+     * @return true si quedaron guardados (o conservados) los datos de [venueId] de esta respuesta.
      */
-    private suspend fun refreshVenueDetails(venueId: String) {
+    suspend fun refrescarDatosDelNegocio(venueId: String): Boolean {
+        val turno = turnoDelRefresco.incrementAndGet()
         try {
             val response = apiService.getVenueDetails(venueId)
-            if (response.isSuccessful && response.body() != null) {
-                val venue = response.body()!!
+            val venue = response.body()
+            if (!response.isSuccessful || venue == null) {
+                Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
+                return false
+            }
+            synchronized(turnoDelRefresco) {
+                val negocioDeLaTerminal = secureStorage.getVenueId()
+                if (venue.id != venueId || negocioDeLaTerminal != venueId) {
+                    Timber.w("⚠️ Datos del negocio $venueId descartados: respuesta de ${venue.id}, terminal en $negocioDeLaTerminal")
+                    return false
+                }
+                if (turno != turnoDelRefresco.get()) {
+                    Timber.d("Datos del negocio $venueId: ya va un refresco más nuevo, éste no escribe")
+                    return false
+                }
                 secureStorage.saveVenueName(venue.name)
                 secureStorage.saveVenueLogo(venue.logo)
-                secureStorage.saveVenueLegalName(venue.legalName)
-                secureStorage.saveVenueRfc(venue.rfc)
+                val fiscal = datosFiscalesDeLaRespuesta(venue, secureStorage.datosFiscalesDelTicket(venueId).delEmisor)
+                if (fiscal != null) {
+                    secureStorage.guardarDatosFiscales(venueId, fiscal)
+                } else {
+                    Timber.w("⚠️ El servidor no mandó el encabezado del ticket: se conserva el emisor guardado de $venueId")
+                }
                 secureStorage.saveVenueAddress(venue.address)
                 secureStorage.saveVenueCity(venue.city)
                 secureStorage.saveVenueState(venue.state)
                 secureStorage.saveVenueZipCode(venue.zipCode)
-                Timber.d("✅ Venue details cached for receipts: ${venue.id}")
-            } else {
-                Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
             }
+            Timber.d("✅ Venue details cached for receipts: ${venue.id}")
+            return true
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Timber.w(e, "⚠️ Failed to fetch venue details")
+            return false
         }
     }
+
+    /** D50 (Codex r1 #3): el turno del último refresco que empezó. */
+    private val turnoDelRefresco = java.util.concurrent.atomic.AtomicLong()
 
     /**
      * Verify PIN and create session for Timeclock
@@ -310,7 +343,7 @@ class AuthRepository @Inject constructor(
 
                 // Save session so API calls work (getTimeEntries, clockIn, etc.)
                 saveSession(authResponse)
-                refreshVenueDetails(authResponse.venueId)
+                refrescarDatosDelNegocio(authResponse.venueId)
                 Timber.d("✅ PIN verified and session saved for: ${authResponse.staff.displayName}")
 
                 kotlin.Result.success(

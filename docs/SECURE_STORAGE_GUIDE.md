@@ -257,8 +257,9 @@ secureStorage.savePermissions(permissions)
 // VenueRepository.kt
 secureStorage.saveVenueName(venue.name)
 secureStorage.saveVenueLogo(venue.logoUrl)
-secureStorage.saveVenueLegalName(venue.legalName)
-secureStorage.saveVenueRfc(venue.rfc)
+// D50: razón social y RFC en UN valor con el negocio adentro (sólo AuthRepository.refrescarDatosDelNegocio);
+// se leen con secureStorage.datosFiscalesDelTicket(<negocio del ticket>).
+secureStorage.guardarDatosFiscales(venueId, datosFiscalesDeLaRespuesta(venue, emisorGuardado))
 secureStorage.saveVenueAddress(venue.address)
 secureStorage.saveVenueType(venue.type)
 secureStorage.saveTpvSettings(venue.tpvSettings)

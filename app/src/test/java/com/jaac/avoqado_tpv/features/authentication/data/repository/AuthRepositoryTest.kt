@@ -1,7 +1,10 @@
 package com.jaac.avoqado_tpv.features.authentication.data.repository
 
+import com.jaac.avoqado_tpv.core.data.local.DatosFiscalesDelTicket
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.dto.ReceiptInfoDto
+import com.jaac.avoqado_tpv.core.data.network.dto.VenueDetailsDto
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.data.dto.AuthResponseDto
@@ -13,6 +16,9 @@ import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -530,6 +536,135 @@ class AuthRepositoryTest {
 
         // Then: Returns true
         assertTrue(result)
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // D50 · los datos fiscales del ticket (GET /tpv/venues/:venueId)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private fun negocio(
+        id: String = testVenueId,
+        receiptInfo: ReceiptInfoDto? = ReceiptInfoDto("Emisor SA de CV", "EMI010101AA1"),
+    ) = VenueDetailsDto(
+        id = id, name = "Mi Negocio", legalName = "Columna Vieja SA", rfc = "COL010101AA1", receiptInfo = receiptInfo,
+    )
+
+    private val EMISOR = DatosFiscalesDelTicket("Emisor SA de CV", "EMI010101AA1", delEmisor = true)
+    private val COLUMNAS = DatosFiscalesDelTicket("Columna Vieja SA", "COL010101AA1", delEmisor = false)
+
+    private fun respuesta(venue: VenueDetailsDto) {
+        coEvery { apiService.getVenueDetails(testVenueId) } returns Response.success(venue)
+    }
+
+    @Test
+    fun `D50 con emisor de Facturacion se guarda el emisor con su negocio, una sola vez`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        respuesta(negocio())
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 1) { secureStorage.guardarDatosFiscales(any(), any()) }
+        verify { secureStorage.guardarDatosFiscales(testVenueId, EMISOR) }
+    }
+
+    @Test
+    fun `D50 sin emisor van las columnas de siempre del mismo negocio`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        respuesta(negocio(receiptInfo = ReceiptInfoDto(null, null)))
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 1) { secureStorage.guardarDatosFiscales(testVenueId, COLUMNAS) }
+    }
+
+    @Test
+    fun `P1 D50 r4 fila 1 el GET que llega cuando la terminal ya no esta en ese negocio no escribe nada`() = runTest {
+        respuesta(negocio())
+        // El latido borró la activación mientras el GET del checador estaba en vuelo; o ya se activó otro negocio.
+        for (ahora in listOf(null, "venue-B")) {
+            every { secureStorage.getVenueId() } returns ahora
+            authRepository.refrescarDatosDelNegocio(testVenueId)
+        }
+
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any()) }
+        verify(exactly = 0) { secureStorage.saveVenueName(any()) }
+    }
+
+    @Test
+    fun `P1 D50 una respuesta con el id de otro negocio no se guarda`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        respuesta(negocio(id = "venue-otro"))
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any()) }
+    }
+
+    @Test
+    fun `D50 una respuesta sin receiptInfo no pisa el emisor ya guardado de este negocio`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        every { secureStorage.datosFiscalesDelTicket(testVenueId) } returns EMISOR
+        respuesta(negocio(receiptInfo = null))
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 0) { secureStorage.guardarDatosFiscales(any(), any()) }
+    }
+
+    @Test
+    fun `D50 sin receiptInfo y sin nada de este negocio van las columnas de siempre`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        every { secureStorage.datosFiscalesDelTicket(testVenueId) } returns DatosFiscalesDelTicket.NINGUNO
+        respuesta(negocio(receiptInfo = null))
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 1) { secureStorage.guardarDatosFiscales(testVenueId, COLUMNAS) }
+    }
+
+    @Test
+    fun `D50 Codex r1 6 sin receiptInfo dos veces, las columnas guardadas se renuevan con las de la respuesta`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        // Lo guardado son las columnas de siempre (no un emisor): una respuesta sin receiptInfo trae las corregidas.
+        every { secureStorage.datosFiscalesDelTicket(testVenueId) } returns DatosFiscalesDelTicket("Columna Vieja SA", null)
+        respuesta(negocio(receiptInfo = null).copy(rfc = "COR010101AA1"))
+
+        authRepository.refrescarDatosDelNegocio(testVenueId)
+
+        verify(exactly = 1) {
+            secureStorage.guardarDatosFiscales(testVenueId, DatosFiscalesDelTicket("Columna Vieja SA", "COR010101AA1", delEmisor = false))
+        }
+    }
+
+    @Test
+    fun `P1 D50 Codex r1 3 un refresco atrasado no pisa al que llego antes con datos mas nuevos, en los dos ordenes`() = runTest {
+        every { secureStorage.getVenueId() } returns testVenueId
+        val viejo = negocio(receiptInfo = ReceiptInfoDto("Emisor Viejo SA", "VIE010101AA1"))
+        val nuevo = negocio()
+        for (primeroElViejo in listOf(false, true)) {
+            clearMocks(secureStorage, answers = false, recordedCalls = true)
+            val respuestaVieja = CompletableDeferred<Response<VenueDetailsDto>>()
+            val respuestaNueva = CompletableDeferred<Response<VenueDetailsDto>>()
+            var llamadas = 0
+            coEvery { apiService.getVenueDetails(testVenueId) } coAnswers { if (llamadas++ == 0) respuestaVieja.await() else respuestaNueva.await() }
+
+            val elViejo = async { authRepository.refrescarDatosDelNegocio(testVenueId) } // empieza primero: Inicio
+            runCurrent()
+            val elNuevo = async { authRepository.refrescarDatosDelNegocio(testVenueId) } // después: la red que volvió o el PIN
+            runCurrent()
+            if (primeroElViejo) {
+                respuestaVieja.complete(Response.success(viejo)); runCurrent()
+                respuestaNueva.complete(Response.success(nuevo)); runCurrent()
+            } else {
+                respuestaNueva.complete(Response.success(nuevo)); runCurrent()
+                respuestaVieja.complete(Response.success(viejo)); runCurrent()
+            }
+
+            assertTrue(elNuevo.await())
+            assertFalse(elViejo.await())
+            verify(exactly = 1) { secureStorage.guardarDatosFiscales(any(), any()) }
+            verify(exactly = 1) { secureStorage.guardarDatosFiscales(testVenueId, EMISOR) }
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════

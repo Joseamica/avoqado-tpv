@@ -293,11 +293,35 @@ class HomeViewModel @Inject constructor(
         }
         fetchSalesGoal()                    // delay(2_500)
         warmUpProductCache()                // delay(3_000)
+        refrescarDatosDelNegocio()          // delay(3_000) — D50: razón social y RFC del ticket
         checkForUpdates()                   // delay(4_000)
         loadInitialQueueCounts()            // delay(3_000)
         fetchPendingVerificationsCount()    // delay(3_000)
 
         Timber.d("[PERF] HomeVM.init ALL LAUNCHED in ${System.currentTimeMillis() - initStartTime}ms")
+    }
+
+    private var refrescoDelNegocio: Job? = null
+
+    /**
+     * D50: los datos del negocio para el ticket (el emisor de Facturación) al abrir Inicio y al volver la red, no sólo con el PIN:
+     * tras actualizar la app, lo que dejó la versión anterior ya no se imprime (no dice de qué negocio es), y una sesión guardada
+     * no pasa por el PIN. Si el GET falla, se reintenta solo (30 s, luego el doble, hasta cada 10 min) mientras Inicio viva.
+     * Uno a la vez (Codex r1 #5): al volver la red, el nuevo reemplaza al que esperaba su siguiente intento. El orden entre éste
+     * y el del PIN lo cuida `AuthRepository`.
+     */
+    private fun refrescarDatosDelNegocio(skipDelay: Boolean = false) {
+        refrescoDelNegocio?.cancel()
+        refrescoDelNegocio = viewModelScope.launch(Dispatchers.IO) {
+            if (!skipDelay) delay(3_000)
+            var espera = 30_000L
+            while (true) {
+                val venueId = secureStorage.getVenueId() ?: return@launch
+                if (authRepository.refrescarDatosDelNegocio(venueId)) return@launch
+                delay(espera)
+                espera = (espera * 2).coerceAtMost(10 * 60_000L)
+            }
+        }
     }
 
     /**
@@ -992,6 +1016,7 @@ class HomeViewModel @Inject constructor(
                 fetchAttendanceState()
                 fetchSalesGoal(skipDelay = true)
                 warmUpProductCache(skipDelay = true)
+                refrescarDatosDelNegocio(skipDelay = true)
 
                 // Re-check for updates (in case initial check failed due to no connection)
                 // Only if there's no pending update already
@@ -1218,6 +1243,10 @@ class HomeViewModel @Inject constructor(
         com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayTicketBuilder()
     }
 
+    /** D50: el nombre que trae el recibo remoto (ANDROID lo manda siempre) es el del negocio de la terminal; sin nombre, no se sabe en contra. */
+    private fun reciboEsDeEsteNegocio(nombreDelRecibo: String?): Boolean =
+        nombreDelRecibo == null || nombreDelRecibo.trim().equals(secureStorage.getVenueName()?.trim(), ignoreCase = true)
+
     private fun printRemoteReceipt(event: SocketEvent.TerminalReceiptPrintRequest) {
         viewModelScope.launch {
             val result: kotlin.Result<Unit> = withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -1277,6 +1306,15 @@ class HomeViewModel @Inject constructor(
                         }
                     }
 
+                    // D50: UNA lectura para los dos impresores, con el negocio del POS que lo pide (el SERVIDOR ya comprobó que
+                    // esta terminal es de ese negocio): si no es el de los datos guardados, sale sin razón social ni RFC. Y si
+                    // el recibo dice ser de otro negocio (Codex r1 #1: un POS de B mandando la copia de una venta de A), tampoco.
+                    val fiscal = if (reciboEsDeEsteNegocio(receipt.stringValue("venueName"))) {
+                        secureStorage.datosFiscalesDelTicket(event.venueId)
+                    } else {
+                        Timber.w("🖨️ [Socket] El recibo remoto dice ser de otro negocio: sale sin razón social ni RFC")
+                        com.jaac.avoqado_tpv.core.data.local.DatosFiscalesDelTicket.NINGUNO
+                    }
                     if (usaPaxParaReciboRemoto) {
                     printerManager.printReceipt(
                         receiptUrl = receipt.stringValue("receiptUrl"),
@@ -1287,8 +1325,8 @@ class HomeViewModel @Inject constructor(
                         referenceNumber = receipt.stringValue("transactionId"),
                         venueName = receipt.stringValue("venueName") ?: secureStorage.getVenueName(),
                         venueLogoUrl = secureStorage.getVenueLogo(),
-                        venueLegalName = secureStorage.getVenueLegalName(),
-                        venueRfc = secureStorage.getVenueRfc(),
+                        venueLegalName = fiscal.legalName,
+                        venueRfc = fiscal.rfc,
                         venueAddress = receipt.stringValue("venueAddress") ?: secureStorage.getVenueAddress(),
                         venueCity = secureStorage.getVenueCity(),
                         venueState = secureStorage.getVenueState(),
@@ -1312,8 +1350,8 @@ class HomeViewModel @Inject constructor(
                             authCode = receipt.stringValue("authCode") ?: receipt.stringValue("transactionId")?.takeLast(6) ?: "",
                             referenceNumber = receipt.stringValue("transactionId"),
                             venueName = receipt.stringValue("venueName") ?: secureStorage.getVenueName(),
-                            venueLegalName = secureStorage.getVenueLegalName(),
-                            venueRfc = secureStorage.getVenueRfc(),
+                            venueLegalName = fiscal.legalName,
+                            venueRfc = fiscal.rfc,
                             venueAddress = receipt.stringValue("venueAddress") ?: secureStorage.getVenueAddress(),
                             venueCity = secureStorage.getVenueCity(),
                             venueState = secureStorage.getVenueState(),

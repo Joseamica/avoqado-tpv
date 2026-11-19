@@ -223,6 +223,26 @@ class CeseDeLaPaxRoomTest {
         assertThat(db.paymentAttemptDao().getById("pos")!!.state).isEqualTo("DESCARTADA")
     }
 
+    /**
+     * 🔴 Codex final r1 #2: «Reintentar» deja varios intentos físicos en UNA solicitud. La comprobación de cese ya miraba todos; la de
+     * dinero del certificado sólo leía 50 (`LIMIT 50`). Con 50 descartados y el aprobado en el 51, la PAX certificaba que se podía firmar.
+     */
+    @Test fun `certificado_con_51_intentos_ve_el_aprobado_del_ultimo`() = runBlocking<Unit> {
+        val l = libreta()
+        cobroEnCurso(l, "a00", solicitud = "req-1")
+        l.marcarSdkRegreso("a00")
+        sql("UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'reintentar', server_answered_at = 1 WHERE attempt_id = 'a00'")
+        val descartado = db.paymentAttemptDao().getById("a00")!!
+        for (i in 1..49) db.paymentAttemptDao().insert(descartado.copy(attemptId = "a%02d".format(i)))
+        // El 51: el banco aprobó, el SDK regresó y falta registrar (la fila quedó en duda).
+        db.paymentAttemptDao().insert(descartado.copy(attemptId = "a50", state = "INDETERMINADO", hostApproved = true, lastError = null))
+
+        assertWithMessage("el aprobado del 51 impide declarar").that(l.solicitudDeclarable("req-1")).isFalse()
+        val sonda = bandeja(l).probe("req-1", venue)
+        assertThat(sonda.executionAlive).isFalse()
+        assertWithMessage("la PAX no certifica la firma del POS").that(sonda.declarable).isFalse()
+    }
+
     // ═══════════════════════════════════════════════ Modelo (lado PAX) ═══════════════════════════════════════════════
 
     /** vivo/cesó × con/sin aprobado × firma local/POS: se firma sólo si la ejecución cesó y no hay aprobado propio. */

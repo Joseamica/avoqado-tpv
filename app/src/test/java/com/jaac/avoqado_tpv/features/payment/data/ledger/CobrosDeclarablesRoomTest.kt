@@ -147,20 +147,28 @@ class CobrosDeclarablesRoomTest {
         assertThat(renglones.single { it.attemptId == "devolucion" }.tipo).isEqualTo(PaymentAttemptEntity.KIND_REFUND)
     }
 
-    @Test fun `una bandeja con CUALQUIER intento no entra por su rama - eso lo resuelve la libreta`() = runTest {
+    @Test fun `una bandeja con un intento que responde por ella no entra por su rama - con uno descartado sin dinero sale sólo para consultar`() = runTest {
         // PREPARANDO y KERNEL_ACTIVO cuentan en el aviso como «sin intento», pero el lector puede estar corriendo.
-        for (estado in listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "DESCARTADA", "REGISTRADO")) {
+        for (estado in listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "REGISTRADO")) {
             db.clearAllTables()
             bandeja.insert(enBandeja("r-1"))
             dao.insert(duda("a-1", "r-1").copy(state = estado))
             assertWithMessage(estado).that(declarables().filter { it.clase == CobroDeclarable.CLASE_SOLICITUD }).isEmpty()
         }
+        // Codex final r1 #8: el intento DESCARTADO sin dinero ya no responde por ella y Caja la cuenta: se ve, pero no se firma (D8).
+        db.clearAllTables()
+        bandeja.insert(enBandeja("r-1"))
+        dao.insert(duda("a-1", "r-1").copy(state = "DESCARTADA"))
+        val solicitudes = declarables().filter { it.clase == CobroDeclarable.CLASE_SOLICITUD }
+        assertThat(solicitudes.map { it.requestId }).containsExactly("r-1")
+        assertThat(solicitudes.single().declarable).isFalse()
     }
 
-    @Test fun `una bandeja con efectivo arrancado no entra - ese cobro es de la cola`() = runTest {
+    @Test fun `una bandeja con efectivo arrancado se ve sin declaracion - la cuenta Caja hasta que su pago llega a la cola`() = runTest {
         bandeja.insert(enBandeja("r-efectivo", efectivo = true))
 
-        assertThat(declarables()).isEmpty()
+        // Codex final r1 #8: la misma regla de Caja (antes no entraba): se ve y se consulta, nunca se firma «no se cobró».
+        assertThat(declarables().map { it.requestId to it.declarable }).containsExactly("r-efectivo" to false)
     }
 
     @Test fun `una bandeja ya resuelta tampoco`() = runTest {

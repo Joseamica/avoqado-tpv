@@ -16,7 +16,8 @@ import javax.inject.Singleton
  * tomar la consulta (queda despachada en la fila, `history_read_at`) → preguntar al historial por la llave original → escribir la
  * respuesta → gastar el turno una vez. Si la app muere en medio, la lectura despachada vuelve primero, aunque haya vencido su reserva
  * o cerrado la ventana. «Cobrado» entra por la única puerta del aprobado ([PaymentAttemptLedger.aprobadoFinalAngelPay]), sin
- * importar el estado ni quién tenga la reserva; «todavía no aparece» gasta un turno; un fallo técnico pausa sin gastarlo.
+ * importar el estado ni quién tenga la reserva; «todavía no aparece» gasta un turno; un fallo técnico pausa sin gastarlo y la lectura
+ * sigue despachada hasta una respuesta escrita.
  */
 @Singleton
 class LedgerUnknownRecovery @Inject constructor(
@@ -58,7 +59,7 @@ class LedgerUnknownRecovery @Inject constructor(
                     // Respuesta válida sin coincidencia: «todavía no aparece». Gasta UN turno (y sólo si la reserva sigue siendo ésta).
                     VerificacionDelCobro.NoCobrado -> dao.terminarConsultaSinCoincidencia(
                         row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
-                    // Red, credenciales o lectura ilegible: pausa sin gastar el turno.
+                    // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
                     is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
                         row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                 }

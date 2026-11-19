@@ -1229,6 +1229,58 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(resultado.texto()).doesNotContain("firma del gerente")
     }
 
+    /**
+     * 🔴 Codex final r1 #6 · POS → TPV: la primera respuesta a la firma se perdió; el gerente reintenta y Avoqado devuelve el comprobante
+     * ya guardado (`alreadyStored`). La relectura de ANTES de decir nada trae el aprobado tardío: manda el dinero, nunca «Ya se puede
+     * volver a cobrar». Orden: dinero/aprobado → impedimento → comprobante.
+     */
+    @Test fun `comprobante_repetido_con_aprobado_tardio_no_dice_volver_a_cobrar`() = runBlocking<Unit> {
+        val cobro = duda("a-1", requestId = "r-1")
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } returns Response.success(
+            Gson().fromJson(
+                """{"success":true,"released":true,"status":"FAILED","requestId":"r-1","paymentId":null,"outcome":"NOT_CHARGED",""" +
+                    """"message":"Terminal liberada.","declarationReceipt":{"id":"${idDe("r-1")}","kind":"UNCHARGED_VERIFIED",""" +
+                    """"by":"SUPERVISOR_PIN","staffId":"gerente-1","acceptedAt":"2026-11-19T12:00:00.000Z","scope":"REQUEST",""" +
+                    """"attemptId":null,"requestId":"r-1","humanSignature":true,"alreadyStored":true}}""",
+                DeclaracionSinCobroResponse::class.java,
+            ),
+        )
+        // El banco aprobó tarde: la consulta de después del POST lo trae.
+        coEvery { api.getAttemptStatus(venue, "a-1") } returns s6(
+            """{"success":true,"attemptId":"a-1","requestId":"r-1","attempt":{"attemptId":"a-1","outcome":"NOT_RECORDED","paymentId":null,""" +
+                """"processorEvidence":"APPROVED","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+                """"resolution":null},"request":{"requestId":"r-1","status":"FAILED","failureCode":"OPERATOR_RECONCILED_NO_CHARGE",""" +
+                """"outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"}}""",
+        )
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertWithMessage("con evidencia de cobro no se dice «ya estaba declarado»").that(resultado)
+            .isNotEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
+        assertThat(resultado).isEqualTo(HayEvidencia)
+        assertThat(resultado!!.texto()).doesNotContain("volver a cobrar")
+        assertThat(dao.getById("a-1")!!.state).isEqualTo("INDETERMINADO")
+    }
+
+    /**
+     * 🔴 Codex final r1 #7 · TPV · PAGO RÁPIDO · N86: el gerente pulsa «Firmar» y la consulta previa al envío encuentra que la ventana
+     * automática acaba de cerrar el intento. Nadie firmó: no se presenta como «Avoqado tiene guardada una declaración».
+     */
+    @Test fun `cierre_automatico_al_firmar_no_se_presenta_como_declaracion`() = runBlocking<Unit> {
+        val cobro = duda("a-1", processor = "ANGELPAY", serverAnsweredAt = 1L)
+        coEvery { api.getAttemptStatus(venue, "a-1") } coAnswers {
+            // Mientras se consulta, la ventana del banco (30 s sin evidencia) libera el Pago rápido.
+            assertThat(ledger.aplicarLiberacionDelServidor(LiberacionDelServidor(venue, "a-1", null, "NO_EVIDENCE_AFTER_WINDOW")).getOrThrow())
+                .isTrue()
+            s6Limpia("a-1")
+        }
+        val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
+        assertThat(dao.getById("a-1")!!.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE")
+        assertThat(resultado).isEqualTo(ResultadoDeLaDeclaracion.YaNoEstaPorRevisar)
+        assertThat(resultado!!.texto())
+            .isEqualTo("Este cobro ya no está por revisar: se resolvió en el POS o en Avoqado. Revisa Pagos para ver cómo quedó.")
+        assertThat(resultado.texto()).doesNotContain("declaración")
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+    }
+
     /** El 409 genérico (evidencia de OTRA terminal entre la consulta y la firma) es un impedimento, nunca una aprobación del banco. */
     @Test fun `409_ajeno_entre_consulta_y_firma_local_no_es_APPROVED`() = runBlocking<Unit> {
         val cobro = duda("a-1", processor = "BLUMON", serverAnsweredAt = 1L)

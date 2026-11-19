@@ -27,7 +27,8 @@ const val SQL_APROBADO_TRAS_LA_VENTANA = "(state = 'DESCARTADA' AND processor = 
 /**
  * 🔴 F1 bloque 5 (I5): «Por revisar» = la unión, POR IDENTIDAD, de los intentos que cuenta Caja
  * ([com.jaac.avoqado_tpv.features.shift.domain.SQL_INTENTO_QUE_CUENTA_CAJA]), los que frenan otra tarjeta de su cuenta
- * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) y las solicitudes del POS pendientes sin intento. Clave del renglón: `(ATTEMPT,
+ * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) y las solicitudes del POS que cuenta Caja
+ * ([com.jaac.avoqado_tpv.features.shift.domain.SQL_SOLICITUD_QUE_CUENTA_CAJA]). Clave del renglón: `(ATTEMPT,
  * attemptId)` o `(REMOTE, requestId)`: un `requestId` sirve para mirar a los hermanos, nunca quita un renglón. `declarable` = admite la
  * firma (lo demás sólo se consulta o lo resuelve su dueño). Usa `:venueId` y `:processToken`.
  */
@@ -57,11 +58,17 @@ const val SQL_POR_REVISAR = """
     UNION ALL
     SELECT 'REMOTE' AS clase, r.request_id AS clave, NULL AS attempt_id, r.request_id AS request_id,
         (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, NULL AS server_answered_at,
-        NULL AS estado, 'SALE' AS tipo, 1 AS declarable, 0 AS ejecucion_viva
+        NULL AS estado, 'SALE' AS tipo,
+        -- Se firma sólo la que nunca tuvo intento ni arrancó efectivo o cripto (como antes). La que tuvo un intento descartado (D8: la
+        -- resuelve el SERVIDOR) o ya arrancó el efectivo se ve y se consulta.
+        CASE WHEN r.execution_started_at IS NULL AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+            WHERE p.terminal_payment_request_id = r.request_id
+               OR instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+            THEN 1 ELSE 0 END AS declarable, 0 AS ejecucion_viva
     FROM remote_payment_requests r
-    WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
-    AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-        WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+    -- 🔴 Codex final r1 #8: EXACTAMENTE la regla de Caja. Antes un intento histórico cualquiera (uno rechazado sin dinero) la
+    -- escondía mientras Caja la seguía contando.
+    WHERE r.venue_id = :venueId AND """ + com.jaac.avoqado_tpv.features.shift.domain.SQL_SOLICITUD_QUE_CUENTA_CAJA + """
 """
 
 /** 🔴 F1 bloque 3: quién trajo el aprobado final de AngelPay; se guarda en `operation_id` (que AngelPay no usa). */
@@ -154,8 +161,12 @@ interface PaymentAttemptDao {
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
     suspend fun terminarConsultaSinCoincidencia(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
 
-    /** 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. */
-    @Query("""UPDATE payment_attempts SET history_read_at = NULL, lease_until = :pausaHasta
+    /**
+     * 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. 🔴 Codex final r1 #3: y SIN borrar la
+     * marca de la lectura despachada: al vencer la pausa se retoma aunque la ventana o una persona hayan cerrado la fila (sin la marca
+     * ninguna consulta la volvía a elegir), y mientras tanto la tarjeta de su cuenta sigue frenada ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+     */
+    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
     suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
 
@@ -826,10 +837,16 @@ interface PaymentAttemptDao {
     )
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long, processToken: String): Int
 
-    /** F1 bloque 2: los intentos de venta de una solicitud del POS (por la columna o, en filas anteriores a la v35, por el contexto). */
+    /**
+     * F1 bloque 2: los intentos de venta de una solicitud del POS (por la columna o, en filas anteriores a la v35, por el contexto).
+     * 🔴 Codex final r1 #2: SIN tope. El certificado `declarable` revisa el dinero de TODOS, igual que el cese
+     * ([intentosQuePuedenSeguirVivos]); con `LIMIT 50` un aprobado en el intento 51 no se veía.
+     * ponytail: carga las filas enteras (las revisa también la memoria de la libreta); son tantas como toques de «Reintentar» de UNA
+     * solicitud. Si algún día fueran miles, un `EXISTS` para lo de Room y sólo los `attempt_id` para lo de memoria.
+     */
     @Query("""SELECT * FROM payment_attempts WHERE kind = 'SALE'
         AND (terminal_payment_request_id = :requestId
-             OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0) LIMIT 50""")
+             OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""")
     suspend fun intentosDeLaSolicitud(requestId: String): List<PaymentAttemptEntity>
 
     /**

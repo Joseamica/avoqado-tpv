@@ -2271,8 +2271,13 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 if ("history_checks" !in columnas)
                     db.execSQL("ALTER TABLE payment_attempts ADD COLUMN history_checks INTEGER NOT NULL DEFAULT 0")
                 if ("history_read_at" !in columnas) db.execSQL("ALTER TABLE payment_attempts ADD COLUMN history_read_at INTEGER")
+                // 🔴 Codex final r1 #3: el turno devuelto de una fila que cerró la VENTANA queda como lectura DESPACHADA: si no, ninguna
+                // consulta la volvía a elegir (sólo eligen dudas y firmadas) y la quinta en vuelo de la v47 se perdía, con su cuenta sin
+                // cerca. Las dudas y las firmadas ya vuelven solas. Mismo UPDATE: idempotente (`verify_attempts` queda en 0).
                 db.execSQL(
-                    """UPDATE payment_attempts SET history_checks = MAX(verify_attempts - 1, 0), verify_attempts = 0
+                    """UPDATE payment_attempts SET history_checks = MAX(verify_attempts - 1, 0), verify_attempts = 0,
+                       history_read_at = CASE WHEN state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE'
+                           THEN COALESCE(history_read_at, updated_at) ELSE history_read_at END
                        WHERE processor = 'ANGELPAY' AND kind = 'SALE' AND host_approved IS NULL AND verify_attempts > 0
                        AND state IN ('AUTORIZANDO','INDETERMINADO','DESCARTADA')""",
                 )

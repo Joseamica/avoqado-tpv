@@ -85,6 +85,38 @@ class PorRevisarRoomTest {
             .isEqualTo("Este cobro ya está en la cola para subir a Avoqado. No lo vuelvas a cobrar.")
     }
 
+    /**
+     * 🔴 Codex final r1 #8 · POS → TPV: la solicitud sigue en proceso con la ejecución abierta y su único intento terminó rechazado sin
+     * dinero. Caja la cuenta (el intento descartado ya no responde por ella) y «Por revisar» la escondía por tener un intento histórico.
+     * La lista usa EXACTAMENTE la condición de Caja para las solicitudes.
+     */
+    @Test fun `solicitud_con_intento_rechazado_que_caja_cuenta_sale_en_por_revisar`() = runBlocking<Unit> {
+        db.remotePaymentRequestDao().insert(
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+                requestId = "r-1", venueId = venue, amountCents = 10_000, tipCents = 0, rating = null, skipReview = true,
+                orderId = "orden-a1", processedByStaffId = null, senderDeviceName = "POS", sourceTimestamp = "t",
+                status = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity.STATUS_PROCESSING,
+                createdAt = 3_000, updatedAt = 3_000,
+            ),
+        )
+        fila("a1", "DESCARTADA", solicitud = "r-1", ajuste = "last_error = 'rechazada_por_el_banco'")
+        assertWithMessage("Caja la cuenta").that(db.localShiftSessionDao().ejecucionesRemotas(venue, "turno-1")).isEqualTo(1)
+        val renglones = lista()
+        assertWithMessage("«Por revisar» también").that(renglones.map { it.identidad }).containsExactly("REMOTE:r-1")
+        assertThat(ledger.observarTotalPorRevisar(venue).first()).isEqualTo(1)
+        assertThat(ledger.renglonPorRevisar(venue, CobroDeclarable.CLASE_SOLICITUD, "r-1")).isNotNull()
+        // D8: tuvo un intento (descartado): la resuelve el SERVIDOR. Se ve y se consulta; no se firma, y mientras siga no se dice que ya no está.
+        val renglon = renglones.single()
+        assertThat(renglon.declarable).isFalse()
+        assertThat(declaracion().resultadoDe(venue, renglon).texto())
+            .isEqualTo("Este cobro todavía no se puede declarar. Vuelve a consultar en un momento.")
+
+        // Con un intento vivo, la solicitud sale por su INTENTO (Caja tampoco la cuenta como solicitud): un renglón, no dos.
+        fila("a2", "INDETERMINADO", solicitud = "r-1", creado = 4_000)
+        assertThat(db.localShiftSessionDao().ejecucionesRemotas(venue, "turno-1")).isEqualTo(0)
+        assertThat(lista().map { it.identidad }).containsExactly("ATTEMPT:a2")
+    }
+
     @Test fun `fila_51_empate_de_fecha_y_caja_compartida_sin_huecos`() = runBlocking<Unit> {
         // 51 dudas con la MISMA hora, de dos en dos por solicitud (la misma cuenta del POS reintentada), repartidas en dos turnos.
         for (i in 0 until 51) fila(

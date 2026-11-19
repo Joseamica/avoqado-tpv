@@ -248,6 +248,15 @@ data class PaymentAttemptEntity(
         /** D22: ¿esta declaración del cajero quedó en Avoqado (no sólo en la libreta)? */
         fun declaradoEnAvoqado(lastError: String?): Boolean =
             lastError != null && lastError.startsWith(PREFIJO_DECLARADO_SIN_COBRO) && lastError.endsWith(SUFIJO_DECLARADO_EN_AVOQADO)
+
+        /**
+         * Codex código r1 #11 y final r1 #7: ¿la cerró una PERSONA? Su firma o declaración (`declarado_sin_cobro:`) o «no presentó
+         * tarjeta» (`OPERATOR_NO_INSTRUMENT`). La ventana automática (`RELEASED_NO_EVIDENCE`) no la firmó nadie. Gemela de la parte
+         * «quién» de [SQL_DECLARADA_POR_UNA_PERSONA].
+         */
+        fun cerradaPorUnaPersona(fila: PaymentAttemptEntity?): Boolean =
+            fila?.state == STATE_DESCARTADA &&
+                (fila.lastError?.startsWith(PREFIJO_DECLARADO_SIN_COBRO) == true || fila.serverOutcome == SERVER_OPERATOR_NO_INSTRUMENT)
         /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
         const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
 

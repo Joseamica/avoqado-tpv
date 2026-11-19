@@ -52,6 +52,44 @@ class MigracionV48RoomTest {
         } finally { db.close() }
     }
 
+    /**
+     * 🔴 Codex final r1 #3: la app (v47) muere durante la QUINTA consulta al historial de una fila que la ventana automática ya cerró, y
+     * se actualiza a v48. La migración devuelve ese último turno; además la deja como lectura DESPACHADA para que se retome aunque la
+     * ventana la cerró (si no, ninguna consulta la volvía a elegir y la tarjeta de A quedaba sin cerca).
+     */
+    @Test fun `N86_migracion_v47_con_quinta_en_vuelo_se_retoma`() = runTest {
+        val contexto = """{"venueId":"v1","idempotencyKey":"ventana-5","deviceSerialNumber":"terminal",""" +
+            """"processorAffiliation":"afiliacion","orderId":"orden-A","amount":100.00,"tip":0}"""
+        crearBase("47.json") { old ->
+            old.execSQL(fila("ventana-5", "ANGELPAY", "DESCARTADA", hostApproved = "NULL", verifyAttempts = 5,
+                serverOutcome = "'RELEASED_NO_EVIDENCE'", contexto = contexto))
+            old.execSQL(fila("firmada-5", "ANGELPAY", "DESCARTADA", hostApproved = "NULL", verifyAttempts = 5,
+                serverOutcome = "'OPERATOR_NO_INSTRUMENT'"))
+        }
+        val db = DatabaseModule.provideDatabase(context)
+        try {
+            val dao = db.paymentAttemptDao()
+            dao.getById("ventana-5")!!.let {
+                assertThat(it.historyChecks).isEqualTo(4)
+                assertThat(it.historyReadAt).isNotNull()   // la quinta queda despachada: se retoma
+            }
+            // La firmada ya la sigue eligiendo la consulta por sí misma: no se le agrega cerca.
+            assertThat(dao.getById("firmada-5")!!.historyReadAt).isNull()
+            val ahora = System.currentTimeMillis()
+            assertThat(dao.getUnknownRecoveryCandidates("v1", ahora, ahora).map { it.attemptId }).contains("ventana-5")
+
+            val verificador = io.mockk.mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
+            io.mockk.coEvery { verificador.verificar(any(), any(), any(), any(), any(), any()) } returns
+                com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro.Cobrado("AUTH", "REF", null)
+            val libreta = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(dao, io.mockk.mockk(relaxed = true))
+            com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerUnknownRecovery(dao, libreta, verificador).recover("v1", ahora)
+            dao.getById("ventana-5")!!.let {
+                assertThat(it.hostApproved).isTrue()
+                assertThat(it.referenceNumber).isEqualTo("REF")
+            }
+        } finally { db.close() }
+    }
+
     @Test fun `la migracion 47 a 48 es idempotente`() {
         crearBase("47.json") { old -> old.execSQL(fila("duda-5", "ANGELPAY", "INDETERMINADO", hostApproved = "NULL", verifyAttempts = 5)) }
         val db = DatabaseModule.provideDatabase(context)
@@ -65,11 +103,14 @@ class MigracionV48RoomTest {
         } finally { db.close() }
     }
 
-    private fun fila(id: String, processor: String, state: String, hostApproved: String, verifyAttempts: Int) =
+    private fun fila(
+        id: String, processor: String, state: String, hostApproved: String, verifyAttempts: Int,
+        serverOutcome: String = "NULL", contexto: String = "{}",
+    ) =
         "INSERT INTO payment_attempts (attempt_id, venue_id, processor, kind, state, state_version, amount_cents, tip_cents, " +
             "currency, recording_route, context_schema_version, payment_context_json, host_approved, verify_attempts, created_at, " +
-            "updated_at, legacy_shadow, server_check_count, shift_membership) VALUES ('$id','v1','$processor','SALE','$state',0,10000,0," +
-            "'MXN','FAST',1,'{}',$hostApproved,$verifyAttempts,1,1,0,0,'UNKNOWN')"
+            "updated_at, legacy_shadow, server_check_count, shift_membership, server_outcome) VALUES ('$id','v1','$processor','SALE'," +
+            "'$state',0,10000,0,'MXN','FAST',1,'$contexto',$hostApproved,$verifyAttempts,1,1,0,0,'UNKNOWN',$serverOutcome)"
 
     /** Crea en disco la base con el esquema exportado (app/schemas/…/<archivo>) y siembra filas. */
     private fun crearBase(archivo: String, sembrar: (SQLiteDatabase) -> Unit) {

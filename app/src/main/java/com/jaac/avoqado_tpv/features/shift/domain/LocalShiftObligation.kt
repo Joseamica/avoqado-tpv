@@ -57,6 +57,17 @@ const val SQL_INTENTO_QUE_CUENTA_CAJA = "(state IN ('PREPARANDO','KERNEL_ACTIVO'
     "WHERE p.venue_id = payment_attempts.venue_id AND p.idempotency_key = payment_attempts.attempt_id) " +
     "AND NOT EXISTS (SELECT 1 FROM pending_refunds r WHERE r.venue_id = payment_attempts.venue_id AND r.idempotency_key = payment_attempts.attempt_id)))))"
 
+/**
+ * 🔴 Codex final r1 #8: la parte REMOTE de [SQL_SHIFT_OBLIGATIONS] — la solicitud del POS que el cierre de caja sigue esperando: en
+ * proceso, sin cerrar para ejecución y sin un intento, pago o cripto que responda por ella (un intento DESCARTADO sin dinero ya no
+ * responde). UNA sola regla para contar (Caja) y listar («Por revisar»). Usa el alias `r` de `remote_payment_requests`.
+ */
+const val SQL_SOLICITUD_QUE_CUENTA_CAJA = "(r.status = 'PROCESSING' AND r.execution_closed_at IS NULL " +
+    "AND NOT EXISTS (SELECT 1 FROM payment_attempts a WHERE a.venue_id = r.venue_id AND a.terminal_payment_request_id = r.request_id " +
+    "AND (a.state != 'DESCARTADA' OR a.host_approved = 1 OR a.server_processor_evidence = 'APPROVED' OR a.server_veto IS NOT NULL)) " +
+    "AND NOT EXISTS (SELECT 1 FROM pending_payments p WHERE p.venue_id = r.venue_id AND p.terminal_payment_request_id = r.request_id) " +
+    "AND NOT EXISTS (SELECT 1 FROM local_crypto_operations c WHERE c.venue_id = r.venue_id AND c.terminal_payment_request_id = r.request_id))"
+
 internal const val SQL_SHIFT_OBLIGATIONS = """
 SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
   SELECT owner, ownerId, createdAt, localSessionId, venue,
@@ -79,10 +90,7 @@ SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
     WHERE sync_status IN ('PENDING','SYNCING') OR (sync_status = 'FAILED' AND acknowledged = 0)
     UNION ALL
     SELECT 'REMOTE', request_id, created_at, shift_membership, local_shift_session_id, cash_drawer_session_id, NULL, venue_id FROM remote_payment_requests r
-    WHERE status = 'PROCESSING' AND r.execution_closed_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM payment_attempts a WHERE a.venue_id = r.venue_id AND a.terminal_payment_request_id = r.request_id AND (a.state != 'DESCARTADA' OR a.host_approved = 1 OR a.server_processor_evidence = 'APPROVED' OR a.server_veto IS NOT NULL))
-      AND NOT EXISTS (SELECT 1 FROM pending_payments p WHERE p.venue_id = r.venue_id AND p.terminal_payment_request_id = r.request_id)
-      AND NOT EXISTS (SELECT 1 FROM local_crypto_operations c WHERE c.venue_id = r.venue_id AND c.terminal_payment_request_id = r.request_id)
+    WHERE """ + SQL_SOLICITUD_QUE_CUENTA_CAJA + """
     UNION ALL
     SELECT 'TABLE_CASH', id, created_at, shift_membership, local_shift_session_id, cash_drawer_session_id, NULL, venue_id FROM sync_intents
     WHERE type = 'PAY_CASH' AND status IN ('PENDING','REJECTED')

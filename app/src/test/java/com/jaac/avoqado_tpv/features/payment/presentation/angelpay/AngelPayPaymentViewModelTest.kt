@@ -4973,6 +4973,26 @@ class AngelPayPaymentViewModelTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    /**
+     * 🔴 Codex final r1 #9 · TPV · PAGO RÁPIDO · N86: al vencer la espera sin NINGUNA respuesta de Avoqado, la duda (que ya no lee
+     * `message`, tarea 5) vuelve a decir que quedó sin conexión y que se revisa al volver la red. Si Avoqado contestó, no.
+     */
+    @Test fun `N86_al_vencer_la_espera_sin_red_la_duda_dice_sin_conexion`() = runTest(testDispatcher) {
+        coEvery { ledgerServerRecovery.liberarSinRastroDelBanco(any(), any(), any()) } returns LedgerServerRecovery.SinRastro.SIN_RESPUESTA
+        val vm = pagoRapidoInciertoTrasLaVentana(servidorContesto = false)
+        try {
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.esperandoAlServidor).isFalse()
+            assertThat(s.sinConexion).isTrue()
+        } finally { vm.viewModelScope.cancel() }
+        val conRed = pagoRapidoInciertoTrasLaVentana(servidorContesto = true)
+        try {
+            assertThat((conRed.state.value as AngelPayPaymentState.ResultadoIncierto).sinConexion).isFalse()
+        } finally { conRed.viewModelScope.cancel() }
+        assertThat(com.jaac.avoqado_tpv.features.payment.presentation.SIN_CONEXION_SE_REVISA_AL_VOLVER)
+            .isEqualTo("Sin conexión con Avoqado: este cobro se revisa solo al volver la red.")
+    }
+
     @Test fun `P2 sin red - si el servidor ACEPTO liberarlo sola pero la fila no trae nada que aplicar, la pantalla no dice que no hay conexion`() = runTest(testDispatcher) {
         // Revisión de A5: la liberación sola contestó LIBERADA (un 2xx) y la relectura de la fila no trajo nada que aplicar. El
         // servidor SÍ contestó: «Sin conexión con Avoqado» afirmaría una falla de red que no existe.

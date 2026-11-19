@@ -4063,9 +4063,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
 
             is VerificacionDelCobro.NoSePudoVerificar -> {
-                // Una lectura que se abandonó (la pantalla se fue a media consulta) NO se termina: la retoma la recuperación.
-                if (kotlinx.coroutines.currentCoroutineContext().isActive)
-                    lecturaDespachada?.let { paymentAttemptLedger.terminarLecturaDelHistorial(attemptId, it) }
+                // 🔴 Codex final r1 #3: un fallo técnico (red, credenciales, lectura ilegible) no es una respuesta: la lectura sigue
+                // despachada y la retoma la recuperación al vencer su reserva, aunque entre tanto la ventana haya cerrado la fila.
+                // Igual que una lectura que se abandonó (la pantalla se fue a media consulta).
                 esperarVeredictoDelServidor(verificacion.motivo)
             }
         }
@@ -4211,6 +4211,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             actualizarIncierto {
                 it.copy(
                     esperandoAlServidor = false,
+                    // Codex final r1 #9: la pantalla de la duda lo dice (no lee `message`).
+                    sinConexion = requestId == null && !servidorContesto,
                     message = when {
                         // 🔴 Sin red (founder, 25-sep): una duda ya no aparta la terminal, así que no queda nada que cerrar a mano
                         // en el aparato. Se dice que el cobro queda sin confirmar y se revisa solo; el aviso de Inicio lo sigue

@@ -225,16 +225,18 @@ class DeclaracionDesdeElAviso @Inject constructor(
         // `fix/f1-minimo` 70ca51c5f); sin ella contesta el de hoy en producción. Se quita cuando ese SERVIDOR ya esté publicado.
         if (cuerpo.released == true && comprobante != null && !comprobante.acreditaPersona(null, requestId)) return resultadoDe(venueId, cobro)
         return when {
+            // 🔴 Codex final r1 #6: lo recién leído manda — dinero/aprobado e impedimento (los separa [evidenciaDe]) ANTES que el
+            // comprobante: un comprobante repetido con un aprobado tardío nunca dice «Ya se puede volver a cobrar».
+            cuerpo.released == true &&
+                (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro)) ->
+                evidenciaDe(cobro.attemptId?.let { ledger.leerIntento(it) }, sinGuardar = lectura?.evidenciaPositivaSinRegistro == true)
             cuerpo.released == true && comprobante?.alreadyStored == true -> ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado
-            cuerpo.released == true ->
-                if (lectura?.evidenciaPositivaSinRegistro == true || lectura?.vetoDelServidor != null || tieneDinero(cobro))
-                    evidenciaDe(cobro.attemptId?.let { ledger.leerIntento(it) }, sinGuardar = lectura?.evidenciaPositivaSinRegistro == true)
-                else {
-                    // Sin sonda de por medio la bandeja seguiría PROCESSING y Caja la contaría. Nunca dice «no se cobró»: lo que certifica es
-                    // que nada de esta solicitud sigue corriendo, y que no vuelve a empezar.
-                    if (cobro.attemptId != null) ledger.cerrarSolicitudSiCeso(requestId)
-                    ResultadoDeLaDeclaracion.Declarado
-                }
+            cuerpo.released == true -> {
+                // Sin sonda de por medio la bandeja seguiría PROCESSING y Caja la contaría. Nunca dice «no se cobró»: lo que certifica es
+                // que nada de esta solicitud sigue corriendo, y que no vuelve a empezar.
+                if (cobro.attemptId != null) ledger.cerrarSolicitudSiCeso(requestId)
+                ResultadoDeLaDeclaracion.Declarado
+            }
             cuerpo.status == "COMPLETED" || cuerpo.paymentId != null -> ResultadoDeLaDeclaracion.HayEvidencia
             else -> ResultadoDeLaDeclaracion.Rechazado(paraElCajero(cuerpo.message))
         }
@@ -259,6 +261,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
                 resultado.row?.lastError?.startsWith(PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO) == true ->
                 if (PaymentAttemptEntity.declaradoEnAvoqado(resultado.row?.lastError)) ResultadoDeLaDeclaracion.DeclaradoEnAvoqado
                 else ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal
+            // Codex final r1 #7: la cerró la ventana automática (nadie firmó): se dice que ya no está por revisar, no «declaración guardada».
+            resultado.state == BlumonAttemptResolver.State.RELEASED &&
+                resultado.row?.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             else -> desenlaceEnLaLibreta(resultado)
         }
     }
@@ -286,14 +291,15 @@ class DeclaracionDesdeElAviso @Inject constructor(
             fila?.state in setOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
                 PaymentAttemptEntity.STATE_AUTORIZANDO) -> ResultadoDeLaDeclaracion.SigueTrabajando
             tieneDinero(cobro) -> evidenciaDe(fila)
+            // Codex final r1 #8: una solicitud del POS que «Por revisar» enseña sólo para consultar (su intento quedó descartado, o el
+            // efectivo ya arrancó) y que sigue ahí tras consultar: no se dice que ya no está por revisar.
+            fila == null && !cobro.declarable && ledger.renglonPorRevisar(venueId, cobro.clase, cobro.clave) != null -> GENERICO
             fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             // F1 bloque 2 (R1): mientras el SDK de ESTE intento pueda regresar, no se firma (ni sale el texto genérico).
             fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && ledger.laEjecucionPuedeSeguir(fila) -> ResultadoDeLaDeclaracion.SigueTrabajando
             // Codex código r1 #11: «lo revisó otra persona» sólo si fue una persona (su firma o «no presentó tarjeta»); lo que soltó
             // la ventana del banco o el silencio no lo revisó nadie.
-            fila.state == PaymentAttemptEntity.STATE_DESCARTADA &&
-                (fila.lastError?.startsWith(PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO) == true ||
-                    fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT) -> ResultadoDeLaDeclaracion.YaResuelto
+            PaymentAttemptEntity.cerradaPorUnaPersona(fila) -> ResultadoDeLaDeclaracion.YaResuelto
             fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             else -> GENERICO
         }

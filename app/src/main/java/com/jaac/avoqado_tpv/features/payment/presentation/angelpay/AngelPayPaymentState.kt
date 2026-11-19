@@ -191,6 +191,8 @@ sealed class AngelPayPaymentState {
         val declarando: Boolean = false,
         /** F1 (tarea 5): el total (importe + propina) del intento ORIGINAL, el que la pantalla dice; null si no se conoce. */
         val totalDelIntento: java.math.BigDecimal? = null,
+        /** Codex final r1 #9: venció la espera de un Pago rápido sin NINGUNA respuesta de Avoqado: la pantalla dice que se revisa al volver la red. */
+        val sinConexion: Boolean = false,
     ) : AngelPayPaymentState()
 
     /**

@@ -983,6 +983,15 @@ private fun ResultadoInciertoContent(
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
         )
+        // Codex final r1 #9: sin respuesta de Avoqado al vencer la espera, se dice qué pasa con el cobro.
+        if (state.sinConexion) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = com.jaac.avoqado_tpv.features.payment.presentation.SIN_CONEXION_SE_REVISA_AL_VOLVER,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+        }
         if (state.verificando || state.esperandoAlServidor) {
             Spacer(modifier = Modifier.height(24.dp))
             CircularProgressIndicator()
@@ -1293,6 +1302,7 @@ private fun AngelPayResultadoInciertoSinConexionPreview() {
                 message = "Sin conexión con Avoqado: este cobro queda sin confirmar y se revisa solo al volver la red. La terminal " +
                     "sigue libre; antes de volver a cobrarle a este cliente, revisa el aviso.",
                 verificando = false, esperandoAlServidor = false, segundos = 10, puedeDeclarar = true,
+                totalDelIntento = java.math.BigDecimal("105.00"), sinConexion = true,
             ),
             onSeguir = {},
         )

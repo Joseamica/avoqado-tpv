@@ -30,6 +30,9 @@ internal fun totalDelIntento(row: com.jaac.avoqado_tpv.features.payment.data.led
 /** K19a: mientras se consulta. */
 internal const val CONFIRMANDO_CON_EL_BANCO = "Confirmando con el banco… No pases la tarjeta otra vez."
 
+/** Codex final r1 #9 (N86): venció la espera y Avoqado nunca contestó. El texto de la base, corto. */
+internal const val SIN_CONEXION_SE_REVISA_AL_VOLVER = "Sin conexión con Avoqado: este cobro se revisa solo al volver la red."
+
 /**
  * «Intento cerrado»: con `declarado_sin_cobro:` lo declaró el cajero (D12) — y con la marca de D22, Avoqado lo guardó; si no, lo
  * liberó el servidor. Sin la marca se dice «no aparece en Avoqado» aunque una respuesta perdida lo haya guardado: la pantalla dice

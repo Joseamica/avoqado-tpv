@@ -30,7 +30,8 @@ class BlumonAttemptResolver @Inject constructor(
         val resultJson: String? = null,
         /**
          * F1 (Codex código r2 #5): la duda ya estaba declarada en Avoqado ANTES de esta firma (la consulta trajo el acuse, o el replay
-         * devolvió el de otra persona, p. ej. el de la cajera por la sesión): la pantalla no dice «la firma del gerente».
+         * devolvió el de otra persona, p. ej. el de la cajera por la sesión): la pantalla no dice «la firma del gerente». Sólo una
+         * PERSONA declara: lo que cerró la ventana automática llega RELEASED con esto en false (Codex final r1 #7).
          */
         val yaEstabaDeclarado: Boolean = false,
     )
@@ -101,7 +102,10 @@ class BlumonAttemptResolver @Inject constructor(
     suspend fun declareChecked(venueId: String, attemptId: String, supervisorPin: String? = null): Result = mutex.withLock {
         if (supervisorPin.isNullOrBlank()) return@withLock Result(State.SIGNATURE_REQUIRED)
         val reading = consultLocked(venueId, attemptId, LOS_DOS)
-        if (reading.state != State.PENDING) return@withLock reading.copy(yaEstabaDeclarado = reading.state == State.RELEASED)
+        // Codex final r1 #7: «ya estaba declarado» sólo si la cerró una PERSONA; la ventana automática no es una declaración guardada.
+        if (reading.state != State.PENDING) return@withLock reading.copy(
+            yaEstabaDeclarado = reading.state == State.RELEASED && PaymentAttemptEntity.cerradaPorUnaPersona(reading.row),
+        )
         val row = reading.row ?: return@withLock Result(State.UNAVAILABLE)
         if (row.terminalPaymentRequestId != null || row.serverAnsweredAt == null || !ledger.puedeDeclararseEnDuda(row, venueId)) return@withLock reading
         // F1: la firma necesita conexión. Si la consulta de ESTA llamada no tuvo respuesta, ni se intenta: A se conserva.
@@ -117,7 +121,8 @@ class BlumonAttemptResolver @Inject constructor(
             if (justoAntes.state != State.PENDING || filaJustoAntes == null || filaJustoAntes.terminalPaymentRequestId != null ||
                 !ledger.puedeDeclararseEnDuda(filaJustoAntes, venueId))
                 return@withLock justoAntes.copy(
-                    serverAnswered = true, resultJson = reading.resultJson, yaEstabaDeclarado = justoAntes.state == State.RELEASED,
+                    serverAnswered = true, resultJson = reading.resultJson,
+                    yaEstabaDeclarado = justoAntes.state == State.RELEASED && PaymentAttemptEntity.cerradaPorUnaPersona(filaJustoAntes),
                 )
         }
         val envio = enviarDeclaracionRevisada(venueId, attemptId, row, staffId, supervisorPin)

@@ -192,6 +192,36 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("gastadas ≤ respuestas escritas (4 «no aparece») y ≤ 5").that(consultasGastadas("a1")).isAtMost(4)
     }
 
+    /**
+     * 🔴 Codex final r1 #3 · TPV N86: la ventana automática cierra la fila mientras AngelPay contesta la quinta consulta, y esa quinta
+     * falla por la red. Un fallo técnico no gasta turno ni borra la marca de la lectura despachada: al vencer la pausa la quinta se
+     * retoma aunque la ventana la cerró, y mientras tanto la tarjeta de A sigue frenada.
+     */
+    @Test fun `N86_quinta_consulta_falla_la_red_no_pierde_el_turno_ni_la_cerca`() = runBlocking<Unit> {
+        dudaN86("a1")
+        var t = System.currentTimeMillis() + 600_000
+        val ventanaYSinRed: suspend () -> VerificacionDelCobro = { ventana("a1"); VerificacionDelCobro.NoSePudoVerificar("sin red") }
+        val (v, consultas) = verificador(noAparece, noAparece, noAparece, noAparece, ventanaYSinRed, cobrado)
+        repeat(4) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 3_600_000 }
+        assertThat(consultasGastadas("a1")).isEqualTo(4)
+
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        assertThat(consultas()).isEqualTo(5)
+        assertWithMessage("el fallo de red no gasta el turno").that(consultasGastadas("a1")).isEqualTo(4)
+        assertWithMessage("la lectura sigue despachada").that(dao.getById("a1")!!.historyReadAt).isNotNull()
+        assertWithMessage("la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
+
+        // Vence la pausa: la quinta se retoma aunque la ventana cerró la fila.
+        t += 3_600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        assertWithMessage("la quinta se retoma").that(consultas()).isEqualTo(6)
+        dineroEscrito("a1")
+        assertThat(dao.getById("a1")!!.serverOutcome).isEqualTo("RELEASED_NO_EVIDENCE")
+        val servidor = Servidor()
+        registrador(servidor).recover(venue, t + 3_600_000)
+        assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
     @Test fun `lease_viejo_con_aprobado_propio_conserva_dinero_sin_gastar_dos_turnos`() = runBlocking<Unit> {
         dudaN86("a1")
         val suelta = CompletableDeferred<Unit>()

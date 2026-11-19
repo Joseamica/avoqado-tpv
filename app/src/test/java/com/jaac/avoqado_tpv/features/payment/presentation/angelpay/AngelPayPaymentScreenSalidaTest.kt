@@ -107,6 +107,17 @@ class AngelPayPaymentScreenSalidaTest {
         )
     }
 
+    /** Codex final r1 #9: sin respuesta de Avoqado, la duda de la N86 dice que se revisa al volver la red (además del importe y [Seguir]). */
+    @Test
+    fun `N86 la duda sin red dice que se revisa al volver la red`() {
+        val linea = Regex(
+            """if \(state\.sinConexion\) \{[^}]*text = com\.jaac\.avoqado_tpv\.features\.payment\.presentation\.SIN_CONEXION_SE_REVISA_AL_VOLVER""",
+        )
+        assertTrue("La duda sin red dice qué pasa con el cobro.", linea.containsMatchIn(contenidoIncierto))
+        assertTrue("Sigue diciendo «No la repitas» con el importe.", contenidoIncierto.contains("tarjetaPorConfirmar(state.totalDelIntento)"))
+        assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))
+    }
+
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(

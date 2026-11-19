@@ -45,6 +45,18 @@ internal fun textoDelCierreBloqueado(operaciones: Int, delPos: Int, sinRespuesta
  * PROCESSING con su cerca— bloqueaba el cierre del turno. Es una regla de CAJA: el aviso de pendientes
  * (`RemotePaymentRequestDao.observePendingObligations`) cuenta otra cosa (filas SIN ningún intento) y no cambia.
  */
+/**
+ * 🔴 F1 bloque 5 (I5): la parte de TARJETA de [SQL_SHIFT_OBLIGATIONS] — los intentos que el cierre de caja cuenta. UNA sola regla para
+ * contar (Caja) y listar («Por revisar», [com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao.observarCobrosDeclarables]).
+ * Sin alias: va en un `FROM payment_attempts` y sus subconsultas nombran `payment_attempts.` para la fila de afuera.
+ */
+const val SQL_INTENTO_QUE_CUENTA_CAJA = "(state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','INDETERMINADO') " +
+    "OR (state = 'DESCARTADA' AND (host_approved = 1 OR server_processor_evidence = 'APPROVED' OR server_veto IS NOT NULL)) " +
+    "OR (state = 'ENTREGADA_A_COLA' AND (" + PaymentAttemptEntity.SQL_REGISTRO_POR_VEREDICTO +
+    " OR instr(COALESCE(last_error,''), 'handoff_contrato_contradictorio') > 0 OR (NOT EXISTS (SELECT 1 FROM pending_payments p " +
+    "WHERE p.venue_id = payment_attempts.venue_id AND p.idempotency_key = payment_attempts.attempt_id) " +
+    "AND NOT EXISTS (SELECT 1 FROM pending_refunds r WHERE r.venue_id = payment_attempts.venue_id AND r.idempotency_key = payment_attempts.attempt_id)))))"
+
 internal const val SQL_SHIFT_OBLIGATIONS = """
 SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
   SELECT owner, ownerId, createdAt, localSessionId, venue,
@@ -58,10 +70,7 @@ SELECT owner, ownerId, createdAt, membership, localSessionId FROM (
   FROM (
     SELECT 'ATTEMPT' owner, attempt_id ownerId, created_at createdAt, shift_membership membership,
         local_shift_session_id localSessionId, cash_drawer_session_id drawerId, NULL remoteShiftId, venue_id venue FROM payment_attempts
-    WHERE state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO','HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO','INDETERMINADO')
-       OR (state = 'DESCARTADA' AND (host_approved = 1 OR server_processor_evidence = 'APPROVED' OR server_veto IS NOT NULL))
-       OR (state = 'ENTREGADA_A_COLA' AND (""" + PaymentAttemptEntity.SQL_REGISTRO_POR_VEREDICTO + """ OR instr(COALESCE(last_error,''), 'handoff_contrato_contradictorio') > 0 OR (NOT EXISTS (SELECT 1 FROM pending_payments p WHERE p.venue_id = payment_attempts.venue_id AND p.idempotency_key = payment_attempts.attempt_id)
-           AND NOT EXISTS (SELECT 1 FROM pending_refunds r WHERE r.venue_id = payment_attempts.venue_id AND r.idempotency_key = payment_attempts.attempt_id))))
+    WHERE """ + SQL_INTENTO_QUE_CUENTA_CAJA + """
     UNION ALL
     SELECT 'PAYMENT', CAST(id AS TEXT), created_at, shift_membership, local_shift_session_id, cash_drawer_session_id, shift_id, venue_id FROM pending_payments
     WHERE sync_status IN ('PENDING','SYNCING') OR ((sync_status = 'FAILED' OR requiere_revision = 1) AND (acknowledged = 0 OR id = :recognizedPaymentId))

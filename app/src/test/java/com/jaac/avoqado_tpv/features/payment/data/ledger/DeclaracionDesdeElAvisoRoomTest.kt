@@ -154,7 +154,8 @@ class DeclaracionDesdeElAvisoRoomTest {
     }
 
     private suspend fun declarables(libreta: PaymentAttemptLedger = ledger) = libreta.observarCobrosDeclarables(venue).first()
-    private suspend fun declarable(identidad: String) = declarables().single { it.identidad == identidad }
+    // F1 bloque 5: el renglón es del INTENTO; las pruebas viejas lo nombran por su solicitud (una sola por solicitud aquí).
+    private suspend fun declarable(identidad: String) = declarables().single { it.clave == identidad || it.requestId == identidad }
     private suspend fun obligaciones() = db.remotePaymentRequestDao().observePendingObligations(venue).first()
 
     /** S6 sin vínculo ni dinero: lo que ve la PAX, y un Pago rápido. */
@@ -249,8 +250,8 @@ class DeclaracionDesdeElAvisoRoomTest {
             ),
         )
         repeat(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) { duda("local-$it") }
-        assertThat(declarables().map { it.identidad }).doesNotContain("r-viejo")
-        val cobro = ledger.observarCobrosDeclarables(venue, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA).first().single { it.identidad == "r-viejo" }
+        assertThat(declarables().map { it.requestId }).doesNotContain("r-viejo")
+        val cobro = ledger.observarCobrosDeclarables(venue, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA).first().single { it.requestId == "r-viejo" }
         coEvery { api.declararSinCobro(venue, "r-viejo", any()) } returns liberada("r-viejo")
         coEvery { api.getAttemptStatus(venue, "a-viejo") } returns s6Declarada("a-viejo", "r-viejo")
 
@@ -524,7 +525,7 @@ class DeclaracionDesdeElAvisoRoomTest {
 
             assertThat(dao.getById(id)!!.state).isEqualTo("INDETERMINADO")
         }
-        assertThat(declarables().map { it.identidad }).containsExactly("a-nexgo", "a-pax")
+        assertThat(declarables().map { it.clave }).containsExactly("a-nexgo", "a-pax")
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
         coVerify(exactly = 0) { api.declararSinCobro(any(), any(), any()) }
     }
@@ -1119,7 +1120,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(ledger.marcarEvidenciaPositivaDelServidor(venue, "a-1").getOrThrow()).isTrue()
 
         val fila = declarables().single()
-        assertThat(fila.identidad).isEqualTo("a-1")
+        assertThat(fila.clave).isEqualTo("a-1")
         assertThat(fila.declarable).isFalse()
     }
 

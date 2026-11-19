@@ -24,6 +24,46 @@ const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERM
 const val SQL_APROBADO_TRAS_LA_VENTANA = "(state = 'DESCARTADA' AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0 " +
     "AND host_approved IS 1 AND server_payment_id IS NULL AND server_veto IS NULL)"
 
+/**
+ * 🔴 F1 bloque 5 (I5): «Por revisar» = la unión, POR IDENTIDAD, de los intentos que cuenta Caja
+ * ([com.jaac.avoqado_tpv.features.shift.domain.SQL_INTENTO_QUE_CUENTA_CAJA]), los que frenan otra tarjeta de su cuenta
+ * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) y las solicitudes del POS pendientes sin intento. Clave del renglón: `(ATTEMPT,
+ * attemptId)` o `(REMOTE, requestId)`: un `requestId` sirve para mirar a los hermanos, nunca quita un renglón. `declarable` = admite la
+ * firma (lo demás sólo se consulta o lo resuelve su dueño). Usa `:venueId` y `:processToken`.
+ */
+const val SQL_POR_REVISAR = """
+    SELECT 'ATTEMPT' AS clase, attempt_id AS clave, attempt_id AS attempt_id, terminal_payment_request_id AS request_id,
+        (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, server_answered_at AS server_answered_at,
+        state AS estado, kind AS tipo,
+        CASE WHEN state = 'INDETERMINADO' AND legacy_shadow = 0 AND kind = 'SALE'
+            AND host_approved IS NOT 1 AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
+            AND (server_outcome IS NULL
+                 OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+            AND NOT (last_error IS 'cuarentena_por_antiguedad' AND process_token IS :processToken)
+            AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)
+            -- Dentro de este FROM los nombres sin prefijo son los del hermano; `payment_attempts.` es la fila de afuera.
+            AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
+                WHERE hermano.terminal_payment_request_id = payment_attempts.terminal_payment_request_id
+                AND hermano.attempt_id != payment_attempts.attempt_id
+                AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
+                     OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
+            THEN 1 ELSE 0 END AS declarable,
+        CASE WHEN state = 'INDETERMINADO' AND process_token IS :processToken AND sdk_returned_at IS NULL
+            AND (processor = 'BLUMON' OR last_error IS 'cuarentena_por_antiguedad') THEN 1 ELSE 0 END AS ejecucion_viva
+    FROM payment_attempts
+    WHERE venue_id = :venueId
+    AND (""" + com.jaac.avoqado_tpv.features.shift.domain.SQL_INTENTO_QUE_CUENTA_CAJA + """ OR """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """)
+    UNION ALL
+    SELECT 'REMOTE' AS clase, r.request_id AS clave, NULL AS attempt_id, r.request_id AS request_id,
+        (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, NULL AS server_answered_at,
+        NULL AS estado, 'SALE' AS tipo, 1 AS declarable, 0 AS ejecucion_viva
+    FROM remote_payment_requests r
+    WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+        WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+"""
+
 /** 🔴 F1 bloque 3: quién trajo el aprobado final de AngelPay; se guarda en `operation_id` (que AngelPay no usa). */
 enum class OrigenDelAprobado(val columna: String) {
     SDK("angelpay:sdk"), APP_A_APP("angelpay:app_a_app"),
@@ -826,50 +866,18 @@ interface PaymentAttemptDao {
      *
      * La ventana de 10 min va en Kotlin, con la misma constante del aviso ([DeclaracionDesdeElAviso.vigentes]).
      */
-    @Query(
-        """SELECT * FROM (
-            SELECT d.attempt_id AS attempt_id, d.terminal_payment_request_id AS request_id,
-                (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at,
-                -- F1 (tarea 4): con dinero o contradicción la fila sale para CONSULTARLA, pero no admite declaración.
-                CASE WHEN d.state = 'INDETERMINADO'
-                    AND d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
-                    AND (d.server_outcome IS NULL
-                         OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
-                    AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
-                    -- F1 (Codex código r2 #4): lo que antes la SACABA de la lista ahora sólo le quita la declaración: la cuarentena por
-                    -- reloj de ESTE proceso (nadie comprobó que el lector terminó) y otro intento de la misma solicitud corriendo, con
-                    -- dinero o registrado (la declaración es de toda la solicitud). La fila se ve igual: el cierre de caja la cuenta.
-                    AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
-                    -- F1 bloque 2 (R1): en la PAX, tampoco mientras el SDK de ESTE intento pueda regresar (misma ejecución, sin regreso).
-                    AND NOT (d.processor = 'BLUMON' AND d.process_token IS :processToken AND d.sdk_returned_at IS NULL)
-                    AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
-                        WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
-                        AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
-                             OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
-                    THEN 1 ELSE 0 END AS declarable,
-                -- F1 bloque 2: «la terminal sigue trabajando en este cobro» (se ve sin [Firmar]).
-                CASE WHEN d.state = 'INDETERMINADO' AND d.process_token IS :processToken AND d.sdk_returned_at IS NULL
-                    AND (d.processor = 'BLUMON' OR d.last_error IS 'cuarentena_por_antiguedad') THEN 1 ELSE 0 END AS ejecucion_viva
-            FROM payment_attempts d
-            WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0
-            -- F1 (Codex código r1 #9): también la DESCARTADA con dinero (el banco aprobó después, o Avoqado trajo evidencia o un veto):
-            -- frena la tarjeta de su cuenta y el cierre de caja (`LocalShiftObligation`), así que se ve aquí, sólo para consultarla.
-            AND (d.state = 'INDETERMINADO'
-                 OR (d.state = 'DESCARTADA' AND (d.host_approved IS 1 OR d.server_processor_evidence IS 'APPROVED' OR d.server_veto IS NOT NULL)))
-            ORDER BY d.created_at DESC LIMIT :limite)
-        UNION ALL
-        SELECT * FROM (
-            SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
-                r.created_at AS desde_millis, NULL AS server_answered_at, 1 AS declarable, 0 AS ejecucion_viva
-            FROM remote_payment_requests r
-            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-                WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
-            ORDER BY r.created_at DESC LIMIT :limite)
-        ORDER BY desde_millis DESC"""
-    )
-    // D20 (Codex r2): [limite] por mitad; el aviso usa 50 y «Ver anteriores» de Pagos lo amplía de 50 en 50.
+    @Query("SELECT * FROM (" + SQL_POR_REVISAR + ") ORDER BY desde_millis DESC, clase ASC, clave ASC LIMIT :limite")
+    // D20 (Codex r2) y F1 bloque 5: un solo orden estable (fecha, clase, ID) y [limite] para TODA la lista: «Ver anteriores» la amplía de
+    // 50 en 50 hasta el último renglón ([contarPorRevisar] dice cuántos son).
     fun observarCobrosDeclarables(venueId: String, processToken: String, limite: Int): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>>
+
+    /** F1 bloque 5: el total EXACTO de «Por revisar» (la misma unión, sin tope). */
+    @Query("SELECT COUNT(*) FROM (" + SQL_POR_REVISAR + ")")
+    fun contarPorRevisar(venueId: String, processToken: String): kotlinx.coroutines.flow.Flow<Int>
+
+    /** F1 bloque 5: UN renglón de «Por revisar» por su clave (sin tope: lo de «Ver anteriores» también se encuentra). */
+    @Query("SELECT * FROM (" + SQL_POR_REVISAR + ") WHERE clase = :clase AND clave = :clave LIMIT 1")
+    suspend fun renglonPorRevisar(venueId: String, processToken: String, clase: String, clave: String): CobroDeclarable?
 
     /**
      * SDK 1.0.19 (18-sep): la petición NO salió al host — lo acreditó el SDK de AngelPay (`authorizationAttempted = false`

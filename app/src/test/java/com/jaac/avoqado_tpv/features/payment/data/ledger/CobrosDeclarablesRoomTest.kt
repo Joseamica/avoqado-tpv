@@ -65,7 +65,8 @@ class CobrosDeclarablesRoomTest {
         dao.insert(duda("a-local").copy(serverAnsweredAt = 77L))
 
         assertThat(declarables()).containsExactly(
-            CobroDeclarable(attemptId = "a-local", requestId = null, totalCentavos = 12_000, desdeMillis = ahora - 60_000, serverAnsweredAt = 77L),
+            CobroDeclarable(attemptId = "a-local", requestId = null, totalCentavos = 12_000, desdeMillis = ahora - 60_000, serverAnsweredAt = 77L,
+                estado = "INDETERMINADO"),
         )
     }
 
@@ -96,16 +97,20 @@ class CobrosDeclarablesRoomTest {
         bandeja.insert(enBandeja("en-medio", haceMs = 200_000))
         dao.insert(duda("nueva", haceMs = 100_000))
 
-        assertThat(declarables().map { it.identidad }).containsExactly("nueva", "en-medio", "vieja").inOrder()
+        assertThat(declarables().map { it.clave }).containsExactly("nueva", "en-medio", "vieja").inOrder()
     }
 
     // ── Lo que no entra: cada una, por separado ───────────────────────────────────────────────────────────────────────
 
-    @Test fun `no entra lo que puede estar corriendo o ya tiene respuesta del banco`() = runTest {
+    // F1 bloque 5 (I5): lo que cuenta Caja se VE en «Por revisar» (sólo para consultar o para su dueño); lo cerrado no.
+    @Test fun `lo que puede estar corriendo o ya tiene respuesta del banco se ve, pero no se declara`() = runTest {
         val estados = listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "HOST_RESPONDIO", "AUTORIZADO", "REGISTRO_FALLIDO", "ENTREGADA_A_COLA", "REGISTRADO", "CERRADA", "DESCARTADA")
         estados.forEach { dao.insert(duda("a-$it").copy(state = it)) }
 
-        assertThat(declarables()).isEmpty()
+        val renglones = declarables()
+        assertThat(renglones.map { it.attemptId }).containsExactly("a-PREPARANDO", "a-KERNEL_ACTIVO", "a-AUTORIZANDO", "a-HOST_RESPONDIO",
+            "a-AUTORIZADO", "a-REGISTRO_FALLIDO", "a-ENTREGADA_A_COLA")
+        assertThat(renglones.none { it.declarable }).isTrue()
     }
 
     // F1 (tarea 4): reemplaza «no entra»: una fila con dinero o contradicción queda en la lista para CONSULTARLA, sin poder declararse.
@@ -129,13 +134,17 @@ class CobrosDeclarablesRoomTest {
         assertWithMessage("una duda limpia sí se declara").that(declarables().single().declarable).isTrue()
     }
 
-    @Test fun `no entra una devolucion, una fila heredada ni otro negocio`() = runTest {
+    // F1 bloque 5: la devolución y la heredada las cuenta Caja: se ven (su dueño las resuelve), sin declaración. Otro negocio, no.
+    @Test fun `una devolucion y una heredada se ven sin declaracion, otro negocio no entra`() = runTest {
         dao.insert(duda("devolucion").copy(kind = PaymentAttemptEntity.KIND_REFUND))
         dao.insert(duda("heredada").copy(legacyShadow = true))
         dao.insert(duda("ajena").copy(venueId = "otro"))
         bandeja.insert(enBandeja("r-ajena", venueId = "otro"))
 
-        assertThat(declarables()).isEmpty()
+        val renglones = declarables()
+        assertThat(renglones.map { it.attemptId }).containsExactly("devolucion", "heredada")
+        assertThat(renglones.none { it.declarable }).isTrue()
+        assertThat(renglones.single { it.attemptId == "devolucion" }.tipo).isEqualTo(PaymentAttemptEntity.KIND_REFUND)
     }
 
     @Test fun `una bandeja con CUALQUIER intento no entra por su rama - eso lo resuelve la libreta`() = runTest {
@@ -144,7 +153,7 @@ class CobrosDeclarablesRoomTest {
             db.clearAllTables()
             bandeja.insert(enBandeja("r-1"))
             dao.insert(duda("a-1", "r-1").copy(state = estado))
-            assertWithMessage(estado).that(declarables()).isEmpty()
+            assertWithMessage(estado).that(declarables().filter { it.clase == CobroDeclarable.CLASE_SOLICITUD }).isEmpty()
         }
     }
 
@@ -213,7 +222,7 @@ class CobrosDeclarablesRoomTest {
     }
 
     /** D20: pasados los 10 min el aviso se va, pero la duda sigue: «Por revisar» (Pagos) la conserva hasta que se declare. */
-    @Test fun `D20 por revisar no tiene ventana - lo de hace horas sigue a la vista, uno por solicitud`() = runTest {
+    @Test fun `D20 por revisar no tiene ventana - lo de hace horas sigue a la vista, uno por intento`() = runTest {
         dao.insert(duda("viejo", haceMs = 3 * 60 * 60_000L))
         dao.insert(duda("primero", "r-1", haceMs = 2 * 60 * 60_000L))
         dao.insert(duda("segundo", "r-1", haceMs = 60 * 60_000L))
@@ -221,7 +230,8 @@ class CobrosDeclarablesRoomTest {
         val todos = declarables()
 
         assertThat(DeclaracionDesdeElAviso.vigentes(todos, ahora)).isEmpty()
-        assertThat(DeclaracionDesdeElAviso.porRevisar(todos).map { it.attemptId }).containsExactly("segundo", "viejo").inOrder()
+        // F1 bloque 5: un renglón por INTENTO, aunque dos sean de la misma solicitud.
+        assertThat(DeclaracionDesdeElAviso.porRevisar(todos).map { it.attemptId }).containsExactly("segundo", "primero", "viejo").inOrder()
     }
 
     /** Codex r1 #1: la consulta trae los 50 más recientes; con 51, el más viejo no sale y el recuadro tiene que decirlo. */
@@ -241,7 +251,7 @@ class CobrosDeclarablesRoomTest {
         assertThat(DeclaracionDesdeElAviso.recortada(ampliada, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA)).isFalse()
     }
 
-    @Test fun `una por solicitud - dos intentos limpios de la misma salen como uno, el mas reciente`() = runTest {
+    @Test fun `F1 bloque 5 - dos intentos de la misma solicitud son dos renglones`() = runTest {
         dao.insert(duda("primero", "r-1", haceMs = 200_000))
         dao.insert(duda("segundo", "r-1", haceMs = 100_000))
         dao.insert(duda("otro", "r-2", haceMs = 300_000))
@@ -250,7 +260,7 @@ class CobrosDeclarablesRoomTest {
 
         val vigentes = DeclaracionDesdeElAviso.vigentes(declarables(), ahora)
 
-        assertThat(vigentes.map { it.attemptId }).containsExactly("segundo", "otro", "local-1", "local-2").inOrder()
+        assertThat(vigentes.map { it.attemptId }).containsExactly("segundo", "primero", "otro", "local-1", "local-2").inOrder()
     }
 
     @Test fun `todo lo declarable sale en el aviso - nunca se ofrece declarar algo que el aviso no nombra`() = runTest {

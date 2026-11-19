@@ -196,6 +196,19 @@ class PaymentAttemptLedger(
         limite: Int = DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA,
     ): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>> = dao.observarCobrosDeclarables(venueId, processToken, limite)
 
+    /** F1 bloque 5: el total exacto de «Por revisar». */
+    fun observarTotalPorRevisar(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.contarPorRevisar(venueId, processToken)
+
+    /** F1 bloque 5: UN renglón de «Por revisar» por su clave, sin tope. Un fallo de lectura es null (no se afirma que siga). */
+    suspend fun renglonPorRevisar(venueId: String, clase: String, clave: String): CobroDeclarable? = try {
+        withContext(Dispatchers.IO) { dao.renglonPorRevisar(venueId, processToken, clase, clave) }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo leer el renglón %s:%s de «Por revisar»", clase, clave)
+        null
+    }
+
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.
 

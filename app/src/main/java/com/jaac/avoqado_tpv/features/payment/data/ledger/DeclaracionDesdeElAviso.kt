@@ -30,12 +30,26 @@ data class CobroDeclarable(
     @ColumnInfo(name = "declarable") val declarable: Boolean = true,
     /** F1 bloque 2 (R1): el SDK de ESTE intento puede regresar todavía (misma ejecución, sin regreso comprobado): sin [Firmar]. */
     @ColumnInfo(name = "ejecucion_viva") val ejecucionViva: Boolean = false,
+    /** F1 bloque 5: `ATTEMPT` o `REMOTE` — con [clave], la identidad del renglón. */
+    @ColumnInfo(name = "clase") val clase: String = if (attemptId != null) CLASE_INTENTO else CLASE_SOLICITUD,
+    @ColumnInfo(name = "clave") val clave: String = attemptId ?: requestId.orEmpty(),
+    /** F1 bloque 5: el estado del intento (null en una solicitud sin intento) y si es venta o devolución: quién es su dueño. */
+    @ColumnInfo(name = "estado") val estado: String? = null,
+    @ColumnInfo(name = "tipo") val tipo: String = PaymentAttemptEntity.KIND_SALE,
 ) {
-    /** Una declaración por solicitud: dos intentos de la misma son el mismo cobro para el cajero. */
-    val identidad: String get() = requestId ?: attemptId.orEmpty()
+    /**
+     * F1 bloque 5 (I5): un renglón por INTENTO (o por solicitud sin intento). Dos intentos de la misma solicitud son dos renglones: el
+     * `requestId` sólo sirve para mirar a los hermanos y decidir si una firma de solicitud es segura.
+     */
+    val identidad: String get() = "$clase:$clave"
 
-    /** F1: los últimos 6 caracteres de la identidad, para distinguir dos filas del mismo importe y minuto. */
-    val referenciaCorta: String get() = identidad.filter { it.isLetterOrDigit() }.takeLast(6).uppercase()
+    /** F1: los últimos 6 caracteres del intento (o de la solicitud), para distinguir dos filas del mismo importe y minuto. */
+    val referenciaCorta: String get() = clave.filter { it.isLetterOrDigit() }.takeLast(6).uppercase()
+
+    companion object {
+        const val CLASE_INTENTO = "ATTEMPT"
+        const val CLASE_SOLICITUD = "REMOTE"
+    }
 }
 
 /** Lo que le pasó a la declaración, con el texto que lee el cajero. */
@@ -64,6 +78,12 @@ sealed interface ResultadoDeLaDeclaracion {
     data object YaNoEstaPorRevisar : ResultadoDeLaDeclaracion
     /** F1 bloque 2 (R1): el SDK de la PAX puede regresar todavía con ESTE cobro: no se firma. */
     data object SigueTrabajando : ResultadoDeLaDeclaracion
+    /** F1 bloque 5: una devolución: la resuelve su pantalla, no «Por revisar». */
+    data object EsDevolucion : ResultadoDeLaDeclaracion
+    /** F1 bloque 5: el cobro ya está en la cola de pagos: lo sube la cola. */
+    data object EnLaCola : ResultadoDeLaDeclaracion
+    /** F1 bloque 7: el banco aprobó ESTE intento y falta que Avoqado lo registre (no se firma). */
+    data object AprobadoSinRegistro : ResultadoDeLaDeclaracion
 
     /** [Declarado] y [PidePin] no se avisan: uno cierra el diálogo y el otro abre el del PIN. */
     fun texto(): String = when (this) {
@@ -84,6 +104,9 @@ sealed interface ResultadoDeLaDeclaracion {
         YaCobrado -> "Este cobro SÍ pasó: Avoqado ya lo registró. No lo vuelvas a cobrar."
         YaNoEstaPorRevisar -> "Este cobro ya no está por revisar: se resolvió en el POS o en Avoqado. Revisa Pagos para ver cómo quedó."
         SigueTrabajando -> DeclaracionDesdeElAviso.TEXTO_SIGUE_TRABAJANDO
+        EsDevolucion -> "Es una devolución: se revisa en Devoluciones, no aquí."
+        EnLaCola -> "Este cobro ya está en la cola para subir a Avoqado. No lo vuelvas a cobrar."
+        AprobadoSinRegistro -> "El banco autorizó este intento. Falta confirmar el registro."
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
         // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
         DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
@@ -115,6 +138,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
     @Volatile private var ultimoRefrescado: String? = null
 
     fun observarDeclarables(venueId: String, limite: Int = TOPE_DE_LA_CONSULTA) = ledger.observarCobrosDeclarables(venueId, limite)
+
+    /** F1 bloque 5: cuántos hay por revisar, exacto. */
+    fun observarTotal(venueId: String) = ledger.observarTotalPorRevisar(venueId)
 
     /**
      * Antes de pedir confirmación. `null` = se puede confirmar. Un Pago rápido consulta primero (Codex plan r1 #2): sin respuesta de Avoqado
@@ -245,7 +271,12 @@ class DeclaracionDesdeElAviso @Inject constructor(
     suspend fun resultadoDe(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion = sinTumbarLaApp {
         val fila = cobro.attemptId?.let { ledger.leerIntento(it) }?.takeIf { it.venueId == venueId }
         when {
+            // F1 bloque 5: ver, firmar y reconocer son acciones distintas; cada renglón ofrece lo de su dueño.
+            fila?.kind == PaymentAttemptEntity.KIND_REFUND -> ResultadoDeLaDeclaracion.EsDevolucion
             fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
+            fila?.state == PaymentAttemptEntity.STATE_ENTREGADA_A_COLA -> ResultadoDeLaDeclaracion.EnLaCola
+            fila?.state in setOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
+                PaymentAttemptEntity.STATE_AUTORIZANDO) -> ResultadoDeLaDeclaracion.SigueTrabajando
             tieneDinero(cobro) -> evidenciaDe(fila)
             fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
             // F1 bloque 2 (R1): mientras el SDK de ESTE intento pueda regresar, no se firma (ni sale el texto genérico).
@@ -262,7 +293,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
 
     /** F1: la consulta de una fila que no admite declaración (dinero o contradicción): se pregunta a Avoqado y se dice cómo quedó. */
     suspend fun consultarYDecir(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion {
-        sinTumbarLaApp { consultar(venueId, cobro); null }
+        // F1 bloque 5: sólo una VENTA se consulta a Avoqado desde aquí; una devolución tiene su dueño.
+        if (cobro.tipo == PaymentAttemptEntity.KIND_SALE) sinTumbarLaApp { consultar(venueId, cobro); null }
         return resultadoDe(venueId, cobro)
     }
 
@@ -283,7 +315,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
     private suspend fun yaNoEsDeclarable(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion? {
         // D20 (Codex r2): sin el tope de la lista. «Ver anteriores» ofrece cobros fuera de los 50 más recientes, y buscar sólo ahí
         // diría «no se puede» de uno que sí. ponytail: una lectura local sin tope al declarar; Room, no el servidor.
-        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad && it.declarable } &&
+        // F1 bloque 5: el renglón por su clave, sin tope (lo de «Ver anteriores» también se encuentra).
+        val sigue = ledger.renglonPorRevisar(venueId, cobro.clase, cobro.clave)?.declarable == true &&
             // F1 bloque 2: el aprobado que sólo está en memoria tampoco deja firmar (la SQL no lo ve).
             cobro.attemptId?.let { ledger.tieneEvidenciaSinGuardar(it) } != true
         return when {
@@ -299,6 +332,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
      * sin dueño) ⇒ «Avoqado tiene evidencia». Lo que no se pudo leer cuenta como del banco (el lado que no invita a cobrar).
      */
     private fun evidenciaDe(fila: PaymentAttemptEntity?, sinGuardar: Boolean = false): ResultadoDeLaDeclaracion {
+        // F1 bloque 7: la aprobación PROPIA (el banco contestó a esta terminal) que Avoqado todavía no registra.
+        if (fila != null && (fila.hostApproved == true || ledger.tieneEvidenciaSinGuardar(fila.attemptId)) && fila.serverPaymentId == null &&
+            fila.serverVeto.isNullOrBlank()) return ResultadoDeLaDeclaracion.AprobadoSinRegistro
         val delBanco = sinGuardar || fila == null || fila.hostApproved == true ||
             fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
             fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || ledger.tieneEvidenciaSinGuardar(fila.attemptId)
@@ -352,12 +388,14 @@ class DeclaracionDesdeElAviso @Inject constructor(
         private val GENERICO = ResultadoDeLaDeclaracion.Rechazado(TEXTO_GENERICO)
 
         /** Lo que se ofrece ahora: la ventana del aviso, y una por solicitud (la lista viene de la más reciente a la más vieja). */
+        // F1 bloque 5: sin `distinctBy` por solicitud — cada intento es su propio renglón. El aviso del Inicio sigue con lo de siempre
+        // (las dudas, lo que trae dinero tras cerrarse y las solicitudes sin intento), no con un cobro que sigue en curso.
         fun vigentes(cobros: List<CobroDeclarable>, ahoraMillis: Long): List<CobroDeclarable> = cobros
             .filter { ahoraMillis - it.desdeMillis < AvisoDeCobrosPendientes.VENTANA_AVISO_MS }
-            .distinctBy { it.identidad }
+            .filter { it.estado == null || it.estado == PaymentAttemptEntity.STATE_INDETERMINADO || it.estado == PaymentAttemptEntity.STATE_DESCARTADA }
 
-        /** D20: «Por revisar» (Pagos) ofrece lo mismo que [vigentes], sin la ventana de 10 min: la duda no se va con el aviso. */
-        fun porRevisar(cobros: List<CobroDeclarable>): List<CobroDeclarable> = cobros.distinctBy { it.identidad }
+        /** D20 y F1 bloque 5: «Por revisar» (Pagos) muestra TODO lo que cuenta Caja o frena una tarjeta, un renglón por intento. */
+        fun porRevisar(cobros: List<CobroDeclarable>): List<CobroDeclarable> = cobros
 
         /** Cuántos trae cada mitad de [PaymentAttemptDao.observarCobrosDeclarables] (intentos y solicitudes sin intento) por vuelta. */
         const val TOPE_DE_LA_CONSULTA = 50
@@ -366,8 +404,10 @@ class DeclaracionDesdeElAviso @Inject constructor(
          * D20 (Codex r1 #1 y r2): la consulta trae los [limite] más recientes de cada mitad. Llena = puede haber más viejos, y el recuadro
          * ofrece «Ver anteriores» (otros 50) en vez de esconderlos.
          */
-        fun recortada(cobros: List<CobroDeclarable>, limite: Int = TOPE_DE_LA_CONSULTA): Boolean =
-            cobros.count { it.attemptId != null } >= limite || cobros.count { it.attemptId == null } >= limite
+        fun recortada(cobros: List<CobroDeclarable>, limite: Int = TOPE_DE_LA_CONSULTA): Boolean = cobros.size >= limite
+
+        /** F1 bloque 5: con el total exacto, ¿falta traer renglones? Llega al último. */
+        fun faltanRenglones(cobros: List<CobroDeclarable>, total: Int): Boolean = total > cobros.size
 
         /** La MISMA declaración en cada intento, también tras reiniciar: el servidor la trata como replay. */
         private fun idDeLaDeclaracion(venueId: String, requestId: String): String =

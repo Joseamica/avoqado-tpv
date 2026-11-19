@@ -208,7 +208,9 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
     var limite by remember(venueId) { mutableStateOf(DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA) }
     val cobrosFlow = remember(venueId, limite) { declaracion.observarDeclarables(venueId, limite) }
     val cobros by cobrosFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-    val recortada = DeclaracionDesdeElAviso.recortada(cobros, limite)
+    // F1 bloque 5: con el total exacto, «Ver anteriores» sigue hasta el último renglón.
+    val total by remember(venueId) { declaracion.observarTotal(venueId) }.collectAsStateWithLifecycle(initialValue = 0)
+    val recortada = DeclaracionDesdeElAviso.faltanRenglones(cobros, total)
     val porRevisar = DeclaracionDesdeElAviso.porRevisar(cobros)
     val porRevisarAlDia by rememberUpdatedState(porRevisar)
     val hayPorRevisar = porRevisar.isNotEmpty()

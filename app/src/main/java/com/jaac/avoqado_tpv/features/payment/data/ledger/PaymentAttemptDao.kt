@@ -561,20 +561,6 @@ interface PaymentAttemptDao {
         return AprobadoFinal.GUARDADO
     }
 
-    /**
-     * 🔴 F1 (Codex código r2 #1, rama `nad53a00`): la respuesta del banco en ESTE proceso (SDK de la PAX o de la N86, o la consulta
-     * de la pantalla) aprueba una venta que una persona ya declaró «no se cobró». Se reabre a `HOST_RESPONDIO` con lo que dijo el
-     * banco y sigue el camino normal: la pantalla la registra y, si el chip de la PAX revierte, pasa a la duda de D5 (que el
-     * gerente vuelve a ver en «Por revisar»), en vez de la marca que trababa el cierre sin salida (Codex r19). No marca el fin del
-     * SDK: en la PAX el cierre EMV sigue pendiente y lo marca la pantalla.
-     */
-    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', state_version = state_version + 1, updated_at = :now,
-        operation_id = :operationId, reference_number = :referenceNumber, auth_code = :authCode, host_approved = 1,
-        lease_until = NULL, verify_attempts = 0, server_outcome = NULL, server_verdict_at = NULL,
-        last_error = 'aprobado_tras_declaracion:' || IFNULL(last_error, '')
-        WHERE attempt_id = :attemptId AND """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA)
-    suspend fun reabrirDeclaradaPorAprobacion(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
-
     /** Returns -1 when the PK already exists (attemptId reuse — double-charge signal, never silent). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(attempt: PaymentAttemptEntity): Long
@@ -794,9 +780,17 @@ interface PaymentAttemptDao {
              AND server_veto IS NULL
              AND server_answered_at IS NOT NULL
              AND (server_outcome IS NULL
-                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))"""
+                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+             -- 🔴 F1 bloque 2 (R1): en la PAX, nunca mientras el SDK de ESTE intento pueda regresar (misma ejecución, sin regreso).
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)"""
     )
-    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long): Int
+    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long, processToken: String): Int
+
+    /** F1 bloque 2: los intentos de venta de una solicitud del POS (por la columna o, en filas anteriores a la v35, por el contexto). */
+    @Query("""SELECT * FROM payment_attempts WHERE kind = 'SALE'
+        AND (terminal_payment_request_id = :requestId
+             OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0) LIMIT 50""")
+    suspend fun intentosDeLaSolicitud(requestId: String): List<PaymentAttemptEntity>
 
     /**
      * 🔴 D22 (Codex plan r1, bloqueante 1): la respuesta del envío se perdió, la terminal cerró la duda SÓLO en la libreta (sin
@@ -846,11 +840,16 @@ interface PaymentAttemptDao {
                     -- reloj de ESTE proceso (nadie comprobó que el lector terminó) y otro intento de la misma solicitud corriendo, con
                     -- dinero o registrado (la declaración es de toda la solicitud). La fila se ve igual: el cierre de caja la cuenta.
                     AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
+                    -- F1 bloque 2 (R1): en la PAX, tampoco mientras el SDK de ESTE intento pueda regresar (misma ejecución, sin regreso).
+                    AND NOT (d.processor = 'BLUMON' AND d.process_token IS :processToken AND d.sdk_returned_at IS NULL)
                     AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
                         WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
                         AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
                              OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
-                    THEN 1 ELSE 0 END AS declarable
+                    THEN 1 ELSE 0 END AS declarable,
+                -- F1 bloque 2: «la terminal sigue trabajando en este cobro» (se ve sin [Firmar]).
+                CASE WHEN d.state = 'INDETERMINADO' AND d.process_token IS :processToken AND d.sdk_returned_at IS NULL
+                    AND (d.processor = 'BLUMON' OR d.last_error IS 'cuarentena_por_antiguedad') THEN 1 ELSE 0 END AS ejecucion_viva
             FROM payment_attempts d
             WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0
             -- F1 (Codex código r1 #9): también la DESCARTADA con dinero (el banco aprobó después, o Avoqado trajo evidencia o un veto):
@@ -861,7 +860,7 @@ interface PaymentAttemptDao {
         UNION ALL
         SELECT * FROM (
             SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
-                r.created_at AS desde_millis, NULL AS server_answered_at, 1 AS declarable
+                r.created_at AS desde_millis, NULL AS server_answered_at, 1 AS declarable, 0 AS ejecucion_viva
             FROM remote_payment_requests r
             WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM payment_attempts p

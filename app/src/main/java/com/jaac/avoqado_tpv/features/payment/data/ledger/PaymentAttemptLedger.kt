@@ -149,7 +149,46 @@ class PaymentAttemptLedger(
         fila.venueId == venueId && !fila.legacyShadow &&
             (fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON || fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY) &&
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
-            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso) &&
+            // 🔴 F1 bloque 2 (R1): en la PAX se firma sólo cuando ESTE intento ya terminó con el lector y no trae aprobado propio.
+            !laEjecucionPuedeSeguir(fila) && fila.hostApproved != true && !hayDineroSinEscribir(fila.attemptId)
+
+    /**
+     * 🔴 F1 bloque 2 (R1): ¿el SDK de la PAX puede regresar todavía con ESTE intento? Misma ejecución (el proceso que lo lanzó sigue
+     * vivo) y su regreso no se comprobó (`sdk_returned_at`): también en cuarentena por reloj. Salir de la pantalla o cancelar la
+     * corrutina no acredita nada; el regreso real del SDK o la muerte del proceso, sí. Gemela de [PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]
+     * para la PAX; la N86 sigue con su regla (sólo la cuarentena por reloj de este proceso).
+     */
+    fun laEjecucionPuedeSeguir(fila: PaymentAttemptEntity): Boolean =
+        fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && fila.processToken == processToken && fila.sdkReturnedAt == null &&
+            fila.state in EJECUCION_POSIBLE
+
+    /**
+     * 🔴 F1 bloque 2 (R1, contrato del SERVIDOR §2): con el cese ya certificado, ¿esta solicitud se puede DECLARAR? Bajo
+     * [candadoDeEvidencia]: ningún intento suyo puede seguir vivo, ninguno trae aprobado propio, evidencia pendiente de escribir (en
+     * memoria, también la del chip), dinero o veto del servidor, ni un hermano en un estado que lo impida. «Terminó con el lector» y
+     * «se puede declarar» son dos respuestas: ésta es la segunda. D5 ya escrito (sin `host_approved`) sí es declarable: lo firma el
+     * gerente por su camino. Nunca lanza (salvo cancelación): un fallo es false — el veto, el lado seguro.
+     */
+    suspend fun solicitudDeclarable(requestId: String): Boolean = try {
+        withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                withContext(Dispatchers.IO) {
+                    dao.intentosQuePuedenSeguirVivos(requestId, processToken) == 0 &&
+                        dao.intentosDeLaSolicitud(requestId).none(::impideDeclarar)
+                }
+            }
+        }
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo saber si la solicitud %s se puede declarar: no se certifica", requestId)
+        false
+    }
+
+    private fun impideDeclarar(fila: PaymentAttemptEntity): Boolean =
+        fila.legacyShadow || fila.hostApproved == true || hayDineroSinEscribir(fila.attemptId) || fila.attemptId in chipRechazoSinEscribir ||
+            fila.serverPaymentId != null || fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED ||
+            !fila.serverVeto.isNullOrBlank() || fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO ||
+            fila.state !in setOf(PaymentAttemptEntity.STATE_INDETERMINADO, PaymentAttemptEntity.STATE_DESCARTADA, PaymentAttemptEntity.STATE_PREPARANDO)
 
     /** Lo que el banner verde puede ofrecer declarar: con el token de ESTE proceso, que sabe qué cuarentena por reloj sigue viva. */
     fun observarCobrosDeclarables(
@@ -623,24 +662,15 @@ class PaymentAttemptLedger(
                         aprobacionSinGuardar.remove(attemptId)
                         false
                     }
-                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» y DESPUÉS llega la aprobación. Marcarla con
-                    // dinero trababa el cierre de caja sin salida cuando el chip rechazaba el cierre. 🔴 F1 (Codex código r2 #1,
-                    // `pasada-aprobado-tardio.md`, opción B del founder): si la cerró una PERSONA, se REABRE con lo que dijo el banco y
-                    // sigue el camino normal (registro; o, si el chip revierte, la duda de D5 que el gerente vuelve a firmar). Cualquier
-                    // otro cierre (rechazo, «no salió al banco», la ventana) se queda como estaba y se reporta.
+                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» y DESPUÉS llega la aprobación. 🔴 F1 bloque 2 (R1):
+                    // se QUITA la reapertura de la PAX (2853bccb). Con las dos puertas (la firma sólo con el cese de ESTE intento y sin
+                    // aprobado propio, aquí y en el SERVIDOR) un aprobado de pantalla ya no llega tras una firma nueva. Lo que el SERVIDOR
+                    // acredite después (E3 `APPROVED`) marca, enseña y protege la cuenta por su camino; un `RECORDED` atribuible se reconoce.
+                    // Reabrirla dejaba registrar una venta que el chip podía revertir (Codex código r3 #4). Se queda como en main y se reporta.
                     fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (no se reabre) | attemptId=%s kind=%s", attemptId, fila.kind)
                         aprobacionSinGuardar.remove(attemptId)
-                        val reabierta = try {
-                            withContext(Dispatchers.IO) {
-                                dao.reabrirDeclaradaPorAprobacion(attemptId, operationId, referenceNumber, authCode, System.currentTimeMillis()) == 1
-                            }
-                        } catch (error: Exception) {
-                            Timber.e(error, "📒 [Libreta] no se pudo reabrir la venta declarada que el banco aprobó | attemptId=%s", attemptId)
-                            false
-                        }
-                        if (reabierta) Timber.e("🚨 [Libreta] el banco aprobó una venta declarada «no se cobró»: se reabre con su respuesta | attemptId=%s", attemptId)
-                        else Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (no lo cerró una persona: no se toca) | attemptId=%s kind=%s", attemptId, fila.kind)
-                        reabierta
+                        false
                     }
                     // Sigue esperando al banco: la base no escribió. Queda en memoria hasta AUTORIZADO, el registro o la cola.
                     else -> false
@@ -1503,7 +1533,7 @@ class PaymentAttemptLedger(
     private suspend fun declararSinCobroLocalYa(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean): Boolean {
         val motivo = PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO + (quien?.takeIf { it.isNotBlank() } ?: "sin_identificar") +
             (if (enAvoqado) PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO else "")
-        val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis())
+        val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis(), processToken)
         if (filas == 1) Timber.w("📒 [Libreta] declarado SIN COBRO por el cajero | attemptId=%s motivo=%s", attemptId, motivo)
         else Timber.w("📒 [Libreta] la declaración NO aplicó (evidencia o estado cambiaron) | attemptId=%s", attemptId)
         return filas == 1
@@ -1633,6 +1663,13 @@ enum class CercaDeSolicitud {
     /** Ya salió su desenlace final (o hay lápida): la terminal no la ejecuta; el POS debe reenviarla. */
     CERRADA,
 }
+
+/** F1 bloque 2: los estados en que el SDK de la PAX puede seguir con el intento ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]). */
+private val EJECUCION_POSIBLE = setOf(
+    PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO, PaymentAttemptEntity.STATE_AUTORIZANDO,
+    PaymentAttemptEntity.STATE_HOST_RESPONDIO, PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
+    PaymentAttemptEntity.STATE_INDETERMINADO,
+)
 
 /** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */
 private val ESPERANDO_AL_BANCO = setOf(

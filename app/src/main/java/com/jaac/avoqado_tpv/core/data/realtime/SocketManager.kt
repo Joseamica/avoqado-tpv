@@ -220,7 +220,9 @@ class SocketManager @Inject constructor(
                     put("terminalPaymentProbeVersion", "1")
                     // v1 = la sonda y la disposición del cancel traen `executionAlive`/`closedForExecution` (B3, 22-oct):
                     // sin esta capacidad el servidor no los toma como evidencia de que la ejecución cesó.
-                    put("terminalPaymentExecutionVersion", "1")
+                    // 🔴 F1 bloque 2 (R1): v2 = además `declarable` (se puede firmar esta solicitud). SÓLO la PAX (SDK de Blumon
+                    // embebido); la N86 se queda en 1 y nada cambia para ella. El SERVIDOR exige el certificado a lo entregado a una v2.
+                    put("terminalPaymentExecutionVersion", if (com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK) "2" else "1")
                 }
 
                 // Transports: WebSocket preferred, fallback to polling
@@ -1609,7 +1611,7 @@ class SocketManager @Inject constructor(
                     socket?.emit("terminal:payment_cancel_disposition", JSONObject().apply {
                         put("requestId", requestId)
                         put("disposition", decision.disposition.name)
-                        ponerEstadoDeEjecucion(decision.executionAlive, decision.closedForExecution)
+                        ponerEstadoDeEjecucion(decision.executionAlive, decision.closedForExecution, decision.declarable)
                     })
                     decision.finalResultJson?.let(::emitPersistedTerminalPaymentResult)
                     // …y recién ENTONCES se avisa a la pantalla: primero lo durable, después el efecto
@@ -1654,7 +1656,7 @@ class SocketManager @Inject constructor(
                         put("requestId", requestId)
                         put("disposition", answer.disposition.name)
                         answer.finalResultJson?.let { put("finalResult", JSONObject(it)) }
-                        ponerEstadoDeEjecucion(answer.executionAlive, answer.closedForExecution)
+                        ponerEstadoDeEjecucion(answer.executionAlive, answer.closedForExecution, answer.declarable)
                     }
                     socket?.emit("terminal:payment_probe_result", payload)
                     ack?.call(JSONObject().put("accepted", true).put("requestId", requestId))
@@ -1680,7 +1682,9 @@ class SocketManager @Inject constructor(
      * la bandeja; por defecto «viva» y «sin cerrar»), pero el SERVIDOR sólo los lee con `ACTIVE` (`ejecucionCerradaAcreditada`):
      * fuera de `ACTIVE` no significan nada y nadie debe leerlos (revisión B3, m2).
      */
-    private fun JSONObject.ponerEstadoDeEjecucion(executionAlive: Boolean, closedForExecution: Boolean): JSONObject = apply {
+    private fun JSONObject.ponerEstadoDeEjecucion(
+        executionAlive: Boolean, closedForExecution: Boolean, declarable: Boolean? = null,
+    ): JSONObject = apply {
         if (!executionAlive && !closedForExecution) {
             Timber.w(
                 "⚠️ [Socket] %s: la bandeja dijo executionAlive=false sin closedForExecution — sale «puede seguir viva»",
@@ -1689,6 +1693,8 @@ class SocketManager @Inject constructor(
         }
         put("executionAlive", executionAlive || !closedForExecution)
         put("closedForExecution", closedForExecution)
+        // F1 bloque 2 (R1): el certificado «se puede declarar» sólo viaja con el cese que lo respalda; sin él, ausente (falla cerrado).
+        if (declarable != null && !executionAlive && closedForExecution) put("declarable", declarable)
     }
 
     /**

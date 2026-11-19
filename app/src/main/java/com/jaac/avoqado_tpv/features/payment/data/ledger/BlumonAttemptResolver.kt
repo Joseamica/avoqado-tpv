@@ -101,7 +101,12 @@ class BlumonAttemptResolver @Inject constructor(
         // One logical declaration across retries, screen recreation and process death. No extra database migration.
         val resolutionId = UUID.nameUUIDFromBytes("pax:no-instrument:$venueId:$attemptId".toByteArray(Charsets.UTF_8)).toString()
         val response = try {
-            api.resolveNoInstrument(venueId, attemptId, NoInstrumentResolutionRequest(row.terminalPaymentRequestId, resolutionId))
+            // F1 bloque 2 (R1): la PAX dueña acredita que terminó con ese cobro y que se puede declarar (sólo con solicitud del POS).
+            val clearance = row.terminalPaymentRequestId
+                ?.takeIf { row.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && ledger.solicitudDeclarable(it) }
+                ?.let { EXECUTION_CLEARANCE_DECLARABLE }
+            api.resolveNoInstrument(venueId, attemptId, NoInstrumentResolutionRequest(row.terminalPaymentRequestId, resolutionId,
+                executionClearance = clearance))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -350,6 +355,8 @@ class BlumonAttemptResolver @Inject constructor(
     }
 
     private companion object {
+        /** F1 bloque 2: el certificado que la PAX dueña manda con «no presentó tarjeta» (contrato del SERVIDOR §2). */
+        const val EXECUTION_CLEARANCE_DECLARABLE = "DECLARABLE"
         val SOLO_PAX = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON)
         val LOS_DOS = setOf(PaymentAttemptEntity.PROCESSOR_BLUMON, PaymentAttemptEntity.PROCESSOR_ANGELPAY)
     }

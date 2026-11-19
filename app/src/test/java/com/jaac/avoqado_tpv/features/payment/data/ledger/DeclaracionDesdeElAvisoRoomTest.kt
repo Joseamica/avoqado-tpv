@@ -1077,11 +1077,11 @@ class DeclaracionDesdeElAvisoRoomTest {
     }
 
     /**
-     * Codex código r2 #1, rama `nad53a00` (E2): la respuesta del banco EN ESTE PROCESO llega para una venta de la PAX que una persona
-     * ya declaró. Se reabre con lo que dijo el banco (cuenta frenada, la pantalla la registra). Si después el chip revierte, pasa a la
-     * duda de D5, que el gerente vuelve a ver y firmar: no queda la marca que trababa el cierre sin salida (Codex r19).
+     * F1 bloque 2 (R1; sustituye la reapertura de r2 #1, rama `nad53a00`): la respuesta del banco EN ESTE PROCESO llega para una venta de
+     * la PAX que una persona ya declaró. Ya no se reabre: con las puertas del cese una firma nueva no puede adelantarse al SDK, y reabrir
+     * dejaba registrar una venta que el chip podía revertir (Codex código r3 #4). Lo que acredite el SERVIDOR la marca por su camino.
      */
-    @Test fun `F1 Codex r2 1 - E2 la aprobacion del banco sobre una venta declarada la reabre, y si el chip revierte vuelve a la duda`() = runBlocking<Unit> {
+    @Test fun `F1 bloque 2 - E2 la aprobacion del banco sobre una venta declarada de la PAX no la reabre`() = runBlocking<Unit> {
         val creado = System.currentTimeMillis() - 60_000
         dao.insert(
             PaymentAttemptEntity(
@@ -1090,17 +1090,10 @@ class DeclaracionDesdeElAvisoRoomTest {
                 lastError = "declarado_sin_cobro:gerente-1:avoqado", createdAt = creado, updatedAt = creado,
             ),
         )
-        assertThat(ledger.markHostResponded("a-1", approved = true, operationId = "op-1", referenceNumber = "REF", authCode = "AUTH")).isTrue()
-        val reabierta = dao.getById("a-1")!!
-        assertThat(reabierta.state).isEqualTo("HOST_RESPONDIO")
-        assertThat(reabierta.referenceNumber).isEqualTo("REF")
-        assertThat(ledger.retencionDeLaVenta("orden-7")?.attemptId).isEqualTo("a-1")
-
-        assertThat(ledger.markChipRechazoTrasAprobacion("a-1")).isEqualTo(PaymentAttemptLedger.ChipRechazo.EN_DUDA)
-        val duda = dao.getById("a-1")!!
-        assertThat(duda.state).isEqualTo("INDETERMINADO")
-        assertThat(duda.hostApproved).isNull()
-        assertThat(declarables().single { it.identidad == "a-1" }.declarable).isTrue() // el gerente la vuelve a firmar
+        assertThat(ledger.markHostResponded("a-1", approved = true, operationId = "op-1", referenceNumber = "REF", authCode = "AUTH")).isFalse()
+        val declarada = dao.getById("a-1")!!
+        assertThat(declarada.state).isEqualTo("DESCARTADA")
+        assertThat(declarada.hostApproved).isNull()
 
         // Un rechazo explícito del banco no se reabre con una aprobación: se queda como estaba.
         dao.insert(

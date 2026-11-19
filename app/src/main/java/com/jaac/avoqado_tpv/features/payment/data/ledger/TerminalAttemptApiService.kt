@@ -133,6 +133,12 @@ data class NoInstrumentResolutionRequest(
      */
     @SerializedName("amountCents") val amountCents: Long? = null,
     @SerializedName("tipCents") val tipCents: Long? = null,
+    /**
+     * 🔴 F1 bloque 2 (R1, contrato §2): «no presentó tarjeta» de la PAX DUEÑA sobre una solicitud del POS: `"DECLARABLE"` cuando la
+     * libreta comprobó, bajo su candado, que la terminal terminó con ese cobro y que se puede declarar. Vale como su certificado más
+     * reciente. `null` viaja ausente (Gson); entra al `bodyHash` del servidor.
+     */
+    @SerializedName("executionClearance") val executionClearance: String? = null,
 )
 
 /** Espejo tolerante de `TerminalAttemptStatus` del servidor: todo nulo por defecto (Gson no respeta la no-nulabilidad). */

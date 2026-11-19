@@ -28,6 +28,8 @@ data class CobroDeclarable(
     @ColumnInfo(name = "server_answered_at") val serverAnsweredAt: Long?,
     /** F1 (tarea 4): false = trae dinero o una contradicción; se puede CONSULTAR, pero no admite declaración. */
     @ColumnInfo(name = "declarable") val declarable: Boolean = true,
+    /** F1 bloque 2 (R1): el SDK de ESTE intento puede regresar todavía (misma ejecución, sin regreso comprobado): sin [Firmar]. */
+    @ColumnInfo(name = "ejecucion_viva") val ejecucionViva: Boolean = false,
 ) {
     /** Una declaración por solicitud: dos intentos de la misma son el mismo cobro para el cajero. */
     val identidad: String get() = requestId ?: attemptId.orEmpty()
@@ -60,6 +62,8 @@ sealed interface ResultadoDeLaDeclaracion {
     data object YaCobrado : ResultadoDeLaDeclaracion
     /** F1: la fila elegida ya no está por revisar y la terminal no sabe cómo quedó (una solicitud del POS). */
     data object YaNoEstaPorRevisar : ResultadoDeLaDeclaracion
+    /** F1 bloque 2 (R1): el SDK de la PAX puede regresar todavía con ESTE cobro: no se firma. */
+    data object SigueTrabajando : ResultadoDeLaDeclaracion
 
     /** [Declarado] y [PidePin] no se avisan: uno cierra el diálogo y el otro abre el del PIN. */
     fun texto(): String = when (this) {
@@ -79,6 +83,7 @@ sealed interface ResultadoDeLaDeclaracion {
         YaResuelto -> "Este cobro ya lo revisó otra persona: ya no está por revisar."
         YaCobrado -> "Este cobro SÍ pasó: Avoqado ya lo registró. No lo vuelvas a cobrar."
         YaNoEstaPorRevisar -> "Este cobro ya no está por revisar: se resolvió en el POS o en Avoqado. Revisa Pagos para ver cómo quedó."
+        SigueTrabajando -> DeclaracionDesdeElAviso.TEXTO_SIGUE_TRABAJANDO
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
         // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
         DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
@@ -243,6 +248,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
             fila?.state == PaymentAttemptEntity.STATE_REGISTRADO -> ResultadoDeLaDeclaracion.YaCobrado
             tieneDinero(cobro) -> evidenciaDe(fila)
             fila == null -> ResultadoDeLaDeclaracion.YaNoEstaPorRevisar
+            // F1 bloque 2 (R1): mientras el SDK de ESTE intento pueda regresar, no se firma (ni sale el texto genérico).
+            fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && ledger.laEjecucionPuedeSeguir(fila) -> ResultadoDeLaDeclaracion.SigueTrabajando
             // Codex código r1 #11: «lo revisó otra persona» sólo si fue una persona (su firma o «no presentó tarjeta»); lo que soltó
             // la ventana del banco o el silencio no lo revisó nadie.
             fila.state == PaymentAttemptEntity.STATE_DESCARTADA &&
@@ -276,7 +283,9 @@ class DeclaracionDesdeElAviso @Inject constructor(
     private suspend fun yaNoEsDeclarable(venueId: String, cobro: CobroDeclarable): ResultadoDeLaDeclaracion? {
         // D20 (Codex r2): sin el tope de la lista. «Ver anteriores» ofrece cobros fuera de los 50 más recientes, y buscar sólo ahí
         // diría «no se puede» de uno que sí. ponytail: una lectura local sin tope al declarar; Room, no el servidor.
-        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad && it.declarable }
+        val sigue = ledger.observarCobrosDeclarables(venueId, Int.MAX_VALUE).first().any { it.identidad == cobro.identidad && it.declarable } &&
+            // F1 bloque 2: el aprobado que sólo está en memoria tampoco deja firmar (la SQL no lo ve).
+            cobro.attemptId?.let { ledger.tieneEvidenciaSinGuardar(it) } != true
         return when {
             sigue -> null
             tieneDinero(cobro) -> ResultadoDeLaDeclaracion.HayEvidencia
@@ -338,6 +347,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
         /** El tope de una vuelta del refresco. */
         const val TOPE_DEL_REFRESCO_MS = 5_000L
         const val TEXTO_GENERICO = "Este cobro todavía no se puede declarar. Vuelve a consultar en un momento."
+        /** F1 bloque 2 (R1): el texto exacto de una fila cuyo SDK puede regresar todavía. */
+        const val TEXTO_SIGUE_TRABAJANDO = "La terminal sigue trabajando en este cobro. Si no avanza, apaga y prende la terminal."
         private val GENERICO = ResultadoDeLaDeclaracion.Rechazado(TEXTO_GENERICO)
 
         /** Lo que se ofrece ahora: la ventana del aviso, y una por solicitud (la lista viene de la más reciente a la más vieja). */

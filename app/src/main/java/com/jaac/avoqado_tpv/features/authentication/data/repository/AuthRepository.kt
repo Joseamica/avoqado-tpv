@@ -271,8 +271,11 @@ class AuthRepository @Inject constructor(
             val venue = response.body()
             if (!response.isSuccessful || venue == null) {
                 Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
-                // Codex r2 #7: sin sesión o sin permiso, volver a intentar cada 10 min no lo arregla.
-                return if (response.code() == 401 || response.code() == 403) RefrescoDelNegocio.NO_REINTENTAR else RefrescoDelNegocio.REINTENTAR
+                // Codex r2 #7: sin permiso (403), o sin sesión (401 con la sesión ya borrada por el autenticador), volver a
+                // intentar no lo arregla. Codex r3: un 401 con la sesión viva es una renovación del token que falló de paso
+                // (500 o sin red): ése sí se reintenta.
+                val sinRemedio = response.code() == 403 || (response.code() == 401 && secureStorage.getToken() == null)
+                return if (sinRemedio) RefrescoDelNegocio.NO_REINTENTAR else RefrescoDelNegocio.REINTENTAR
             }
             synchronized(turnoDelRefresco) {
                 val negocioDeLaTerminal = secureStorage.getVenueId()

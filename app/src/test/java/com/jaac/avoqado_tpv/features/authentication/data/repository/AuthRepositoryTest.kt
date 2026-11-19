@@ -681,13 +681,18 @@ class AuthRepositoryTest {
     }
 
     @Test
-    fun `D50 Codex r2 7 un 401 o un 403 no se reintenta y un 500 o sin red si`() = runTest {
+    fun `D50 Codex r2 7 y r3 un 403 o un 401 sin sesion no se reintentan y un 401 con sesion viva, un 500 o sin red si`() = runTest {
         every { secureStorage.getVenueId() } returns testVenueId
         val cuerpo = "{}".toResponseBody("application/json".toMediaTypeOrNull())
-        for (codigo in listOf(401, 403)) {
-            coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(codigo, cuerpo)
-            assertEquals("HTTP $codigo", RefrescoDelNegocio.NO_REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
-        }
+        coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(403, cuerpo)
+        assertEquals(RefrescoDelNegocio.NO_REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        // 401 con la sesión borrada (el autenticador la dio por muerta): no hay a quién reintentarle.
+        every { secureStorage.getToken() } returns null
+        coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(401, cuerpo)
+        assertEquals(RefrescoDelNegocio.NO_REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
+        // Codex r3: 401 con la sesión viva = la renovación del token falló de paso (500 o sin red): se reintenta.
+        every { secureStorage.getToken() } returns testAccessToken
+        assertEquals(RefrescoDelNegocio.REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
         coEvery { apiService.getVenueDetails(testVenueId) } returns Response.error(500, cuerpo)
         assertEquals(RefrescoDelNegocio.REINTENTAR, authRepository.refrescarDatosDelNegocio(testVenueId))
         coEvery { apiService.getVenueDetails(testVenueId) } throws java.io.IOException("sin red")

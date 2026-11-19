@@ -308,7 +308,7 @@ class HomeViewModel @Inject constructor(
      * D50: los datos del negocio para el ticket (el emisor de Facturación) al abrir Inicio y al volver la red, no sólo con el PIN:
      * tras actualizar la app, lo que dejó la versión anterior ya no se imprime (no dice de qué negocio es), y una sesión guardada
      * no pasa por el PIN. Si el GET falla o llega sin `receiptInfo`, se reintenta solo (30 s, luego el doble, hasta cada 10 min)
-     * mientras Inicio viva; con 401 o 403 no (Codex r2 #4 y #7).
+     * mientras Inicio viva; con 403 o con la sesión ya cerrada, no (Codex r2 #4 y #7, r3).
      * Uno a la vez (Codex r1 #5): al volver la red, el nuevo reemplaza al que esperaba su siguiente intento. El orden entre éste
      * y el del PIN lo cuida `AuthRepository`.
      */

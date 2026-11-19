@@ -1368,9 +1368,12 @@ interface PaymentAttemptDao {
              AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
-             AND server_veto IS NULL""",
+             AND server_veto IS NULL
+             -- 🔴 F1 (aplicarAcuse único): la misma cláusula de cese que la firma local (bloque 2, R1): en la PAX, nunca mientras el
+             -- SDK de ESTE intento pueda regresar (misma ejecución, sin regreso). Tras el regreso o un reinicio, sí.
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""",
     )
-    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long): Int
+    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long, processToken: String): Int
 
     /**
      * 🔴 «Ninguna terminal muerta» (22-sep), pieza C: la MISMA liberación, pero de un cobro **LOCAL** — un Pago rápido,
@@ -1391,9 +1394,12 @@ interface PaymentAttemptDao {
              AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
-             AND server_veto IS NULL""",
+             AND server_veto IS NULL
+             -- 🔴 F1 (aplicarAcuse único): la misma cláusula de cese que la firma local (bloque 2, R1): en la PAX, nunca mientras el
+             -- SDK de ESTE intento pueda regresar (misma ejecución, sin regreso). Tras el regreso o un reinicio, sí.
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""",
     )
-    suspend fun cerrarPorLiberacionLocalDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long): Int
+    suspend fun cerrarPorLiberacionLocalDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long, processToken: String): Int
 
     /**
      * 🔴 Codex r5-4 (22-sep): guarda el VETO del servidor de forma DURABLE. `server_veto IS NULL` conserva el PRIMER

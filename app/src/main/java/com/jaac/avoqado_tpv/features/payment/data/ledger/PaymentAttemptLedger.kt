@@ -896,8 +896,8 @@ class PaymentAttemptLedger(
         // tiene dinero, aunque esa evidencia no se haya podido escribir todavía.
         val cerrada = salidaNegativa(l.attemptId, "liberación del servidor") {
             val n =
-                if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now)
-                else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now)
+                if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now, processToken)
+                else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now, processToken)
             n == 1
         }
         if (cerrada)

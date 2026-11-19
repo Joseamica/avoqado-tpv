@@ -97,7 +97,7 @@ class EvidenciaDurableDelServidorRoomTest {
 
     /** La ventana de 30 s del servidor venció sin evidencia: la solicitud quedó NOT_CHARGED y la fila DESCARTADA. */
     private suspend fun liberar(attemptId: String, requestId: String, at: Long = now): Int =
-        dao.cerrarPorLiberacionDelServidor(attemptId, venue, requestId, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", at)
+        dao.cerrarPorLiberacionDelServidor(attemptId, venue, requestId, "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", at, "otro-proceso")
 
     private suspend fun marcar(attemptId: String, at: Long = now): Int = dao.marcarEvidenciaPositivaDelServidor(attemptId, venue, at)
 

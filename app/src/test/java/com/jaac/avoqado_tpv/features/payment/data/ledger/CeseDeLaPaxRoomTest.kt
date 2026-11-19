@@ -197,6 +197,32 @@ class CeseDeLaPaxRoomTest {
         assertThat(l.retencionDeLaVenta("orden-a1")?.attemptId).isEqualTo("a1")
     }
 
+    /**
+     * 🔴 F1 cierre TPV (aplicarAcuse único): la liberación del SERVIDOR —el acuse de una persona, por solicitud o de un Pago rápido—
+     * tampoco cierra una PAX cuyo SDK de ESTE intento puede regresar. Antes, los dos CAS de la liberación no traían la cláusula de cese
+     * que `declararSinCobroLocal` sí trae (bloque 2): el acuse que llegaba por S6 cerraba lo que la firma local no podía.
+     */
+    @Test fun `liberacion_del_servidor_no_cierra_una_PAX_con_el_SDK_vivo`() = runBlocking<Unit> {
+        val l = libreta()
+        cobroEnCurso(l, "local"); dudaSinRegreso(l, "local")
+        cobroEnCurso(l, "pos", solicitud = "req-1"); dudaSinRegreso(l, "pos")
+        val local = LiberacionDelServidor(venue, "local", null, "OPERATOR_RECONCILED", "gerente-1")
+        val delPos = LiberacionDelServidor(venue, "pos", "req-1", "OPERATOR_RECONCILED")
+        // Misma ejecución, SDK sin regresar: cero filas en los dos CAS.
+        assertWithMessage("local con el SDK vivo").that(l.aplicarLiberacionDelServidor(local).getOrThrow()).isFalse()
+        assertWithMessage("del POS con el SDK vivo").that(l.aplicarLiberacionDelServidor(delPos).getOrThrow()).isFalse()
+        for (id in listOf("local", "pos")) assertThat(db.paymentAttemptDao().getById(id)!!.state).isEqualTo("INDETERMINADO")
+
+        // Regreso del SDK: el local cierra.
+        l.marcarSdkRegreso("local")
+        assertWithMessage("local tras el regreso del SDK").that(l.aplicarLiberacionDelServidor(local).getOrThrow()).isTrue()
+        assertThat(db.paymentAttemptDao().getById("local")!!.state).isEqualTo("DESCARTADA")
+        // Reinicio (otro proceso): el del POS cierra, aunque su SDK nunca regresó.
+        val nuevo = libreta()
+        assertWithMessage("del POS tras reiniciar").that(nuevo.aplicarLiberacionDelServidor(delPos).getOrThrow()).isTrue()
+        assertThat(db.paymentAttemptDao().getById("pos")!!.state).isEqualTo("DESCARTADA")
+    }
+
     // ═══════════════════════════════════════════════ Modelo (lado PAX) ═══════════════════════════════════════════════
 
     /** vivo/cesó × con/sin aprobado × firma local/POS: se firma sólo si la ejecución cesó y no hay aprobado propio. */

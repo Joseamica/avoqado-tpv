@@ -207,7 +207,7 @@ class LedgerServerRecoveryRoomTest {
     @Test fun `una fila liberada sigue siendo candidata de consulta S6 — si el servidor dice RECORDED despues, queda contradiccion fechada desde el dinero`() = runTest {
         // La fila lleva la MISMA solicitud que contesta S6 (`req-1`): un veredicto de otra solicitud se rechaza por pertenencia.
         fila("b3", "INDETERMINADO", requestId = "req-1", hostApproved = null)
-        dao.cerrarPorLiberacionDelServidor("b3", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now)
+        dao.cerrarPorLiberacionDelServidor("b3", venue, "req-1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now, "otro-proceso")
         assertThat(dao.candidatasDeConsultaAlServidor(venue, now - 120_000, now + 1, 600_000, 86_400_000).map { it.attemptId }).contains("b3")
         coEvery { api.getAttemptStatus(venue, "b3") } returns Response.success(
             TerminalAttemptStatusResponse(success = true, attemptId = "b3", requestId = "req-1",
@@ -266,7 +266,7 @@ class LedgerServerRecoveryRoomTest {
     /** Una fila del POS que el servidor YA liberó: si la lectura se pierde, la pantalla la lee y dice «se puede volver a cobrar». */
     private suspend fun conLiberacionVieja(attemptId: String) {
         fila(attemptId, "INDETERMINADO", requestId = "req-$attemptId", hostApproved = null)
-        dao.cerrarPorLiberacionDelServidor(attemptId, venue, "req-$attemptId", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1)
+        dao.cerrarPorLiberacionDelServidor(attemptId, venue, "req-$attemptId", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1, "otro-proceso")
         assertThat(dao.getById(attemptId)!!.state).isEqualTo("DESCARTADA")
     }
 
@@ -488,7 +488,7 @@ class LedgerServerRecoveryRoomTest {
     /** Pago rápido A (sin solicitud y sin orden), ya LIBERADO por el servidor: la fila conserva «se puede volver a cobrar». */
     private suspend fun cobroLocalLiberado(attemptId: String) {
         filaLocal(attemptId, "INDETERMINADO")
-        dao.cerrarPorLiberacionLocalDelServidor(attemptId, venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, "liberada_por_el_servidor:OPERATOR_RECONCILED", now - 1)
+        dao.cerrarPorLiberacionLocalDelServidor(attemptId, venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, "liberada_por_el_servidor:OPERATOR_RECONCILED", now - 1, "otro-proceso")
         assertThat(dao.getById(attemptId)!!.state).isEqualTo("DESCARTADA")
     }
 
@@ -1109,7 +1109,7 @@ class LedgerServerRecoveryRoomTest {
     @Test fun `fix4 W4 escritor - la marca APPROVED se escribe en INDETERMINADO y en DESCARTADA, la primera fecha es estable, y estado, version, host y outcome quedan intactos`() = runTest {
         fila("w1", "INDETERMINADO", requestId = "req-w1", hostApproved = null)
         fila("w2", "INDETERMINADO", requestId = "req-w2", hostApproved = null)
-        dao.cerrarPorLiberacionDelServidor("w2", venue, "req-w2", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1)
+        dao.cerrarPorLiberacionDelServidor("w2", venue, "req-w2", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 1, "otro-proceso")
         val antes1 = dao.getById("w1")!!; val antes2 = dao.getById("w2")!!
         fila("legacy", "INDETERMINADO", requestId = "req-legacy", hostApproved = null)
         dao.insert(PaymentAttemptEntity(attemptId = "unsupported", venueId = venue, processor = "OTHER", state = "INDETERMINADO", amountCents = 1, tipCents = 0,
@@ -1173,7 +1173,7 @@ class LedgerServerRecoveryRoomTest {
 
     @Test fun `fix4 W2b recoverOne - la marca se escribe tambien sobre una fila YA liberada (DESCARTADA) y una segunda consulta no la re-fecha`() = runTest {
         fila("d1", "INDETERMINADO", requestId = "req-d1", hostApproved = null)
-        dao.cerrarPorLiberacionDelServidor("d1", venue, "req-d1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 10)
+        dao.cerrarPorLiberacionDelServidor("d1", venue, "req-d1", "RELEASED_NO_EVIDENCE", "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW", now - 10, "otro-proceso")
         coEvery { api.getAttemptStatus(venue, "d1") } returns aprobadaSinPayment("d1", "req-d1")
 
         assertThat(recovery.recoverOne(venue, "d1", now, estampar = false).evidenciaPositivaSinRegistro).isTrue()

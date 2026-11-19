@@ -510,7 +510,7 @@ class LiberacionSolaRoomTest {
                 // hasta el tope de la consulta, y la prueba acabaría en SIN_RESPUESTA por el motivo equivocado.)
                 val cerradas = kotlinx.coroutines.runBlocking {
                     dao.cerrarPorLiberacionLocalDelServidor(
-                        "c", venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "OPERATOR_RECONCILED", now,
+                        "c", venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "OPERATOR_RECONCILED", now, "otro-proceso",
                     )
                 }
                 check(cerradas == 1) { "la liberación vieja no se aplicó" }

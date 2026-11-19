@@ -353,7 +353,13 @@ class PaymentAttemptLedger(
      */
     suspend fun adoptarCobroDeLaSolicitud(requestId: String): CobroSinResolver? = try {
         val fragmento = "\"terminalPaymentRequestId\":" + com.google.gson.Gson().toJson(requestId)
-        dao.findUnresolvedForRequest(fragmento)?.let { CobroSinResolver(it.attemptId) }
+        // 🔴 F1 bloque 3 (hueco 4): sin la llave del lanzamiento, la solicitud sólo identifica el intento si es INEQUÍVOCA. Con A1
+        // firmado y A2 en duda, «el más reciente» le colgaba a A2 el aprobado de A1. Con dos dueños posibles no se adopta nada: el
+        // resultado no se asigna por parecido y el aprobado de A1 lo trae el historial (E1, por su llave).
+        if (dao.duenosPosiblesDeUnResultado(requestId) > 1) {
+            Timber.e("📒🚨 [Libreta] NO se adopta: la solicitud %s tiene varios intentos que pueden ser dueños del resultado", requestId)
+            null
+        } else dao.findUnresolvedForRequest(fragmento)?.let { CobroSinResolver(it.attemptId) }
             ?: run {
                 Timber.w("📒 [Libreta] NO se adopta: ninguna fila lleva la solicitud %s", requestId)
                 null
@@ -363,6 +369,40 @@ class PaymentAttemptLedger(
     } catch (error: Exception) {
         Timber.e(error, "📒 [Libreta] no se pudo buscar el cobro de la solicitud %s", requestId)
         null
+    }
+
+    /** F1 bloque 3 (hueco 4): ¿varios intentos de esta solicitud pueden ser dueños de un resultado tardío? Un fallo de lectura dice sí. */
+    suspend fun solicitudAmbigua(requestId: String): Boolean = try {
+        withContext(Dispatchers.IO) { dao.duenosPosiblesDeUnResultado(requestId) } > 1
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        true
+    }
+
+    /**
+     * 🔴 F1 bloque 4: la lectura del historial de la PANTALLA (K19a) queda despachada en la fila ANTES de preguntar. Devuelve su
+     * marca (para terminarla), o null si no se pudo escribir — la consulta sigue igual: la pantalla no se frena por la libreta.
+     */
+    suspend fun despacharLecturaDelHistorial(attemptId: String, now: Long = System.currentTimeMillis()): Long? = try {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val fila = dao.getById(attemptId) ?: return@withContext null
+            if (dao.despacharLecturaDeLaPantalla(attemptId, fila.venueId, now, now + LedgerUnknownRecovery.RESERVA_DE_LA_LECTURA_MS) == 1) now
+            else null
+        }
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo anotar la lectura del historial | attemptId=%s", attemptId)
+        null
+    }
+
+    /** F1 bloque 4: la lectura de la pantalla terminó sin aprobado (sin coincidencia o fallo): se quita SU marca, sólo la suya. */
+    suspend fun terminarLecturaDelHistorial(attemptId: String, marca: Long) {
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val fila = dao.getById(attemptId) ?: return@withContext
+                dao.terminarLecturaDeLaPantalla(attemptId, fila.venueId, marca)
+            }
+        }.onFailure { Timber.e(it, "📒 [Libreta] no se pudo cerrar la lectura del historial | attemptId=%s", attemptId) }
     }
 
     /**
@@ -447,9 +487,14 @@ class PaymentAttemptLedger(
         approved: Boolean,
         operationId: String?,
         referenceNumber: String?,
-        authCode: String?
+        authCode: String?,
+        /** F1 bloque 3: la sucursal del cobro que espera quien llama (AngelPay); null = la de la fila. */
+        venueId: String? = null,
+        /** F1 bloque 3: quién trae el aprobado final de AngelPay (el SDK, también con la pantalla recreada; app a app; K19a; E1). */
+        origen: OrigenDelAprobado = OrigenDelAprobado.SDK,
     ): Boolean {
         if (!isEnabled()) return true
+        if (approved && esVentaAngelPay(attemptId)) return aprobadoFinalAngelPay(attemptId, venueId, referenceNumber, authCode, origen).quedoEscrito
         if (approved) return aprobacionDelHost(attemptId, operationId, referenceNumber, authCode)
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
@@ -483,6 +528,58 @@ class PaymentAttemptLedger(
 
     /** ¿El banco aprobó este intento y la libreta todavía no lo pudo escribir (en ninguna forma)? */
     fun aprobacionPendienteDeGuardar(attemptId: String): Boolean = aprobacionSinGuardar.containsKey(attemptId)
+
+    /** ¿El intento es una VENTA de AngelPay? Un fallo de lectura sigue el camino de siempre (la memoria de abajo protege igual). */
+    private suspend fun esVentaAngelPay(attemptId: String): Boolean = try {
+        withContext(NonCancellable + Dispatchers.IO) { dao.getById(attemptId) }?.let {
+            it.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY && it.kind == PaymentAttemptEntity.KIND_SALE
+        } == true
+    } catch (error: Exception) {
+        false
+    }
+
+    /**
+     * 🔴 F1 bloque 3 (R2, I1): la ÚNICA entrada del aprobado FINAL de AngelPay — el SDK, el SDK con la pantalla recreada, la consulta
+     * de la pantalla (K19a) y la recuperación en segundo plano (E1). Su primera escritura no depende del estado de la fila ni de quién
+     * es dueño de la consulta ([PaymentAttemptDao.escribirAprobadoFinalAngelPay]): verifica sucursal, intento, procesador y venta,
+     * guarda referencia, autorización y origen, y en la MISMA transacción deja la obligación de registrar (reabre sólo lo que cerró
+     * una persona; lo que cerró la ventana conserva su motivo y queda para el registrador). Desde ese commit la cuenta queda protegida
+     * para otra tarjeta y Caja la cuenta. Bajo [candadoDeEvidencia] y con la copia en memoria ANTES de escribir: un error de escritura
+     * conserva la protección (ninguna salida «no se cobró» pasa) y sólo DESPUÉS del commit se suelta.
+     */
+    suspend fun aprobadoFinalAngelPay(
+        attemptId: String, venueId: String?, referencia: String?, autorizacion: String?, origen: OrigenDelAprobado,
+    ): AprobadoFinal = withContext(NonCancellable) {
+        candadoDeEvidencia.withLock {
+            aprobacionSinGuardar[attemptId] = AprobacionDelHost(null, referencia, autorizacion)
+            var resultado: AprobadoFinal? = null
+            for (vez in 0..1) {
+                resultado = try {
+                    withContext(Dispatchers.IO) {
+                        val sucursal = venueId ?: dao.getById(attemptId)?.venueId ?: return@withContext AprobadoFinal.SIN_FILA
+                        dao.escribirAprobadoFinalAngelPay(sucursal, attemptId, referencia, autorizacion, origen.columna, System.currentTimeMillis())
+                    }
+                } catch (error: Exception) {
+                    Timber.e(error, "📒 [Libreta] el aprobado de AngelPay NO quedó guardado (%s) | attemptId=%s", origen, attemptId)
+                    null
+                }
+                if (resultado != null) break
+            }
+            when {
+                resultado == null -> Timber.e("📒🚨 [Libreta] aprobado de AngelPay sólo en memoria: la cuenta sigue protegida | attemptId=%s", attemptId)
+                resultado.quedoEscrito -> {
+                    aprobacionSinGuardar.remove(attemptId)
+                    if (resultado != AprobadoFinal.REGISTRABLE && resultado != AprobadoFinal.YA_ESTABA)
+                        Timber.e("🚨 [Libreta] aprobado de AngelPay (%s) sobre una fila cerrada o en revisión: %s | attemptId=%s", origen, resultado, attemptId)
+                }
+                else -> {
+                    aprobacionSinGuardar.remove(attemptId)
+                    Timber.e("🚨 [Libreta] aprobado de AngelPay (%s) para un intento que no es de esta venta: %s | attemptId=%s", origen, resultado, attemptId)
+                }
+            }
+            resultado ?: AprobadoFinal.SIN_FILA
+        }
+    }
 
     /**
      * La aprobación es dinero: aterriza siempre. Codex r1 #1: la memoria se anota ANTES de escribir y todo va bajo

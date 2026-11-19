@@ -10,6 +10,47 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 /** E3 · cuántas candidatas trae cada página de la consulta S6 ([PaymentAttemptDao.candidatasDeConsultaAlServidor]). */
 const val CANDIDATAS_POR_PAGINA = 25
 
+/**
+ * 🔴 F1 bloque 4: la venta de AngelPay que la recuperación (E1) todavía pregunta al historial — en duda, o declarada por una PERSONA
+ * (la firma no la saca: un «cobrado» posterior debe aparecer), sin veto, con turnos (`history_checks < 5`). Sin alias.
+ */
+const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERMINADO') OR " +
+    PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + ") AND server_veto IS NULL AND history_checks < 5)"
+
+/**
+ * 🔴 F1 bloque 3 (I2): el aprobado final de AngelPay escrito sobre una fila que cerró la VENTANA (no una persona): conserva su
+ * `DESCARTADA` y su motivo, y es una obligación de registro que el registrador toma con la llave del intento. Sin alias.
+ */
+const val SQL_APROBADO_TRAS_LA_VENTANA = "(state = 'DESCARTADA' AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0 " +
+    "AND host_approved IS 1 AND server_payment_id IS NULL AND server_veto IS NULL)"
+
+/** 🔴 F1 bloque 3: quién trajo el aprobado final de AngelPay; se guarda en `operation_id` (que AngelPay no usa). */
+enum class OrigenDelAprobado(val columna: String) {
+    SDK("angelpay:sdk"), APP_A_APP("angelpay:app_a_app"),
+    HISTORIAL_PANTALLA("angelpay:historial_k19a"), HISTORIAL_RECUPERACION("angelpay:historial_e1"),
+}
+
+/** 🔴 F1 bloque 3: qué dejó la escritura del aprobado final de AngelPay ([PaymentAttemptDao.escribirAprobadoFinalAngelPay]). */
+enum class AprobadoFinal {
+    /** Quedó en `HOST_RESPONDIO`: lo registra la pantalla o la recuperación, con la llave del intento. */
+    REGISTRABLE,
+    /** La cerró la ventana: sigue `DESCARTADA` con su motivo, con el aprobado escrito y elegible para el registrador. */
+    REGISTRABLE_TRAS_LA_VENTANA,
+    /** Se escribió el aprobado; el estado no cambia (veto: Avoqado concilia; o ya estaba registrada / en la cola). */
+    GUARDADO,
+    /** El mismo aprobado ya estaba escrito. */
+    YA_ESTABA,
+    /** Un segundo par incompatible (o un aprobado sobre un rechazo del host): se anotó, la fila queda en revisión. */
+    INCOMPATIBLE,
+    /** Otra sucursal, otro procesador, una devolución o una fila heredada: no se toca. */
+    AJENO,
+    /** No hay fila. */
+    SIN_FILA;
+
+    /** ¿La aprobación quedó escrita en la fila (y desde ese commit protege su cuenta)? */
+    val quedoEscrito: Boolean get() = this in setOf(REGISTRABLE, REGISTRABLE_TRAS_LA_VENTANA, GUARDADO, YA_ESTABA, INCOMPATIBLE)
+}
+
 /** B1: revierte la transacción de [PaymentAttemptDao.cerrarSolicitudSiCeso] cuando la bandeja no aceptó el cierre. */
 class CierreParaEjecucionNoAceptado : RuntimeException("La bandeja no aceptó el cierre para ejecución; se revierte la transacción")
 
@@ -31,25 +72,68 @@ interface PaymentAttemptDao {
     // se escribe en minúsculas, una coincidencia que no protege nada.
     // 🔴 F1 (Codex código r2 #1): también la venta que una persona declaró «no se cobró» (la firma pudo llegar antes de la primera
     // consulta, o tras reiniciar): AngelPay se sigue consultando con la MISMA pausa y el MISMO tope de 5.
-    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND processor = 'ANGELPAY' AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
-        AND host_approved IS NULL AND server_veto IS NULL AND created_at < :olderThan AND verify_attempts < 5
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
+    // 🔴 F1 bloque 4 (I3): el tope cuenta RESPUESTAS escritas (`history_checks`), no consultas tomadas; y PRIMERO va la lectura
+    // despachada que nadie terminó (`history_read_at`), en cualquier estado — aunque cerró la ventana o la firmó una persona —, en
+    // cuanto vence la reserva de quien la despachó.
+    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
+        AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
+        AND (lease_until IS NULL OR lease_until < :now)
+        AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
+        ORDER BY (history_read_at IS NULL), created_at ASC LIMIT 50""")
     suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
     // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
+    // 🔴 F1 bloque 3 (I2): y la DESCARTADA de AngelPay con su aprobado final escrito (la cerró la ventana y conserva su motivo):
+    // desde ese commit es una obligación de registro, con la llave del intento ([SQL_APROBADO_TRAS_LA_VENTANA]).
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND verify_attempts < 5
+        AND ((state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') AND (host_approved = 1 OR state = 'AUTORIZADO'))
+             OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
+        AND created_at < :olderThan AND verify_attempts < 5
         AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
-    @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL
-        AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
+    /**
+     * 🔴 F1 bloque 4 (I3): tomar la consulta NO gasta el turno. Deja la lectura DESPACHADA en la fila (`history_read_at`) con la
+     * reserva de quien la toma; el turno se gasta en [terminarConsultaSinCoincidencia] cuando su respuesta queda escrita.
+     */
+    @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, history_read_at = :now
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'
+        AND (history_read_at IS NOT NULL OR """ + SQL_CONSULTABLE_EN_EL_HISTORIAL + """)
         AND (lease_until IS NULL OR lease_until < :now)""")
     suspend fun claimUnknownRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
+
+    /**
+     * 🔴 F1 bloque 4: la respuesta VÁLIDA del historial sin coincidencia («todavía no aparece») de la lectura de [ownedLease] quedó
+     * escrita: se gasta UN turno (tope 5) y la fila descansa hasta [pausaHasta]. Un trabajador con la reserva vencida también la
+     * termina si nadie la volvió a tomar; si otro la tomó, su reserva es otra y ésta no cuenta dos veces.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL, history_checks = MIN(history_checks + 1, 5),
+        lease_until = :pausaHasta
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
+    suspend fun terminarConsultaSinCoincidencia(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
+
+    /** 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL, lease_until = :pausaHasta
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
+    suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
+
+    /**
+     * 🔴 F1 bloque 4: la lectura de la PANTALLA (K19a) queda despachada en la fila ANTES de preguntar, sin importar su estado ni
+     * quién tenga la reserva: si la app muere o la ventana cierra mientras pregunta, la recuperación la retoma. K19a conserva su
+     * presupuesto interactivo: no gasta turnos de E1. Devuelve la marca a usar al terminar (la que ya hubiera, si E1 la tenía).
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = COALESCE(history_read_at, :now),
+        lease_until = MAX(IFNULL(lease_until, 0), :leaseUntil)
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'""")
+    suspend fun despacharLecturaDeLaPantalla(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
+
+    /** 🔴 F1 bloque 4: la lectura de la pantalla terminó sin aprobado: se quita su marca (sólo la suya). */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND history_read_at = :despachadaEn""")
+    suspend fun terminarLecturaDeLaPantalla(attemptId: String, venueId: String, despachadaEn: Long): Int
 
     /** 🔴 ¿Qué cobro de ESTE proceso está usando el lector ahora? ([PaymentAttemptEntity.SQL_APARTA_EL_APARATO]) */
     @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + " LIMIT 1")
@@ -106,6 +190,17 @@ interface PaymentAttemptDao {
         AND instr(payment_context_json, :requestJsonFragment) > 0
         ORDER BY updated_at DESC LIMIT 1""")
     suspend fun findUnresolvedForRequest(requestJsonFragment: String): PaymentAttemptEntity?
+
+    /**
+     * 🔴 F1 bloque 3 (hueco 4): cuántos intentos de ESTA solicitud pueden ser dueños de un resultado del SDK que llega tarde — el
+     * banco no les contestó y no hay Payment: en curso, en duda, o cerrados por una persona o por la ventana. Con más de uno, la
+     * solicitud no identifica el intento.
+     */
+    @Query("""SELECT COUNT(*) FROM payment_attempts WHERE legacy_shadow = 0 AND kind = 'SALE'
+        AND terminal_payment_request_id = :requestId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO')
+             OR (state = 'DESCARTADA' AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS NOT NULL)))""")
+    suspend fun duenosPosiblesDeUnResultado(requestId: String): Int
 
     /**
      * Cuántas obligaciones pendientes hay en el APARATO. Es lo que permite distinguir «no hay con
@@ -355,7 +450,7 @@ interface PaymentAttemptDao {
 
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
-        AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
+        AND (state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
         AND (lease_until IS NULL OR lease_until < :now)""")
     suspend fun claimRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
 
@@ -370,7 +465,7 @@ interface PaymentAttemptDao {
      */
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
-        AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
+        AND (state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
         AND (lease_until IS NULL OR lease_until < :now)
         AND NOT (processor = 'BLUMON' AND state = 'HOST_RESPONDIO' AND process_token IS :processToken AND sdk_returned_at IS NULL)""")
     suspend fun claimRecoveryConElSdkFuera(attemptId: String, venueId: String, now: Long, leaseUntil: Long, processToken: String): Int
@@ -388,34 +483,83 @@ interface PaymentAttemptDao {
                           WHEN COALESCE(last_error,'') = 'cuarentena_por_antiguedad'
                           THEN 'cuarentena_por_antiguedad' ELSE :error END
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
-        AND lease_until > :now AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')""")
+        AND lease_until > :now AND (state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)""")
     suspend fun completeRecovery(attemptId: String, venueId: String, ownedLease: Long,
         newState: String, now: Long, error: String?): Int
 
     /**
-     * I-1: `server_veto IS NULL` también DENTRO del UPDATE — un veto que llega entre tomar la fila y escribir no la deja subir.
-     *
-     * 🔴 F1 (Codex código r2 #1, `pasada-aprobado-tardio.md`): también REABRE la venta que una persona declaró «no se cobró»
-     * ([PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA]), aunque la firma haya llegado con la consulta en vuelo: con la
-     * referencia y la autorización de AngelPay queda `HOST_RESPONDIO` y `LedgerApprovalRecovery` la registra por el camino de
-     * siempre, con la llave del intento (el SERVIDOR deduplica y avisa del sobrepago). Se limpia el veredicto que la liberó (un
-     * positivo gana) y queda rastro en `last_error`. El fin del SDK se marca sólo con la declaración de ESTA terminal, que nunca
-     * se ofrece con la llamada viva; así la fila reabierta no aparta el aparato.
+     * 🔴 F1 bloque 3 (R2/I1): la PRIMERA escritura del aprobado FINAL de AngelPay (SDK, SDK con la pantalla recreada, K19a y E1). No
+     * depende del estado, de la reserva ni de quién sea dueño de la consulta: sólo de la sucursal, el intento, el procesador y la
+     * venta. Guarda la referencia, la autorización y el origen (`operation_id`, que AngelPay no usa), y quita la lectura despachada.
+     * Repetir el mismo par es inocuo; un par distinto no pisa el primero (lo anota [anotarAprobadoIncompatible]).
      */
-    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', state_version = state_version + 1,
-        updated_at = :now, host_approved = 1, reference_number = :reference, auth_code = :authorization,
-        lease_until = NULL, verify_attempts = 0,
-        server_outcome = CASE WHEN state = 'DESCARTADA' THEN NULL ELSE server_outcome END,
-        server_verdict_at = CASE WHEN state = 'DESCARTADA' THEN NULL ELSE server_verdict_at END,
-        sdk_returned_at = CASE WHEN state = 'DESCARTADA' AND IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%'
-                               THEN COALESCE(sdk_returned_at, :now) ELSE sdk_returned_at END,
+    @Query("""UPDATE payment_attempts SET host_approved = 1, reference_number = :referencia, auth_code = :autorizacion,
+        operation_id = COALESCE(operation_id, :origen), history_read_at = NULL,
+        updated_at = :now, state_version = state_version + 1
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0
+        AND host_approved IS NULL""")
+    suspend fun sellarAprobadoFinalAngelPay(attemptId: String, venueId: String, referencia: String?, autorizacion: String?,
+        origen: String, now: Long): Int
+
+    /**
+     * 🔴 F1 bloque 3: la transición del aprobado recién sellado, en la MISMA transacción. Lo que esperaba al banco y lo que cerró una
+     * PERSONA ([PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA] sin `host_approved`) pasan a `HOST_RESPONDIO` (registro de
+     * siempre). Lo que cerró la ventana se queda `DESCARTADA` con su motivo y es elegible para el registrador
+     * ([SQL_APROBADO_TRAS_LA_VENTANA]). Con veto, nada sube: Avoqado lo concilia. Rastro en `last_error`, nunca un control.
+     */
+    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', lease_until = NULL, updated_at = :now,
+        state_version = state_version + 1,
         last_error = CASE WHEN state = 'DESCARTADA' THEN 'aprobado_tras_declaracion:' || IFNULL(last_error, '') ELSE last_error END
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
-        AND lease_until > :now AND host_approved IS NULL
-        AND (state IN ('AUTORIZANDO','INDETERMINADO') OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """)
-        AND server_veto IS NULL""")
-    suspend fun completeUnknownRecovery(attemptId: String, venueId: String, ownedLease: Long,
-        now: Long, reference: String, authorization: String): Int
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved = 1 AND server_payment_id IS NULL
+        -- r9 P1-1 (se conserva): el veredicto VIVO del SDK aterriza aunque haya veto; una duda o una fila cerrada con veto no sube (I-1).
+        AND (state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO')
+             OR (server_veto IS NULL AND (state = 'INDETERMINADO'
+                 OR (state = 'DESCARTADA' AND legacy_shadow = 0 AND kind = 'SALE'
+                     AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT')))))""")
+    suspend fun abrirRegistroDelAprobado(attemptId: String, venueId: String, now: Long): Int
+
+    /** La DESCARTADA por la ventana con su aprobado: se suelta la reserva para que el registrador la tome ya. */
+    @Query("""UPDATE payment_attempts SET lease_until = NULL WHERE attempt_id = :attemptId AND venue_id = :venueId
+        AND """ + SQL_APROBADO_TRAS_LA_VENTANA)
+    suspend fun soltarReservaDelAprobadoTrasLaVentana(attemptId: String, venueId: String): Int
+
+    /**
+     * 🔴 F1 bloque 3 (I1, contradicción): un SEGUNDO par incompatible para el mismo intento (otra referencia o autorización, o un
+     * aprobado sobre un rechazo del host). No se pisa la primera prueba: la segunda queda en `last_error` y la fila queda en revisión
+     * con el veto local de la terminal (cerca su cuenta y sale en el aviso). No observado en un negocio.
+     */
+    @Query("""UPDATE payment_attempts SET server_veto = COALESCE(server_veto, 'SDK_CONTRADICTION'),
+        last_error = 'aprobado_incompatible:' || IFNULL(:referencia, '') || '/' || IFNULL(:autorizacion, '') || ':' || IFNULL(last_error, ''),
+        updated_at = :now, state_version = state_version + 1
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND processor = 'ANGELPAY' AND kind = 'SALE'""")
+    suspend fun anotarAprobadoIncompatible(attemptId: String, venueId: String, referencia: String?, autorizacion: String?, now: Long): Int
+
+    /**
+     * 🔴 F1 bloque 3: [sellarAprobadoFinalAngelPay] y su transición en UNA transacción. Devuelve qué quedó; un error de escritura
+     * revierte las dos y quien llama conserva la protección en memoria.
+     */
+    @Transaction
+    suspend fun escribirAprobadoFinalAngelPay(venueId: String, attemptId: String, referencia: String?, autorizacion: String?,
+        origen: String, now: Long): AprobadoFinal {
+        val fila = getById(attemptId) ?: return AprobadoFinal.SIN_FILA
+        if (fila.venueId != venueId || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
+            fila.kind != PaymentAttemptEntity.KIND_SALE || fila.legacyShadow) return AprobadoFinal.AJENO
+        if (fila.hostApproved == true) {
+            val mismo = (fila.referenceNumber == null || fila.referenceNumber == referencia) &&
+                (fila.authCode == null || fila.authCode == autorizacion)
+            if (mismo) return AprobadoFinal.YA_ESTABA
+            anotarAprobadoIncompatible(attemptId, venueId, referencia, autorizacion, now)
+            return AprobadoFinal.INCOMPATIBLE
+        }
+        if (fila.hostApproved == false) {
+            anotarAprobadoIncompatible(attemptId, venueId, referencia, autorizacion, now)
+            return AprobadoFinal.INCOMPATIBLE
+        }
+        if (sellarAprobadoFinalAngelPay(attemptId, venueId, referencia, autorizacion, origen, now) != 1) return AprobadoFinal.SIN_FILA
+        if (abrirRegistroDelAprobado(attemptId, venueId, now) == 1) return AprobadoFinal.REGISTRABLE
+        if (soltarReservaDelAprobadoTrasLaVentana(attemptId, venueId) == 1) return AprobadoFinal.REGISTRABLE_TRAS_LA_VENTANA
+        return AprobadoFinal.GUARDADO
+    }
 
     /**
      * 🔴 F1 (Codex código r2 #1, rama `nad53a00`): la respuesta del banco en ESTE proceso (SDK de la PAX o de la N86, o la consulta
@@ -917,6 +1061,8 @@ interface PaymentAttemptDao {
     @Query(
         """DELETE FROM payment_attempts WHERE venue_id = :venueId AND state IN ('CERRADA','DESCARTADA') AND updated_at < :olderThan
            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+           -- F1 bloques 3 y 4: ni una lectura del historial despachada sin respuesta, ni un aprobado propio sin registrar.
+           AND history_read_at IS NULL AND NOT """ + SQL_APROBADO_TRAS_LA_VENTANA + """
            -- `IFNULL`: con `last_error` NULL, `NULL LIKE …` es NULL, `NOT (NULL AND …)` es NULL, y el WHERE excluía EN
            -- SILENCIO toda fila sin motivo — la poda dejó de podar (lo cazaron las pruebas de la poda de siempre).
            AND NOT (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%'

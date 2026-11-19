@@ -55,7 +55,11 @@ class LedgerApprovalRecovery(
                 Timber.i("📒 [LedgerApproval] se fue la sesión o la red a media pasada: las demás aprobaciones esperan")
                 break
             }
-            if (row.venueId != venueId || row.state !in RECOVERABLE ||
+            // F1 bloque 3 (I2): también el aprobado final de AngelPay sobre una fila que cerró la ventana (sigue DESCARTADA con su motivo).
+            val aprobadoTrasLaVentana = row.state == PaymentAttemptEntity.STATE_DESCARTADA &&
+                row.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY && row.hostApproved == true &&
+                row.serverPaymentId == null && row.serverVeto == null
+            if (row.venueId != venueId || (row.state !in RECOVERABLE && !aprobadoTrasLaVentana) ||
                 (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
                 row.verifyAttempts >= 5) continue
             try {

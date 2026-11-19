@@ -46,7 +46,7 @@ class MigracionV46RoomTest {
         val db = DatabaseModule.provideDatabase(context)
         try {
             val sql = db.openHelper.readableDatabase
-            assertThat(sql.version).isEqualTo(47) // la cadena sigue hasta la v47 (D5)
+            assertThat(sql.version).isEqualTo(48) // la cadena sigue hasta la v48 (D5, F1)
             assertThat(tablas(db)).containsAtLeast("proof_of_sale_queue", "actionable_sale_cache", "pending_refunds")
             assertThat(tablas(db)).doesNotContain("verification_queue")
 
@@ -73,14 +73,14 @@ class MigracionV46RoomTest {
         } finally { db.close() }
 
         val reabierta = DatabaseModule.provideDatabase(context)
-        try { assertThat(reabierta.openHelper.readableDatabase.version).isEqualTo(47) } finally { reabierta.close() }
+        try { assertThat(reabierta.openHelper.readableDatabase.version).isEqualTo(48) } finally { reabierta.close() }
     }
 
     @Test fun `cadena 44 a 45 a 46 por DatabaseModule conserva pending_refunds`() {
         crearBase("44.json") { old -> old.execSQL(filaGenerica(old, "pending_refunds", "idempotency_key")!!) }
         val db = DatabaseModule.provideDatabase(context)
         try {
-            assertThat(db.openHelper.readableDatabase.version).isEqualTo(47)
+            assertThat(db.openHelper.readableDatabase.version).isEqualTo(48)
             assertThat(tablas(db)).containsAtLeast("proof_of_sale_queue", "actionable_sale_cache", "pending_refunds")
             assertThat(tablas(db)).doesNotContain("verification_queue")
             db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM pending_refunds WHERE idempotency_key = 'k1'").use { c ->

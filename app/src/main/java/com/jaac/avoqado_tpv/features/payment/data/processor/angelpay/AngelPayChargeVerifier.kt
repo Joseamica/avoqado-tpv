@@ -20,7 +20,10 @@ sealed interface VerificacionDelCobro {
         val cardBin: String?,
     ) : VerificacionDelCobro
 
-    /** El procesador contestó y el cobro NO existe. Ahora sí es seguro reintentar. */
+    /**
+     * El historial CONTESTÓ (respuesta válida) y no trae este intento con autorización: «todavía no aparece». 🔴 NO prueba que no
+     * se cobró (el historial no garantiza estar completo) ni autoriza reintentar: sólo gasta una consulta (F1 bloque 4, I3).
+     */
     data object NoCobrado : VerificacionDelCobro
 
     /** No se pudo preguntar (sin red, error del SDK…). Sigue sin saberse: NO reintentar. */
@@ -126,7 +129,9 @@ class AngelPayChargeVerifier @Inject constructor(
 
         // This API returns a history slice, with no completeness/finality guarantee.
         // An absent entry can never prove that authorization did not occur.
-        return VerificacionDelCobro.NoSePudoVerificar(ultimoFallo ?: "El historial aún no confirma este intento")
+        // F1 bloque 4: una respuesta VÁLIDA sin coincidencia («todavía no aparece») se distingue del fallo técnico (red, credenciales,
+        // lectura ilegible): la primera gasta un turno de la recuperación, el segundo sólo pausa.
+        return ultimoFallo?.let { VerificacionDelCobro.NoSePudoVerificar(it) } ?: VerificacionDelCobro.NoCobrado
     }
 
     companion object {

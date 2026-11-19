@@ -160,6 +160,19 @@ data class PaymentAttemptEntity(
      * anterior a la v45.
      */
     @ColumnInfo(name = "sdk_returned_at") val sdkReturnedAt: Long? = null,
+    /**
+     * 🔴 F1 bloque 4 (I3, Room v48): cuántas consultas al historial de AngelPay de la recuperación (E1) tienen su respuesta ESCRITA
+     * («todavía no aparece»). Se gasta al escribir la respuesta, nunca al tomar la consulta: si la app muere en la quinta, vuelve la
+     * quinta. Un fallo técnico (red, credenciales, lectura ilegible) no la gasta. La firma no la repone. Registrar la venta tiene su
+     * propio contador (`verify_attempts`). La migración 47→48 trae el contador viejo menos el último turno (el único recuperable).
+     */
+    @ColumnInfo(name = "history_checks", defaultValue = "0") val historyChecks: Int = 0,
+    /**
+     * 🔴 F1 bloque 4 (Room v48): una lectura del historial de AngelPay (E1 o la de la pantalla, K19a) DESPACHADA cuya respuesta no
+     * quedó escrita; su valor es cuándo se despachó. Distingue «consultando» de una pausa (`lease_until` solo), no se poda, frena otra
+     * tarjeta de su cuenta ([SQL_CERCA_LA_TARJETA]) y la recuperación la retoma aunque haya vencido su reserva o cerrado la ventana.
+     */
+    @ColumnInfo(name = "history_read_at") val historyReadAt: Long? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -354,7 +367,9 @@ data class PaymentAttemptEntity(
                 "OR last_error IS 'chip_rechazo_tras_aprobacion' " +
                 "OR server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
                 "OR (last_error = 'cuarentena_por_antiguedad' AND process_token IS :processToken))) " +
-            "OR (state = 'DESCARTADA' AND (server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
+            // F1 bloque 3: el aprobado final de AngelPay escrito sobre una fila que cerró la ventana (conserva su motivo) — Caja ya
+            // la cuenta (`LocalShiftObligation`) y el registrador la toma; desde ese commit su cuenta queda protegida.
+            "OR (state = 'DESCARTADA' AND (host_approved IS 1 OR server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
 
         /**
          * 🔴 F1 (17-nov, plan mínimo tarea 2; reemplaza para la TARJETA la regla del 25-sep «decide el cajero»): otra TARJETA de una
@@ -374,8 +389,10 @@ data class PaymentAttemptEntity(
             "AND host_approved IS NULL AND server_veto IS NULL AND server_payment_id IS NULL " +
             "AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT'))"
 
+        // F1 bloque 4: y una lectura del historial despachada sin respuesta escrita: se retoma antes de armar otra tarjeta de su cuenta.
         const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
-            " OR (legacy_shadow = 0 AND kind = 'SALE' AND state = 'INDETERMINADO'))"
+            " OR (legacy_shadow = 0 AND kind = 'SALE' AND (state = 'INDETERMINADO' OR (history_read_at IS NOT NULL " +
+            "AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
 
         /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el

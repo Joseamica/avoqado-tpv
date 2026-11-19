@@ -4048,6 +4048,35 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    /**
+     * 🔴 F1 bloque 3 (Codex código r3 #3): el SDK regresa primero SIN veredicto (incierto) y después llega el APROBADO del mismo intento.
+     * Antes el primer callback consumía el intento y el aprobado se descartaba como «duplicado»: el dinero se movió y no quedaba en la
+     * fila ni se registraba. Ahora un callback sin aprobado no consume el aprobado siguiente.
+     */
+    @Test
+    fun `callback_inconcluso_no_consume_el_aprobado_siguiente`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin red")
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-tardio", receiptUrl = "https://r/t", accessKey = "k", amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO),
+        )
+        val vm = vmConCobroDelPos("req-tardio")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+            vm.onAngelPaySdkResult(approvedSdkResult("A5", "R5"))
+            runCurrent()
+            coVerify(timeout = 2000) { paymentAttemptLedger.markHostResponded(any(), true, any(), "R5", "A5") }
+            coVerify(timeout = 2000) { recordPaymentUseCase(any(), any(), "A5", "R5") }
+            // El MISMO aprobado entregado otra vez sí es un duplicado.
+            vm.onAngelPaySdkResult(approvedSdkResult("A5", "R5"))
+            runCurrent()
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), "A5", "R5") }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `si el historial confirma el cobro se registra y se reporta success`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns

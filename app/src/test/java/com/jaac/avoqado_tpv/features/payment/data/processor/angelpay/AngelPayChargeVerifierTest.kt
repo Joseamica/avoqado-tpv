@@ -65,7 +65,7 @@ class AngelPayChargeVerifierTest {
             listOf(transaccion(integratorReference = "otro-intento", authorization = "999999"))
         )
 
-        assertThat(verificar(intentos = 1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -77,7 +77,7 @@ class AngelPayChargeVerifierTest {
             listOf(transaccion(integratorReference = "intento-1", authorization = ""))
         )
 
-        assertThat(verificar(intentos = 1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -128,7 +128,7 @@ class AngelPayChargeVerifierTest {
     fun `historial vacio tras agotar intentos sigue incierto`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(emptyList())
 
-        assertThat(verificar(intentos = 2)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 2)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -145,7 +145,7 @@ class AngelPayChargeVerifierTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
             listOf(transaccion("intento-1", "123456").copy(status = "DECLINED"))
         )
-        assertThat(verificar(1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -153,21 +153,21 @@ class AngelPayChargeVerifierTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
             listOf(transaccion("intento-1", "123456").copy(terminal = "OTHER"))
         )
-        assertThat(verificar(1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
     fun `matching attempt from wrong affiliation cannot confirm approval`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(transaccion("intento-1", "123456").copy(affiliation = "other")))
         val result = verifier.verificar("intento-1", "N860W173400", intentos = 1, esperaEntreIntentosMs = 0, affiliation = "expected")
-        assertThat(result).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(result).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
     fun `unknown affiliation cannot confirm approval from another account`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(transaccion("intento-1", "123456").copy(affiliation = "other")))
         assertThat(verifier.verificar("intento-1", "N860W173400", intentos = 1, esperaEntreIntentosMs = 0))
-            .isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+            .isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     private suspend fun verificar(intentos: Int = 2) = verifier.verificar(
@@ -244,7 +244,7 @@ class AngelPayChargeVerifierTest {
             affiliation = "merchant-1",
         )
 
-        assertThat(r).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(r).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     private fun transaccion(

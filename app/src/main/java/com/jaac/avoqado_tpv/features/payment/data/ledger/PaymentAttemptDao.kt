@@ -125,12 +125,34 @@ interface PaymentAttemptDao {
     // 🔴 Codex final r2 #4: el turno va por el ÚLTIMO TOQUE (la toma escribe `history_read_at = :now`; lo nunca tomado, su
     // `created_at`), como S6 (`candidatasDeConsultaAlServidor`). «Despachadas primero» dejaba que 50 lecturas con falla permanente
     // (credenciales) ocuparan cada barrido y una venta B nueva no recibía ninguna consulta; ahora la recién reintentada va al final.
+    // 🔴 Codex final r3 #1: y POR PÁGINAS con llave (la del orden), como S6 y la bandeja: la página siguiente se pide DESPUÉS de la
+    // última fila LEÍDA. Una fila que el barrido salta sin tomar turno (sin afiliación, contexto que no cuadra, la tomó otro proceso) no
+    // cambia su clave: con un `LIMIT 50` fijo, 50 así delante tapaban para siempre a la 51.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
         AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
         AND (lease_until IS NULL OR lease_until < :now)
         AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
-        ORDER BY COALESCE(history_read_at, created_at) ASC, attempt_id ASC LIMIT 50""")
-    suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
+        AND (COALESCE(history_read_at, created_at) > :trasToque
+             OR (COALESCE(history_read_at, created_at) = :trasToque AND attempt_id > :trasId))
+        ORDER BY COALESCE(history_read_at, created_at) ASC, attempt_id ASC LIMIT :limite""")
+    suspend fun getUnknownRecoveryCandidates(
+        venueId: String, olderThan: Long, now: Long, trasToque: Long, trasId: String, limite: Int,
+    ): List<PaymentAttemptEntity>
+
+    /** La primera página (50). */
+    suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity> =
+        getUnknownRecoveryCandidates(venueId, olderThan, now, Long.MIN_VALUE, "", 50)
+
+    /**
+     * 🔴 Codex plan de rediseño #8: la lectura DESPACHADA de una fila que el historial NUNCA podrá consultar (su contexto guardado no trae
+     * terminal ni afiliación, o no cuadra con la fila; se escribe una sola vez, al abrir el intento). Nadie la podría terminar y frenaría
+     * su tarjeta para siempre ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]): se quita su marca, sólo la suya y con su reserva vencida (una
+     * pantalla que todavía pregunta la extiende). La que sigue en duda (INDETERMINADO) queda en «Por revisar», firmable por el gerente.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND history_read_at = :marca
+        AND (lease_until IS NULL OR lease_until < :now)""")
+    suspend fun soltarLecturaQueNadiePuedeHacer(attemptId: String, venueId: String, marca: Long, now: Long): Int
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
     // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
@@ -722,7 +744,10 @@ interface PaymentAttemptDao {
            SET state = :newState, state_version = state_version + 1, updated_at = :now,
                operation_id = :operationId, reference_number = :referenceNumber,
                auth_code = :authCode, host_approved = :hostApproved,
-               lease_until = NULL, verify_attempts = 0
+               lease_until = NULL, verify_attempts = 0,
+               -- 🔴 Codex plan de rediseño #8: el banco contestó: ninguna consulta al historial la vuelve a tomar (`host_approved`), así
+               -- que su lectura despachada se quita aquí. Si no, quedaba viva sin quien la terminara y la poda ya no quitaba la fila.
+               history_read_at = NULL
            WHERE attempt_id = :attemptId AND state IN (:expectedStates)
              AND (:hostApproved = 1 OR server_veto IS NULL)"""
     )
@@ -741,7 +766,9 @@ interface PaymentAttemptDao {
            SET host_approved = 1, state_version = state_version + 1, updated_at = :now,
                operation_id = COALESCE(operation_id, :operationId),
                reference_number = COALESCE(reference_number, :referenceNumber),
-               auth_code = COALESCE(auth_code, :authCode)
+               auth_code = COALESCE(auth_code, :authCode),
+               -- Familia «marca del historial» (ronda 3): con `host_approved` ninguna consulta al historial la vuelve a tomar.
+               history_read_at = NULL
            WHERE attempt_id = :attemptId AND host_approved IS NULL AND state = 'AUTORIZADO'"""
     )
     suspend fun sellarAprobacionDelHost(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
@@ -1137,7 +1164,10 @@ interface PaymentAttemptDao {
            SET server_payment_id = :paymentId, server_outcome = :outcome, server_recorded_via = :via,
                server_amount_cents = :amountCents, server_tip_cents = :tipCents, server_winner_payment_id = :winnerPaymentId,
                server_verdict_at = CASE WHEN server_outcome IN ('RELEASED_NO_EVIDENCE','OPERATOR_NO_INSTRUMENT') THEN :now ELSE COALESCE(server_verdict_at, :now) END,
-               server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now
+               server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now,
+               -- 🔴 Familia «marca del historial» (ronda 3): con Payment ninguna consulta al historial la vuelve a tomar
+               -- (`server_payment_id`): su lectura despachada se quita aquí. Sin Payment (una liberación) se conserva: se retoma.
+               history_read_at = CASE WHEN :paymentId IS NULL THEN history_read_at ELSE NULL END
            WHERE attempt_id = :attemptId"""
     )
     suspend fun guardarVeredictoDelServidor(

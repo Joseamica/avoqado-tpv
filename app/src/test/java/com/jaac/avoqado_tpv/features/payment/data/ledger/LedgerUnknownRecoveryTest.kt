@@ -17,7 +17,7 @@ class LedgerUnknownRecoveryTest {
         createdAt = 1000, updatedAt = 1000)
 
     @Test fun `restart queries saved identity once and persists exact positive approval`() = runTest {
-        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any()) } returns listOf(row)
+        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any(), any(), any(), any()) } returns listOf(row)
         coEvery { dao.claimUnknownRecovery(any(), any(), any(), any()) } returns 1
         coEvery { verifier.verificar("attempt", "terminal", any(), 1, 0, "affiliation") } returns
             VerificacionDelCobro.Cobrado("AUTH", "REF", null)
@@ -26,7 +26,7 @@ class LedgerUnknownRecoveryTest {
     }
 
     @Test fun `missing history cannot clear durable uncertainty`() = runTest {
-        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any()) } returns listOf(row)
+        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any(), any(), any(), any()) } returns listOf(row)
         coEvery { dao.claimUnknownRecovery(any(), any(), any(), any()) } returns 1
         coEvery { verifier.verificar(any(), any(), any(), any(), any(), any()) } returns
             VerificacionDelCobro.NoSePudoVerificar("empty history")
@@ -38,7 +38,7 @@ class LedgerUnknownRecoveryTest {
     }
 
     @Test fun `Blumon and wrong venue never enter AngelPay recovery`() = runTest {
-        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any()) } returns listOf(row.copy(processor = "BLUMON"), row.copy(venueId = "other"))
+        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any(), any(), any(), any()) } returns listOf(row.copy(processor = "BLUMON"), row.copy(venueId = "other"))
         assertEquals(0, LedgerUnknownRecovery(dao, ledger, verifier).recover("venue", 1000000))
         coVerify(exactly = 0) { verifier.verificar(any(), any(), any(), any(), any(), any()) }
     }

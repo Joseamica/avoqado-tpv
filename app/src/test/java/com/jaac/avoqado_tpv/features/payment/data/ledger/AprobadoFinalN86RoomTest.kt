@@ -73,18 +73,19 @@ class AprobadoFinalN86RoomTest {
         return LedgerApprovalRecovery(dao, fast, order)
     }
 
-    private fun contexto(id: String, orden: String = "orden-A"): String = Gson().toJsonTree(
+    /** [afiliacion] null = la sesión del SDK no la dio al abrir el intento (el ViewModel guarda `null` tal cual). */
+    private fun contexto(id: String, orden: String = "orden-A", afiliacion: String? = "afiliacion"): String = Gson().toJsonTree(
         PaymentContext.AngelPayPayment(
             venueId = venue, staffId = "cajera", amount = BigDecimal("100.00"), tip = BigDecimal.ZERO, merchantAccountId = "merchant",
             deviceSerialNumber = "terminal", idempotencyKey = id, orderId = orden,
         ),
-    ).asJsonObject.apply { addProperty("processorAffiliation", "afiliacion") }.toString()
+    ).asJsonObject.apply { addProperty("processorAffiliation", afiliacion) }.toString()
 
     private val creado = System.currentTimeMillis() - 10 * 60_000
 
-    private suspend fun dudaN86(id: String, orden: String = "orden-A", solicitud: String? = null) {
-        val json = if (solicitud == null) contexto(id, orden)
-            else com.google.gson.JsonParser.parseString(contexto(id, orden)).asJsonObject.apply { addProperty("terminalPaymentRequestId", solicitud) }.toString()
+    private suspend fun dudaN86(id: String, orden: String = "orden-A", solicitud: String? = null, afiliacion: String? = "afiliacion") {
+        val json = if (solicitud == null) contexto(id, orden, afiliacion)
+            else com.google.gson.JsonParser.parseString(contexto(id, orden, afiliacion)).asJsonObject.apply { addProperty("terminalPaymentRequestId", solicitud) }.toString()
         dao.insert(
             PaymentAttemptEntity(
                 attemptId = id, venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
@@ -122,8 +123,10 @@ class AprobadoFinalN86RoomTest {
     /** El proceso muere con la respuesta en la mano, antes de escribirla. */
     private val muere: suspend () -> VerificacionDelCobro = { throw CancellationException("el proceso murió") }
 
-    private suspend fun otraTarjetaDeA(l: PaymentAttemptLedger, id: String = "b-${System.nanoTime()}"): Boolean {
-        val entro = l.openAttempt(id, venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-A"}""")
+    private suspend fun otraTarjetaDeA(l: PaymentAttemptLedger, id: String = "b-${System.nanoTime()}"): Boolean = otraTarjeta(l, "orden-A", id)
+
+    private suspend fun otraTarjeta(l: PaymentAttemptLedger, orden: String, id: String = "b-${System.nanoTime()}"): Boolean {
+        val entro = l.openAttempt(id, venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"$orden"}""")
         if (entro) l.markDiscardedBeforeCharge(id, "fin de la prueba")
         return entro
     }
@@ -138,6 +141,7 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("el aprobado queda en SU intento").that(fila.hostApproved).isTrue()
         assertThat(fila.referenceNumber).isEqualTo("REF")
         assertThat(fila.authCode).isEqualTo("AUTH")
+        assertWithMessage("el aprobado final no deja la marca de la lectura").that(fila.historyReadAt).isNull()
     }
 
     // ═══════════════════════════════════════ Pruebas con nombre (Codex código r1–r3) ═══════════════════════════════════════
@@ -246,6 +250,117 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("B recibe su turno aunque 50 filas fallen siempre").that(consultasDeB).isAtLeast(1)
         assertWithMessage("las que fallan siguen despachadas (se retoman)").that(dao.getById("f-0")!!.historyReadAt).isNotNull()
         assertWithMessage("y sin gastar turno").that(consultasGastadas("f-0")).isEqualTo(0)
+    }
+
+    // ═══════════════════ Familia «turnos y marca del historial», ronda 3 (Codex final r3 #1 y plan de rediseño #8) ═══════════════════
+
+    /**
+     * 🔴 Codex final r3 #1 · TPV N86: 50 ventas guardadas SIN afiliación de AngelPay (la sesión del SDK no la dio al abrir el intento) nunca
+     * se pueden consultar y el barrido las salta sin tomar turno. Con la misma clave de orden que B (lectura ya despachada) llenaban la
+     * página de 50 de cada barrido: B, cuyo aprobado sólo aparecería en el historial, entraba 0 de 3 veces. Ahora el barrido pagina desde
+     * la última fila LEÍDA y su tope (50) cuenta consultas INICIADAS: B y las 49 en duda que siguen se lo reparten.
+     */
+    @Test fun `N86_cincuenta_sin_afiliacion_delante_no_dejan_sin_turno_a_B`() = runBlocking<Unit> {
+        val clave = System.currentTimeMillis() - 3 * 3_600_000L
+        repeat(50) { i -> dudaN86("f-%02d".format(i), orden = "orden-f$i", afiliacion = null) }
+        sql("UPDATE payment_attempts SET created_at = $clave WHERE attempt_id LIKE 'f-%'")
+        dudaN86("zz-b", orden = "orden-B")
+        sql("UPDATE payment_attempts SET history_read_at = $clave WHERE attempt_id = 'zz-b'")   // despachada, misma clave que las 50
+        repeat(50) { i -> dudaN86("zz-c-%02d".format(i), orden = "orden-c$i") }               // en duda, detrás de B
+        val consultadas = mutableListOf<String>()
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers {
+            consultadas += firstArg<String>(); VerificacionDelCobro.NoCobrado
+        }
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis() + 600_000)
+        assertWithMessage("B recibe su consulta").that(consultadas).contains("zz-b")
+        assertWithMessage("el tope cuenta consultas iniciadas, no filas leídas").that(consultadas).hasSize(50)
+        assertWithMessage("las 50 sin afiliación no se consultan").that(consultadas.filter { it.startsWith("f-") }).isEmpty()
+        assertWithMessage("ni se marcan (frenaría su tarjeta)").that(dao.getById("f-00")!!.historyReadAt).isNull()
+        assertWithMessage("ni gastan turno").that(consultasGastadas("f-00")).isEqualTo(0)
+    }
+
+    /**
+     * 🔴 Codex plan de rediseño #8 (a) · TPV N86: el historial toma la consulta de A y, mientras AngelPay contesta, el SDK vivo escribe el
+     * rechazo EXPLÍCITO del banco (quita la reserva y deja `host_approved = 0`). La respuesta del historial ya no encuentra su reserva y A
+     * ya no es candidata: la marca quedaba viva sin consulta que la terminara, y la poda nunca quitaba la fila. El rechazo es la escritura
+     * que decide que A ya no necesita el historial: quita la marca en el mismo UPDATE.
+     */
+    @Test fun `N86_rechazo_del_banco_tras_tomar_la_consulta_no_deja_la_marca_viva`() = runBlocking<Unit> {
+        dudaN86("a1")
+        val pantalla = libreta()   // la pantalla del cobro, viva
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers {
+            assertWithMessage("la consulta quedó tomada").that(dao.getById("a1")!!.historyReadAt).isNotNull()
+            assertThat(pantalla.markHostResponded("a1", false, "OP", "REF", null)).isTrue()
+            VerificacionDelCobro.NoCobrado
+        }
+        val t = System.currentTimeMillis() + 600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        val a1 = dao.getById("a1")!!
+        assertThat(a1.state).isEqualTo("DESCARTADA")
+        assertThat(a1.hostApproved).isFalse()
+        assertWithMessage("la marca no queda viva sin una consulta que la termine").that(a1.historyReadAt).isNull()
+        assertWithMessage("A ya no es candidata del historial")
+            .that(dao.getUnknownRecoveryCandidates(venue, t + 3_600_000, t + 3_600_000).map { it.attemptId }).doesNotContain("a1")
+        assertWithMessage("la tarjeta de A entra: el banco la rechazó").that(otraTarjetaDeA(libreta())).isTrue()
+        dao.pruneTerminalOlderThan(venue, t + 8 * 86_400_000L)
+        assertWithMessage("y la poda de la libreta la puede quitar").that(dao.getById("a1")).isNull()
+    }
+
+    /**
+     * 🔴 Codex plan de rediseño #8 (b) · TPV N86: la pantalla despachó su lectura del historial (K19a) de un intento guardado SIN
+     * afiliación y la app murió; la recuperación nunca podrá hacer esa consulta. A (la ventana ya la liberó) frenaba su tarjeta para
+     * siempre; D (sigue en duda) también, aun después de la firma del gerente. Ahora el barrido quita la marca en la escritura que decide
+     * que nadie la puede hacer: A queda como la resolvió la ventana y D pasa a la revisión del gerente («Por revisar», firmable).
+     */
+    @Test fun `N86_lectura_despachada_sin_afiliacion_no_frena_la_tarjeta_para_siempre`() = runBlocking<Unit> {
+        dudaN86("a1", afiliacion = null)
+        assertThat(libreta().despacharLecturaDelHistorial("a1")).isNotNull()
+        ventana("a1")
+        dudaN86("d1", orden = "orden-D", afiliacion = null)
+        assertThat(libreta().despacharLecturaDelHistorial("d1")).isNotNull()
+        val (v, consultas) = verificador(noAparece)
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis() + 600_000)   // venció la reserva de la pantalla
+
+        assertWithMessage("sin afiliación el historial no se pregunta").that(consultas()).isEqualTo(0)
+        assertWithMessage("A: la marca sale").that(dao.getById("a1")!!.historyReadAt).isNull()
+        assertWithMessage("A: la ventana ya la resolvió; su tarjeta entra").that(otraTarjetaDeA(libreta())).isTrue()
+        val l = libreta()
+        assertWithMessage("D: la marca sale").that(dao.getById("d1")!!.historyReadAt).isNull()
+        assertWithMessage("D: en «Por revisar», firmable por el gerente")
+            .that(l.renglonPorRevisar(venue, CobroDeclarable.CLASE_INTENTO, "d1")?.declarable).isTrue()
+        assertWithMessage("D: su tarjeta espera al gerente").that(otraTarjeta(l, "orden-D")).isFalse()
+        firmar("d1")
+        assertWithMessage("D: con la firma, su tarjeta entra").that(otraTarjeta(l, "orden-D")).isTrue()
+    }
+
+    /**
+     * 🔴 Familia «marca del historial», ronda 3 (tabla): el SERVIDOR registra el Payment de A mientras el historial la consulta y esa
+     * consulta falla por la red. Con Payment, A ya no es candidata (`server_payment_id`): la pausa conservaba una marca que nadie iba a
+     * terminar y la fila ya nunca se podaba. El veredicto con Payment es la escritura que lo decide: quita la marca.
+     */
+    @Test fun `N86_payment_del_servidor_con_la_consulta_en_vuelo_no_deja_la_marca_viva`() = runBlocking<Unit> {
+        dudaN86("a1")
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers {
+            dao.guardarVeredictoDelServidor("a1", "pay-1", "RECORDED", "terminal", 10_000, 0, null, System.currentTimeMillis())
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        }
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis() + 600_000)
+        assertThat(dao.getById("a1")!!.serverPaymentId).isEqualTo("pay-1")
+        assertWithMessage("la marca no queda viva sin una consulta que la termine").that(dao.getById("a1")!!.historyReadAt).isNull()
+    }
+
+    /**
+     * 🔴 Familia «marca del historial», ronda 3 (tabla): la primera escritura del aprobado final no entró y la marca del banco se sella al
+     * pasar a AUTORIZADO (`sellarAprobacionDelHost`). Con `host_approved` ninguna consulta al historial la vuelve a tomar: quita la marca.
+     */
+    @Test fun `N86_aprobado_sellado_al_autorizar_no_deja_la_marca_viva`() = runBlocking<Unit> {
+        dudaN86("a1")
+        sql("UPDATE payment_attempts SET state = 'AUTORIZADO', history_read_at = ${System.currentTimeMillis()} WHERE attempt_id = 'a1'")
+        assertThat(dao.sellarAprobacionDelHost("a1", null, "REF", "AUTH", System.currentTimeMillis())).isEqualTo(1)
+        assertWithMessage("la marca no queda viva sin una consulta que la termine").that(dao.getById("a1")!!.historyReadAt).isNull()
     }
 
     @Test fun `lease_viejo_con_aprobado_propio_conserva_dinero_sin_gastar_dos_turnos`() = runBlocking<Unit> {

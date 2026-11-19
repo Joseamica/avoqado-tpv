@@ -121,8 +121,8 @@ class BlumonAttemptResolver @Inject constructor(
                 )
         }
         val envio = enviarDeclaracionRevisada(venueId, attemptId, row, staffId, supervisorPin)
-        val gerente = when (envio) {
-            is EnvioRevisado.Firmado -> envio.gerente
+        val liberacion = when (envio) {
+            is EnvioRevisado.Firmado -> envio.liberacion
             // Sin respuesta: A se conserva y la pantalla dice que la firma necesita conexión.
             EnvioRevisado.SIN_RESPUESTA -> return@withLock reading.copy(serverAnswered = false)
             // Contestó, pero no es el acuse firmado de ESTA declaración (otro rechazo, un servidor anterior, sin firmante).
@@ -132,7 +132,8 @@ class BlumonAttemptResolver @Inject constructor(
             EnvioRevisado.SIN_PERMISO -> return@withLock reading.copy(state = State.PERMISSION_REQUIRED, serverAnswered = true)
             is EnvioRevisado.ConVeto -> return@withLock envio.resultado
         }
-        val cerrada = ledger.declararSinCobroLocal(attemptId, venueId, gerente, enAvoqado = true)
+        // F1 cierre TPV (I4): el cierre es el del escritor único, con el acuse que validó [LiberacionDelServidor.desdeAcuse].
+        val cerrada = ledger.aplicarLiberacionDelServidor(liberacion).getOrDefault(false)
         // Avoqado sí contestó (firmó): si el CAS no aplicó, la pantalla no debe decir «sin conexión».
         val despues = inspect(venueId, attemptId, LOS_DOS).copy(
             serverAnswered = true, resultJson = reading.resultJson,
@@ -155,8 +156,8 @@ class BlumonAttemptResolver @Inject constructor(
 
     /** D22: lo que pasó con el envío de la declaración revisada. */
     private sealed interface EnvioRevisado {
-        /** F1: Avoqado la guardó FIRMADA: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó y su gerente. */
-        data class Firmado(val gerente: String, val porElGerente: Boolean = true) : EnvioRevisado
+        /** F1: Avoqado la guardó FIRMADA: 2xx de ESTE intento, sin dinero ni veto, con el testimonio que se mandó y quien la firmó. */
+        data class Firmado(val liberacion: LiberacionDelServidor, val porElGerente: Boolean = true) : EnvioRevisado
         /** Sin red, sin respuesta o 5xx: no se sabe si llegó. A se conserva; repetir manda la MISMA declaración. */
         data object SIN_RESPUESTA : EnvioRevisado
         /** Contestó sin el acuse firmado de ESTA declaración (otro 4xx, un servidor anterior, sin firmante): A se conserva. */
@@ -235,15 +236,18 @@ class BlumonAttemptResolver @Inject constructor(
             declaracion?.get("amountCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.amountCents } &&
                 declaracion?.get("tipCents")?.takeUnless { it.isJsonNull }?.asLong.let { it == null || it == row.tipCents }
         }.getOrDefault(false)
-        val quien = LiberacionDelServidor.quienDeclaroElAcuse(declaracion)
-        // F1 bloque 7: con el comprobante del SERVIDOR, manda él: tiene que acreditar a una persona en ESTE intento, y la firma es de
-        // ESTE gerente sólo si este POST la escribió (`alreadyStored = false`). Un replay (otro gerente con el mismo id, respuesta
-        // perdida) es la declaración guardada, con su firmante y su hora: nunca «quedó tu firma».
+        if (!esLaNuestra || !mismoImporte) return EnvioRevisado.NO_FIRMADO
+        // F1 cierre TPV (I4): quién la firmó lo decide el validador único: con el comprobante del SERVIDOR manda él (una persona en
+        // ESTE intento, a su nombre); sin él, la regla vieja del testimonio. La firma es de ESTE gerente sólo si este POST la escribió
+        // (`alreadyStored = false`). Un replay (otro gerente con el mismo id, respuesta perdida) es la declaración guardada, con su
+        // firmante y su hora: nunca «quedó tu firma».
         val comprobante = body?.declarationReceipt
-        if (comprobante != null && !comprobante.acreditaPersona(attemptId, null)) return EnvioRevisado.NO_FIRMADO
+        val liberacion = LiberacionDelServidor.desdeAcuse(
+            venueId, attemptId, null, LiberacionDelServidor.CAJERO_REVISO, comprobante, declaracion, body?.attempt,
+        ) ?: return EnvioRevisado.NO_FIRMADO
         val porElGerente = if (comprobante != null) comprobante.alreadyStored == false && comprobante.by == "SUPERVISOR_PIN"
             else runCatching { declaracion?.get("by")?.asString == "SUPERVISOR_PIN" }.getOrDefault(false)
-        return if (esLaNuestra && mismoImporte && quien != null) EnvioRevisado.Firmado(quien, porElGerente) else EnvioRevisado.NO_FIRMADO
+        return EnvioRevisado.Firmado(liberacion, porElGerente)
     }
 
     /**

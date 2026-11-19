@@ -106,12 +106,16 @@ data class ComprobanteDeDeclaracion(
     @SerializedName("humanSignature") val humanSignature: Boolean? = null,
     @SerializedName("alreadyStored") val alreadyStored: Boolean? = null,
 ) {
-    /** ¿Acredita la firma de una PERSONA para ESTE alcance? (`ATTEMPT` con el intento, `REQUEST` con la solicitud.) */
-    fun acreditaPersona(attemptId: String?, requestId: String?): Boolean = humanSignature == true && !staffId.isNullOrBlank() && when (scope) {
+    /** ¿Es de ESTE alcance? (`ATTEMPT` con el intento, `REQUEST` con la solicitud.) */
+    fun esDe(attemptId: String?, requestId: String?): Boolean = when (scope) {
         "ATTEMPT" -> attemptId != null && this.attemptId == attemptId
         "REQUEST" -> requestId != null && this.requestId == requestId
         else -> false
     }
+
+    /** ¿Acredita la firma de una PERSONA para ESTE alcance? */
+    fun acreditaPersona(attemptId: String?, requestId: String?): Boolean =
+        humanSignature == true && !staffId.isNullOrBlank() && esDe(attemptId, requestId)
 }
 
 data class DeclaracionSinCobroResponse(

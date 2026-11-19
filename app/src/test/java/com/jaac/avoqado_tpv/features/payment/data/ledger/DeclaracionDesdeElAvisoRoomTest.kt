@@ -649,7 +649,8 @@ class DeclaracionDesdeElAvisoRoomTest {
     @Test fun `si el CAS ya no aplica no afirma nada`() = runBlocking<Unit> {
         val cobro = duda("a-1", serverAnsweredAt = 1L)
         val conCasPerdido = spyk(ledger)
-        coEvery { conCasPerdido.declararSinCobroLocal("a-1", venue, any(), any()) } returns false
+        // F1 cierre TPV (I4): la firma cierra por el escritor único; ahí es donde el CAS ya no aplica.
+        coEvery { conCasPerdido.aplicarLiberacionDelServidor(match { it.attemptId == "a-1" }, any()) } returns Result.success(false)
         coEvery { api.getAttemptStatus(venue, "a-1") } returns s6Limpia("a-1")
         coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
 

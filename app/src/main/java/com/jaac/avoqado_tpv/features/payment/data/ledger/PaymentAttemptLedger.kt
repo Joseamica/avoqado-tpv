@@ -1570,6 +1570,9 @@ class PaymentAttemptLedger(
      *
      * @return true si la fila quedó cerrada y la terminal libre.
      */
+    // F1 cierre TPV (I4): en producción NADIE cierra con un nombre y un booleano: el acuse de Avoqado entra por
+    // [aplicarLiberacionDelServidor] (validado por [LiberacionDelServidor.desdeAcuse]), que usa este mismo CAS. Queda para las pruebas.
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean = false): Boolean = try {
         // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada. Pasada final
         // (P1-1): se mira DENTRO del candado, junto al CAS — mirarla antes dejaba cerrar si la evidencia llegaba en medio.

@@ -39,6 +39,7 @@ class BlumonAttemptResolverTest {
         every { ledger.puedeDeclararseEnDuda(any(), any()) } returns true
         coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns
             LedgerServerRecovery.LecturaDelIntento(null, servidorContesto = true)
+        coEvery { ledger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(false)
         resolver = BlumonAttemptResolver(ledger, recovery, api, storage)
     }
 
@@ -71,7 +72,7 @@ class BlumonAttemptResolverTest {
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""") }
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
         coVerify(exactly = 1) { api.resolveNoInstrument("venue", "pax", any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** Era «declaration refuses a live SDK attempt»: con el SDK dentro (o que puede regresar) no se firma ni se manda nada. */
@@ -82,14 +83,14 @@ class BlumonAttemptResolverTest {
         every { ledger.puedeDeclararseEnDuda(any(), any()) } returns false
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** Era «declaration never announces release when the durable write failed»: un acuse firmado sin CAS local no es «liberada». */
     @Test fun `B7 con el acuse firmado pero sin escritura local no se anuncia la liberacion`() = runTest {
         cajeroQueRevisa()
         guardadaEnAvoqado(mutableListOf())
-        coEvery { ledger.declararSinCobroLocal("pax", "venue", any(), any()) } returns false
+        coEvery { ledger.aplicarLiberacionDelServidor(any(), any()) } returns Result.success(false)
         val r = resolver.declareChecked("venue", "pax", pin)
         assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         assertThat(r.serverAnswered).isTrue()
@@ -126,7 +127,6 @@ class BlumonAttemptResolverTest {
         coEvery { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) } returns Result.success(true)
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         coVerify { ledger.marcarEvidenciaPositivaDelServidor("venue", "pax", any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
         coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
@@ -146,7 +146,7 @@ class BlumonAttemptResolverTest {
             }
             assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** Era «a bank veto in the HTTP conflict stays blocked if the followup query fails»: ahora el 409 es un impedimento. */
@@ -159,7 +159,6 @@ class BlumonAttemptResolverTest {
         row = row.copy(state = "DESCARTADA", serverOutcome = "OPERATOR_NO_INSTRUMENT")
         assertThat(resolver.current("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         coVerify(exactly = 0) { ledger.marcarEvidenciaPositivaDelServidor(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
         coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
@@ -169,7 +168,7 @@ class BlumonAttemptResolverTest {
         coEvery { api.resolveNoInstrument("venue", "pax", any()) } answers { httpError(403, """{"code":"SUPERVISOR_AUTHORIZATION_REQUIRED"}""") }
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
         io.mockk.verify(exactly = 0) { storage.remove("permissions_cache") }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** Era «a server permission denial invalidates the cached grant across resolver recreation». */
@@ -185,7 +184,7 @@ class BlumonAttemptResolverTest {
         assertThat(resolver.hasPermission()).isFalse()
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isNotEqualTo(BlumonAttemptResolver.State.RELEASED)
         io.mockk.verify { storage.remove("permissions_cache") }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** Era «a delayed denial for the old staff preserves the new staff permission cache». */
@@ -274,7 +273,7 @@ class BlumonAttemptResolverTest {
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         row = row.copy(serverAnsweredAt = 3, terminalPaymentRequestId = "pos-request")
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // F1 (tarea 3): reemplaza «cierra sin red una duda ya contestada»: la firma necesita conexión y A se conserva.
@@ -287,7 +286,7 @@ class BlumonAttemptResolverTest {
         assertThat(r.serverAnswered).isFalse()
         coVerify { recovery.recoverOne("venue", "pax", any(), false) }
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /** F1 (tarea 3): reemplaza «el cajero declara aunque el envío falle»: si la firma no llega, nada se cierra. */
@@ -299,7 +298,7 @@ class BlumonAttemptResolverTest {
         assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         assertThat(r.serverAnswered).isFalse()
         coVerify(exactly = 1) { api.resolveNoInstrument("venue", "pax", any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // ── D22 · A1 (founder, 17-nov: «Sí, A1»): la declaración revisada llega a Avoqado ──────────────────────────────────
@@ -331,9 +330,10 @@ class BlumonAttemptResolverTest {
     }
 
     private fun cierraLaLibreta() {
-        coEvery { ledger.declararSinCobroLocal("pax", "venue", any(), any()) } coAnswers {
-            row = row.copy(state = "DESCARTADA", lastError = "declarado_sin_cobro:${arg<String>(2)}" + (if (arg<Boolean>(3)) ":avoqado" else ""))
-            true
+        // F1 cierre TPV (I4): la firma cierra por el escritor único (antes, `declararSinCobroLocal(nombre, enAvoqado = true)`).
+        coEvery { ledger.aplicarLiberacionDelServidor(any(), any()) } coAnswers {
+            row = row.copy(state = "DESCARTADA", lastError = "declarado_sin_cobro:${firstArg<LiberacionDelServidor>().quien}:avoqado")
+            Result.success(true)
         }
     }
 
@@ -355,7 +355,10 @@ class BlumonAttemptResolverTest {
         // The local CAS runs AFTER the server answered: evidence that arrives in between still wins inside it.
         io.mockk.coVerifyOrder {
             api.resolveNoInstrument("venue", "pax", any())
-            ledger.declararSinCobroLocal("pax", "venue", "gerente-1", true)
+            ledger.aplicarLiberacionDelServidor(match {
+                it.attemptId == "pax" && it.venueId == "venue" && it.requestId == null && it.quien == "gerente-1" &&
+                    it.evidencia == LiberacionDelServidor.CAJERO_REVISO
+            }, any())
         }
     }
 
@@ -390,7 +393,7 @@ class BlumonAttemptResolverTest {
             assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.PENDING)
             assertThat(r.serverAnswered).isEqualTo(contesto)
         }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // F1 (tarea 3 y Codex código r1 #3): un 2xx que no es el acuse de ESTA declaración (otra clase, otro id, otro importe, sin quién la
@@ -408,6 +411,55 @@ class BlumonAttemptResolverTest {
             respuesta()
             assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
+    }
+
+    /**
+     * 🔴 F1 cierre TPV (I4): la firma del gerente sólo cierra con un comprobante del SERVIDOR que acredite a una PERSONA en ESTE intento,
+     * y la cierra el escritor único ([PaymentAttemptLedger.aplicarLiberacionDelServidor]) a nombre de quien dice el comprobante. Antes
+     * cerraba con `declararSinCobroLocal(nombre, enAvoqado = true)` y el nombre del testimonio, aunque el comprobante dijera otra clase.
+     */
+    @Test fun `declareChecked_no_cierra_sin_comprobante_que_acredite`() = runTest {
+        cajeroQueRevisa()
+        fun conComprobante(recibo: (String) -> ComprobanteDeDeclaracion) {
+            coEvery { api.resolveNoInstrument("venue", "pax", any()) } coAnswers {
+                val id = thirdArg<NoInstrumentResolutionRequest>().resolutionId
+                val resolution = com.google.gson.JsonObject().apply {
+                    addProperty("kind", "UNCHARGED_VERIFIED"); addProperty("id", id); addProperty("by", "SUPERVISOR_PIN"); addProperty("staffId", "gerente-1")
+                }
+                Response.success(TerminalAttemptStatusResponse(success = true, declarationReceipt = recibo(id), attemptId = "pax",
+                    attempt = TerminalAttemptResultDto(attemptId = "pax", outcome = "NOT_RECORDED", resolution = resolution)))
+            }
+        }
+        val humano = { id: String ->
+            ComprobanteDeDeclaracion(id = id, kind = "UNCHARGED_VERIFIED", by = "SUPERVISOR_PIN", staffId = "gerente-R",
+                acceptedAt = "2026-11-19T12:00:00.000Z", scope = "ATTEMPT", attemptId = "pax", humanSignature = true, alreadyStored = false)
+        }
+        coEvery { ledger.aplicarLiberacionDelServidor(any(), any()) } coAnswers {
+            row = row.copy(state = "DESCARTADA", lastError = "declarado_sin_cobro:${firstArg<LiberacionDelServidor>().quien}:avoqado")
+            Result.success(true)
+        }
+        for (malo in listOf<(String) -> ComprobanteDeDeclaracion>(
+            { humano(it).copy(humanSignature = false) },
+            { humano(it).copy(staffId = null) },
+            { humano(it).copy(by = "AUTOMATIC", humanSignature = false) },
+            { humano(it).copy(attemptId = "otro") },
+            { humano(it).copy(scope = "REQUEST", attemptId = null, requestId = "req-x") },
+            { humano(it).copy(kind = "NO_BANK_TRACE_AFTER_WINDOW") },
+        )) {
+            conComprobante(malo)
+            assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
+        }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
+        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        // Control: el comprobante que acredita a una persona cierra por el escritor único, a nombre de quien dice EL COMPROBANTE.
+        conComprobante(humano)
+        assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.RELEASED)
+        coVerify(exactly = 1) {
+            ledger.aplicarLiberacionDelServidor(match {
+                it.evidencia == LiberacionDelServidor.CAJERO_REVISO && it.quien == "gerente-R" && it.requestId == null && it.attemptId == "pax"
+            }, any())
+        }
         coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
     }
 
@@ -422,7 +474,7 @@ class BlumonAttemptResolverTest {
             okhttp3.ResponseBody.create(null, """{"code":"SESSION_NOT_IN_VENUE"}"""))
         every { storage.getString("permissions_cache", null) } returns "venue|cajero\npayments:reconcile-uncharged"
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PERMISSION_REQUIRED)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
         assertThat(row.state).isEqualTo("INDETERMINADO")
     }
 
@@ -451,7 +503,7 @@ class BlumonAttemptResolverTest {
 
         assertThat(r.state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     /**
@@ -470,17 +522,17 @@ class BlumonAttemptResolverTest {
         timber.log.Timber.plant(arbol)
         try {
             val enDuda = row
-            coEvery { ledger.declararSinCobroLocal("pax", "venue", "gerente-1", any()) } coAnswers {
+            coEvery { ledger.aplicarLiberacionDelServidor(match { it.quien == "gerente-1" }, any()) } coAnswers {
                 row = row.copy(serverVeto = "LINK_VENUE_MISMATCH") // evidencia de OTRA terminal
-                false
+                Result.success(false)
             }
             resolver.declareChecked("venue", "pax", pin)
             assertThat(errores.filter { "contradicha" in it }).isEmpty()
 
             row = enDuda
-            coEvery { ledger.declararSinCobroLocal("pax", "venue", "gerente-1", any()) } coAnswers {
+            coEvery { ledger.aplicarLiberacionDelServidor(match { it.quien == "gerente-1" }, any()) } coAnswers {
                 row = row.copy(state = "HOST_RESPONDIO", hostApproved = true) // la aprobación del banco llegó con el envío en camino
-                false
+                Result.success(false)
             }
             resolver.declareChecked("venue", "pax", pin)
             assertThat(errores.filter { "contradicha" in it }).hasSize(1)
@@ -507,7 +559,7 @@ class BlumonAttemptResolverTest {
             )),
         )
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // F1 (tarea 3): reemplaza «necesita payments:reconcile-uncharged de la sesión»: lo que hace falta es la firma del gerente.
@@ -517,7 +569,7 @@ class BlumonAttemptResolverTest {
             assertThat(resolver.declareChecked("venue", "pax", sinPin).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
         coVerify(exactly = 0) { recovery.recoverOne(any(), any(), any(), any()) }
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `the checked declaration refuses when Avoqado has money evidence`() = runTest {
@@ -526,7 +578,7 @@ class BlumonAttemptResolverTest {
         coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns
             LedgerServerRecovery.LecturaDelIntento(null, evidenciaPositivaSinRegistro = true, servidorContesto = true)
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // F1: reemplaza «revisa el permiso tras la consulta»: la sesión que cambia de negocio durante la consulta no firma nada.
@@ -538,7 +590,7 @@ class BlumonAttemptResolverTest {
         }
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
         coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `a session from another venue cannot query or resolve the old PAX attempt`() = runTest {
@@ -570,7 +622,7 @@ class BlumonAttemptResolverTest {
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         row = row.copy(serverAnsweredAt = 3, terminalPaymentRequestId = "pos-request")
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `on Nexgo money evidence and a veto that could not be saved both refuse`() = runTest {
@@ -584,7 +636,7 @@ class BlumonAttemptResolverTest {
         // El veto no quedó en la fila: se recuerda aunque la consulta siguiente ya no lo traiga.
         coEvery { recovery.recoverOne("venue", "pax", any(), false) } returns LedgerServerRecovery.LecturaDelIntento(null)
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.MONEY_EVIDENCE)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `on Nexgo the live call guard of this process also refuses, and so does a missing permission`() = runTest {
@@ -593,7 +645,7 @@ class BlumonAttemptResolverTest {
         assertThat(resolver.declareChecked("venue", "pax", pin).state).isEqualTo(BlumonAttemptResolver.State.PENDING)
         // F1: lo que falta ahora es el PIN del gerente, no el permiso de la sesión.
         assertThat(resolver.declareChecked("venue", "pax", null).state).isEqualTo(BlumonAttemptResolver.State.SIGNATURE_REQUIRED)
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     @Test fun `preparing asks first and tells what the row can do, on both processors`() = runTest {
@@ -605,7 +657,7 @@ class BlumonAttemptResolverTest {
             every { ledger.puedeDeclararseEnDuda(any(), any()) } returns false
             assertThat(resolver.prepareChecked("venue", "pax").state).isEqualTo(BlumonAttemptResolver.State.UNAVAILABLE)
         }
-        coVerify(exactly = 0) { ledger.declararSinCobroLocal(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ledger.aplicarLiberacionDelServidor(any(), any()) }
     }
 
     // F1: reemplaza «sin el permiso ni pregunta»: la consulta se ofrece a quien sea; la firma la pone el gerente con su PIN.

@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.22.1] - 2026-11-18
+
 ### **Fixed**
 - **Mesas · el efectivo ya no cobra el saldo VIEJO si otro aparato cambió la cuenta (D49, tarjeta hz:e9ce0be7:D49; visto en la PAX el 18-nov: $25 cobrados de $75 con «Cuenta saldada»)**: con red, `TableCheckoutViewModel.payCash` vuelve a leer la cuenta del SERVIDOR justo antes de encolar (a lo más 3 s; si no llega, cobra como antes). Si cambió el saldo, se anuló o ya se cobró en otro aparato, no cobra y lo dice en el aviso del cobro (hasta «Entendido»). El botón lleva la foto de la pantalla que vio el cajero (importe y saldo del mismo estado pintado): si una lectura ya cambió el saldo, ni efectivo ni tarjeta salen con el importe viejo. Toda lectura deja en $0 una cuenta anulada o ya cobrada (el SERVIDOR conserva sus importes). Compara en centavos, no cobra si el cajero salió de la cuenta mientras se leía y una lectura de la cuenta que se dejó no escribe en la sesión nueva. «Acciones rechazadas» traduce «Cannot clear table with unpaid order X» a «La mesa sigue ocupada: la cuenta X todavía debe.» (como ANDROID), y la guía del «Liberar mesa» rechazado dice que se libera sola «si no tiene otra cuenta abierta». Sin red, la terminal no puede saber de una ronda de otro aparato (como hoy).
 - **Mesas · el «Quitar» de una rebaja que quedó fija al cobrar vales sale en gris con su razón (D15, tarjeta hz:e82938e1:D15)**: en «Cobrar» de una mesa, la rebaja del vale y la del producto suelto de esa venta se siguen viendo con su monto, pero su «−» sale apagado con «Fija: viene del cobro de vales» debajo, y tocar la fila dice sólo por qué («Esta rebaja quedó fija al cobrar los vales y no se quita desde la caja. Si hay que cambiarla, avisa a un encargado»). Antes se veía activo y el SERVIDOR contestaba un 400 al tocarlo. El SERVIDOR marca esas filas con `congeladoPorVales` (uno viejo no lo manda y la fila queda como antes). Las demás rebajas no cambian. Órdenes queda como hoy (tarjeta hz:e82938e1:D16). Diseño y rondas de Codex: `docs/audit/2026-11-18-d15-quitar-en-gris/` del workspace. Prueba: `TableCheckoutRebajaFijaTest`.

@@ -108,19 +108,30 @@ object LedgerSweepLogic {
     const val PRUNE_DAYS = 7L
 
     /**
-     * El dinero de la libreta en una pasada del trabajador: las consultas al historial de AngelPay ([LedgerUnknownRecovery]) y el registro
-     * de los aprobados ([LedgerApprovalRecovery]). [ahora] es la hora de pared que reciben las dos; [reloj] es monotónico (ms) y lo usa
-     * el arreglo C de Codex r8 (presupuesto de las consultas).
+     * Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada del trabajador. Android detiene un
+     * `CoroutineWorker` a los 10 min; con la última consulta (4 min de tope) y el registro final, la pasada termina antes.
+     */
+    const val PRESUPUESTO_DE_CONSULTAS_MS = 4 * 60_000L
+
+    /**
+     * El dinero de la libreta en una pasada del trabajador.
+     *
+     * 🔴 F1 · Codex final r8 #7 (C, 20-nov): PRIMERO el dinero que ya está en la mano (registrar los aprobados) y DESPUÉS las consultas al
+     * historial, que tienen un presupuesto de tiempo para iniciarse ([PRESUPUESTO_DE_CONSULTAS_MS], con el reloj monotónico [reloj]). Antes
+     * se consultaba primero, una duda por una: con 80 consultas lentas (20 s cada una) Android detenía el trabajo a los 10 min y nunca llegaba
+     * a registrar un aprobado que ya tenía todo. Lo que las consultas encuentren aprobado se registra al final de la MISMA pasada; lo que no
+     * alcanzó a consultarse sigue en la siguiente (el orden por último toque lo pone primero).
      */
     suspend fun recuperarElDinero(
         approval: LedgerApprovalRecovery,
         unknown: LedgerUnknownRecovery,
         venueId: String,
         ahora: () -> Long = { System.currentTimeMillis() },
-        @Suppress("UNUSED_PARAMETER") reloj: () -> Long = { System.nanoTime() / 1_000_000L },
+        reloj: () -> Long = { System.nanoTime() / 1_000_000L },
     ) {
-        unknown.recover(venueId, ahora())
         approval.recover(venueId, ahora())
+        val confirmados = unknown.recover(venueId, ahora(), reloj, PRESUPUESTO_DE_CONSULTAS_MS)
+        if (confirmados > 0) approval.recover(venueId, ahora())
     }
 
     data class SweepResult(

@@ -25,7 +25,15 @@ class LedgerUnknownRecovery @Inject constructor(
     private val ledger: PaymentAttemptLedger,
     private val verifier: AngelPayChargeVerifier,
 ) {
-    suspend fun recover(venueId: String, now: Long): Int {
+    /**
+     * @param reloj monotónico (ms) para [presupuestoMs].
+     * @param presupuestoMs F1 · Codex final r8 #7 (C): pasado este tiempo desde que empezó, la pasada ya no INICIA consultas (la que está en
+     *   vuelo termina). Sin presupuesto, como siempre (tope de [CONSULTAS_POR_CORRIDA]).
+     */
+    suspend fun recover(
+        venueId: String, now: Long, reloj: () -> Long = { System.nanoTime() / 1_000_000L }, presupuestoMs: Long = Long.MAX_VALUE,
+    ): Int {
+        val inicio = reloj()
         var confirmed = 0
         // 🔴 Codex final r3 #1: por páginas desde la última fila LEÍDA, y el tope cuenta consultas INICIADAS (tomadas), no filas leídas:
         // una fila que se salta sin tomar turno ya no tapa a las de atrás. ponytail: las que nunca se podrán consultar se releen en cada
@@ -37,7 +45,7 @@ class LedgerUnknownRecovery @Inject constructor(
             val rows = dao.getUnknownRecoveryCandidates(venueId, now - 120_000L, now, trasToque, trasId, FILAS_POR_PAGINA)
             rows.lastOrNull()?.let { trasToque = it.historyReadAt ?: it.createdAt; trasId = it.attemptId }
             for (row in rows) {
-                if (iniciadas >= CONSULTAS_POR_CORRIDA) break@paginas
+                if (iniciadas >= CONSULTAS_POR_CORRIDA || reloj() - inicio >= presupuestoMs) break@paginas
                 if (row.venueId != venueId || row.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
                     row.kind != PaymentAttemptEntity.KIND_SALE || row.hostApproved != null) continue
                 try {

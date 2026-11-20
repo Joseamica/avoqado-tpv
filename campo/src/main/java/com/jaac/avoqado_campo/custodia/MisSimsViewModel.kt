@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
-enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR }
+enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR, RECHAZADA, VENTA_POR_SUBIR }
 
 data class FilaSim(val sim: SimEnCopia, val estado: EstadoFila, val nota: String? = null)
 
@@ -51,7 +51,14 @@ data class EstadoMisSims(
     val ocupado: Boolean = false,
     val corrigiendo: Correccion? = null,
     val error: String? = null,
-)
+) {
+    // «Mis ventas» (Isaac, 20-nov): lo que el promotor corrige, lo que se vendió (también «En revisión») y lo perdido.
+    val porRevisar get() = vendidas.filter { it.estado == EstadoFila.REVISAR || it.estado == EstadoFila.CORRECCION_POR_SUBIR }
+    val rechazadas get() = vendidas.filter { it.estado == EstadoFila.RECHAZADA }
+    // Codex r1: la vendida en el celular que aún no sube no es «exitosa» (el SERVIDOR todavía puede rechazarla).
+    val ventasPorSubir get() = vendidas.filter { it.estado == EstadoFila.VENTA_POR_SUBIR }
+    val exitosas get() = vendidas.filter { it.estado == EstadoFila.VENDIDA || it.estado == EstadoFila.EN_REVISION }
+}
 
 @HiltViewModel
 class MisSimsViewModel @Inject constructor(
@@ -270,10 +277,13 @@ class MisSimsViewModel @Inject constructor(
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
             when {
-                s.custodyState == "SOLD" || s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> when (s.verificationStatus) {
+                s.custodyState != "SOLD" && s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
+                s.custodyState == "SOLD" -> when (s.verificationStatus) {
                     "FAILED" -> if (s.verificationId in corrigiendo) FilaSim(s, EstadoFila.CORRECCION_POR_SUBIR, "Corrección por subir")
                     else FilaSim(s, EstadoFila.REVISAR, motivos(s))
                     "PENDING" -> FilaSim(s, EstadoFila.EN_REVISION, "En revisión")
+                    // Terminal: la venta se perdió (no se pudo vincular o portar) y no se corrige. Antes salía «Vendida».
+                    "REJECTED" -> FilaSim(s, EstadoFila.RECHAZADA, motivos(s, siNoHay = "Tu supervisor la rechazó"))
                     else -> FilaSim(s, EstadoFila.VENDIDA)
                 }
                 s.custodyState == "PROMOTER_PENDING" -> when {
@@ -288,7 +298,7 @@ class MisSimsViewModel @Inject constructor(
                 else -> null
             }
         }
-        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR)
+        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR, EstadoFila.RECHAZADA, EstadoFila.VENTA_POR_SUBIR)
         _estado.update { e ->
             e.copy(
                 porAceptar = filas.filter { it.sim.custodyState == "PROMOTER_PENDING" && it.estado !in vendidas },
@@ -320,8 +330,9 @@ class MisSimsViewModel @Inject constructor(
             "OTHER" to "Otro motivo",
         )
 
-        fun motivos(s: SimEnCopia) = (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
-            .joinToString(" · ").ifEmpty { "Tu supervisor pidió corregir la evidencia" }
+        fun motivos(s: SimEnCopia, siNoHay: String = "Tu supervisor pidió corregir la evidencia") =
+            (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
+                .joinToString(" · ").ifEmpty { siNoHay }
 
         const val REASIGNADA = "Te volvieron a asignar esta SIM: vuelve a decidir"
 

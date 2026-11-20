@@ -4,6 +4,14 @@ Esta app tiene su propia versión y su propio release firmado (`.github/workflow
 las terminales: por eso sus cambios van aquí y no en el `CHANGELOG.md` de la raíz, que es el de las notas de versión de la
 TPV (`/avoqado:release-production`).
 
+## 0.5.0 (código 5) — lo que pidió PlayTelecom en sus pruebas (Asana 1220750328814319, 20-nov)
+- Venta sin costo: si la SIM no trae precio fijo, el importe puede ser $0 (como «Regalar (Gratis)» en la terminal); la
+  confirmación dice «Sin costo».
+- «Mis ventas», aparte de «Mis SIMs»: Por revisar (con «Corregir evidencia»), Exitosas y Rechazadas. Una venta rechazada ya
+  no sale como «Vendida». El Inicio dice cuántas hay por revisar.
+- «Mis pendientes» ahora se llama «Ventas pendientes por subir», y una venta sin señal sale en una sola línea: su foto y su
+  número viajan con ella.
+
 ## 0.4.0 (código 4) — la primera que se reparte
 - Pantallas rehechas sobre los mockups aprobados el 8-nov: Inicio en mosaicos (Vender SIM, Mis SIMs con «N en tu custodia»,
   Checar con «Entraste HH:MM», Mis pendientes con contador) y chip de turno; Activar con el código en 6 cuadros; PIN con

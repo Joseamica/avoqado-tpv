@@ -254,6 +254,23 @@ class PendientesViewModelTest {
         assertEquals("Foto y número · Venta de SIM 8952140000000000401", evidencia.resumen)
     }
 
+    // Isaac (PlayTelecom, 20-nov): sin señal, la venta y su foto salían como dos renglones y parecía venta doble.
+    @Test fun `una venta sin subir sale en una sola linea aunque traiga sus fotos`() {
+        val venta = pieza(TipoPieza.VENTA, EstadoPieza.PENDIENTE).copy(id = 1, llave = "kv")
+        val foto1 = pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(id = 2, llave = "kf1", dependeDe = "kv")
+        val foto2 = pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(id = 3, llave = "kf2", dependeDe = "kv")
+        assertEquals(listOf(1L), visiblesEnPendientes(listOf(venta, foto1, foto2)).map { it.id })
+        // Su venta ya subió: la foto que sigue sola sí se ve (es lo único de esa venta que falta).
+        assertEquals(listOf(2L), visiblesEnPendientes(listOf(foto1)).map { it.id })
+        // Una foto que necesita algo de la persona no se esconde nunca.
+        val rechazada = foto1.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = "FOTO_NO_SUBIO")
+        assertEquals(listOf(1L, 2L), visiblesEnPendientes(listOf(venta, rechazada)).map { it.id })
+        // La salida que espera a su entrada sí sale aparte: son dos checadas.
+        val entrada = pieza(TipoPieza.ENTRADA, EstadoPieza.PENDIENTE).copy(id = 4, llave = "ke")
+        val salida = pieza(TipoPieza.SALIDA, EstadoPieza.PENDIENTE).copy(id = 5, llave = "ks", dependeDe = "ke")
+        assertEquals(listOf(4L, 5L), visiblesEnPendientes(listOf(entrada, salida)).map { it.id })
+    }
+
     @Test fun `los avisos se entienden y lo pendiente dice que espera`() {
         assertEquals(listOf(Accion.ENTENDIDO), acciones(filaDe(pieza(TipoPieza.EVIDENCIA, EstadoPieza.AVISO, "SALE_ALREADY_APPROVED", "Ya aprobada"), yo(), true, emptySet())))
         assertEquals(

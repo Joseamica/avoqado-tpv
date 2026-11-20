@@ -201,6 +201,30 @@ class MisSimsViewModelTest {
         assertEquals(EstadoFila.EN_REVISION, revision.estado)
     }
 
+    // Isaac (PlayTelecom, 20-nov): «Mis ventas» aparte de «Mis SIMs», por estado. La rechazada salía «Vendida» en verde.
+    @Test fun `mis ventas separa por revisar, exitosas y rechazadas`() {
+        ponerCopia(
+            sim("S1", "SOLD", verificacion = "FAILED"), sim("S2", "SOLD", verificacion = "COMPLETED"), sim("S3", "SOLD", verificacion = "PENDING"),
+            sim("S4", "SOLD"), sim("S5", "SOLD", verificacion = "REJECTED"), sim("S6", "PROMOTER_HELD"),
+        )
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.porRevisar.map { it.sim.serialNumber })
+        assertEquals(listOf("S2", "S3", "S4"), e.exitosas.map { it.sim.serialNumber })
+        assertEquals(listOf("S5"), e.rechazadas.map { it.sim.serialNumber })
+        assertEquals(EstadoFila.RECHAZADA, e.rechazadas.single().estado)
+        assertTrue(e.rechazadas.single().nota!!.contains("Se ve borrosa"))
+        assertEquals(listOf("S6"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    // Codex r1: la vendida en el celular que todavía no sube no es «exitosa»: sale aparte, «Por subir».
+    @Test fun `una venta del celular sin subir sale en Por subir y no en Exitosas`() {
+        ponerCopia(sim("S1", "PROMOTER_HELD").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), sim("S2", "SOLD", verificacion = "COMPLETED"))
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.ventasPorSubir.map { it.sim.serialNumber })
+        assertEquals(listOf("S2"), e.exitosas.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
     @Test fun `corregir evidencia encola una evidencia suelta con su pago y su verificacion`() {
         ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
         val ev = slot<EvidenciaSueltaNueva>()

@@ -13,9 +13,16 @@ const val CANDIDATAS_POR_PAGINA = 25
 /**
  * 🔴 F1 bloque 4: la venta de AngelPay que la recuperación (E1) todavía pregunta al historial — en duda, o declarada por una PERSONA
  * (la firma no la saca: un «cobrado» posterior debe aparecer), sin veto, con turnos (`history_checks < 5`). Sin alias.
+ * 🔴 F1 · Codex final r8 #1, mitad «(f)» (F, 20-nov): y la que el SERVIDOR soltó por un rechazo del banco de ESTE intento (2c,
+ * `liberada_por_el_servidor:PROCESSOR_DECLINED`). El SERVIDOR llama «rechazo» también al `rejected + 05AP`, que puede aprobarse después:
+ * el rechazo suelta el freno (la fila queda `DESCARTADA`), pero la fila sigue en el seguimiento del historial como cualquier otra; si la
+ * app murió antes de la primera consulta (sin marca), antes nadie la volvía a mirar. Con la primera respuesta queda la marca y se sigue
+ * como una «sin aprobar» (7 días, sin gastar turno); si aparece aprobada, se registra una vez por el camino de la ventana.
  */
 const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERMINADO') OR " +
-    PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + ") AND server_veto IS NULL AND history_checks < 5)"
+    PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA +
+    " OR (state = 'DESCARTADA' AND last_error IS 'liberada_por_el_servidor:PROCESSOR_DECLINED')" +
+    ") AND server_veto IS NULL AND history_checks < 5)"
 
 /**
  * 🔴 F1 · Codex final r8 #5 (A, 20-nov): el SERVIDOR ya acreditó el Payment de ESTE intento: `RECORDED` con Payment, el MISMO importe y la

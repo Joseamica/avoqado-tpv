@@ -85,15 +85,10 @@ import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
-import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
-import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
 import com.jaac.avoqado_tpv.features.tables.presentation.TableCheckoutScreen
 import com.jaac.avoqado_tpv.features.tables.presentation.TableMenuScreen
 import com.jaac.avoqado_tpv.features.tables.presentation.TableOrderScreen
 import com.jaac.avoqado_tpv.features.tables.presentation.TablesScreen
-import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
-import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
-import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.SerializedSaleScreen
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.MySalesScreen
@@ -1334,15 +1329,6 @@ fun AppNavigation(
                     Timber.d("[PERF] NAV: Welcome → Shifts START")
                     navController.navigate(NavRoute.Shifts.route)
                 },
-                onNavigateToOrdering = {
-                    launchHomeAction action@ {
-                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome ordering")) {
-                            return@action
-                        }
-                        Timber.d("[PERF] NAV: Welcome → Ordering START")
-                        navController.navigate(NavRoute.OrderingWelcome.route)
-                    }
-                },
                 onNavigateToTables = {
                     // 🪑 Mesas (Plan C, Task 6) — plano en vivo, sin costura de
                     // pago (no necesita esperar al SDK del PAX), a diferencia de
@@ -1652,53 +1638,6 @@ fun AppNavigation(
             )
         }
 
-        // Ordering Welcome Screen - Entry point for ordering system
-        composable(NavRoute.OrderingWelcome.route) {
-            OrderingWelcomeScreen(
-                showTableService = secureStorage.supportsTableService(),
-                onQuickOrderClick = {
-                    Timber.d("[PERF] NAV: Ordering → MenuScreen (QuickOrder) START")
-                    navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER"))
-                },
-                onTableServiceClick = {
-                    // Navigate to Floor Plan screen (visual canvas)
-                    navController.navigate(NavRoute.FloorPlan.route)
-                },
-                onViewOrdersClick = {
-                    // Navigate to Order List screen
-                    navController.navigate(NavRoute.OrderList.route)
-                    Timber.d("📋 Navigating to Order List")
-                },
-                onViewUnpaidOrdersClick = {
-                    // Navigate to Order List screen with UNPAID_TAKEOUT filter
-                    navController.navigate(NavRoute.OrderList.createRoute("UNPAID_TAKEOUT"))
-                    Timber.d("🔔 Navigating to Order List with UNPAID_TAKEOUT filter")
-                },
-                onViewPayLaterOrdersClick = {
-                    // Navigate to Order List screen with PAY_LATER filter
-                    navController.navigate(NavRoute.OrderList.createRoute("PAY_LATER"))
-                    Timber.d("💳 Navigating to Order List with PAY_LATER filter")
-                },
-                onNavigateBack = {
-                    navController.safePopBackStack()
-                }
-            )
-        }
-
-        // Floor Plan Canvas Screen - Visual floor plan editor with zoom/pan
-        composable(NavRoute.FloorPlan.route) {
-            FloorPlanCanvasScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
-                },
-                onTableAssigned = { orderId ->
-                    // Navigate to Menu screen with orderId
-                    Timber.d("🪑 Table assigned - Navigating to Menu with Order ID: $orderId")
-                    navController.navigate(NavRoute.Menu.createRoute(orderId))
-                }
-            )
-        }
-
         // 🪑 Mesas — Plan C, Task 6. NEW module (`features/tables/`), isolated
         // from the legacy `FloorPlanCanvasScreen` above: no shared imports, no
         // shared ViewModel, no shared Room tables (D-3 of the design spec).
@@ -1803,142 +1742,6 @@ fun AppNavigation(
                     navController.popBackStack(NavRoute.Tables.route, false)
                     Timber.d("🪑 [Navigation] Mesas: cobro completado — de vuelta al plano en un solo salto")
                 },
-            )
-        }
-
-        // Menu Screen - Product selection + Order check (Hybrid Toast + Square pattern)
-        composable(
-            route = NavRoute.Menu.route,
-            arguments = listOf(navArgument("orderId") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
-            val menuPaymentScope = rememberCoroutineScope()
-
-            MenuScreen(
-                orderId = orderId,
-                onNavigateBack = {
-                    navController.safePopBackStack()
-                },
-                onProcessPayment = { order ->
-                    menuPaymentScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Order payment")) {
-                            return@launch
-                        }
-                        // ✅ FIX: Pass remainingBalance instead of total for split payments
-                        // If order is fresh: remainingBalance = total (correct)
-                        // If order has partial payment: remainingBalance = total - paidAmount (correct)
-                        val isPayLaterOrder = order.orderCustomers.isNotEmpty()
-                        navController.currentBackStackEntry?.savedStateHandle?.apply {
-                            set("initialAmount", order.remainingBalance.toString())
-                            set("orderId", order.id)
-                            set("orderNumber", order.orderNumber)
-                            set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
-                            set("splitType", SplitType.FULLPAYMENT.value)
-                            // 💳 PAY-LATER CONTEXT: Detect if order has customers
-                            set("wasPayLaterOrder", isPayLaterOrder)
-                        }
-                        navController.navigate(getPaymentRoute())
-                        Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
-                    }
-                },
-                onProcessPaymentWithAmount = { order, customAmount, splitType ->
-                    menuPaymentScope.launch {
-                        // 🛡️ P1 fix (2026-07-11): AngelPay records order payments with
-                        // splitType hardcodeado a FULLPAYMENT (buildAngelPayOrderPaymentRequest)
-                        // — un cobro PARCIAL en Nexgo se registraría como pago completo y el
-                        // backend cerraría la orden con dinero faltante. Bloquear hasta que
-                        // el recorder AngelPay soporte splits reales.
-                        if (isAppToAppPayment() && splitType != SplitType.FULLPAYMENT) {
-                            Toast.makeText(
-                                context,
-                                "Cobro parcial aún no disponible en esta terminal. Cobra el total de la orden.",
-                                Toast.LENGTH_LONG
-                            ).show()
-                            return@launch
-                        }
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Order custom payment")) {
-                            return@launch
-                        }
-                        // Custom amount payment with split type (CUSTOMAMOUNT)
-                        val isPayLaterOrder = order.orderCustomers.isNotEmpty()
-                        navController.currentBackStackEntry?.savedStateHandle?.apply {
-                            set("initialAmount", customAmount.toString())
-                            set("orderId", order.id)
-                            set("orderNumber", order.orderNumber)
-                            set("tableId", order.tableId)
-                            set("splitType", splitType.value)
-                            // 💳 PAY-LATER CONTEXT: Detect if order has customers
-                            set("wasPayLaterOrder", isPayLaterOrder)
-                        }
-                        navController.navigate(getPaymentRoute())
-                        Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
-                    }
-                },
-                onNavigateToSplitByProduct = { splitOrderId, hasCustomers ->
-                    // 🛡️ P1 fix (2026-07-11): las pantallas de split navegan HARDCODED a
-                    // NavRoute.Payment (Blumon) — en Nexgo eso abre la pantalla del
-                    // procesador equivocado. Bloquear en el origen hasta que el flujo
-                    // AngelPay soporte splits (routing + splitType real en el recorder).
-                    if (isAppToAppPayment()) {
-                        Toast.makeText(
-                            context,
-                            "Pagos divididos aún no disponibles en esta terminal.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
-                        navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
-                        navController.navigate(NavRoute.SplitByProduct.createRoute(splitOrderId))
-                        Timber.d("📦 Navigating to SplitByProduct: $splitOrderId | wasPayLater=$hasCustomers")
-                    }
-                },
-                onNavigateToSplitByPerson = { splitOrderId, hasCustomers ->
-                    if (isAppToAppPayment()) {
-                        Toast.makeText(
-                            context,
-                            "Pagos divididos aún no disponibles en esta terminal.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
-                        navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
-                        navController.navigate(NavRoute.SplitByPerson.createRoute(splitOrderId))
-                        Timber.d("👥 Navigating to SplitByPerson: $splitOrderId | wasPayLater=$hasCustomers")
-                    }
-                }
-            )
-        }
-
-        // Order List Screen - List of all orders with filters
-        composable(
-            route = NavRoute.OrderList.route,
-            arguments = listOf(
-                navArgument("filter") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
-            )
-        ) { backStackEntry ->
-            val filterParam = backStackEntry.arguments?.getString("filter")
-            val initialFilter = filterParam?.let {
-                try {
-                    OrderStatusFilter.valueOf(it)
-                } catch (e: IllegalArgumentException) {
-                    OrderStatusFilter.ALL
-                }
-            } ?: OrderStatusFilter.ALL
-
-            OrderListScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
-                },
-                onOrderClick = { order ->
-                    // Navigate to MenuScreen to view/edit order
-                    navController.navigate(NavRoute.Menu.createRoute(order.id))
-                    Timber.d("📋 Viewing order: ${order.orderNumber}")
-                },
-                initialFilter = initialFilter
             )
         }
 
@@ -2225,14 +2028,10 @@ fun AppNavigation(
                         }
                         Timber.d("🛒 [Navigation] Nueva Orden: returning to unified Checkout")
                     } else {
-                        // 🔄 Toast/Square Pattern: Navigate FORWARD to fresh MenuScreen instance
-                        // This creates a new order with fresh ViewModel (no state reuse/patching)
-                        navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER")) {
-                            // Pop back to OrderingWelcome but don't include it
-                            // Stack: OrderingWelcome → MenuScreen (NEW)
-                            popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
-                        }
-                        Timber.d("🔄 [Navigation] Toast/Square pattern: Navigated to NEW quick order")
+                        // D34 (20-nov): «Órdenes» ya no existe en la terminal. Un cobro de una orden que no vino de Cobrar,
+                        // Mesas ni un folio (p. ej. un cobro remoto del POS) regresa al Inicio.
+                        navController.popAlInicio()
+                        Timber.d("🏠 [Navigation] Nueva Orden: de vuelta al Inicio (Órdenes ya no existe, D34)")
                     }
                 },
                 onNavigateToSerializedSale = {
@@ -2292,11 +2091,8 @@ fun AppNavigation(
                             Timber.e("❌ [Navigation] Cannot clear table - no venueId in session")
                         }
 
-                        // Navigate to floor plan regardless of clear result
-                        // ✅ FIX: Navigate to FloorPlan (visual canvas) not TableService (old grid)
-                        navController.navigate(NavRoute.FloorPlan.route) {
-                            popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
-                        }
+                        // D34 (20-nov): el plano viejo de «Órdenes» ya no existe; se regresa al Inicio pase lo que pase.
+                        navController.popAlInicio()
                     }
                 },
                 onNavigateToOrder = { continueOrderId, continueTableId ->
@@ -2317,20 +2113,15 @@ fun AppNavigation(
                         Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
                         navController.volverALaCuentaDeLaMesa()
                     } else {
-                        Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
-                        navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {
-                            // Pop payment screen and return to menu with same order
-                            popUpTo(NavRoute.Payment.route) { inclusive = true }
-                        }
+                        // D34 (20-nov): sin «Órdenes», la orden se sigue cobrando desde donde se abrió; aquí se regresa al Inicio.
+                        Timber.i("🏠 [Navigation] Orden $continueOrderId sin pantalla de Órdenes (D34): de vuelta al Inicio")
+                        navController.popAlInicio()
                     }
                 },
                 onNavigateToPayLaterOrders = {
-                    // 💳 Navigate to OrderListScreen with PAY_LATER filter
-                    Timber.i("💳 [Navigation] Navigating to pay-later orders list")
-                    navController.navigate(NavRoute.OrderList.createRoute(OrderStatusFilter.PAY_LATER.name)) {
-                        // Pop payment screen and go to OrderList with PAY_LATER filter
-                        popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
-                    }
+                    // D34 (20-nov): la lista de cuentas por cobrar de «Órdenes» ya no existe; se regresa al Inicio.
+                    Timber.i("🏠 [Navigation] Cuentas por cobrar sin pantalla de Órdenes (D34): de vuelta al Inicio")
+                    navController.popAlInicio()
                 }
             )
         }

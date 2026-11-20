@@ -6,14 +6,15 @@ import com.jaac.avoqado_tpv.core.data.network.dto.TpvSettingsDto
 import com.jaac.avoqado_tpv.core.data.network.dto.toDomain
 import com.jaac.avoqado_tpv.core.data.network.dto.toDto
 import org.junit.Test
+import java.io.File
 
 /**
  * Restaurant mode flag ("Mesas" module entry point) on TpvSettings.
  *
  * Mirrors android's PosMode.RESTAURANT. Default `false` and additive: a
  * terminal on an old backend, or one that never sends the field, must never
- * see Mesas appear out of nowhere. Turning it ON hides the legacy "Órdenes"
- * tile — the two never coexist (spec D-4, 2026-07-24-tpv-mesas-offline-first-design.md).
+ * see Mesas appear out of nowhere. «Órdenes», el camino viejo hacia la misma mesa,
+ * ya no existe en la terminal (D34, 20-nov).
  */
 class TpvSettingsRestaurantModeTest {
 
@@ -49,58 +50,48 @@ class TpvSettingsRestaurantModeTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // NEW: visibility of the "Mesas" tile
+    // Visibilidad del tile de «Mesas»
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `modo restaurante ON oculta el tile de Ordenes`() {
-        // Nunca conviven los dos caminos hacia la misma mesa (spec D-4).
-        val settings = TpvSettings(restaurantModeEnabled = true, showOrderManagement = true)
-        assertThat(shouldShowOrderManagementTile(settings)).isFalse()
-        assertThat(shouldShowTablesTile(settings)).isTrue()
+    fun `modo restaurante ON muestra Mesas`() {
+        assertThat(shouldShowTablesTile(TpvSettings(restaurantModeEnabled = true))).isTrue()
+        // showOrderManagement ya no cuenta para nada en la pantalla (D34): ni prendido ni apagado cambia Mesas.
+        assertThat(shouldShowTablesTile(TpvSettings(restaurantModeEnabled = true, showOrderManagement = true))).isTrue()
+        assertThat(shouldShowTablesTile(TpvSettings(restaurantModeEnabled = true, showOrderManagement = false))).isTrue()
     }
 
     @Test
-    fun `sin Cobrar y con modo restaurante OFF, Ordenes queda de respaldo`() {
-        // Un negocio que apago «Cobrar» a proposito no se queda sin forma de tomar pedidos.
-        val settings = TpvSettings(restaurantModeEnabled = false, showOrderManagement = true, showCheckout = false)
-        assertThat(shouldShowOrderManagementTile(settings)).isTrue()
-        assertThat(shouldShowTablesTile(settings)).isFalse()
-    }
-
-    @Test
-    fun `P1 Cobrar sustituye a Ordenes, que es legacy (founder, 25-sep)`() {
-        // «Ordenar ya es legacy, no deberia ni de aparecer». Con los defaults, Cobrar esta prendido.
-        assertThat(shouldShowOrderManagementTile(TpvSettings())).isFalse()
-        val conCobrar = TpvSettings(restaurantModeEnabled = false, showOrderManagement = true, showCheckout = true)
-        assertThat(shouldShowOrderManagementTile(conCobrar)).isFalse()
+    fun `modo restaurante OFF no muestra Mesas`() {
+        assertThat(shouldShowTablesTile(TpvSettings(restaurantModeEnabled = false))).isFalse()
+        assertThat(shouldShowTablesTile(TpvSettings(restaurantModeEnabled = false, showOrderManagement = true, showCheckout = false))).isFalse()
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // REGRESSION: existing showOrderManagement semantics untouched
+    // P1 «Órdenes» ya no existe en la terminal (founder, 25-sep, 20-oct y 20-nov: D34)
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * «Para ordering se usa Mesas y Cobrar». El SERVIDOR ya manda `showOrderManagement=false` siempre; aquí se fija que la
+     * TPV no tenga por dónde enseñarla aunque un servidor viejo o un ajuste guardado la manden prendida (la TPV la toma como
+     * prendida si el campo falta). Estática a propósito, como `ArgumentosDelCobroSeLeenUnaVezTest`.
+     */
     @Test
-    fun `showOrderManagement en false sigue ocultando Ordenes con modo restaurante OFF`() {
-        // shouldShowOrderManagementTile debe seguir respetando el flag original,
-        // no solo el nuevo — si alguien ya apagó "Ordenes" a mano, no debe reaparecer.
-        val settings = TpvSettings(restaurantModeEnabled = false, showOrderManagement = false)
-        assertThat(shouldShowOrderManagementTile(settings)).isFalse()
-        assertThat(shouldShowTablesTile(settings)).isFalse()
+    fun `P1 el Inicio no tiene tarjeta de Ordenes ni la navegacion sus pantallas`() {
+        val inicio = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/screens/WelcomeScreen.kt").readText()
+        val navegacion = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt").readText()
+        val rutas = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/NavRoute.kt").readText()
+        assertThat(inicio).doesNotContain("label = \"Órdenes\"")
+        assertThat(inicio).doesNotContain("onNavigateToOrdering")
+        listOf("OrderingWelcome", "NavRoute.Menu", "NavRoute.OrderList", "NavRoute.FloorPlan", "MenuScreen(").forEach {
+            assertThat(navegacion).doesNotContain(it)
+        }
+        listOf("ordering_welcome", "\"menu/{orderId}\"", "order_list", "floor_plan").forEach { assertThat(rutas).doesNotContain(it) }
     }
 
     @Test
-    fun `showOrderManagement en false y modo restaurante ON- Ordenes sigue oculto`() {
-        val settings = TpvSettings(restaurantModeEnabled = true, showOrderManagement = false)
-        assertThat(shouldShowOrderManagementTile(settings)).isFalse()
-        assertThat(shouldShowTablesTile(settings)).isTrue()
-    }
-
-    @Test
-    fun `showOrderManagement por default sigue en true a nivel global`() {
-        // El founder decidio explicitamente NO cambiar este default (rompería
-        // terminales que hoy usan "Ordenes" y no van a tener Mesas). Ver spec
-        // nota D-4.
-        assertThat(TpvSettings().showOrderManagement).isTrue()
+    fun `regresion el Inicio sigue teniendo Mesas, Cobrar y Pago rapido`() {
+        val inicio = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/screens/WelcomeScreen.kt").readText()
+        listOf("label = \"Mesas\"", "label = \"Cobrar\"", "label = \"Pago rápido\"").forEach { assertThat(inicio).contains(it) }
     }
 }

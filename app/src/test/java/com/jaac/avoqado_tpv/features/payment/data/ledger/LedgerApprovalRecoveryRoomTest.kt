@@ -137,6 +137,59 @@ class LedgerApprovalRecoveryRoomTest {
         coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
     }
 
+    /**
+     * 🔴 Codex final r6 #4 (F1, 20-nov) · POS → N86: la ventana soltó la solicitud, después la recuperación encontró el aprobado de AngelPay
+     * (referencia y autorización guardadas) y el único aviso de AngelPay se perdió: sólo la TPV puede registrarlo. Con el SERVIDOR caído, el
+     * quinto fallo la sacaba de toda pasada (`verify_attempts < 5`): cargo aprobado con cero Payment. Un aprobado con evidencia nunca se
+     * abandona: seis fallos seguidos y, de vuelta el SERVIDOR, el séptimo lo registra una sola vez.
+     */
+    @Test fun `F1 Codex r6 4 · un aprobado con evidencia nunca se abandona - seis fallos y al septimo se registra una vez`() = runTest {
+        dao.insert(angelPay("a4").copy(state = "DESCARTADA", serverOutcome = "RELEASED_NO_EVIDENCE",
+            lastError = "liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW"))
+        var caido = true
+        val registrados = mutableListOf<String>()
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } coAnswers {
+            if (caido) Result.failure(java.io.IOException("503"))
+            else { registrados += firstArg<PaymentContext>().idempotencyKey!!; Result.success(receipt.copy(solicitudLigada = "req-a4")) }
+        }
+        var t = System.currentTimeMillis()
+        repeat(6) { t += 3_600_000L; LedgerApprovalRecovery(dao, fast, order).recover("venue", t) }
+        assertThat(dao.getById("a4")!!.state).isEqualTo("REGISTRO_FALLIDO")
+        assertThat(dao.getById("a4")!!.verifyAttempts).isEqualTo(6)
+
+        caido = false
+        t += 3_600_000L
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", t)).isEqualTo(1)
+        LedgerApprovalRecovery(dao, fast, order).recover("venue", t + 3_600_000L)
+        assertThat(registrados).containsExactly("a4")
+        assertThat(dao.getById("a4")!!.state).isEqualTo("REGISTRADO")
+    }
+
+    /**
+     * 🔴 Codex final r7 #2: sin tope de intentos y eligiendo los 50 más viejos, 300 aprobados viejos cuyo registro falla siempre dejaban sin
+     * turno a un aprobado NUEVO (B), con su evidencia completa: cero Payment aunque el SERVIDOR ya pudiera registrarlo. Reescrita por Codex
+     * final r8 #6 (el orden va por el ÚLTIMO TOQUE, no por «menos intentos»): cada viejo que se intenta queda detrás de B, así que B entra a
+     * más tardar en la pasada ⌈300 / 50⌉ + 1 = 7 (el peor caso, con las pausas vencidas en cada pasada, está en `CodexR8RecuperacionRoomTest`).
+     */
+    @Test fun `F1 Codex r7 2 · 300 aprobados viejos que fallan no dejan sin turno a uno nuevo`() = runTest {
+        repeat(300) { i ->
+            dao.insert(angelPay("viejo-%03d".format(i)).copy(state = "REGISTRO_FALLIDO", verifyAttempts = 7,
+                createdAt = now - 86_400_000L - i, updatedAt = now - 86_400_000L))
+        }
+        dao.insert(angelPay("b-nuevo"))
+        val registrados = mutableListOf<String>()
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } coAnswers {
+            val llave = firstArg<PaymentContext>().idempotencyKey!!
+            if (llave != "b-nuevo") Result.failure(java.io.IOException("503"))
+            else { registrados += llave; Result.success(receipt.copy(solicitudLigada = "req-b-nuevo")) }
+        }
+        var pasadas = 0
+        while (registrados.isEmpty() && pasadas < 20) { pasadas++; LedgerApprovalRecovery(dao, fast, order).recover("venue", now) }
+        assertThat(registrados).containsExactly("b-nuevo")
+        assertThat(pasadas).isAtMost(7)
+        assertThat(dao.getById("b-nuevo")!!.state).isEqualTo("REGISTRADO")
+    }
+
     @Test fun `B2 recovery legacy no demuestra OFF por un campo JSON redundante`() = runTest {
         val original = blumon("legacy-tag")
         val snapshot = Gson().fromJson(original.paymentContextJson, PaymentContext.FastPayment::class.java).copy(shiftMembership = "NO_SHIFT_SYSTEM")

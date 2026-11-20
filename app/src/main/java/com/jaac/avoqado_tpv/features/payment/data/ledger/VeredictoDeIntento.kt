@@ -214,29 +214,94 @@ data class LiberacionDelServidor(
             else -> null
         }
 
-        fun desdeConsultaS6(venueId: String, attemptId: String, respuesta: TerminalAttemptStatusResponse): LiberacionDelServidor? {
-            if (acreditaDinero(respuesta.attempt)) return null // el dinero (o una aprobación conocida) manda
-            if (hayEvidenciaSinDueno(respuesta.attempt)) return null // algo lo contradice y nadie puede reclamarlo: no se libera
-            if (hayContradiccion(respuesta.attempt)) return null // hay dinero o evidencia que no es de este intento: tampoco
+        /**
+         * 🔴 F1 cierre TPV (I4, `plan-cierre-familias.md` §2): EL ÚNICO que decide si un acuse del SERVIDOR libera ESTA fila. Todo el que
+         * libera pasa por aquí —S6 ([desdeConsultaS6]), el GET por solicitud ([desdeConsultaPorSolicitud]) y el 2xx de una declaración
+         * ([desdeDeclaracion]: la liberación sola, la N86; y la firma del gerente en `BlumonAttemptResolver.declareChecked`)— y lo aplica
+         * el único escritor ([PaymentAttemptLedger.aplicarLiberacionDelServidor]), que vuelve a comprobar la fila DENTRO del UPDATE
+         * (estado, pertenencia, dinero, veto y cese de la PAX). Nadie libera con un nombre suelto.
+         *  · Sin dinero ni veto en lo que el servidor sabe del intento ([intento]).
+         *  · Alcance: el comprobante, si viene, es de ESTE intento o de ESTA solicitud.
+         *  · Clase: `OPERATOR_RECONCILED` o [CAJERO_REVISO] son de una PERSONA: con comprobante, tiene que acreditarla con una clase de
+         *    persona y el autor es el SUYO. `NO_EVIDENCE_AFTER_WINDOW` (la ventana, de la terminal o del servidor) no pide autor ni se
+         *    vuelve firma: [quien] queda vacío. El rechazo del banco no libera por acuse (lo decide el resultado del SDK), salvo el que el
+         *    SERVIDOR publica en S6 sobre ESTE intento ([desdeRechazoDelBanco], Codex final r6 #1); cualquier otra clase, tampoco.
+         * @param testimonio la declaración que publica el intento (`attempt.resolution`), para la regla vieja; null en la ruta por solicitud.
+         */
+        fun desdeAcuse(
+            venueId: String, attemptId: String, requestId: String?, evidencia: String?,
+            comprobante: ComprobanteDeDeclaracion?, testimonio: JsonObject?, intento: TerminalAttemptResultDto?,
+        ): LiberacionDelServidor? {
+            if (acreditaDinero(intento) || hayEvidenciaSinDueno(intento) || hayContradiccion(intento)) return null
+            if (comprobante != null && !comprobante.esDe(attemptId, requestId)) return null
+            return when (evidencia) {
+                // 🔴 F1 · salida del gerente para el 05AP (20-nov): la ventana del SERVIDOR soltó la solicitud y, encima, un gerente firmó
+                // con su PIN (el SERVIDOR guarda su asiento sin cambiar el estado financiero). Con el comprobante de una PERSONA para ESTA
+                // solicitud, la liberación es la suya: la fila queda cerrada por una persona y su tarjeta entra de inmediato; el historial
+                // de AngelPay se sigue consultando igual (Codex final r8 #3). Sin ese comprobante, sigue siendo sólo la ventana.
+                "NO_EVIDENCE_AFTER_WINDOW" -> comprobante
+                    ?.takeIf { requestId != null && it.kind in DECLARACIONES_DE_UNA_PERSONA && it.acreditaPersona(attemptId, requestId) }
+                    ?.let { LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED", it.staffId) }
+                    ?: LiberacionDelServidor(venueId, attemptId, requestId, evidencia)
+                "OPERATOR_RECONCILED", CAJERO_REVISO -> {
+                    val quien = when {
+                        comprobante != null -> comprobante.staffId
+                            ?.takeIf { comprobante.kind in DECLARACIONES_DE_UNA_PERSONA && comprobante.acreditaPersona(attemptId, requestId) }
+                            ?: return null
+                        // ponytail: SERVIDOR anterior a `declarationReceipt` (avoqado-server 70ca51c5f, F1 bloque 7): la regla de antes —el
+                        // testimonio con el `by` de una persona; sin testimonio (la ruta por solicitud), la evidencia sola. Se quita cuando
+                        // ese SERVIDOR ya esté publicado.
+                        testimonio != null -> quienDeclaroElAcuse(testimonio) ?: return null
+                        else -> null
+                    }
+                    LiberacionDelServidor(venueId, attemptId, requestId, evidencia, quien)
+                }
+                else -> null
+            }
+        }
 
+        fun desdeConsultaS6(venueId: String, attemptId: String, respuesta: TerminalAttemptStatusResponse): LiberacionDelServidor? {
             // ── Cobro LOCAL (22-sep): iniciado EN la terminal, sin solicitud del POS ────────────────────────────
             // Su liberación NO puede viajar en `request.outcome` porque no hay `request`. El servidor publica la
-            // declaración del cajero en `attempt.resolution`, y ésa es la única señal que destraba este caso.
+            // declaración en `attempt.resolution`, y ésa es la única señal que destraba este caso.
             val requestIdCrudo = respuesta.requestId?.takeIf { it.isNotBlank() }
             if (requestIdCrudo == null && respuesta.request == null) {
                 val declaracion = respuesta.attempt?.resolution ?: return null
-                val evidencia = evidenciaDeLaDeclaracion(runCatching { declaracion.get("kind")?.asString }.getOrNull()) ?: return null
                 // `requestId` nulo = «sin solicitud»: es lo que manda la fila local al CAS, que exige IS NULL.
-                return LiberacionDelServidor(venueId, attemptId, null, evidencia, quienDeclaro(declaracion))
+                return desdeAcuse(
+                    venueId, attemptId, null, evidenciaDeLaDeclaracion(textoDe(declaracion, "kind")),
+                    respuesta.declarationReceipt, declaracion, respuesta.attempt,
+                )
             }
 
             val requestId = requestIdCrudo ?: return null // sin solicitud no hay pertenencia que comprobar
             val request = respuesta.request ?: return null
-            val outcome = runCatching { request.get("outcome")?.asString }.getOrNull()
-            val evidencia = runCatching { request.get("outcomeEvidence")?.asString }.getOrNull()
-            if (outcome != "NOT_CHARGED" || evidencia !in EVIDENCIAS) return null
-            return LiberacionDelServidor(venueId, attemptId, requestId, evidencia!!)
+            if (textoDe(request, "outcome") != "NOT_CHARGED") return null
+            val evidenciaCruda = textoDe(request, "outcomeEvidence")
+            if (evidenciaCruda == RECHAZO_DEL_BANCO) return desdeRechazoDelBanco(venueId, attemptId, requestId, respuesta.attempt)
+            val evidencia = evidenciaCruda?.takeIf { it in EVIDENCIAS } ?: return null
+            // F1 cierre TPV (I4): antes esta rama liberaba `OPERATOR_RECONCILED` sin mirar el comprobante.
+            return desdeAcuse(venueId, attemptId, requestId, evidencia, respuesta.declarationReceipt, null, respuesta.attempt)
         }
+
+        /** La solicitud que el SERVIDOR soltó porque el banco rechazó (aviso de AngelPay: `BANK_DECLINED`). */
+        const val RECHAZO_DEL_BANCO = "PROCESSOR_DECLINED"
+
+        /**
+         * 🔴 Codex final r6 #1 (20-nov): el SERVIDOR soltó la solicitud porque AngelPay le avisó que el banco rechazó ESTE intento
+         * (`attempt.processorEvidence = DECLINED`: el evento es de este intento, con dueño). La N86 no lo aceptaba («el rechazo lo decide el
+         * resultado del SDK», I4) y, con la respuesta del lector perdida y la firma rechazada por el SERVIDOR (el banco ya resolvió), la duda
+         * de esa cuenta frenaba su tarjeta para siempre. Se aplica como la ventana: sin autor, nunca firma, por el único escritor (que
+         * vuelve a mirar dinero, veto y pertenencia dentro del UPDATE). NO quita la marca del historial: el SERVIDOR llama «rechazo» a todo
+         * estado de AngelPay que no es `approved` (`clasificarEstadoBancario`), también al `05AP`, así que si el historial la trae sin
+         * aprobar la tarjeta espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). El rechazo de OTRO intento de la solicitud
+         * (`processorEvidence` ≠ DECLINED en éste) no suelta nada.
+         */
+        private fun desdeRechazoDelBanco(venueId: String, attemptId: String, requestId: String, intento: TerminalAttemptResultDto?): LiberacionDelServidor? =
+            intento?.takeIf {
+                it.attemptId == attemptId && it.processorEvidence == "DECLINED" &&
+                    !acreditaDinero(it) && !hayEvidenciaSinDueno(it) && !hayContradiccion(it)
+            }?.let { LiberacionDelServidor(venueId, attemptId, requestId, RECHAZO_DEL_BANCO) }
 
         /**
          * 🔴 D12 («ninguna duda de cobro sin salida», hallazgo #3 de Codex TPV r1), PASO 1 de la consulta por SOLICITUD: ¿puede la
@@ -268,27 +333,46 @@ data class LiberacionDelServidor(
             val solicitud = respuesta.request ?: return null
             if (textoDe(solicitud, "requestId") != requestId) return null
             if (solicitud.get("venueId")?.isJsonNull == false && textoDe(solicitud, "venueId") != venueId) return null
-            if (textoDe(solicitud, "outcome") != "NOT_CHARGED" || textoDe(solicitud, "outcomeEvidence") != "OPERATOR_RECONCILED") return null
-            return LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED")
+            if (textoDe(solicitud, "outcome") != "NOT_CHARGED") return null
+            // F1 · 05AP (20-nov): también la ventana con la firma de un gerente encima. Lo que sale tiene que ser la liberación de una
+            // PERSONA ([desdeAcuse] la da sólo con su comprobante): el silencio solo nunca cierra por aquí.
+            val evidencia = textoDe(solicitud, "outcomeEvidence")
+                ?.takeIf { it == "OPERATOR_RECONCILED" || it == "NO_EVIDENCE_AFTER_WINDOW" } ?: return null
+            // F1 bloque 7 (I4): un `OPERATOR_RECONCILED` aislado no acredita a nadie: hace falta el comprobante de una PERSONA (lo decide
+            // [desdeAcuse], con su ponytail para el SERVIDOR anterior).
+            return desdeAcuse(venueId, attemptId, requestId, evidencia, respuesta.declarationReceipt, null, null)
+                ?.takeIf { it.evidencia == "OPERATOR_RECONCILED" }
         }
 
-        private fun textoDe(objeto: JsonObject, campo: String): String? =
-            runCatching { objeto.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
+        private fun textoDe(objeto: JsonObject?, campo: String): String? =
+            runCatching { objeto?.get(campo)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
 
         /**
          * El 2xx de la declaración del cajero (`POST …/no-instrument-resolution`): por contrato el servidor sólo contesta 200
          * cuando liberó la solicitud como `OPERATOR_RECONCILED`, así que la liberación se sintetiza de la respuesta misma —
          * pero con el MISMO veto que S6: si el cuerpo acredita dinero del intento, no hay liberación (null).
          */
-        fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String?, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? =
-            if (acreditaDinero(respuesta?.attempt) || hayEvidenciaSinDueno(respuesta?.attempt) || hayContradiccion(respuesta?.attempt)) null
-            // Ronda 20: la declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
-            // Sin clase (un servidor anterior) o con la del cajero, lo de siempre.
-            else LiberacionDelServidor(
-                venueId, attemptId, requestId,
-                evidenciaDeLaDeclaracion(runCatching { respuesta?.attempt?.resolution?.get("kind")?.asString }.getOrNull()) ?: "OPERATOR_RECONCILED",
-                respuesta?.attempt?.resolution?.let(::quienDeclaro),
+        fun desdeDeclaracion(venueId: String, attemptId: String, requestId: String?, respuesta: TerminalAttemptStatusResponse?): LiberacionDelServidor? {
+            // F1 bloque 7 (I4): sin testimonio no hay acuse (antes se sintetizaba `OPERATOR_RECONCILED` de un 2xx sin más). Ronda 20: la
+            // declaración AUTOMÁTICA de la terminal se guarda como liberación por ventana (no la firmó una persona).
+            val testimonio = respuesta?.attempt?.resolution ?: return null
+            return desdeAcuse(
+                venueId, attemptId, requestId, evidenciaDeLaDeclaracion(textoDe(testimonio, "kind")),
+                respuesta.declarationReceipt, testimonio, respuesta.attempt,
             )
+        }
+
+        /**
+         * 🔴 F1 (Codex código r1 #2 y #3): quién declaró, en el acuse que Avoqado YA guardó — por la sesión (`SESSION`) o con el PIN de
+         * un gerente (`SUPERVISOR_PIN`) —, o null. El SERVIDOR de F1 ya no acepta una declaración nueva por la sesión (pide el PIN del
+         * gerente), así que un `SESSION` sólo puede ser una declaración VIEJA que Avoqado aceptó con las reglas de entonces, y es la
+         * única que va a volver a contestar (replay). Rechazarla no protege nada y deja la cuenta sin salida. Lo automático
+         * (`AUTOMATIC`) o un acuse sin `by` no cuentan. Que sea de ESTE intento y de esta declaración lo comprueba quien llama.
+         */
+        private val DECLARACIONES_DE_UNA_PERSONA = setOf("UNCHARGED_VERIFIED", "NO_INSTRUMENT_PRESENTED")
+
+        fun quienDeclaroElAcuse(declaracion: JsonObject?): String? =
+            declaracion?.takeIf { textoDe(it, "by") == "SUPERVISOR_PIN" || textoDe(it, "by") == "SESSION" }?.let { quienDeclaro(it) }
 
         /** D22: el `staffId` del testimonio publicado (el servidor lo toma de la sesión, nunca del cuerpo). */
         private fun quienDeclaro(declaracion: JsonObject): String? = textoDe(declaracion, "staffId")?.takeIf { it.isNotBlank() }

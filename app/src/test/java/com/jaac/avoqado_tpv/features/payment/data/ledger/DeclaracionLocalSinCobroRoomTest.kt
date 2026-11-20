@@ -138,11 +138,11 @@ class DeclaracionLocalSinCobroRoomTest {
         // pero la permisividad quedaba latente para un llamador futuro sobre una ejecución viva.
         fila(attemptId = "en-vuelo", state = PaymentAttemptEntity.STATE_AUTORIZANDO)
         val antes = dao.getById("en-vuelo")
-        assertThat(dao.declararSinCobroLocal("en-vuelo", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(0)
+        assertThat(dao.declararSinCobroLocal("en-vuelo", venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(0)
         assertWithMessage("la fila queda intacta").that(dao.getById("en-vuelo")).isEqualTo(antes)
 
         fila(attemptId = "duda")   // INDETERMINADO y todo lo demás igual: se declara como hoy
-        assertThat(dao.declararSinCobroLocal("duda", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(1)
+        assertThat(dao.declararSinCobroLocal("duda", venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(1)
         assertThat(dao.getById("duda")!!.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
         assertThat(dao.getById("duda")!!.lastError).isEqualTo("declarado_sin_cobro:Ana")
     }
@@ -176,7 +176,7 @@ class DeclaracionLocalSinCobroRoomTest {
     @Test fun `r7 P2-5 - una declaracion sin red NO se poda a los 7 dias si el servidor no la vigilo despues`() = runTest {
         val dia = 24L * 3_600_000
         fila()   // consultada al servidor ANTES de declarar, como exige el candado 5
-        assertThat(dao.declararSinCobroLocal("a1", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(1)
+        assertThat(dao.declararSinCobroLocal("a1", venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(1)
 
         // Ocho días después, sin ninguna consulta posterior (la terminal siguió sin red): la declaración se queda.
         assertThat(dao.pruneTerminalOlderThan(venue, now + 8 * dia)).isEqualTo(0)
@@ -216,7 +216,7 @@ class DeclaracionLocalSinCobroRoomTest {
             fila(attemptId = id, serverCheckedAt = null, serverAnsweredAt = null)
             recuperacionQueRecibe(http(codigo)).recover(venue, now)
             assertThat(dao.getById(id)!!.serverCheckedAt).isEqualTo(now)
-            assertThat(dao.declararSinCobroLocal(id, venue, "declarado_sin_cobro:Ana", now)).isEqualTo(0)
+            assertThat(dao.declararSinCobroLocal(id, venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(0)
         }
     }
 
@@ -244,7 +244,7 @@ class DeclaracionLocalSinCobroRoomTest {
     /** Una declaración sin red de hace ocho días, sin vigilancia posterior: la poda la soltaría en cuanto el servidor CONTESTE. */
     private suspend fun declaracionDeHaceOchoDias(attemptId: String = "a1") {
         fila(attemptId = attemptId)
-        assertThat(dao.declararSinCobroLocal(attemptId, venue, "declarado_sin_cobro:Ana", now)).isEqualTo(1)
+        assertThat(dao.declararSinCobroLocal(attemptId, venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(1)
     }
 
     @Test fun `r9 P1-3 - la poda intercalada ANTES de guardar el veto de la respuesta no borra la declaracion (worker y sondeo)`() = runTest {
@@ -293,7 +293,7 @@ class DeclaracionLocalSinCobroRoomTest {
     @Test fun `r8 P2-4 - un 503 del dia ocho NO cuenta como vigilancia - la declaracion sin red no se poda`() = runTest {
         val dia = 24L * 3_600_000
         fila()
-        assertThat(dao.declararSinCobroLocal("a1", venue, "declarado_sin_cobro:Ana", now)).isEqualTo(1)
+        assertThat(dao.declararSinCobroLocal("a1", venue, "declarado_sin_cobro:Ana", now, "otro-proceso")).isEqualTo(1)
 
         // Día ocho: la recuperación vuelve a preguntar por la declaración y el servidor contesta 503.
         recuperacionQueRecibe(http(503)).recover(venue, now + 8 * dia)

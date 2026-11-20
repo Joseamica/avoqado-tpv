@@ -72,7 +72,10 @@ class AvisoDeCobrosPendientesTest {
         val texto = AvisoDeCobrosPendientes.textoPorRevisar(listOf(obligacion(1000, 3 * 60 * 60_000L)), ahora)!!
         assertThat(texto).contains("$10.00")
         assertThat(texto).contains("hace 3 h")
-        assertThat(texto).contains("«No se cobró»")
+        // F1 (tarea 4): lo revisa el gerente, con su PIN, en «Revisar».
+        assertThat(texto).contains("«Revisar»")
+        assertThat(texto).contains("gerente")
+        assertThat(texto).doesNotContain("«No se cobró»")
         assertThat(texto).contains("no lo vuelvas a cobrar")
         // Un Pago rápido de la PAX no llega a Avoqado: decir que «Avoqado lo concilia» sería una pantalla que miente.
         assertThat(texto).doesNotContain("Avoqado")
@@ -171,7 +174,7 @@ class AvisoDeCobrosPendientesTest {
             apartaLaVenta = "\$120.00, hace 3 min", apartaElAparato = "\$50.00, hace 1 h",
         )
 
-        assertThat(texto).contains("Esta venta ya tiene un cobro sin confirmar (\$120.00, hace 3 min)")
+        assertThat(texto).contains("Esta cuenta tiene un cobro con tarjeta por confirmar (\$120.00, hace 3 min)")
         assertThat(texto).doesNotContain("\$50.00")
     }
 

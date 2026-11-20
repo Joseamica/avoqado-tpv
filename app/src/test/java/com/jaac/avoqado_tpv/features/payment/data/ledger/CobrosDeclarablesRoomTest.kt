@@ -65,7 +65,8 @@ class CobrosDeclarablesRoomTest {
         dao.insert(duda("a-local").copy(serverAnsweredAt = 77L))
 
         assertThat(declarables()).containsExactly(
-            CobroDeclarable(attemptId = "a-local", requestId = null, totalCentavos = 12_000, desdeMillis = ahora - 60_000, serverAnsweredAt = 77L),
+            CobroDeclarable(attemptId = "a-local", requestId = null, totalCentavos = 12_000, desdeMillis = ahora - 60_000, serverAnsweredAt = 77L,
+                estado = "INDETERMINADO"),
         )
     }
 
@@ -96,19 +97,24 @@ class CobrosDeclarablesRoomTest {
         bandeja.insert(enBandeja("en-medio", haceMs = 200_000))
         dao.insert(duda("nueva", haceMs = 100_000))
 
-        assertThat(declarables().map { it.identidad }).containsExactly("nueva", "en-medio", "vieja").inOrder()
+        assertThat(declarables().map { it.clave }).containsExactly("nueva", "en-medio", "vieja").inOrder()
     }
 
     // ── Lo que no entra: cada una, por separado ───────────────────────────────────────────────────────────────────────
 
-    @Test fun `no entra lo que puede estar corriendo o ya tiene respuesta del banco`() = runTest {
+    // F1 bloque 5 (I5): lo que cuenta Caja se VE en «Por revisar» (sólo para consultar o para su dueño); lo cerrado no.
+    @Test fun `lo que puede estar corriendo o ya tiene respuesta del banco se ve, pero no se declara`() = runTest {
         val estados = listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "HOST_RESPONDIO", "AUTORIZADO", "REGISTRO_FALLIDO", "ENTREGADA_A_COLA", "REGISTRADO", "CERRADA", "DESCARTADA")
         estados.forEach { dao.insert(duda("a-$it").copy(state = it)) }
 
-        assertThat(declarables()).isEmpty()
+        val renglones = declarables()
+        assertThat(renglones.map { it.attemptId }).containsExactly("a-PREPARANDO", "a-KERNEL_ACTIVO", "a-AUTORIZANDO", "a-HOST_RESPONDIO",
+            "a-AUTORIZADO", "a-REGISTRO_FALLIDO", "a-ENTREGADA_A_COLA")
+        assertThat(renglones.none { it.declarable }).isTrue()
     }
 
-    @Test fun `no entra lo que trae evidencia de dinero o una contradiccion`() = runTest {
+    // F1 (tarea 4): reemplaza «no entra»: una fila con dinero o contradicción queda en la lista para CONSULTARLA, sin poder declararse.
+    @Test fun `F1 lo que trae evidencia de dinero o una contradiccion entra sólo para consulta`() = runTest {
         val conDinero = mapOf<String, (PaymentAttemptEntity) -> PaymentAttemptEntity>(
             "host aprobado" to { it.copy(hostApproved = true) },
             "banco aprobado" to { it.copy(serverProcessorEvidence = "APPROVED") },
@@ -121,33 +127,48 @@ class CobrosDeclarablesRoomTest {
         for ((nombre, marca) in conDinero) {
             db.clearAllTables()
             dao.insert(marca(duda("a")))
-            assertWithMessage(nombre).that(declarables()).isEmpty()
+            assertWithMessage(nombre).that(declarables().map { it.attemptId to it.declarable }).containsExactly("a" to false)
         }
+        db.clearAllTables()
+        dao.insert(duda("limpia"))
+        assertWithMessage("una duda limpia sí se declara").that(declarables().single().declarable).isTrue()
     }
 
-    @Test fun `no entra una devolucion, una fila heredada ni otro negocio`() = runTest {
+    // F1 bloque 5: la devolución y la heredada las cuenta Caja: se ven (su dueño las resuelve), sin declaración. Otro negocio, no.
+    @Test fun `una devolucion y una heredada se ven sin declaracion, otro negocio no entra`() = runTest {
         dao.insert(duda("devolucion").copy(kind = PaymentAttemptEntity.KIND_REFUND))
         dao.insert(duda("heredada").copy(legacyShadow = true))
         dao.insert(duda("ajena").copy(venueId = "otro"))
         bandeja.insert(enBandeja("r-ajena", venueId = "otro"))
 
-        assertThat(declarables()).isEmpty()
+        val renglones = declarables()
+        assertThat(renglones.map { it.attemptId }).containsExactly("devolucion", "heredada")
+        assertThat(renglones.none { it.declarable }).isTrue()
+        assertThat(renglones.single { it.attemptId == "devolucion" }.tipo).isEqualTo(PaymentAttemptEntity.KIND_REFUND)
     }
 
-    @Test fun `una bandeja con CUALQUIER intento no entra por su rama - eso lo resuelve la libreta`() = runTest {
+    @Test fun `una bandeja con un intento que responde por ella no entra por su rama - con uno descartado sin dinero sale sólo para consultar`() = runTest {
         // PREPARANDO y KERNEL_ACTIVO cuentan en el aviso como «sin intento», pero el lector puede estar corriendo.
-        for (estado in listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "DESCARTADA", "REGISTRADO")) {
+        for (estado in listOf("PREPARANDO", "KERNEL_ACTIVO", "AUTORIZANDO", "REGISTRADO")) {
             db.clearAllTables()
             bandeja.insert(enBandeja("r-1"))
             dao.insert(duda("a-1", "r-1").copy(state = estado))
-            assertWithMessage(estado).that(declarables()).isEmpty()
+            assertWithMessage(estado).that(declarables().filter { it.clase == CobroDeclarable.CLASE_SOLICITUD }).isEmpty()
         }
+        // Codex final r1 #8: el intento DESCARTADO sin dinero ya no responde por ella y Caja la cuenta: se ve, pero no se firma (D8).
+        db.clearAllTables()
+        bandeja.insert(enBandeja("r-1"))
+        dao.insert(duda("a-1", "r-1").copy(state = "DESCARTADA"))
+        val solicitudes = declarables().filter { it.clase == CobroDeclarable.CLASE_SOLICITUD }
+        assertThat(solicitudes.map { it.requestId }).containsExactly("r-1")
+        assertThat(solicitudes.single().declarable).isFalse()
     }
 
-    @Test fun `una bandeja con efectivo arrancado no entra - ese cobro es de la cola`() = runTest {
+    @Test fun `una bandeja con efectivo arrancado se ve sin declaracion - la cuenta Caja hasta que su pago llega a la cola`() = runTest {
         bandeja.insert(enBandeja("r-efectivo", efectivo = true))
 
-        assertThat(declarables()).isEmpty()
+        // Codex final r1 #8: la misma regla de Caja (antes no entraba): se ve y se consulta, nunca se firma «no se cobró».
+        assertThat(declarables().map { it.requestId to it.declarable }).containsExactly("r-efectivo" to false)
     }
 
     @Test fun `una bandeja ya resuelta tampoco`() = runTest {
@@ -157,7 +178,8 @@ class CobrosDeclarablesRoomTest {
         assertThat(declarables()).isEmpty()
     }
 
-    @Test fun `una solicitud con otro intento con dinero o corriendo no entra - la declaracion es de toda la solicitud`() = runTest {
+    // F1 (Codex código r2 #4): «no entra» = no se puede DECLARAR; la fila se ve igual, sólo para consultar (el cierre la cuenta).
+    @Test fun `una solicitud con otro intento con dinero o corriendo no se declara - la declaracion es de toda la solicitud`() = runTest {
         val hermanos = mapOf<String, (PaymentAttemptEntity) -> PaymentAttemptEntity>(
             "host respondio" to { it.copy(state = "HOST_RESPONDIO", hostApproved = true) },
             "lector corriendo" to { it.copy(state = "KERNEL_ACTIVO") },
@@ -170,7 +192,9 @@ class CobrosDeclarablesRoomTest {
             db.clearAllTables()
             dao.insert(duda("limpio", "r-1"))
             dao.insert(marca(duda("hermano", "r-1")))
-            assertWithMessage(nombre).that(declarables()).isEmpty()
+            // F1 (tarea 4): la solicitud no se ofrece para declarar; un hermano EN DUDA con dinero sale sólo para consulta.
+            assertWithMessage(nombre).that(declarables().filter { it.declarable }).isEmpty()
+            assertWithMessage(nombre).that(declarables().single { it.attemptId == "limpio" }.declarable).isFalse()
         }
     }
 
@@ -181,17 +205,18 @@ class CobrosDeclarablesRoomTest {
         assertThat(declarables().map { it.attemptId }).containsExactly("limpio")
     }
 
-    @Test fun `la cuarentena por reloj de ESTE proceso no entra - nadie comprobo que el lector terminara`() = runTest {
+    @Test fun `la cuarentena por reloj de ESTE proceso no se declara - nadie comprobo que el lector terminara`() = runTest {
         assertThat(ledger.openAttempt("viva", venue, "ANGELPAY", 100, 0, "FAST", "{}")).isTrue()
         assertThat(ledger.markAuthorizing("viva")).isTrue()
         assertThat(dao.quarantineStaleAuthorizing(venue, Long.MAX_VALUE, ahora)).isEqualTo(1)
         assertThat(dao.getById("viva")!!.lastError).isEqualTo(PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD)
 
-        assertThat(declarables()).isEmpty()
+        // Codex código r2 #4: se ve (el cierre de caja la cuenta), pero sólo para consultar.
+        assertThat(declarables().single().declarable).isFalse()
 
         // El proceso murió: su llamada nativa murió con él y ya se puede declarar.
         val procesoNuevo = PaymentAttemptLedger(dao, mockk(relaxed = true))
-        assertThat(procesoNuevo.observarCobrosDeclarables(venue).first().map { it.attemptId }).containsExactly("viva")
+        assertThat(procesoNuevo.observarCobrosDeclarables(venue).first().single { it.attemptId == "viva" }.declarable).isTrue()
     }
 
     // ── La ventana y «una por solicitud» ──────────────────────────────────────────────────────────────────────────────
@@ -205,7 +230,7 @@ class CobrosDeclarablesRoomTest {
     }
 
     /** D20: pasados los 10 min el aviso se va, pero la duda sigue: «Por revisar» (Pagos) la conserva hasta que se declare. */
-    @Test fun `D20 por revisar no tiene ventana - lo de hace horas sigue a la vista, uno por solicitud`() = runTest {
+    @Test fun `D20 por revisar no tiene ventana - lo de hace horas sigue a la vista, uno por intento`() = runTest {
         dao.insert(duda("viejo", haceMs = 3 * 60 * 60_000L))
         dao.insert(duda("primero", "r-1", haceMs = 2 * 60 * 60_000L))
         dao.insert(duda("segundo", "r-1", haceMs = 60 * 60_000L))
@@ -213,7 +238,8 @@ class CobrosDeclarablesRoomTest {
         val todos = declarables()
 
         assertThat(DeclaracionDesdeElAviso.vigentes(todos, ahora)).isEmpty()
-        assertThat(DeclaracionDesdeElAviso.porRevisar(todos).map { it.attemptId }).containsExactly("segundo", "viejo").inOrder()
+        // F1 bloque 5: un renglón por INTENTO, aunque dos sean de la misma solicitud.
+        assertThat(DeclaracionDesdeElAviso.porRevisar(todos).map { it.attemptId }).containsExactly("segundo", "primero", "viejo").inOrder()
     }
 
     /** Codex r1 #1: la consulta trae los 50 más recientes; con 51, el más viejo no sale y el recuadro tiene que decirlo. */
@@ -233,7 +259,7 @@ class CobrosDeclarablesRoomTest {
         assertThat(DeclaracionDesdeElAviso.recortada(ampliada, 2 * DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA)).isFalse()
     }
 
-    @Test fun `una por solicitud - dos intentos limpios de la misma salen como uno, el mas reciente`() = runTest {
+    @Test fun `F1 bloque 5 - dos intentos de la misma solicitud son dos renglones`() = runTest {
         dao.insert(duda("primero", "r-1", haceMs = 200_000))
         dao.insert(duda("segundo", "r-1", haceMs = 100_000))
         dao.insert(duda("otro", "r-2", haceMs = 300_000))
@@ -242,7 +268,7 @@ class CobrosDeclarablesRoomTest {
 
         val vigentes = DeclaracionDesdeElAviso.vigentes(declarables(), ahora)
 
-        assertThat(vigentes.map { it.attemptId }).containsExactly("segundo", "otro", "local-1", "local-2").inOrder()
+        assertThat(vigentes.map { it.attemptId }).containsExactly("segundo", "primero", "otro", "local-1", "local-2").inOrder()
     }
 
     @Test fun `todo lo declarable sale en el aviso - nunca se ofrece declarar algo que el aviso no nombra`() = runTest {
@@ -252,6 +278,15 @@ class CobrosDeclarablesRoomTest {
 
         assertThat(declarables().map { it.totalCentavos to it.desdeMillis })
             .containsExactlyElementsIn(bandeja.observePendingObligations(venue).first().map { it.totalCentavos to it.desdeMillis })
+    }
+
+    @Test fun `F1 el renglon del gerente dice importe, hora del negocio y referencia corta`() {
+        val zona = java.time.ZoneOffset.ofHours(-6)
+        val alas1432 = java.time.ZonedDateTime.of(2026, 11, 17, 14, 32, 0, 0, zona).toInstant().toEpochMilli()
+        val cobro = CobroDeclarable("6f1c2a9e-77b3-4d1e-9a2f-03c4d5e6a1b2", null, 12_000, alas1432, null)
+        assertThat(cobro.referenciaCorta).isEqualTo("E6A1B2")
+        assertThat(AvisoDeCobrosPendientes.renglonParaElGerente(cobro.totalCentavos, cobro.desdeMillis, cobro.referenciaCorta, zona))
+            .isEqualTo("$120.00 · 14:32 · ref E6A1B2")
     }
 
     @Test fun `el renglon de la lista dice el importe y la antiguedad`() {

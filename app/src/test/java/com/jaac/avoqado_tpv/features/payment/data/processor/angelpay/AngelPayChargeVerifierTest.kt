@@ -65,7 +65,7 @@ class AngelPayChargeVerifierTest {
             listOf(transaccion(integratorReference = "otro-intento", authorization = "999999"))
         )
 
-        assertThat(verificar(intentos = 1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -77,26 +77,40 @@ class AngelPayChargeVerifierTest {
             listOf(transaccion(integratorReference = "intento-1", authorization = ""))
         )
 
-        assertThat(verificar(intentos = 1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
-    fun `consulta el dia de hoy y el anterior, acotada a esta terminal`() = runTest {
+    fun `consulta el dia del cobro, el anterior y el siguiente, acotada a esta terminal`() = runTest {
         val query = slot<TransactionHistoryQuery>()
         coEvery { adapter.getTransactionHistory(capture(query)) } returns Result.success(emptyList())
 
         verificar(intentos = 1)
 
-        // Ayer tambien: un cobro de las 23:59 que se verifica pasada la medianoche
-        // desapareceria de una consulta de un solo dia.
+        // El día anterior también: un reloj del aparato adelantado (la Nexgo con Android 9 corre +1 h de abril a octubre) pone el
+        // cobro en el día siguiente. Y el día SIGUIENTE (Codex final r6 #3): un intento abierto a las 23:59:55 que AngelPay registra a
+        // las 00:00:05 desaparecía de [ese día − 1, ese día]: cargo aprobado con cero Payment.
         assertThat(query.captured.startDate).isEqualTo("2026-09-07")
-        assertThat(query.captured.endDate).isEqualTo("2026-09-08")
+        assertThat(query.captured.endDate).isEqualTo("2026-09-09")
         assertThat(query.captured.terminal).isEqualTo("N860W173400")
         // 🔴 `reference` va en null a proposito: ese campo filtra por la referencia de
         // AngelPay, no por la nuestra. Mandarle el attemptId devuelve SIEMPRE vacio, y
         // vacio se leeria como "no se cobro".
         assertThat(query.captured.reference).isNull()
         assertThat(query.captured.integratorReference).isEqualTo("intento-1")
+    }
+
+    @Test
+    fun `la consulta nunca pasa de hoy en la zona del negocio`() = runTest {
+        val query = slot<TransactionHistoryQuery>()
+        coEvery { adapter.getTransactionHistory(capture(query)) } returns Result.success(emptyList())
+        val hoy = java.time.LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)
+
+        // La pantalla (K19a) pregunta por el cobro de hoy: la consulta queda como antes, [ayer, hoy].
+        verifier.verificar("intento-1", "N860W173400", intentos = 1, esperaEntreIntentosMs = 0, affiliation = "merchant-1")
+
+        assertThat(query.captured.startDate).isEqualTo(hoy.minusDays(1).toString())
+        assertThat(query.captured.endDate).isEqualTo(hoy.toString())
     }
 
     @Test
@@ -128,7 +142,7 @@ class AngelPayChargeVerifierTest {
     fun `historial vacio tras agotar intentos sigue incierto`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(emptyList())
 
-        assertThat(verificar(intentos = 2)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(intentos = 2)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
@@ -145,7 +159,31 @@ class AngelPayChargeVerifierTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
             listOf(transaccion("intento-1", "123456").copy(status = "DECLINED"))
         )
-        assertThat(verificar(1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        // Codex plan A #2: no confirma cobro, pero tampoco es «no aparece»: la venta está en el procesador sin aprobar.
+        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.EnElProcesador("DECLINED"))
+    }
+
+    /**
+     * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): sin respuesta del banco la venta sale `rejected` / «05AP DECLINADA» y puede volverse
+     * aprobada. El historial del SDK 1.0.23 no trae código ni descripción: no se distingue de un rechazo definitivo, y ninguno de los dos
+     * es «no aparece». Si después sale aprobada, gana el aprobado.
+     */
+    @Test
+    fun `P1 la venta en 05AP es EnElProcesador, nunca NoCobrado, y si se aprueba gana el aprobado`() = runTest {
+        val enDuda = transaccion("intento-1", "").copy(status = "rejected")
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(enDuda))
+        assertThat(verificar(2)).isEqualTo(VerificacionDelCobro.EnElProcesador("rejected"))
+
+        coEvery { adapter.getTransactionHistory(any()) } returnsMany listOf(
+            Result.success(listOf(enDuda)), Result.success(listOf(transaccion("intento-1", "251259"))),
+        )
+        assertThat(verificar(2)).isInstanceOf(VerificacionDelCobro.Cobrado::class.java)
+
+        // Visto en el procesador y luego un fallo de red: lo visto no se pierde.
+        coEvery { adapter.getTransactionHistory(any()) } returnsMany listOf(
+            Result.success(listOf(enDuda)), Result.failure(RuntimeException("sin red")),
+        )
+        assertThat(verificar(2)).isEqualTo(VerificacionDelCobro.EnElProcesador("rejected"))
     }
 
     @Test
@@ -153,27 +191,27 @@ class AngelPayChargeVerifierTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
             listOf(transaccion("intento-1", "123456").copy(terminal = "OTHER"))
         )
-        assertThat(verificar(1)).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
     fun `matching attempt from wrong affiliation cannot confirm approval`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(transaccion("intento-1", "123456").copy(affiliation = "other")))
         val result = verifier.verificar("intento-1", "N860W173400", intentos = 1, esperaEntreIntentosMs = 0, affiliation = "expected")
-        assertThat(result).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(result).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     @Test
     fun `unknown affiliation cannot confirm approval from another account`() = runTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(transaccion("intento-1", "123456").copy(affiliation = "other")))
         assertThat(verifier.verificar("intento-1", "N860W173400", intentos = 1, esperaEntreIntentosMs = 0))
-            .isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+            .isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     private suspend fun verificar(intentos: Int = 2) = verifier.verificar(
         attemptId = "intento-1",
         terminalSerial = "N860W173400",
-        hoy = java.time.LocalDate.of(2026, 9, 8),
+        fechaDelCobro = java.time.LocalDate.of(2026, 9, 8),
         intentos = intentos,
         esperaEntreIntentosMs = 0L,
         affiliation = "merchant-1",
@@ -220,7 +258,7 @@ class AngelPayChargeVerifierTest {
         val r = verifier.verificar(
             attemptId = "intento-ok",
             terminalSerial = serialParaAngelPay("AVQD-N860W173400"),
-            hoy = java.time.LocalDate.of(2026, 9, 8),
+            fechaDelCobro = java.time.LocalDate.of(2026, 9, 8),
             intentos = 1,
             esperaEntreIntentosMs = 0L,
             affiliation = "merchant-1",
@@ -238,13 +276,13 @@ class AngelPayChargeVerifierTest {
         val r = verifier.verificar(
             attemptId = "intento-ok",
             terminalSerial = "AVQD-N860W173400",
-            hoy = java.time.LocalDate.of(2026, 9, 8),
+            fechaDelCobro = java.time.LocalDate.of(2026, 9, 8),
             intentos = 1,
             esperaEntreIntentosMs = 0L,
             affiliation = "merchant-1",
         )
 
-        assertThat(r).isInstanceOf(VerificacionDelCobro.NoSePudoVerificar::class.java)
+        assertThat(r).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
     }
 
     private fun transaccion(

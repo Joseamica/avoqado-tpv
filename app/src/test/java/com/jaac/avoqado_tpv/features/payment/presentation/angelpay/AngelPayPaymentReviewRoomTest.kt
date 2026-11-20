@@ -1030,10 +1030,13 @@ class AngelPayPaymentReviewRoomTest {
             val restoredHandle = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
             vm = createViewModel(restoredHandle, recovery, api).also { it.msMostrarLiberada = 60_000 }   // la liberación se queda visible
             vm!!.onAngelPayResult(android.app.Activity.RESULT_CANCELED, null)   // callback vacío: adopta att-r3 ⇒ incierto ⇒ espera al servidor
-            // 1) El sondeo inmediato aplica la LIBERACIÓN: «se puede volver a cobrar».
-            kotlinx.coroutines.withTimeout(15_000) {
-                vm!!.state.first { it is AngelPayPaymentState.Error && it.message.contains("volver a cobrar") }
-            }
+            // 1) El sondeo inmediato aplica la LIBERACIÓN. 🔴 Codex final r2 #3: la lectura del historial de AngelPay de la pantalla
+            // falló (`NoSePudoVerificar`) y sigue despachada — frena la tarjeta —, así que ya no se dice «se puede volver a cobrar»:
+            // queda la duda con «Historial de AngelPay pendiente» (antes esta prueba esperaba el texto que invitaba a cobrar).
+            val liberada = kotlinx.coroutines.withTimeout(15_000) {
+                vm!!.state.first { it is AngelPayPaymentState.ResultadoIncierto && it.historialPendiente }
+            } as AngelPayPaymentState.ResultadoIncierto
+            assertThat(liberada.message).doesNotContain("volver a cobrar")
             assertThat(db.paymentAttemptDao().getById("att-r3")!!.state).isEqualTo("DESCARTADA")
             // 2) El cajero declara; el 2xx trae APPROVED sin Payment ⇒ contradicción en pantalla y evidencia DURABLE en la fila.
             vm!!.declararSinTarjeta()

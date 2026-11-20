@@ -152,21 +152,33 @@ class LiberacionSolaRoomTest {
         assertThat(dao.getById("h2")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
     }
 
-    // Founder, 25-sep («ninguna duda apaga la terminal»): el huérfano de un proceso muerto SIN dinero conocido ya no cerca ni su
-    // venta — se avisa, y la misma cuenta se puede volver a cobrar (el aviso la nombra). La duda sigue guardada.
-    @Test fun `con orden, el huerfano sin dinero ya no cerca su venta - se avisa y la misma cuenta entra`() = runTest {
+    // F1 (17-nov, reemplaza la regla del 25-sep): el huérfano de un proceso muerto no aparta el aparato, pero su duda frena otra
+    // TARJETA de su misma cuenta hasta que el gerente la revise. Otra cuenta entra. La duda sigue guardada.
+    @Test fun `con orden, el huerfano sin dinero frena la tarjeta de SU cuenta - otra cuenta entra`() = runTest {
         filaDeOtroProceso("o", PaymentAttemptEntity.STATE_AUTORIZANDO, orderId = "venta-1")
-        assertWithMessage("antes: lo que dejó un proceso muerto ya no aparta el aparato (founder, 25-sep)").that(ledger.retencionDelAparato()).isNull()
+        assertWithMessage("lo que dejó un proceso muerto no aparta el aparato (founder, 25-sep)").that(ledger.retencionDelAparato()).isNull()
 
         ledger.cuarentenaDeHuerfanos(now)
 
-        assertWithMessage("la MISMA venta entra: la duda no es dinero").that(otroCobroEntra("misma", orderId = "venta-1")).isTrue()
-        // Codex r19 (P3-1): un sabotaje que borrara la duda también dejaría entrar la venta; esto lo caza.
+        assertWithMessage("la MISMA cuenta no entra con tarjeta").that(otroCobroEntra("misma", orderId = "venta-1")).isFalse()
         assertWithMessage("y la duda sigue guardada para el aviso").that(dao.getById("o")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
-        // La reserva de «misma» (PREPARANDO de este mismo token) aparta el aparato: se descarta, y otra venta entra.
-        assertWithMessage("precondición: la reserva de «misma» se descarta")
-            .that(ledger.markDiscardedBeforeCharge("misma", "fin de la prueba")).isTrue()
-        assertWithMessage("otra venta ya entra").that(otroCobroEntra("otra", orderId = "venta-2")).isTrue()
+        assertWithMessage("otra cuenta entra").that(otroCobroEntra("otra", orderId = "venta-2")).isTrue()
+    }
+
+    // F1 (17-nov, plan mínimo tarea 2): en una cuenta (folio) el silencio no resuelve la duda. La liberación sola sigue para el Pago
+    // rápido; la duda de un folio se queda para el gerente, sin pedirle nada al servidor.
+    @Test fun `F1 la duda LOCAL de un folio no se libera sola - se queda en duda sin POST`() = runTest {
+        filaDeOtroProceso("l", PaymentAttemptEntity.STATE_INDETERMINADO, orderId = "venta-1", lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso("l")
+        val api = api(declaracionSola())
+        val recuperacion = LedgerServerRecovery(dao, ledger, api)
+
+        assertThat(recuperacion.liberarSinRastroDelBanco(venue, "l", now)).isEqualTo(LedgerServerRecovery.SinRastro.NO_ELEGIBLE)
+        recuperacion.recover(venue, now)
+
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+        assertThat(dao.getById("l")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertWithMessage("la tarjeta de esa cuenta sigue esperando").that(otroCobroEntra("misma", orderId = "venta-1")).isFalse()
     }
 
     // Founder, 25-sep: la duda sin orden de un proceso muerto se AVISA; el aparato sigue cobrando y la recuperación la cierra.
@@ -498,7 +510,7 @@ class LiberacionSolaRoomTest {
                 // hasta el tope de la consulta, y la prueba acabaría en SIN_RESPUESTA por el motivo equivocado.)
                 val cerradas = kotlinx.coroutines.runBlocking {
                     dao.cerrarPorLiberacionLocalDelServidor(
-                        "c", venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "OPERATOR_RECONCILED", now,
+                        "c", venue, PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT, PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "OPERATOR_RECONCILED", now, "otro-proceso",
                     )
                 }
                 check(cerradas == 1) { "la liberación vieja no se aplicó" }
@@ -557,7 +569,8 @@ class LiberacionSolaRoomTest {
         assertWithMessage("sale en el aviso de Inicio como contradicción").that(aviso.count { it.contradiccion == 1 }).isEqualTo(1)
     }
 
-    @Test fun `r21 P1-2 · un 409 POSITIVE_EVIDENCE_EXISTS veta DESDE que llega aunque la consulta siguiente falle — el cierre sin red ya no pasa`() = runTest {
+    // F1 bloque 7 (I4): el 409 es GENÉRICO: veta desde que llega como IMPEDIMENTO, sin inventar dinero de este intento.
+    @Test fun `409_en_liberacion_automatica_no_inventa_dinero`() = runTest {
         filaDeOtroProceso("e", PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
         yaEsperoElAviso("e")
         // 🔴 Codex r22 (P3): la fila tiene que ser DECLARABLE antes (el servidor ya contestó limpio alguna vez), o «el cierre sin
@@ -572,7 +585,8 @@ class LiberacionSolaRoomTest {
         val r = LedgerServerRecovery(dao, ledger, api).liberarSinRastroDelBanco(venue, "e", now)
 
         assertThat(r).isEqualTo(LedgerServerRecovery.SinRastro.CON_EVIDENCIA)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertWithMessage("sin dinero inventado").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
+        assertThat(dao.getById("e")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
         assertWithMessage("el cierre sin red del gerente ya no pasa").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
@@ -599,29 +613,51 @@ class LiberacionSolaRoomTest {
         )
     }
 
+    /**
+     * F1 bloque 7 (I4): desde que el `409` se guarda como IMPEDIMENTO (`server_veto`) y no como aprobación, «la marca del 409 rota» es
+     * la escritura de `server_veto`. Disparador propio: el de la evidencia (`marca_rota`) lo siguen usando las pruebas «final».
+     */
+    private suspend fun dudaDeclarableConImpedimentoRoto(id: String) {
+        filaDeOtroProceso(id, PaymentAttemptEntity.STATE_INDETERMINADO, lastError = PaymentAttemptEntity.LAST_ERROR_PROCESO_TERMINADO)
+        yaEsperoElAviso(id)
+        dao.estamparRespuestaDelServidor(id, now - 60_000)
+        gemelaSinMarcaSeDeclara(id)
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER impedimento_roto BEFORE UPDATE OF server_veto ON payment_attempts BEGIN SELECT RAISE(ABORT, 'escritura rota'); END",
+        )
+    }
+
     private fun api409SinConsulta() = mockk<TerminalAttemptApiService> {
         coEvery { resolveNoInstrument(any(), any(), any()) } returns error(409, "POSITIVE_EVIDENCE_EXISTS")
         coEvery { getAttemptStatus(any(), any()) } throws java.io.IOException("se cortó la conexión")
     }
 
+    // F1 bloque 7: la MARCA del 409 es el impedimento (`server_veto`); su escritura rota se recuerda en memoria igual que antes la evidencia.
     @Test fun `r22 P1-2 a · si la MARCA del 409 no se puede escribir, el cierre sin red sigue bloqueado`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         assertThat(LedgerServerRecovery(dao, ledger, api409SinConsulta()).liberarSinRastroDelBanco(venue, "e", now)).isEqualTo(LedgerServerRecovery.SinRastro.CON_EVIDENCIA)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isNull()   // la escritura sí falló…
+        assertThat(dao.getById("e")!!.serverVeto).isNull()   // la escritura sí falló…
+        assertWithMessage("…y nunca se inventa la aprobación del banco").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
         assertWithMessage("…pero el cierre sin red sigue bloqueado").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
+    // F1 bloque 7 (I4): antes la pasada siguiente escribía `APPROVED` (el 409 se leía como dinero de este intento). Ahora escribe el
+    // IMPEDIMENTO, que cerca la cuenta y sale en «Por revisar» igual, sin atribuirle un cobro al banco.
     @Test fun `r22 P1-2 c · la marca que no se pudo escribir se escribe en la pasada siguiente, cuando la base se recupera`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         val recuperacion = LedgerServerRecovery(dao, ledger, api409SinConsulta())
         recuperacion.liberarSinRastroDelBanco(venue, "e", now)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER marca_rota")
+        assertThat(ledger.tieneImpedimentoSinGuardar("e")).isTrue()
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER impedimento_roto")
         recuperacion.recover(venue, now + 1_000)
-        assertThat(dao.getById("e")!!.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
+        assertThat(dao.getById("e")!!.serverVeto).isEqualTo(PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR)
+        assertWithMessage("sin dinero inventado").that(dao.getById("e")!!.serverProcessorEvidence).isNull()
+        assertThat(ledger.tieneEvidenciaSinGuardar("e")).isFalse()
+        assertWithMessage("escrito, el impedimento sigue frenando el cierre").that(ledger.declararSinCobroLocal("e", venue, "gerente")).isFalse()
     }
 
     @Test fun `r22 P1-2 d · con la marca sin escribir, la liberacion sola no vuelve a pedir aunque el servidor ahora la aceptara`() = runTest {
-        dudaDeclarableConMarcaRota("e")
+        dudaDeclarableConImpedimentoRoto("e")
         LedgerServerRecovery(dao, ledger, api409SinConsulta()).liberarSinRastroDelBanco(venue, "e", now)
         val aceptaria = api(declaracionSola(id = "e"))
 
@@ -952,16 +988,26 @@ class LiberacionSolaRoomTest {
     // ── 4 · Lo que publica el servidor ─────────────────────────────────────────────────────────
 
     @Test fun `S6 con la declaracion AUTOMATICA se lee como liberacion por ventana · una clase desconocida no libera`() {
-        val conKind = { kind: String ->
+        // F1 (Codex código r2 #8): una declaración de una PERSONA lleva quién la declaró (`by`); la automática, `AUTOMATIC`.
+        val conKind = { kind: String, by: String? ->
             TerminalAttemptStatusResponse(
                 success = true, attemptId = "l",
-                attempt = TerminalAttemptResultDto(attemptId = "l", outcome = "NOT_RECORDED", resolution = JsonObject().apply { addProperty("kind", kind) }),
+                attempt = TerminalAttemptResultDto(attemptId = "l", outcome = "NOT_RECORDED", resolution = JsonObject().apply {
+                    addProperty("kind", kind)
+                    addProperty("staffId", "s1")
+                    if (by != null) addProperty("by", by)
+                }),
             )
         }
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_BANK_TRACE_AFTER_WINDOW"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
-        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("OTRA_COSA"))).isNull()
-        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_BANK_TRACE_AFTER_WINDOW"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
-        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_BANK_TRACE_AFTER_WINDOW", "AUTOMATIC"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED", "SESSION"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("OTRA_COSA", "SESSION"))).isNull()
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_BANK_TRACE_AFTER_WINDOW", "AUTOMATIC"))?.evidencia).isEqualTo("NO_EVIDENCE_AFTER_WINDOW")
+        assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED", "SUPERVISOR_PIN"))?.evidencia).isEqualTo("OPERATOR_RECONCILED")
+        // Codex código r2 #8: «no presentó tarjeta» sin `by` o con `AUTOMATIC` no libera, ni por S6 ni por el POST.
+        for (by in listOf(null, "AUTOMATIC")) {
+            assertThat(LiberacionDelServidor.desdeConsultaS6(venue, "l", conKind("NO_INSTRUMENT_PRESENTED", by))).isNull()
+            assertThat(LiberacionDelServidor.desdeDeclaracion(venue, "l", null, conKind("NO_INSTRUMENT_PRESENTED", by))).isNull()
+        }
     }
 }

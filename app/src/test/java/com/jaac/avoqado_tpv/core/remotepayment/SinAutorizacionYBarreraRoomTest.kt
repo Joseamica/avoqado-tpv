@@ -309,11 +309,13 @@ class SinAutorizacionYBarreraRoomTest {
         assertWithMessage("la cuenta con dinero conocido sigue cercada")
             .that(ledger.openAttempt("repetida", "venue-1", "ANGELPAY", 1_000, 0, "FAST", contexto("repetida", "orden-7"))).isFalse()
 
-        // El candado va DENTRO del UPDATE: un veto que llega entre tomar la fila y escribir tampoco la deja subir.
+        // El candado va DENTRO del UPDATE: una fila con veto no se toma para consultar, y si el aprobado llega igual (F1 bloque 3,
+        // la única puerta del aprobado final) queda ESCRITO pero la fila no sube: Avoqado la concilia.
         val t = System.currentTimeMillis() + 900_000
-        assertThat(dao.claimUnknownRecovery("vetada", "venue-1", t, t + 300_000)).isEqualTo(1)
-        assertThat(dao.completeUnknownRecovery("vetada", "venue-1", t + 300_000, t + 1, "REF", "AUTH")).isEqualTo(0)
+        assertThat(dao.claimUnknownRecovery("vetada", "venue-1", t, t + 300_000)).isEqualTo(0)
+        assertThat(ledger.markHostResponded("vetada", true, null, "REF", "AUTH")).isTrue()
         assertThat(dao.getById("vetada")!!.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
+        assertThat(dao.getById("vetada")!!.hostApproved).isTrue()
     }
 
     // ═══════════════════════════ §3.8: el rechazo de la barrera se cierra con PRE_AUTHORIZATION ═══════════════════════════

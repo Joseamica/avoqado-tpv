@@ -44,15 +44,16 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
     private val secureStorage: SecureStorage,
     private val observability: ObservabilityManager,
     private val approvalRecovery: LedgerApprovalRecovery,
-    private val unknownRecovery: LedgerUnknownRecovery
+    private val unknownRecovery: LedgerUnknownRecovery,
+    /** F1 bloque 6: el token de ESTE proceso, para no poner en duda por reloj un lector que sigue dentro. */
+    private val ledger: PaymentAttemptLedger,
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
         return try {
             // Financial recovery is mandatory even when shadow telemetry is OFF.
             secureStorage.getVenueId()?.let { venueId ->
-                unknownRecovery.recover(venueId, System.currentTimeMillis())
-                approvalRecovery.recover(venueId, System.currentTimeMillis())
+                LedgerSweepLogic.recuperarElDinero(approvalRecovery, unknownRecovery, venueId)
                 // Codex r4–r5 (D3): lo que sigue pendiente (reciente, que envejeció durante la pasada o que no cupo en la página)
                 // se agenda para cuando se pueda tomar, en vez de esperar la reconexión o las 6 h.
                 runCatching {
@@ -67,7 +68,8 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
                 secureStorage = secureStorage,
                 dao = paymentAttemptDao,
                 observability = observability,
-                now = System.currentTimeMillis()
+                now = System.currentTimeMillis(),
+                procesoVivo = ledger.tokenDelProceso(),
             )
             if (result == null) {
                 Timber.d("📒 [LedgerSweep] Skipped (mode OFF or no venue)")
@@ -105,6 +107,33 @@ object LedgerSweepLogic {
     /** CERRADA/DESCARTADA pruned after a week. INDETERMINADO is NEVER pruned (DAO SQL). */
     const val PRUNE_DAYS = 7L
 
+    /**
+     * Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada del trabajador. Android detiene un
+     * `CoroutineWorker` a los 10 min; con la última consulta (4 min de tope) y el registro final, la pasada termina antes.
+     */
+    const val PRESUPUESTO_DE_CONSULTAS_MS = 4 * 60_000L
+
+    /**
+     * El dinero de la libreta en una pasada del trabajador.
+     *
+     * 🔴 F1 · Codex final r8 #7 (C, 20-nov): PRIMERO el dinero que ya está en la mano (registrar los aprobados) y DESPUÉS las consultas al
+     * historial, que tienen un presupuesto de tiempo para iniciarse ([PRESUPUESTO_DE_CONSULTAS_MS], con el reloj monotónico [reloj]). Antes
+     * se consultaba primero, una duda por una: con 80 consultas lentas (20 s cada una) Android detenía el trabajo a los 10 min y nunca llegaba
+     * a registrar un aprobado que ya tenía todo. Lo que las consultas encuentren aprobado se registra al final de la MISMA pasada; lo que no
+     * alcanzó a consultarse sigue en la siguiente (el orden por último toque lo pone primero).
+     */
+    suspend fun recuperarElDinero(
+        approval: LedgerApprovalRecovery,
+        unknown: LedgerUnknownRecovery,
+        venueId: String,
+        ahora: () -> Long = { System.currentTimeMillis() },
+        reloj: () -> Long = { System.nanoTime() / 1_000_000L },
+    ) {
+        approval.recover(venueId, ahora())
+        val confirmados = unknown.recover(venueId, ahora(), reloj, PRESUPUESTO_DE_CONSULTAS_MS)
+        if (confirmados > 0) approval.recover(venueId, ahora())
+    }
+
     data class SweepResult(
         val openRowsLogged: Int,
         val quarantined: Int,
@@ -121,11 +150,12 @@ object LedgerSweepLogic {
         secureStorage: SecureStorage,
         dao: PaymentAttemptDao,
         observability: ObservabilityManager,
-        now: Long
+        now: Long,
+        procesoVivo: String = "",
     ): SweepResult? {
         if (settingsRepository.getCurrentSettings().paymentLedgerMode == PaymentLedgerMode.OFF) return null
         val venueId = secureStorage.getVenueId() ?: return null
-        return sweepOnce(dao, venueId, observability, now)
+        return sweepOnce(dao, venueId, observability, now, procesoVivo)
     }
 
     /**
@@ -138,7 +168,9 @@ object LedgerSweepLogic {
         dao: PaymentAttemptDao,
         venueId: String,
         observability: ObservabilityManager,
-        now: Long
+        now: Long,
+        /** F1 bloque 6: el proceso cuyo lector puede seguir dentro (su `KERNEL_ACTIVO` no se pone en duda por reloj); `""` = ninguno. */
+        procesoVivo: String = "",
     ): SweepResult {
         val staleCutoff = now - TimeUnit.MINUTES.toMillis(STALE_AUTHORIZING_MIN)
 
@@ -168,8 +200,9 @@ object LedgerSweepLogic {
 
         // 2. Bookkeeping transitions (venue-scoped; CAS-safe SQL in the DAO).
         val quarantined = dao.quarantineStaleAuthorizing(venueId, staleCutoff, now) +
-            // 🔴 El proceso murió DENTRO del kernel: pudo aprobar. Se cuarentena, nunca se descarta.
-            dao.quarantineStaleKernel(venueId, staleCutoff, now)
+            // 🔴 El proceso murió DENTRO del kernel: pudo aprobar. Se cuarentena, nunca se descarta. F1 bloque 6: el lector de ESTE
+            // proceso no (sigue dentro, sin envío; se suelta o se arma cuando regresa).
+            dao.quarantineStaleKernel(venueId, staleCutoff, now, procesoVivo)
         // 🔴 Y su contrapeso, de DISPONIBILIDAD: PREPARANDO retiene la terminal, así que una fila
         // huérfana (proceso muerto entre la reserva y el kernel) dejaría la caja sin poder cobrar.
         // Liberarla es seguro por construcción: en PREPARANDO ninguna llamada capaz de autorizar

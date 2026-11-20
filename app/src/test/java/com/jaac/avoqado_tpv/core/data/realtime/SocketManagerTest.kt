@@ -83,6 +83,9 @@ class SocketManagerTest {
 
         // Create SocketManager and call connect() to register all event listeners
         mockPaymentAttemptLedger = mockk(relaxed = true)
+        // F1 bloque 7 (I4): el listener de S5 comprueba que el intento es de ESA solicitud y de este negocio ANTES de marcar nada. Por
+        // defecto, cada intento es de este negocio y de la solicitud que dice el aviso (`att-x` ↔ `req-x`).
+        coEvery { mockPaymentAttemptLedger.leerIntento(any()) } answers { filaDelAviso(firstArg()) }
         socketManager = SocketManager(
             secureStorage = mockSecureStorage,
             authRepositoryLazy = mockAuthRepositoryLazy,
@@ -296,28 +299,44 @@ class SocketManagerTest {
         recoleccion.cancel()
     }
 
+    /**
+     * Codex r13 (P2-3): sin la pantalla de ese intento no hay otro consumidor que persista la evidencia; el `SharedFlow` puede perder
+     * el aviso. Eso se conserva para el intento PROPIO: si el veredicto no quedó (la transacción cayó), la marca de dinero sí.
+     * 🔴 F1 bloque 7 (I4, Codex r3 #9): la versión anterior también marcaba el aviso de OTRA solicitud (pertenencia rechazada) —
+     * cercaba este intento con una aprobación que no era suya—. Ahora la pertenencia se verifica ANTES de marcar: lo ajeno no se toca.
+     */
     @Test
-    fun `r13 P2-3 S5 - si el veredicto no quedo en la fila (falla o pertenencia), el listener deja la marca de dinero sin pantalla`() = runTest(testDispatcher) {
-        // Codex r13: sin la pantalla de ese intento no hay otro consumidor que persista la evidencia; el `SharedFlow` puede perder
-        // el aviso y la fila conservaría su liberación vieja hasta la siguiente recuperación.
+    fun `r13 P2-3 S5 - si el veredicto no quedo en la fila el listener deja la marca de dinero, pero nunca en un intento de otra solicitud`() = runTest(testDispatcher) {
         every { mockSecureStorage.getVenueId() } returns "venue-1"
-        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } answers {
-            val v = firstArg<com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento>()
-            if (v.attemptId == "att-falla") Result.failure(IllegalStateException("room caída"))
-            else Result.success(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto(
-                com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false))
-        }
+        coEvery { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(any()) } returns Result.failure(IllegalStateException("room caída"))
+        // «att-ajeno» es de ESTE negocio, pero de otra solicitud; «att-otro-negocio», de otro negocio.
+        coEvery { mockPaymentAttemptLedger.leerIntento("att-ajeno") } returns filaDelAviso("att-ajeno").copy(terminalPaymentRequestId = "req-OTRA")
+        coEvery { mockPaymentAttemptLedger.leerIntento("att-otro-negocio") } returns filaDelAviso("att-otro-negocio").copy(venueId = "venue-2")
+        val eventos = java.util.Collections.synchronizedList(mutableListOf<SocketEvent>())
+        val recoleccion = launch { socketManager.events.collect { eventos += it } }
 
-        for (intento in listOf("att-falla", "att-ajeno")) {
+        for (intento in listOf("att-falla", "att-ajeno", "att-otro-negocio")) {
             capturedListeners["terminal:payment_confirmed"]?.call(
-                JSONObject().put("requestId", "req-$intento").put("attemptId", intento).put("paymentId", "pay-$intento")
+                JSONObject().put("requestId", "req-${intento.removePrefix("att-")}").put("attemptId", intento).put("paymentId", "pay-$intento")
                     .put("amountCents", 10000).put("tipCents", 0).put("via", "webhook"),
             )
         }
         // El listener despacha en `Dispatchers.IO` (tiempo real): se espera con `timeout`, no con el reloj virtual.
         coVerify(timeout = 3000) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-falla", any()) }
-        coVerify(timeout = 3000) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor("venue-1", "att-ajeno", any()) }
+        val vistos = esperarEn(eventos) { v -> v.count { it is SocketEvent.TerminalPaymentConfirmed } >= 3 }
+        assertThat(vistos.filterIsInstance<SocketEvent.TerminalPaymentConfirmed>().none { it.registrado }).isTrue()
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), "att-ajeno", any()) }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.marcarEvidenciaPositivaDelServidor(any(), "att-otro-negocio", any()) }
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.aplicarVeredictoDelServidor(match { it.attemptId != "att-falla" }) }
+        recoleccion.cancel()
     }
+
+    /** F1 bloque 7: la fila que la libreta tiene para el intento del aviso: de este negocio y de la solicitud que el aviso dice. */
+    private fun filaDelAviso(attemptId: String) = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity(
+        attemptId = attemptId, venueId = "venue-1", processor = "ANGELPAY", state = "INDETERMINADO",
+        amountCents = 10000, tipCents = 0, recordingRoute = "FAST", paymentContextJson = "{}", createdAt = 1, updatedAt = 1,
+        terminalPaymentRequestId = "req-" + attemptId.removePrefix("att-"),
+    )
 
     @Test
     fun `r15 P1 S5 - si la marca que aparta el aparato falla, el veredicto NO se aplica (queda para la consulta siguiente)`() = runTest(testDispatcher) {
@@ -567,12 +586,14 @@ class SocketManagerTest {
     // los dos campos viajan como booleanos de JSON, nunca como texto.
 
     @Test
-    fun `P1 el socket declara terminalPaymentExecutionVersion 1`() = runTest(testDispatcher) {
+    fun `P1 el socket declara terminalPaymentExecutionVersion 2 en la PAX y 1 en la Nexgo`() = runTest(testDispatcher) {
         val capturedOptions = slot<IO.Options>()
         every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
         socketManager.connect("https://test.socket.io", "test-token", terminalId = "AVQD-123")
         val authMap = capturedOptions.captured.auth as? Map<*, *>
-        assertThat(authMap?.get("terminalPaymentExecutionVersion")).isEqualTo("1")
+        // F1 bloque 2 (R1): la PAX además certifica si la solicitud se puede declarar; la N86 se queda en 1.
+        assertThat(authMap?.get("terminalPaymentExecutionVersion"))
+            .isEqualTo(if (com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK) "2" else "1")
         // Las capacidades de antes siguen igual: anunciar una más no le quita nada a un servidor viejo.
         assertThat(authMap?.get("terminalPaymentAckVersion")).isEqualTo("1")
         assertThat(authMap?.get("terminalPaymentCancelDispositionVersion")).isEqualTo("2")
@@ -585,11 +606,12 @@ class SocketManagerTest {
         coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-cerrada", any()) } returns
             com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
-                executionAlive = false, closedForExecution = true,
+                executionAlive = false, closedForExecution = true, declarable = false,
             )
         coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-viva", any()) } returns
             com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+                declarable = true, // F1 bloque 2: sin el cese que lo respalda no viaja
             )
         capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-cerrada").put("venueId", "venue-1"))
         capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-viva").put("venueId", "venue-1"))
@@ -598,14 +620,15 @@ class SocketManagerTest {
         verify(timeout = 2000) {
             mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
                 it.optString("requestId") == "req-cerrada" && it.optString("disposition") == "ACTIVE" &&
-                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true && !it.has("finalResult")
+                    it.opt("executionAlive") == false && it.opt("closedForExecution") == true && !it.has("finalResult") &&
+                    it.opt("declarable") == false
             })
         }
         // Con la ejecución viva (lo de siempre) también viaja, explícito; para el servidor no es evidencia.
         verify(timeout = 2000) {
             mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
                 it.optString("requestId") == "req-viva" && it.optString("disposition") == "ACTIVE" &&
-                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false
+                    it.opt("executionAlive") == true && it.opt("closedForExecution") == false && !it.has("declarable")
             })
         }
         verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }

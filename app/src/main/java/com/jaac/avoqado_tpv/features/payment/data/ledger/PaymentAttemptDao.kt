@@ -10,6 +10,118 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 /** E3 · cuántas candidatas trae cada página de la consulta S6 ([PaymentAttemptDao.candidatasDeConsultaAlServidor]). */
 const val CANDIDATAS_POR_PAGINA = 25
 
+/**
+ * 🔴 F1 bloque 4: la venta de AngelPay que la recuperación (E1) todavía pregunta al historial — en duda, o declarada por una PERSONA
+ * (la firma no la saca: un «cobrado» posterior debe aparecer), sin veto, con turnos (`history_checks < 5`). Sin alias.
+ * 🔴 F1 · Codex final r8 #1, mitad «(f)» (F, 20-nov): y la que el SERVIDOR soltó por un rechazo del banco de ESTE intento (2c,
+ * `liberada_por_el_servidor:PROCESSOR_DECLINED`). El SERVIDOR llama «rechazo» también al `rejected + 05AP`, que puede aprobarse después:
+ * el rechazo suelta el freno (la fila queda `DESCARTADA`), pero la fila sigue en el seguimiento del historial como cualquier otra; si la
+ * app murió antes de la primera consulta (sin marca), antes nadie la volvía a mirar. Con la primera respuesta queda la marca y se sigue
+ * como una «sin aprobar» (7 días, sin gastar turno); si aparece aprobada, se registra una vez por el camino de la ventana.
+ */
+const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERMINADO') OR " +
+    PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA +
+    " OR (state = 'DESCARTADA' AND last_error IS 'liberada_por_el_servidor:PROCESSOR_DECLINED')" +
+    ") AND server_veto IS NULL AND history_checks < 5)"
+
+/**
+ * 🔴 F1 · Codex final r8 #5 (A, 20-nov): el SERVIDOR ya acreditó el Payment de ESTE intento: `RECORDED` con Payment, el MISMO importe y la
+ * MISMA propina y, si vino del POS, sin otro ganador acreditado para su solicitud. Con eso el impedimento genérico del `409
+ * POSITIVE_EVIDENCE_EXISTS` ([PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR]) queda resuelto: esa evidencia positiva ES este pago.
+ * NULL-segura (sólo `IS`): se usa negada. Sin alias.
+ */
+const val SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO = "(server_outcome IS 'RECORDED' AND server_payment_id IS NOT NULL " +
+    "AND server_amount_cents IS amount_cents AND server_tip_cents IS tip_cents " +
+    "AND (terminal_payment_request_id IS NULL OR server_winner_payment_id IS NULL OR server_winner_payment_id IS server_payment_id))"
+
+/**
+ * 🔴 F1 bloque 3 (I2): el aprobado final de AngelPay escrito sobre una fila que cerró la VENTANA (no una persona): conserva su
+ * `DESCARTADA` y su motivo, y es una obligación de registro que el registrador toma con la llave del intento. Sin alias.
+ */
+const val SQL_APROBADO_TRAS_LA_VENTANA = "(state = 'DESCARTADA' AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0 " +
+    "AND host_approved IS 1 AND server_payment_id IS NULL AND server_veto IS NULL)"
+
+/**
+ * 🔴 F1 bloque 5 (I5): «Por revisar» = la unión, POR IDENTIDAD, de los intentos que cuenta Caja
+ * ([com.jaac.avoqado_tpv.features.shift.domain.SQL_INTENTO_QUE_CUENTA_CAJA]), los que frenan otra tarjeta de su cuenta
+ * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) y las solicitudes del POS que cuenta Caja
+ * ([com.jaac.avoqado_tpv.features.shift.domain.SQL_SOLICITUD_QUE_CUENTA_CAJA]). Clave del renglón: `(ATTEMPT,
+ * attemptId)` o `(REMOTE, requestId)`: un `requestId` sirve para mirar a los hermanos, nunca quita un renglón. `declarable` = admite la
+ * firma (lo demás sólo se consulta o lo resuelve su dueño). Usa `:venueId` y `:processToken`.
+ */
+const val SQL_POR_REVISAR = """
+    SELECT 'ATTEMPT' AS clase, attempt_id AS clave, attempt_id AS attempt_id, terminal_payment_request_id AS request_id,
+        (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, server_answered_at AS server_answered_at,
+        state AS estado, kind AS tipo,
+        CASE WHEN (state = 'INDETERMINADO'
+                   -- 🔴 F1 · 05AP (20-nov): la venta que la VENTANA del SERVIDOR ya soltó y la N86 frena hasta el techo porque el historial de
+                   -- AngelPay la trae sin aprobar (marca de lectura viva). Firmable: la firma va al SERVIDOR como cualquier otra.
+                   OR (state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE' AND history_read_at IS NOT NULL
+                       -- Codex final r6 #1: sólo la VENTANA; la que soltó el rechazo del banco el SERVIDOR ya no acepta firmarla.
+                       AND last_error IS 'liberada_por_el_servidor:NO_EVIDENCE_AFTER_WINDOW'
+                       AND processor = 'ANGELPAY' AND terminal_payment_request_id IS NOT NULL AND server_payment_id IS NULL))
+            AND legacy_shadow = 0 AND kind = 'SALE'
+            AND host_approved IS NOT 1 AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
+            AND (server_outcome IS NULL
+                 OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+            AND NOT (last_error IS 'cuarentena_por_antiguedad' AND process_token IS :processToken)
+            AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)
+            -- Dentro de este FROM los nombres sin prefijo son los del hermano; `payment_attempts.` es la fila de afuera.
+            AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
+                WHERE hermano.terminal_payment_request_id = payment_attempts.terminal_payment_request_id
+                AND hermano.attempt_id != payment_attempts.attempt_id
+                AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
+                     OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
+            THEN 1 ELSE 0 END AS declarable,
+        CASE WHEN state = 'INDETERMINADO' AND process_token IS :processToken AND sdk_returned_at IS NULL
+            AND (processor = 'BLUMON' OR last_error IS 'cuarentena_por_antiguedad') THEN 1 ELSE 0 END AS ejecucion_viva
+    FROM payment_attempts
+    WHERE venue_id = :venueId
+    AND (""" + com.jaac.avoqado_tpv.features.shift.domain.SQL_INTENTO_QUE_CUENTA_CAJA + """ OR """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """)
+    UNION ALL
+    SELECT 'REMOTE' AS clase, r.request_id AS clave, NULL AS attempt_id, r.request_id AS request_id,
+        (r.amount_cents + r.tip_cents) AS total_centavos, r.created_at AS desde_millis, NULL AS server_answered_at,
+        NULL AS estado, 'SALE' AS tipo,
+        -- Se firma sólo la que nunca tuvo intento ni arrancó efectivo o cripto (como antes). La que tuvo un intento descartado (D8: la
+        -- resuelve el SERVIDOR) o ya arrancó el efectivo se ve y se consulta.
+        CASE WHEN r.execution_started_at IS NULL AND NOT EXISTS (SELECT 1 FROM payment_attempts p
+            WHERE p.terminal_payment_request_id = r.request_id
+               OR instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
+            THEN 1 ELSE 0 END AS declarable, 0 AS ejecucion_viva
+    FROM remote_payment_requests r
+    -- 🔴 Codex final r1 #8: EXACTAMENTE la regla de Caja. Antes un intento histórico cualquiera (uno rechazado sin dinero) la
+    -- escondía mientras Caja la seguía contando.
+    WHERE r.venue_id = :venueId AND """ + com.jaac.avoqado_tpv.features.shift.domain.SQL_SOLICITUD_QUE_CUENTA_CAJA + """
+"""
+
+/** 🔴 F1 bloque 3: quién trajo el aprobado final de AngelPay; se guarda en `operation_id` (que AngelPay no usa). */
+enum class OrigenDelAprobado(val columna: String) {
+    SDK("angelpay:sdk"), APP_A_APP("angelpay:app_a_app"),
+    HISTORIAL_PANTALLA("angelpay:historial_k19a"), HISTORIAL_RECUPERACION("angelpay:historial_e1"),
+}
+
+/** 🔴 F1 bloque 3: qué dejó la escritura del aprobado final de AngelPay ([PaymentAttemptDao.escribirAprobadoFinalAngelPay]). */
+enum class AprobadoFinal {
+    /** Quedó en `HOST_RESPONDIO`: lo registra la pantalla o la recuperación, con la llave del intento. */
+    REGISTRABLE,
+    /** La cerró la ventana: sigue `DESCARTADA` con su motivo, con el aprobado escrito y elegible para el registrador. */
+    REGISTRABLE_TRAS_LA_VENTANA,
+    /** Se escribió el aprobado; el estado no cambia (veto: Avoqado concilia; o ya estaba registrada / en la cola). */
+    GUARDADO,
+    /** El mismo aprobado ya estaba escrito. */
+    YA_ESTABA,
+    /** Un segundo par incompatible (o un aprobado sobre un rechazo del host): se anotó, la fila queda en revisión. */
+    INCOMPATIBLE,
+    /** Otra sucursal, otro procesador, una devolución o una fila heredada: no se toca. */
+    AJENO,
+    /** No hay fila. */
+    SIN_FILA;
+
+    /** ¿La aprobación quedó escrita en la fila (y desde ese commit protege su cuenta)? */
+    val quedoEscrito: Boolean get() = this in setOf(REGISTRABLE, REGISTRABLE_TRAS_LA_VENTANA, GUARDADO, YA_ESTABA, INCOMPATIBLE)
+}
+
 /** B1: revierte la transacción de [PaymentAttemptDao.cerrarSolicitudSiCeso] cuando la bandeja no aceptó el cierre. */
 class CierreParaEjecucionNoAceptado : RuntimeException("La bandeja no aceptó el cierre para ejecución; se revierte la transacción")
 
@@ -29,25 +141,113 @@ interface PaymentAttemptDao {
      */
     // 🔴 29-sep-2026: sólo VENTAS. Una devolución la verifica su propio flujo; hoy sólo la dejaba fuera que su `processor`
     // se escribe en minúsculas, una coincidencia que no protege nada.
-    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND processor = 'ANGELPAY' AND state IN ('AUTORIZANDO','INDETERMINADO')
-        AND host_approved IS NULL AND server_veto IS NULL AND created_at < :olderThan AND verify_attempts < 5
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
-    suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
+    // 🔴 F1 (Codex código r2 #1): también la venta que una persona declaró «no se cobró» (la firma pudo llegar antes de la primera
+    // consulta, o tras reiniciar): AngelPay se sigue consultando con la MISMA pausa y el MISMO tope de 5.
+    // 🔴 F1 bloque 4 (I3): el tope cuenta RESPUESTAS escritas (`history_checks`), no consultas tomadas; y PRIMERO va la lectura
+    // despachada que nadie terminó (`history_read_at`), en cualquier estado — aunque cerró la ventana o la firmó una persona —, en
+    // cuanto vence la reserva de quien la despachó.
+    // 🔴 Codex final r2 #4: el turno va por el ÚLTIMO TOQUE (la toma escribe `history_read_at = :now`; lo nunca tomado, su
+    // `created_at`), como S6 (`candidatasDeConsultaAlServidor`). «Despachadas primero» dejaba que 50 lecturas con falla permanente
+    // (credenciales) ocuparan cada barrido y una venta B nueva no recibía ninguna consulta; ahora la recién reintentada va al final.
+    // 🔴 Codex final r3 #1: y POR PÁGINAS con llave (la del orden), como S6 y la bandeja: la página siguiente se pide DESPUÉS de la
+    // última fila LEÍDA. Una fila que el barrido salta sin tomar turno (sin afiliación, contexto que no cuadra, la tomó otro proceso) no
+    // cambia su clave: con un `LIMIT 50` fijo, 50 así delante tapaban para siempre a la 51.
+    @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
+        AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
+        AND (lease_until IS NULL OR lease_until < :now)
+        AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
+        AND (COALESCE(history_read_at, created_at) > :trasToque
+             OR (COALESCE(history_read_at, created_at) = :trasToque AND attempt_id > :trasId))
+        ORDER BY COALESCE(history_read_at, created_at) ASC, attempt_id ASC LIMIT :limite""")
+    suspend fun getUnknownRecoveryCandidates(
+        venueId: String, olderThan: Long, now: Long, trasToque: Long, trasId: String, limite: Int,
+    ): List<PaymentAttemptEntity>
+
+    /** La primera página (50). */
+    suspend fun getUnknownRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity> =
+        getUnknownRecoveryCandidates(venueId, olderThan, now, Long.MIN_VALUE, "", 50)
+
+    /**
+     * 🔴 Codex plan de rediseño #8: la lectura DESPACHADA de una fila que el historial NUNCA podrá consultar (su contexto guardado no trae
+     * terminal ni afiliación, o no cuadra con la fila; se escribe una sola vez, al abrir el intento). Nadie la podría terminar y frenaría
+     * su tarjeta para siempre ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]): se quita su marca, sólo la suya y con su reserva vencida (una
+     * pantalla que todavía pregunta la extiende). La que sigue en duda (INDETERMINADO) queda en «Por revisar», firmable por el gerente.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND history_read_at = :marca
+        AND (lease_until IS NULL OR lease_until < :now)""")
+    suspend fun soltarLecturaQueNadiePuedeHacer(attemptId: String, venueId: String, marca: Long, now: Long): Int
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
     // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
+    // 🔴 F1 bloque 3 (I2): y la DESCARTADA de AngelPay con su aprobado final escrito (la cerró la ventana y conserva su motivo):
+    // desde ese commit es una obligación de registro, con la llave del intento ([SQL_APROBADO_TRAS_LA_VENTANA]).
+    // 🔴 F1 · Codex final r6 #4 (20-nov): sin tope de intentos. Todas son un aprobado con evidencia del banco, y con `verify_attempts < 5`
+    // cinco fallos del SERVIDOR la sacaban de toda pasada para siempre: cargo aprobado con cero Payment. Un aprobado nunca se abandona; la
+    // pausa entre intentos crece hasta 32 min (`LedgerApprovalRecovery`) y la reserva vigente la saca de la página mientras tanto.
+    // 🔴 F1 · Codex final r7 #2 y r8 #6 (20-nov): el turno va por el ÚLTIMO TOQUE, como las consultas al historial y S6. El reclamo escribe
+    // `lease_until` (la hora del intento más su pausa, siempre, aunque el registro truene); en un aprobado nadie más la adelanta (abrir el
+    // registro la pone en NULL; la de una consulta al historial es de antes del aprobado), así que `COALESCE(lease_until, created_at)` es
+    // «cuándo volvió a estar libre» (lo nunca tomado, desde su `created_at`). Por antigüedad, 300
+    // aprobados viejos que fallan siempre tapaban para siempre a un B nuevo (r7 #2); por «menos intentos primero», un B con 4 intentos
+    // nunca entraba si en cada reconexión había un aprobado nuevo (r8 #6). Ahora cada fila que se intenta queda detrás de todas las que ya
+    // estaban libres: nadie pasa delante de B más de una vez. B entra a más tardar tras las filas que ya estaban libres antes que él
+    // (⌈N / 50⌉ + 1 pasadas). Sin esquema nuevo.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND verify_attempts < 5
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
+        AND ((state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') AND (host_approved = 1 OR state = 'AUTORIZADO'))
+             OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
+        AND created_at < :olderThan
+        AND (lease_until IS NULL OR lease_until < :now) ORDER BY COALESCE(lease_until, created_at) ASC, attempt_id ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
-    @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL
-        AND state IN ('AUTORIZANDO','INDETERMINADO')
+    /**
+     * 🔴 F1 bloque 4 (I3): tomar la consulta NO gasta el turno. Deja la lectura DESPACHADA en la fila (`history_read_at`) con la
+     * reserva de quien la toma; el turno se gasta en [terminarConsultaSinCoincidencia] cuando su respuesta queda escrita.
+     */
+    @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, history_read_at = :now
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'
+        AND (history_read_at IS NOT NULL OR """ + SQL_CONSULTABLE_EN_EL_HISTORIAL + """)
         AND (lease_until IS NULL OR lease_until < :now)""")
     suspend fun claimUnknownRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
+
+    /**
+     * 🔴 F1 bloque 4: la respuesta VÁLIDA del historial sin coincidencia («todavía no aparece») de la lectura de [ownedLease] quedó
+     * escrita: se gasta UN turno (tope 5) y la fila descansa hasta [pausaHasta]. Un trabajador con la reserva vencida también la
+     * termina si nadie la volvió a tomar; si otro la tomó, su reserva es otra y ésta no cuenta dos veces.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL, history_checks = MIN(history_checks + 1, 5),
+        lease_until = :pausaHasta
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
+    suspend fun terminarConsultaSinCoincidencia(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
+
+    /**
+     * 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. 🔴 Codex final r1 #3: y SIN borrar la
+     * marca de la lectura despachada: al vencer la pausa se retoma aunque la ventana o una persona hayan cerrado la fila (sin la marca
+     * ninguna consulta la volvía a elegir), y la tarjeta de su cuenta sigue frenada sólo hasta el techo ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+     */
+    // 🔴 F1 · rediseño tras Codex r7 (20-nov): la marca se queda tal cual (la escribió la toma: es el «último toque» del orden, Codex final
+    // r2 #4). Ya no distingue «en vuelo» de «respondida»: el freno sólo mira la edad ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). También
+    // la usa el «sin aprobar» (`05AP`) durante su seguimiento ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
+    suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
+
+    /**
+     * 🔴 F1 bloque 4: la lectura de la PANTALLA (K19a) queda despachada en la fila ANTES de preguntar, sin importar su estado ni
+     * quién tenga la reserva: si la app muere o la ventana cierra mientras pregunta, la recuperación la retoma. K19a conserva su
+     * presupuesto interactivo: no gasta turnos de E1. Si E1 ya tenía su marca, ésa se queda.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = COALESCE(history_read_at, :now),
+        lease_until = MAX(IFNULL(lease_until, 0), :leaseUntil)
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'""")
+    suspend fun despacharLecturaDeLaPantalla(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
+
+    /** 🔴 F1 bloque 4: la lectura de la pantalla terminó sin aprobado: se quita su marca (sólo la suya). */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND history_read_at = :despachadaEn""")
+    suspend fun terminarLecturaDeLaPantalla(attemptId: String, venueId: String, despachadaEn: Long): Int
 
     /** 🔴 ¿Qué cobro de ESTE proceso está usando el lector ahora? ([PaymentAttemptEntity.SQL_APARTA_EL_APARATO]) */
     @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + " LIMIT 1")
@@ -106,6 +306,17 @@ interface PaymentAttemptDao {
     suspend fun findUnresolvedForRequest(requestJsonFragment: String): PaymentAttemptEntity?
 
     /**
+     * 🔴 F1 bloque 3 (hueco 4): cuántos intentos de ESTA solicitud pueden ser dueños de un resultado del SDK que llega tarde — el
+     * banco no les contestó y no hay Payment: en curso, en duda, o cerrados por una persona o por la ventana. Con más de uno, la
+     * solicitud no identifica el intento.
+     */
+    @Query("""SELECT COUNT(*) FROM payment_attempts WHERE legacy_shadow = 0 AND kind = 'SALE'
+        AND terminal_payment_request_id = :requestId AND host_approved IS NULL AND server_payment_id IS NULL
+        AND (state IN ('KERNEL_ACTIVO','AUTORIZANDO','INDETERMINADO')
+             OR (state = 'DESCARTADA' AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS NOT NULL)))""")
+    suspend fun duenosPosiblesDeUnResultado(requestId: String): Int
+
+    /**
      * Cuántas obligaciones pendientes hay en el APARATO. Es lo que permite distinguir «no hay con
      * qué confundirse» (una sola, se puede adoptar a ciegas como siempre) de «hay varias», donde
      * adivinar sería atribuir dinero. Sin venue: la terminal es UNA.
@@ -140,7 +351,8 @@ interface PaymentAttemptDao {
      *
      * Son TRES cercas distintas y cada una protege algo distinto:
      *  1. **El aparato**: sólo un cobro corriendo en ESTE proceso; ver [PaymentAttemptEntity.SQL_APARTA_EL_APARATO].
-     *  2. **La venta**, por `orderId`, sólo con DINERO en juego; ver [PaymentAttemptEntity.SQL_CERCA_LA_VENTA] — el MISMO
+     *  2. **La venta**, por `orderId`: desde F1 (17-nov) la TARJETA de una cuenta con dinero en juego o con una duda; ver
+     *     [PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]. Lo de abajo es la regla del dinero ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]), el MISMO
      *     fragmento que leen [retencionDeLaVenta] y el CAS a AUTORIZANDO/KERNEL_ACTIVO, así que no pueden divergir. Cerca un
      *     cobro corriendo o ya respondido (de cualquier proceso), la evidencia del servidor o su veto y la cuarentena por reloj
      *     de ESTE proceso. 🔴 Founder, 25-sep: una duda sin dinero conocido ya no cerca nada, ni en la PAX ni en la Nexgo: se
@@ -174,7 +386,7 @@ interface PaymentAttemptDao {
             WHERE venue_id = :venueId AND local_session_id = :localShiftSessionId AND local_status = 'OPEN'))
         AND NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """)
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
-            SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
+            SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
             AND instr(payment_context_json, :orderJsonFragment) > 0))
         AND (:terminalPaymentRequestId IS NULL OR NOT EXISTS (
             SELECT 1 FROM remote_payment_requests cerca
@@ -314,9 +526,24 @@ interface PaymentAttemptDao {
      * que SÍ está cercada (founder, 21-sep). Sin filtro de venue a propósito. 🔴 [findUnresolvedOrder] NO sirve para esto:
      * filtra por venue y deja fuera PREPARANDO y DESCARTADA.
      */
-    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_VENTA +
+    // F1 (17-nov): la gemela de la cerca 2, que desde F1 es la de la TARJETA ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA +
         " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
     suspend fun retencionDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
+
+    /**
+     * 🔴 F1 (Codex código r1 #5): la cerca de la TARJETA de esta cuenta que pone OTRO intento, nunca el propio (su reserva PREPARANDO
+     * también entra en [PaymentAttemptEntity.SQL_CERCA_LA_VENTA]). Es la misma condición del CAS ([casTransitionRow]), leída ANTES de
+     * encender el lector: la evidencia de otra tarjeta de la cuenta puede llegar después de reservar.
+     */
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA +
+        " AND instr(payment_context_json, :orderJsonFragment) > 0 AND attempt_id != :attemptIdPropio LIMIT 1")
+    suspend fun otraCercaDeLaTarjeta(orderJsonFragment: String, attemptIdPropio: String, processToken: String): PaymentAttemptEntity?
+
+    /** F1: sólo el DINERO en juego de la venta ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]); una duda sin dinero no cuenta. */
+    @Query("SELECT * FROM payment_attempts WHERE " + PaymentAttemptEntity.SQL_CERCA_LA_VENTA +
+        " AND instr(payment_context_json, :orderJsonFragment) > 0 LIMIT 1")
+    suspend fun dineroEnJuegoDeLaVenta(orderJsonFragment: String, processToken: String): PaymentAttemptEntity?
 
     /**
      * D9 (Mesas, Codex r3, 16-nov): ¿esta terminal tiene dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma?
@@ -337,7 +564,7 @@ interface PaymentAttemptDao {
 
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
-        AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
+        AND (state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
         AND (lease_until IS NULL OR lease_until < :now)""")
     suspend fun claimRecovery(attemptId: String, venueId: String, now: Long, leaseUntil: Long): Int
 
@@ -352,7 +579,7 @@ interface PaymentAttemptDao {
      */
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
-        AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')
+        AND (state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
         AND (lease_until IS NULL OR lease_until < :now)
         AND NOT (processor = 'BLUMON' AND state = 'HOST_RESPONDIO' AND process_token IS :processToken AND sdk_returned_at IS NULL)""")
     suspend fun claimRecoveryConElSdkFuera(attemptId: String, venueId: String, now: Long, leaseUntil: Long, processToken: String): Int
@@ -370,19 +597,83 @@ interface PaymentAttemptDao {
                           WHEN COALESCE(last_error,'') = 'cuarentena_por_antiguedad'
                           THEN 'cuarentena_por_antiguedad' ELSE :error END
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
-        AND lease_until > :now AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')""")
+        AND lease_until > :now AND (state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)""")
     suspend fun completeRecovery(attemptId: String, venueId: String, ownedLease: Long,
         newState: String, now: Long, error: String?): Int
 
-    /** I-1: `server_veto IS NULL` también DENTRO del UPDATE — un veto que llega entre tomar la fila y escribir no la deja subir. */
-    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', state_version = state_version + 1,
-        updated_at = :now, host_approved = 1, reference_number = :reference, auth_code = :authorization,
-        lease_until = NULL, verify_attempts = 0
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease
-        AND lease_until > :now AND host_approved IS NULL AND state IN ('AUTORIZANDO','INDETERMINADO')
-        AND server_veto IS NULL""")
-    suspend fun completeUnknownRecovery(attemptId: String, venueId: String, ownedLease: Long,
-        now: Long, reference: String, authorization: String): Int
+    /**
+     * 🔴 F1 bloque 3 (R2/I1): la PRIMERA escritura del aprobado FINAL de AngelPay (SDK, SDK con la pantalla recreada, K19a y E1). No
+     * depende del estado, de la reserva ni de quién sea dueño de la consulta: sólo de la sucursal, el intento, el procesador y la
+     * venta. Guarda la referencia, la autorización y el origen (`operation_id`, que AngelPay no usa), y quita la lectura despachada.
+     * Repetir el mismo par es inocuo; un par distinto no pisa el primero (lo anota [anotarAprobadoIncompatible]).
+     */
+    @Query("""UPDATE payment_attempts SET host_approved = 1, reference_number = :referencia, auth_code = :autorizacion,
+        operation_id = COALESCE(operation_id, :origen), history_read_at = NULL,
+        updated_at = :now, state_version = state_version + 1
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND processor = 'ANGELPAY' AND kind = 'SALE' AND legacy_shadow = 0
+        AND host_approved IS NULL""")
+    suspend fun sellarAprobadoFinalAngelPay(attemptId: String, venueId: String, referencia: String?, autorizacion: String?,
+        origen: String, now: Long): Int
+
+    /**
+     * 🔴 F1 bloque 3: la transición del aprobado recién sellado, en la MISMA transacción. Lo que esperaba al banco y lo que cerró una
+     * PERSONA ([PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA] sin `host_approved`) pasan a `HOST_RESPONDIO` (registro de
+     * siempre). Lo que cerró la ventana se queda `DESCARTADA` con su motivo y es elegible para el registrador
+     * ([SQL_APROBADO_TRAS_LA_VENTANA]). Con veto, nada sube: Avoqado lo concilia. Rastro en `last_error`, nunca un control.
+     */
+    @Query("""UPDATE payment_attempts SET state = 'HOST_RESPONDIO', lease_until = NULL, updated_at = :now,
+        state_version = state_version + 1,
+        last_error = CASE WHEN state = 'DESCARTADA' THEN 'aprobado_tras_declaracion:' || IFNULL(last_error, '') ELSE last_error END
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved = 1 AND server_payment_id IS NULL
+        -- r9 P1-1 (se conserva): el veredicto VIVO del SDK aterriza aunque haya veto; una duda o una fila cerrada con veto no sube (I-1).
+        AND (state IN ('PREPARANDO','KERNEL_ACTIVO','AUTORIZANDO')
+             OR (server_veto IS NULL AND (state = 'INDETERMINADO'
+                 OR (state = 'DESCARTADA' AND legacy_shadow = 0 AND kind = 'SALE'
+                     AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT')))))""")
+    suspend fun abrirRegistroDelAprobado(attemptId: String, venueId: String, now: Long): Int
+
+    /** La DESCARTADA por la ventana con su aprobado: se suelta la reserva para que el registrador la tome ya. */
+    @Query("""UPDATE payment_attempts SET lease_until = NULL WHERE attempt_id = :attemptId AND venue_id = :venueId
+        AND """ + SQL_APROBADO_TRAS_LA_VENTANA)
+    suspend fun soltarReservaDelAprobadoTrasLaVentana(attemptId: String, venueId: String): Int
+
+    /**
+     * 🔴 F1 bloque 3 (I1, contradicción): un SEGUNDO par incompatible para el mismo intento (otra referencia o autorización, o un
+     * aprobado sobre un rechazo del host). No se pisa la primera prueba: la segunda queda en `last_error` y la fila queda en revisión
+     * con el veto local de la terminal (cerca su cuenta y sale en el aviso). No observado en un negocio.
+     */
+    @Query("""UPDATE payment_attempts SET server_veto = COALESCE(server_veto, 'SDK_CONTRADICTION'),
+        last_error = 'aprobado_incompatible:' || IFNULL(:referencia, '') || '/' || IFNULL(:autorizacion, '') || ':' || IFNULL(last_error, ''),
+        updated_at = :now, state_version = state_version + 1
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND processor = 'ANGELPAY' AND kind = 'SALE'""")
+    suspend fun anotarAprobadoIncompatible(attemptId: String, venueId: String, referencia: String?, autorizacion: String?, now: Long): Int
+
+    /**
+     * 🔴 F1 bloque 3: [sellarAprobadoFinalAngelPay] y su transición en UNA transacción. Devuelve qué quedó; un error de escritura
+     * revierte las dos y quien llama conserva la protección en memoria.
+     */
+    @Transaction
+    suspend fun escribirAprobadoFinalAngelPay(venueId: String, attemptId: String, referencia: String?, autorizacion: String?,
+        origen: String, now: Long): AprobadoFinal {
+        val fila = getById(attemptId) ?: return AprobadoFinal.SIN_FILA
+        if (fila.venueId != venueId || fila.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
+            fila.kind != PaymentAttemptEntity.KIND_SALE || fila.legacyShadow) return AprobadoFinal.AJENO
+        if (fila.hostApproved == true) {
+            val mismo = (fila.referenceNumber == null || fila.referenceNumber == referencia) &&
+                (fila.authCode == null || fila.authCode == autorizacion)
+            if (mismo) return AprobadoFinal.YA_ESTABA
+            anotarAprobadoIncompatible(attemptId, venueId, referencia, autorizacion, now)
+            return AprobadoFinal.INCOMPATIBLE
+        }
+        if (fila.hostApproved == false) {
+            anotarAprobadoIncompatible(attemptId, venueId, referencia, autorizacion, now)
+            return AprobadoFinal.INCOMPATIBLE
+        }
+        if (sellarAprobadoFinalAngelPay(attemptId, venueId, referencia, autorizacion, origen, now) != 1) return AprobadoFinal.SIN_FILA
+        if (abrirRegistroDelAprobado(attemptId, venueId, now) == 1) return AprobadoFinal.REGISTRABLE
+        if (soltarReservaDelAprobadoTrasLaVentana(attemptId, venueId) == 1) return AprobadoFinal.REGISTRABLE_TRAS_LA_VENTANA
+        return AprobadoFinal.GUARDADO
+    }
 
     /** Returns -1 when the PK already exists (attemptId reuse — double-charge signal, never silent). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -432,7 +723,7 @@ interface PaymentAttemptDao {
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                            AND """ + PaymentAttemptEntity.SQL_EJECUCION_VIVA + """)
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
-                   AND """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
+                   AND """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
                    AND instr(payment_attempts.payment_context_json, '"orderId":"') > 0
                    AND instr(payment_attempts.payment_context_json, '"orderId":""') = 0
                    AND instr(other.payment_context_json,
@@ -491,7 +782,10 @@ interface PaymentAttemptDao {
            SET state = :newState, state_version = state_version + 1, updated_at = :now,
                operation_id = :operationId, reference_number = :referenceNumber,
                auth_code = :authCode, host_approved = :hostApproved,
-               lease_until = NULL, verify_attempts = 0
+               lease_until = NULL, verify_attempts = 0,
+               -- 🔴 Codex plan de rediseño #8: el banco contestó: ninguna consulta al historial la vuelve a tomar (`host_approved`), así
+               -- que su lectura despachada se quita aquí. Si no, quedaba viva sin quien la terminara y la poda ya no quitaba la fila.
+               history_read_at = NULL
            WHERE attempt_id = :attemptId AND state IN (:expectedStates)
              AND (:hostApproved = 1 OR server_veto IS NULL)"""
     )
@@ -510,7 +804,9 @@ interface PaymentAttemptDao {
            SET host_approved = 1, state_version = state_version + 1, updated_at = :now,
                operation_id = COALESCE(operation_id, :operationId),
                reference_number = COALESCE(reference_number, :referenceNumber),
-               auth_code = COALESCE(auth_code, :authCode)
+               auth_code = COALESCE(auth_code, :authCode),
+               -- Familia «marca del historial» (ronda 3): con `host_approved` ninguna consulta al historial la vuelve a tomar.
+               history_read_at = NULL
            WHERE attempt_id = :attemptId AND host_approved IS NULL AND state = 'AUTORIZADO'"""
     )
     suspend fun sellarAprobacionDelHost(attemptId: String, operationId: String?, referenceNumber: String?, authCode: String?, now: Long): Int
@@ -603,9 +899,42 @@ interface PaymentAttemptDao {
              AND server_veto IS NULL
              AND server_answered_at IS NOT NULL
              AND (server_outcome IS NULL
-                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))"""
+                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
+             -- 🔴 F1 bloque 2 (R1): en la PAX, nunca mientras el SDK de ESTE intento pueda regresar (misma ejecución, sin regreso).
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)"""
     )
-    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long): Int
+    suspend fun declararSinCobroLocal(attemptId: String, venueId: String, motivo: String, now: Long, processToken: String): Int
+
+    /**
+     * F1 bloque 2: los intentos de venta de una solicitud del POS (por la columna o, en filas anteriores a la v35, por el contexto).
+     * 🔴 Codex final r1 #2: SIN tope. El certificado `declarable` revisa el dinero de TODOS, igual que el cese
+     * ([intentosQuePuedenSeguirVivos]); con `LIMIT 50` un aprobado en el intento 51 no se veía.
+     * ponytail: carga las filas enteras (las revisa también la memoria de la libreta); son tantas como toques de «Reintentar» de UNA
+     * solicitud. Si algún día fueran miles, un `EXISTS` para lo de Room y sólo los `attempt_id` para lo de memoria.
+     */
+    @Query("""SELECT * FROM payment_attempts WHERE kind = 'SALE'
+        AND (terminal_payment_request_id = :requestId
+             OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0)""")
+    suspend fun intentosDeLaSolicitud(requestId: String): List<PaymentAttemptEntity>
+
+    /** Familia «el texto miente»: la cuenta de una solicitud del POS (la de la bandeja, aunque no tenga intento). */
+    @Query("SELECT order_id FROM remote_payment_requests WHERE request_id = :requestId")
+    suspend fun cuentaDeLaSolicitud(requestId: String): String?
+
+    /**
+     * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): la fila que frena la tarjeta
+     * ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA], la MISMA regla de la admisión y del CAS) del intento, de su solicitud o de su cuenta.
+     * Primero la que tiene una lectura del historial de AngelPay despachada. Usa `:processToken`.
+     */
+    @Query("""SELECT * FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_TARJETA + """
+        AND (attempt_id = :attemptId
+             OR (:requestId IS NOT NULL AND (terminal_payment_request_id = :requestId
+                 OR instr(payment_context_json, '"terminalPaymentRequestId":"' || :requestId || '"') > 0))
+             OR (:orderJsonFragment IS NOT NULL AND instr(payment_context_json, :orderJsonFragment) > 0))
+        ORDER BY (history_read_at IS NULL) LIMIT 1""")
+    suspend fun filaQueFrenaLaTarjetaDelCobro(
+        attemptId: String?, requestId: String?, orderJsonFragment: String?, processToken: String,
+    ): PaymentAttemptEntity?
 
     /**
      * 🔴 D22 (Codex plan r1, bloqueante 1): la respuesta del envío se perdió, la terminal cerró la duda SÓLO en la libreta (sin
@@ -641,36 +970,18 @@ interface PaymentAttemptDao {
      *
      * La ventana de 10 min va en Kotlin, con la misma constante del aviso ([DeclaracionDesdeElAviso.vigentes]).
      */
-    @Query(
-        """SELECT * FROM (
-            SELECT d.attempt_id AS attempt_id, d.terminal_payment_request_id AS request_id,
-                (d.amount_cents + d.tip_cents) AS total_centavos, d.created_at AS desde_millis, d.server_answered_at AS server_answered_at
-            FROM payment_attempts d
-            WHERE d.venue_id = :venueId AND d.kind = 'SALE' AND d.legacy_shadow = 0 AND d.state = 'INDETERMINADO'
-            AND d.host_approved IS NOT 1 AND d.server_processor_evidence IS NOT 'APPROVED' AND d.server_veto IS NULL
-            AND (d.server_outcome IS NULL
-                 OR d.server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
-            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
-            AND NOT (d.last_error IS 'cuarentena_por_antiguedad' AND d.process_token IS :processToken)
-            -- Dentro de este FROM los nombres sin prefijo son los del hermano.
-            AND NOT EXISTS (SELECT 1 FROM payment_attempts hermano
-                WHERE hermano.terminal_payment_request_id = d.terminal_payment_request_id AND hermano.attempt_id != d.attempt_id
-                AND (hermano.legacy_shadow = 1 OR hermano.state NOT IN ('DESCARTADA','INDETERMINADO') OR hermano.host_approved IS 1
-                     OR """ + PaymentAttemptEntity.SQL_CONTRADICCION + """))
-            ORDER BY d.created_at DESC LIMIT :limite)
-        UNION ALL
-        SELECT * FROM (
-            SELECT NULL AS attempt_id, r.request_id AS request_id, (r.amount_cents + r.tip_cents) AS total_centavos,
-                r.created_at AS desde_millis, NULL AS server_answered_at
-            FROM remote_payment_requests r
-            WHERE r.venue_id = :venueId AND r.status = 'PROCESSING' AND r.execution_started_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM payment_attempts p
-                WHERE instr(p.payment_context_json, '"terminalPaymentRequestId":"' || r.request_id || '"') > 0)
-            ORDER BY r.created_at DESC LIMIT :limite)
-        ORDER BY desde_millis DESC"""
-    )
-    // D20 (Codex r2): [limite] por mitad; el aviso usa 50 y «Ver anteriores» de Pagos lo amplía de 50 en 50.
+    @Query("SELECT * FROM (" + SQL_POR_REVISAR + ") ORDER BY desde_millis DESC, clase ASC, clave ASC LIMIT :limite")
+    // D20 (Codex r2) y F1 bloque 5: un solo orden estable (fecha, clase, ID) y [limite] para TODA la lista: «Ver anteriores» la amplía de
+    // 50 en 50 hasta el último renglón ([contarPorRevisar] dice cuántos son).
     fun observarCobrosDeclarables(venueId: String, processToken: String, limite: Int): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>>
+
+    /** F1 bloque 5: el total EXACTO de «Por revisar» (la misma unión, sin tope). */
+    @Query("SELECT COUNT(*) FROM (" + SQL_POR_REVISAR + ")")
+    fun contarPorRevisar(venueId: String, processToken: String): kotlinx.coroutines.flow.Flow<Int>
+
+    /** F1 bloque 5: UN renglón de «Por revisar» por su clave (sin tope: lo de «Ver anteriores» también se encuentra). */
+    @Query("SELECT * FROM (" + SQL_POR_REVISAR + ") WHERE clase = :clase AND clave = :clave LIMIT 1")
+    suspend fun renglonPorRevisar(venueId: String, processToken: String, clase: String, clave: String): CobroDeclarable?
 
     /**
      * SDK 1.0.19 (18-sep): la petición NO salió al host — lo acreditó el SDK de AngelPay (`authorizationAttempted = false`
@@ -757,14 +1068,21 @@ interface PaymentAttemptDao {
     /**
      * 🔴 KERNEL_ACTIVO colgado = el proceso murió DENTRO de una llamada capaz de aprobar.
      * Va a INDETERMINADO, jamás a DESCARTADA: el dinero pudo moverse.
+     *
+     * 🔴 F1 bloque 6 (I6): NUNCA la venta cuyo lector sigue en ESTE proceso ([procesoVivo]). `KERNEL_ACTIVO` es «lector activo sin
+     * envío» (la autorización se arma después, en `AUTORIZANDO`): ponerla en duda por reloj borraba esa distinción, y cuando el
+     * lector regresaba y fallaba la lectura de los datos, ya no se podía soltar (Codex código r3 #7: «Reintentar» con la terminal
+     * todavía apartada). Mientras el lector siga dentro, la fila ya aparta el aparato tal cual; ningún cobro sano se aborta por reloj.
+     * `""` = sin proceso que excluir (como antes).
      */
     @Query(
         """UPDATE payment_attempts
            SET state = 'INDETERMINADO', state_version = state_version + 1, updated_at = :now,
                last_error = 'cuarentena_por_antiguedad'
-           WHERE venue_id = :venueId AND state = 'KERNEL_ACTIVO' AND updated_at < :olderThan"""
+           WHERE venue_id = :venueId AND state = 'KERNEL_ACTIVO' AND updated_at < :olderThan
+             AND NOT (kind = 'SALE' AND process_token IS :procesoVivo)"""
     )
-    suspend fun quarantineStaleKernel(venueId: String, olderThan: Long, now: Long): Int
+    suspend fun quarantineStaleKernel(venueId: String, olderThan: Long, now: Long, procesoVivo: String): Int
 
     /**
      * 🔴 Ronda 20: lo que un proceso pudo dejar a medias (nunca las heredadas: en 2.9.2 el contactless entraba al kernel en
@@ -809,6 +1127,8 @@ interface PaymentAttemptDao {
            WHERE venue_id = :venueId AND legacy_shadow = 0 AND processor = 'ANGELPAY' AND kind = 'SALE'
              AND terminal_payment_request_id IS NULL AND state = 'INDETERMINADO' AND host_approved IS NOT 1
              AND server_outcome IS NULL AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
+             -- F1 (17-nov): la duda de una cuenta (folio) no se libera por silencio: la revisa el gerente.
+             AND NOT (instr(payment_context_json, '"orderId":"') > 0 AND instr(payment_context_json, '"orderId":""') = 0)
              -- Ronda 22 (Codex r20, P2-1): la página siguiente va DESPUÉS de la última leída. Con un LIMIT fijo, 100 dudas que no
              -- se pueden liberar tapaban para siempre a la 101 (las saltadas por su reintento se descartaban DESPUÉS del LIMIT).
              AND (updated_at > :trasActualizada OR (updated_at = :trasActualizada AND attempt_id > :trasId))
@@ -859,6 +1179,8 @@ interface PaymentAttemptDao {
     @Query(
         """DELETE FROM payment_attempts WHERE venue_id = :venueId AND state IN ('CERRADA','DESCARTADA') AND updated_at < :olderThan
            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
+           -- F1 bloques 3 y 4: ni una lectura del historial despachada sin respuesta, ni un aprobado propio sin registrar.
+           AND history_read_at IS NULL AND NOT """ + SQL_APROBADO_TRAS_LA_VENTANA + """
            -- `IFNULL`: con `last_error` NULL, `NULL LIKE …` es NULL, `NOT (NULL AND …)` es NULL, y el WHERE excluía EN
            -- SILENCIO toda fila sin motivo — la poda dejó de podar (lo cazaron las pruebas de la poda de siempre).
            AND NOT (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%'
@@ -880,7 +1202,10 @@ interface PaymentAttemptDao {
            SET server_payment_id = :paymentId, server_outcome = :outcome, server_recorded_via = :via,
                server_amount_cents = :amountCents, server_tip_cents = :tipCents, server_winner_payment_id = :winnerPaymentId,
                server_verdict_at = CASE WHEN server_outcome IN ('RELEASED_NO_EVIDENCE','OPERATOR_NO_INSTRUMENT') THEN :now ELSE COALESCE(server_verdict_at, :now) END,
-               server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now
+               server_checked_at = :now, server_check_count = server_check_count + 1, updated_at = :now,
+               -- 🔴 Familia «marca del historial» (ronda 3): con Payment ninguna consulta al historial la vuelve a tomar
+               -- (`server_payment_id`): su lectura despachada se quita aquí. Sin Payment (una liberación) se conserva: se retoma.
+               history_read_at = CASE WHEN :paymentId IS NULL THEN history_read_at ELSE NULL END
            WHERE attempt_id = :attemptId"""
     )
     suspend fun guardarVeredictoDelServidor(
@@ -1058,18 +1383,20 @@ interface PaymentAttemptDao {
         // intento, y bastaba con que UN llamador olvidara marcar antes (el respaldo de S5 de la pantalla) para dejar una
         // DESCARTADA con RECORDED que no apartaba nada. Aquí nadie la salta y no hay ventana entre las dos escrituras: si falla,
         // falla todo. Su propio WHERE la acota (AngelPay/Blumon · SALE · no heredada · ESTE venue); sin atribuir el Payment.
-        marcarEvidenciaPositivaDelServidor(v.attemptId, v.venueId, now)
-        // 🔴 Ronda 21 (Codex r19, P1-1): el VETO que trajo la MISMA respuesta, en la MISMA transacción. Aplicado sin él, un
-        // RECORDED con `evidenceContradiction` dejaba la fila limpia y el aviso ofrecía «Entendido» (confirmar y volver a cobrar).
-        v.veto?.let { marcarVetoDelServidor(v.attemptId, v.venueId, it, now) }
         val requestId = v.requestId ?: fila.terminalPaymentRequestId
         // Codex (código, P1-2/P1-6): fuera del checkpoint (heredada, procesador desconocido, devolución) NO es un rechazo — quien llama
         // sigue su camino anterior; un venue o una solicitud ajenos SÍ lo son (anomalía: no se pisa nada).
         if (fila.legacyShadow || fila.processor !in setOf(PaymentAttemptEntity.PROCESSOR_ANGELPAY, PaymentAttemptEntity.PROCESSOR_BLUMON) || fila.kind != PaymentAttemptEntity.KIND_SALE)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE, false, null, false)
+        // 🔴 F1 bloque 7 (I4): la PERTENENCIA se verifica ANTES de marcar nada. Antes la marca «hubo dinero» iba primero, y un aviso
+        // (S5) de OTRA solicitud dejaba este intento cercado con una aprobación que no era suya.
         if (fila.venueId != v.venueId ||
             (v.requestId != null && fila.terminalPaymentRequestId != null && fila.terminalPaymentRequestId != v.requestId)
         ) return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_PERTENENCIA, false, null, false)
+        marcarEvidenciaPositivaDelServidor(v.attemptId, v.venueId, now)
+        // 🔴 Ronda 21 (Codex r19, P1-1): el VETO que trajo la MISMA respuesta, en la MISMA transacción. Aplicado sin él, un
+        // RECORDED con `evidenceContradiction` dejaba la fila limpia y el aviso ofrecía «Entendido» (confirmar y volver a cobrar).
+        v.veto?.let { marcarVetoDelServidor(v.attemptId, v.venueId, it, now) }
         if (fila.serverPaymentId != null && v.paymentId != null && fila.serverPaymentId != v.paymentId) {
             estamparConsultaAlServidor(v.attemptId, now)
             return ResultadoDelVeredicto(ResultadoDelVeredicto.Decision.RECHAZADO_OTRO_PAYMENT, false, null, esContradiccion(v.attemptId) == true)
@@ -1103,6 +1430,8 @@ interface PaymentAttemptDao {
         guardarVeredictoDelServidor(
             v.attemptId, v.paymentId, v.outcome.name, v.recordedVia, v.amountCents, v.tipCents, v.ganadorAcreditado, now,
         )
+        // F1 · Codex final r8 #5 (A): el Payment de ESTE intento resuelve el impedimento genérico del 409 (nunca un veto propio).
+        resolverElImpedimentoConElPagoDeEsteIntento(v.attemptId)
         val transiciono = v.esFinalAprobado && registrarPorVeredictoDelServidor(v.attemptId, now) == 1
         val bandejaJson = v.ganadorAcreditado?.let { ganador -> requestId?.let { resolverBandejaConGanador(it, ganador, v.recordedVia, now) } }
         val estadoFinal = getById(v.attemptId)?.state
@@ -1144,13 +1473,21 @@ interface PaymentAttemptDao {
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
            WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id = :requestId
              AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
-             AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL
+             AND ((state = 'INDETERMINADO' AND server_outcome IS NULL)
+                  -- 🔴 F1 · 05AP (20-nov): la que ya soltó la VENTANA y después firmó un gerente pasa a «cerrada por una persona» (no se
+                  -- reabre ni toca la marca del historial: la siguiente respuesta la termina). Nunca al revés.
+                  OR (:serverOutcome = 'OPERATOR_NO_INSTRUMENT' AND state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE'
+                      AND server_payment_id IS NULL))
+             AND host_approved IS NOT 1
              AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
-             AND server_veto IS NULL""",
+             AND server_veto IS NULL
+             -- 🔴 F1 (aplicarAcuse único): la misma cláusula de cese que la firma local (bloque 2, R1): en la PAX, nunca mientras el
+             -- SDK de ESTE intento pueda regresar (misma ejecución, sin regreso). Tras el regreso o un reinicio, sí.
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""",
     )
-    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long): Int
+    suspend fun cerrarPorLiberacionDelServidor(attemptId: String, venueId: String, requestId: String, serverOutcome: String, motivo: String, now: Long, processToken: String): Int
 
     /**
      * 🔴 «Ninguna terminal muerta» (22-sep), pieza C: la MISMA liberación, pero de un cobro **LOCAL** — un Pago rápido,
@@ -1171,20 +1508,40 @@ interface PaymentAttemptDao {
              AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).
-             AND server_veto IS NULL""",
+             AND server_veto IS NULL
+             -- 🔴 F1 (aplicarAcuse único): la misma cláusula de cese que la firma local (bloque 2, R1): en la PAX, nunca mientras el
+             -- SDK de ESTE intento pueda regresar (misma ejecución, sin regreso). Tras el regreso o un reinicio, sí.
+             AND NOT (processor = 'BLUMON' AND process_token IS :processToken AND sdk_returned_at IS NULL)""",
     )
-    suspend fun cerrarPorLiberacionLocalDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long): Int
+    suspend fun cerrarPorLiberacionLocalDelServidor(attemptId: String, venueId: String, serverOutcome: String, motivo: String, now: Long, processToken: String): Int
 
     /**
      * 🔴 Codex r5-4 (22-sep): guarda el VETO del servidor de forma DURABLE. `server_veto IS NULL` conserva el PRIMER
      * motivo: lo que importa es que algo contradice, no cuál fue el último aviso. No toca el estado ni la retención —
      * esto no cierra nada, sólo impide que una respuesta LIMPIA y ATRASADA libere lo que otra ya contradijo.
      */
+    // 🔴 F1 · Codex final r8 #5 (A): el impedimento genérico del `409` (`SERVER_IMPEDIMENT`) es el ÚNICO veto que se puede sustituir: por
+    // un veto propio del servidor (más preciso, sigue prohibiendo liberar), nunca al revés. Y no se escribe sobre una fila cuyo Payment de
+    // ESTE intento ya lo resolvió ([SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO]): el 409 que llega tarde, o el reintento del que
+    // quedó en memoria, ya no frena para siempre el saldo de la cuenta.
     @Query(
         """UPDATE payment_attempts SET server_veto = :motivo, updated_at = :now
-           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0 AND server_veto IS NULL""",
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0
+           AND (server_veto IS NULL OR (server_veto = 'SERVER_IMPEDIMENT' AND :motivo != 'SERVER_IMPEDIMENT'))
+           AND NOT (:motivo = 'SERVER_IMPEDIMENT' AND """ + SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO + """)""",
     )
     suspend fun marcarVetoDelServidor(attemptId: String, venueId: String, motivo: String, now: Long): Int
+
+    /**
+     * 🔴 F1 · Codex final r8 #5 (A): el SERVIDOR acreditó el Payment de ESTE intento (`RECORDED`, mismo importe y propina; con solicitud,
+     * sin otro ganador acreditado): el impedimento genérico del `409` queda resuelto y se quita, en la MISMA transacción que guarda el
+     * veredicto y antes de la regla de liberación. Sólo ese veto: uno propio del servidor se conserva.
+     */
+    @Query(
+        """UPDATE payment_attempts SET server_veto = NULL
+           WHERE attempt_id = :attemptId AND server_veto = 'SERVER_IMPEDIMENT' AND """ + SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO,
+    )
+    suspend fun resolverElImpedimentoConElPagoDeEsteIntento(attemptId: String): Int
 
     /**
      * E4 · la bandeja responde por la SOLICITUD y sólo con un ganador acreditado: PROCESSING ⇒ RESOLVED `success`;

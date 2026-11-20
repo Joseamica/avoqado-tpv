@@ -26,6 +26,15 @@ sealed interface VerificacionDelCobro {
      */
     data object NoCobrado : VerificacionDelCobro
 
+    /**
+     * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): la venta de ESTE intento SÍ está en el historial y no está aprobada. AngelPay la
+     * registra ANTES de mandarla al banco: `05AP` («rejected», «05AP DECLINADA») es el banco que no contestó y puede volverse aprobada.
+     * Un rechazo definitivo trae el código del emisor, pero el historial del SDK 1.0.23 no trae ni código ni descripción (`TransactionItem`
+     * sólo tiene `status`): la terminal no los distingue y trata todo «no aprobada» como `05AP`. NO es «no aparece»: llegó al procesador,
+     * frena su tarjeta y se vuelve a preguntar. Sólo la resuelven el aprobado o la firma de una persona. [estado] = el `status` del historial.
+     */
+    data class EnElProcesador(val estado: String) : VerificacionDelCobro
+
     /** No se pudo preguntar (sin red, error del SDK…). Sigue sin saberse: NO reintentar. */
     data class NoSePudoVerificar(val motivo: String) : VerificacionDelCobro
 }
@@ -83,6 +92,7 @@ class AngelPayChargeVerifier @Inject constructor(
         )
 
         var ultimoFallo: String? = null
+        var enElProcesador: String? = null
         repeat(intentos.coerceIn(1, 3)) { intento ->
             if (intento > 0 && esperaEntreIntentosMs > 0) delay(esperaEntreIntentosMs * (1L shl intento.coerceAtMost(4)))
 
@@ -91,14 +101,16 @@ class AngelPayChargeVerifier @Inject constructor(
 
             resultado.fold(
                 onSuccess = { transacciones ->
-                    val mia = transacciones.filter { it.integratorReference == attemptId }.singleOrNull()
-                    if (mia != null && mia.authorizationCode.isNotBlank() &&
+                    // La venta de ESTE intento: nuestra referencia, de esta terminal y afiliación, y una venta.
+                    val mia = transacciones.filter { it.integratorReference == attemptId }.singleOrNull()?.takeIf {
+                        it.processorType == ProcessorType.ANGELPAY &&
+                            !terminalSerial.isNullOrBlank() && it.terminal == terminalSerial &&
+                            (!affiliation.isNullOrBlank() && it.affiliation == affiliation) &&
+                            it.operationType?.uppercase() in setOf("VENTA", "SALE")
+                    }
+                    val aprobada = mia?.status?.uppercase() in setOf("APROBADA", "APPROVED")
+                    if (mia != null && aprobada && mia.authorizationCode.isNotBlank() &&
                         mia.reference.isNotBlank() &&
-                        mia.processorType == ProcessorType.ANGELPAY &&
-                        mia.status.uppercase() in setOf("APROBADA", "APPROVED") &&
-                        !terminalSerial.isNullOrBlank() && mia.terminal == terminalSerial &&
-                        (!affiliation.isNullOrBlank() && mia.affiliation == affiliation) &&
-                        mia.operationType?.uppercase() in setOf("VENTA", "SALE") &&
                         mia.postOperationStatus.isNullOrBlank()) {
                         // `idOperation` (SDK 1.0.20) va al log para MEDIR qué número usa AngelPay para «venta»;
                         // mientras no se mida, la condición sigue siendo el texto de `operationType`.
@@ -111,6 +123,12 @@ class AngelPayChargeVerifier @Inject constructor(
                             referencia = mia.reference,
                             cardBin = mia.cardBin.takeIf { bin -> bin.isNotBlank() },
                         )
+                    }
+                    // Codex plan A #2: está y no aprobada (`05AP`, o un rechazo cuyo código no trae el SDK 1.0.23). Se vuelve a mirar
+                    // (puede aprobarse en segundos), pero ya no se concluye «no aparece».
+                    if (mia != null && !aprobada) {
+                        enElProcesador = mia.status
+                        Timber.w("🔍 [AngelPay] La venta está en el historial SIN aprobar (%s): llegó al procesador | attemptId=%s", mia.status, attemptId)
                     }
                     // Todavía no está. Puede que el historial vaya con retraso frente a un
                     // cobro de hace segundos, así que se vuelve a mirar antes de concluir.
@@ -131,7 +149,9 @@ class AngelPayChargeVerifier @Inject constructor(
         // An absent entry can never prove that authorization did not occur.
         // F1 bloque 4: una respuesta VÁLIDA sin coincidencia («todavía no aparece») se distingue del fallo técnico (red, credenciales,
         // lectura ilegible): la primera gasta un turno de la recuperación, el segundo sólo pausa.
-        return ultimoFallo?.let { VerificacionDelCobro.NoSePudoVerificar(it) } ?: VerificacionDelCobro.NoCobrado
+        // Codex plan A #2: verla «en el procesador» una vez gana a un fallo técnico o a un vistazo vacío posterior.
+        return enElProcesador?.let { VerificacionDelCobro.EnElProcesador(it) }
+            ?: ultimoFallo?.let { VerificacionDelCobro.NoSePudoVerificar(it) } ?: VerificacionDelCobro.NoCobrado
     }
 
     companion object {

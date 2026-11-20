@@ -145,7 +145,31 @@ class AngelPayChargeVerifierTest {
         coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
             listOf(transaccion("intento-1", "123456").copy(status = "DECLINED"))
         )
-        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.NoCobrado) // F1 bloque 4: respuesta válida sin coincidencia, no fallo técnico
+        // Codex plan A #2: no confirma cobro, pero tampoco es «no aparece»: la venta está en el procesador sin aprobar.
+        assertThat(verificar(1)).isEqualTo(VerificacionDelCobro.EnElProcesador("DECLINED"))
+    }
+
+    /**
+     * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): sin respuesta del banco la venta sale `rejected` / «05AP DECLINADA» y puede volverse
+     * aprobada. El historial del SDK 1.0.23 no trae código ni descripción: no se distingue de un rechazo definitivo, y ninguno de los dos
+     * es «no aparece». Si después sale aprobada, gana el aprobado.
+     */
+    @Test
+    fun `P1 la venta en 05AP es EnElProcesador, nunca NoCobrado, y si se aprueba gana el aprobado`() = runTest {
+        val enDuda = transaccion("intento-1", "").copy(status = "rejected")
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(listOf(enDuda))
+        assertThat(verificar(2)).isEqualTo(VerificacionDelCobro.EnElProcesador("rejected"))
+
+        coEvery { adapter.getTransactionHistory(any()) } returnsMany listOf(
+            Result.success(listOf(enDuda)), Result.success(listOf(transaccion("intento-1", "251259"))),
+        )
+        assertThat(verificar(2)).isInstanceOf(VerificacionDelCobro.Cobrado::class.java)
+
+        // Visto en el procesador y luego un fallo de red: lo visto no se pierde.
+        coEvery { adapter.getTransactionHistory(any()) } returnsMany listOf(
+            Result.success(listOf(enDuda)), Result.failure(RuntimeException("sin red")),
+        )
+        assertThat(verificar(2)).isEqualTo(VerificacionDelCobro.EnElProcesador("rejected"))
     }
 
     @Test

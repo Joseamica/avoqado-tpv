@@ -72,6 +72,16 @@ class LedgerUnknownRecovery @Inject constructor(
                         // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
                         is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
+                        // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y
+                        // puede aprobarse tarde). No es «no aparece»: la marca se queda —frena su tarjeta aunque la ventana del SERVIDOR la
+                        // suelte— y se vuelve a preguntar sin gastar turno. La resuelven el aprobado (arriba) o una PERSONA: si ya la firmó,
+                        // cuenta como «no aparece» y su tarjeta sigue lo que decidió. Nunca el silencio.
+                        // ponytail: una `05AP` que nunca cambia se vuelve a preguntar en cada barrido y su fila no se poda; si se acumulan,
+                        // hace falta la firma del gerente para la que ya soltó la ventana (decisión de producto pendiente).
+                        is VerificacionDelCobro.EnElProcesador ->
+                            if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId))) dao.terminarConsultaSinCoincidencia(
+                                row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
+                            else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled

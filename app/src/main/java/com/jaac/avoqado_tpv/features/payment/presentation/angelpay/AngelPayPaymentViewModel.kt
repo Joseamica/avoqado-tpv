@@ -4068,6 +4068,10 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // Igual que una lectura que se abandonó (la pantalla se fue a media consulta).
                 esperarVeredictoDelServidor(verificacion.motivo)
             }
+
+            // 🔴 Codex plan A #2: la venta está en el historial sin aprobar (`05AP`). Tampoco es «no aparece»: la lectura sigue despachada
+            // (frena la tarjeta de la cuenta aunque la ventana la suelte) y la retoma la recuperación.
+            is VerificacionDelCobro.EnElProcesador -> esperarVeredictoDelServidor("en el historial sin aprobar: ${verificacion.estado}")
         }
     }
 
@@ -4430,7 +4434,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         val mostrado = AngelPayPaymentState.Error(
             message = when (evidencia) {
                 "OPERATOR_RECONCILED" -> "Confirmado: no se presentó tarjeta. Se puede volver a cobrar."
-                else -> "No se confirmó el cobro en 30 s. Se puede volver a cobrar. Si el banco lo aprueba tarde, se registra solo y la terminal avisa."
+                // Codex plan A #2: «si el banco lo aprueba tarde, se registra solo» era falso (el aviso de AngelPay sale una vez y las
+                // consultas de la terminal se agotan).
+                else -> "No se confirmó el cobro."
             },
             canRetry = false,
         )

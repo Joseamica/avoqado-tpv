@@ -13,7 +13,13 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.domain.processor.PaymentPostOperationsAdapter
+import com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationsAdapterFactory
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+import com.jaac.avoqado_tpv.features.payment.domain.processor.TransactionHistoryQuery
+import com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -361,6 +367,116 @@ class AprobadoFinalN86RoomTest {
         sql("UPDATE payment_attempts SET state = 'AUTORIZADO', history_read_at = ${System.currentTimeMillis()} WHERE attempt_id = 'a1'")
         assertThat(dao.sellarAprobacionDelHost("a1", null, "REF", "AUTH", System.currentTimeMillis())).isEqualTo(1)
         assertWithMessage("la marca no queda viva sin una consulta que la termine").that(dao.getById("a1")!!.historyReadAt).isNull()
+    }
+
+    // ═══════════════════════════════ Admisión de la N86 (Codex plan A #1 y #2, 20-nov) ═══════════════════════════════
+
+    /** Un proceso cuya base no puede escribir el aprobado final de AngelPay (disco lleno, E/S): el aprobado queda sólo en memoria. */
+    private fun libretaQueNoEscribeElAprobado() = PaymentAttemptLedger(
+        object : PaymentAttemptDao by dao {
+            override suspend fun escribirAprobadoFinalAngelPay(
+                venueId: String, attemptId: String, referencia: String?, autorizacion: String?, origen: String, now: Long,
+            ): AprobadoFinal = throw android.database.sqlite.SQLiteFullException("disco lleno")
+        },
+        mockk(relaxed = true),
+    )
+
+    /**
+     * 🔴 Codex plan A #1 · TPV SOLA en la N86: el gerente firmó A1 («no se cobró»); llega su aprobado tardío y las dos escrituras fallan.
+     * La libreta lo recuerda en memoria, pero la reserva del lector miraba sólo la base: otra tarjeta de la MISMA cuenta entraba (con el
+     * aprobado escrito, no). Ahora la memoria frena igual que la base; otra cuenta del mismo importe entra.
+     */
+    @Test fun `N86_aprobado_solo_en_memoria_frena_la_reserva_de_otra_tarjeta_de_la_cuenta`() = runBlocking<Unit> {
+        dudaN86("a1"); firmar("a1")
+        val l = libretaQueNoEscribeElAprobado()
+        assertWithMessage("el aprobado no quedó escrito").that(l.markHostResponded("a1", true, null, "REF", "AUTH")).isFalse()
+        assertThat(l.aprobacionPendienteDeGuardar("a1")).isTrue()
+        assertWithMessage("otra tarjeta de A no reserva el lector").that(otraTarjetaDeA(l)).isFalse()
+        assertWithMessage("la pantalla lo ve antes de encender el lector").that(l.otraCercaDeLaTarjeta("orden-A", "b-x")).isTrue()
+        assertWithMessage("otra cuenta, mismo importe, entra").that(otraTarjeta(l, "orden-B")).isTrue()
+    }
+
+    /**
+     * 🔴 Codex plan A #1 · la misma memoria entre reservar y autorizar: B ya reservó (la firma de A1 no frena) y entonces el aprobado
+     * tardío de A1 queda sólo en memoria. B no entra al lector ni pide autorización. Otra cuenta, sí.
+     */
+    @Test fun `N86_aprobado_solo_en_memoria_frena_lector_y_autorizacion_de_la_tarjeta_ya_reservada`() = runBlocking<Unit> {
+        dudaN86("a1"); firmar("a1")
+        val l = libretaQueNoEscribeElAprobado()
+        assertThat(l.openAttempt("b", venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-A"}""")).isTrue()
+        l.markHostResponded("a1", true, null, "REF", "AUTH")
+        assertWithMessage("B no entra al lector").that(l.markKernelEntered("b")).isFalse()
+        assertWithMessage("B no pide autorización").that(l.markAuthorizing("b")).isFalse()
+        assertThat(dao.getById("b")!!.state).isEqualTo("PREPARANDO")
+        l.markDiscardedBeforeCharge("b", "fin de la prueba")
+        assertThat(l.openAttempt("c", venue, "ANGELPAY", 10_000, 0, "ORDER", """{"orderId":"orden-C"}""")).isTrue()
+        assertWithMessage("otra cuenta sí pide autorización").that(l.markAuthorizing("c")).isTrue()
+    }
+
+    /** El verificador REAL frente a un historial de AngelPay simulado: la venta de ESTE intento con [estado] (null = no aparece). */
+    private fun historialReal(estado: () -> String?): AngelPayChargeVerifier {
+        val adapter = mockk<PaymentPostOperationsAdapter>()
+        coEvery { adapter.getTransactionHistory(any()) } answers {
+            val id = firstArg<TransactionHistoryQuery>().integratorReference!!
+            Result.success(listOfNotNull(estado()?.let { ventaEnElHistorial(id, it) }))
+        }
+        val fabrica = mockk<PostOperationsAdapterFactory>()
+        every { fabrica.get(ProcessorType.ANGELPAY) } returns adapter
+        return AngelPayChargeVerifier(fabrica)
+    }
+
+    /** Una fila del historial de AngelPay de la venta [id], de esta terminal y afiliación (las de [contexto]). */
+    private fun ventaEnElHistorial(id: String, estado: String) = UnifiedTransaction(
+        processorType = ProcessorType.ANGELPAY, reference = "REF", amount = 100.0,
+        authorizationCode = if (estado == "APROBADA") "AUTH" else "", status = estado, cardType = null, last4 = null,
+        cardBin = "411111", entryMode = "CHIP", date = null, time = null, operationType = "VENTA", merchantName = null,
+        affiliation = "afiliacion", terminal = "terminal", folio = "1", waiter = null, tip = null, issuingBank = null, cardMethod = null,
+        creationDate = "", aid = null, arqc = null, postOperationType = null, postOperationReference = null,
+        postOperationAuthorization = null, postOperationStatus = null, integratorReference = id,
+    )
+
+    /**
+     * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): el historial trae la venta en `05AP` («rejected»): llegó al procesador y el banco no
+     * ha contestado; puede volverse aprobada. Se trataba como «no aparece»: se gastaba el turno, se borraba la marca y, al soltarla la
+     * ventana del SERVIDOR, otra tarjeta de la MISMA cuenta entraba. Ahora la marca se queda (sin gastar turno, aunque se pregunte más de
+     * cinco veces): la tarjeta sigue frenada y, cuando AngelPay la aprueba, se registra una venta con la llave del intento.
+     */
+    @Test fun `N86_venta_en_05AP_con_la_ventana_vencida_sigue_frenando_la_tarjeta_y_si_se_aprueba_se_registra`() = runBlocking<Unit> {
+        dudaN86("a1")
+        var estado = "rejected"   // «05AP DECLINADA»
+        val v = historialReal { estado }
+        var t = System.currentTimeMillis() + 600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        ventana("a1")   // el SERVIDOR la suelta: no le llegó el aviso del procesador
+        assertWithMessage("la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
+        assertWithMessage("05AP no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
+        repeat(6) { t += 3_600_000; LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t) }
+        assertWithMessage("sigue frenada tras siete respuestas 05AP").that(otraTarjetaDeA(libreta())).isFalse()
+        estado = "APROBADA"   // la respuesta del banco llegó tarde
+        t += 3_600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        dineroEscrito("a1")
+        val servidor = Servidor()
+        registrador(servidor).recover(venue, t + 3_600_000)
+        assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
+    /**
+     * 🔴 Codex plan A #2 · la salida (c): la venta sigue en `05AP` y el gerente firma «no se cobró» en «Por revisar». La consulta pendiente
+     * la termina la siguiente respuesta: con la firma, `05AP` cuenta como «no aparece» (gasta un turno, quita la marca) y la tarjeta de
+     * A entra. Sin la firma no había salida que no fuera el silencio.
+     */
+    @Test fun `N86_venta_en_05AP_firmada_por_el_gerente_suelta_su_tarjeta_en_la_siguiente_respuesta`() = runBlocking<Unit> {
+        dudaN86("a1")
+        val v = historialReal { "rejected" }
+        var t = System.currentTimeMillis() + 600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        firmar("a1")
+        assertWithMessage("con la consulta 05AP pendiente, la tarjeta todavía espera").that(otraTarjetaDeA(libreta())).isFalse()
+        t += 3_600_000
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        assertWithMessage("la firma decide: la tarjeta entra").that(otraTarjetaDeA(libreta())).isTrue()
+        assertWithMessage("una respuesta con la firma gasta un turno").that(consultasGastadas("a1")).isEqualTo(1)
     }
 
     @Test fun `lease_viejo_con_aprobado_propio_conserva_dinero_sin_gastar_dos_turnos`() = runBlocking<Unit> {

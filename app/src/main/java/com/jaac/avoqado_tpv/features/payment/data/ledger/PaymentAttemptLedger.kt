@@ -332,6 +332,9 @@ class PaymentAttemptLedger(
                     if (if (evidenceLockHeld) evidenciaSinGuardar.isNotEmpty() else puertaBajoCandado()) {
                         Timber.w("📒 [Libreta] reserva RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                         -1L
+                    } else if (aprobadoSinEscribirDeLaCuenta(fragment, attemptId) != null) {
+                        Timber.w("📒 [Libreta] reserva RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
+                        -1L
                     } else dao.reserveTerminal(
                         attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
                         amountCents = amountCents, tipCents = tipCents, recordingRoute = recordingRoute,
@@ -515,6 +518,9 @@ class PaymentAttemptLedger(
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] autorización RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                 false
+            } else if (aprobadoSinEscribirFrenaA(attemptId)) {
+                Timber.w("📒 [Libreta] autorización RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
+                false
             } else withContext(Dispatchers.IO) {
                 // KERNEL_ACTIVO entra aquí como continuación EXPLÍCITA (kernel → autorización
                 // online) y sólo por este camino: es del mismo intento, nunca de uno recreado.
@@ -548,6 +554,9 @@ class PaymentAttemptLedger(
         candadoDeEvidencia.withLock {
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] entrada al lector RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                false
+            } else if (aprobadoSinEscribirFrenaA(attemptId)) {
+                Timber.w("📒 [Libreta] entrada al lector RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
                 false
             } else withContext(Dispatchers.IO) {
                 dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
@@ -1052,6 +1061,30 @@ class PaymentAttemptLedger(
             // Codex r2 #2: si el chip rechazó el cierre (D5), la aprobación ya no es «cobrado»: es la duda, aunque falte escribirla.
             (aprobacionSinGuardar.containsKey(attemptId) && attemptId !in chipRechazoSinEscribir)
 
+    /**
+     * 🔴 Codex plan A #1 (20-nov): el aprobado que la libreta tiene sólo en MEMORIA ([aprobacionSinGuardar]: sus escrituras fallaron) frena
+     * la tarjeta de SU cuenta igual que si estuviera escrito — la admisión por SQL ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) no lo ve.
+     * Mismo criterio que [tieneDinero] ([hayDineroSinEscribir]) y mismo alcance que el SQL: la cuenta (`"orderId":"…"` del contexto, sin
+     * venue), una fila no heredada y que no esté ya a salvo (REGISTRADO, CERRADA, en la cola). La fila que frena, o null. Una lectura que
+     * falla se lanza: quien admite falla cerrado. Decide bajo [candadoDeEvidencia], donde nadie agrega a la memoria.
+     */
+    private suspend fun aprobadoSinEscribirDeLaCuenta(fragmento: String?, salvo: String?): PaymentAttemptEntity? {
+        if (fragmento == null) return null
+        for (id in aprobacionSinGuardar.keys) {
+            if (id == salvo || !hayDineroSinEscribir(id)) continue
+            val fila = dao.getById(id) ?: continue
+            if (!fila.legacyShadow && fila.state !in ESTADOS_A_SALVO && fila.paymentContextJson.contains(fragmento)) return fila
+        }
+        return null
+    }
+
+    /** [aprobadoSinEscribirDeLaCuenta] para un intento ya reservado (lector y autorización): su cuenta sale de su propia fila. */
+    private suspend fun aprobadoSinEscribirFrenaA(attemptId: String): Boolean =
+        aprobacionSinGuardar.keys.any { it != attemptId } && withContext(Dispatchers.IO) {
+            val cuenta = dao.getById(attemptId)?.let(::cuentaDe)
+            aprobadoSinEscribirDeLaCuenta(cuenta?.let { "\"orderId\":" + com.google.gson.Gson().toJson(it) }, attemptId) != null
+        }
+
     /** Una salida «no se cobró» bajo [candadoDeEvidencia]: con dinero del intento sin escribir, [escribir] ni se llama y da false. */
     private suspend fun salidaNegativa(attemptId: String, etiqueta: String, escribir: suspend () -> Boolean): Boolean =
         candadoDeEvidencia.withLock {
@@ -1498,8 +1531,11 @@ class PaymentAttemptLedger(
         true
     }
 
-    private suspend fun filaQueFrenaLaTarjeta(orderId: String, attemptIdPropio: String?): PaymentAttemptEntity? =
-        dao.otraCercaDeLaTarjeta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), attemptIdPropio.orEmpty(), processToken)
+    private suspend fun filaQueFrenaLaTarjeta(orderId: String, attemptIdPropio: String?): PaymentAttemptEntity? {
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        return dao.otraCercaDeLaTarjeta(fragmento, attemptIdPropio.orEmpty(), processToken)
+            ?: aprobadoSinEscribirDeLaCuenta(fragmento, attemptIdPropio)   // Codex plan A #1: también lo que sólo está en memoria
+    }
 
     /**
      * 🧾 Tienda híbrida (R89): ¿la libreta tiene DINERO EN JUEGO de esta venta que el SERVIDOR todavía no confirma? Es la MISMA
@@ -1765,6 +1801,11 @@ private val EJECUCION_POSIBLE = setOf(
 private val ESTADOS_CON_DINERO = setOf(
     PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_REGISTRADO,
     PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, PaymentAttemptEntity.STATE_CERRADA,
+)
+
+/** Codex plan A #1: el dinero ya está a salvo (registrado o en la cola): no frena la tarjeta de su cuenta — el mismo corte que la marca de [PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]. */
+private val ESTADOS_A_SALVO = setOf(
+    PaymentAttemptEntity.STATE_REGISTRADO, PaymentAttemptEntity.STATE_CERRADA, PaymentAttemptEntity.STATE_ENTREGADA_A_COLA,
 )
 
 /**

@@ -65,25 +65,29 @@ class AngelPayChargeVerifier @Inject constructor(
     /**
      * @param attemptId el `paymentAttemptId` que viajó como `integratorReference`.
      * @param terminalSerial acota la consulta a esta terminal (null = sin filtro).
-     * @param hoy fecha civil del cobro; se consulta también el día anterior.
+     * @param fechaDelCobro fecha civil en que se ABRIÓ el intento (zona del negocio); por default hoy (la pantalla pregunta en el acto).
      * @param intentos vistazos al historial antes de rendirse.
      * @param esperaEntreIntentosMs pausa entre vistazos.
      */
     suspend fun verificar(
         attemptId: String,
         terminalSerial: String?,
-        hoy: LocalDate = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
+        fechaDelCobro: LocalDate = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
         intentos: Int = INTENTOS_POR_DEFECTO,
         esperaEntreIntentosMs: Long = ESPERA_ENTRE_INTENTOS_MS,
         affiliation: String? = null,
     ): VerificacionDelCobro {
         val adapter = adapterFactory.get(ProcessorType.ANGELPAY)
-        // 🔴 Se consulta ayer TAMBIÉN: un cobro de las 23:59 verificado pasada la medianoche
-        // desaparecería de una consulta de un solo día, y esa ausencia se leería como
-        // "no se cobró" — el error que cuesta dinero.
+        // 🔴 Se consulta el día del cobro, el ANTERIOR y el SIGUIENTE, nunca más allá de hoy. Una ausencia se leería como «todavía no
+        // aparece» y gastaría las consultas: el error que cuesta dinero.
+        //  · El anterior: el cobro de ayer verificado pasada la medianoche (la pantalla pregunta con la fecha de hoy) y un reloj del aparato
+        //    adelantado (la Nexgo con Android 9 corre +1 h de abril a octubre: un cobro de las 23:30 se abre «mañana»).
+        //  · El siguiente (Codex final r6 #3): la recuperación pregunta con la fecha de APERTURA; un intento abierto a las 23:59:55 que
+        //    AngelPay registra a las 00:00:05 no estaba en [día − 1, día]. Con el aviso de AngelPay perdido: cargo aprobado y cero Payment.
+        val hoy = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)
         val query = TransactionHistoryQuery(
-            startDate = hoy.minusDays(1).format(FORMATO),
-            endDate = hoy.format(FORMATO),
+            startDate = fechaDelCobro.minusDays(1).format(FORMATO),
+            endDate = minOf(fechaDelCobro.plusDays(1), maxOf(hoy, fechaDelCobro)).format(FORMATO),
             // `reference` filtra por la referencia DE ANGELPAY, no por la nuestra: mandarle
             // el attemptId devuelve siempre vacío. El filtro nuestro se aplica abajo.
             reference = null,

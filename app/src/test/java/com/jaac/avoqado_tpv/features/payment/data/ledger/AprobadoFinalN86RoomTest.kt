@@ -606,6 +606,32 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("una respuesta con la firma gasta un turno").that(consultasGastadas("a1")).isEqualTo(1)
     }
 
+    /**
+     * 🔴 Codex final r6 #3 · POS → N86: el intento se abrió el 31-ene a las 23:59:55 y AngelPay registró la venta el 1-feb a las 00:00:05.
+     * La recuperación le pasaba al historial la fecha de apertura como «hoy» y buscaba [30-ene, 31-ene]: nunca la encontraba, gastaba sus
+     * consultas y, perdido el único aviso de AngelPay, el cliente pagaba con cero Payment. Ahora busca también el día siguiente.
+     */
+    @Test fun `N86_medianoche_el_aprobado_que_AngelPay_registra_el_dia_siguiente_se_encuentra_y_se_registra`() = runBlocking<Unit> {
+        val apertura = java.time.ZonedDateTime.of(2026, 1, 31, 23, 59, 55, 0, com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)
+            .toInstant().toEpochMilli()
+        dudaN86("a1", solicitud = "r-1", creadoEn = apertura)
+        ventana("a1")
+        firmar("a1")   // el gerente firmó tras la ventana: la recuperación sigue preguntando
+        val adapter = mockk<PaymentPostOperationsAdapter>()
+        coEvery { adapter.getTransactionHistory(any()) } answers {
+            val q = firstArg<TransactionHistoryQuery>()
+            // AngelPay la tiene con fecha del 1-feb: sólo aparece si la consulta cubre ese día.
+            Result.success(if (q.startDate <= "2026-02-01" && q.endDate >= "2026-02-01") listOf(ventaEnElHistorial(q.integratorReference!!, "APROBADA")) else emptyList())
+        }
+        val fabrica = mockk<PostOperationsAdapterFactory>()
+        every { fabrica.get(ProcessorType.ANGELPAY) } returns adapter
+        LedgerUnknownRecovery(dao, libreta(), AngelPayChargeVerifier(fabrica)).recover(venue, System.currentTimeMillis())
+        dineroEscrito("a1")
+        val servidor = Servidor()
+        registrador(servidor).recover(venue, System.currentTimeMillis() + 3_600_000)
+        assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
     @Test fun `lease_viejo_con_aprobado_propio_conserva_dinero_sin_gastar_dos_turnos`() = runBlocking<Unit> {
         dudaN86("a1")
         val suelta = CompletableDeferred<Unit>()

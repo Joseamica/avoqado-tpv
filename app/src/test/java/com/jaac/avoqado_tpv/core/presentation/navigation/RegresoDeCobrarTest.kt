@@ -39,4 +39,22 @@ class RegresoDeCobrarTest {
         assertThat(alPedido.indexOf("volverALosFolios(")).isLessThan(alPedido.indexOf("cameFromCheckout"))
         assertThat(alPedido.indexOf("volverALaCuentaDeLaMesa()")).isLessThan(alPedido.indexOf("cameFromCheckout"))
     }
+
+    @Test
+    fun `P1 D36 atras desde el cobro de Cobrar pide retirar la venta en la PAX y en la Nexgo`() {
+        val cobro = navegacion.substring(navegacion.indexOf("composable(NavRoute.Payment.route)"))
+        val alPedido = cobro.substringAfter("onNavigateToOrder = {").substringBefore("onNavigateToPayLaterOrders")
+        val deCobrar = alPedido.substring(alPedido.indexOf("} else if (cameFromCheckout) {"))
+        assertThat(deCobrar.substringBefore("} else {")).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), continueOrderId)")
+
+        val nexgo = navegacion.substring(navegacion.indexOf("composable(NavRoute.AngelPayPayment.route)"))
+        val atrasNexgo = nexgo.substringAfter("onNavigateBack = {").substringBefore("onNavigateHome = {")
+        assertThat(atrasNexgo).contains("if (cameFromCheckout && folio == null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orderId)")
+    }
+
+    @Test
+    fun `D36 abrir Cobrar reintenta los retiros que quedaron sin red`() {
+        val cobrar = navegacion.substring(navegacion.indexOf("composable(NavRoute.Checkout.route)")).substringBefore("CheckoutScreen(")
+        assertThat(cobrar).contains("retiroDeVentaSinCobro.reintentarPendientes()")
+    }
 }

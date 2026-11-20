@@ -140,6 +140,7 @@ interface AppNavigationEntryPoint {
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
     fun tpvSettingsRepository(): com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+    fun retiroDeVentaSinCobro(): com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaSinCobro
 
     // 🛡️ A5 — AngelPay refunds must resolve the merchant that OWNS the original
     // payment and authenticate as ITS AngelPay account before refunding.
@@ -361,6 +362,8 @@ fun AppNavigation(
     val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }
     // 🎁 Tienda híbrida, parte 2: el cobro con saldo de un folio (lo mira el cobro remoto del POS antes de entrar).
     val cobroConSaldo = remember { kioskEntryPoint.cobroConSaldo() }
+    // 🛒 D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó en el SERVIDOR (si nunca se intentó cobrar).
+    val retiroDeVentaSinCobro = remember { kioskEntryPoint.retiroDeVentaSinCobro() }
     LaunchedEffect(vigiaDeFolios) {
         vigiaDeFolios.iniciar(
             kotlinx.coroutines.CoroutineScope(activityOwner.lifecycleScope.coroutineContext + kotlinx.coroutines.Dispatchers.IO)
@@ -1569,6 +1572,8 @@ fun AppNavigation(
         // amount + orderId + orderNumber forwarded to Payment).
         composable(NavRoute.Checkout.route) {
             val checkoutScope = rememberCoroutineScope()
+            // D36: un retiro que quedó anotado sin red sale al volver a abrir Cobrar.
+            LaunchedEffect(Unit) { retiroDeVentaSinCobro.reintentarPendientes() }
             CheckoutScreen(
                 onNavigateBack = { navController.safePopBackStack() },
                 onNavigateToPayment = { payload ->
@@ -2118,6 +2123,9 @@ fun AppNavigation(
                         // registrado (p. ej. «sin papel» al imprimir), y el carrito lleno invitaba a cobrar la misma venta otra vez.
                         // La orden ya creada queda en el SERVIDOR (cobrada, o abierta si nunca se cobró).
                         Timber.i("🛒 [Navigation] Atrás desde el cobro de Cobrar (orden %s): Cobrar nuevo, vacío", continueOrderId)
+                        // D36: si esta venta nunca tuvo un intento de cobro, se retira en el SERVIDOR (no se queda abierta para siempre).
+                        // Corre aparte y no frena la navegación; la libreta, la cola y el servidor deciden si de verdad nunca se cobró.
+                        retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), continueOrderId)
                         navController.navigate(NavRoute.Checkout.route) {
                             popUpTo(NavRoute.Home.route) { inclusive = false }
                         }
@@ -2990,6 +2998,9 @@ fun AppNavigation(
                 folio = folio,
                 onNavigateBack = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
+                    // D36: «atrás» desde el cobro de una venta de Cobrar (Nexgo): si nunca se intentó cobrar, se retira en el SERVIDOR.
+                    // El carrito sigue en Cobrar; si la cajera vuelve a cobrar, nace otra venta (la de antes no se queda abierta).
+                    if (cameFromCheckout && folio == null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orderId)
                     if (folio != null) {
                         volverALosFolios(navController, vigiaDeFolios, cobrado = false)
                     } else {

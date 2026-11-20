@@ -238,6 +238,12 @@ object NetworkModule {
      * del plan), así que tampoco comparte su interfaz Retrofit aunque reutilice el
      * mismo [Retrofit]/[OkHttpClient] subyacente.
      */
+    /** D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó al tocar «Cobrar» (`RetiroDeVentaSinCobro`). */
+    @Provides
+    @Singleton
+    fun provideRetiroDeVentaApi(retrofit: Retrofit): com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaApi =
+        retrofit.create(com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaApi::class.java)
+
     @Provides
     @Singleton
     fun provideTablesApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService {

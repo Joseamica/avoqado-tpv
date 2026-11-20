@@ -33,6 +33,29 @@ class PaymentNavigationStateTest {
         assertThat(handle.get<String>("orderId")).isNull()
     }
 
+    /**
+     * D7 (19-nov-2026): Pago rápido sin red con el lector de Blumon sin preparar va en sólo efectivo, igual que Cobrar.
+     * El argumento viaja a la pantalla de cobro; sin él, un «sólo efectivo» viejo no se hereda.
+     */
+    @Test
+    fun `D7 pago rapido lleva soloEfectivo a la pantalla de cobro`() {
+        val handle = SavedStateHandle()
+
+        prepareManualPaymentArgs(handle, "120.00", soloEfectivo = true)
+
+        assertThat(handle.get<String>("initialAmount")).isEqualTo("120.00")
+        assertThat(handle.get<Boolean>("soloEfectivo")).isTrue()
+    }
+
+    @Test
+    fun `D7 pago rapido con red no hereda un soloEfectivo viejo`() {
+        val handle = SavedStateHandle(mapOf("soloEfectivo" to true))
+
+        prepareManualPaymentArgs(handle, "120.00")
+
+        assertThat(handle.get<Boolean>("soloEfectivo") ?: false).isFalse()
+    }
+
     // ------------------------------------------------------------------------------------------
     // 🔴 D.7 (2026-09-11) — los argumentos de un cobro son de UN solo uso
     // ------------------------------------------------------------------------------------------

@@ -343,6 +343,21 @@ fun AppNavigation(
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
     val connectionStateManager = remember { kioskEntryPoint.connectionStateManager() }
     val tpvSettingsRepository = remember { kioskEntryPoint.tpvSettingsRepository() }
+    // 💵 D7 (19-nov-2026): «Pago rápido» sin red va en sólo efectivo y NO espera al lector de Blumon, con la MISMA regla
+    // que un cobro de Cobrar sin orden (D2). Antes esperaba al lector (que sin red no termina de prepararse) y no dejaba
+    // cobrar ni en efectivo tras abrir la app sin red. Con red, o con el lector ya listo, igual que antes: la tarjeta espera.
+    val pagoRapidoVaEnSoloEfectivo: () -> Boolean = {
+        cobrarSaltaElLector(
+            hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
+            lectorListo = initializationManager.isInitialized.value,
+            tarjetaSinRed = tarjetaSinRed(
+                requiereServidorDeAvoqado = tpvSettingsRepository.getCurrentSettings().requireAvoqadoServerForCardPayment,
+                esCobro = true,
+                hayInternet = connectionStateManager.hasInternet(),
+                conexionCompleta = connectionStateManager.isFullyConnected(),
+            ),
+        )
+    }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
 
@@ -1304,12 +1319,13 @@ fun AppNavigation(
                 onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
                 onStartPaymentWithAmount = { amount ->
                     launchHomeAction action@ {
-                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
+                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                        if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
                             return@action
                         }
-                        Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
+                        Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
                         navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount)
+                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
                         }
                         navController.navigate(getPaymentRoute())
                     }
@@ -1548,11 +1564,12 @@ fun AppNavigation(
                 },
                 onAmountSubmit = { amount ->
                     fastPaymentScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
+                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
                             return@launch
                         }
                         navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount)
+                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
                         }
                         navController.navigate(getPaymentRoute())
                     }
@@ -3576,10 +3593,12 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
  * [SavedStateHandle]. Reusing that handle without clearing it makes the next manual payment
  * inherit `skipReview=true`, the external tip/rating, and the socket request id.
  */
-internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String) {
+internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String, soloEfectivo: Boolean = false) {
     clearPaymentArgs(handle)
     handle["initialAmount"] = amount
     handle["skipReview"] = false
+    // 💵 D7: sólo se escribe si va en sólo efectivo; clearPaymentArgs ya quitó uno viejo.
+    if (soloEfectivo) handle["soloEfectivo"] = true
 }
 
 /**

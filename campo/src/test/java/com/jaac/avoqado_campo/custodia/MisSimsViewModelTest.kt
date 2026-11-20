@@ -240,6 +240,7 @@ class MisSimsViewModelTest {
         assertTrue(e.ventasPorSubir[1].nota!!.contains("No se pudo subir"))
         assertEquals(listOf("S2", "S4", "S5"), e.exitosas.map { it.sim.serialNumber })
         assertTrue(e.enCustodia.isEmpty())
+        assertEquals(0L, e.bajadaAt) // la hora de la lista viaja a la pantalla («Así estaban tus ventas a las…»)
     }
 
     @Test fun `corregir evidencia encola una evidencia suelta con su pago y su verificacion`() {

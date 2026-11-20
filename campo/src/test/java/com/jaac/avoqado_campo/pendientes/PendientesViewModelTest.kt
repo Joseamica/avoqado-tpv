@@ -30,7 +30,6 @@ import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import com.jaac.avoqado_campo.red.Conectividad
 import io.mockk.coEvery
-import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -206,16 +205,6 @@ class PendientesViewModelTest {
         val ev = dao.hijosPorSubir(v.llave).single()
         assertEquals(EstadoPieza.RECHAZADA, ev.estado)
         assertEquals("SU_VENTA_SE_DESCARTO", ev.rechazoCode)
-    }
-
-    // Codex r2: la venta rechazada que se quita no se hizo; la SIM deja de estar «vendida» en el celular (antes, hasta tener señal).
-    @Test fun `quitar una venta rechazada le quita la marca de vendida a su SIM`() = runBlocking {
-        val v = ventaRechazada("PRECIO_CAMBIO", null)
-        val copia = mockk<RepositorioDeCopia>(relaxed = true)
-        val m = PendientesViewModel(dao, encolador, quienSoy, copia, conectividad, ApplicationProvider.getApplicationContext()).also { vm = it }
-        m.quitar(v.id)
-        esperar { dao.porId(v.id)?.estado == EstadoPieza.DESCARTADA }
-        coVerify(timeout = 5_000) { copia.marcar(quienSoy.generacion, "89521400001", null) }
     }
 
     // Codex r2: una fila guardada por la 0.4.0 trae «Mis SIMs»; se lee el texto de hoy, que manda a «Mis ventas».

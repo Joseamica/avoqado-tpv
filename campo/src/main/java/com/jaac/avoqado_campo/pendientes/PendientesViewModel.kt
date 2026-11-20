@@ -149,13 +149,9 @@ class PendientesViewModel @Inject constructor(
     /** El AVISO ya lo vio: pasa a DESCARTADA. */
     fun entendido(id: Long) = descartar(id, EstadoPieza.AVISO)
 
-    private fun descartar(id: Long, debeEstar: String) = correr { generacion ->
+    private fun descartar(id: Long, debeEstar: String) = correr {
         val p = dao.porId(id)?.takeIf { it.estado == debeEstar } ?: return@correr
         dao.descartarConHijos(id, if (p.tipo == TipoPieza.ENTRADA) "SU_ENTRADA_SE_DESCARTO" else "SU_VENTA_SE_DESCARTO")
-        // Codex r2: la venta rechazada que se quita no se hizo; sin esto la SIM seguía «vendida» en el celular hasta tener señal.
-        if (p.tipo == TipoPieza.VENTA && debeEstar == EstadoPieza.RECHAZADA) {
-            objetoJson(p.cuerpoJson)?.get("serialNumber")?.takeIf { it.isJsonPrimitive }?.asString?.let { copia.marcar(generacion, it, null) }
-        }
     }
 
     fun corregirPrecio(id: Long) = correr { generacion ->

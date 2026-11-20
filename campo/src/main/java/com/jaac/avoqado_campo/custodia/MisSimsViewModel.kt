@@ -47,6 +47,8 @@ data class EstadoMisSims(
     val enCustodia: List<FilaSim> = emptyList(),
     val vendidas: List<FilaSim> = emptyList(),
     val sinCopia: Boolean = true,
+    /** Cuándo se bajó la lista del SERVIDOR: sin señal, «Mis ventas» la enseña tal como estaba a esa hora (Codex r3). */
+    val bajadaAt: Long? = null,
     val actualizando: Boolean = false,
     val ocupado: Boolean = false,
     val corrigiendo: Correccion? = null,
@@ -316,6 +318,7 @@ class MisSimsViewModel @Inject constructor(
                 enCustodia = filas.filter { it.estado == EstadoFila.EN_CUSTODIA },
                 vendidas = filas.filter { it.estado in vendidas },
                 sinCopia = c == null,
+                bajadaAt = c?.bajadaAt,
             )
         }
     }

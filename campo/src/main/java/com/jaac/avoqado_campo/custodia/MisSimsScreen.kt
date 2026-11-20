@@ -38,6 +38,7 @@ import com.jaac.avoqado_campo.ui.Tenue
 import com.jaac.avoqado_campo.ui.TituloDeSeccion
 import com.jaac.avoqado_campo.ui.Tono
 import com.jaac.avoqado_campo.ui.enGrupos
+import com.jaac.avoqado_campo.ui.horaCorta
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
@@ -83,6 +84,8 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
         if (e.sinCopia) Recuadro("Todavía no están tus SIMs en el celular. Conéctate a internet una vez para bajarlas.", Tono.AVISO)
         e.error?.let { Recuadro(it, Tono.ERROR) }
         if (ventas) {
+            // Codex r3 (parada): sin señal la lista puede ir atrasada; se dice de qué hora es en vez de fingir que está al día.
+            e.bajadaAt?.takeIf { it > 0 }?.let { Tenue("Así estaban tus ventas a las ${horaCorta(it)}. Con señal, toca «Actualizar».") }
             if (e.ventasPorSubir.isNotEmpty()) {
                 Seccion("Por subir", e.ventasPorSubir, vacio = "") {}
                 Tenue("Todavía no llegan al servidor; las ves en «Ventas pendientes por subir».")

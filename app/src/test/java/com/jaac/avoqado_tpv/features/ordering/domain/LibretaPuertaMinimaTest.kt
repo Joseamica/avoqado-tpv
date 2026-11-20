@@ -117,6 +117,7 @@ class LibretaPuertaMinimaTest {
             coordinator.cacheBackendOrder(delServidor(4, tacos, cafeSrv, aguaDeOtro))
             Result.success(delServidor(3, tacos, cafeSrv)) // el acuse del alta es la versión 3
         }
+        coEvery { repo.getOrder(venue, cuenta) } returns Result.success(delServidor(4, tacos, cafeSrv, aguaDeOtro))
 
         coordinator.syncOrderImmediately(cuenta)
 
@@ -178,5 +179,54 @@ class LibretaPuertaMinimaTest {
         assertThat(renglones().all { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_SYNCED }).isTrue()
         assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_SYNCED)
         assertThat(cabecera().version).isEqualTo(3)
+    }
+
+    @Test fun `M8 un 409 que no trae version nueva se suelta como rechazo y no deja Pagar trabado`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        coordinator.removeItemFromLocalOrder(cuenta, "renglon-srv-tacos")
+        // El SERVIDOR rechaza el retiro con 409 aunque la versión es la correcta (p. ej. GIFT_CARD_ORDER_IMMUTABLE).
+        coEvery { repo.removeOrderItem(venue, cuenta, "renglon-srv-tacos", any()) } returns Result.failure(ConflictException("unknown"))
+        coEvery { repo.getOrder(venue, cuenta) } returns Result.success(delServidor(2, tacos))
+
+        coordinator.syncOrderImmediately(cuenta)
+
+        assertThat(renglones().map { it.id to it.syncStatus }).containsExactly("renglon-srv-tacos" to DraftOrderItemEntity.SYNC_STATUS_SYNCED)
+        assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_SYNCED)
+        assertThat(coordinator.hayRenglonesSinSubir(cuenta)).isFalse()
+    }
+
+    @Test fun `M9 un mas sobre un cafe ya subido que otra caja quito no lo vuelve a dar de alta`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        val llave = agregar("prod-cafe", "Café", "50.00")
+        val cafeSrv = renglon("renglon-srv-cafe", "prod-cafe", "Café", "50.00", externalId = llave)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), 2, any()) } returns Result.success(delServidor(3, tacos, cafeSrv))
+        coordinator.syncOrderImmediately(cuenta)
+        coordinator.updateItemQuantityInLocalOrder(cuenta, llave, 2, BigDecimal("50.00")) // «+» sin red
+        // Otra caja quitó el café (versión 4): el «+» choca y la relectura ya no lo trae.
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), 3, any()) } returns Result.failure(ConflictException("4"))
+        coEvery { repo.getOrder(venue, cuenta) } returns Result.success(delServidor(4, tacos))
+
+        coordinator.syncOrderImmediately(cuenta)
+
+        assertThat(renglones().map { it.productId }).containsExactly("prod-tacos")
+        assertThat(coordinator.hayRenglonesSinSubir(cuenta)).isFalse()
+    }
+
+    @Test fun `M10 un acuse que llega despues de una lectura mas nueva no deja visible lo que otra caja ya quito`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        val llave = agregar("prod-cafe", "Café", "50.00")
+        val cafeSrv = renglon("renglon-srv-cafe", "prod-cafe", "Café", "50.00", externalId = llave)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } coAnswers {
+            // El alta entra en la 3 y otra caja quita el café en la 4; la terminal lee la 4 antes de recibir el acuse.
+            coordinator.cacheBackendOrder(delServidor(4, tacos))
+            Result.success(delServidor(3, tacos, cafeSrv))
+        }
+        coEvery { repo.getOrder(venue, cuenta) } returns Result.success(delServidor(4, tacos))
+
+        coordinator.syncOrderImmediately(cuenta)
+
+        assertThat(renglones().map { it.productId }).containsExactly("prod-tacos")
+        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("100.00")
+        assertThat(cabecera().version).isEqualTo(4)
     }
 }

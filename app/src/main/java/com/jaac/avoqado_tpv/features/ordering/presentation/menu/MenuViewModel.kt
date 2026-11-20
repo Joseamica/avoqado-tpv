@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ResultadoDeLectura
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
@@ -498,8 +499,11 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Cache to local DB (preserves local-only fields like sentToKitchenAt)
-                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+                // Libreta fase 1 mínima: por la puerta. Una lectura más vieja que la libreta no toca la pantalla ni los descuentos.
+                if (orderSyncCoordinator.cacheBackendOrder(backendOrder) == ResultadoDeLectura.VIEJA) {
+                    Timber.i("⏭️ [MenuViewModel] Lectura vieja tras el cobro: la libreta ya tiene una versión más nueva")
+                    return@launch
+                }
 
                 // Load from local DB to get merged data (backend + local fields)
                 val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
@@ -585,8 +589,11 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Cache to local DB
-                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+                // Libreta fase 1 mínima: por la puerta; una lectura vieja no publica nada.
+                if (orderSyncCoordinator.cacheBackendOrder(backendOrder) == ResultadoDeLectura.VIEJA) {
+                    Timber.i("⏭️ [Sync] Lectura vieja: la libreta ya tiene una versión más nueva")
+                    return@launch
+                }
 
                 // Load merged order (preserves local-only fields like sentToKitchenAt)
                 val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
@@ -653,6 +660,13 @@ class MenuViewModel @Inject constructor(
             val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
             Timber.d("⚡ [Payment Prep] Order synced | id=$syncedOrderId")
 
+            // Libreta fase 1 mínima: con productos sin subir no se abre el cobro (cobraría sin ellos); se reintenta subirlos.
+            if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) {
+                Timber.w("⛔ [Payment Prep] Hay renglones sin subir | id=$syncedOrderId")
+                orderSyncCoordinator.scheduleSync(syncedOrderId)
+                return Result.failure(Exception(TEXTO_COLA_ANTES_DE_COBRAR))
+            }
+
             // Step 2: Fetch order from backend with recalculated discounts
             val venueId = deviceInfoManager.getVenueId()
                 ?: return Result.failure(Exception("Venue not configured"))
@@ -662,8 +676,14 @@ class MenuViewModel @Inject constructor(
                 return Result.failure(error)
             }
 
-            // Step 3: Cache and update local state
-            orderSyncCoordinator.cacheBackendOrder(backendOrder)
+            // Step 3: Cache and update local state — por la puerta. Sólo se cobra si la libreta quedó igual al SERVIDOR: con
+            // cola (un alta que entró mientras se leía) o con una lectura vieja, no se abre el cobro.
+            val lectura = orderSyncCoordinator.cacheBackendOrder(backendOrder)
+            if (lectura == ResultadoDeLectura.CON_COLA || lectura == ResultadoDeLectura.VIEJA) {
+                Timber.w("⛔ [Payment Prep] La libreta no quedó igual al SERVIDOR | lectura=$lectura")
+                orderSyncCoordinator.scheduleSync(syncedOrderId)
+                return Result.failure(Exception(TEXTO_COLA_ANTES_DE_COBRAR))
+            }
             // 💳 FIX: Merge orderCustomers from StateFlow with backend order
             // API doesn't return orderCustomers, but we already loaded them in _orderCustomers
             val mergedOrder = backendOrder.copy(orderCustomers = customersSnapshot)
@@ -756,7 +776,10 @@ class MenuViewModel @Inject constructor(
                     },
                     onFailure = { error ->
                         _isPreparingPayment.value = false
-                        onError(error.message ?: "Error preparando pago")
+                        val mensaje = error.message ?: "Error preparando pago"
+                        // Libreta fase 1 mínima: las 4 entradas de «Pagar» sólo registraban el error; el freno tiene que verse.
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = mensaje, isError = true))
+                        onError(mensaje)
                     }
                 )
             } catch (e: Exception) {
@@ -2085,6 +2108,14 @@ class MenuViewModel @Inject constructor(
                     order = order.copy(id = syncedOrderId)
                 }
 
+                // Libreta fase 1 mínima: con productos sin subir no se anula (la lectura de abajo no los tendría); se reintenta.
+                if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) {
+                    Timber.w("⛔ [VoidItems] Hay renglones sin subir | id=$syncedOrderId")
+                    orderSyncCoordinator.scheduleSync(syncedOrderId)
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_COLA_ANTES_DE_ANULAR, isError = true))
+                    return@launch
+                }
+
                 // ⭐ FIX: Fetch order DIRECTLY from backend to get real item IDs (not local cache)
                 // Local DB still has local_item_ IDs even after sync
                 Timber.d("🔄 [VoidItems] Fetching order from backend to get real item IDs...")
@@ -2097,6 +2128,15 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
                 Timber.d("🔄 [VoidItems] Backend order loaded | items=${freshOrder.items.size}")
+
+                // Si mientras se leía entró un alta (cola), no se anula. Esta lectura NO se guarda en la libreta (como antes): su
+                // precio unitario viene sin extras y una anulación fallida dejaría la libreta con precios bajos (Codex r1 #10).
+                if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) {
+                    Timber.w("⛔ [VoidItems] Entró un alta mientras se leía | id=$syncedOrderId")
+                    orderSyncCoordinator.scheduleSync(syncedOrderId)
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_COLA_ANTES_DE_ANULAR, isError = true))
+                    return@launch
+                }
 
                 // ⭐ Guard: If order has no items, it was already voided
                 if (freshOrder.items.isEmpty()) {
@@ -3770,6 +3810,12 @@ sealed interface MenuState {
  * vuelve a permitir. Degradar, nunca bloquear.
  */
 private const val PAYMENT_PREP_GUARD_MS = 15_000L
+
+// Libreta de Órdenes, fase 1 mínima: «Pagar» y «Anular» no abren con productos sin subir (la terminal los vuelve a subir sola).
+internal const val TEXTO_COLA_ANTES_DE_COBRAR =
+    "Hay productos que todavía no se suben al servidor. Se están enviando: revisa la conexión y vuelve a tocar Pagar."
+internal const val TEXTO_COLA_ANTES_DE_ANULAR =
+    "Hay productos que todavía no se suben al servidor. Se están enviando: revisa la conexión y vuelve a intentar anular."
 
 /**
  * ¿Se debe ignorar este toque a `Pagar` porque ya hay una preparación de pago en vuelo?

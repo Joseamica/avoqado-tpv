@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Órdenes · releer la cuenta del SERVIDOR ya no borra lo que la terminal no ha subido (libreta fase 1 mínima, tarjeta hz:e82938e1:D30 y hz:nube0000:nacec621, encargo 3a34fd)**: en TPV SOLA → ÓRDENES, toda cuenta que llega del SERVIDOR (abrirla, tras un cobro, tras un choque con otra caja, «Pagar», el recibo, el caché de `OrderRepositoryImpl`) entra a Room por UNA puerta (`DraftOrderDao.guardarCuentaDelServidor`, una transacción) en vez del `INSERT REPLACE` que borraba en cascada los productos agregados o quitados sin red. Con renglones en cola, ésos no se tocan y el total los suma; lo ya subido queda igual al SERVIDOR (entra lo de otra caja, sale lo que quitó) conservando la marca de cocina también por la llave del renglón; una lectura con versión menor que la de la terminal no la pisa, y la versión sólo sube (acuses, recálculo local y cierre de la vuelta ya no la regresan). «Pagar» y «Anular» no abren mientras haya productos sin subir: lo dicen en pantalla y la terminal los vuelve a subir (antes «Pagar» cobraba sin ellos tras un 409, y sus errores no se veían). Un 409 que no trae versión nueva (p. ej. tarjeta de regalo) se suelta como rechazo permanente, igual que antes. Fuera: acuses por cantidad, marca de cocina con el id viejo, el total con descuento al agregar, D23 (`updateOrderMerchant`) y descuentos. Promesa y rondas de Codex: `docs/audit/2026-11-20-libreta-fase-1-minima/` del workspace. Pruebas: `LibretaPuertaMinimaTest`, `MenuViewModelFrenoDeColaTest`, `QuitarRecienAgregadoTest` (T7 ahora: tras el 409 el retiro sigue en cola).
+
 ---
 
 ## [2.22.2] - 2026-11-20

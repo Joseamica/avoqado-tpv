@@ -13,8 +13,6 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrderCustomers
-import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
-import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.ConflictException
 import com.jaac.avoqado_tpv.features.ordering.domain.PermanentSyncException
@@ -200,36 +198,8 @@ class OrderRepositoryImpl @Inject constructor(
                             try {
                                 Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
 
-                                // Convert order to entity
-                                val draftOrderEntity = order.toEntity(
-                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
-                                    isServerCreated = true
-                                )
-
-                                // Preserve local line positions to keep UI order stable
-                                val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
-                                val localLinePositions = existingItems.associate { it.id to it.linePosition }
-
-                                // Convert items to entities
-                                val draftItemEntities = order.items.toEntities(
-                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                                    isServerCreated = true
-                                ).map { item ->
-                                    val localLinePosition = localLinePositions[item.id]
-                                    if (localLinePosition != null) {
-                                        item.copy(linePosition = localLinePosition)
-                                    } else {
-                                        item
-                                    }
-                                }
-
-                                // Insert order first (parent)
-                                draftOrderDao.insert(draftOrderEntity)
-
-                                // Then insert items (children)
-                                draftItemEntities.forEach { item ->
-                                    draftOrderItemDao.insert(item)
-                                }
+                                // Libreta fase 1 mínima: por la puerta (antes INSERT REPLACE, que borraba en cascada lo no subido).
+                                com.jaac.avoqado_tpv.features.ordering.domain.guardarPorLaPuerta(draftOrderDao, order)
 
                                 Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
                             } catch (e: Exception) {
@@ -315,19 +285,8 @@ class OrderRepositoryImpl @Inject constructor(
                         try {
                             Timber.d("💾 [Cache] Caching checkout order to local DB | id=${order.id} | items=${order.items.size}")
 
-                            val draftOrderEntity = order.toEntity(
-                                syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
-                                isServerCreated = true
-                            )
-                            val draftItemEntities = order.items.toEntities(
-                                syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                                isServerCreated = true
-                            )
-
-                            draftOrderDao.insert(draftOrderEntity)
-                            draftItemEntities.forEach { item ->
-                                draftOrderItemDao.insert(item)
-                            }
+                            // Libreta fase 1 mínima: por la puerta.
+                            com.jaac.avoqado_tpv.features.ordering.domain.guardarPorLaPuerta(draftOrderDao, order)
                         } catch (cacheError: Exception) {
                             Timber.e(cacheError, "❌ [Cache] Failed to cache checkout order: ${order.id}")
                         }
@@ -442,25 +401,8 @@ class OrderRepositoryImpl @Inject constructor(
                             try {
                                 Timber.d("💾 [Cache] Updating backend order in local DB | id=${order.id} | items=${order.items.size}")
 
-                                // Convert order to entity
-                                val draftOrderEntity = order.toEntity(
-                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
-                                    isServerCreated = true
-                                )
-
-                                // Convert items to entities
-                                val draftItemEntities = order.items.toEntities(
-                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                                    isServerCreated = true
-                                )
-
-                                // Insert order first (parent)
-                                draftOrderDao.insert(draftOrderEntity)
-
-                                // Then insert items (children)
-                                draftItemEntities.forEach { item ->
-                                    draftOrderItemDao.insert(item)
-                                }
+                                // Libreta fase 1 mínima: por la puerta (antes INSERT REPLACE, que borraba en cascada lo no subido).
+                                com.jaac.avoqado_tpv.features.ordering.domain.guardarPorLaPuerta(draftOrderDao, order)
 
                                 Timber.i("✅ [Cache] Backend order updated in local DB | id=${order.id}")
                             } catch (e: Exception) {

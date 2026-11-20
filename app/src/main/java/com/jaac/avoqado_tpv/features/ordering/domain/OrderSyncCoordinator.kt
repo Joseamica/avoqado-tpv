@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ResultadoDeLectura
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
@@ -118,6 +119,10 @@ class OrderSyncCoordinator @Inject constructor(
      * After sync completes, we schedule another sync if dirty=true.
      */
     private val dirtyOrders = ConcurrentHashMap<String, Boolean>()
+
+    /** Libreta fase 1 mínima: la versión con la que salió la última escritura de cada cuenta. Un 409 cuya relectura NO trae una
+     *  versión mayor no fue un choque de versión (p. ej. GIFT_CARD_ORDER_IMMUTABLE): se suelta como rechazo permanente. */
+    private val ultimaVersionEnviada = ConcurrentHashMap<String, Int>()
 
     /**
      * Local → server ID remapping (avoids FK violations during ID replacement window).
@@ -475,56 +480,24 @@ class OrderSyncCoordinator @Inject constructor(
      *
      * @param order Order fetched from backend
      */
-    suspend fun cacheBackendOrder(order: Order) = withContext(Dispatchers.IO) {
+    suspend fun cacheBackendOrder(order: Order): ResultadoDeLectura? = withContext(Dispatchers.IO) {
         try {
             Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
-
-            // ⭐ PRESERVE LOCAL sentToKitchenAt TIMESTAMPS
-            // Backend doesn't have this field, so we must preserve local values
-            val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
-            val localSentTimestamps = existingItems.associate { it.id to it.sentToKitchenAt }
-            val localLinePositions = existingItems.associate { it.id to it.linePosition }
-            Timber.d("💾 [Cache] Preserving ${localSentTimestamps.count { it.value != null }} local sentToKitchenAt timestamps")
-
-            // Convert order to entity (marked as SYNCED since it came from backend)
-            val draftOrderEntity = order.toEntity(
-                syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
-            )
-
-            // Convert items to entities (also marked as SYNCED)
-            val draftItemEntities = order.items.toEntities(
-                syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
-            ).map { item ->
-                // Preserve local sentToKitchenAt if it exists
-                val localTimestamp = localSentTimestamps[item.id]
-                val localLinePosition = localLinePositions[item.id]
-                val withSentAt = if (localTimestamp != null && item.sentToKitchenAt == null) {
-                    item.copy(sentToKitchenAt = localTimestamp)
-                } else {
-                    item
-                }
-                if (localLinePosition != null) {
-                    withSentAt.copy(linePosition = localLinePosition)
-                } else {
-                    withSentAt
-                }
-            }
-
-            // Insert order first (parent)
-            draftOrderDao.insert(draftOrderEntity)
-
-            // Then insert items (children with foreign key to order)
-            draftItemEntities.forEach { item ->
-                draftOrderItemDao.insert(item)
-            }
-
-            Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
+            // Libreta fase 1 mínima: por la puerta (nunca INSERT REPLACE; con cola no se borra ni se esconde nada; una lectura
+            // más vieja no pisa). La puerta conserva la marca de cocina y la posición de lo ya subido.
+            val resultado = guardarPorLaPuerta(draftOrderDao, order)
+            Timber.i("✅ [Cache] Backend order cached | id=${order.id} | version=${order.version} | resultado=$resultado")
+            resultado
         } catch (e: Exception) {
             Timber.e(e, "❌ [Cache] Failed to cache backend order: ${order.id}")
             // Don't throw - caching is a nice-to-have, order still loaded in memory
+            null
         }
+    }
+
+    /** ¿Quedan renglones de esta cuenta sin subir (altas, cantidades o retiros)? «Pagar» y «Anular» no abren mientras sí. */
+    suspend fun hayRenglonesSinSubir(orderId: String): Boolean = withContext(Dispatchers.IO) {
+        draftOrderDao.renglonesSinSubir(resolveExistingOrderId(orderId)) > 0
     }
 
     /**
@@ -1085,6 +1058,16 @@ class OrderSyncCoordinator @Inject constructor(
                 return false
             }
 
+            // Libreta fase 1 mínima: un 409 cuya relectura no trae una versión MAYOR que la enviada no fue un choque de versión (el
+            // SERVIDOR rechaza esa operación por otra razón, p. ej. GIFT_CARD_ORDER_IMMUTABLE). Antes el INSERT REPLACE la tiraba;
+            // con la puerta se reintentaría para siempre y «Pagar» no abriría: se suelta como rechazo permanente.
+            val enviada = ultimaVersionEnviada[orderId]
+            if (enviada != null && backendOrder.version <= enviada) {
+                Timber.w("🛑 [Sync] 409 sin versión nueva (enviada=$enviada, servidor=${backendOrder.version}) | order=$orderId")
+                handlePermanentSyncFailure(orderId, TEXTO_CAMBIO_NO_ACEPTADO)
+                return true
+            }
+
             cacheBackendOrder(backendOrder)
 
             val hasPending =
@@ -1128,21 +1111,36 @@ class OrderSyncCoordinator @Inject constructor(
      */
     private suspend fun handlePermanentSyncFailure(orderId: String, reason: String) {
         withContext(NonCancellable) {
-            // 1. Drop un-syncable local pending items (they were never accepted by the server).
-            val pending = draftOrderItemDao.getPendingItemsByOrder(orderId)
-            pending.forEach { draftOrderItemDao.markAsDeleted(it.id) }
-            if (pending.isNotEmpty()) {
-                Timber.w("🛑 [Sync] Dropped ${pending.size} un-syncable pending item(s) | order=$orderId")
-            }
-
-            // 2. Best-effort: refresh the order from the backend so local reflects its true state.
+            // 1. Lee la cuenta del SERVIDOR (lo que sí aceptó).
             val draft = draftOrderDao.getOrder(orderId)
-            if (draft?.isServerCreated == true) {
+            val backendOrder = if (draft?.isServerCreated == true) {
                 try {
-                    val backendOrder = orderRepository.getOrder(venueId = draft.venueId, orderId = orderId).getOrNull()
-                    if (backendOrder != null) cacheBackendOrder(backendOrder)
+                    orderRepository.getOrder(venueId = draft.venueId, orderId = orderId).getOrNull()
                 } catch (e: Exception) {
                     Timber.e(e, "🛑 [Sync] Permanent-failure backend refresh failed | order=$orderId")
+                    null
+                }
+            } else null
+
+            if (backendOrder != null) {
+                // 2. Libreta fase 1 mínima: suelta la cola de ESA cuenta y deja la libreta igual al SERVIDOR en UNA transacción
+                // (como el INSERT REPLACE de antes, pero sin perder la marca de cocina; si la puerta dejara los retiros en cola,
+                // la siguiente vuelta quitaría del SERVIDOR algo que ya no se quiere quitar).
+                val resultado = try {
+                    guardarPorLaPuerta(draftOrderDao, backendOrder, soltarCola = true)
+                } catch (e: Exception) {
+                    Timber.e(e, "🛑 [Sync] Permanent-failure cache failed | order=$orderId")
+                    null
+                }
+                Timber.w("🛑 [Sync] Dropped the queue and mirrored the server | order=$orderId | resultado=$resultado")
+            } else {
+                // Sin lectura: las altas que el SERVIDOR nunca aceptó se borran y los cambios sobre lo que ya tenía vuelven a SYNCED
+                // (la siguiente lectura los deja como allá). Antes pasaban a DELETED y, con la puerta, la siguiente vuelta habría
+                // quitado del SERVIDOR un producto que nadie pidió quitar (Codex fase 1 mínima r1 #6).
+                try {
+                    draftOrderDao.soltarAltasRechazadas(orderId)
+                } catch (e: Exception) {
+                    Timber.e(e, "🛑 [Sync] Permanent-failure local drop failed | order=$orderId")
                 }
             }
 
@@ -1424,6 +1422,7 @@ class OrderSyncCoordinator @Inject constructor(
                 Timber.d("   [$index] productId=${item.productId} | name=${item.productName} | qty=${item.quantity}")
             }
 
+            ultimaVersionEnviada[orderId] = currentVersion
             val result = orderRepository.addItemsToOrder(
                 venueId = venueId,
                 orderId = orderId,
@@ -1477,6 +1476,7 @@ class OrderSyncCoordinator @Inject constructor(
                 cuenta.items.firstOrNull { it.externalId == (deletedItem.externalId ?: deletedItem.id) }?.id
             }
             if (idEnServidor != null) {
+                ultimaVersionEnviada[orderId] = currentVersion
                 val result = orderRepository.removeOrderItem(
                     venueId = venueId,
                     orderId = orderId,
@@ -1512,21 +1512,21 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.i("✅ [Sync] Removed ${deletedItems.size} items | version=$currentVersion")
         }
 
-        // Step 3: Update local order version and mark as SYNCED
-        // ⭐ P0 FIX: Save the latest version from server
-        val order = draftOrderDao.getOrder(orderId)
-        if (order != null) {
-            // ✅ FIX: Use update() instead of insert() to prevent CASCADE DELETE
-            // insert() with REPLACE strategy DELETEs order row, triggering FK CASCADE on all items
-            // update() modifies existing row without DELETE, preserving all child items
-            withContext(NonCancellable) {
-                draftOrderDao.update(
-                    order.copy(
-                        version = currentVersion,  // ← Save latest version
-                        syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                        lastSyncAt = System.currentTimeMillis()
-                    )
-                )
+        // Step 3: Update local order version and mark as SYNCED — libreta fase 1 mínima: con una sentencia (la versión sólo sube)
+        // y sin copiar la cabecera entera, que pisaba una lectura del SERVIDOR que entró mientras se subía.
+        val versionEnLaLibreta = draftOrderDao.getOrder(orderId)?.version ?: currentVersion
+        withContext(NonCancellable) {
+            draftOrderDao.cerrarVueltaDeSubida(orderId, currentVersion, System.currentTimeMillis())
+        }
+        // Codex fase 1 mínima r1 #5: si mientras se subía entró una lectura MÁS NUEVA que el último acuse, esa lectura vio como «en
+        // cola» lo que el acuse acaba de dar por subido (y quizá otra caja ya lo quitó). Se relee una vez y entra por la puerta.
+        if (versionEnLaLibreta > currentVersion) {
+            val relectura = try { orderRepository.getOrder(venueId, orderId).getOrNull() } catch (e: Exception) { null }
+            if (relectura != null) {
+                val resultado = try { guardarPorLaPuerta(draftOrderDao, relectura, soltarCola = false) } catch (e: Exception) { null }
+                Timber.i("🔁 [Sync] Relectura tras un acuse atrasado | order=$orderId | libreta=$versionEnLaLibreta | acuse=$currentVersion | $resultado")
+            } else {
+                Timber.w("⚠️ [Sync] No se pudo releer tras un acuse atrasado | order=$orderId (la siguiente lectura lo corrige)")
             }
         }
 
@@ -1547,30 +1547,8 @@ class OrderSyncCoordinator @Inject constructor(
         if (effectiveOrderId != orderId) {
             Timber.w("⚠️ [Order Remap] recalc totals remapped orderId $orderId → $effectiveOrderId")
         }
-
-        val items = draftOrderItemDao.getItemsByOrder(effectiveOrderId)
-
-        val subtotal = items.sumOf { it.totalPrice.toBigDecimal() }
-        val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
-        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
-
-        val order = draftOrderDao.getOrder(effectiveOrderId) ?: return
-
-        // ✅ P0 FIX: Calculate remainingBalance = total - paidAmount
-        // Without this, payment buttons stay disabled because canProcessPayment requires remainingBalance > 0
-        val paidAmount = order.paidAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        val remainingBalance = total - paidAmount
-
-        draftOrderDao.update(
-            order.copy(
-                subtotal = subtotal.toString(),
-                tax = tax.toString(),
-                total = total.toString(),
-                remainingBalance = remainingBalance.toString(),  // ✅ P0 FIX: Enable payment buttons
-                updatedAt = System.currentTimeMillis(),
-                syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING // Mark for sync
-            )
-        )
+        // Total = suma de lo que se ve (como antes); en una transacción y sin reescribir la versión (libreta fase 1 mínima).
+        draftOrderDao.recalcularTotalesLocales(effectiveOrderId, System.currentTimeMillis())
     }
 
     fun resolveOrderId(orderId: String): String {
@@ -1646,3 +1624,22 @@ class PermanentSyncException(
     val httpCode: Int,
     message: String = "La operación no se pudo sincronizar"
 ) : Exception(message)
+
+/**
+ * Libreta de Órdenes · fase 1 mínima: convierte una cuenta del SERVIDOR al formato de la libreta y la pasa por la ÚNICA puerta
+ * ([DraftOrderDao.guardarCuentaDelServidor]). Las llaves (`externalId`) van aparte: `OrderItem.toEntity` guarda el id del SERVIDOR
+ * como llave a propósito (así sube un cambio de cantidad hoy), y la puerta sólo las usa para reconocer un renglón de la caja.
+ */
+internal suspend fun guardarPorLaPuerta(
+    draftOrderDao: DraftOrderDao,
+    order: Order,
+    soltarCola: Boolean = false,
+): ResultadoDeLectura {
+    val cuenta = order.toEntity(syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED, isServerCreated = true)
+    val renglones = order.items.toEntities(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = true)
+    val llaves = order.items.mapNotNull { r -> r.externalId?.takeIf { it.isNotBlank() && it != r.id }?.let { r.id to it } }.toMap()
+    return draftOrderDao.guardarCuentaDelServidor(cuenta, renglones, llaves, soltarCola)
+}
+
+internal const val TEXTO_CAMBIO_NO_ACEPTADO =
+    "El servidor no aceptó el último cambio de esta cuenta; se dejó como está en el servidor."

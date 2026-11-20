@@ -8,8 +8,19 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderWithItems
 import kotlinx.coroutines.flow.Flow
+import java.math.BigDecimal
+
+/**
+ * Qué hizo la puerta de la libreta con una cuenta que llegó del SERVIDOR (libreta de Órdenes, fase 1 mínima).
+ * - [NUEVA]: no estaba en la libreta; se guardó tal cual.
+ * - [REEMPLAZADA]: no había nada sin subir; la libreta quedó igual al SERVIDOR.
+ * - [CON_COLA]: había renglones sin subir; se conservaron y la cabecera los suma.
+ * - [VIEJA]: la libreta ya tenía una versión más nueva; no se tocó nada.
+ */
+enum class ResultadoDeLectura { NUEVA, REEMPLAZADA, CON_COLA, VIEJA }
 
 /**
  * DraftOrderDao - Room database access object for draft orders
@@ -264,7 +275,7 @@ interface DraftOrderDao {
      */
     @Query("""
         UPDATE draft_orders
-        SET version = :version,
+        SET version = MAX(version, :version),
             updated_at = :updatedAt
         WHERE id = :orderId
     """)
@@ -273,4 +284,159 @@ interface DraftOrderDao {
         version: Int,
         updatedAt: Long = System.currentTimeMillis()
     )
+
+    // ========================================================================================================================
+    // LA PUERTA DE LA LIBRETA (fase 1 mínima, encargo 3a34fd; promesa: docs/audit/2026-11-20-libreta-fase-1-minima/promesa.md)
+    // ========================================================================================================================
+
+    @Query("SELECT * FROM draft_order_items WHERE order_id = :orderId")
+    suspend fun renglonesDeLaCuenta(orderId: String): List<DraftOrderItemEntity>
+
+    /** Renglones que la caja todavía no sube: altas o cantidades (`PENDING`/`SYNCING`) y retiros (`DELETED`). */
+    @Query("SELECT COUNT(*) FROM draft_order_items WHERE order_id = :orderId AND sync_status != 'SYNCED'")
+    suspend fun renglonesSinSubir(orderId: String): Int
+
+    /**
+     * Un cambio local (agregar, quitar, cantidad) recalcula la cabecera como siempre (total = suma de lo que se ve), pero en UNA
+     * transacción y sin reescribir la versión: antes copiaba la cabecera entera leída afuera y, si en medio entraba una lectura
+     * del SERVIDOR, le regresaba la versión y el saldo viejos (Codex fase 1 mínima r1 #3).
+     */
+    @Transaction
+    suspend fun recalcularTotalesLocales(orderId: String, ahora: Long) {
+        val cuenta = getOrder(orderId) ?: return
+        val subtotal = renglonesDeLaCuenta(orderId)
+            .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+            .fold(BigDecimal.ZERO) { suma, r -> suma + dinero(r.totalPrice) }
+        update(
+            cuenta.copy(
+                subtotal = subtotal.toString(),
+                tax = BigDecimal.ZERO.toString(),
+                total = subtotal.toString(),
+                remainingBalance = (subtotal - dinero(cuenta.paidAmount)).toString(),
+                updatedAt = ahora,
+                syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING,
+            )
+        )
+    }
+
+    /** Cierre de una vuelta de la cola: la versión sólo sube (sin copiar la cabecera entera, que pisaba lo que entró en medio). */
+    @Query("UPDATE draft_orders SET version = MAX(version, :version), sync_status = 'SYNCED', last_sync_at = :ahora WHERE id = :orderId")
+    suspend fun cerrarVueltaDeSubida(orderId: String, version: Int, ahora: Long)
+
+    /**
+     * Rechazo permanente sin poder leer la cuenta: lo que el SERVIDOR ya tenía (cantidad cambiada) vuelve a `SYNCED` y la siguiente
+     * lectura lo deja como está allá; un alta que nunca aceptó se borra. Antes todo pasaba a `DELETED` y, con la puerta, la siguiente
+     * vuelta habría quitado del SERVIDOR un producto que nadie pidió quitar (Codex fase 1 mínima r1 #6).
+     */
+    @Transaction
+    suspend fun soltarAltasRechazadas(orderId: String) {
+        val pendientes = renglonesDeLaCuenta(orderId).filter { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING }
+        val (yaEnElServidor, nuevas) = pendientes.partition { it.isServerCreated }
+        if (nuevas.isNotEmpty()) borrarRenglones(nuevas.map { it.id })
+        if (yaEnElServidor.isNotEmpty()) marcarRenglonesSincronizados(yaEnElServidor.map { it.id })
+    }
+
+    @Query("UPDATE draft_order_items SET sync_status = 'SYNCED' WHERE id IN (:ids)")
+    suspend fun marcarRenglonesSincronizados(ids: List<String>)
+
+    @Query("DELETE FROM draft_order_items WHERE id IN (:ids)")
+    suspend fun borrarRenglones(ids: List<String>)
+
+    @Query("UPDATE draft_order_items SET sync_status = 'SYNCED' WHERE order_id = :orderId AND sync_status != 'SYNCED'")
+    suspend fun soltarLaColaDeLaCuenta(orderId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun guardarRenglones(renglones: List<DraftOrderItemEntity>)
+
+    /** `UPDATE OR REPLACE`: la cuenta conserva su fila (sin el borrado en cascada de sus renglones); ante un choque del índice
+     *  único (venue, folio) con OTRA fila se comporta como el `INSERT REPLACE` de antes. */
+    @Update(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun actualizarCuenta(order: DraftOrderEntity)
+
+    /**
+     * La ÚNICA entrada de una cuenta del SERVIDOR a la libreta, en una transacción de Room (hz:nube0000:nacec621: el `INSERT
+     * REPLACE` de antes borraba en cascada los renglones que la caja todavía no subía).
+     * 1. Si la libreta ya tiene una versión MÁS nueva, no se toca nada ([ResultadoDeLectura.VIEJA]). Igual versión sí entra: el
+     *    SERVIDOR no sube la versión con un abono ni con los datos del cliente.
+     * 2. Lo ya subido (`SYNCED`) queda igual al SERVIDOR: lo que ya no trae se borra, lo nuevo (de otra caja) entra, y la marca de
+     *    cocina y la posición pasan al renglón del SERVIDOR que coincide por id o por la llave que mandó la caja.
+     * 3. Lo que la caja todavía no sube (`PENDING`, `SYNCING`, `DELETED`) no se toca, y un renglón del SERVIDOR que es uno de ésos
+     *    (por id o llave) no entra encima. Excepción, como hoy: un cambio de cantidad pendiente sobre un renglón del SERVIDOR que
+     *    esta lectura ya no trae (otra caja lo quitó) se borra; si no, la cola lo volvería a dar de alta.
+     * 4. Cabecera: sin cola, la del SERVIDOR, por `UPDATE` ([ResultadoDeLectura.REEMPLAZADA]). Con cola, la del SERVIDOR con el
+     *    subtotal de los renglones vivos de la libreta y su estado de sincronización ([ResultadoDeLectura.CON_COLA]).
+     * Con [soltarCola] (rechazo permanente) primero se suelta la cola de esa cuenta: queda igual al SERVIDOR, como hacía el REPLACE.
+     *
+     * @param llaves id del SERVIDOR → la llave (`externalId`) con la que la caja dio de alta ese renglón, si la trae.
+     */
+    @Transaction
+    suspend fun guardarCuentaDelServidor(
+        cuenta: DraftOrderEntity,
+        renglones: List<DraftOrderItemEntity>,
+        llaves: Map<String, String>,
+        soltarCola: Boolean,
+    ): ResultadoDeLectura {
+        val actual = getOrder(cuenta.id)
+        if (actual == null) {
+            insert(cuenta)
+            if (renglones.isNotEmpty()) guardarRenglones(renglones)
+            return ResultadoDeLectura.NUEVA
+        }
+        if (actual.version > cuenta.version) return ResultadoDeLectura.VIEJA
+        if (soltarCola) soltarLaColaDeLaCuenta(cuenta.id)
+
+        fun nombres(id: String) = listOfNotNull(id, llaves[id])
+        val delServidor = renglones.flatMap { nombres(it.id) }.toSet()
+        var locales = renglonesDeLaCuenta(cuenta.id)
+        val retiradosPorOtro = locales.filter {
+            it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING && it.isServerCreated &&
+                it.id !in delServidor && (it.externalId == null || it.externalId !in delServidor)
+        }
+        if (retiradosPorOtro.isNotEmpty()) {
+            borrarRenglones(retiradosPorOtro.map { it.id })
+            locales = locales - retiradosPorOtro.toSet()
+        }
+        val (enCola, subidos) = locales.partition { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }
+        val nombresEnCola = enCola.flatMap { listOfNotNull(it.id, it.externalId) }.toSet()
+        val subidosPorNombre = HashMap<String, DraftOrderItemEntity>()
+        subidos.forEach { r -> r.externalId?.let { subidosPorNombre.putIfAbsent(it, r) } }
+        subidos.forEach { r -> subidosPorNombre[r.id] = r } // el id exacto gana sobre una llave
+        val nuevos = renglones.filter { r -> nombres(r.id).none { it in nombresEnCola } }.map { r ->
+            val previo = nombres(r.id).firstNotNullOfOrNull { subidosPorNombre[it] }
+            if (previo == null) r
+            else r.copy(sentToKitchenAt = r.sentToKitchenAt ?: previo.sentToKitchenAt, linePosition = previo.linePosition)
+        }
+        val quedan = nuevos.map { it.id }.toSet()
+        val sobran = subidos.map { it.id }.filter { it !in quedan }
+        if (sobran.isNotEmpty()) borrarRenglones(sobran)
+
+        val cabecera = cuenta.copy(
+            merchantAccountId = cuenta.merchantAccountId ?: actual.merchantAccountId,
+            merchantAccountName = cuenta.merchantAccountName ?: actual.merchantAccountName,
+            lastSplitType = cuenta.lastSplitType ?: actual.lastSplitType,
+        )
+        if (enCola.isEmpty()) {
+            actualizarCuenta(cabecera)
+            if (nuevos.isNotEmpty()) guardarRenglones(nuevos)
+            return ResultadoDeLectura.REEMPLAZADA
+        }
+        val subtotal = (enCola + nuevos)
+            .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+            .fold(BigDecimal.ZERO) { suma, r -> suma + dinero(r.totalPrice) }
+        val total = (subtotal + dinero(cabecera.total) - dinero(cabecera.subtotal)).max(BigDecimal.ZERO)
+        actualizarCuenta(
+            cabecera.copy(
+                subtotal = subtotal.toString(),
+                total = total.toString(),
+                remainingBalance = (total - dinero(cabecera.paidAmount)).max(BigDecimal.ZERO).toString(),
+                syncStatus = actual.syncStatus,
+                lastSyncAt = actual.lastSyncAt,
+                conflictData = actual.conflictData,
+            )
+        )
+        if (nuevos.isNotEmpty()) guardarRenglones(nuevos)
+        return ResultadoDeLectura.CON_COLA
+    }
 }
+
+private fun dinero(texto: String?): BigDecimal = texto?.toBigDecimalOrNull() ?: BigDecimal.ZERO

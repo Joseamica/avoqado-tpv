@@ -185,8 +185,9 @@ interface DraftOrderItemDao {
     @Query("UPDATE draft_order_items SET sync_status = :syncStatus WHERE id = :itemId")
     suspend fun updateSyncStatus(itemId: String, syncStatus: String)
 
-    /** D23: confirma un alta sin revivir el renglón que la cajera quitó mientras el alta iba en camino. */
-    @Query("UPDATE draft_order_items SET sync_status = 'SYNCED' WHERE id = :itemId AND sync_status != 'DELETED'")
+    /** D23: confirma un alta sin revivir el renglón que la cajera quitó mientras el alta iba en camino. Libreta fase 1 mínima: deja
+     *  dicho que el SERVIDOR ya lo aceptó (`is_server_created`), para que la puerta distinga un «+» sobre él de un alta nueva. */
+    @Query("UPDATE draft_order_items SET sync_status = 'SYNCED', is_server_created = 1 WHERE id = :itemId AND sync_status != 'DELETED'")
     suspend fun marcarSincronizadoSiNoSeQuito(itemId: String)
 
     /**

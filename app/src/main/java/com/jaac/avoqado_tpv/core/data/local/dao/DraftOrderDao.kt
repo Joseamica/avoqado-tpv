@@ -434,10 +434,24 @@ interface DraftOrderDao {
         recalcularCabecera(renglon.orderId, ahora)
     }
 
+    @Query("SELECT * FROM draft_order_items WHERE id = :itemId")
+    suspend fun renglonPorId(itemId: String): DraftOrderItemEntity?
+
+    /** Codex fase 1 r3 #5: si la cuenta cambió de id local al del SERVIDOR a media impresión, el renglón se busca por su id exacto
+     *  (único en la tabla), como antes. */
     @Transaction
     suspend fun marcarEnCocina(orderId: String, itemIds: List<String>, sentAt: Long) {
-        itemIds.forEach { id -> renglonNombrado(orderId, id)?.let { marcarRenglonEnCocina(it.id, sentAt) } }
+        itemIds.forEach { id -> (renglonNombrado(orderId, id) ?: renglonPorId(id))?.let { marcarRenglonEnCocina(it.id, sentAt) } }
     }
+
+    /** `SYNCED` sólo si no queda nada sin subir; si no, `PENDING` (en una sola sentencia: un alta que entra a la vez no se pierde). */
+    @Query("""
+        UPDATE draft_orders SET last_sync_at = :ahora, sync_status = CASE WHEN EXISTS (
+            SELECT 1 FROM draft_order_items WHERE order_id = :orderId AND sync_status != 'SYNCED'
+        ) THEN 'PENDING' ELSE 'SYNCED' END
+        WHERE id = :orderId
+    """)
+    suspend fun marcarSegunLaCola(orderId: String, ahora: Long)
 
     /**
      * El SERVIDOR aceptó el alta (o el cambio de cantidad) de este renglón con `cantidadEnviada` piezas. Queda `SYNCED` sólo si la

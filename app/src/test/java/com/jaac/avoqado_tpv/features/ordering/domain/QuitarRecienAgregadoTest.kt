@@ -117,8 +117,7 @@ class QuitarRecienAgregadoTest {
         coordinator.syncOrderImmediately(cuenta)
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
-        // Libreta fase 1: la respuesta del alta entra por la puerta y el renglón ya tiene el id del SERVIDOR; no hace falta releer.
-        coVerify(exactly = 0) { repo.getOrder(venue, cuenta) }
+        coVerify(exactly = 1) { repo.getOrder(venue, cuenta) } // una sola lectura para saber su id allá
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
         assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("25.00")
         assertThat(db.draftOrderDao().getOrder(cuenta)!!.syncStatus).isEqualTo("SYNCED")
@@ -259,7 +258,7 @@ class QuitarRecienAgregadoTest {
         servidorQuitaElCafe()
         coordinator.syncOrderImmediately(cuenta)
         // Lo que queda si la app muere entre guardar el retiro y recalcular (residuo declarado: la cola de reconexión no lo ve).
-        db.draftOrderItemDao().markAsDeleted(renglonesEnElAparato().single { it.productId == "prod-cafe" }.id)
+        db.draftOrderItemDao().markAsDeleted(llave)
 
         // La app se reinicia; la cajera hace otro cambio en esa cuenta y la cola corre: el retiro sale con él.
         val otro = OrderSyncCoordinator(db.draftOrderDao(), db.draftOrderItemDao(), repo)

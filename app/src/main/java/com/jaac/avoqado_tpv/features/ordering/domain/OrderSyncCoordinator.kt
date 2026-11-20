@@ -492,6 +492,11 @@ class OrderSyncCoordinator @Inject constructor(
         }
     }
 
+    /** El renglón que la pantalla nombra con `itemId` como está HOY en la libreta (la puerta pudo cambiarle el id). */
+    suspend fun renglonVigente(orderId: String, itemId: String): OrderItem? = withContext(Dispatchers.IO) {
+        draftOrderDao.renglonNombrado(resolveExistingOrderId(orderId), itemId)?.toDomain()
+    }
+
     /** ¿La caja tiene en esta cuenta algo que todavía no sube (alta, cantidad o retiro)? */
     suspend fun hayRenglonesSinSubir(orderId: String): Boolean = withContext(Dispatchers.IO) {
         draftOrderDao.renglonesSinSubir(resolveExistingOrderId(orderId)) > 0
@@ -1027,7 +1032,7 @@ class OrderSyncCoordinator @Inject constructor(
             return orderId
         }
 
-        if (colaTrasRechazo) {
+        if (colaTrasRechazo || (permanentlyFailed && resyncNeeded)) { // r3 #7: un alta que entró durante la recuperación
             // Fase 1 (Codex D16 r6 #7): lo rechazado ya se soltó; lo que la caja agregó mientras tanto sigue en cola y sube.
             Timber.i("🔁 [Sync] Queue left after a permanent failure | order=$orderId | scheduling resync")
             scheduleSync(orderId)
@@ -1134,14 +1139,9 @@ class OrderSyncCoordinator @Inject constructor(
             }
 
             // 3. Sin cola → SYNCED (syncPendingOrders no la revive: el ciclo infinito sigue roto). Con cola → PENDING y vuelve a
-            //    subir: cada rechazo suelta lo suyo, así que la cola siempre se acorta.
-            val cola = draftOrderDao.renglonesSinSubir(orderId) > 0
-            draftOrderDao.updateSyncStatus(
-                orderId,
-                if (cola) DraftOrderEntity.SYNC_STATUS_PENDING else DraftOrderEntity.SYNC_STATUS_SYNCED,
-                System.currentTimeMillis(),
-            )
-            cola
+            //    subir: cada rechazo suelta lo suyo, así que la cola siempre se acorta. En una sola sentencia (Codex r3 #7).
+            draftOrderDao.marcarSegunLaCola(orderId, System.currentTimeMillis())
+            draftOrderDao.renglonesSinSubir(orderId) > 0
         }
 
         // 4. Tell the UI so the cashier knows their change wasn't applied.
@@ -1527,9 +1527,16 @@ class OrderSyncCoordinator @Inject constructor(
         // agregado algo mientras subía). Si quedó cola, esta misma vuelta vuelve a subir al terminar.
         withContext(NonCancellable) {
             draftOrderDao.cerrarVuelta(orderId, currentVersion, System.currentTimeMillis())
-            // Codex fase 1 r2 #8: la respuesta del SERVIDOR a esta vuelta trae la cabecera que él calculó (cargos, % recalculados,
-            // precios) y lo de otro aparato; entra por la puerta (si ya es vieja o quedó cola, la puerta lo decide).
-            cuentaDelServidor?.let { cacheBackendOrder(it) }
+        }
+        // Codex fase 1 r3 #1: si mientras viajaba esta vuelta entró una lectura MÁS NUEVA que su acuse, lo que se acaba de confirmar
+        // pudo cambiar después en el SERVIDOR (otra caja lo quitó). Se relee una vez y entra por la puerta. (La respuesta de la
+        // vuelta NO se guarda: trae precios sin extras y sin la división de pagos, r3 #2 y #4.)
+        if ((draftOrderDao.getOrder(orderId)?.version ?: 0) > currentVersion) {
+            try {
+                orderRepository.getOrder(venueId, orderId).getOrNull()?.let { cacheBackendOrder(it) }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Sync] Re-read after a newer read failed | order=$orderId")
+            }
         }
         if (draftOrderDao.renglonesSinSubir(orderId) > 0) markDirty(orderId, reason = "queue left after upload")
 

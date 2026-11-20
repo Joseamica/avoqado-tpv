@@ -2189,7 +2189,8 @@ class MenuViewModel @Inject constructor(
                 // (In case user selected items before sync)
                 val usados = mutableSetOf<String>()
                 val backendItemIds = itemIds.mapNotNull { localId ->
-                    val localItem = order.items.find { it.id == localId }
+                    // Codex fase 1 r3 #3: el diálogo pudo quedarse con el id de antes de que la puerta pusiera el del SERVIDOR.
+                    val localItem = order.items.find { it.id == localId } ?: orderSyncCoordinator.renglonVigente(syncedOrderId, localId)
                     if (localItem != null) {
                         // Libreta fase 1 (Codex r1 #12): el mismo renglón, por su id o por la llave que mandó la caja.
                         val llave = localItem.externalId ?: localItem.id

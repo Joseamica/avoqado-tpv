@@ -1002,9 +1002,11 @@ class DeclaracionDesdeElAvisoRoomTest {
         coEvery { api.resolveNoInstrument(venue, "a-1", any()) } answers { s6Firmada("a-1", thirdArg<NoInstrumentResolutionRequest>().resolutionId) }
         val verificador = mockk<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier>()
         coEvery { verificador.verificar("a-1", "terminal", any(), any(), any(), "afiliacion") } coAnswers {
-            // 🔴 Codex final r2 #3: la firma queda guardada, pero con la lectura del historial EN VUELO no se dice «Ya se puede volver a
-            // cobrar» (antes esta prueba lo exigía, y el historial contesta «cobrado» justo después).
-            assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.HistorialPendiente)
+            // F1 · rediseño tras Codex r7 (20-nov): la firma de una persona suelta la tarjeta DE INMEDIATO, también con la lectura del
+            // historial en vuelo (una sola regla: estado, edad y firma). Antes (Codex final r2 #3) aquí se exigía «Historial pendiente»; ahora
+            // el resultado es el de la firma. Lo que protege el dinero sigue abajo: el «cobrado» que llega después reabre la fila y aparta la
+            // cuenta otra vez.
+            assertThat(declaracion.declarar(venue, cobro, pinDelGerente)).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
             assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
             com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro.Cobrado("AUTH", "REF", null)
         }

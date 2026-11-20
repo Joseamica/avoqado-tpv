@@ -40,6 +40,7 @@ import timber.log.Timber
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -621,6 +622,37 @@ class HomeViewModelTest {
         coVerify(timeout = 8_000) { authRepository.refrescarDatosDelNegocio("venue-123") }
         vm.viewModelScope.cancel()
     }
+    @Test
+    fun `P1 D34 sin la pantalla de Ordenes, el Inicio sube las cuentas de Ordenes que quedaron sin red`() = runTest(testDispatcher) {
+        // Antes sólo las subía la pantalla de «Órdenes» al abrirse; sin ella, una cuenta pendiente no subiría nunca.
+        val vm = createViewModel()
+        coVerify(timeout = 8_000, exactly = 1) { orderSyncCoordinator.syncPendingOrders("venue-123") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 D34 al volver la red el Inicio vuelve a subir las cuentas de Ordenes pendientes`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        coVerify(timeout = 8_000, exactly = 1) { orderSyncCoordinator.syncPendingOrders("venue-123") }
+        advanceTimeBy(2_000)
+        runCurrent()
+        fakeConnectionRestoredEvents.emit(
+            com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 1),
+        )
+        runCurrent()
+        coVerify(timeout = 8_000, exactly = 2) { orderSyncCoordinator.syncPendingOrders("venue-123") }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `D34 si subir las cuentas de Ordenes falla, el Inicio no truena`() = runTest(testDispatcher) {
+        coEvery { orderSyncCoordinator.syncPendingOrders(any()) } throws IllegalStateException("Room cerrada")
+        val vm = createViewModel()
+        coVerify(timeout = 8_000) { orderSyncCoordinator.syncPendingOrders("venue-123") }
+        assertThat(vm.viewModelScope.isActive).isTrue()
+        vm.viewModelScope.cancel()
+    }
+
     private suspend fun remotePublicNexgoT11(
         receipt: Map<String, Any>, expectedStatus: String,
         callbackCode: Int = 0, statusCode: Int = 0, expectedStarts: Int = 1,

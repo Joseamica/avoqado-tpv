@@ -295,6 +295,7 @@ class HomeViewModel @Inject constructor(
         fetchSalesGoal()                    // delay(2_500)
         warmUpProductCache()                // delay(3_000)
         refrescarDatosDelNegocio()          // delay(3_000) — D50: razón social y RFC del ticket
+        subirCuentasDeOrdenesPendientes()   // delay(3_500) — D34: lo que quedó de «Órdenes» sin subir
         checkForUpdates()                   // delay(4_000)
         loadInitialQueueCounts()            // delay(3_000)
         fetchPendingVerificationsCount()    // delay(3_000)
@@ -323,6 +324,22 @@ class HomeViewModel @Inject constructor(
                 delay(espera)
                 espera = (espera * 2).coerceAtMost(10 * 60_000L)
             }
+        }
+    }
+
+    /**
+     * D34 (founder, 20-nov): «Órdenes» se quitó de la terminal. Su pantalla era la ÚNICA que subía las cuentas que se
+     * guardaron en la terminal sin red (`OrderSyncCoordinator.syncPendingOrders`, al abrirla y al volver la red con ella
+     * abierta). Sin pantalla, una cuenta que quedó pendiente en una terminal que se actualiza no subiría nunca: ahora la sube
+     * el Inicio, al abrir y cada vez que vuelve la red. Sin nada pendiente no hace nada (consulta Room y sale). Nunca truena el
+     * Inicio: un fallo sólo se anota y se reintenta con la siguiente red.
+     */
+    private fun subirCuentasDeOrdenesPendientes(skipDelay: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!skipDelay) delay(3_500)
+            val venueId = secureStorage.getVenueId() ?: return@launch
+            runCatching { orderSyncCoordinator.syncPendingOrders(venueId) }
+                .onFailure { Timber.w(it, "🔁 [D34] No se pudieron subir las cuentas de Órdenes pendientes; se reintenta con la red") }
         }
     }
 
@@ -1019,6 +1036,7 @@ class HomeViewModel @Inject constructor(
                 fetchSalesGoal(skipDelay = true)
                 warmUpProductCache(skipDelay = true)
                 refrescarDatosDelNegocio(skipDelay = true)
+                subirCuentasDeOrdenesPendientes(skipDelay = true)
 
                 // Re-check for updates (in case initial check failed due to no connection)
                 // Only if there's no pending update already

@@ -64,8 +64,8 @@ enum class PaymentLedgerMode {
  *                               Skips merchant selection in kiosk mode if set.
  * @param showQuickPayment Whether to show "Pago rápido" button on home screen.
  *                         Controlled from dashboard settings.
- * @param showOrderManagement Whether to show "Órdenes" button on home screen.
- *                            Controlled from dashboard settings.
+ * @param showOrderManagement LEGACY, sin efecto: «Órdenes» se quitó de la terminal (D34, 20-nov). Se sigue leyendo y
+ *                            guardando sólo para no romper el contrato con el SERVIDOR (que ya lo manda siempre en false).
  * @param cellularFailoverMode Cellular failover rollout stage. Default OFF.
  * @param cellularFailoverBadReadingsThreshold Consecutive bad readings required before failover.
  * @param cellularFailoverCooldownSeconds Minimum seconds between network toggles.
@@ -119,7 +119,7 @@ data class TpvSettings(
     val kioskDefaultMerchantId: String? = null,
     // Home screen button visibility (controlled from dashboard)
     val showQuickPayment: Boolean = true,
-    val showOrderManagement: Boolean = true,
+    val showOrderManagement: Boolean = false,
     // Unified Checkout (additive rollout — runs in parallel with Pago Rápido + Órdenes)
     val showCheckout: Boolean = true,
     val showReports: Boolean = true,
@@ -177,15 +177,3 @@ data class TpvSettings(
  * The "Mesas" tile appears on the home screen only when restaurant mode is ON.
  */
 fun shouldShowTablesTile(settings: TpvSettings): Boolean = settings.restaurantModeEnabled
-
-/**
- * The legacy "Órdenes" tile hides once restaurant mode is ON — the two tiles
- * never both point at the same table at once (spec D-4). `showOrderManagement`
- * itself stays `true` at the global default on purpose: terminals without
- * Mesas keep it.
- *
- * Founder, 25-sep: «Ordenar ya es legacy, no debería ni de aparecer». «Cobrar» la sustituye: donde «Cobrar»
- * está prendido (el default), «Ordenes» no sale. Sólo queda de respaldo si un negocio apagó «Cobrar».
- */
-fun shouldShowOrderManagementTile(settings: TpvSettings): Boolean =
-    settings.showOrderManagement && !settings.restaurantModeEnabled && !settings.showCheckout

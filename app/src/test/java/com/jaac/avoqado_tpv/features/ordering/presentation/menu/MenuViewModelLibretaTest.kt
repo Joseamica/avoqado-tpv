@@ -118,6 +118,16 @@ class MenuViewModelLibretaTest {
         assertThat(error).isEqualTo(textoTotalCambio(BigDecimal("150.00")))
     }
 
+    @Test fun `Pagar con un total menor del SERVIDOR (un porcentaje recalculado) abre el cobro con el del SERVIDOR`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden("90.00"))
+        val vm = crear(orden("100.00"))
+        var listo: Order? = null
+
+        vm.onPaymentRequested(onReady = { listo = it }, onError = {})
+
+        assertThat(listo?.total).isEqualToIgnoringScale("90.00")
+    }
+
     @Test fun `Pagar con una lectura que dejo cola no abre el cobro`() {
         coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden("100.00"))
         coEvery { coordinator.cacheBackendOrder(any()) } returns ResultadoDeLectura.CON_COLA

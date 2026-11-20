@@ -684,7 +684,9 @@ class MenuViewModel @Inject constructor(
                 }
                 else -> Unit
             }
-            if (backendOrder.total.compareTo(order.total) != 0) {
+            // Sólo frena si cobraría MÁS de lo que la caja vio (otro aparato agregó algo). Si es menos (un % de descuento que el
+            // SERVIDOR recalculó, algo que otro aparato quitó), el cobro sigue con la cuenta del SERVIDOR, como antes.
+            if (backendOrder.total > order.total) {
                 Timber.w("⏸️ [Payment Prep] Total changed ${order.total} → ${backendOrder.total} — showing it first | id=$syncedOrderId")
                 orderSyncCoordinator.getLocalOrder(syncedOrderId)?.let { updateStateWithOrder(it) }
                 return Result.failure(Exception(textoTotalCambio(backendOrder.total)))
@@ -3847,7 +3849,7 @@ internal const val TEXTO_COLA_ANTES_DE_ANULAR =
     "Hay productos que todavía no se suben. Revisa la conexión y vuelve a intentar anular."
 internal const val TEXTO_CUENTA_CAMBIO = "La cuenta cambió mientras se preparaba el cobro. Revísala y vuelve a tocar Pagar."
 internal fun textoTotalCambio(total: java.math.BigDecimal): String =
-    "La cuenta cambió en otro aparato: ahora es \$" + total.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() +
+    "La cuenta cambió: ahora es \$" + total.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() +
         ". Revísala y vuelve a tocar Pagar."
 
 /**

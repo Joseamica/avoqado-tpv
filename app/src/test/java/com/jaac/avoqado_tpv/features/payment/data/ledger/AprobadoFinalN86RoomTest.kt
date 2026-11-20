@@ -89,17 +89,31 @@ class AprobadoFinalN86RoomTest {
 
     private val creado = System.currentTimeMillis() - 10 * 60_000
 
-    private suspend fun dudaN86(id: String, orden: String = "orden-A", solicitud: String? = null, afiliacion: String? = "afiliacion") {
+    /** Un intento abierto hace 2.5 min: la recuperación ya lo toma (más de 2 min) y todavía no llega al techo del `05AP` (5 min). */
+    private val reciente get() = System.currentTimeMillis() - 150_000
+
+    private suspend fun dudaN86(
+        id: String, orden: String = "orden-A", solicitud: String? = null, afiliacion: String? = "afiliacion", creadoEn: Long = creado,
+    ) {
         val json = if (solicitud == null) contexto(id, orden, afiliacion)
             else com.google.gson.JsonParser.parseString(contexto(id, orden, afiliacion)).asJsonObject.apply { addProperty("terminalPaymentRequestId", solicitud) }.toString()
         dao.insert(
             PaymentAttemptEntity(
                 attemptId = id, venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
                 recordingRoute = "ORDER", paymentContextJson = json, terminalPaymentRequestId = solicitud, serverAnsweredAt = 1L,
-                createdAt = creado, updatedAt = creado,
+                createdAt = creadoEn, updatedAt = creadoEn,
             ),
         )
     }
+
+    /**
+     * El reloj avanza [ms] para el intento [id]: su `created_at` (y la marca, si guarda la respuesta `05AP`, que es su `created_at`) se
+     * corre hacia atrás. La admisión lee la hora del aparato: así se prueba «sólo por el reloj», sin otra consulta ni red.
+     */
+    private fun envejecer(id: String, ms: Long) = sql(
+        "UPDATE payment_attempts SET history_read_at = CASE WHEN history_read_at = created_at THEN history_read_at - $ms ELSE history_read_at END, " +
+            "created_at = created_at - $ms WHERE attempt_id = '$id'",
+    )
 
     private fun sql(s: String) = db.openHelper.writableDatabase.execSQL(s)
 
@@ -413,10 +427,14 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("otra cuenta sí pide autorización").that(l.markAuthorizing("c")).isTrue()
     }
 
+    /** Cuántas veces se le preguntó al historial de AngelPay ([historialReal]). */
+    private var consultasAlHistorial = 0
+
     /** El verificador REAL frente a un historial de AngelPay simulado: la venta de ESTE intento con [estado] (null = no aparece). */
     private fun historialReal(estado: () -> String?): AngelPayChargeVerifier {
         val adapter = mockk<PaymentPostOperationsAdapter>()
         coEvery { adapter.getTransactionHistory(any()) } answers {
+            consultasAlHistorial++
             val id = firstArg<TransactionHistoryQuery>().integratorReference!!
             Result.success(listOfNotNull(estado()?.let { ventaEnElHistorial(id, it) }))
         }
@@ -438,38 +456,147 @@ class AprobadoFinalN86RoomTest {
     /**
      * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): el historial trae la venta en `05AP` («rejected»): llegó al procesador y el banco no
      * ha contestado; puede volverse aprobada. Se trataba como «no aparece»: se gastaba el turno, se borraba la marca y, al soltarla la
-     * ventana del SERVIDOR, otra tarjeta de la MISMA cuenta entraba. Ahora la marca se queda (sin gastar turno, aunque se pregunte más de
-     * cinco veces): la tarjeta sigue frenada y, cuando AngelPay la aprueba, se registra una venta con la llave del intento.
+     * ventana del SERVIDOR, otra tarjeta de la MISMA cuenta entraba. Ahora la marca se queda sin gastar turno y frena la tarjeta HASTA EL
+     * TECHO ([PaymentAttemptEntity.TECHO_DEL_05AP_MS], Codex final r6, 20-nov). Ajustada por el techo: antes exigía «sigue frenada tras
+     * siete respuestas 05AP» (sin límite); ahora pasado el techo la tarjeta entra sola y, si AngelPay la aprueba después, se registra una
+     * venta con la llave del intento por el camino de una fila soltada por la ventana.
      */
-    @Test fun `N86_venta_en_05AP_con_la_ventana_vencida_sigue_frenando_la_tarjeta_y_si_se_aprueba_se_registra`() = runBlocking<Unit> {
-        dudaN86("a1")
+    @Test fun `N86_venta_en_05AP_frena_su_tarjeta_hasta_el_techo_y_si_se_aprueba_despues_se_registra_una_vez`() = runBlocking<Unit> {
+        dudaN86("a1", solicitud = "r-1", creadoEn = reciente)
         var estado = "rejected"   // «05AP DECLINADA»
         val v = historialReal { estado }
-        var t = System.currentTimeMillis() + 600_000
-        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
         ventana("a1")   // el SERVIDOR la suelta: no le llegó el aviso del procesador
-        assertWithMessage("la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
+        assertWithMessage("antes del techo, la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
         assertWithMessage("05AP no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
-        repeat(6) { t += 3_600_000; LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t) }
-        assertWithMessage("sigue frenada tras siete respuestas 05AP").that(otraTarjetaDeA(libreta())).isFalse()
+        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertWithMessage("pasado el techo, la tarjeta de A entra").that(otraTarjetaDeA(libreta())).isTrue()
+
         estado = "APROBADA"   // la respuesta del banco llegó tarde
-        t += 3_600_000
+        val t = System.currentTimeMillis() + 3_600_000
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
         dineroEscrito("a1")
+        assertWithMessage("la ventana conserva su motivo (REGISTRABLE_TRAS_LA_VENTANA)").that(dao.getById("a1")!!.state).isEqualTo("DESCARTADA")
+        assertWithMessage("el dinero vuelve a proteger la cuenta").that(otraTarjetaDeA(libreta())).isFalse()
         val servidor = Servidor()
         registrador(servidor).recover(venue, t + 3_600_000)
+        registrador(servidor).recover(venue, t + 7_200_000)
         assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
+    // ═══════════════════════ Techo del 05AP (Codex final r6 #1 y #2, 20-nov · `decisiones-codigo-r1.md`) ═══════════════════════
+
+    /**
+     * 🔴 Codex final r6 #2 (la firma vetada para siempre) en lo que toca a la TPV: la ventana soltó la solicitud, el historial trae la venta en
+     * `05AP` y NADIE puede firmar. Antes del techo la tarjeta de A espera (y es firmable); pasado el techo entra SÓLO por el reloj: en otro
+     * proceso (la app se mató y se reabrió), sin otra consulta al historial, sin red y sin firma.
+     */
+    @Test fun `N86_techo_05AP_pasado_el_techo_la_tarjeta_entra_sola_sin_consulta_ni_red_ni_firma`() = runBlocking<Unit> {
+        dudaN86("a1", solicitud = "r-1", creadoEn = reciente)
+        LedgerUnknownRecovery(dao, libreta(), historialReal { "rejected" }).recover(venue, System.currentTimeMillis())
+        ventana("a1")
+        assertWithMessage("antes del techo, frenada").that(otraTarjetaDeA(libreta())).isFalse()
+        assertWithMessage("…y firmable por el gerente, como hoy")
+            .that(libreta().renglonPorRevisar(venue, CobroDeclarable.CLASE_INTENTO, "a1")?.declarable).isTrue()
+
+        val consultas = consultasAlHistorial
+        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        val reabierta = libreta()
+        assertWithMessage("pasado el techo, sólo por el reloj: entra").that(otraTarjetaDeA(reabierta)).isTrue()
+        assertWithMessage("la lectura antes de encender el lector tampoco la frena").that(reabierta.otraCercaDeLaTarjeta("orden-A", "b-x")).isFalse()
+        assertWithMessage("sin otra consulta al historial").that(consultasAlHistorial).isEqualTo(consultas)
+        assertWithMessage("y ya no se ofrece firmarla").that(reabierta.renglonPorRevisar(venue, CobroDeclarable.CLASE_INTENTO, "a1")).isNull()
+    }
+
+    /**
+     * Techo del 05AP · una lectura EN VUELO sigue frenando como en `eac5f940`, también pasado el techo: la respuesta que está por llegar
+     * puede ser el aprobado. La de la recuperación (E1) y la de la pantalla (K19a), aunque la fila ya traiga la respuesta 05AP vieja. La
+     * respuesta 05AP que llega pasado el techo cuenta como «no aparece»: la marca sale.
+     */
+    @Test fun `N86_techo_una_lectura_en_vuelo_frena_aunque_haya_pasado_el_techo`() = runBlocking<Unit> {
+        for (id in listOf("a1", "c1")) {
+            dudaN86(id, orden = if (id == "a1") "orden-A" else "orden-C", solicitud = "r-$id", creadoEn = reciente)
+            LedgerUnknownRecovery(dao, libreta(), historialReal { "rejected" }).recover(venue, System.currentTimeMillis())
+            ventana(id); envejecer(id, PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        }
+        assertWithMessage("el techo ya soltó A").that(otraTarjetaDeA(libreta())).isTrue()
+
+        // La pantalla (K19a) vuelve a preguntar por A: mientras AngelPay contesta, la tarjeta de A espera.
+        val pantalla = libreta()
+        val marca = pantalla.despacharLecturaDelHistorial("a1")!!
+        assertWithMessage("K19a en vuelo: frenada").that(otraTarjetaDeA(libreta())).isFalse()
+        pantalla.anotar05APDeLaPantalla("a1", marca)
+        assertWithMessage("K19a contestó 05AP pasado el techo: «no aparece», la marca sale").that(dao.getById("a1")!!.historyReadAt).isNull()
+        assertThat(otraTarjetaDeA(libreta())).isTrue()
+
+        // La recuperación (E1) vuelve a preguntar por C.
+        var enVuelo: Boolean? = null
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers {
+            enVuelo = otraTarjeta(libreta(), "orden-C"); VerificacionDelCobro.EnElProcesador("rejected")
+        }
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis() + 3_600_000)
+        assertWithMessage("E1 en vuelo: frenada").that(enVuelo).isFalse()
+        assertWithMessage("E1 contestó 05AP pasado el techo: «no aparece», la marca sale").that(dao.getById("c1")!!.historyReadAt).isNull()
+        assertWithMessage("…y gasta su turno").that(consultasGastadas("c1")).isEqualTo(1)
+        assertThat(otraTarjeta(libreta(), "orden-C")).isTrue()
+    }
+
+    /**
+     * Techo del 05AP · pasado el techo las consultas vuelven a gastar turno (no se pregunta para siempre). La que soltó la VENTANA recibe UNA
+     * consulta más (su respuesta la termina y la ventana no vuelve a consultarse). La duda sin ventana (TPV SOLA) gasta un turno por respuesta
+     * y a las cinco se deja de preguntar; su tarjeta sigue esperando al gerente (regla de F1 del 17-nov: la duda de una cuenta la firma el
+     * gerente; el techo no la cambia).
+     */
+    @Test fun `N86_techo_pasado_el_techo_las_consultas_gastan_turno_y_se_acaban`() = runBlocking<Unit> {
+        val v = historialReal { "rejected" }
+        dudaN86("a1", solicitud = "r-1", creadoEn = reciente)
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
+        ventana("a1"); envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        var antes = consultasAlHistorial
+        var t = System.currentTimeMillis()
+        repeat(6) { t += 6 * 3_600_000L; LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t) }
+        assertWithMessage("la soltada por la ventana: una consulta más").that(consultasAlHistorial - antes).isEqualTo(1)
+        assertThat(consultasGastadas("a1")).isEqualTo(1)
+        assertThat(dao.getById("a1")!!.historyReadAt).isNull()
+
+        dudaN86("d1", orden = "orden-D", creadoEn = System.currentTimeMillis() - PaymentAttemptEntity.TECHO_DEL_05AP_MS - 60_000)
+        antes = consultasAlHistorial
+        repeat(8) { t += 6 * 3_600_000L; LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t) }
+        assertWithMessage("la duda: cinco consultas y se acaban").that(consultasAlHistorial - antes).isEqualTo(5)
+        assertThat(consultasGastadas("d1")).isEqualTo(5)
+        assertWithMessage("su tarjeta sigue esperando al gerente").that(otraTarjeta(libreta(), "orden-D")).isFalse()
+    }
+
+    /**
+     * Techo del 05AP · el aprobado que llega por el SERVIDOR después del techo (el aviso de AngelPay creó el Payment): la TPV lo guarda y no
+     * registra una segunda venta.
+     */
+    @Test fun `N86_techo_aprobado_por_el_servidor_despues_del_techo_no_se_registra_dos_veces`() = runBlocking<Unit> {
+        dudaN86("a1", solicitud = "r-1", creadoEn = reciente)
+        LedgerUnknownRecovery(dao, libreta(), historialReal { "rejected" }).recover(venue, System.currentTimeMillis())
+        ventana("a1"); envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertThat(otraTarjetaDeA(libreta())).isTrue()
+        libreta().aplicarVeredictoDelServidor(
+            VeredictoDeIntento(venue, "a1", "r-1", com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED,
+                "pay-a1", "webhook", 10_000, 0, "pay-a1", VeredictoDeIntento.Fuente.CONSULTA_S6),
+        )
+        assertThat(dao.getById("a1")!!.serverPaymentId).isEqualTo("pay-a1")
+        val servidor = Servidor()
+        registrador(servidor).recover(venue, System.currentTimeMillis() + 3_600_000)
+        assertWithMessage("el Payment es el del SERVIDOR: la TPV no registra otro").that(servidor.pagos).isEmpty()
     }
 
     /**
      * 🔴 Codex plan A #2 · la salida (c): la venta sigue en `05AP` y el gerente firma «no se cobró» en «Por revisar». La consulta pendiente
      * la termina la siguiente respuesta: con la firma, `05AP` cuenta como «no aparece» (gasta un turno, quita la marca) y la tarjeta de
-     * A entra. Sin la firma no había salida que no fuera el silencio.
+     * A entra. Sin la firma no había salida que no fuera el silencio. Ajustada por el techo: la venta se abre hace 2.5 min y la primera
+     * respuesta llega ANTES del techo (con 10 min, ya contaba como «no aparece» y la firma no tenía nada que soltar).
      */
     @Test fun `N86_venta_en_05AP_firmada_por_el_gerente_suelta_su_tarjeta_en_la_siguiente_respuesta`() = runBlocking<Unit> {
-        dudaN86("a1")
+        dudaN86("a1", creadoEn = reciente)
         val v = historialReal { "rejected" }
-        var t = System.currentTimeMillis() + 600_000
+        var t = System.currentTimeMillis()
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
         firmar("a1")
         assertWithMessage("con la consulta 05AP pendiente, la tarjeta todavía espera").that(otraTarjetaDeA(libreta())).isFalse()

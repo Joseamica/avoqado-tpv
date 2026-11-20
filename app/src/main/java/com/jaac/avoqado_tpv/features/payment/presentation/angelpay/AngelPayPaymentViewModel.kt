@@ -4070,8 +4070,12 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
 
             // 🔴 Codex plan A #2: la venta está en el historial sin aprobar (`05AP`). Tampoco es «no aparece»: la lectura sigue despachada
-            // (frena la tarjeta de la cuenta aunque la ventana la suelte) y la retoma la recuperación.
-            is VerificacionDelCobro.EnElProcesador -> esperarVeredictoDelServidor("en el historial sin aprobar: ${verificacion.estado}")
+            // (frena la tarjeta de la cuenta aunque la ventana la suelte) y la retoma la recuperación. Techo del 05AP (Codex final r6):
+            // queda anotada como «contestó 05AP», que frena sólo hasta el techo; pasado el techo cuenta como «no aparece».
+            is VerificacionDelCobro.EnElProcesador -> {
+                lecturaDespachada?.let { paymentAttemptLedger.anotar05APDeLaPantalla(attemptId, it) }
+                esperarVeredictoDelServidor("en el historial sin aprobar: ${verificacion.estado}")
+            }
         }
     }
 

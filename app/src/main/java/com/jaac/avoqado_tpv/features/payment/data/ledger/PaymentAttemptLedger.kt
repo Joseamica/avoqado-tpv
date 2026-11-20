@@ -496,6 +496,21 @@ class PaymentAttemptLedger(
     }
 
     /**
+     * 🔴 F1 · techo del 05AP (Codex final r6): la lectura de la PANTALLA (K19a) encontró la venta sin aprobar (`05AP`). Antes del techo,
+     * SU marca queda como «contestó 05AP»: frena la tarjeta de su cuenta hasta el techo y la retoma la recuperación. Pasado el techo cuenta
+     * como «no aparece»: se quita SU marca. Sólo la suya: si la recuperación ya tenía otra lectura, decide ésa. Nunca lanza.
+     */
+    suspend fun anotar05APDeLaPantalla(attemptId: String, marca: Long, now: Long = System.currentTimeMillis()) {
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val fila = dao.getById(attemptId) ?: return@withContext
+                if (now - fila.createdAt >= PaymentAttemptEntity.TECHO_DEL_05AP_MS) dao.terminarLecturaDeLaPantalla(attemptId, fila.venueId, marca)
+                else dao.anotar05APDeLaPantalla(attemptId, fila.venueId, marca)
+            }
+        }.onFailure { Timber.e(it, "📒 [Libreta] no se pudo anotar el 05AP de la pantalla | attemptId=%s", attemptId) }
+    }
+
+    /**
      * Fix 4 (D3d): la fila sin resolver de ESTA solicitud —incluida una DESCARTADA con evidencia positiva DURABLE del servidor—
      * tal cual está, o null. Lectura silenciosa (sin el aviso de «no se adopta»): la usa un ViewModel recreado al arrancar el cobro
      * para cargar el veto ANTES de ofrecer cobrar o declarar. Un fallo de lectura es null: quien llama no afirma nada con él.

@@ -78,10 +78,13 @@ class LedgerUnknownRecovery @Inject constructor(
                         // cuenta como «no aparece» y su tarjeta sigue lo que decidió. Nunca el silencio. Si la VENTANA del SERVIDOR ya la
                         // soltó, sigue siendo firmable en «Por revisar» (F1 · 05AP, 20-nov): el SERVIDOR guarda la firma sin cambiar el estado
                         // financiero, su comprobante la deja «cerrada por una persona» y la libreta pide esta pasada al vencer la reserva.
+                        // 🔴 Techo del 05AP (Codex final r6 #1 y #2): pasado [PaymentAttemptEntity.TECHO_DEL_05AP_MS] desde el intento, también
+                        // cuenta como «no aparece»; antes, la marca queda como «contestó 05AP» y frena su tarjeta sólo hasta el techo.
                         is VerificacionDelCobro.EnElProcesador ->
-                            if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId))) dao.terminarConsultaSinCoincidencia(
+                            if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId)) ||
+                                terminadaEn - row.createdAt >= PaymentAttemptEntity.TECHO_DEL_05AP_MS) dao.terminarConsultaSinCoincidencia(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
-                            else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
+                            else dao.pausarTras05AP(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled

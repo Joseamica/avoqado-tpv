@@ -23,6 +23,8 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -80,7 +82,17 @@ class FirmaTrasLaVentana05APRoomTest {
         ),
     ).asJsonObject.apply { addProperty("processorAffiliation", "afiliacion") }.toString()
 
-    private val creado = System.currentTimeMillis() - 10 * 60_000
+    /**
+     * Hace 2.5 min: la recuperación ya lo toma (más de 2 min) y la respuesta `05AP` llega ANTES del techo (5 min). Ajustado por el techo
+     * (Codex final r6): con 10 min la primera respuesta ya llegaba pasado el techo y contaba como «no aparece» (nada que firmar).
+     */
+    private val creado = System.currentTimeMillis() - 150_000
+
+    /** El reloj avanza [ms] para el intento [id] (ver `AprobadoFinalN86RoomTest.envejecer`). */
+    private fun envejecer(id: String, ms: Long) = db.openHelper.writableDatabase.execSQL(
+        "UPDATE payment_attempts SET history_read_at = CASE WHEN history_read_at = created_at THEN history_read_at - $ms ELSE history_read_at END, " +
+            "created_at = created_at - $ms WHERE attempt_id = '$id'",
+    )
 
     /** POS → N86: el cobro de la cuenta [orden] quedó en duda (sin respuesta del banco). */
     private suspend fun duda(id: String, solicitud: String? = "r-1", orden: String = "orden-A") = dao.insert(
@@ -153,7 +165,7 @@ class FirmaTrasLaVentana05APRoomTest {
      */
     private suspend fun frenadaTrasLaVentana(v: AngelPayChargeVerifier): Long {
         duda("a1")
-        val t = System.currentTimeMillis() + 600_000
+        val t = System.currentTimeMillis()
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
         coEvery { api.getAttemptStatus(venue, "a1") } returns s6Ventana("a1")
         LedgerServerRecovery(dao, libreta(), api).recoverOne(venue, "a1", estampar = false)
@@ -294,6 +306,60 @@ class FirmaTrasLaVentana05APRoomTest {
         dao.cerrarPorLiberacionDelServidor("a1", venue, "r-1", "RELEASED_NO_EVIDENCE", ventana, System.currentTimeMillis(), "otro")
         assertThat(renglon(libreta())?.declarable).isNotEqualTo(true)
         assertWithMessage("y su tarjeta entra").that(otraTarjeta(libreta())).isTrue()
+    }
+
+    // ═══════════════ Techo del 05AP (Codex final r6 #1 y #2, 20-nov): la tarjeta se suelta sola aunque nadie pueda firmar ═══════════════
+
+    /**
+     * 🔴 Codex final r6 #2: la caja pidió cancelar mientras el lector trabajaba, la N86 contestó `ACTIVE` y el SERVIDOR conserva ese «sigo
+     * ocupado» tras la ventana: cada PIN del gerente recibe `409 EXECUTION_STILL_ACTIVE`. Con el historial en `05AP`, A quedaba frenada para
+     * siempre en esta N86. Ahora espera hasta el techo y después entra sola.
+     */
+    @Test fun `Codex r6 2 · la firma vetada por un ACTIVE viejo - pasado el techo la tarjeta entra sola`() = runBlocking<Unit> {
+        frenadaTrasLaVentana(historial { "rejected" })
+        val l = libreta()
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } returns Response.error(
+            409, """{"success":false,"code":"EXECUTION_STILL_ACTIVE","message":"La terminal sigue trabajando en este cobro."}"""
+                .toResponseBody("application/json".toMediaTypeOrNull()),
+        )
+        assertThat(declaracionCon(l).declarar(venue, renglon(l)!!, supervisorPin = "1234")).isNotEqualTo(ResultadoDeLaDeclaracion.Declarado)
+        assertWithMessage("sin firma posible, antes del techo sigue frenada").that(otraTarjeta(libreta())).isFalse()
+        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertWithMessage("pasado el techo, sola").that(otraTarjeta(libreta())).isTrue()
+    }
+
+    /** Lo que publica el SERVIDOR (S6) cuando AngelPay le avisó que el banco rechazó [id] (o, con [deEsteIntento] = false, otro intento). */
+    private fun s6RechazoDelBanco(id: String, deEsteIntento: Boolean = true): Response<TerminalAttemptStatusResponse> = Response.success(Gson().fromJson(
+        """{"success":true,"attemptId":"$id","requestId":"r-1","attempt":{"attemptId":"$id","outcome":"NOT_RECORDED","paymentId":null,""" +
+            """"processorEvidence":"${if (deEsteIntento) "DECLINED" else "NONE"}","paymentContradiction":false,"evidenceContradiction":false,""" +
+            """"unattributedEvidence":false,"resolution":null},"request":{"requestId":"r-1","status":"FAILED","failureCode":"BANK_DECLINED",""" +
+            """"outcome":"NOT_CHARGED","outcomeEvidence":"PROCESSOR_DECLINED"},"declarationReceipt":null}""",
+        TerminalAttemptStatusResponse::class.java,
+    ))
+
+    /**
+     * 🔴 Codex final r6 #1: antes de que venza la ventana, AngelPay le avisa al SERVIDOR que el banco rechazó ESTE intento y el SERVIDOR
+     * suelta la solicitud (`NOT_CHARGED / PROCESSOR_DECLINED`). La N86 no aceptaba esa evidencia, la firma del gerente la rechaza el SERVIDOR
+     * (el banco ya resolvió) y la duda de A frenaba su tarjeta para siempre. Ahora la N86 la aplica como la ventana: la duda se cierra; si el
+     * historial la trae en `05AP`, la tarjeta espera hasta el techo (el SERVIDOR llama «rechazo» a todo lo que no es `approved`) y después
+     * entra sola. No se ofrece una firma que el SERVIDOR rechazaría. Un rechazo de OTRO intento de la solicitud no suelta éste.
+     */
+    @Test fun `Codex r6 1 · el banco rechazo segun el SERVIDOR - la duda se cierra y la tarjeta entra al techo`() = runBlocking<Unit> {
+        duda("a1")
+        LedgerUnknownRecovery(dao, libreta(), historial { "rejected" }).recover(venue, System.currentTimeMillis())
+        coEvery { api.getAttemptStatus(venue, "a1") } returns s6RechazoDelBanco("a1", deEsteIntento = false)
+        LedgerServerRecovery(dao, libreta(), api).recoverOne(venue, "a1", estampar = false)
+        assertWithMessage("el rechazo de OTRO intento no suelta éste").that(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
+
+        coEvery { api.getAttemptStatus(venue, "a1") } returns s6RechazoDelBanco("a1")
+        LedgerServerRecovery(dao, libreta(), api).recoverOne(venue, "a1", estampar = false)
+        val fila = dao.getById("a1")!!
+        assertWithMessage("la duda se cierra con el rechazo del SERVIDOR").that(fila.state).isEqualTo("DESCARTADA")
+        assertWithMessage("…sin tocar lo que dijo el lector").that(fila.hostApproved).isNull()
+        assertWithMessage("antes del techo, el 05AP del historial sigue frenando").that(otraTarjeta(libreta())).isFalse()
+        assertWithMessage("…y no se ofrece una firma que el SERVIDOR rechazaría").that(renglon(libreta())?.declarable).isNotEqualTo(true)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertWithMessage("pasado el techo, sola").that(otraTarjeta(libreta())).isTrue()
     }
 
     // ═══════════════ De paso (misma familia «la admisión ve la memoria»): las puertas del EFECTIVO de la cuenta ═══════════════

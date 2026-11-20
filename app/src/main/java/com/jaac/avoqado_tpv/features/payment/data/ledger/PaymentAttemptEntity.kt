@@ -398,9 +398,34 @@ data class PaymentAttemptEntity(
             "AND host_approved IS NULL AND server_veto IS NULL AND server_payment_id IS NULL " +
             "AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT'))"
 
+        /**
+         * 🔴 F1 · techo del 05AP (Codex final r6 #1 y #2, 20-nov, `decisiones-codigo-r1.md`): lo más que una venta que el historial de
+         * AngelPay trae SIN aprobar (`05AP`, o un rechazo que el SDK 1.0.23 no deja distinguir) frena la tarjeta de su cuenta en ESTA
+         * terminal, contado desde `created_at` del intento. Pasado el techo, su respuesta «sin aprobar» cuenta como «no aparece» (como antes
+         * del 20-nov: gasta turno y suelta la marca) y la admisión deja pasar la tarjeta sólo por el reloj; un aprobado tardío se registra
+         * por el camino de una fila soltada por la ventana. Una lectura EN VUELO sigue frenando.
+         * ⚠️ DECISIÓN DEL FOUNDER PENDIENTE: 5 min / 30 min / nada extra (30 s de la ventana, como producción). 5 min porque Square vence a
+         * los 5 min un cobro sin respuesta (precedente del 20-oct). La solución completa es del SERVIDOR con la consulta S2S de AngelPay
+         * (`hz:248b195b:D4`): sólo él podrá distinguir `05AP` de un rechazo definitivo.
+         */
+        const val TECHO_DEL_05AP_MS = 300_000L
+
+        /**
+         * F1 · techo del 05AP: «el historial contestó `05AP` y ya pasó el techo». La respuesta `05AP` se anota dejando en la marca de lectura
+         * el `created_at` del intento ([PaymentAttemptDao.pausarTras05AP], [PaymentAttemptDao.anotar05APDeLaPantalla]): ninguna lectura real
+         * se despacha en el milisegundo en que se abrió el intento (la toma y la pantalla escriben su hora, siempre posterior), así que no se
+         * confunde con una lectura EN VUELO o que murió sin respuesta, que siguen frenando como en `eac5f940`. La hora es la de SQLite
+         * (`'now'`, el reloj del aparato): así la ven igual la admisión, el CAS, «Por revisar» y las listas que se observan, sin pasarla.
+         * Sin alias. Sólo tiene sentido con `history_read_at IS NOT NULL` (va detrás de esa condición en [SQL_CERCA_LA_TARJETA]).
+         */
+        const val SQL_05AP_PASADO_EL_TECHO = "(history_read_at = created_at " +
+            "AND created_at <= CAST(strftime('%s','now') AS INTEGER) * 1000 - " + TECHO_DEL_05AP_MS + ")"
+
         // F1 bloque 4: y una lectura del historial despachada sin respuesta escrita: se retoma antes de armar otra tarjeta de su cuenta.
+        // F1 · techo del 05AP: salvo la que el historial ya contestó `05AP` y pasó el techo ([SQL_05AP_PASADO_EL_TECHO]).
         const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
             " OR (legacy_shadow = 0 AND kind = 'SALE' AND (state = 'INDETERMINADO' OR (history_read_at IS NOT NULL " +
+            "AND NOT " + SQL_05AP_PASADO_EL_TECHO + " " +
             "AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
 
         /**

@@ -224,8 +224,8 @@ data class LiberacionDelServidor(
          *  · Alcance: el comprobante, si viene, es de ESTE intento o de ESTA solicitud.
          *  · Clase: `OPERATOR_RECONCILED` o [CAJERO_REVISO] son de una PERSONA: con comprobante, tiene que acreditarla con una clase de
          *    persona y el autor es el SUYO. `NO_EVIDENCE_AFTER_WINDOW` (la ventana, de la terminal o del servidor) no pide autor ni se
-         *    vuelve firma: [quien] queda vacío. El rechazo del banco no libera por acuse (lo decide el resultado del SDK); cualquier
-         *    otra clase, tampoco.
+         *    vuelve firma: [quien] queda vacío. El rechazo del banco no libera por acuse (lo decide el resultado del SDK), salvo el que el
+         *    SERVIDOR publica en S6 sobre ESTE intento ([desdeRechazoDelBanco], Codex final r6 #1); cualquier otra clase, tampoco.
          * @param testimonio la declaración que publica el intento (`attempt.resolution`), para la regla vieja; null en la ruta por solicitud.
          */
         fun desdeAcuse(
@@ -277,10 +277,31 @@ data class LiberacionDelServidor(
             val requestId = requestIdCrudo ?: return null // sin solicitud no hay pertenencia que comprobar
             val request = respuesta.request ?: return null
             if (textoDe(request, "outcome") != "NOT_CHARGED") return null
-            val evidencia = textoDe(request, "outcomeEvidence")?.takeIf { it in EVIDENCIAS } ?: return null
+            val evidenciaCruda = textoDe(request, "outcomeEvidence")
+            if (evidenciaCruda == RECHAZO_DEL_BANCO) return desdeRechazoDelBanco(venueId, attemptId, requestId, respuesta.attempt)
+            val evidencia = evidenciaCruda?.takeIf { it in EVIDENCIAS } ?: return null
             // F1 cierre TPV (I4): antes esta rama liberaba `OPERATOR_RECONCILED` sin mirar el comprobante.
             return desdeAcuse(venueId, attemptId, requestId, evidencia, respuesta.declarationReceipt, null, respuesta.attempt)
         }
+
+        /** La solicitud que el SERVIDOR soltó porque el banco rechazó (aviso de AngelPay: `BANK_DECLINED`). */
+        const val RECHAZO_DEL_BANCO = "PROCESSOR_DECLINED"
+
+        /**
+         * 🔴 Codex final r6 #1 (20-nov): el SERVIDOR soltó la solicitud porque AngelPay le avisó que el banco rechazó ESTE intento
+         * (`attempt.processorEvidence = DECLINED`: el evento es de este intento, con dueño). La N86 no lo aceptaba («el rechazo lo decide el
+         * resultado del SDK», I4) y, con la respuesta del lector perdida y la firma rechazada por el SERVIDOR (el banco ya resolvió), la duda
+         * de esa cuenta frenaba su tarjeta para siempre. Se aplica como la ventana: sin autor, nunca firma, por el único escritor (que
+         * vuelve a mirar dinero, veto y pertenencia dentro del UPDATE). NO quita la marca del historial: el SERVIDOR llama «rechazo» a todo
+         * estado de AngelPay que no es `approved` (`clasificarEstadoBancario`), también al `05AP`, así que si el historial la trae sin
+         * aprobar la tarjeta espera hasta el techo ([PaymentAttemptEntity.TECHO_DEL_05AP_MS]). El rechazo de OTRO intento de la solicitud
+         * (`processorEvidence` ≠ DECLINED en éste) no suelta nada.
+         */
+        private fun desdeRechazoDelBanco(venueId: String, attemptId: String, requestId: String, intento: TerminalAttemptResultDto?): LiberacionDelServidor? =
+            intento?.takeIf {
+                it.attemptId == attemptId && it.processorEvidence == "DECLINED" &&
+                    !acreditaDinero(it) && !hayEvidenciaSinDueno(it) && !hayContradiccion(it)
+            }?.let { LiberacionDelServidor(venueId, attemptId, requestId, RECHAZO_DEL_BANCO) }
 
         /**
          * 🔴 D12 («ninguna duda de cobro sin salida», hallazgo #3 de Codex TPV r1), PASO 1 de la consulta por SOLICITUD: ¿puede la

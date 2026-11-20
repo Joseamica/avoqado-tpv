@@ -5,7 +5,7 @@ import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
-import com.jaac.avoqado_campo.cola.seriesDeCustodia
+import com.jaac.avoqado_campo.cola.simsDeCustodia
 import com.jaac.avoqado_campo.red.MiSimDto
 import com.jaac.avoqado_campo.red.RespuestaModulos
 
@@ -22,7 +22,8 @@ data class Copia(
     val bajadaAt: Long,
     /**
      * D1: las piezas de SIM (id) que ya habían llegado al SERVIDOR ANTES de pedir esta lista: ésas ya vienen en ella. Lo que
-     * llegó después o sigue en la cola manda sobre la lista ([loDelCelular]). null (copia de antes de D1) = ninguna.
+     * llegó después o sigue en la cola manda sobre la lista ([loDelCelular]). null (copia de antes de D1) = no se sabe: manda
+     * la lista en todo lo que ya llegó.
      */
     val yaLlegadas: List<Long>? = null,
 )
@@ -107,12 +108,16 @@ fun llegoAlServidor(p: Pieza) = p.estado == EstadoPieza.HECHA || p.estado == Est
  * queda la marca de la copia. `SOLD` en la lista lo decide quien llama: es del SERVIDOR.
  */
 fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
-    val vistas = c.yaLlegadas.orEmpty().toSet()
+    // Codex misventas r1 #2: una copia de antes de D1 no sabe qué ya venía en ella: manda la lista (como la 0.5.0).
+    val vistas = c.yaLlegadas?.toSet()
+    fun yaVenia(p: Pieza) = vistas?.contains(p.id) ?: true
+    val enLaLista = c.sims.associateBy { normalizarSerie(it.serialNumber) }
     val ventas = mutableMapOf<String, Pieza>()
-    val custodias = mutableMapOf<String, Pieza>()
+    val custodias = mutableMapOf<String, Pair<Pieza, Int>>()
     for (p in piezas.sortedBy { it.id }) when (p.tipo) {
         TipoPieza.VENTA -> serieDeVenta(p.cuerpoJson)?.let { ventas[it] = p }
-        TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR -> seriesDeCustodia(p.cuerpoJson).forEach { custodias[it] = p }
+        TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR ->
+            simsDeCustodia(p.cuerpoJson).forEach { custodias[it.serialNumber] = p to it.custodyVersion }
     }
     val r = mutableMapOf<String, LoDelCelular>()
     for (s in c.sims) {
@@ -125,15 +130,21 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
             else -> continue
         }
     }
-    for ((serie, k) in custodias) {
+    for ((serie, kv) in custodias) {
+        val (k, version) = kv
         val acepta = k.tipo == TipoPieza.CUSTODIA_ACEPTAR
+        val fallidas = seriesDe(k.rechazoDatosJson, "fallidas")
         r[serie] = when {
             k.estado in POR_SUBIR -> if (acepta) LoDelCelular.ACEPTADA_POR_SUBIR else LoDelCelular.RECHAZADA_POR_SUBIR
-            !llegoAlServidor(k) || k.id in vistas -> continue
+            !llegoAlServidor(k) || yaVenia(k) -> continue
+            // r1 #2: la lista trae OTRA asignación de esa SIM (la recogieron y se la volvieron a dar): esta decisión ya no es de ella.
+            enLaLista[serie]?.custodyVersion != version -> continue
             // Un AVISO de aceptar: a las `fallidas` no se las aceptaron (lo que sigue lo dice la lista o «Te volvieron a
-            // asignar»); las `faltan` no se pudieron confirmar y siguen como antes, «por subir».
-            serie in seriesDe(k.rechazoDatosJson, "fallidas") -> continue
-            serie in seriesDe(k.rechazoDatosJson, "faltan") -> LoDelCelular.ACEPTADA_POR_SUBIR
+            // asignar»); las `faltan` no se pudieron confirmar y siguen como antes, «por subir». r1 #1: «en parte» sin saber
+            // cuáles (así lo guardaba la gracia antes): ninguna se da por aceptada.
+            serie in fallidas -> continue
+            serie in seriesDe(k.rechazoDatosJson, "faltan") || (k.rechazoCode == EN_PARTE && fallidas.isEmpty()) ->
+                LoDelCelular.ACEPTADA_POR_SUBIR
             acepta -> LoDelCelular.ACEPTADA
             else -> LoDelCelular.RECHAZADA
         }
@@ -142,7 +153,7 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
         r[serie] = when {
             v.estado == EstadoPieza.PENDIENTE || v.estado == EstadoPieza.RETENIDA -> LoDelCelular.VENTA_POR_SUBIR
             v.estado == EstadoPieza.RECHAZADA -> LoDelCelular.VENTA_NO_SUBIO
-            llegoAlServidor(v) && v.id !in vistas -> LoDelCelular.VENDIDA
+            llegoAlServidor(v) && !yaVenia(v) -> LoDelCelular.VENDIDA
             else -> continue
         }
     }
@@ -150,6 +161,7 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
 }
 
 private val POR_SUBIR = setOf(EstadoPieza.PENDIENTE, EstadoPieza.RETENIDA, EstadoPieza.RECHAZADA)
+private const val EN_PARTE = "CUSTODIA_EN_PARTE"
 
 private fun serieDeVenta(cuerpo: String?): String? = runCatching {
     JsonParser.parseString(cuerpo).asJsonObject["serialNumber"]?.asString?.let(::normalizarSerie)

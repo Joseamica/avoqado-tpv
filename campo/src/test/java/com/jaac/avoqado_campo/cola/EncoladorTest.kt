@@ -267,10 +267,24 @@ class EncoladorTest {
         dao.marcarHecha(dao.porLlave(e)!!, "{\"timeEntryId\":\"te1\"}", "HECHA")
         val suelta = encolador.aceptarCustodia(quienSoy.generacion, listOf(SimConVersion("8952", 3)), "v1")
         dao.marcarHecha(dao.porLlave(suelta)!!, "{}", "HECHA")
-        dao.purgarTerminalesAntesDe(ahora + 1)
+        dao.purgarTerminalesAntesDe(ahora + 1, ahora + 1)
         assertEquals("HECHA", dao.porLlave(v)?.estado)
         assertEquals("HECHA", dao.porLlave(e)?.estado)
         assertNull(dao.porLlave(suelta)) // control: lo terminal sin dependientes sí se va
+    }
+
+    // Codex misventas r1 #3: la venta quitada es lo único que dice que no se vendió; no se va a los 7 días de creada.
+    @Test fun `purgar deja la venta o custodia DESCARTADA hasta su propio plazo`() = runBlocking {
+        // Sin evidencias vivas que dependan de ella (ésas ya la protegen): una custodia reemplazada.
+        val quitada = encolador.rechazarCustodia(quienSoy.generacion, SimConVersion("8953", 3), "v1")
+        dao.actualizar(dao.porLlave(quitada)!!.copy(estado = "DESCARTADA"))
+        val hecha = encolador.aceptarCustodia(quienSoy.generacion, listOf(SimConVersion("8952", 3)), "v1")
+        dao.marcarHecha(dao.porLlave(hecha)!!, "{}", "HECHA")
+        dao.purgarTerminalesAntesDe(ahora + 1, ahora - 1)
+        assertEquals("DESCARTADA", dao.porLlave(quitada)?.estado)
+        assertNull(dao.porLlave(hecha))
+        dao.purgarTerminalesAntesDe(ahora + 1, ahora + 1)
+        assertNull(dao.porLlave(quitada))
     }
 
     @Test fun `marcarHecha de la ENTRADA del turno guarda su timeEntryId y la salida va PorId`() = runBlocking {

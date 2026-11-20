@@ -177,9 +177,7 @@ class MisSimsViewModelTest {
             ).copy(rechazoDatosJson = """{"fallidas":[{"serialNumber":"S1","status":"error","code":"ASIGNACION_CAMBIO"}]}"""),
         )
         val v = vm()
-        assertEquals(listOf(EstadoFila.ACTUALIZANDO), v.estado.value.porAceptar.map { it.estado })
-        // D1: a S2 sí se la aceptaron (el AVISO sólo trae a S1 en `fallidas`): ya está en su custodia aunque la lista no lo diga.
-        assertEquals(listOf("S2"), v.estado.value.enCustodia.map { it.sim.serialNumber })
+        assertEquals(listOf(EstadoFila.ACTUALIZANDO, EstadoFila.POR_DECIDIR), v.estado.value.porAceptar.map { it.estado })
         coVerify(exactly = 2) { copia.actualizar("v1") }
         ponerCopia(sim("S1", version = 5))
         assertEquals("Te volvieron a asignar esta SIM: vuelve a decidir", v.estado.value.porAceptar.single().nota)
@@ -300,6 +298,31 @@ class MisSimsViewModelTest {
         assertEquals("Por subir", e.ventasPorSubir.single().nota)
     }
 
+    // Codex misventas r1 #2: una aceptación vieja no pisa la asignación NUEVA que ya trae la lista, ni una copia de antes de D1.
+    @Test fun `una aceptacion que ya llego no pisa otra asignacion de la SIM ni una copia sin yaLlegadas`() {
+        cola.value = listOf(aceptada("S1", EstadoPieza.HECHA, 1), aceptada("S2", EstadoPieza.HECHA, 2))
+        ponerCopia(sim("S1", "PROMOTER_PENDING", version = 5), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.porAceptar.map { it.sim.serialNumber }) // la recogieron y se la volvieron a dar
+        assertEquals(listOf("S2"), e.enCustodia.map { it.sim.serialNumber })
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING")) // copia de antes de D1: manda la lista
+        assertEquals(listOf("S1", "S2"), vm.estado.value.porAceptar.map { it.sim.serialNumber })
+    }
+
+    // Codex misventas r1 #1: un AVISO «en parte» sin saber cuáles fallaron (la gracia lo guardaba así) no acepta a ninguna.
+    @Test fun `un aviso en parte sin la lista de fallidas no da ninguna por aceptada`() {
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.AVISO, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(rechazoDatosJson = """{"fallidas":[]}"""),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf(EstadoFila.POR_SUBIR, EstadoFila.POR_SUBIR), e.porAceptar.map { it.estado })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
     @Test fun `entendido de un aviso de aceptacion sigue contando como aceptada`() {
         cola.value = listOf(
             custodia(
@@ -328,6 +351,7 @@ class MisSimsViewModelTest {
             sim("S1", "PROMOTER_HELD"), sim("S2", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), // S2: ya subió
             sim("S3", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), sim("S4", "PROMOTER_HELD").copy(localmente = vendidaEnCelular),
             sim("S5", "SOLD", verificacion = "COMPLETED"),
+            yaLlegadas = emptyList(), // la lista se bajó antes de que llegara S4
         )
         val e = vm().estado.value
         assertEquals(listOf("S1", "S3"), e.ventasPorSubir.map { it.sim.serialNumber })

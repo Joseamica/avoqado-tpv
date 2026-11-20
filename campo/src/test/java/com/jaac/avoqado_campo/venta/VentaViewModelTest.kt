@@ -198,6 +198,18 @@ class VentaViewModelTest {
         assertEquals("Esta SIM no está en tu custodia.", v.estado.value.error)
     }
 
+    // Codex misventas r1 #1: a la SIM que falló en un AVISO de aceptar no se le da por aceptada.
+    @Test fun `una SIM fallida de una aceptacion en parte pide aceptarla primero`() {
+        coEvery { dao.conSimsAhora() } returns listOf(
+            aceptarDe(EstadoPieza.AVISO, 4).copy(
+                rechazoCode = "CUSTODIA_EN_PARTE", rechazoDatosJson = """{"fallidas":[{"serialNumber":"$serie","status":"error","code":"X"}]}""",
+            ),
+        )
+        val v = vm(copiaCon(sim(estado = "PROMOTER_PENDING", localmente = MarcaLocal.ACEPTADA_EN_EL_CELULAR), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertEquals("Primero acepta esta SIM en Mis SIMs.", v.estado.value.error)
+    }
+
     @Test fun `una venta que ya venia en la lista la decide la lista`() {
         coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
         val v = vm(copiaCon(sim(), yaLlegadas = listOf(5L)))

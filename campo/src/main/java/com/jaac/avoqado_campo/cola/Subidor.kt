@@ -59,7 +59,8 @@ class Subidor(
      * las fotos sin dueño ([barrer]). R2-3: corre tras TODA pasada, también la de la gracia (`TrabajoDeSubida`), que no pasa por aquí.
      */
     suspend fun mantener() = mutex.mutex.withLock {
-        dao.purgarTerminalesAntesDe(ahora() - SIETE_DIAS)
+        // ponytail: 90 días por fecha de creación; una columna «terminadaAt» si una quitada de más de 90 días llega a importar.
+        dao.purgarTerminalesAntesDe(ahora() - SIETE_DIAS, ahora() - 90 * UN_DIA)
         barrer()
     }
 

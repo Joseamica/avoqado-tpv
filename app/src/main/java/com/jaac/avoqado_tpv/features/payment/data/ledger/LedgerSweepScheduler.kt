@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  *
  * Recovery is venue-scoped and runs independently of shadow mode. One-shot startup
  * runs after two minutes, allowing live recording to finish and freshly persisted rows
- * to reach the stale cutoff. Failed registration stays durable for bounded later retry.
+ * to reach the stale cutoff. Failed registration stays durable and is retried with a capped backoff, never abandoned (F1, Codex r6 #4).
  */
 object LedgerSweepScheduler {
 

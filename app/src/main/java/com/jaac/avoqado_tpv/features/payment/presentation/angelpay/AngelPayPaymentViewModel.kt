@@ -5503,6 +5503,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     fun printReceipt(receipt: PaymentReceipt?) {
         val venta = ventaLocal
         val exito = _state.value as? AngelPayPaymentState.Success
+        // D50: de qué NEGOCIO es este cobro; sin él, el ticket sale sin razón social ni RFC.
+        val negocioDelCobro = cachedVenueId
         viewModelScope.launch {
             if (venta != null && exito?.isCash == true) {
                 if (!canPrintReceipt) {
@@ -5561,14 +5563,15 @@ class AngelPayPaymentViewModel @Inject constructor(
                         // print primitives (no QR/bitmap support yet —
                         // receipt URL surfaces as text instead).
                         val venueZone = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
+                        val fiscal = secureStorage.datosFiscalesDelTicket(negocioDelCobro) // D50: sólo los del negocio del cobro
                         val ticket = angelPayTicketBuilder.buildPaymentTicket(
                             amount = receipt.baseAmount,
                             tipAmount = receipt.tipAmount,
                             authCode = authCode,
                             referenceNumber = referenceNumber,
                             venueName = venueName,
-                            venueLegalName = secureStorage.getVenueLegalName(),
-                            venueRfc = secureStorage.getVenueRfc(),
+                            venueLegalName = fiscal.legalName,
+                            venueRfc = fiscal.rfc,
                             venueAddress = secureStorage.getVenueAddress(),
                             venueCity = secureStorage.getVenueCity(),
                             venueState = secureStorage.getVenueState(),

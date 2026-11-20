@@ -106,6 +106,50 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
     }
 
     /**
+     * 💵 D7 (19-nov-2026): tras abrir la app sin red en la PAX, «Pago rápido» esperaba al lector de Blumon (que sin red no
+     * termina) y no dejaba cobrar ni en efectivo. Sus dos entradas (el monto del Inicio y la pantalla de monto) deciden
+     * igual que Cobrar: sin red y con el lector sin preparar, sólo efectivo y sin esperar; con red, esperan como siempre.
+     */
+    @Test
+    fun `D7 Pago rapido desde la pantalla de monto no espera al lector en solo efectivo`() {
+        val cuerpo = cuerpoDe("NavRoute.FastPaymentEntry.route")
+        assertTrue(
+            "La pantalla de monto de Pago rápido debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
+                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+            cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
+                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
+                cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
+        )
+    }
+
+    @Test
+    fun `D7 Pago rapido desde el Inicio no espera al lector en solo efectivo`() {
+        val inicio = navegacion.indexOf("onStartPaymentWithAmount = { amount ->")
+        require(inicio >= 0) { "No encontré onStartPaymentWithAmount en AppNavigation.kt" }
+        val cuerpo = navegacion.substring(inicio, navegacion.indexOf("onNavigateToShifts", inicio))
+        assertTrue(
+            "El Pago rápido del Inicio debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
+                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+            cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
+                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
+                cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
+        )
+    }
+
+    @Test
+    fun `D7 la regla de Pago rapido es la misma de Cobrar sin orden`() {
+        val inicio = navegacion.indexOf("val pagoRapidoVaEnSoloEfectivo")
+        require(inicio >= 0) { "No encontré pagoRapidoVaEnSoloEfectivo en AppNavigation.kt" }
+        val cuerpo = navegacion.substring(inicio, inicio + 1200)
+        assertTrue(
+            "pagoRapidoVaEnSoloEfectivo debe usar cobrarSaltaElLector(…) con tarjetaSinRed(…, esCobro = true, …), " +
+                "la regla de un cobro de Cobrar sin orden (su comportamiento se prueba en SoloEfectivoSinRedTest).",
+            cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") &&
+                cuerpo.contains("esCobro = true"),
+        )
+    }
+
+    /**
      * 💵 C2b «Cobrar» sin red (21-oct-2026): la venta local va SIEMPRE en sólo efectivo (sin esperar al lector de Blumon, que sin red no
      * termina) y lleva su venta guardada en `"ventaLocalJson"`, que se congela con los demás argumentos del cobro.
      */

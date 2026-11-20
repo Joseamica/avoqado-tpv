@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+import com.jaac.avoqado_tpv.core.data.local.DatosFiscalesDelTicket
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
@@ -468,7 +469,8 @@ class HomeViewModelTest {
     private suspend fun remoteReceiptT11(
         receipt: Map<String, Any>, expectedStatus: String,
         expectedCargo: String? = null, printerFails: Boolean = false,
-    ) {
+        eventVenueId: String = "venue-123",
+    ): List<Any?> {
         val ack = kotlinx.coroutines.CompletableDeferred<String>()
         val printed = java.util.concurrent.CopyOnWriteArrayList<List<Any?>>()
         every {
@@ -513,7 +515,7 @@ class HomeViewModelTest {
                 kotlinx.coroutines.withTimeout(5_000) { fakeSocketEvents.subscriptionCount.first { it > 0 } }
             }
             fakeSocketEvents.emit(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalReceiptPrintRequest(
-                requestId = "receipt-T11", receipt = receipt, venueId = "venue-123", timestamp = "2026-10-10T12:00:00Z",
+                requestId = "receipt-T11", receipt = receipt, venueId = eventVenueId, timestamp = "2026-10-10T12:00:00Z",
             ))
             // El renderer corre en IO real. Esperar su ACK, no asumir que runCurrent terminó IO.
             val status = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -534,6 +536,7 @@ class HomeViewModelTest {
             }
             verify(exactly = 1) { socketManager.emitTerminalReceiptPrintResult("receipt-T11", expectedStatus, any()) }
             if (expectedStatus == "failed") verify(exactly = 0) { socketManager.emitTerminalReceiptPrintResult("receipt-T11", "success", any()) }
+            return printed.singleOrNull().orEmpty()
         } finally {
             vm.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
             clearMocks(socketManager, answers = false, recordedCalls = true)
@@ -568,9 +571,60 @@ class HomeViewModelTest {
     fun `T11 evento remoto propaga fallo real de impresora sin success`() = runTest(testDispatcher) {
         remoteReceiptT11(receiptT11() + ("serviceChargeAmount" to 1500), "failed", "15.00", printerFails = true)
     }
+
+    /** D50: lo guardado en la terminal es el emisor del negocio de la terminal ("venue-123"), con la regla real de SecureStorage. */
+    private fun terminalConEmisorDelNegocio123() {
+        every { secureStorage.getVenueName() } returns "Negocio A" // el nombre que trae receiptT11()
+        every { secureStorage.datosFiscalesDelTicket(any()) } answers {
+            if (firstArg<String?>() == "venue-123") DatosFiscalesDelTicket("Emisor 123 SA", "AAA010101AA1") else DatosFiscalesDelTicket.NINGUNO
+        }
+    }
+
+    @Test
+    fun `P1 D50 el ticket remoto que pide el POS de otro negocio sale sin razon social ni RFC en la PAX`() = runTest(testDispatcher) {
+        terminalConEmisorDelNegocio123()
+        val printed = remoteReceiptT11(receiptT11(), "success", eventVenueId = "venue-B")
+        assertThat(printed[8]).isNull() // venueLegalName
+        assertThat(printed[9]).isNull() // venueRfc
+    }
+
+    @Test
+    fun `control D50 el ticket remoto del mismo negocio lleva su emisor en la PAX`() = runTest(testDispatcher) {
+        terminalConEmisorDelNegocio123()
+        val printed = remoteReceiptT11(receiptT11(), "success")
+        assertThat(printed[8]).isEqualTo("Emisor 123 SA")
+        assertThat(printed[9]).isEqualTo("AAA010101AA1")
+    }
+
+    @Test
+    fun `P1 D50 Codex r1 1 la copia del recibo de otro negocio que manda un POS de este negocio sale sin RFC`() = runTest(testDispatcher) {
+        terminalConEmisorDelNegocio123()
+        val printed = remoteReceiptT11(receiptT11() + ("venueName" to "Negocio Z"), "success")
+        assertThat(printed[8]).isNull()
+        assertThat(printed[9]).isNull()
+    }
+
+    @Test
+    fun `P1 D50 el ticket remoto de otro negocio sale sin RFC en la Nexgo y el del mismo negocio con el suyo`() = runTest(testDispatcher) {
+        terminalConEmisorDelNegocio123()
+        val otro = remotePublicNexgoT11(receiptT11(), "success", eventVenueId = "venue-B").joinToString("\n")
+        assertThat(otro).doesNotContain("AAA010101AA1")
+        assertThat(otro).doesNotContain("Emisor 123 SA")
+        val mismo = remotePublicNexgoT11(receiptT11(), "success").joinToString("\n")
+        assertThat(mismo).contains("AAA010101AA1")
+    }
+
+    @Test
+    fun `D50 al abrir Inicio se refrescan los datos fiscales del negocio de la terminal`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        // warmUpProductCache corre en IO real con su espera de 3 s.
+        coVerify(timeout = 8_000) { authRepository.refrescarDatosDelNegocio("venue-123") }
+        vm.viewModelScope.cancel()
+    }
     private suspend fun remotePublicNexgoT11(
         receipt: Map<String, Any>, expectedStatus: String,
         callbackCode: Int = 0, statusCode: Int = 0, expectedStarts: Int = 1,
+        eventVenueId: String = "venue-123",
     ): List<String> {
         every {
             printerManager.printReceipt(
@@ -624,7 +678,7 @@ class HomeViewModelTest {
         try {
             fakeSocketEvents.subscriptionCount.first { it > 0 }
             fakeSocketEvents.emit(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalReceiptPrintRequest(
-                requestId = "public-Nexgo", receipt = receipt, venueId = "venue-123", timestamp = "2026-10-10T12:00:00Z"))
+                requestId = "public-Nexgo", receipt = receipt, venueId = eventVenueId, timestamp = "2026-10-10T12:00:00Z"))
             if (expectedStarts > 0) {
                 val observed = kotlinx.coroutines.withContext(Dispatchers.IO) {
                     kotlinx.coroutines.withTimeout(5_000) {

@@ -532,7 +532,8 @@ class PrinterManager @Inject constructor(
         venueZipCode: String?
     ) {
         val primaryName = venueLegalName?.takeIf { it.isNotBlank() } ?: venueName?.takeIf { it.isNotBlank() }
-        primaryName?.let { printerInstance.printStr("${centerText(it)}\n", null) }
+        // D50 (Codex r1 #2): la razón social del emisor suele pasar de 32 caracteres; se parte en renglones, no se corta.
+        primaryName?.let { nombre -> wrapText(nombre).forEach { printerInstance.printStr("${centerText(it)}\n", null) } }
 
         if (!venueLegalName.isNullOrBlank() && !venueName.isNullOrBlank() && venueLegalName != venueName) {
             printerInstance.printStr("${centerText(venueName)}\n", null)

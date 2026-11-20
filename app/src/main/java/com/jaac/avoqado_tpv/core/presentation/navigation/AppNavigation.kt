@@ -2112,6 +2112,11 @@ fun AppNavigation(
                         // «atrás» caía en el cobro viejo con el saldo de antes de la tarjeta (ver su KDoc).
                         Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
                         navController.volverALaCuentaDeLaMesa()
+                    } else if (cameFromCheckout) {
+                        // D34 (Codex r1 #1): «atrás» antes de cobrar regresa a Cobrar con su carrito, igual que el riel AngelPay
+                        // (su onNavigateBack es un pop). Antes abría la orden en «Órdenes», que ya no existe.
+                        Timber.i("🛒 [Navigation] Cobro de Cobrar sin terminar (orden %s): de vuelta a Cobrar", continueOrderId)
+                        if (!navController.popBackStack()) navController.popAlInicio()
                     } else {
                         // D34 (20-nov): sin «Órdenes», la orden se sigue cobrando desde donde se abrió; aquí se regresa al Inicio.
                         Timber.i("🏠 [Navigation] Orden $continueOrderId sin pantalla de Órdenes (D34): de vuelta al Inicio")

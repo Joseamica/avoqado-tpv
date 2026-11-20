@@ -83,9 +83,11 @@ class TpvSettingsRestaurantModeTest {
         val rutas = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/NavRoute.kt").readText()
         assertThat(inicio).doesNotContain("label = \"Órdenes\"")
         assertThat(inicio).doesNotContain("onNavigateToOrdering")
-        listOf("OrderingWelcome", "NavRoute.Menu", "NavRoute.OrderList", "NavRoute.FloorPlan", "MenuScreen(").forEach {
-            assertThat(navegacion).doesNotContain(it)
+        // Con límite de palabra: `TableMenuScreen(` (el menú de Mesas) contiene «MenuScreen(» y SÍ debe seguir (Codex r1 #6).
+        listOf("""\bOrderingWelcome""", """\bNavRoute\.Menu\b""", """\bNavRoute\.OrderList\b""", """\bNavRoute\.FloorPlan\b""", """\bMenuScreen\(""").forEach {
+            assertThat(navegacion).doesNotContainMatch(it)
         }
+        assertThat(navegacion).contains("TableMenuScreen(")
         listOf("ordering_welcome", "\"menu/{orderId}\"", "order_list", "floor_plan").forEach { assertThat(rutas).doesNotContain(it) }
     }
 

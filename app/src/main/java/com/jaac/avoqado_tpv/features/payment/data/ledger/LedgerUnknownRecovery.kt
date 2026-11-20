@@ -75,9 +75,9 @@ class LedgerUnknownRecovery @Inject constructor(
                         // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y
                         // puede aprobarse tarde). No es «no aparece»: la marca se queda —frena su tarjeta aunque la ventana del SERVIDOR la
                         // suelte— y se vuelve a preguntar sin gastar turno. La resuelven el aprobado (arriba) o una PERSONA: si ya la firmó,
-                        // cuenta como «no aparece» y su tarjeta sigue lo que decidió. Nunca el silencio.
-                        // ponytail: una `05AP` que nunca cambia se vuelve a preguntar en cada barrido y su fila no se poda; si se acumulan,
-                        // hace falta la firma del gerente para la que ya soltó la ventana (decisión de producto pendiente).
+                        // cuenta como «no aparece» y su tarjeta sigue lo que decidió. Nunca el silencio. Si la VENTANA del SERVIDOR ya la
+                        // soltó, sigue siendo firmable en «Por revisar» (F1 · 05AP, 20-nov): el SERVIDOR guarda la firma sin cambiar el estado
+                        // financiero, su comprobante la deja «cerrada por una persona» y la libreta pide esta pasada al vencer la reserva.
                         is VerificacionDelCobro.EnElProcesador ->
                             if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId))) dao.terminarConsultaSinCoincidencia(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))

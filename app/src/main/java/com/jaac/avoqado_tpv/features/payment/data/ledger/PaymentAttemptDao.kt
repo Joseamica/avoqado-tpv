@@ -36,7 +36,12 @@ const val SQL_POR_REVISAR = """
     SELECT 'ATTEMPT' AS clase, attempt_id AS clave, attempt_id AS attempt_id, terminal_payment_request_id AS request_id,
         (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, server_answered_at AS server_answered_at,
         state AS estado, kind AS tipo,
-        CASE WHEN state = 'INDETERMINADO' AND legacy_shadow = 0 AND kind = 'SALE'
+        CASE WHEN (state = 'INDETERMINADO'
+                   -- 🔴 F1 · 05AP (20-nov): la venta que la VENTANA del SERVIDOR ya soltó y la N86 sigue frenando porque el historial de
+                   -- AngelPay la trae sin aprobar (marca de lectura viva). Firmable: la firma va al SERVIDOR como cualquier otra.
+                   OR (state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE' AND history_read_at IS NOT NULL
+                       AND processor = 'ANGELPAY' AND terminal_payment_request_id IS NOT NULL AND server_payment_id IS NULL))
+            AND legacy_shadow = 0 AND kind = 'SALE'
             AND host_approved IS NOT 1 AND server_processor_evidence IS NOT 'APPROVED' AND server_veto IS NULL
             AND (server_outcome IS NULL
                  OR server_outcome NOT IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE'))
@@ -1433,7 +1438,12 @@ interface PaymentAttemptDao {
            server_verdict_at = :now, updated_at = :now, state_version = state_version + 1
            WHERE attempt_id = :attemptId AND venue_id = :venueId AND terminal_payment_request_id = :requestId
              AND legacy_shadow = 0 AND processor IN ('ANGELPAY','BLUMON') AND kind = 'SALE'
-             AND state = 'INDETERMINADO' AND host_approved IS NOT 1 AND server_outcome IS NULL
+             AND ((state = 'INDETERMINADO' AND server_outcome IS NULL)
+                  -- 🔴 F1 · 05AP (20-nov): la que ya soltó la VENTANA y después firmó un gerente pasa a «cerrada por una persona» (no se
+                  -- reabre ni toca la marca del historial: la siguiente respuesta la termina). Nunca al revés.
+                  OR (:serverOutcome = 'OPERATOR_NO_INSTRUMENT' AND state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE'
+                      AND server_payment_id IS NULL))
+             AND host_approved IS NOT 1
              AND (processor = 'ANGELPAY' OR :serverOutcome = 'OPERATOR_NO_INSTRUMENT')
              AND server_processor_evidence IS NOT 'APPROVED'
              -- r5-4: y ningún VETO durable del servidor (pago no atribuible, evidencia ajena, evidencia sin dueño).

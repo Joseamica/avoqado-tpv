@@ -867,6 +867,13 @@ class PaymentAttemptLedger(
      */
     @Volatile var onUncertaintyBorn: ((attemptId: String) -> Unit)? = null
 
+    /**
+     * 🔴 F1 · 05AP (20-nov): una PERSONA cerró una venta cuya lectura del historial de AngelPay sigue despachada (la marca que frena su
+     * tarjeta). La siguiente respuesta del historial la termina, y el barrido que la pregunta corre cada 6 h: se pide una pasada en
+     * cuanto vence la reserva de esa lectura ([delayMs]). Lo cablea [LedgerRecoveryTrigger]; sin él (pruebas), espera al barrido.
+     */
+    @Volatile var alFirmarConLecturaPendiente: ((delayMs: Long) -> Unit)? = null
+
     private fun avisarIncertidumbre(attemptId: String) {
         anotarEnDuda(attemptId)   // Ronda 21: la espera del aviso del banco cuenta desde que nace la duda
         runCatching { onUncertaintyBorn?.invoke(attemptId) }
@@ -929,7 +936,7 @@ class PaymentAttemptLedger(
                             Timber.w("📒 [Libreta] la declaración local de %s ya estaba en Avoqado: marcada", l.attemptId)
                         false
                     }
-            }
+            }.also { if (it) pedirLaSiguienteRespuestaDelHistorial(l.attemptId, now) }
         }
         val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
         // 🔴 Pieza C (22-sep): sin `requestId` la liberación es de un cobro LOCAL y va a su propio CAS, que exige
@@ -949,10 +956,28 @@ class PaymentAttemptLedger(
                 "📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada",
                 l.attemptId, l.evidencia, l.requestId ?: "LOCAL (cobro en la terminal)",
             )
+        if (cerrada && l.evidencia == "OPERATOR_RECONCILED") pedirLaSiguienteRespuestaDelHistorial(l.attemptId, now)
         cerrada
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
         Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
+    }
+
+    /**
+     * F1 · 05AP: una persona acaba de cerrar [attemptId] y su lectura del historial de AngelPay sigue despachada (frena su tarjeta): se
+     * pide la pasada que la termina en cuanto vence su reserva, sin esperar al barrido de 6 h. Nunca lanza; sin el hook, nada.
+     */
+    private suspend fun pedirLaSiguienteRespuestaDelHistorial(attemptId: String, now: Long) {
+        val pedir = alFirmarConLecturaPendiente ?: return
+        try {
+            val fila = withContext(Dispatchers.IO) { dao.getById(attemptId) } ?: return
+            if (fila.historyReadAt == null) return
+            pedir(maxOf(0L, (fila.leaseUntil ?: now) - now) + MARGEN_TRAS_LA_RESERVA_MS)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.w(error, "📒 [Libreta] no se pudo pedir la pasada del historial tras la firma | attemptId=%s", attemptId)
+        }
     }
 
     /**
@@ -1544,16 +1569,29 @@ class PaymentAttemptLedger(
      * La PAX y la Nexgo escriben en la misma libreta. Lo que ya está en la cola (ENTREGADA_A_COLA) o registrado no cuenta.
      * A diferencia de [retencionDeLaVenta], un fallo de lectura SE LANZA: quien pregunta para no cobrar dos veces falla cerrado.
      */
-    suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean =
+    suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean {
         // F1: el DINERO de la venta, no la cerca de la tarjeta: una duda sin dinero no impide abrir el folio ni cobrar su saldo.
-        dao.dineroEnJuegoDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        // F1 · 05AP (20-nov, misma familia que Codex plan A #1): también el aprobado que sólo está en MEMORIA. Bajo el candado, donde
+        // se escribe: base y memoria son UNA foto (el aprobado no puede pasar de una a otra entre las dos lecturas).
+        return candadoDeEvidencia.withLock {
+            withContext(Dispatchers.IO) { dao.dineroEnJuegoDeLaVenta(fragmento, processToken) } != null ||
+                aprobadoSinEscribirDeLaCuenta(fragmento, null) != null
+        }
+    }
 
     /**
      * D9 (Mesas, Codex r3): [PaymentAttemptDao.dineroDeTarjetaDeLaCuenta] —cola y libreta de ESTA cuenta en una sola
      * fotografía— con el token de ESTE proceso. Un fallo de lectura SE LANZA: quien pregunta para no cobrar de más falla cerrado.
+     * F1 · 05AP: el aprobado sólo en memoria también es libreta ('LIBRETA'), en la misma foto (bajo el candado de la memoria).
      */
-    suspend fun dineroDeTarjetaSinConfirmarDeLaCuenta(venueId: String, orderId: String): String? =
-        dao.dineroDeTarjetaDeLaCuenta(venueId, orderId, "\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken)
+    suspend fun dineroDeTarjetaSinConfirmarDeLaCuenta(venueId: String, orderId: String): String? {
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        return candadoDeEvidencia.withLock {
+            withContext(Dispatchers.IO) { dao.dineroDeTarjetaDeLaCuenta(venueId, orderId, fragmento, processToken) }
+                ?: aprobadoSinEscribirDeLaCuenta(fragmento, null)?.let { "LIBRETA" }
+        }
+    }
 
     /**
      * 🔴 Decisión del founder (23-sep, «corrige y avisa»): los cobros que la terminal dio por NO cobrados y el servidor SÍ
@@ -1802,6 +1840,9 @@ private val ESTADOS_CON_DINERO = setOf(
     PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_REGISTRADO,
     PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, PaymentAttemptEntity.STATE_CERRADA,
 )
+
+/** F1 · 05AP: la pasada del historial que se pide tras una firma va un poco DESPUÉS de que venza la reserva de la lectura (su CAS la exige vencida). */
+internal const val MARGEN_TRAS_LA_RESERVA_MS = 5_000L
 
 /** Codex plan A #1: el dinero ya está a salvo (registrado o en la cola): no frena la tarjeta de su cuenta — el mismo corte que la marca de [PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]. */
 private val ESTADOS_A_SALVO = setOf(

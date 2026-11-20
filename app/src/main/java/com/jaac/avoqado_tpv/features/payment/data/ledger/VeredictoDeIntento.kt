@@ -235,7 +235,14 @@ data class LiberacionDelServidor(
             if (acreditaDinero(intento) || hayEvidenciaSinDueno(intento) || hayContradiccion(intento)) return null
             if (comprobante != null && !comprobante.esDe(attemptId, requestId)) return null
             return when (evidencia) {
-                "NO_EVIDENCE_AFTER_WINDOW" -> LiberacionDelServidor(venueId, attemptId, requestId, evidencia)
+                // 🔴 F1 · salida del gerente para el 05AP (20-nov): la ventana del SERVIDOR soltó la solicitud y, encima, un gerente firmó
+                // con su PIN (el SERVIDOR guarda su asiento sin cambiar el estado financiero). Con el comprobante de una PERSONA para ESTA
+                // solicitud, la liberación es la suya: la fila queda cerrada por una persona y la siguiente respuesta del historial de
+                // AngelPay ya cuenta como «no aparece» (suelta la tarjeta). Sin ese comprobante, sigue siendo sólo la ventana.
+                "NO_EVIDENCE_AFTER_WINDOW" -> comprobante
+                    ?.takeIf { requestId != null && it.kind in DECLARACIONES_DE_UNA_PERSONA && it.acreditaPersona(attemptId, requestId) }
+                    ?.let { LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED", it.staffId) }
+                    ?: LiberacionDelServidor(venueId, attemptId, requestId, evidencia)
                 "OPERATOR_RECONCILED", CAJERO_REVISO -> {
                     val quien = when {
                         comprobante != null -> comprobante.staffId
@@ -305,10 +312,15 @@ data class LiberacionDelServidor(
             val solicitud = respuesta.request ?: return null
             if (textoDe(solicitud, "requestId") != requestId) return null
             if (solicitud.get("venueId")?.isJsonNull == false && textoDe(solicitud, "venueId") != venueId) return null
-            if (textoDe(solicitud, "outcome") != "NOT_CHARGED" || textoDe(solicitud, "outcomeEvidence") != "OPERATOR_RECONCILED") return null
+            if (textoDe(solicitud, "outcome") != "NOT_CHARGED") return null
+            // F1 · 05AP (20-nov): también la ventana con la firma de un gerente encima. Lo que sale tiene que ser la liberación de una
+            // PERSONA ([desdeAcuse] la da sólo con su comprobante): el silencio solo nunca cierra por aquí.
+            val evidencia = textoDe(solicitud, "outcomeEvidence")
+                ?.takeIf { it == "OPERATOR_RECONCILED" || it == "NO_EVIDENCE_AFTER_WINDOW" } ?: return null
             // F1 bloque 7 (I4): un `OPERATOR_RECONCILED` aislado no acredita a nadie: hace falta el comprobante de una PERSONA (lo decide
             // [desdeAcuse], con su ponytail para el SERVIDOR anterior).
-            return desdeAcuse(venueId, attemptId, requestId, "OPERATOR_RECONCILED", respuesta.declarationReceipt, null, null)
+            return desdeAcuse(venueId, attemptId, requestId, evidencia, respuesta.declarationReceipt, null, null)
+                ?.takeIf { it.evidencia == "OPERATOR_RECONCILED" }
         }
 
         private fun textoDe(objeto: JsonObject?, campo: String): String? =

@@ -40,6 +40,8 @@ class LedgerRecoveryTrigger @Inject constructor(
                 }
             }
         }
+        // F1 · 05AP: tras la firma de una venta cuya lectura del historial sigue despachada, la pasada que la termina (no a las 6 h).
+        ledger.alFirmarConLecturaPendiente = { delayMs -> LedgerSweepScheduler.runApprovalFollowUp(appContext, delayMs) }
         Timber.d("🔎 [LedgerServer] hook de incertidumbre instalado")
         // 🔴 Ronda 20 (founder, 23-sep): al ARRANCAR, lo que un proceso muerto dejó a medias pasa AL INSTANTE a «en duda», y la
         // recuperación se agenda para cuando ya pasó la espera del aviso del banco: la terminal se libera SOLA, sin que nadie

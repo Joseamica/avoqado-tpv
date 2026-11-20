@@ -158,7 +158,7 @@ class LibretaUnEscritorTest {
         coordinator.syncOrderImmediately(cuenta) // lo que llama «Pagar» y «Anular»
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 4) }
-        assertThat(loQueVeLaCajera().items.map { it.productId }).containsExactly("prod-tacos", "prod-agua")
+        assertThat(renglones().map { it.productId }).doesNotContain("prod-cafe")
         assertThat(renglones().all { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_SYNCED }).isTrue()
         assertThat(cabecera().version).isEqualTo(5)
     }

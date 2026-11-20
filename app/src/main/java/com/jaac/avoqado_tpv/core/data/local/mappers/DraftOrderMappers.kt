@@ -170,7 +170,8 @@ fun DraftOrderItemEntity.toDomain(): OrderItem {
         notes = notes,
         kitchenStatus = KitchenStatus.valueOf(kitchenStatus),
         createdAt = Instant.ofEpochMilli(createdAt),
-        sentToKitchenAt = sentToKitchenAt?.let { Instant.ofEpochMilli(it) }
+        sentToKitchenAt = sentToKitchenAt?.let { Instant.ofEpochMilli(it) },
+        externalId = externalId,
     )
 }
 
@@ -196,7 +197,7 @@ fun OrderItem.toEntity(
 
     return DraftOrderItemEntity(
         id = id,
-        externalId = id,  // ✅ Idempotency: default externalId to server ID for synced items
+        externalId = externalId ?: id,  // la llave que mandó la caja (fase 1, Codex r1 #9); si no hay, el id del SERVIDOR
         linePosition = createdAt.toEpochMilli(),
         orderId = orderId,
         productId = productId,

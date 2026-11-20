@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ResultadoDeLectura
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
@@ -475,56 +476,25 @@ class OrderSyncCoordinator @Inject constructor(
      *
      * @param order Order fetched from backend
      */
-    suspend fun cacheBackendOrder(order: Order) = withContext(Dispatchers.IO) {
+    suspend fun cacheBackendOrder(order: Order): ResultadoDeLectura? = withContext(Dispatchers.IO) {
+        // Libreta de Órdenes, fase 1: ES la puerta. Antes era un `insert` REPLACE de la cuenta, que borraba en cascada los
+        // renglones sin subir (hz:nube0000:nacec621) y aceptaba lecturas viejas. Ahora decide en UNA transacción de Room.
         try {
-            Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
-
-            // ⭐ PRESERVE LOCAL sentToKitchenAt TIMESTAMPS
-            // Backend doesn't have this field, so we must preserve local values
-            val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
-            val localSentTimestamps = existingItems.associate { it.id to it.sentToKitchenAt }
-            val localLinePositions = existingItems.associate { it.id to it.linePosition }
-            Timber.d("💾 [Cache] Preserving ${localSentTimestamps.count { it.value != null }} local sentToKitchenAt timestamps")
-
-            // Convert order to entity (marked as SYNCED since it came from backend)
-            val draftOrderEntity = order.toEntity(
-                syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
+            val resultado = draftOrderDao.guardarCuentaDelServidor(
+                cuenta = order.toEntity(syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED, isServerCreated = true),
+                renglones = order.items.toEntities(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = true),
             )
-
-            // Convert items to entities (also marked as SYNCED)
-            val draftItemEntities = order.items.toEntities(
-                syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED,
-                isServerCreated = true
-            ).map { item ->
-                // Preserve local sentToKitchenAt if it exists
-                val localTimestamp = localSentTimestamps[item.id]
-                val localLinePosition = localLinePositions[item.id]
-                val withSentAt = if (localTimestamp != null && item.sentToKitchenAt == null) {
-                    item.copy(sentToKitchenAt = localTimestamp)
-                } else {
-                    item
-                }
-                if (localLinePosition != null) {
-                    withSentAt.copy(linePosition = localLinePosition)
-                } else {
-                    withSentAt
-                }
-            }
-
-            // Insert order first (parent)
-            draftOrderDao.insert(draftOrderEntity)
-
-            // Then insert items (children with foreign key to order)
-            draftItemEntities.forEach { item ->
-                draftOrderItemDao.insert(item)
-            }
-
-            Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
+            Timber.i("💾 [Libreta] Lectura del SERVIDOR | id=${order.id} | v=${order.version} | items=${order.items.size} | $resultado")
+            resultado
         } catch (e: Exception) {
-            Timber.e(e, "❌ [Cache] Failed to cache backend order: ${order.id}")
-            // Don't throw - caching is a nice-to-have, order still loaded in memory
+            Timber.e(e, "❌ [Libreta] No se pudo guardar la lectura del SERVIDOR: ${order.id}")
+            null // como antes: la cuenta sigue en memoria
         }
+    }
+
+    /** ¿La caja tiene en esta cuenta algo que todavía no sube (alta, cantidad o retiro)? */
+    suspend fun hayRenglonesSinSubir(orderId: String): Boolean = withContext(Dispatchers.IO) {
+        draftOrderDao.renglonesSinSubir(resolveExistingOrderId(orderId)) > 0
     }
 
     /**
@@ -562,8 +532,11 @@ class OrderSyncCoordinator @Inject constructor(
 
             // Merge identical items (same product + modifiers + notes) unless already sent to kitchen.
             val existingItems = draftOrderItemDao.getItemsByOrderAndProduct(effectiveOrderId, productId)
+            // Fase 1 (Codex r1 #4): sólo se junta con un renglón que todavía no sube. Juntar en uno ya subido mandaba la misma
+            // llave con otra cantidad y el SERVIDOR, que deduplica por llave, se quedaba con la vieja.
             val matchingItem = existingItems.firstOrNull { item ->
-                item.sentToKitchenAt == null &&
+                item.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING &&
+                    item.sentToKitchenAt == null &&
                     normalizeNotes(item.notes) == normalizedNotes &&
                     buildModifiersKeyFromJson(item.modifiers) == modifiersKey
             }
@@ -647,10 +620,10 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.w("⚠️ [Order Remap] removeItem remapped orderId $orderId → $effectiveOrderId")
         }
 
-        draftOrderItemDao.markAsDeleted(itemId)
-
-        // Update order totals
-        recalculateOrderTotals(effectiveOrderId)
+        // Fase 1: dentro de su cuenta, por id o por la llave (la puerta pudo cambiar el id local por el del SERVIDOR).
+        if (!draftOrderDao.quitarRenglon(effectiveOrderId, itemId, System.currentTimeMillis())) {
+            Timber.w("⚠️ [Local] Item to remove not found | order=$effectiveOrderId | item=$itemId")
+        }
 
         Timber.d("➖ [Local] Soft deleted item | order=$effectiveOrderId | item=$itemId")
     }
@@ -683,10 +656,7 @@ class OrderSyncCoordinator @Inject constructor(
         } else {
             // Update quantity in database
             val newTotalPrice = (unitPrice * newQuantity.toBigDecimal()).toString()
-            draftOrderItemDao.updateQuantity(itemId, newQuantity, newTotalPrice)
-
-            // Update order totals
-            recalculateOrderTotals(effectiveOrderId)
+            draftOrderDao.cambiarCantidad(effectiveOrderId, itemId, newQuantity, newTotalPrice, System.currentTimeMillis())
 
             Timber.d("✏️ [Local] Updated item quantity | order=$effectiveOrderId | item=$itemId | qty=$newQuantity")
         }
@@ -712,7 +682,8 @@ class OrderSyncCoordinator @Inject constructor(
             return@withContext
         }
 
-        draftOrderItemDao.markItemsAsSentToKitchen(itemIds, sentAt)
+        // Fase 1 (Codex D16 r6 #2): la impresora pudo tomar el id local antes de que la puerta pusiera el del SERVIDOR.
+        draftOrderDao.marcarEnCocina(resolveExistingOrderId(orderId), itemIds, sentAt)
         Timber.i("🍳 [Local] Marked ${itemIds.size} items as sent to kitchen | order=$orderId | sentAt=$sentAt")
     }
 
@@ -971,12 +942,16 @@ class OrderSyncCoordinator @Inject constructor(
         var conflictDetected = false
         var permanentlyFailed = false
         var errorMessage: String? = null
+        var reintentoTrasChoque = false
+        var colaTrasRechazo = false
 
         activeSyncOrders[orderId] = true
 
         try {
             while (true) {
-                if (attempt > 1) {
+                val sinEspera = reintentoTrasChoque
+                reintentoTrasChoque = false
+                if (attempt > 1 && !sinEspera) {
                     val delayMs = (2.0.pow(attempt - 1) * 1000).toLong()
                     Timber.d("🔄 [Sync] Retry attempt $attempt | order=$orderId | delay=${delayMs}ms | syncRunId=$syncRunId")
                     delay(delayMs)
@@ -1000,7 +975,16 @@ class OrderSyncCoordinator @Inject constructor(
                     break
                 } catch (e: ConflictException) {
                     val autoResolved = attemptAutoResolveConflict(orderId, e.serverVersion)
-                    if (autoResolved) {
+                    if (autoResolved == ChoqueResuelto.CON_COLA && attempt < 4) {
+                        // Fase 1 (Codex D16 r6 #3): la cola sigue y la libreta ya tiene la versión nueva; se sube en ESTA vuelta,
+                        // para que «Pagar» y «Anular» no sigan como si ya hubiera terminado.
+                        Timber.i("🔁 [Sync] Conflict auto-resolved with queue — retrying now | order=$orderId | syncRunId=$syncRunId")
+                        reintentoTrasChoque = true
+                        attempt += 1
+                        continue
+                    }
+                    if (autoResolved != ChoqueResuelto.FALLO) {
+                        if (autoResolved == ChoqueResuelto.CON_COLA) markDirty(orderId, reason = "conflict auto-resolve")
                         Timber.i("✅ [Sync] Conflict auto-resolved | order=$orderId | serverVersion=${e.serverVersion} | syncRunId=$syncRunId")
                         resultId = orderId
                         break
@@ -1022,7 +1006,7 @@ class OrderSyncCoordinator @Inject constructor(
                         "🛑 [Sync] Permanent failure — dropping queued op, will NOT retry | order=$orderId | " +
                             "code=${e.httpCode} | ${e.message} | syncRunId=$syncRunId",
                     )
-                    handlePermanentSyncFailure(orderId, e.message ?: "La operación no se pudo sincronizar")
+                    colaTrasRechazo = handlePermanentSyncFailure(orderId, e.message ?: "La operación no se pudo sincronizar", e.renglones)
                     permanentlyFailed = true
                     break
                 } catch (e: Exception) {
@@ -1048,7 +1032,11 @@ class OrderSyncCoordinator @Inject constructor(
             return orderId
         }
 
-        if (resyncNeeded && !conflictDetected && !permanentlyFailed) {
+        if (colaTrasRechazo) {
+            // Fase 1 (Codex D16 r6 #7): lo rechazado ya se soltó; lo que la caja agregó mientras tanto sigue en cola y sube.
+            Timber.i("🔁 [Sync] Queue left after a permanent failure | order=$orderId | scheduling resync")
+            scheduleSync(orderId)
+        } else if (resyncNeeded && !conflictDetected && !permanentlyFailed) {
             Timber.i("🔁 [Sync] Dirty changes detected after sync | order=$orderId | scheduling resync")
             scheduleSync(orderId)
         }
@@ -1070,10 +1058,10 @@ class OrderSyncCoordinator @Inject constructor(
     private suspend fun attemptAutoResolveConflict(
         orderId: String,
         serverVersion: String
-    ): Boolean {
+    ): ChoqueResuelto {
         return try {
-            val draftOrder = draftOrderDao.getOrder(orderId) ?: return false
-            if (!draftOrder.isServerCreated) return false
+            val draftOrder = draftOrderDao.getOrder(orderId) ?: return ChoqueResuelto.FALLO
+            if (!draftOrder.isServerCreated) return ChoqueResuelto.FALLO
 
             Timber.w("⚠️ [Sync] Auto-resolving conflict | order=$orderId | serverVersion=$serverVersion")
 
@@ -1082,36 +1070,31 @@ class OrderSyncCoordinator @Inject constructor(
                 orderId = orderId
             ).getOrElse { error ->
                 Timber.e(error, "❌ [Sync] Conflict auto-resolve failed (backend fetch)")
-                return false
+                return ChoqueResuelto.FALLO
             }
 
-            cacheBackendOrder(backendOrder)
-
-            val hasPending =
-                draftOrderItemDao.getPendingItemsByOrder(orderId).isNotEmpty() ||
-                    draftOrderItemDao.getDeletedItemsByOrder(orderId).isNotEmpty()
-
-            withContext(NonCancellable) {
-                val newStatus = if (hasPending) {
-                    DraftOrderEntity.SYNC_STATUS_PENDING
-                } else {
-                    DraftOrderEntity.SYNC_STATUS_SYNCED
+            // Fase 1: por la puerta. Con cola, la libreta toma la versión nueva y CONSERVA lo que no se ha subido (antes el
+            // REPLACE lo borraba y después preguntaba si había cola). Una lectura vieja no cuenta como resuelto.
+            when (cacheBackendOrder(backendOrder)) {
+                ResultadoDeLectura.CON_COLA -> {
+                    withContext(NonCancellable) {
+                        draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_PENDING, System.currentTimeMillis())
+                    }
+                    ChoqueResuelto.CON_COLA
                 }
-                draftOrderDao.updateSyncStatus(orderId, newStatus, System.currentTimeMillis())
+                ResultadoDeLectura.REEMPLAZADA, ResultadoDeLectura.NUEVA -> {
+                    _syncEvents.emit(SyncEvent.Synced(orderId, backendOrder.version))
+                    ChoqueResuelto.SIN_COLA
+                }
+                ResultadoDeLectura.VIEJA, null -> ChoqueResuelto.FALLO
             }
-
-            if (hasPending) {
-                markDirty(orderId, reason = "conflict auto-resolve")
-            } else {
-                _syncEvents.emit(SyncEvent.Synced(orderId, backendOrder.version))
-            }
-
-            true
         } catch (e: Exception) {
             Timber.e(e, "❌ [Sync] Conflict auto-resolve failed")
-            false
+            ChoqueResuelto.FALLO
         }
     }
+
+    private enum class ChoqueResuelto { FALLO, SIN_COLA, CON_COLA }
 
     /**
      * Handle a PERMANENT sync failure (a 4xx that can never succeed on retry — e.g. the
@@ -1126,16 +1109,21 @@ class OrderSyncCoordinator @Inject constructor(
      *   3. Mark the order SYNCED so it is NEVER resurrected/retried again.
      *   4. Surface a user-facing event so the cashier knows the change wasn't applied.
      */
-    private suspend fun handlePermanentSyncFailure(orderId: String, reason: String) {
-        withContext(NonCancellable) {
-            // 1. Drop un-syncable local pending items (they were never accepted by the server).
-            val pending = draftOrderItemDao.getPendingItemsByOrder(orderId)
-            pending.forEach { draftOrderItemDao.markAsDeleted(it.id) }
-            if (pending.isNotEmpty()) {
-                Timber.w("🛑 [Sync] Dropped ${pending.size} un-syncable pending item(s) | order=$orderId")
+    private suspend fun handlePermanentSyncFailure(orderId: String, reason: String, rechazados: List<String>): Boolean {
+        val quedaCola = withContext(NonCancellable) {
+            // 1. Se sueltan sólo los renglones del envío que el SERVIDOR rechazó (fase 1, Codex D16 r6 #7). Si el rechazo no dice
+            //    cuáles (la cuenta entera: pagada, cerrada, no existe), como antes: la cola de este momento.
+            val soltar = rechazados.ifEmpty {
+                draftOrderItemDao.getPendingItemsByOrder(orderId).map { it.id } +
+                    draftOrderItemDao.getDeletedItemsByOrder(orderId).map { it.id }
+            }
+            if (soltar.isNotEmpty()) {
+                draftOrderDao.borrarRenglones(soltar)
+                draftOrderDao.recalcularCabecera(orderId, System.currentTimeMillis())
+                Timber.w("🛑 [Sync] Dropped ${soltar.size} rejected item(s) | order=$orderId")
             }
 
-            // 2. Best-effort: refresh the order from the backend so local reflects its true state.
+            // 2. Best-effort: la cuenta del SERVIDOR entra por la puerta (conserva lo que la caja agregue mientras tanto).
             val draft = draftOrderDao.getOrder(orderId)
             if (draft?.isServerCreated == true) {
                 try {
@@ -1146,13 +1134,21 @@ class OrderSyncCoordinator @Inject constructor(
                 }
             }
 
-            // 3. SYNCED → syncPendingOrders never resurrects it. Loop broken.
-            draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_SYNCED, System.currentTimeMillis())
+            // 3. Sin cola → SYNCED (syncPendingOrders no la revive: el ciclo infinito sigue roto). Con cola → PENDING y vuelve a
+            //    subir: cada rechazo suelta lo suyo, así que la cola siempre se acorta.
+            val cola = draftOrderDao.renglonesSinSubir(orderId) > 0
+            draftOrderDao.updateSyncStatus(
+                orderId,
+                if (cola) DraftOrderEntity.SYNC_STATUS_PENDING else DraftOrderEntity.SYNC_STATUS_SYNCED,
+                System.currentTimeMillis(),
+            )
+            cola
         }
 
         // 4. Tell the UI so the cashier knows their change wasn't applied.
         _syncEvents.emit(SyncEvent.Error(orderId, reason))
-        Timber.i("🛑 [Sync] Permanent failure handled — order marked SYNCED, retry loop broken | order=$orderId")
+        Timber.i("🛑 [Sync] Permanent failure handled | order=$orderId | quedaCola=$quedaCola")
+        return quedaCola
     }
 
     /**
@@ -1296,24 +1292,30 @@ class OrderSyncCoordinator @Inject constructor(
             // ✅ P1 FIX: Match by productId instead of index (safer when order differs)
             // Build a map of server items by productId for efficient lookup
             val serverItemsByProduct = updatedOrder.items.groupBy { it.productId }
+            val usados = mutableSetOf<String>()
 
             for (localItem in pendingItems) {
-                // Find server items with matching productId
-                val matchingServerItems = serverItemsByProduct[localItem.productId]
+                // Fase 1 (Codex r1 #5): primero por la llave que mandó la caja; si no, por producto y cantidad, sin repetir un id.
+                val llave = localItem.externalId ?: localItem.id
+                val serverItem = updatedOrder.items.firstOrNull { it.externalId == llave && it.id !in usados }
+                    ?: serverItemsByProduct[localItem.productId].orEmpty().filter { it.id !in usados }
+                        .let { candidatos -> candidatos.find { it.quantity == localItem.quantity } ?: candidatos.firstOrNull() }
 
-                if (matchingServerItems.isNullOrEmpty()) {
+                if (serverItem == null) {
                     Timber.w("⚠️ [Sync] No server item found for productId=${localItem.productId} (${localItem.productName})")
                     continue
                 }
+                usados += serverItem.id
 
-                // If there are multiple items with same productId, match by quantity as tiebreaker
-                val serverItem = matchingServerItems.find { it.quantity == localItem.quantity }
-                    ?: matchingServerItems.first()  // Fallback to first match
-
-                draftOrderItemDao.replaceLocalIdWithServerCuid(
-                    localId = localItem.id,
-                    newId = serverItem.id
-                )
+                withContext(NonCancellable) {
+                    draftOrderItemDao.replaceLocalIdWithServerCuid(
+                        localId = localItem.id,
+                        newId = serverItem.id
+                    )
+                    draftOrderDao.confirmarAlta(
+                        draftOrder.id, serverItem.id, localItem.quantity, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis()
+                    )
+                }
                 Timber.d("🔄 [Sync] Replaced item ID | local=${localItem.id} → server=${serverItem.id} | product=${localItem.productName}")
             }
         }
@@ -1361,6 +1363,13 @@ class OrderSyncCoordinator @Inject constructor(
         }
 
         Timber.d("✅ [Sync] Order ID replaced | oldId=${draftOrder.id} | newId=${serverOrder.id} | version=$finalVersion")
+        // Fase 1 (Codex r1 #4/#5): lo que la caja agregó o quitó mientras viajaba la primera alta sigue en cola y sube después.
+        if (draftOrderDao.renglonesSinSubir(serverOrder.id) > 0) {
+            withContext(NonCancellable) {
+                draftOrderDao.updateSyncStatus(serverOrder.id, DraftOrderEntity.SYNC_STATUS_PENDING, System.currentTimeMillis())
+            }
+            markDirty(draftOrder.id, reason = "queue left after first upload")
+        }
         Timber.d("   → ON UPDATE CASCADE automatically updated ${pendingItems.size} items")
 
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT | serverId=${serverOrder.id} | version=$finalVersion | timestamp=${System.currentTimeMillis()}")
@@ -1437,6 +1446,7 @@ class OrderSyncCoordinator @Inject constructor(
                 if (exception is ConflictException) {
                     throw exception
                 }
+                if (exception is PermanentSyncException) throw exception.conRenglones(pendingItems.map { it.id })
                 throw exception ?: Exception("Failed to add items")
             }
 
@@ -1448,14 +1458,17 @@ class OrderSyncCoordinator @Inject constructor(
             // ⭐ CRITICAL: Persist version immediately to prevent stale retry
             // If a retry happens after this point, it will read the correct version from DB
             withContext(NonCancellable) {
-                draftOrderDao.updateVersion(orderId, currentVersion)
+                draftOrderDao.subirVersion(orderId, currentVersion)
             }
             Timber.d("💾 [Sync] Persisted version=$currentVersion after addItems")
 
             // Mark items as SYNCED — D23: salvo el que la cajera quitó mientras el alta iba en camino (antes revivía).
             // El renglón conserva su id local a propósito: la pantalla, la impresión y «Anular» lo siguen nombrando así.
-            pendingItems.forEach { item ->
-                draftOrderItemDao.marcarSincronizadoSiNoSeQuito(item.id)
+            // Fase 1 (Codex r1 #4): con la cantidad que se mandó; lo que se sumó mientras viajaba queda en cola aparte.
+            withContext(NonCancellable) {
+                pendingItems.forEach { item ->
+                    draftOrderDao.confirmarAlta(orderId, item.id, item.quantity, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis())
+                }
             }
             cuentaDelServidor = updatedOrder
 
@@ -1489,6 +1502,7 @@ class OrderSyncCoordinator @Inject constructor(
                     if (exception is ConflictException) {
                         throw exception
                     }
+                    if (exception is PermanentSyncException) throw exception.conRenglones(listOf(deletedItem.id))
                     throw exception ?: Exception("Failed to remove item")
                 }
 
@@ -1499,7 +1513,7 @@ class OrderSyncCoordinator @Inject constructor(
 
                 // ⭐ CRITICAL: Persist version immediately to prevent stale retry
                 withContext(NonCancellable) {
-                    draftOrderDao.updateVersion(orderId, currentVersion)
+                    draftOrderDao.subirVersion(orderId, currentVersion)
                 }
                 Timber.d("💾 [Sync] Persisted version=$currentVersion after removeItem")
             }
@@ -1512,23 +1526,13 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.i("✅ [Sync] Removed ${deletedItems.size} items | version=$currentVersion")
         }
 
-        // Step 3: Update local order version and mark as SYNCED
-        // ⭐ P0 FIX: Save the latest version from server
-        val order = draftOrderDao.getOrder(orderId)
-        if (order != null) {
-            // ✅ FIX: Use update() instead of insert() to prevent CASCADE DELETE
-            // insert() with REPLACE strategy DELETEs order row, triggering FK CASCADE on all items
-            // update() modifies existing row without DELETE, preserving all child items
-            withContext(NonCancellable) {
-                draftOrderDao.update(
-                    order.copy(
-                        version = currentVersion,  // ← Save latest version
-                        syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                        lastSyncAt = System.currentTimeMillis()
-                    )
-                )
-            }
+        // Step 3: la versión sólo sube y la cuenta queda SYNCED sólo si ya no hay nada sin subir (fase 1, Codex r1 #2 y #4: antes
+        // se escribía la versión de esta vuelta aunque una lectura más nueva ya hubiera entrado, y SYNCED aunque la caja hubiera
+        // agregado algo mientras subía). Si quedó cola, esta misma vuelta vuelve a subir al terminar.
+        withContext(NonCancellable) {
+            draftOrderDao.cerrarVuelta(orderId, currentVersion, System.currentTimeMillis())
         }
+        if (draftOrderDao.renglonesSinSubir(orderId) > 0) markDirty(orderId, reason = "queue left after upload")
 
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT (update) | orderId=$orderId | version=$currentVersion | timestamp=${System.currentTimeMillis()}")
         _syncEvents.emit(SyncEvent.Synced(orderId, currentVersion))
@@ -1547,30 +1551,8 @@ class OrderSyncCoordinator @Inject constructor(
         if (effectiveOrderId != orderId) {
             Timber.w("⚠️ [Order Remap] recalc totals remapped orderId $orderId → $effectiveOrderId")
         }
-
-        val items = draftOrderItemDao.getItemsByOrder(effectiveOrderId)
-
-        val subtotal = items.sumOf { it.totalPrice.toBigDecimal() }
-        val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
-        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
-
-        val order = draftOrderDao.getOrder(effectiveOrderId) ?: return
-
-        // ✅ P0 FIX: Calculate remainingBalance = total - paidAmount
-        // Without this, payment buttons stay disabled because canProcessPayment requires remainingBalance > 0
-        val paidAmount = order.paidAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        val remainingBalance = total - paidAmount
-
-        draftOrderDao.update(
-            order.copy(
-                subtotal = subtotal.toString(),
-                tax = tax.toString(),
-                total = total.toString(),
-                remainingBalance = remainingBalance.toString(),  // ✅ P0 FIX: Enable payment buttons
-                updatedAt = System.currentTimeMillis(),
-                syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING // Mark for sync
-            )
-        )
+        // Fase 1: en una transacción y con la misma regla que la puerta (conserva el descuento, nunca cuenta dos veces).
+        draftOrderDao.recalcularCabecera(effectiveOrderId, System.currentTimeMillis())
     }
 
     fun resolveOrderId(orderId: String): String {
@@ -1644,5 +1626,9 @@ class ConflictException(
  */
 class PermanentSyncException(
     val httpCode: Int,
-    message: String = "La operación no se pudo sincronizar"
-) : Exception(message)
+    message: String = "La operación no se pudo sincronizar",
+    /** Los renglones del envío que el SERVIDOR rechazó (vacío = no se sabe: la cuenta entera). Fase 1 de la libreta. */
+    val renglones: List<String> = emptyList(),
+) : Exception(message) {
+    fun conRenglones(ids: List<String>) = PermanentSyncException(httpCode, message ?: "La operación no se pudo sincronizar", ids)
+}

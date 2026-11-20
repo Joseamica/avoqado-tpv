@@ -206,7 +206,7 @@ interface DraftOrderItemDao {
         UPDATE draft_order_items
         SET id = :newId,
             is_server_created = 1,
-            sync_status = 'SYNCED'
+            sync_status = CASE WHEN sync_status = 'DELETED' THEN 'DELETED' ELSE 'SYNCED' END
         WHERE id = :localId
     """)
     suspend fun replaceLocalIdWithServerCuid(localId: String, newId: String)

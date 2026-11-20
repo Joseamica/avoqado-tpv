@@ -205,7 +205,7 @@ class QuitarRecienAgregadoTest {
         assertThat(db.draftOrderDao().getOrder(cuenta)!!.syncStatus).isEqualTo("SYNCED")
     }
 
-    @Test fun `T7 respuesta perdida - lo encuentra por su llave, el 409 recarga la cuenta, vuelve a verse y al quitarlo otra vez sale`() = runTest {
+    @Test fun `T7 respuesta perdida - lo encuentra por su llave y tras el 409 el retiro sale en la misma vuelta`() = runTest {
         abrirCuentaConTacos() // la TPV cree que va en la versión 2; el alta perdida ya subió al SERVIDOR a la 3
         val llave = sembrarCafe(DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false)
         alReleerLaCuenta(cafeConLlave = llave)
@@ -216,14 +216,10 @@ class QuitarRecienAgregadoTest {
         quitarCafeDesdeLaPantalla()
         coordinator.syncOrderImmediately(cuenta)
 
-        // Como hoy con cualquier artículo tras un 409: la cuenta se recarga del SERVIDOR y el café vuelve a verse.
-        assertThat(loQueVeLaCajera().items.map { it.id }).contains("renglon-srv-cafe")
-
-        quitarCafeDesdeLaPantalla()
-        coordinator.syncOrderImmediately(cuenta)
-
+        // Libreta fase 1 (Codex D16 r6 #3): el 409 ya no borra el retiro ni lo deja para «después»; sale en la misma vuelta.
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
+        assertThat(loQueVeLaCajera().items.map { it.productId }).containsExactly("prod-tacos")
     }
 
     @Test fun `T8 si el SERVIDOR no tiene el renglon, no se manda un DELETE de algo que no tiene`() = runTest {
@@ -238,20 +234,21 @@ class QuitarRecienAgregadoTest {
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
     }
 
-    @Test fun `T9 un renglon de la version de hoy al que se le sumo otra unidad y se quito antes de mandar tambien sale`() = runTest {
+    @Test fun `T9 sumar una unidad a un renglon ya subido abre renglon aparte con su llave (no se pierde en el SERVIDOR)`() = runTest {
         abrirCuentaConTacos()
         val llave = sembrarCafe(DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = false)
-        agregarCafe() // se fusiona: el mismo renglón pasa a 2 unidades y queda pendiente
-        assertThat(renglonesEnElAparato().single { it.productId == "prod-cafe" }.quantity).isEqualTo(2)
-        alReleerLaCuenta(cafeConLlave = llave, version = 2)
-        servidorQuitaElCafe()
+        val otra = agregarCafe() // Libreta fase 1 (Codex r1 #4): antes se juntaba y el SERVIDOR, que deduplica por llave, se quedaba con 1
+        assertThat(otra).isNotEqualTo(llave)
+        val cafes = renglonesEnElAparato().filter { it.productId == "prod-cafe" }
+        assertThat(cafes.map { it.quantity }).containsExactly(1, 1)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns
+            Result.success(cuentaDelServidor(3, tacos, cafeDelServidor(llave), renglon("renglon-srv-cafe-2", "prod-cafe", "Café", "85.00", externalId = otra)))
 
-        quitarCafeDesdeLaPantalla()
         coordinator.syncOrderImmediately(cuenta)
 
-        coVerify(exactly = 0) { repo.addItemsToOrder(any(), any(), any(), any(), any()) }
-        coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 2) }
-        assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
+        coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().externalId == otra }, any(), any()) }
+        assertThat(renglonesEnElAparato().all { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_SYNCED }).isTrue()
+        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("195.00")
     }
 
     @Test fun `T10 un retiro guardado en una cuenta que quedo SYNCED (la app murio a media operacion) sale con el siguiente cambio`() = runTest {

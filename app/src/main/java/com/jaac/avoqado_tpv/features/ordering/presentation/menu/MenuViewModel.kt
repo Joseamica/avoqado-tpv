@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.CatalogoGuardado
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.ResultadoDeLectura
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
@@ -498,8 +499,11 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Cache to local DB (preserves local-only fields like sentToKitchenAt)
-                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+                // Libreta fase 1: por la puerta. Una lectura más vieja que la libreta no toca pantalla ni descuentos (Codex D16 r6 #4).
+                if (orderSyncCoordinator.cacheBackendOrder(backendOrder) == ResultadoDeLectura.VIEJA) {
+                    Timber.i("⏭️ [MenuViewModel] Lectura vieja tras el cobro: no se publica | orderId=$orderId")
+                    return@launch
+                }
 
                 // Load from local DB to get merged data (backend + local fields)
                 val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
@@ -585,8 +589,11 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Cache to local DB
-                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+                // Libreta fase 1: por la puerta; una lectura vieja no publica nada (Codex D16 r6 #4).
+                if (orderSyncCoordinator.cacheBackendOrder(backendOrder) == ResultadoDeLectura.VIEJA) {
+                    Timber.i("⏭️ [Sync] Lectura vieja tras subir: no se publica | orderId=$orderId")
+                    return@launch
+                }
 
                 // Load merged order (preserves local-only fields like sentToKitchenAt)
                 val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
@@ -653,6 +660,12 @@ class MenuViewModel @Inject constructor(
             val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
             Timber.d("⚡ [Payment Prep] Order synced | id=$syncedOrderId")
 
+            // Libreta fase 1 (Codex D16 r6 #3): con algo sin subir, el SERVIDOR cobraría una cuenta distinta de la que ve la caja.
+            if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) {
+                Timber.w("⏸️ [Payment Prep] Queue left after sync — not opening payment | id=$syncedOrderId")
+                return Result.failure(Exception(TEXTO_COLA_ANTES_DE_COBRAR))
+            }
+
             // Step 2: Fetch order from backend with recalculated discounts
             val venueId = deviceInfoManager.getVenueId()
                 ?: return Result.failure(Exception("Venue not configured"))
@@ -662,8 +675,20 @@ class MenuViewModel @Inject constructor(
                 return Result.failure(error)
             }
 
-            // Step 3: Cache and update local state
-            orderSyncCoordinator.cacheBackendOrder(backendOrder)
+            // Step 3: Cache and update local state — por la puerta (fase 1). Sólo se cobra si la libreta quedó igual al SERVIDOR y
+            // el total es el que la caja estaba viendo; si otro aparato lo cambió, se muestra y se vuelve a tocar «Pagar».
+            when (orderSyncCoordinator.cacheBackendOrder(backendOrder)) {
+                ResultadoDeLectura.CON_COLA, ResultadoDeLectura.VIEJA -> {
+                    Timber.w("⏸️ [Payment Prep] Account changed while preparing — not opening payment | id=$syncedOrderId")
+                    return Result.failure(Exception(TEXTO_CUENTA_CAMBIO))
+                }
+                else -> Unit
+            }
+            if (backendOrder.total.compareTo(order.total) != 0) {
+                Timber.w("⏸️ [Payment Prep] Total changed ${order.total} → ${backendOrder.total} — showing it first | id=$syncedOrderId")
+                orderSyncCoordinator.getLocalOrder(syncedOrderId)?.let { updateStateWithOrder(it) }
+                return Result.failure(Exception(textoTotalCambio(backendOrder.total)))
+            }
             // 💳 FIX: Merge orderCustomers from StateFlow with backend order
             // API doesn't return orderCustomers, but we already loaded them in _orderCustomers
             val mergedOrder = backendOrder.copy(orderCustomers = customersSnapshot)
@@ -756,6 +781,8 @@ class MenuViewModel @Inject constructor(
                     },
                     onFailure = { error ->
                         _isPreparingPayment.value = false
+                        // Libreta fase 1 (Codex r1 #11): los cuatro botones de «Pagar» sólo registraban el error; el aviso sale aquí.
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = error.message ?: "Error preparando pago", isError = true))
                         onError(error.message ?: "Error preparando pago")
                     }
                 )
@@ -932,7 +959,10 @@ class MenuViewModel @Inject constructor(
                         // ⭐ [SSOT] Update _currentOrderId when ID changes (local_xxx → CUID)
                         // This triggers collectOrderFromRoom() to switch to the new ID
                         val previousId = _currentOrderId.value
-                        if (previousId != event.orderId) {
+                        // Libreta fase 1 (Codex r1 #8): sólo si es ESTA cuenta que cambió de id local al del SERVIDOR. La cola al
+                        // reconectar sube otras cuentas y antes la pantalla se iba a la cuenta que acababa de subir.
+                        if (previousId != null && previousId != event.orderId &&
+                            orderSyncCoordinator.resolveOrderId(previousId) == event.orderId) {
                             Timber.i("🔄 [SSOT] Order ID changed after sync | old=$previousId → new=${event.orderId}")
                             _currentOrderId.value = event.orderId
                             // Flow will automatically emit the new order, updating _state
@@ -945,7 +975,7 @@ class MenuViewModel @Inject constructor(
                         // ⭐ FIX: Refresh order from backend to get recalculated discounts
                         // Backend recalculates percentage discounts when items change
                         // Only fetches if order has discounts (optimization)
-                        refreshOrderAfterSync(event.orderId)
+                        if (_currentOrderId.value == event.orderId) refreshOrderAfterSync(event.orderId)
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Error -> {
                         Timber.e("❌ [Sync] Sync error | order=${event.orderId} | error=${event.message}")
@@ -1399,6 +1429,9 @@ class MenuViewModel @Inject constructor(
                         if (localOrder != null) {
                             // Found in local DB - instant load!
                             Timber.i("✅ [Local-First] Order loaded from local DB | id=$orderId | items=${localOrder.items.size}")
+                            // Libreta fase 1 (Codex r1 #7): lo que quedó sin subir (app cerrada, red que volvió con otra pantalla)
+                            // sale al abrir la cuenta; antes sólo se cargaba.
+                            if (orderSyncCoordinator.hayRenglonesSinSubir(orderId)) orderSyncCoordinator.scheduleSync(orderId)
                             localOrder
                         } else {
                             // ⚠️ DEFENSIVE CHECK: Detect local-only IDs that can't be fetched from backend
@@ -1748,7 +1781,8 @@ class MenuViewModel @Inject constructor(
                             items = updatedItems,
                             kitchenStatus = KitchenStatus.PREPARING
                         )
-                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
+                        // Libreta fase 1 (Codex r1 #8): desde la libreta, no la copia tomada antes de imprimir.
+                        publicarDesdeLaLibreta(order.id, updatedOrder) { it.copy(kitchenStatus = KitchenStatus.PREPARING) }
                         Timber.i("✅ [SendToKitchen] Local state updated - ${pendingItems.size} items marked as sent")
 
                     } catch (e: Exception) {
@@ -1817,8 +1851,9 @@ class MenuViewModel @Inject constructor(
 
                 // Persist sentToKitchenAt to Room DB
                 val now = Instant.now()
-                orderSyncCoordinator.markItemAsSentToKitchen(
-                    itemId = item.id,
+                orderSyncCoordinator.markItemsAsSentToKitchen(
+                    orderId = order.id,
+                    itemIds = listOf(item.id),
                     sentAt = now.toEpochMilli()
                 )
 
@@ -1831,7 +1866,7 @@ class MenuViewModel @Inject constructor(
                     }
                 }
                 val updatedOrder = order.copy(items = updatedItems)
-                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
+                publicarDesdeLaLibreta(order.id, updatedOrder)  // fase 1: desde la libreta
                 Timber.i("✅ Item marked as sent: ${item.productName}")
 
             } catch (e: Exception) {
@@ -1896,7 +1931,7 @@ class MenuViewModel @Inject constructor(
                     }
                 }
                 val updatedOrder = order.copy(items = updatedItems)
-                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
+                publicarDesdeLaLibreta(order.id, updatedOrder)  // fase 1: desde la libreta
                 Timber.i("✅ [PrintComanda] Local state updated - ${pendingItems.size} items marked as sent")
 
             } catch (e: Exception) {
@@ -1957,7 +1992,17 @@ class MenuViewModel @Inject constructor(
                     customerId = customerId
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
+                        // Libreta fase 1: sólo los datos del cliente sobre la cuenta que ve la caja (la respuesta puede no traer
+                        // los productos que la caja todavía no sube).
+                        val enPantalla = (_state.value as? MenuState.Success)?.order
+                        updateStateWithOrder(
+                            enPantalla?.copy(
+                                covers = updatedOrder.covers,
+                                customerName = updatedOrder.customerName,
+                                customerPhone = updatedOrder.customerPhone,
+                                specialRequests = updatedOrder.specialRequests,
+                            ) ?: updatedOrder
+                        )
                         Timber.d("✅ Guest info updated successfully")
                         _uiEvents.emit(MenuUiEvent.ShowSnackbar("Información del cliente actualizada", isError = false))
                     },
@@ -2085,6 +2130,12 @@ class MenuViewModel @Inject constructor(
                     order = order.copy(id = syncedOrderId)
                 }
 
+                // Libreta fase 1 (Codex D16 r6 #6): con algo sin subir, la lectura del SERVIDOR no lo trae y se escondería.
+                if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) {
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_COLA_ANTES_DE_ANULAR, isError = true))
+                    return@launch
+                }
+
                 // ⭐ FIX: Fetch order DIRECTLY from backend to get real item IDs (not local cache)
                 // Local DB still has local_item_ IDs even after sync
                 Timber.d("🔄 [VoidItems] Fetching order from backend to get real item IDs...")
@@ -2102,8 +2153,12 @@ class MenuViewModel @Inject constructor(
                 if (freshOrder.items.isEmpty()) {
                     Timber.w("⚠️ [VoidItems] Order has no items - already voided")
 
-                    // ⭐ FIX: Sync local DB with backend state (remove local items, update status)
-                    updateStateWithOrder(freshOrder)
+                    // Libreta fase 1: por la puerta; si mientras tanto la caja agregó algo, se queda en la cuenta.
+                    if (orderSyncCoordinator.cacheBackendOrder(freshOrder) == ResultadoDeLectura.CON_COLA) {
+                        publicarDesdeLaLibreta(syncedOrderId, freshOrder)
+                        return@launch
+                    }
+                    publicarDesdeLaLibreta(syncedOrderId, freshOrder)
                     Timber.i("🔄 [VoidItems] Local DB synced with backend (0 items)")
 
                     _uiEvents.emit(MenuUiEvent.ShowSnackbar(
@@ -2116,15 +2171,21 @@ class MenuViewModel @Inject constructor(
 
                 // Map local itemIds to backend itemIds by matching productId + quantity
                 // (In case user selected items before sync)
+                val usados = mutableSetOf<String>()
                 val backendItemIds = itemIds.mapNotNull { localId ->
                     val localItem = order.items.find { it.id == localId }
                     if (localItem != null) {
-                        // Find matching item in fresh order by productId
-                        val backendItem = freshOrder.items.find {
-                            it.productId == localItem.productId &&
-                            it.quantity == localItem.quantity &&
-                            it.unitPrice == localItem.unitPrice
-                        }
+                        // Libreta fase 1 (Codex r1 #12): primero el mismo renglón (id o la llave que mandó la caja); sólo si no, por
+                        // producto, cantidad y precio, sin repetir uno ya elegido.
+                        val llave = localItem.externalId ?: localItem.id
+                        val backendItem = freshOrder.items.firstOrNull { it.id == localItem.id || it.externalId == llave }
+                            ?: freshOrder.items.find {
+                                it.id !in usados &&
+                                it.productId == localItem.productId &&
+                                it.quantity == localItem.quantity &&
+                                it.unitPrice == localItem.unitPrice
+                            }
+                        backendItem?.let { usados += it.id }
                         if (backendItem != null) {
                             Timber.d("🔄 [VoidItems] Mapped local ID $localId → backend ID ${backendItem.id}")
                             backendItem.id
@@ -2167,7 +2228,9 @@ class MenuViewModel @Inject constructor(
                     currentVersion = freshOrder.version
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
+                        // Libreta fase 1: la respuesta entra por la puerta (antes sólo a pantalla y Room revivía lo anulado).
+                        val resultado = orderSyncCoordinator.cacheBackendOrder(updatedOrder)
+                        publicarDesdeLaLibreta(syncedOrderId, updatedOrder)
 
                         // ⭐ Show appropriate message based on void scope
                         val message = if (isVoidingAllItems) {
@@ -2182,8 +2245,8 @@ class MenuViewModel @Inject constructor(
                             isError = false
                         ))
 
-                        // ⭐ If voided all items, navigate back to order list
-                        if (isVoidingAllItems) {
+                        // ⭐ If voided all items, navigate back to order list (no si la caja agregó algo mientras tanto)
+                        if (isVoidingAllItems && resultado != ResultadoDeLectura.CON_COLA) {
                             Timber.d("🔙 [VoidItems] Navigating back - order was cancelled")
                             _uiEvents.emit(MenuUiEvent.NavigateBack)
                         }
@@ -3363,6 +3426,12 @@ class MenuViewModel @Inject constructor(
      *
      * @param order The updated order (after recalculateOrder)
      */
+    /** Libreta fase 1: la pantalla se publica desde la libreta (Room), no desde una copia tomada antes de imprimir o de llamar
+     *  al SERVIDOR; `respaldo` sólo si la cuenta no está en la libreta. */
+    private suspend fun publicarDesdeLaLibreta(orderId: String, respaldo: Order, ajuste: (Order) -> Order = { it }) {
+        updateStateWithOrder(ajuste(orderSyncCoordinator.getLocalOrder(orderId) ?: respaldo))
+    }
+
     private fun updateStateWithOrder(order: Order) {
         val normalizedOrder = normalizeOrderForUi(order)
         _state.value = MenuState.Success(normalizedOrder)
@@ -3770,6 +3839,16 @@ sealed interface MenuState {
  * vuelve a permitir. Degradar, nunca bloquear.
  */
 private const val PAYMENT_PREP_GUARD_MS = 15_000L
+
+// Libreta de Órdenes, fase 1: «Pagar» y «Anular» no salen con productos sin subir ni con una cuenta que cambió sin que la caja la viera.
+internal const val TEXTO_COLA_ANTES_DE_COBRAR =
+    "Hay productos que todavía no se suben. Revisa la conexión y vuelve a tocar Pagar."
+internal const val TEXTO_COLA_ANTES_DE_ANULAR =
+    "Hay productos que todavía no se suben. Revisa la conexión y vuelve a intentar anular."
+internal const val TEXTO_CUENTA_CAMBIO = "La cuenta cambió mientras se preparaba el cobro. Revísala y vuelve a tocar Pagar."
+internal fun textoTotalCambio(total: java.math.BigDecimal): String =
+    "La cuenta cambió en otro aparato: ahora es \$" + total.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() +
+        ". Revísala y vuelve a tocar Pagar."
 
 /**
  * ¿Se debe ignorar este toque a `Pagar` porque ya hay una preparación de pago en vuelo?

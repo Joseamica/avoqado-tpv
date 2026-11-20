@@ -206,30 +206,12 @@ class OrderRepositoryImpl @Inject constructor(
                                     isServerCreated = true
                                 )
 
-                                // Preserve local line positions to keep UI order stable
-                                val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
-                                val localLinePositions = existingItems.associate { it.id to it.linePosition }
-
-                                // Convert items to entities
+                                // Libreta fase 1: por la puerta (conserva posición, cocina y lo que la caja no ha subido).
                                 val draftItemEntities = order.items.toEntities(
                                     syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
                                     isServerCreated = true
-                                ).map { item ->
-                                    val localLinePosition = localLinePositions[item.id]
-                                    if (localLinePosition != null) {
-                                        item.copy(linePosition = localLinePosition)
-                                    } else {
-                                        item
-                                    }
-                                }
-
-                                // Insert order first (parent)
-                                draftOrderDao.insert(draftOrderEntity)
-
-                                // Then insert items (children)
-                                draftItemEntities.forEach { item ->
-                                    draftOrderItemDao.insert(item)
-                                }
+                                )
+                                draftOrderDao.guardarCuentaDelServidor(draftOrderEntity, draftItemEntities)
 
                                 Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
                             } catch (e: Exception) {
@@ -324,10 +306,8 @@ class OrderRepositoryImpl @Inject constructor(
                                 isServerCreated = true
                             )
 
-                            draftOrderDao.insert(draftOrderEntity)
-                            draftItemEntities.forEach { item ->
-                                draftOrderItemDao.insert(item)
-                            }
+                            // Libreta fase 1: por la puerta.
+                            draftOrderDao.guardarCuentaDelServidor(draftOrderEntity, draftItemEntities)
                         } catch (cacheError: Exception) {
                             Timber.e(cacheError, "❌ [Cache] Failed to cache checkout order: ${order.id}")
                         }
@@ -454,13 +434,8 @@ class OrderRepositoryImpl @Inject constructor(
                                     isServerCreated = true
                                 )
 
-                                // Insert order first (parent)
-                                draftOrderDao.insert(draftOrderEntity)
-
-                                // Then insert items (children)
-                                draftItemEntities.forEach { item ->
-                                    draftOrderItemDao.insert(item)
-                                }
+                                // Libreta fase 1: por la puerta (antes INSERT REPLACE, que borraba en cascada lo no subido).
+                                draftOrderDao.guardarCuentaDelServidor(draftOrderEntity, draftItemEntities)
 
                                 Timber.i("✅ [Cache] Backend order updated in local DB | id=${order.id}")
                             } catch (e: Exception) {

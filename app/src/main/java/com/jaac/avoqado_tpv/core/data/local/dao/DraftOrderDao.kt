@@ -8,8 +8,19 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderWithItems
 import kotlinx.coroutines.flow.Flow
+import java.math.BigDecimal
+
+/**
+ * Qué hizo la puerta de la libreta con una cuenta que llegó del SERVIDOR (libreta de Órdenes, fase 1).
+ * - [NUEVA]: no estaba en la libreta; se guardó tal cual.
+ * - [REEMPLAZADA]: no había nada sin subir; la libreta quedó igual al SERVIDOR.
+ * - [CON_COLA]: había renglones sin subir; se conservaron y la cabecera los suma.
+ * - [VIEJA]: la libreta ya tenía una versión más nueva; no se tocó nada.
+ */
+enum class ResultadoDeLectura { NUEVA, REEMPLAZADA, CON_COLA, VIEJA }
 
 /**
  * DraftOrderDao - Room database access object for draft orders
@@ -249,6 +260,210 @@ interface DraftOrderDao {
         currentTime: Long = System.currentTimeMillis()
     ): List<DraftOrderEntity>
 
+    // ========================================================================================================================
+    // LA PUERTA DE LA LIBRETA (fase 1, encargo 95c69a; promesa: docs/audit/2026-11-20-libreta-fase-1/promesa.md del workspace)
+    // ========================================================================================================================
+
+    @Query("SELECT * FROM draft_order_items WHERE order_id = :orderId")
+    suspend fun renglonesDeLaCuenta(orderId: String): List<DraftOrderItemEntity>
+
+    /** Renglones que la caja todavía no sube: altas o cantidades (`PENDING`/`SYNCING`) y retiros (`DELETED`). */
+    @Query("SELECT COUNT(*) FROM draft_order_items WHERE order_id = :orderId AND sync_status != 'SYNCED'")
+    suspend fun renglonesSinSubir(orderId: String): Int
+
+    @Query("DELETE FROM draft_order_items WHERE id IN (:ids)")
+    suspend fun borrarRenglones(ids: List<String>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun guardarRenglones(renglones: List<DraftOrderItemEntity>)
+
+    /** `UPDATE OR REPLACE`: la cuenta conserva su fila (sin borrado en cascada de sus renglones). */
+    @Update(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun actualizarCuenta(order: DraftOrderEntity)
+
+    /**
+     * La ÚNICA entrada de una cuenta del SERVIDOR a la libreta, en una transacción de Room:
+     * 1. Si la libreta ya tiene una versión más nueva, no se toca nada ([ResultadoDeLectura.VIEJA]).
+     * 2. Lo ya subido (`SYNCED`) queda igual al SERVIDOR: lo que ya no tiene se borra, lo nuevo (de otro aparato) entra, y la marca de
+     *    cocina y la posición pasan al renglón del SERVIDOR que coincide por id o por su llave (`externalId`).
+     * 3. Lo que la caja todavía no sube (`PENDING`, `SYNCING`, `DELETED`) no se toca, ni el estado de sincronización de la cuenta;
+     *    la cabecera se arma con la regla de [totalConLaRegla] sobre los renglones vivos de la libreta ([ResultadoDeLectura.CON_COLA]).
+     * 4. Sin cola, la cabecera es la del SERVIDOR ([ResultadoDeLectura.REEMPLAZADA]). Nunca `INSERT REPLACE` sobre una cuenta que
+     *    existe (borraba en cascada sus renglones, hz:nube0000:nacec621).
+     */
+    @Transaction
+    suspend fun guardarCuentaDelServidor(
+        cuenta: DraftOrderEntity,
+        renglones: List<DraftOrderItemEntity>,
+    ): ResultadoDeLectura {
+        val actual = getOrder(cuenta.id)
+        if (actual == null) {
+            insert(cuenta)
+            if (renglones.isNotEmpty()) guardarRenglones(renglones)
+            return ResultadoDeLectura.NUEVA
+        }
+        if (actual.version > cuenta.version) return ResultadoDeLectura.VIEJA
+
+        val locales = renglonesDeLaCuenta(cuenta.id)
+        val (enCola, subidos) = locales.partition { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }
+        val idsEnCola = enCola.flatMap { listOfNotNull(it.id, it.externalId) }.toSet()
+        val subidosPorId = subidos.associateBy { it.id }
+        val subidosPorLlave = subidos.filter { it.externalId != null }.associateBy { it.externalId!! }
+        // Un renglón del SERVIDOR que es uno de la cola (por id o por la llave que mandó la caja) lo sigue llevando la caja.
+        val nuevos = renglones.filter { it.id !in idsEnCola && (it.externalId == null || it.externalId !in idsEnCola) }.map { r ->
+            val previo = subidosPorId[r.id] ?: r.externalId?.let { subidosPorId[it] ?: subidosPorLlave[it] }
+            if (previo == null) r
+            else r.copy(sentToKitchenAt = r.sentToKitchenAt ?: previo.sentToKitchenAt, linePosition = previo.linePosition)
+        }
+        val quedan = nuevos.map { it.id }.toSet()
+        val sobran = subidos.map { it.id }.filter { it !in quedan }
+        if (sobran.isNotEmpty()) borrarRenglones(sobran)
+
+        val cabecera = cuenta.copy(
+            merchantAccountId = cuenta.merchantAccountId ?: actual.merchantAccountId,
+            merchantAccountName = cuenta.merchantAccountName ?: actual.merchantAccountName,
+        )
+        if (enCola.isEmpty()) {
+            actualizarCuenta(cabecera)
+            if (nuevos.isNotEmpty()) guardarRenglones(nuevos)
+            return ResultadoDeLectura.REEMPLAZADA
+        }
+        val subtotal = subtotalDe(enCola + nuevos)
+        val total = totalConLaRegla(subtotal, cabecera)
+        actualizarCuenta(
+            cabecera.copy(
+                subtotal = subtotal.toString(),
+                total = total.toString(),
+                remainingBalance = (total - dinero(cabecera.paidAmount)).max(BigDecimal.ZERO).toString(),
+                syncStatus = actual.syncStatus,
+                lastSyncAt = actual.lastSyncAt,
+                conflictData = actual.conflictData,
+            )
+        )
+        if (nuevos.isNotEmpty()) guardarRenglones(nuevos)
+        return ResultadoDeLectura.CON_COLA
+    }
+
+    /**
+     * Un cambio local de renglones (agregar, quitar, cantidad, soltar un rechazo) recalcula la cabecera en UNA transacción con la
+     * regla de [totalConLaRegla]. Aplicada dos veces da lo mismo, así que cruzarse con una lectura no cuenta nada dos veces
+     * (Codex D16 r6 #1) y el descuento no se pierde (antes: total = subtotal).
+     */
+    @Transaction
+    suspend fun recalcularCabecera(orderId: String, ahora: Long) {
+        val cuenta = getOrder(orderId) ?: return
+        val subtotal = subtotalDe(renglonesDeLaCuenta(orderId))
+        val total = totalConLaRegla(subtotal, cuenta)
+        update(
+            cuenta.copy(
+                subtotal = subtotal.toString(),
+                total = total.toString(),
+                remainingBalance = (total - dinero(cuenta.paidAmount)).max(BigDecimal.ZERO).toString(),
+                updatedAt = ahora,
+                syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING,
+            )
+        )
+    }
+
+    /** Como [recalcularCabecera] pero sin tocar el estado de sincronización (un acuse no crea trabajo nuevo). */
+    @Transaction
+    suspend fun recalcularCabeceraSinMarcar(orderId: String) {
+        val cuenta = getOrder(orderId) ?: return
+        val subtotal = subtotalDe(renglonesDeLaCuenta(orderId))
+        val total = totalConLaRegla(subtotal, cuenta)
+        update(cuenta.copy(subtotal = subtotal.toString(), total = total.toString(),
+            remainingBalance = (total - dinero(cuenta.paidAmount)).max(BigDecimal.ZERO).toString()))
+    }
+
+    /** La versión de la cuenta sólo sube (un acuse atrasado no la regresa por debajo de una lectura que ya entró). */
+    @Query("UPDATE draft_orders SET version = MAX(version, :version), updated_at = :updatedAt WHERE id = :orderId")
+    suspend fun subirVersion(orderId: String, version: Int, updatedAt: Long = System.currentTimeMillis())
+
+    /** Al terminar una vuelta de la cola: `SYNCED` sólo si ya no queda nada sin subir (si no, `PENDING`); la versión sólo sube. */
+    @Query("""
+        UPDATE draft_orders
+        SET version = MAX(version, :version),
+            last_sync_at = :ahora,
+            sync_status = CASE WHEN EXISTS (
+                SELECT 1 FROM draft_order_items WHERE order_id = :orderId AND sync_status != 'SYNCED'
+            ) THEN 'PENDING' ELSE 'SYNCED' END
+        WHERE id = :orderId
+    """)
+    suspend fun cerrarVuelta(orderId: String, version: Int, ahora: Long)
+
+    // --- Un renglón se nombra por su id o por su llave, siempre DENTRO de su cuenta y con prioridad al id exacto -------------
+
+    @Query("""
+        SELECT * FROM draft_order_items WHERE order_id = :orderId AND (id = :itemId OR external_id = :itemId)
+        ORDER BY CASE WHEN id = :itemId THEN 0 ELSE 1 END
+    """)
+    suspend fun candidatosDelRenglon(orderId: String, itemId: String): List<DraftOrderItemEntity>
+
+    /** El renglón que la pantalla, la impresora o la cola nombran con `itemId` (aunque la puerta ya le haya puesto el id del
+     *  SERVIDOR). null si no existe o si la llave es ambigua (dos renglones con esa llave y ninguno con ese id). */
+    suspend fun renglonNombrado(orderId: String, itemId: String): DraftOrderItemEntity? {
+        val candidatos = candidatosDelRenglon(orderId, itemId)
+        return candidatos.firstOrNull { it.id == itemId } ?: candidatos.singleOrNull()
+    }
+
+    @Query("UPDATE draft_order_items SET sync_status = 'DELETED' WHERE id = :itemId")
+    suspend fun marcarRenglonQuitado(itemId: String)
+
+    @Query("UPDATE draft_order_items SET sent_to_kitchen_at = :sentAt WHERE id = :itemId")
+    suspend fun marcarRenglonEnCocina(itemId: String, sentAt: Long)
+
+    @Query("UPDATE draft_order_items SET quantity = :cantidad, total_price = :total, sync_status = 'PENDING' WHERE id = :itemId")
+    suspend fun cambiarCantidadDelRenglon(itemId: String, cantidad: Int, total: String)
+
+    @Update
+    suspend fun actualizarRenglon(renglon: DraftOrderItemEntity)
+
+    @Transaction
+    suspend fun quitarRenglon(orderId: String, itemId: String, ahora: Long): Boolean {
+        val r = renglonNombrado(orderId, itemId) ?: return false
+        marcarRenglonQuitado(r.id)
+        recalcularCabecera(orderId, ahora)
+        return true
+    }
+
+    @Transaction
+    suspend fun cambiarCantidad(orderId: String, itemId: String, cantidad: Int, total: String, ahora: Long): Boolean {
+        val r = renglonNombrado(orderId, itemId) ?: return false
+        cambiarCantidadDelRenglon(r.id, cantidad, total)
+        recalcularCabecera(orderId, ahora)
+        return true
+    }
+
+    @Transaction
+    suspend fun marcarEnCocina(orderId: String, itemIds: List<String>, sentAt: Long) {
+        itemIds.forEach { id -> renglonNombrado(orderId, id)?.let { marcarRenglonEnCocina(it.id, sentAt) } }
+    }
+
+    /**
+     * El SERVIDOR aceptó el alta de `cantidadEnviada` piezas de este renglón. Si la caja sumó piezas mientras viajaba (agregar el
+     * mismo producto se junta en el renglón), lo subido queda `SYNCED` con lo enviado y la diferencia sale como renglón nuevo en
+     * cola, con su propia llave (Codex fase 1 r1 #4: antes el acuse marcaba subidas las dos piezas). Un renglón que la caja quitó
+     * mientras viajaba sigue quitado (D23).
+     */
+    @Transaction
+    suspend fun confirmarAlta(orderId: String, itemId: String, cantidadEnviada: Int, idNuevo: String, ahora: Long) {
+        val r = renglonNombrado(orderId, itemId) ?: return
+        if (r.syncStatus == DraftOrderItemEntity.SYNC_STATUS_DELETED) return
+        val unidad = dinero(r.unitPrice)
+        val subido = r.copy(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, quantity = cantidadEnviada,
+            totalPrice = (unidad * cantidadEnviada.toBigDecimal()).toString())
+        actualizarRenglon(subido)
+        val resto = r.quantity - cantidadEnviada
+        if (resto > 0) {
+            guardarRenglones(listOf(r.copy(
+                id = idNuevo, externalId = idNuevo, quantity = resto, totalPrice = (unidad * resto.toBigDecimal()).toString(),
+                linePosition = r.linePosition + 1, createdAt = ahora, sentToKitchenAt = null,
+                syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false,
+            )))
+        }
+        recalcularCabeceraSinMarcar(orderId)
+    }
+
     /**
      * Update only the version field atomically.
      *
@@ -273,4 +488,23 @@ interface DraftOrderDao {
         version: Int,
         updatedAt: Long = System.currentTimeMillis()
     )
+}
+
+private fun dinero(texto: String?): BigDecimal = texto?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+private fun subtotalDe(renglones: List<DraftOrderItemEntity>): BigDecimal =
+    renglones.filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+        .fold(BigDecimal.ZERO) { suma, r -> suma + dinero(r.totalPrice) }
+
+/**
+ * El total de la libreta: máx(0, subtotal − descuento) + lo demás que el SERVIDOR suma (cargos, impuesto aparte), donde «lo demás»
+ * sale de la cabecera: total − máx(0, subtotal − descuento). Así queda la cabecera que llega del SERVIDOR y así la dejan los
+ * cambios locales: la regla da lo mismo aplicada una o dos veces y no pierde el descuento al tocar cero (Codex fase 1 r1 #3). Un %
+ * de descuento se queda con su importe anterior hasta que el SERVIDOR lo recalcule (declarado en la promesa).
+ */
+internal fun totalConLaRegla(subtotal: BigDecimal, cabecera: DraftOrderEntity): BigDecimal {
+    val descuento = dinero(cabecera.discountAmount)
+    val baseDeLaCabecera = (dinero(cabecera.subtotal) - descuento).max(BigDecimal.ZERO)
+    val loDemas = dinero(cabecera.total) - baseDeLaCabecera
+    return ((subtotal - descuento).max(BigDecimal.ZERO) + loDemas).max(BigDecimal.ZERO)
 }

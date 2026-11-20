@@ -120,10 +120,6 @@ class OrderSyncCoordinator @Inject constructor(
      */
     private val dirtyOrders = ConcurrentHashMap<String, Boolean>()
 
-    /** Libreta fase 1 mínima: la versión con la que salió la última escritura de cada cuenta. Un 409 cuya relectura NO trae una
-     *  versión mayor no fue un choque de versión (p. ej. GIFT_CARD_ORDER_IMMUTABLE): se suelta como rechazo permanente. */
-    private val ultimaVersionEnviada = ConcurrentHashMap<String, Int>()
-
     /**
      * Local → server ID remapping (avoids FK violations during ID replacement window).
      */
@@ -493,6 +489,11 @@ class OrderSyncCoordinator @Inject constructor(
             // Don't throw - caching is a nice-to-have, order still loaded in memory
             null
         }
+    }
+
+    /** La versión de la cuenta en la libreta (null si no está). «Anular» no publica una lectura con versión menor. */
+    suspend fun versionEnLaLibreta(orderId: String): Int? = withContext(Dispatchers.IO) {
+        draftOrderDao.getOrder(resolveExistingOrderId(orderId))?.version
     }
 
     /** ¿Quedan renglones de esta cuenta sin subir (altas, cantidades o retiros)? «Pagar» y «Anular» no abren mientras sí. */
@@ -972,7 +973,7 @@ class OrderSyncCoordinator @Inject constructor(
                     )
                     break
                 } catch (e: ConflictException) {
-                    val autoResolved = attemptAutoResolveConflict(orderId, e.serverVersion)
+                    val autoResolved = attemptAutoResolveConflict(orderId, e.serverVersion, e.versionEnviada)
                     if (autoResolved) {
                         Timber.i("✅ [Sync] Conflict auto-resolved | order=$orderId | serverVersion=${e.serverVersion} | syncRunId=$syncRunId")
                         resultId = orderId
@@ -1042,7 +1043,8 @@ class OrderSyncCoordinator @Inject constructor(
      */
     private suspend fun attemptAutoResolveConflict(
         orderId: String,
-        serverVersion: String
+        serverVersion: String,
+        versionEnviada: Int? = null,
     ): Boolean {
         return try {
             val draftOrder = draftOrderDao.getOrder(orderId) ?: return false
@@ -1061,10 +1063,9 @@ class OrderSyncCoordinator @Inject constructor(
             // Libreta fase 1 mínima: un 409 cuya relectura no trae una versión MAYOR que la enviada no fue un choque de versión (el
             // SERVIDOR rechaza esa operación por otra razón, p. ej. GIFT_CARD_ORDER_IMMUTABLE). Antes el INSERT REPLACE la tiraba;
             // con la puerta se reintentaría para siempre y «Pagar» no abriría: se suelta como rechazo permanente.
-            val enviada = ultimaVersionEnviada[orderId]
-            if (enviada != null && backendOrder.version <= enviada) {
-                Timber.w("🛑 [Sync] 409 sin versión nueva (enviada=$enviada, servidor=${backendOrder.version}) | order=$orderId")
-                handlePermanentSyncFailure(orderId, TEXTO_CAMBIO_NO_ACEPTADO)
+            if (versionEnviada != null && backendOrder.version <= versionEnviada) {
+                Timber.w("🛑 [Sync] 409 sin versión nueva (enviada=$versionEnviada, servidor=${backendOrder.version}) | order=$orderId")
+                handlePermanentSyncFailure(orderId, TEXTO_CAMBIO_NO_ACEPTADO, lectura = backendOrder)
                 return true
             }
 
@@ -1109,11 +1110,20 @@ class OrderSyncCoordinator @Inject constructor(
      *   3. Mark the order SYNCED so it is NEVER resurrected/retried again.
      *   4. Surface a user-facing event so the cashier knows the change wasn't applied.
      */
-    private suspend fun handlePermanentSyncFailure(orderId: String, reason: String) {
+    private suspend fun handlePermanentSyncFailure(orderId: String, reason: String, lectura: Order? = null) {
         withContext(NonCancellable) {
-            // 1. Lee la cuenta del SERVIDOR (lo que sí aceptó).
+            // 1. Libreta fase 1 mínima: se suelta SÓLO la cola que había al rechazarse (antes de leer). Lo que la cajera agregue
+            // mientras se relee sigue en cola y sube después (Codex r2 #1 y #4).
+            val rechazados = try {
+                draftOrderDao.renglonesDeLaCuenta(orderId)
+                    .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }.map { it.id }.toSet()
+            } catch (e: Exception) {
+                emptySet()
+            }
+
+            // 2. Lee la cuenta del SERVIDOR (lo que sí aceptó), salvo que el 409 ya la haya traído.
             val draft = draftOrderDao.getOrder(orderId)
-            val backendOrder = if (draft?.isServerCreated == true) {
+            val backendOrder = lectura ?: if (draft?.isServerCreated == true) {
                 try {
                     orderRepository.getOrder(venueId = draft.venueId, orderId = orderId).getOrNull()
                 } catch (e: Exception) {
@@ -1122,30 +1132,33 @@ class OrderSyncCoordinator @Inject constructor(
                 }
             } else null
 
-            if (backendOrder != null) {
-                // 2. Libreta fase 1 mínima: suelta la cola de ESA cuenta y deja la libreta igual al SERVIDOR en UNA transacción
-                // (como el INSERT REPLACE de antes, pero sin perder la marca de cocina; si la puerta dejara los retiros en cola,
-                // la siguiente vuelta quitaría del SERVIDOR algo que ya no se quiere quitar).
-                val resultado = try {
-                    guardarPorLaPuerta(draftOrderDao, backendOrder, soltarCola = true)
+            // 3. Con lectura: suelta esa cola y deja lo demás igual al SERVIDOR en UNA transacción (como el INSERT REPLACE de
+            // antes, sin perder la marca de cocina). Sin lectura, o si llegó vieja: lo que el SERVIDOR ya tenía vuelve a SYNCED
+            // y lo que nunca aceptó se borra (Codex r1 #6, r2 #3).
+            val resultado = if (backendOrder != null) {
+                try {
+                    guardarPorLaPuerta(draftOrderDao, backendOrder, soltar = rechazados)
                 } catch (e: Exception) {
                     Timber.e(e, "🛑 [Sync] Permanent-failure cache failed | order=$orderId")
                     null
                 }
-                Timber.w("🛑 [Sync] Dropped the queue and mirrored the server | order=$orderId | resultado=$resultado")
-            } else {
-                // Sin lectura: las altas que el SERVIDOR nunca aceptó se borran y los cambios sobre lo que ya tenía vuelven a SYNCED
-                // (la siguiente lectura los deja como allá). Antes pasaban a DELETED y, con la puerta, la siguiente vuelta habría
-                // quitado del SERVIDOR un producto que nadie pidió quitar (Codex fase 1 mínima r1 #6).
+            } else null
+            if (resultado == null || resultado == ResultadoDeLectura.VIEJA) {
                 try {
-                    draftOrderDao.soltarAltasRechazadas(orderId)
+                    draftOrderDao.soltarRechazados(rechazados.toList())
                 } catch (e: Exception) {
                     Timber.e(e, "🛑 [Sync] Permanent-failure local drop failed | order=$orderId")
                 }
             }
+            Timber.w("🛑 [Sync] Dropped the rejected queue | order=$orderId | rechazados=${rechazados.size} | resultado=$resultado")
 
-            // 3. SYNCED → syncPendingOrders never resurrects it. Loop broken.
-            draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_SYNCED, System.currentTimeMillis())
+            // 4. SYNCED → syncPendingOrders never resurrects it. Si la cajera agregó algo mientras tanto, queda PENDING y sube.
+            val quedaCola = try { draftOrderDao.renglonesSinSubir(orderId) > 0 } catch (e: Exception) { false }
+            draftOrderDao.updateSyncStatus(
+                orderId,
+                if (quedaCola) DraftOrderEntity.SYNC_STATUS_PENDING else DraftOrderEntity.SYNC_STATUS_SYNCED,
+                System.currentTimeMillis()
+            )
         }
 
         // 4. Tell the UI so the cashier knows their change wasn't applied.
@@ -1422,7 +1435,6 @@ class OrderSyncCoordinator @Inject constructor(
                 Timber.d("   [$index] productId=${item.productId} | name=${item.productName} | qty=${item.quantity}")
             }
 
-            ultimaVersionEnviada[orderId] = currentVersion
             val result = orderRepository.addItemsToOrder(
                 venueId = venueId,
                 orderId = orderId,
@@ -1434,7 +1446,8 @@ class OrderSyncCoordinator @Inject constructor(
             if (result.isFailure) {
                 val exception = result.exceptionOrNull()
                 if (exception is ConflictException) {
-                    throw exception
+                    // Libreta fase 1 mínima: el 409 lleva la versión con la que salió ESTA petición (Codex r2 #3).
+                    throw ConflictException(exception.serverVersion, exception.message ?: "", versionEnviada = currentVersion)
                 }
                 throw exception ?: Exception("Failed to add items")
             }
@@ -1476,7 +1489,6 @@ class OrderSyncCoordinator @Inject constructor(
                 cuenta.items.firstOrNull { it.externalId == (deletedItem.externalId ?: deletedItem.id) }?.id
             }
             if (idEnServidor != null) {
-                ultimaVersionEnviada[orderId] = currentVersion
                 val result = orderRepository.removeOrderItem(
                     venueId = venueId,
                     orderId = orderId,
@@ -1487,7 +1499,7 @@ class OrderSyncCoordinator @Inject constructor(
                 if (result.isFailure) {
                     val exception = result.exceptionOrNull()
                     if (exception is ConflictException) {
-                        throw exception
+                        throw ConflictException(exception.serverVersion, exception.message ?: "", versionEnviada = currentVersion)
                     }
                     throw exception ?: Exception("Failed to remove item")
                 }
@@ -1520,13 +1532,19 @@ class OrderSyncCoordinator @Inject constructor(
         }
         // Codex fase 1 mínima r1 #5: si mientras se subía entró una lectura MÁS NUEVA que el último acuse, esa lectura vio como «en
         // cola» lo que el acuse acaba de dar por subido (y quizá otra caja ya lo quitó). Se relee una vez y entra por la puerta.
-        if (versionEnLaLibreta > currentVersion) {
+        // También se relee si la vuelta no tenía nada que subir y la cuenta estaba pendiente (una relectura así que falló antes).
+        // Si la relectura falla, la cuenta queda PENDING: la reconexión o el siguiente cambio la vuelven a intentar (r2 #5).
+        val nadaQueSubir = pendingItems.isEmpty() && deletedItems.isEmpty()
+        if (versionEnLaLibreta > currentVersion || (nadaQueSubir && draftOrder.syncStatus != DraftOrderEntity.SYNC_STATUS_SYNCED)) {
             val relectura = try { orderRepository.getOrder(venueId, orderId).getOrNull() } catch (e: Exception) { null }
-            if (relectura != null) {
-                val resultado = try { guardarPorLaPuerta(draftOrderDao, relectura, soltarCola = false) } catch (e: Exception) { null }
-                Timber.i("🔁 [Sync] Relectura tras un acuse atrasado | order=$orderId | libreta=$versionEnLaLibreta | acuse=$currentVersion | $resultado")
+            val resultado = relectura?.let { try { guardarPorLaPuerta(draftOrderDao, it) } catch (e: Exception) { null } }
+            if (resultado != null) {
+                Timber.i("🔁 [Sync] Relectura al cerrar la vuelta | order=$orderId | libreta=$versionEnLaLibreta | acuse=$currentVersion | $resultado")
             } else {
-                Timber.w("⚠️ [Sync] No se pudo releer tras un acuse atrasado | order=$orderId (la siguiente lectura lo corrige)")
+                Timber.w("⚠️ [Sync] No se pudo releer al cerrar la vuelta | order=$orderId: queda PENDING")
+                withContext(NonCancellable) {
+                    draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_PENDING, System.currentTimeMillis())
+                }
             }
         }
 
@@ -1608,7 +1626,9 @@ class OrderSyncCoordinator @Inject constructor(
  */
 class ConflictException(
     val serverVersion: String,
-    message: String = "Order was modified by another terminal"
+    message: String = "Order was modified by another terminal",
+    /** Libreta fase 1 mínima: la versión con la que salió la petición rechazada (null si no se sabe). */
+    val versionEnviada: Int? = null,
 ) : Exception(message)
 
 /**
@@ -1633,12 +1653,12 @@ class PermanentSyncException(
 internal suspend fun guardarPorLaPuerta(
     draftOrderDao: DraftOrderDao,
     order: Order,
-    soltarCola: Boolean = false,
+    soltar: Set<String> = emptySet(),
 ): ResultadoDeLectura {
     val cuenta = order.toEntity(syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED, isServerCreated = true)
     val renglones = order.items.toEntities(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = true)
     val llaves = order.items.mapNotNull { r -> r.externalId?.takeIf { it.isNotBlank() && it != r.id }?.let { r.id to it } }.toMap()
-    return draftOrderDao.guardarCuentaDelServidor(cuenta, renglones, llaves, soltarCola)
+    return draftOrderDao.guardarCuentaDelServidor(cuenta, renglones, llaves, soltar)
 }
 
 internal const val TEXTO_CAMBIO_NO_ACEPTADO =

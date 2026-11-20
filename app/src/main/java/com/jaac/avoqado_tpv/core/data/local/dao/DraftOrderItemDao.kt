@@ -234,11 +234,15 @@ interface DraftOrderItemDao {
      * @param itemId Item ID
      * @param newQuantity New quantity (must be > 0)
      * @param newTotalPrice Recalculated total price (unit_price * newQuantity)
+     *
+     * Libreta fase 1 mínima (Codex r2 #2): un renglón `SYNCED` ya lo aceptó el SERVIDOR (también los que confirmó una versión
+     * anterior de la app, que no lo marcaba): se deja dicho para que la puerta distinga este cambio de un alta nueva.
      */
     @Query("""
         UPDATE draft_order_items
         SET quantity = :newQuantity,
             total_price = :newTotalPrice,
+            is_server_created = CASE WHEN sync_status = 'SYNCED' THEN 1 ELSE is_server_created END,
             sync_status = 'PENDING'
         WHERE id = :itemId
     """)

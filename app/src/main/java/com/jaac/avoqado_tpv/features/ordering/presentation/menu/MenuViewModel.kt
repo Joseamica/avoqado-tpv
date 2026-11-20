@@ -678,8 +678,9 @@ class MenuViewModel @Inject constructor(
 
             // Step 3: Cache and update local state — por la puerta. Sólo se cobra si la libreta quedó igual al SERVIDOR: con
             // cola (un alta que entró mientras se leía) o con una lectura vieja, no se abre el cobro.
+            // Si la puerta falló (null), tampoco: no se sabe si entró un alta mientras se leía (Codex r2 #7).
             val lectura = orderSyncCoordinator.cacheBackendOrder(backendOrder)
-            if (lectura == ResultadoDeLectura.CON_COLA || lectura == ResultadoDeLectura.VIEJA) {
+            if (lectura != ResultadoDeLectura.REEMPLAZADA && lectura != ResultadoDeLectura.NUEVA) {
                 Timber.w("⛔ [Payment Prep] La libreta no quedó igual al SERVIDOR | lectura=$lectura")
                 orderSyncCoordinator.scheduleSync(syncedOrderId)
                 return Result.failure(Exception(TEXTO_COLA_ANTES_DE_COBRAR))
@@ -2135,6 +2136,13 @@ class MenuViewModel @Inject constructor(
                     Timber.w("⛔ [VoidItems] Entró un alta mientras se leía | id=$syncedOrderId")
                     orderSyncCoordinator.scheduleSync(syncedOrderId)
                     _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_COLA_ANTES_DE_ANULAR, isError = true))
+                    return@launch
+                }
+                // Una lectura con versión menor que la libreta (llegó tarde) no se publica ni decide la anulación (Codex r2 #8).
+                val versionLocal = orderSyncCoordinator.versionEnLaLibreta(syncedOrderId)
+                if (versionLocal != null && freshOrder.version < versionLocal) {
+                    Timber.w("⛔ [VoidItems] Lectura vieja | servidor=${freshOrder.version} libreta=$versionLocal")
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_ANULAR_OTRA_VEZ, isError = true))
                     return@launch
                 }
 
@@ -3816,6 +3824,8 @@ internal const val TEXTO_COLA_ANTES_DE_COBRAR =
     "Hay productos que todavía no se suben al servidor. Se están enviando: revisa la conexión y vuelve a tocar Pagar."
 internal const val TEXTO_COLA_ANTES_DE_ANULAR =
     "Hay productos que todavía no se suben al servidor. Se están enviando: revisa la conexión y vuelve a intentar anular."
+internal const val TEXTO_ANULAR_OTRA_VEZ =
+    "La cuenta cambió mientras se preparaba la anulación. Revísala y vuelve a intentar."
 
 /**
  * ¿Se debe ignorar este toque a `Pagar` porque ya hay una preparación de pago en vuelo?

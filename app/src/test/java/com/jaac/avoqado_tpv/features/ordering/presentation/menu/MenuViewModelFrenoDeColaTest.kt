@@ -117,6 +117,8 @@ class MenuViewModelFrenoDeColaTest {
 
         assertThat(listo).isNull() // antes: cobraba $100, sin el café
         assertThat(error).contains("todavía no se suben")
+        esperar { avisos.isNotEmpty() }
+        assertThat(avisos.joinToString(" | ")).contains("todavía no se suben") // se ve en pantalla (antes sólo se registraba)
         val cafe = runBlocking { db.draftOrderItemDao().getAllItemsByOrderId(cuenta) }.single { it.productId == "prod-cafe" }
         assertThat(cafe.syncStatus).isEqualTo("PENDING")
     }

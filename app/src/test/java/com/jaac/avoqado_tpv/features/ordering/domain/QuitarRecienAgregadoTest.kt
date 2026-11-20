@@ -268,6 +268,7 @@ class QuitarRecienAgregadoTest {
         otro.cleanup()
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
-        assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
+        // Libreta fase 1: subir la cantidad de un renglón ya subido abre renglón aparte (otra pieza de tacos).
+        assertThat(renglonesEnElAparato().map { it.productId }.toSet()).containsExactly("prod-tacos")
     }
 }

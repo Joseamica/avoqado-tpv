@@ -189,6 +189,33 @@ class LibretaUnEscritorTest {
         coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().externalId == llaveAgua }, any(), any()) }
     }
 
+    @Test fun `T7 cambiar la cantidad de un renglon ya subido no se pierde en el SERVIDOR`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        coordinator.updateItemQuantityInLocalOrder(cuenta, "renglon-srv-tacos", 3, BigDecimal("100.00"))
+
+        val nuevo = renglones().single { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING }
+        assertThat(nuevo.quantity).isEqualTo(2)
+        assertThat(nuevo.externalId).isEqualTo(nuevo.id)
+        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("300.00")
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns Result.success(delServidor(3, tacos))
+        coordinator.syncOrderImmediately(cuenta)
+        coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().quantity == 2 && it.single().externalId == nuevo.id }, any(), any()) }
+    }
+
+    @Test fun `T7b bajar la cantidad de un renglon ya subido e impreso no repite la comanda`() = runTest {
+        val tres = renglon("renglon-srv-tacos", "prod-tacos", "Tacos", "300.00").copy(quantity = 3, unitPrice = BigDecimal("100.00"))
+        coordinator.cacheBackendOrder(delServidor(2, tres))
+        coordinator.markItemsAsSentToKitchen(cuenta, listOf("renglon-srv-tacos"), 1_000L)
+
+        coordinator.updateItemQuantityInLocalOrder(cuenta, "renglon-srv-tacos", 1, BigDecimal("100.00"))
+
+        assertThat(renglones().single { it.id == "renglon-srv-tacos" }.syncStatus).isEqualTo(DraftOrderItemEntity.SYNC_STATUS_DELETED)
+        val queda = loQueVeLaCajera().items.single()
+        assertThat(queda.quantity).isEqualTo(1)
+        assertThat(queda.sentToKitchenAt).isNotNull()
+        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("100.00")
+    }
+
     @Test fun `T8 sin cola la libreta queda igual al SERVIDOR y conserva el comercio`() = runTest {
         val cafe = renglon("renglon-srv-cafe", "prod-cafe", "Café", "50.00")
         coordinator.cacheBackendOrder(delServidor(3, tacos, cafe))

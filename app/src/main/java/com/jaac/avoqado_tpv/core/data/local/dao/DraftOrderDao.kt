@@ -426,10 +426,29 @@ interface DraftOrderDao {
         return true
     }
 
+    /**
+     * Cambiar la cantidad. Un renglón que todavía no sube cambia ahí mismo. Uno ya subido NO (el SERVIDOR deduplica por la llave y
+     * se quedaba con la cantidad vieja mientras la libreta decía «subido», Codex fase 1 r1 #4): para SUBIR, la diferencia sale como
+     * renglón nuevo en cola; para BAJAR, el renglón se quita y sale uno nuevo con la cantidad que quedó (con su marca de cocina, para
+     * que no se repita la comanda).
+     */
     @Transaction
-    suspend fun cambiarCantidad(orderId: String, itemId: String, cantidad: Int, total: String, ahora: Long): Boolean {
+    suspend fun cambiarCantidad(orderId: String, itemId: String, cantidad: Int, total: String, idNuevo: String, ahora: Long): Boolean {
         val r = renglonNombrado(orderId, itemId) ?: return false
-        cambiarCantidadDelRenglon(r.id, cantidad, total)
+        if (r.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED) {
+            cambiarCantidadDelRenglon(r.id, cantidad, total)
+        } else if (cantidad != r.quantity) {
+            val unidad = dinero(r.unitPrice)
+            val sube = cantidad > r.quantity
+            if (!sube) marcarRenglonQuitado(r.id)
+            val piezas = if (sube) cantidad - r.quantity else cantidad
+            guardarRenglones(listOf(r.copy(
+                id = idNuevo, externalId = idNuevo, quantity = piezas, totalPrice = (unidad * piezas.toBigDecimal()).toString(),
+                linePosition = if (sube) r.linePosition + 1 else r.linePosition, createdAt = ahora,
+                sentToKitchenAt = if (sube) null else r.sentToKitchenAt,
+                syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false,
+            )))
+        }
         recalcularCabecera(orderId, ahora)
         return true
     }

@@ -656,7 +656,9 @@ class OrderSyncCoordinator @Inject constructor(
         } else {
             // Update quantity in database
             val newTotalPrice = (unitPrice * newQuantity.toBigDecimal()).toString()
-            draftOrderDao.cambiarCantidad(effectiveOrderId, itemId, newQuantity, newTotalPrice, System.currentTimeMillis())
+            draftOrderDao.cambiarCantidad(
+                effectiveOrderId, itemId, newQuantity, newTotalPrice, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis()
+            )
 
             Timber.d("✏️ [Local] Updated item quantity | order=$effectiveOrderId | item=$itemId | qty=$newQuantity")
         }

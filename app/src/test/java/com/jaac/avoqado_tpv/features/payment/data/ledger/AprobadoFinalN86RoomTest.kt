@@ -685,8 +685,9 @@ class AprobadoFinalN86RoomTest {
 
     /**
      * Codex plan A #2 · la salida (c): la venta sigue en `05AP` y el gerente firma «no se cobró» en «Por revisar». Reescrita por el rediseño
-     * de Codex r7: la firma de una persona suelta la tarjeta DE INMEDIATO (antes esperaba la siguiente respuesta); la consulta pendiente la
-     * termina la siguiente respuesta, que con la firma cuenta como «no aparece» (gasta un turno y quita la marca).
+     * de Codex r7: la firma de una persona suelta la tarjeta DE INMEDIATO (antes esperaba la siguiente respuesta). Y por Codex final r8 #3:
+     * la firma no acorta el seguimiento: la siguiente respuesta «sin aprobar» no gasta turno y la marca se queda (antes contaba como «no
+     * aparece»); la tarjeta sigue entrando.
      */
     @Test fun `N86_venta_en_05AP_firmada_por_el_gerente_suelta_su_tarjeta_de_inmediato`() = runBlocking<Unit> {
         dudaN86("a1", creadoEn = reciente)
@@ -698,8 +699,8 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("con la firma, entra de inmediato").that(otraTarjetaDeA(libreta())).isTrue()
         t += 3_600_000
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
-        assertWithMessage("una respuesta con la firma gasta un turno").that(consultasGastadas("a1")).isEqualTo(1)
-        assertThat(dao.getById("a1")!!.historyReadAt).isNull()
+        assertWithMessage("firmada, «sin aprobar» tampoco gasta turno (Codex r8 #3)").that(consultasGastadas("a1")).isEqualTo(0)
+        assertWithMessage("…y se sigue buscando").that(dao.getById("a1")!!.historyReadAt).isNotNull()
         assertThat(otraTarjetaDeA(libreta())).isTrue()
     }
 

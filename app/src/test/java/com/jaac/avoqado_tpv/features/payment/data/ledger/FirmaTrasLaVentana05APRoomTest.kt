@@ -176,7 +176,7 @@ class FirmaTrasLaVentana05APRoomTest {
         return t
     }
 
-    @Test fun `N86_05AP_tras_la_ventana_firmable_y_la_firma_suelta_la_tarjeta_en_la_siguiente_respuesta`() = runBlocking<Unit> {
+    @Test fun `N86_05AP_tras_la_ventana_firmable_y_la_firma_suelta_la_tarjeta_de_inmediato`() = runBlocking<Unit> {
         val v = historial { "rejected" }
         var t = frenadaTrasLaVentana(v)
         val l = libreta()
@@ -205,9 +205,10 @@ class FirmaTrasLaVentana05APRoomTest {
 
         t += 3_600_000
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)   // AngelPay sigue en 05AP
-        assertWithMessage("con la firma, 05AP cuenta como «no aparece»: la tarjeta entra").that(otraTarjeta(libreta())).isTrue()
-        assertThat(dao.getById("a1")!!.historyReadAt).isNull()
-        assertWithMessage("una respuesta con la firma gasta un turno").that(consultasGastadas("a1")).isEqualTo(1)
+        assertWithMessage("con la firma, la tarjeta sigue entrando").that(otraTarjeta(libreta())).isTrue()
+        // Codex final r8 #3: la firma decide el freno, nunca el seguimiento: «sin aprobar» no gasta turno y la marca se queda (7 días).
+        assertWithMessage("firmada, «sin aprobar» no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
+        assertWithMessage("…y se sigue buscando").that(dao.getById("a1")!!.historyReadAt).isNotNull()
         assertWithMessage("y sale de «Por revisar»").that(renglon(libreta())).isNull()
     }
 

@@ -237,8 +237,8 @@ data class LiberacionDelServidor(
             return when (evidencia) {
                 // 🔴 F1 · salida del gerente para el 05AP (20-nov): la ventana del SERVIDOR soltó la solicitud y, encima, un gerente firmó
                 // con su PIN (el SERVIDOR guarda su asiento sin cambiar el estado financiero). Con el comprobante de una PERSONA para ESTA
-                // solicitud, la liberación es la suya: la fila queda cerrada por una persona y la siguiente respuesta del historial de
-                // AngelPay ya cuenta como «no aparece» (suelta la tarjeta). Sin ese comprobante, sigue siendo sólo la ventana.
+                // solicitud, la liberación es la suya: la fila queda cerrada por una persona y su tarjeta entra de inmediato; el historial
+                // de AngelPay se sigue consultando igual (Codex final r8 #3). Sin ese comprobante, sigue siendo sólo la ventana.
                 "NO_EVIDENCE_AFTER_WINDOW" -> comprobante
                     ?.takeIf { requestId != null && it.kind in DECLARACIONES_DE_UNA_PERSONA && it.acreditaPersona(attemptId, requestId) }
                     ?.let { LiberacionDelServidor(venueId, attemptId, requestId, "OPERATOR_RECONCILED", it.staffId) }

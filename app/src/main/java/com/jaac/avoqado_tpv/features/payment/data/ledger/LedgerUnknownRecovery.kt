@@ -84,11 +84,13 @@ class LedgerUnknownRecovery @Inject constructor(
                         // puede aprobarse tarde). No es «no aparece»: la marca se queda y se vuelve a preguntar SIN gastar turno mientras el
                         // intento tenga menos de [SEGUIMIENTO_DEL_SIN_APROBAR_MS] (F1 · Codex r7 #1: aunque la VENTANA del SERVIDOR la haya
                         // soltado; la marca la mantiene entre las candidatas). El seguimiento ya no depende del freno: la tarjeta de su cuenta
-                        // sólo espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). Si una PERSONA ya la firmó, o
-                        // pasaron los 7 días, cuenta como «no aparece» y gasta turno; con los turnos acabados, se acaba.
+                        // sólo espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). Pasados los 7 días cuenta como
+                        // «no aparece» y gasta turno; con los turnos acabados, se acaba.
+                        // 🔴 F1 · Codex final r8 #3 (E): firmada o no. La firma de una persona decide el FRENO (lo suelta de inmediato), nunca
+                        // el seguimiento: antes cada «sin aprobar» de una venta firmada gastaba turno y a las ~30 h dejaba de buscarse; si el
+                        // banco la aprobaba después, con su aviso perdido, cero Payment.
                         is VerificacionDelCobro.EnElProcesador ->
-                            if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId)) ||
-                                terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_SIN_APROBAR_MS) dao.terminarConsultaSinCoincidencia(
+                            if (terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_SIN_APROBAR_MS) dao.terminarConsultaSinCoincidencia(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
                             else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                     }

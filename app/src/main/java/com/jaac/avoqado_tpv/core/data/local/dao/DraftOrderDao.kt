@@ -365,16 +365,6 @@ interface DraftOrderDao {
         )
     }
 
-    /** Como [recalcularCabecera] pero sin tocar el estado de sincronización (un acuse no crea trabajo nuevo). */
-    @Transaction
-    suspend fun recalcularCabeceraSinMarcar(orderId: String) {
-        val cuenta = getOrder(orderId) ?: return
-        val subtotal = subtotalDe(renglonesDeLaCuenta(orderId))
-        val total = totalConLaRegla(subtotal, cuenta)
-        update(cuenta.copy(subtotal = subtotal.toString(), total = total.toString(),
-            remainingBalance = (total - dinero(cuenta.paidAmount)).max(BigDecimal.ZERO).toString()))
-    }
-
     /** La versión de la cuenta sólo sube (un acuse atrasado no la regresa por debajo de una lectura que ya entró). */
     @Query("UPDATE draft_orders SET version = MAX(version, :version), updated_at = :updatedAt WHERE id = :orderId")
     suspend fun subirVersion(orderId: String, version: Int, updatedAt: Long = System.currentTimeMillis())
@@ -426,31 +416,22 @@ interface DraftOrderDao {
         return true
     }
 
-    /**
-     * Cambiar la cantidad. Un renglón que todavía no sube cambia ahí mismo. Uno ya subido NO (el SERVIDOR deduplica por la llave y
-     * se quedaba con la cantidad vieja mientras la libreta decía «subido», Codex fase 1 r1 #4): para SUBIR, la diferencia sale como
-     * renglón nuevo en cola; para BAJAR, el renglón se quita y sale uno nuevo con la cantidad que quedó (con su marca de cocina, para
-     * que no se repita la comanda).
-     */
+    /** Cambiar la cantidad en el MISMO renglón (queda `PENDING`): el SERVIDOR, por la ruta de la TPV, actualiza la cantidad del
+     *  renglón que tiene esa llave (`order.tpv.service` addItemsToOrder, «UPDATING by externalId»). */
     @Transaction
-    suspend fun cambiarCantidad(orderId: String, itemId: String, cantidad: Int, total: String, idNuevo: String, ahora: Long): Boolean {
+    suspend fun cambiarCantidad(orderId: String, itemId: String, cantidad: Int, total: String, ahora: Long): Boolean {
         val r = renglonNombrado(orderId, itemId) ?: return false
-        if (r.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED) {
-            cambiarCantidadDelRenglon(r.id, cantidad, total)
-        } else if (cantidad != r.quantity) {
-            val unidad = dinero(r.unitPrice)
-            val sube = cantidad > r.quantity
-            if (!sube) marcarRenglonQuitado(r.id)
-            val piezas = if (sube) cantidad - r.quantity else cantidad
-            guardarRenglones(listOf(r.copy(
-                id = idNuevo, externalId = idNuevo, quantity = piezas, totalPrice = (unidad * piezas.toBigDecimal()).toString(),
-                linePosition = if (sube) r.linePosition + 1 else r.linePosition, createdAt = ahora,
-                sentToKitchenAt = if (sube) null else r.sentToKitchenAt,
-                syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false,
-            )))
-        }
+        cambiarCantidadDelRenglon(r.id, cantidad, total)
         recalcularCabecera(orderId, ahora)
         return true
+    }
+
+    /** Agregar un renglón nuevo y recalcular la cabecera en UNA transacción (Codex fase 1 r2 #9: si el proceso moría entre las
+     *  dos, quedaba el renglón pendiente con la cuenta `SYNCED` y la reconexión no lo veía). */
+    @Transaction
+    suspend fun agregarRenglon(renglon: DraftOrderItemEntity, ahora: Long) {
+        guardarRenglones(listOf(renglon))
+        recalcularCabecera(renglon.orderId, ahora)
     }
 
     @Transaction
@@ -459,28 +440,18 @@ interface DraftOrderDao {
     }
 
     /**
-     * El SERVIDOR aceptó el alta de `cantidadEnviada` piezas de este renglón. Si la caja sumó piezas mientras viajaba (agregar el
-     * mismo producto se junta en el renglón), lo subido queda `SYNCED` con lo enviado y la diferencia sale como renglón nuevo en
-     * cola, con su propia llave (Codex fase 1 r1 #4: antes el acuse marcaba subidas las dos piezas). Un renglón que la caja quitó
-     * mientras viajaba sigue quitado (D23).
+     * El SERVIDOR aceptó el alta (o el cambio de cantidad) de este renglón con `cantidadEnviada` piezas. Queda `SYNCED` sólo si la
+     * cantidad sigue siendo ésa: si la caja la cambió mientras viajaba, sigue `PENDING` y la siguiente vuelta manda la nueva con
+     * la misma llave, que el SERVIDOR actualiza (Codex fase 1 r1 #4; antes el acuse la marcaba subida). Conserva la marca de
+     * cocina. Un renglón que la caja quitó mientras viajaba sigue quitado (D23).
      */
     @Transaction
-    suspend fun confirmarAlta(orderId: String, itemId: String, cantidadEnviada: Int, idNuevo: String, ahora: Long) {
+    suspend fun confirmarAlta(orderId: String, itemId: String, cantidadEnviada: Int) {
         val r = renglonNombrado(orderId, itemId) ?: return
         if (r.syncStatus == DraftOrderItemEntity.SYNC_STATUS_DELETED) return
-        val unidad = dinero(r.unitPrice)
-        val subido = r.copy(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED, quantity = cantidadEnviada,
-            totalPrice = (unidad * cantidadEnviada.toBigDecimal()).toString())
-        actualizarRenglon(subido)
-        val resto = r.quantity - cantidadEnviada
-        if (resto > 0) {
-            guardarRenglones(listOf(r.copy(
-                id = idNuevo, externalId = idNuevo, quantity = resto, totalPrice = (unidad * resto.toBigDecimal()).toString(),
-                linePosition = r.linePosition + 1, createdAt = ahora, sentToKitchenAt = null,
-                syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING, isServerCreated = false,
-            )))
-        }
-        recalcularCabeceraSinMarcar(orderId)
+        val estado = if (r.quantity == cantidadEnviada) DraftOrderItemEntity.SYNC_STATUS_SYNCED
+        else DraftOrderItemEntity.SYNC_STATUS_PENDING
+        if (estado != r.syncStatus) actualizarRenglon(r.copy(syncStatus = estado))
     }
 
     /**

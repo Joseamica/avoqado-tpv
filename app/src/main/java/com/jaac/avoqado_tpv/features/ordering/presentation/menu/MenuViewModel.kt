@@ -684,6 +684,9 @@ class MenuViewModel @Inject constructor(
                 }
                 else -> Unit
             }
+            if (orderSyncCoordinator.hayRenglonesSinSubir(syncedOrderId)) { // Codex fase 1 r2 #5: entró un alta mientras se leía
+                return Result.failure(Exception(TEXTO_CUENTA_CAMBIO))
+            }
             // Sólo frena si cobraría MÁS de lo que la caja vio (otro aparato agregó algo). Si es menos (un % de descuento que el
             // SERVIDOR recalculó, algo que otro aparato quitó), el cobro sigue con la cuenta del SERVIDOR, como antes.
             if (backendOrder.total > order.total) {
@@ -2151,15 +2154,26 @@ class MenuViewModel @Inject constructor(
                 }
                 Timber.d("🔄 [VoidItems] Backend order loaded | items=${freshOrder.items.size}")
 
+                // Codex fase 1 r2 #6: la lectura previa entra por la puerta. Si la caja agregó algo mientras se leía, o si la lectura
+                // ya es vieja, no se anula con ella.
+                when (orderSyncCoordinator.cacheBackendOrder(freshOrder)) {
+                    ResultadoDeLectura.CON_COLA -> {
+                        publicarDesdeLaLibreta(syncedOrderId, freshOrder)
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_COLA_ANTES_DE_ANULAR, isError = true))
+                        return@launch
+                    }
+                    ResultadoDeLectura.VIEJA -> {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_ANULAR_OTRA_VEZ, isError = true))
+                        return@launch
+                    }
+                    else -> Unit
+                }
+
                 // ⭐ Guard: If order has no items, it was already voided
                 if (freshOrder.items.isEmpty()) {
                     Timber.w("⚠️ [VoidItems] Order has no items - already voided")
 
-                    // Libreta fase 1: por la puerta; si mientras tanto la caja agregó algo, se queda en la cuenta.
-                    if (orderSyncCoordinator.cacheBackendOrder(freshOrder) == ResultadoDeLectura.CON_COLA) {
-                        publicarDesdeLaLibreta(syncedOrderId, freshOrder)
-                        return@launch
-                    }
+                    // Libreta fase 1: la lectura ya entró por la puerta (arriba).
                     publicarDesdeLaLibreta(syncedOrderId, freshOrder)
                     Timber.i("🔄 [VoidItems] Local DB synced with backend (0 items)")
 
@@ -2177,16 +2191,11 @@ class MenuViewModel @Inject constructor(
                 val backendItemIds = itemIds.mapNotNull { localId ->
                     val localItem = order.items.find { it.id == localId }
                     if (localItem != null) {
-                        // Libreta fase 1 (Codex r1 #12): primero el mismo renglón (id o la llave que mandó la caja); sólo si no, por
-                        // producto, cantidad y precio, sin repetir uno ya elegido.
+                        // Libreta fase 1 (Codex r1 #12): el mismo renglón, por su id o por la llave que mandó la caja.
                         val llave = localItem.externalId ?: localItem.id
-                        val backendItem = freshOrder.items.firstOrNull { it.id == localItem.id || it.externalId == llave }
-                            ?: freshOrder.items.find {
-                                it.id !in usados &&
-                                it.productId == localItem.productId &&
-                                it.quantity == localItem.quantity &&
-                                it.unitPrice == localItem.unitPrice
-                            }
+                        // Codex fase 1 r2 #7: sin respaldo por producto/cantidad/precio. Si ya no está (otro aparato lo quitó),
+                        // no se anula otro parecido.
+                        val backendItem = freshOrder.items.firstOrNull { it.id !in usados && (it.id == localItem.id || it.externalId == llave) }
                         backendItem?.let { usados += it.id }
                         if (backendItem != null) {
                             Timber.d("🔄 [VoidItems] Mapped local ID $localId → backend ID ${backendItem.id}")
@@ -2201,6 +2210,11 @@ class MenuViewModel @Inject constructor(
                     }
                 }
 
+                if (backendItemIds.size != itemIds.size) {
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(message = TEXTO_ANULAR_OTRA_VEZ, isError = true))
+                    publicarDesdeLaLibreta(syncedOrderId, freshOrder)
+                    return@launch
+                }
                 if (backendItemIds.isEmpty()) {
                     Timber.e("❌ [VoidItems] No valid backend IDs found for selected items")
                     _uiEvents.emit(MenuUiEvent.ShowSnackbar(
@@ -3431,7 +3445,9 @@ class MenuViewModel @Inject constructor(
     /** Libreta fase 1: la pantalla se publica desde la libreta (Room), no desde una copia tomada antes de imprimir o de llamar
      *  al SERVIDOR; `respaldo` sólo si la cuenta no está en la libreta. */
     private suspend fun publicarDesdeLaLibreta(orderId: String, respaldo: Order, ajuste: (Order) -> Order = { it }) {
-        updateStateWithOrder(ajuste(orderSyncCoordinator.getLocalOrder(orderId) ?: respaldo))
+        val local = orderSyncCoordinator.getLocalOrder(orderSyncCoordinator.resolveOrderId(orderId)) // Codex r2 #11: id local → SERVIDOR
+            ?: orderSyncCoordinator.getLocalOrder(orderId)
+        updateStateWithOrder(ajuste(local ?: respaldo))
     }
 
     private fun updateStateWithOrder(order: Order) {
@@ -3847,6 +3863,8 @@ internal const val TEXTO_COLA_ANTES_DE_COBRAR =
     "Hay productos que todavía no se suben. Revisa la conexión y vuelve a tocar Pagar."
 internal const val TEXTO_COLA_ANTES_DE_ANULAR =
     "Hay productos que todavía no se suben. Revisa la conexión y vuelve a intentar anular."
+internal const val TEXTO_ANULAR_OTRA_VEZ =
+    "La cuenta cambió mientras se preparaba la anulación. Revísala y vuelve a intentar."
 internal const val TEXTO_CUENTA_CAMBIO = "La cuenta cambió mientras se preparaba el cobro. Revísala y vuelve a tocar Pagar."
 internal fun textoTotalCambio(total: java.math.BigDecimal): String =
     "La cuenta cambió: ahora es \$" + total.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString() +

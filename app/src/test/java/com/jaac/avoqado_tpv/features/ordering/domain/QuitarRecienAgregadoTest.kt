@@ -117,7 +117,8 @@ class QuitarRecienAgregadoTest {
         coordinator.syncOrderImmediately(cuenta)
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
-        coVerify(exactly = 1) { repo.getOrder(venue, cuenta) } // una sola lectura para saber su id allá
+        // Libreta fase 1: la respuesta del alta entra por la puerta y el renglón ya tiene el id del SERVIDOR; no hace falta releer.
+        coVerify(exactly = 0) { repo.getOrder(venue, cuenta) }
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
         assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("25.00")
         assertThat(db.draftOrderDao().getOrder(cuenta)!!.syncStatus).isEqualTo("SYNCED")
@@ -234,21 +235,20 @@ class QuitarRecienAgregadoTest {
         assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
     }
 
-    @Test fun `T9 sumar una unidad a un renglon ya subido abre renglon aparte con su llave (no se pierde en el SERVIDOR)`() = runTest {
+    @Test fun `T9 un renglon de la version de hoy al que se le sumo otra unidad y se quito antes de mandar tambien sale`() = runTest {
         abrirCuentaConTacos()
         val llave = sembrarCafe(DraftOrderItemEntity.SYNC_STATUS_SYNCED, isServerCreated = false)
-        val otra = agregarCafe() // Libreta fase 1 (Codex r1 #4): antes se juntaba y el SERVIDOR, que deduplica por llave, se quedaba con 1
-        assertThat(otra).isNotEqualTo(llave)
-        val cafes = renglonesEnElAparato().filter { it.productId == "prod-cafe" }
-        assertThat(cafes.map { it.quantity }).containsExactly(1, 1)
-        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns
-            Result.success(cuentaDelServidor(3, tacos, cafeDelServidor(llave), renglon("renglon-srv-cafe-2", "prod-cafe", "Café", "85.00", externalId = otra)))
+        agregarCafe() // se fusiona: el mismo renglón pasa a 2 unidades y queda pendiente
+        assertThat(renglonesEnElAparato().single { it.productId == "prod-cafe" }.quantity).isEqualTo(2)
+        alReleerLaCuenta(cafeConLlave = llave, version = 2)
+        servidorQuitaElCafe()
 
+        quitarCafeDesdeLaPantalla()
         coordinator.syncOrderImmediately(cuenta)
 
-        coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().externalId == otra }, any(), any()) }
-        assertThat(renglonesEnElAparato().all { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_SYNCED }).isTrue()
-        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("195.00")
+        coVerify(exactly = 0) { repo.addItemsToOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 2) }
+        assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
     }
 
     @Test fun `T10 un retiro guardado en una cuenta que quedo SYNCED (la app murio a media operacion) sale con el siguiente cambio`() = runTest {
@@ -259,7 +259,7 @@ class QuitarRecienAgregadoTest {
         servidorQuitaElCafe()
         coordinator.syncOrderImmediately(cuenta)
         // Lo que queda si la app muere entre guardar el retiro y recalcular (residuo declarado: la cola de reconexión no lo ve).
-        db.draftOrderItemDao().markAsDeleted(llave)
+        db.draftOrderItemDao().markAsDeleted(renglonesEnElAparato().single { it.productId == "prod-cafe" }.id)
 
         // La app se reinicia; la cajera hace otro cambio en esa cuenta y la cola corre: el retiro sale con él.
         val otro = OrderSyncCoordinator(db.draftOrderDao(), db.draftOrderItemDao(), repo)
@@ -268,7 +268,6 @@ class QuitarRecienAgregadoTest {
         otro.cleanup()
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 3) }
-        // Libreta fase 1: subir la cantidad de un renglón ya subido abre renglón aparte (otra pieza de tacos).
-        assertThat(renglonesEnElAparato().map { it.productId }.toSet()).containsExactly("prod-tacos")
+        assertThat(renglonesEnElAparato().map { it.id }).containsExactly("renglon-srv-tacos")
     }
 }

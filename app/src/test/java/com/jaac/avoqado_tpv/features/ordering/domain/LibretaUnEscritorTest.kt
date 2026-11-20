@@ -158,7 +158,7 @@ class LibretaUnEscritorTest {
         coordinator.syncOrderImmediately(cuenta) // lo que llama «Pagar» y «Anular»
 
         coVerify(exactly = 1) { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", 4) }
-        assertThat(renglones().map { it.productId }).doesNotContain("prod-cafe")
+        assertThat(renglones().map { it.productId }).containsExactly("prod-tacos", "prod-agua") // lo del otro aparato entra
         assertThat(renglones().all { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_SYNCED }).isTrue()
         assertThat(cabecera().version).isEqualTo(5)
     }
@@ -189,31 +189,45 @@ class LibretaUnEscritorTest {
         coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().externalId == llaveAgua }, any(), any()) }
     }
 
-    @Test fun `T7 cambiar la cantidad de un renglon ya subido no se pierde en el SERVIDOR`() = runTest {
+    @Test fun `T7 cambiar la cantidad de un renglon ya subido la manda con su misma llave`() = runTest {
         coordinator.cacheBackendOrder(delServidor(2, tacos))
         coordinator.updateItemQuantityInLocalOrder(cuenta, "renglon-srv-tacos", 3, BigDecimal("100.00"))
 
-        val nuevo = renglones().single { it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING }
-        assertThat(nuevo.quantity).isEqualTo(2)
-        assertThat(nuevo.externalId).isEqualTo(nuevo.id)
+        val r = renglones().single()
+        assertThat(r.syncStatus).isEqualTo(DraftOrderItemEntity.SYNC_STATUS_PENDING)
+        assertThat(r.quantity).isEqualTo(3)
         assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("300.00")
-        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns Result.success(delServidor(3, tacos))
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns
+            Result.success(delServidor(3, tacos.copy(quantity = 3, totalPrice = BigDecimal("300.00"))))
         coordinator.syncOrderImmediately(cuenta)
-        coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().quantity == 2 && it.single().externalId == nuevo.id }, any(), any()) }
+
+        coVerify(exactly = 1) {
+            repo.addItemsToOrder(venue, cuenta, match { it.single().quantity == 3 && it.single().externalId == "renglon-srv-tacos" }, any(), any())
+        }
+        assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_SYNCED)
     }
 
-    @Test fun `T7b bajar la cantidad de un renglon ya subido e impreso no repite la comanda`() = runTest {
-        val tres = renglon("renglon-srv-tacos", "prod-tacos", "Tacos", "300.00").copy(quantity = 3, unitPrice = BigDecimal("100.00"))
-        coordinator.cacheBackendOrder(delServidor(2, tres))
-        coordinator.markItemsAsSentToKitchen(cuenta, listOf("renglon-srv-tacos"), 1_000L)
+    @Test fun `T7b bajar la cantidad mientras viaja el alta no se pierde y conserva la marca de cocina`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        val llave = agregar("prod-cafe", "Café", "50.00")
+        agregar("prod-cafe", "Café", "50.00") // se junta: 2 cafés
+        coordinator.markItemsAsSentToKitchen(cuenta, listOf(llave), 1_000L)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } coAnswers {
+            coordinator.updateItemQuantityInLocalOrder(cuenta, llave, 1, BigDecimal("50.00")) // «−» mientras viaja
+            Result.success(delServidor(3, tacos, renglon("renglon-srv-cafe", "prod-cafe", "Café", "100.00", externalId = llave).copy(quantity = 2)))
+        }
 
-        coordinator.updateItemQuantityInLocalOrder(cuenta, "renglon-srv-tacos", 1, BigDecimal("100.00"))
+        coordinator.syncOrderImmediately(cuenta)
 
-        assertThat(renglones().single { it.id == "renglon-srv-tacos" }.syncStatus).isEqualTo(DraftOrderItemEntity.SYNC_STATUS_DELETED)
-        val queda = loQueVeLaCajera().items.single()
-        assertThat(queda.quantity).isEqualTo(1)
-        assertThat(queda.sentToKitchenAt).isNotNull()
-        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("100.00")
+        val cafe = renglones().single { it.productId == "prod-cafe" }
+        assertThat(cafe.quantity).isEqualTo(1)
+        assertThat(cafe.syncStatus).isEqualTo(DraftOrderItemEntity.SYNC_STATUS_PENDING)
+        assertThat(cafe.sentToKitchenAt).isNotNull()
+        assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_PENDING)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns
+            Result.success(delServidor(4, tacos, renglon("renglon-srv-cafe", "prod-cafe", "Café", "50.00", externalId = llave)))
+        coordinator.syncOrderImmediately(cuenta)
+        coVerify(exactly = 1) { repo.addItemsToOrder(venue, cuenta, match { it.single().quantity == 1 && it.single().externalId == llave }, any(), any()) }
     }
 
     @Test fun `T8 sin cola la libreta queda igual al SERVIDOR y conserva el comercio`() = runTest {

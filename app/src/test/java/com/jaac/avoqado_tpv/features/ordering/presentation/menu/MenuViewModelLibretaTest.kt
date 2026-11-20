@@ -174,6 +174,42 @@ class MenuViewModelLibretaTest {
         coVerify(exactly = 1) { orderRepository.voidItems(venueId, "o-1", listOf("S2"), any(), any(), any()) }
     }
 
+    @Test fun `Anular no anula otro parecido si el elegido ya no esta en el SERVIDOR`() {
+        val enPantalla = orden("100.00", cafe("L1", notas = "sin azúcar"), cafe("L2", notas = "con leche"))
+        val delServidor = orden("50.00", cafe("S1", externalId = "L1", notas = "sin azúcar")) // otro aparato quitó el segundo
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(delServidor)
+        val vm = crear(enPantalla)
+
+        vm.voidItems(listOf("L2"), "se equivocó")
+
+        assertThat(avisos).contains(TEXTO_ANULAR_OTRA_VEZ)
+        coVerify(exactly = 0) { orderRepository.voidItems(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `Anular con una alta que entro mientras se leia no anula`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden("50.00", cafe("S1", externalId = "L1")))
+        coEvery { coordinator.cacheBackendOrder(any()) } returns ResultadoDeLectura.CON_COLA
+        val vm = crear(orden("50.00", cafe("L1")))
+
+        vm.voidItems(listOf("L1"), "se equivocó")
+
+        assertThat(avisos).contains(TEXTO_COLA_ANTES_DE_ANULAR)
+        coVerify(exactly = 0) { orderRepository.voidItems(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `Pagar con un alta que entro mientras se leia no abre el cobro`() {
+        coEvery { orderRepository.getOrder(venueId, "o-1") } returns Result.success(orden("100.00"))
+        coEvery { coordinator.hayRenglonesSinSubir("o-1") } returnsMany listOf(false, true)
+        val vm = crear(orden("100.00"))
+        var listo: Order? = null
+        var error: String? = null
+
+        vm.onPaymentRequested(onReady = { listo = it }, onError = { error = it })
+
+        assertThat(listo).isNull()
+        assertThat(error).isEqualTo(TEXTO_CUENTA_CAMBIO)
+    }
+
     private fun crear(order: Order): MenuViewModel {
         val deviceInfoManager = mockk<DeviceInfoManager>(relaxed = true)
         val socketManager = mockk<SocketManager>(relaxed = true)

@@ -532,11 +532,8 @@ class OrderSyncCoordinator @Inject constructor(
 
             // Merge identical items (same product + modifiers + notes) unless already sent to kitchen.
             val existingItems = draftOrderItemDao.getItemsByOrderAndProduct(effectiveOrderId, productId)
-            // Fase 1 (Codex r1 #4): sólo se junta con un renglón que todavía no sube. Juntar en uno ya subido mandaba la misma
-            // llave con otra cantidad y el SERVIDOR, que deduplica por llave, se quedaba con la vieja.
             val matchingItem = existingItems.firstOrNull { item ->
-                item.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING &&
-                    item.sentToKitchenAt == null &&
+                item.sentToKitchenAt == null &&
                     normalizeNotes(item.notes) == normalizedNotes &&
                     buildModifiersKeyFromJson(item.modifiers) == modifiersKey
             }
@@ -546,8 +543,8 @@ class OrderSyncCoordinator @Inject constructor(
                 val unit = matchingItem.unitPrice.toBigDecimal()
                 val newTotalPrice = (unit * newQuantity.toBigDecimal()).toString()
 
-                draftOrderItemDao.updateQuantity(matchingItem.id, newQuantity, newTotalPrice)
-                recalculateOrderTotals(effectiveOrderId)
+                // Fase 1 (Codex r2 #9): cantidad y cabecera en una transacción.
+                draftOrderDao.cambiarCantidad(effectiveOrderId, matchingItem.id, newQuantity, newTotalPrice, System.currentTimeMillis())
 
                 Timber.i(
                     "🧩 [Local] Merged item | order=$effectiveOrderId | product=$productName | " +
@@ -590,10 +587,8 @@ class OrderSyncCoordinator @Inject constructor(
                 isServerCreated = false
             )
 
-            draftOrderItemDao.insert(draftItem)
-
-            // Update order totals
-            recalculateOrderTotals(effectiveOrderId)
+            // Fase 1 (Codex r2 #9): renglón y cabecera en una transacción.
+            draftOrderDao.agregarRenglon(draftItem, System.currentTimeMillis())
 
             Timber.d("➕ [Local] Added item | order=$effectiveOrderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
             Timber.d("➕ [SYNC-DEBUG] addItemToLocalOrder() | orderId=$effectiveOrderId | itemId=$localItemId | product=$productName | timestamp=${System.currentTimeMillis()}")
@@ -656,9 +651,7 @@ class OrderSyncCoordinator @Inject constructor(
         } else {
             // Update quantity in database
             val newTotalPrice = (unitPrice * newQuantity.toBigDecimal()).toString()
-            draftOrderDao.cambiarCantidad(
-                effectiveOrderId, itemId, newQuantity, newTotalPrice, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis()
-            )
+            draftOrderDao.cambiarCantidad(effectiveOrderId, itemId, newQuantity, newTotalPrice, System.currentTimeMillis())
 
             Timber.d("✏️ [Local] Updated item quantity | order=$effectiveOrderId | item=$itemId | qty=$newQuantity")
         }
@@ -1088,7 +1081,11 @@ class OrderSyncCoordinator @Inject constructor(
                     _syncEvents.emit(SyncEvent.Synced(orderId, backendOrder.version))
                     ChoqueResuelto.SIN_COLA
                 }
-                ResultadoDeLectura.VIEJA, null -> ChoqueResuelto.FALLO
+                // Codex fase 1 r2 #10: la libreta ya tiene una versión más nueva que esta relectura (otra lectura entró mientras
+                // tanto): se decide con lo que ya tiene, en vez de dejar la cola parada en «conflicto».
+                ResultadoDeLectura.VIEJA ->
+                    if (draftOrderDao.renglonesSinSubir(orderId) > 0) ChoqueResuelto.CON_COLA else ChoqueResuelto.SIN_COLA
+                null -> ChoqueResuelto.FALLO
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ [Sync] Conflict auto-resolve failed")
@@ -1314,9 +1311,7 @@ class OrderSyncCoordinator @Inject constructor(
                         localId = localItem.id,
                         newId = serverItem.id
                     )
-                    draftOrderDao.confirmarAlta(
-                        draftOrder.id, serverItem.id, localItem.quantity, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis()
-                    )
+                    draftOrderDao.confirmarAlta(draftOrder.id, serverItem.id, localItem.quantity)
                 }
                 Timber.d("🔄 [Sync] Replaced item ID | local=${localItem.id} → server=${serverItem.id} | product=${localItem.productName}")
             }
@@ -1466,11 +1461,9 @@ class OrderSyncCoordinator @Inject constructor(
 
             // Mark items as SYNCED — D23: salvo el que la cajera quitó mientras el alta iba en camino (antes revivía).
             // El renglón conserva su id local a propósito: la pantalla, la impresión y «Anular» lo siguen nombrando así.
-            // Fase 1 (Codex r1 #4): con la cantidad que se mandó; lo que se sumó mientras viajaba queda en cola aparte.
+            // Fase 1 (Codex r1 #4): SYNCED sólo si la cantidad sigue siendo la que se mandó; si no, se vuelve a mandar.
             withContext(NonCancellable) {
-                pendingItems.forEach { item ->
-                    draftOrderDao.confirmarAlta(orderId, item.id, item.quantity, DraftOrderItemEntity.generateLocalId(), System.currentTimeMillis())
-                }
+                pendingItems.forEach { item -> draftOrderDao.confirmarAlta(orderId, item.id, item.quantity) }
             }
             cuentaDelServidor = updatedOrder
 
@@ -1509,6 +1502,7 @@ class OrderSyncCoordinator @Inject constructor(
                 }
 
                 val updatedOrder = result.getOrThrow()
+                cuentaDelServidor = updatedOrder
 
                 // ⭐ Update tracked version after removing item
                 currentVersion = updatedOrder.version
@@ -1533,28 +1527,15 @@ class OrderSyncCoordinator @Inject constructor(
         // agregado algo mientras subía). Si quedó cola, esta misma vuelta vuelve a subir al terminar.
         withContext(NonCancellable) {
             draftOrderDao.cerrarVuelta(orderId, currentVersion, System.currentTimeMillis())
+            // Codex fase 1 r2 #8: la respuesta del SERVIDOR a esta vuelta trae la cabecera que él calculó (cargos, % recalculados,
+            // precios) y lo de otro aparato; entra por la puerta (si ya es vieja o quedó cola, la puerta lo decide).
+            cuentaDelServidor?.let { cacheBackendOrder(it) }
         }
         if (draftOrderDao.renglonesSinSubir(orderId) > 0) markDirty(orderId, reason = "queue left after upload")
 
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT (update) | orderId=$orderId | version=$currentVersion | timestamp=${System.currentTimeMillis()}")
         _syncEvents.emit(SyncEvent.Synced(orderId, currentVersion))
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced EMITTED (update) | orderId=$orderId | timestamp=${System.currentTimeMillis()}")
-    }
-
-    /**
-     * Recalculate order totals (subtotal, tax, total).
-     *
-     * Sums all non-deleted items. Tax is 0% (backend handles tax separately).
-     *
-     * @param orderId Order to recalculate
-     */
-    private suspend fun recalculateOrderTotals(orderId: String) {
-        val effectiveOrderId = resolveExistingOrderId(orderId)
-        if (effectiveOrderId != orderId) {
-            Timber.w("⚠️ [Order Remap] recalc totals remapped orderId $orderId → $effectiveOrderId")
-        }
-        // Fase 1: en una transacción y con la misma regla que la puerta (conserva el descuento, nunca cuenta dos veces).
-        draftOrderDao.recalcularCabecera(effectiveOrderId, System.currentTimeMillis())
     }
 
     fun resolveOrderId(orderId: String): String {

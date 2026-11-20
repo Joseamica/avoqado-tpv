@@ -18,10 +18,14 @@ const val CANDIDATAS_POR_PAGINA = 25
  * el rechazo suelta el freno (la fila queda `DESCARTADA`), pero la fila sigue en el seguimiento del historial como cualquier otra; si la
  * app murió antes de la primera consulta (sin marca), antes nadie la volvía a mirar. Con la primera respuesta queda la marca y se sigue
  * como una «sin aprobar» (7 días, sin gastar turno); si aparece aprobada, se registra una vez por el camino de la ventana.
+ * 🔴 F1 · Codex final r9 «Igual 3» (R9-3, 20-nov): toda fila que soltó el SERVIDOR (`liberada_por_el_servidor:…`: la ventana, la liberación
+ * sola de un Pago rápido, el rechazo de 2c, la firma por la solicitud), no sólo la de 2c. Antes, tras el primer «no aparece» (que quita la
+ * marca) la soltada por la ventana salía de las consultas; si el historial tardaba en mostrar el cobro y el aviso se perdía, cero Payment.
+ * Ser consultable NO frena nada: el freno mira la marca (`SQL_CERCA_LA_TARJETA`), no esta lista.
  */
 const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERMINADO') OR " +
     PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA +
-    " OR (state = 'DESCARTADA' AND last_error IS 'liberada_por_el_servidor:PROCESSOR_DECLINED')" +
+    " OR (state = 'DESCARTADA' AND IFNULL(last_error, '') LIKE 'liberada_por_el_servidor:%')" +
     ") AND server_veto IS NULL AND history_checks < 5)"
 
 /**
@@ -152,13 +156,17 @@ interface PaymentAttemptDao {
     // 🔴 Codex final r3 #1: y POR PÁGINAS con llave (la del orden), como S6 y la bandeja: la página siguiente se pide DESPUÉS de la
     // última fila LEÍDA. Una fila que el barrido salta sin tomar turno (sin afiliación, contexto que no cuadra, la tomó otro proceso) no
     // cambia su clave: con un `LIMIT 50` fijo, 50 así delante tapaban para siempre a la 51.
+    // 🔴 F1 · Codex final r9 «Igual 3» (R9-3): el último toque es la RESERVA (`lease_until`: toma = hora + 5 min, respuesta = fin de la
+    // pausa), no la marca: un «no aparece» ya no saca la fila del seguimiento pero sí le quita la marca (para soltar el freno), y por la
+    // marca volvía al lugar de su `created_at`, delante de todas: 50 «no aparece» viejas dejaban sin turno a una nueva. Lo nunca tomado, su
+    // `created_at`.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
         AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
         AND (lease_until IS NULL OR lease_until < :now)
         AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
-        AND (COALESCE(history_read_at, created_at) > :trasToque
-             OR (COALESCE(history_read_at, created_at) = :trasToque AND attempt_id > :trasId))
-        ORDER BY COALESCE(history_read_at, created_at) ASC, attempt_id ASC LIMIT :limite""")
+        AND (COALESCE(lease_until, created_at) > :trasToque
+             OR (COALESCE(lease_until, created_at) = :trasToque AND attempt_id > :trasId))
+        ORDER BY COALESCE(lease_until, created_at) ASC, attempt_id ASC LIMIT :limite""")
     suspend fun getUnknownRecoveryCandidates(
         venueId: String, olderThan: Long, now: Long, trasToque: Long, trasId: String, limite: Int,
     ): List<PaymentAttemptEntity>
@@ -222,13 +230,21 @@ interface PaymentAttemptDao {
     suspend fun terminarConsultaSinCoincidencia(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
 
     /**
+     * 🔴 F1 · Codex final r9 «Igual 3» (R9-3): «todavía no aparece» DENTRO del seguimiento. Igual que [terminarConsultaSinCoincidencia]
+     * (quita la marca: el freno se suelta como siempre) pero SIN gastar turno: la fila sigue consultándose en segundo plano. CAS por su reserva.
+     */
+    @Query("""UPDATE payment_attempts SET history_read_at = NULL, lease_until = :pausaHasta
+        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
+    suspend fun soltarLaMarcaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
+
+    /**
      * 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. 🔴 Codex final r1 #3: y SIN borrar la
      * marca de la lectura despachada: al vencer la pausa se retoma aunque la ventana o una persona hayan cerrado la fila (sin la marca
      * ninguna consulta la volvía a elegir), y la tarjeta de su cuenta sigue frenada sólo hasta el techo ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
      */
     // 🔴 F1 · rediseño tras Codex r7 (20-nov): la marca se queda tal cual (la escribió la toma: es el «último toque» del orden, Codex final
     // r2 #4). Ya no distingue «en vuelo» de «respondida»: el freno sólo mira la edad ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). También
-    // la usa el «sin aprobar» (`05AP`) durante su seguimiento ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+    // la usa el «sin aprobar» (`05AP`) durante su seguimiento ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_HISTORIAL_MS]).
     @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
     suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int

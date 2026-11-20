@@ -43,7 +43,8 @@ class LedgerUnknownRecovery @Inject constructor(
         var trasId = ""
         paginas@ while (iniciadas < CONSULTAS_POR_CORRIDA) {
             val rows = dao.getUnknownRecoveryCandidates(venueId, now - 120_000L, now, trasToque, trasId, FILAS_POR_PAGINA)
-            rows.lastOrNull()?.let { trasToque = it.historyReadAt ?: it.createdAt; trasId = it.attemptId }
+            // R9-3: la llave del orden es el último toque (la reserva), la misma de `getUnknownRecoveryCandidates`.
+            rows.lastOrNull()?.let { trasToque = it.leaseUntil ?: it.createdAt; trasId = it.attemptId }
             for (row in rows) {
                 if (iniciadas >= CONSULTAS_POR_CORRIDA || reloj() - inicio >= presupuestoMs) break@paginas
                 if (row.venueId != venueId || row.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY ||
@@ -74,15 +75,19 @@ class LedgerUnknownRecovery @Inject constructor(
                             )
                             if (escrito == AprobadoFinal.REGISTRABLE || escrito == AprobadoFinal.REGISTRABLE_TRAS_LA_VENTANA) confirmed++
                         }
-                        // Respuesta válida sin coincidencia: «todavía no aparece». Gasta UN turno (y sólo si la reserva sigue siendo ésta).
-                        VerificacionDelCobro.NoCobrado -> dao.terminarConsultaSinCoincidencia(
-                            row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
+                        // Respuesta válida sin coincidencia: «todavía no aparece». Quita la marca (el freno se suelta, como siempre) y sólo si la
+                        // reserva sigue siendo ésta. 🔴 Codex final r9 «Igual 3» (R9-3): DENTRO de [SEGUIMIENTO_DEL_HISTORIAL_MS] no gasta turno y la
+                        // fila sigue entre las candidatas (el historial puede tardar en mostrar el cobro); pasado el plazo gasta UN turno y se acaba.
+                        VerificacionDelCobro.NoCobrado ->
+                            if (terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_HISTORIAL_MS) dao.terminarConsultaSinCoincidencia(
+                                row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
+                            else dao.soltarLaMarcaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
                         is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y
                         // puede aprobarse tarde). No es «no aparece»: la marca se queda y se vuelve a preguntar SIN gastar turno mientras el
-                        // intento tenga menos de [SEGUIMIENTO_DEL_SIN_APROBAR_MS] (F1 · Codex r7 #1: aunque la VENTANA del SERVIDOR la haya
+                        // intento tenga menos de [SEGUIMIENTO_DEL_HISTORIAL_MS] (F1 · Codex r7 #1: aunque la VENTANA del SERVIDOR la haya
                         // soltado; la marca la mantiene entre las candidatas). El seguimiento ya no depende del freno: la tarjeta de su cuenta
                         // sólo espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). Pasados los 7 días cuenta como
                         // «no aparece» y gasta turno; con los turnos acabados, se acaba.
@@ -90,7 +95,7 @@ class LedgerUnknownRecovery @Inject constructor(
                         // el seguimiento: antes cada «sin aprobar» de una venta firmada gastaba turno y a las ~30 h dejaba de buscarse; si el
                         // banco la aprobaba después, con su aviso perdido, cero Payment.
                         is VerificacionDelCobro.EnElProcesador ->
-                            if (terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_SIN_APROBAR_MS) dao.terminarConsultaSinCoincidencia(
+                            if (terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_HISTORIAL_MS) dao.terminarConsultaSinCoincidencia(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
                             else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                     }
@@ -131,11 +136,12 @@ class LedgerUnknownRecovery @Inject constructor(
         /** Consultas al historial que un barrido INICIA como máximo (antes, filas leídas: `LIMIT 50`). */
         const val CONSULTAS_POR_CORRIDA = 50
         /**
-         * 🔴 F1 · Codex r7 #1 (20-nov): cuánto se sigue buscando, sin gastar turno, el aprobado tardío de una venta que el historial de
-         * AngelPay trae «sin aprobar» (`05AP`), contado desde `created_at`. Se pregunta cuando una pasada la encuentra con su pausa vencida
-         * (5 min tras la anterior como mínimo): en el barrido de 6 h, al arrancar o entrar, y en las pasadas de seguimiento.
+         * 🔴 F1 · Codex r7 #1 (20-nov): cuánto se sigue buscando, sin gastar turno, el aprobado tardío de una venta en duda de AngelPay,
+         * contado desde `created_at`: «sin aprobar» (`05AP`) y, desde Codex r9 «Igual 3» (R9-3), también «todavía no aparece». Se pregunta
+         * cuando una pasada la encuentra con su pausa vencida (5 min tras la anterior como mínimo): en el barrido de 6 h, al arrancar o
+         * entrar, y en las pasadas de seguimiento. No frena nada: el freno mira la marca y el techo.
          */
-        const val SEGUIMIENTO_DEL_SIN_APROBAR_MS = 7 * 24 * 3_600_000L
+        const val SEGUIMIENTO_DEL_HISTORIAL_MS = 7 * 24 * 3_600_000L
         const val FILAS_POR_PAGINA = 50
     }
 }

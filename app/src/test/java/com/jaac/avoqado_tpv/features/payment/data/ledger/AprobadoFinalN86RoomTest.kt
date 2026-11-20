@@ -192,7 +192,8 @@ class AprobadoFinalN86RoomTest {
             assertWithMessage("$id: una venta, con la llave del intento").that(servidor.pagos[id]).isEqualTo(1)
         }
         assertThat(servidor.pagos.keys).containsExactly("antes", "durante", "despues")
-        assertWithMessage("la firma no repone turnos: una respuesta sin coincidencia, un turno").that(consultasGastadas("despues")).isEqualTo(1)
+        // Codex r9 «Igual 3» (R9-3): «no aparece» tampoco gasta turno durante el seguimiento (7 días); antes, uno.
+        assertWithMessage("una respuesta sin coincidencia no gasta turno en el seguimiento").that(consultasGastadas("despues")).isEqualTo(0)
     }
 
     @Test fun `N86_quinta_respuesta_muere_antes_del_commit_repite_el_turno_y_registra_una_venta`() = runBlocking<Unit> {
@@ -229,11 +230,11 @@ class AprobadoFinalN86RoomTest {
         val ventanaYSinRed: suspend () -> VerificacionDelCobro = { ventana("a1"); VerificacionDelCobro.NoSePudoVerificar("sin red") }
         val (v, consultas) = verificador(noAparece, noAparece, noAparece, noAparece, ventanaYSinRed, cobrado)
         repeat(4) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 3_600_000 }
-        assertThat(consultasGastadas("a1")).isEqualTo(4)
+        assertWithMessage("R9-3: «no aparece» no gasta turno en el seguimiento (antes 4)").that(consultasGastadas("a1")).isEqualTo(0)
 
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
         assertThat(consultas()).isEqualTo(5)
-        assertWithMessage("el fallo de red no gasta el turno").that(consultasGastadas("a1")).isEqualTo(4)
+        assertWithMessage("el fallo de red no gasta el turno").that(consultasGastadas("a1")).isEqualTo(0)
         assertWithMessage("la lectura sigue despachada").that(dao.getById("a1")!!.historyReadAt).isNotNull()
         assertWithMessage("la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
 
@@ -559,16 +560,17 @@ class AprobadoFinalN86RoomTest {
         registrador(servidor).recover(venue, t30 + 7_200_000)
         assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
 
-        // Pasados los 7 días: «sin aprobar» gasta turno y la soltada por la ventana deja de consultarse.
+        // Pasados los 7 días: «sin aprobar» gasta turno y, con los cinco gastados, se acaba. (Ajustada por R9-3, Codex r9 «Igual 3»: la
+        // soltada por la ventana sigue entre las candidatas sin la marca, así que gasta sus cinco turnos; antes salía con el primero.)
         estado = "rejected"
         dudaN86("d1", orden = "orden-D", solicitud = "r-2", creadoEn = c)
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
         ventana("d1")
-        var t = c + LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS + 3_600_000
+        var t = c + LedgerUnknownRecovery.SEGUIMIENTO_DEL_HISTORIAL_MS + 3_600_000
         val antes = consultasAlHistorial
-        repeat(4) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 6 * 3_600_000L }
-        assertWithMessage("una consulta más, que gasta su turno, y se acaba").that(consultasAlHistorial - antes).isEqualTo(1)
-        assertThat(consultasGastadas("d1")).isEqualTo(1)
+        repeat(8) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 6 * 3_600_000L }
+        assertWithMessage("cinco consultas que gastan turno, y se acaba").that(consultasAlHistorial - antes).isEqualTo(5)
+        assertThat(consultasGastadas("d1")).isEqualTo(5)
         assertThat(dao.getById("d1")!!.historyReadAt).isNull()
     }
 
@@ -702,6 +704,79 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("firmada, «sin aprobar» tampoco gasta turno (Codex r8 #3)").that(consultasGastadas("a1")).isEqualTo(0)
         assertWithMessage("…y se sigue buscando").that(dao.getById("a1")!!.historyReadAt).isNotNull()
         assertThat(otraTarjetaDeA(libreta())).isTrue()
+    }
+
+    // ═══════════════ R9-3 · Codex final r9 «Igual 3»: «no aparece» no acorta el seguimiento (el freno no cambia) ═══════════════
+
+    /**
+     * 🔴 Codex final r9 «Igual 3» · POS → N86: el historial de AngelPay tarda en mostrar el cobro. La pantalla pregunta a los 30 s y no aparece;
+     * la ventana suelta la solicitud. Antes la fila salía de las consultas (soltada por la ventana y sin marca) y, si el cobro aparecía aprobado
+     * después con el aviso perdido, cero Payment. Ahora se sigue preguntando en segundo plano a las 6 h y a las 12 h sin gastar turno y, aprobada
+     * a las 30 h, se registra una vez. El FRENO no cambia: tras el primer «no aparece» la tarjeta de la cuenta ya entra.
+     */
+    @Test fun `N86_r9_3_no_aparece_no_acorta_el_seguimiento_y_aprobada_a_las_30_h_se_registra`() = runBlocking<Unit> {
+        val c = System.currentTimeMillis() - 150_000
+        dudaN86("a1", solicitud = "r-1", creadoEn = c)
+        var estado: String? = null   // el historial todavía no la trae
+        val v = historialReal { estado }
+        val pantalla = libreta()
+        val marca = pantalla.despacharLecturaDelHistorial("a1", now = c + 30_000)!!
+        pantalla.terminarLecturaDelHistorial("a1", marca)   // a los 30 s: no aparece
+        ventana("a1")
+        assertWithMessage("tras el primer vacío la tarjeta de la cuenta entra (no espera)").that(otraTarjetaDeA(libreta())).isTrue()
+        for (h in listOf(6L, 12L)) {
+            val t = c + h * 3_600_000L
+            assertWithMessage("a las $h h sigue entre las candidatas").that(dao.getUnknownRecoveryCandidates(venue, t, t).map { it.attemptId }).contains("a1")
+            val antes = consultasAlHistorial
+            LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+            assertWithMessage("a las $h h: una consulta").that(consultasAlHistorial - antes).isEqualTo(1)
+            assertWithMessage("«no aparece» no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
+            assertWithMessage("…y no deja nada que frene").that(dao.getById("a1")!!.historyReadAt).isNull()
+            assertThat(otraTarjetaDeA(libreta())).isTrue()
+        }
+        estado = "APROBADA"
+        val t30 = c + 30 * 3_600_000L
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t30)
+        dineroEscrito("a1")
+        val servidor = Servidor()
+        registrador(servidor).recover(venue, t30 + 3_600_000)
+        registrador(servidor).recover(venue, t30 + 7_200_000)
+        assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
+    /** R9-3 · pasados los 7 días, «no aparece» gasta turno y, con los cinco gastados, se deja de preguntar. */
+    @Test fun `N86_r9_3_pasados_7_dias_no_aparece_gasta_turno_y_se_acaba`() = runBlocking<Unit> {
+        dudaN86("d1", creadoEn = System.currentTimeMillis() - LedgerUnknownRecovery.SEGUIMIENTO_DEL_HISTORIAL_MS - 3_600_000L)
+        val v = historialReal { null }
+        var t = System.currentTimeMillis()
+        repeat(8) { LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t); t += 6 * 3_600_000L }
+        assertThat(consultasAlHistorial).isEqualTo(5)
+        assertThat(consultasGastadas("d1")).isEqualTo(5)
+    }
+
+    /**
+     * R9-3 · el seguimiento no martilla y no deja a nadie sin turno: 60 ventas soltadas por la ventana con «no aparece». Cada pasada inicia a
+     * lo más [LedgerUnknownRecovery.CONSULTAS_POR_CORRIDA]; a una fila no se le vuelve a preguntar antes de su pausa; y el orden es el último
+     * toque: las 10 que quedaron detrás vuelven a tocar ANTES que las 50 de la primera pasada (por `created_at` se quedaban sin turno).
+     */
+    @Test fun `N86_r9_3_el_seguimiento_va_por_ultimo_toque_y_esta_acotado_por_pasada`() = runBlocking<Unit> {
+        repeat(60) { i -> dudaN86("s%02d".format(i), orden = "orden-$i", solicitud = "r-$i", creadoEn = reciente); ventana("s%02d".format(i)) }
+        val consultadas = mutableListOf<String>()
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers { consultadas += firstArg<String>(); VerificacionDelCobro.NoCobrado }
+        val t = System.currentTimeMillis()
+        val tope = LedgerUnknownRecovery.CONSULTAS_POR_CORRIDA
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)
+        assertWithMessage("una pasada: a lo más $tope").that(consultadas).hasSize(tope)
+        val atras = (0 until 60).map { "s%02d".format(it) } - consultadas.toSet()
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t + 60_000)
+        assertWithMessage("un minuto después: sólo las 10 que no alcanzaron, ninguna repetida").that(consultadas).hasSize(60)
+        assertThat(consultadas.toSet()).hasSize(60)
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t + 6 * 3_600_000L)
+        assertWithMessage("a las 6 h, otra vez a lo más $tope").that(consultadas).hasSize(60 + tope)
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t + 12 * 3_600_000L)
+        for (id in atras) assertWithMessage("$id: por último toque vuelve a tocar").that(consultadas.count { it == id }).isAtLeast(2)
+        assertWithMessage("sin gastar turnos").that(consultasGastadas("s00")).isEqualTo(0)
     }
 
     /**

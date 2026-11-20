@@ -403,7 +403,7 @@ data class PaymentAttemptEntity(
          * (venta con `terminal_payment_request_id`) frena otra tarjeta de su cuenta en ESTA terminal, contado desde `created_at` del intento:
          * su estado `INDETERMINADO` y cualquier marca del historial de AngelPay (despachada, en vuelo, con fallo, muerta o «sin aprobar»).
          * Pasado el techo nada de esa duda frena, tampoco una lectura en vuelo: el techo es EL límite. La firma de una persona suelta antes.
-         * El seguimiento del aprobado tardío NO depende de esto ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+         * El seguimiento del aprobado tardío NO depende de esto ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_HISTORIAL_MS]).
          * ⚠️ DECISIÓN DEL FOUNDER PENDIENTE: 5 min / 30 min / 30 s (la ventana, como producción). 5 min porque Square vence a los 5 min un
          * cobro sin respuesta (precedente del 20-oct). Límite dicho: un ajuste del reloj del aparato mueve el techo.
          */

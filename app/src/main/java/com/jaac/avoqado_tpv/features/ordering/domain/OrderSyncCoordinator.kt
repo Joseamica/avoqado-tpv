@@ -1122,8 +1122,7 @@ class OrderSyncCoordinator @Inject constructor(
                     draftOrderItemDao.getDeletedItemsByOrder(orderId).map { it.id }
             }
             if (soltar.isNotEmpty()) {
-                draftOrderDao.borrarRenglones(soltar)
-                draftOrderDao.recalcularCabecera(orderId, System.currentTimeMillis())
+                draftOrderDao.soltarRechazados(orderId, soltar, System.currentTimeMillis())
                 Timber.w("🛑 [Sync] Dropped ${soltar.size} rejected item(s) | order=$orderId")
             }
 
@@ -1275,7 +1274,10 @@ class OrderSyncCoordinator @Inject constructor(
             )
 
             if (addItemsResult.isFailure) {
-                throw addItemsResult.exceptionOrNull() ?: Exception("Failed to add items to order on server")
+                val e = addItemsResult.exceptionOrNull()
+                // Codex fase 1 r4 #4: con los renglones de ESTE envío (no la cola entera de ese momento).
+                if (e is PermanentSyncException) throw e.conRenglones(pendingItems.map { it.id })
+                throw e ?: Exception("Failed to add items to order on server")
             }
 
             val updatedOrder = addItemsResult.getOrThrow()
@@ -1473,6 +1475,16 @@ class OrderSyncCoordinator @Inject constructor(
         // Step 2: Remove deleted items
         val deletedItems = draftOrderItemDao.getDeletedItemsByOrder(orderId)
 
+        // Codex fase 1 r4 #1: una vuelta sin nada que subir sobre una cuenta que quedó PENDING (p. ej. una relectura que falló)
+        // relee y entra por la puerta.
+        if (pendingItems.isEmpty() && deletedItems.isEmpty()) {
+            try {
+                orderRepository.getOrder(venueId, orderId).getOrNull()?.let { cacheBackendOrder(it) }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Sync] Re-read on an empty pass failed | order=$orderId")
+            }
+        }
+
         for (deletedItem in deletedItems) {
             // D23: un renglón agregado en la TPV conserva su id local aunque su alta ya esté en el SERVIDOR (antes se borraba
             // sólo aquí y el SERVIDOR lo seguía cobrando). Se busca allá por su llave (`externalId`) en lo último que contestó el
@@ -1532,10 +1544,15 @@ class OrderSyncCoordinator @Inject constructor(
         // pudo cambiar después en el SERVIDOR (otra caja lo quitó). Se relee una vez y entra por la puerta. (La respuesta de la
         // vuelta NO se guarda: trae precios sin extras y sin la división de pagos, r3 #2 y #4.)
         if ((draftOrderDao.getOrder(orderId)?.version ?: 0) > currentVersion) {
-            try {
+            val releida = try {
                 orderRepository.getOrder(venueId, orderId).getOrNull()?.let { cacheBackendOrder(it) }
             } catch (e: Exception) {
                 Timber.w(e, "⚠️ [Sync] Re-read after a newer read failed | order=$orderId")
+                null
+            }
+            // Codex fase 1 r4 #1: si no se pudo releer, la cuenta queda PENDING y la siguiente vuelta (sin cola) relee.
+            if (releida == null) withContext(NonCancellable) {
+                draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_PENDING, System.currentTimeMillis())
             }
         }
         if (draftOrderDao.renglonesSinSubir(orderId) > 0) markDirty(orderId, reason = "queue left after upload")

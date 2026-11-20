@@ -304,7 +304,18 @@ interface DraftOrderDao {
         }
         if (actual.version > cuenta.version) return ResultadoDeLectura.VIEJA
 
-        val locales = renglonesDeLaCuenta(cuenta.id)
+        var locales = renglonesDeLaCuenta(cuenta.id)
+        // Codex fase 1 r4 #5: un cambio de cantidad pendiente sobre un renglón que vino del SERVIDOR y que esta lectura (igual o
+        // más nueva) ya no trae: otra caja lo quitó. Se respeta el retiro; si no, la cantidad lo volvía a dar de alta.
+        val idsDelServidor = renglones.flatMap { listOfNotNull(it.id, it.externalId) }.toSet()
+        val retiradosPorOtro = locales.filter {
+            it.syncStatus == DraftOrderItemEntity.SYNC_STATUS_PENDING && it.isServerCreated &&
+                it.id !in idsDelServidor && (it.externalId == null || it.externalId !in idsDelServidor)
+        }
+        if (retiradosPorOtro.isNotEmpty()) {
+            borrarRenglones(retiradosPorOtro.map { it.id })
+            locales = locales - retiradosPorOtro.toSet()
+        }
         val (enCola, subidos) = locales.partition { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }
         val idsEnCola = enCola.flatMap { listOfNotNull(it.id, it.externalId) }.toSet()
         val subidosPorId = subidos.associateBy { it.id }
@@ -322,6 +333,8 @@ interface DraftOrderDao {
         val cabecera = cuenta.copy(
             merchantAccountId = cuenta.merchantAccountId ?: actual.merchantAccountId,
             merchantAccountName = cuenta.merchantAccountName ?: actual.merchantAccountName,
+            // Codex fase 1 r4 #2: la respuesta de una escritura (anular) no trae la división de pagos; no se borra.
+            lastSplitType = cuenta.lastSplitType ?: actual.lastSplitType,
         )
         if (enCola.isEmpty()) {
             actualizarCuenta(cabecera)
@@ -436,6 +449,21 @@ interface DraftOrderDao {
 
     @Query("SELECT * FROM draft_order_items WHERE id = :itemId")
     suspend fun renglonPorId(itemId: String): DraftOrderItemEntity?
+
+    /**
+     * Soltar lo que el SERVIDOR rechazó para siempre. Un renglón que nunca llegó (alta local) se borra; uno que el SERVIDOR ya tiene
+     * (cambio de cantidad o retiro rechazado) vuelve a `SYNCED` para que la relectura lo deje igual al SERVIDOR CONSERVANDO su marca
+     * de cocina (Codex fase 1 r4 #3: borrarlo hacía que la comanda lo repitiera).
+     */
+    @Transaction
+    suspend fun soltarRechazados(orderId: String, ids: List<String>, ahora: Long) {
+        ids.forEach { id ->
+            val r = renglonPorId(id) ?: return@forEach
+            if (r.isServerCreated) actualizarRenglon(r.copy(syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED))
+            else borrarRenglones(listOf(r.id))
+        }
+        recalcularCabecera(orderId, ahora)
+    }
 
     /** Codex fase 1 r3 #5: si la cuenta cambió de id local al del SERVIDOR a media impresión, el renglón se busca por su id exacto
      *  (único en la tabla), como antes. */

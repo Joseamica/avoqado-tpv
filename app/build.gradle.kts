@@ -893,8 +893,11 @@ afterEvaluate {
             nombres.forEach { println("NEXGO_FALLA $it") }
         }
     }
+    // Sin las dependencias de sandbox: con 2 trabajadores, compilar sandbox y Nexgo a la vez dejó sin memoria al compilador (2 corridas).
     tasks.named<Test>("testSandboxDebugUnitTest") {
-        dependsOn("testNexgoDebugUnitTest")   // compileProductionDebugKotlin va en otra corrida: juntas, el compilador se quedó sin memoria
+        setDependsOn(listOf("testNexgoDebugUnitTest"))
+        classpath = files()
+        testClassesDirs = files()
         onlyIf { false }
     }
 }

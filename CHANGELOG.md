@@ -15,6 +15,7 @@
 
 ### **Fixed**
 - **PAX · cobrar con tarjeta una cuenta de Órdenes ya no borra sus productos de la terminal (D23, tarjeta hz:e82938e1:D23; encargo bb2206)**: tras el cobro, `OrderSyncCoordinator.updateOrderMerchant` anotaba el comercio con un `INSERT … REPLACE`, que en SQLite borra la fila de la cuenta y la vuelve a crear; el `ON DELETE CASCADE` se llevaba todos sus renglones, también los agregados sin red que aún no subían. Ahora es un UPDATE de sólo esos campos (`DraftOrderDao.updateMerchant`). Prueba: `ComercioSinBorrarRenglonesTest` (Room en memoria).
+- **Prueba inestable `AngelPayPaymentReviewRoomTest` «review staggered…» (sólo pruebas; D35, tarjeta hz:e82938e1:D35)**: tronaba al azar en el CI (corrida 44808891911: `CompletionHandlerException` → `UnsupportedOperationException` de `UnconfinedTestDispatcher.dispatch`) por un ViewModel de la prueba ANTERIOR: al cerrarlo, lo que tenía a medias en un hilo real (Room/IO) terminaba después y avisaba a su vigía D3 en `Dispatchers.Main` justo cuando `@After`/`@Before` lo cambiaban. Ahora el `@After` de la clase espera (tope 10 s) a que terminen los ViewModels de cada prueba antes de soltar Main. Ninguna comprobación cambia; el APK tampoco.
 
 ---
 

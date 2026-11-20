@@ -210,6 +210,14 @@ class VentaViewModelTest {
         assertEquals("Primero acepta esta SIM en Mis SIMs.", v.estado.value.error)
     }
 
+    // Codex misventas r2 #2: copia de antes de D1 (sin yaLlegadas): la marca bloquea como en la 0.5.0.
+    @Test fun `con una copia de antes de D1 la marca de vendida sigue bloqueando`() {
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
+        val v = vm(copiaCon(sim(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR)))
+        v.alEscanear(serie)
+        assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
+    }
+
     @Test fun `una venta que ya venia en la lista la decide la lista`() {
         coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
         val v = vm(copiaCon(sim(), yaLlegadas = listOf(5L)))

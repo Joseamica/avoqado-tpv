@@ -323,6 +323,32 @@ class MisSimsViewModelTest {
         assertTrue(e.enCustodia.isEmpty())
     }
 
+    // Codex misventas r2 #4: el AVISO guardado con `fallidas: []` (antes del arreglo de Desenlace) las lee de la respuesta.
+    @Test fun `un aviso en parte guardado sin fallidas las toma de la respuesta del SERVIDOR`() {
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.AVISO, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(
+                rechazoDatosJson = """{"fallidas":[]}""",
+                resultadoJson = """{"summary":{"total":2,"succeeded":1,"failed":1},"fallidas":[{"serialNumber":"S1","status":"error","code":"X"}]}""",
+            ),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf(EstadoFila.POR_DECIDIR), e.porAceptar.map { it.estado })
+        assertEquals(listOf("S2"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    // Codex misventas r2 #2: con una copia de antes de D1 (mismo versionCode), la marca sigue mandando como en la 0.5.0.
+    @Test fun `con una copia de antes de D1 la venta que ya subio sigue vendida por su marca`() {
+        cola.value = listOf(venta("S1", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago))
+        ponerCopia(sim("S1", "PROMOTER_HELD").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR))
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.exitosas.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
     @Test fun `entendido de un aviso de aceptacion sigue contando como aceptada`() {
         cola.value = listOf(
             custodia(

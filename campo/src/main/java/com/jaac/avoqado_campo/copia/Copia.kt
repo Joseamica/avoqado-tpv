@@ -22,8 +22,8 @@ data class Copia(
     val bajadaAt: Long,
     /**
      * D1: las piezas de SIM (id) que ya habían llegado al SERVIDOR ANTES de pedir esta lista: ésas ya vienen en ella. Lo que
-     * llegó después o sigue en la cola manda sobre la lista ([loDelCelular]). null (copia de antes de D1) = no se sabe: manda
-     * la lista en todo lo que ya llegó.
+     * llegó después o sigue en la cola manda sobre la lista ([loDelCelular]). null (copia de antes de D1) = no se sabe: como la
+     * 0.5.0, la marca y lo que sigue en la cola.
      */
     val yaLlegadas: List<Long>? = null,
 )
@@ -104,11 +104,12 @@ fun llegoAlServidor(p: Pieza) = p.estado == EstadoPieza.HECHA || p.estado == Est
  * D1: serie normalizada → lo último que el celular hizo con esa SIM, si la lista [c] todavía no lo trae. [piezas]: las ventas
  * y custodias de la cola, también las terminadas (7 días). De cada tipo manda la última; la venta gana a la custodia. No
  * cuentan lo que llegó al SERVIDOR antes de pedir la lista (`yaLlegadas`: ya viene en ella) ni lo DESCARTADO sin respuesta
- * (Quitar, gracia descartada, la venta vieja de «corregir precio»: nunca existió). Sin ninguna pieza de la SIM (ya se purgó)
- * queda la marca de la copia. `SOLD` en la lista lo decide quien llama: es del SERVIDOR.
+ * (Quitar, gracia descartada, la venta vieja de «corregir precio»: nunca existió). Sin ninguna pieza de la SIM (ya se purgó),
+ * o con una copia de antes de D1, queda la marca de la copia. `SOLD` en la lista lo decide quien llama: es del SERVIDOR.
  */
 fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
-    // Codex misventas r1 #2: una copia de antes de D1 no sabe qué ya venía en ella: manda la lista (como la 0.5.0).
+    // Codex misventas r1 #2 y r2 #2: una copia de antes de D1 no sabe qué ya venía en ella: lo que ya llegó no cuenta y queda
+    // su marca, como en la 0.5.0.
     val vistas = c.yaLlegadas?.toSet()
     fun yaVenia(p: Pieza) = vistas?.contains(p.id) ?: true
     val enLaLista = c.sims.associateBy { normalizarSerie(it.serialNumber) }
@@ -122,7 +123,7 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
     val r = mutableMapOf<String, LoDelCelular>()
     for (s in c.sims) {
         val serie = normalizarSerie(s.serialNumber)
-        if (serie in ventas || serie in custodias) continue
+        if (vistas != null && (serie in ventas || serie in custodias)) continue
         r[serie] = when (s.localmente) {
             MarcaLocal.VENDIDA_EN_EL_CELULAR -> LoDelCelular.VENDIDA
             MarcaLocal.ACEPTADA_EN_EL_CELULAR -> LoDelCelular.ACEPTADA_POR_SUBIR
@@ -133,7 +134,8 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
     for ((serie, kv) in custodias) {
         val (k, version) = kv
         val acepta = k.tipo == TipoPieza.CUSTODIA_ACEPTAR
-        val fallidas = seriesDe(k.rechazoDatosJson, "fallidas")
+        // r2 #4: un AVISO guardado antes del arreglo de `Desenlace` trae `fallidas: []`, pero la respuesta completa sí las trae.
+        val fallidas = seriesDe(k.rechazoDatosJson, "fallidas") + seriesDe(k.resultadoJson, "fallidas")
         r[serie] = when {
             k.estado in POR_SUBIR -> if (acepta) LoDelCelular.ACEPTADA_POR_SUBIR else LoDelCelular.RECHAZADA_POR_SUBIR
             !llegoAlServidor(k) || yaVenia(k) -> continue

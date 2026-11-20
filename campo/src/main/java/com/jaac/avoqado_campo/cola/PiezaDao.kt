@@ -83,18 +83,13 @@ abstract class PiezaDao {
     @Query("SELECT * FROM piezas WHERE dependeDe = :llave AND estado IN ('PENDIENTE','RETENIDA','RECHAZADA') ORDER BY id")
     abstract suspend fun hijosPorSubir(llave: String): List<Pieza>
 
-    /**
-     * P12 + R2-5: lo terminal viejo, salvo si un hijo vivo depende de él o es la entrada del turno. Codex misventas r1 #3: una
-     * venta o custodia DESCARTADA (Quitar, gracia descartada) se queda hasta [descartadasDeSimAntesDe]: es lo único que dice
-     * que no se vendió, y la purga cuenta desde que se CREÓ (una venta de hace 8 días quitada hoy se iría en la siguiente pasada).
-     */
+    /** P12 + R2-5: lo terminal viejo, salvo si un hijo vivo depende de él o es la entrada del turno. */
     @Query(
         """DELETE FROM piezas WHERE estado IN ('HECHA','DESCARTADA') AND creadaAt < :ms
-           AND NOT (estado = 'DESCARTADA' AND tipo IN ('VENTA','CUSTODIA_ACEPTAR','CUSTODIA_RECHAZAR') AND creadaAt >= :descartadasDeSimAntesDe)
            AND NOT EXISTS (SELECT 1 FROM piezas h WHERE h.dependeDe = piezas.llave AND h.estado NOT IN ('HECHA','DESCARTADA'))
            AND llave NOT IN (SELECT llaveEntrada FROM turno WHERE llaveEntrada IS NOT NULL)"""
     )
-    abstract suspend fun purgarTerminalesAntesDe(ms: Long, descartadasDeSimAntesDe: Long)
+    abstract suspend fun purgarTerminalesAntesDe(ms: Long)
 
     @Query("SELECT fotosJson FROM piezas WHERE estado NOT IN ('HECHA','DESCARTADA')")
     abstract suspend fun fotosVivas(): List<String>

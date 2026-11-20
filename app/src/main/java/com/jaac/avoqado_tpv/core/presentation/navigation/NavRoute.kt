@@ -50,8 +50,7 @@ sealed class NavRoute(val route: String) {
     /**
      * Checkout screen - Unified cart inspired by avoqado-android.
      * 4 tabs: Teclado, Shortcuts, Todos los productos, Configurar.
-     * Additive rollout — runs in parallel with FastPaymentEntry and OrderingWelcome
-     * during validation. Old screens get removed in a separate ola (Phase 8).
+     * Runs in parallel with FastPaymentEntry. «Órdenes» (OrderingWelcome/Menu/OrderList/FloorPlan) se quitó el 20-nov (D34).
      */
     data object Checkout : NavRoute("checkout")
 
@@ -75,42 +74,6 @@ sealed class NavRoute(val route: String) {
      * Access limited to superadmin users
      */
     data object SuperAdmin : NavRoute("superadmin")
-
-    /**
-     * Ordering Welcome screen - Entry point for ordering system
-     * Shows two options: Quick Order (retail/QSR) or Table Service (restaurant)
-     */
-    data object OrderingWelcome : NavRoute("ordering_welcome")
-
-    /**
-     * Floor Plan Canvas screen - Visual floor plan editor
-     * Interactive canvas with zoom/pan gestures for table layout management
-     */
-    data object FloorPlan : NavRoute("floor_plan")
-
-    /**
-     * Menu screen - Product selection + Order check (Hybrid Toast + Square pattern)
-     * Shows product grid with collapsible order panel
-     *
-     * @param orderId Order unique identifier
-     */
-    data object Menu : NavRoute("menu/{orderId}") {
-        fun createRoute(orderId: String) = "menu/$orderId"
-    }
-
-    /**
-     * Order List screen - List of all orders with filters
-     * Shows all venue orders with filter chips (ALL, OPEN, IN_PROGRESS, COMPLETED, UNPAID_TAKEOUT)
-     *
-     * @param filter Optional filter to apply (e.g., "UNPAID_TAKEOUT")
-     */
-    data object OrderList : NavRoute("order_list?filter={filter}") {
-        fun createRoute(filter: String? = null) = if (filter != null) {
-            "order_list?filter=$filter"
-        } else {
-            "order_list"
-        }
-    }
 
     /**
      * Reports screen - Sales analytics and reports dashboard

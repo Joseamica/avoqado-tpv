@@ -1305,7 +1305,7 @@ class SecureStorage @Inject constructor(
             kioskDefaultMerchantId = encryptedPrefs.getString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, null),
             // Home screen button visibility (default: enabled)
             showQuickPayment = encryptedPrefs.getBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, true),
-            showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, true),
+            showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, false), // LEGACY sin efecto (D34)
             showReports = encryptedPrefs.getBoolean(KEY_TPV_SHOW_REPORTS, true),
             showPayments = encryptedPrefs.getBoolean(KEY_TPV_SHOW_PAYMENTS, true),
             showSupport = encryptedPrefs.getBoolean(KEY_TPV_SHOW_SUPPORT, true),

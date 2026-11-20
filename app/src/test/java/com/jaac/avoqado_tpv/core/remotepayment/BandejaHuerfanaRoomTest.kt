@@ -356,7 +356,11 @@ class BandejaHuerfanaRoomTest {
         assertThat(dao.observePendingObligationsCount(venue)).isEqualTo(0)
         assertThat(dao.observePendingObligations(venue).first()).isEmpty()
         val ledger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), io.mockk.mockk(relaxed = true))
-        assertThat(ledger.observarCobrosDeclarables(venue).first()).isEmpty()
+        // Codex final r1 #8: Caja la cuenta, así que «Por revisar» la enseña (antes la escondía); sólo para consultar, nunca para firmar.
+        val renglon = ledger.observarCobrosDeclarables(venue).first().single()
+        assertThat(renglon.requestId).isEqualTo("req-d8")
+        assertThat(renglon.attemptId).isNull()
+        assertThat(renglon.declarable).isFalse()
     }
 
     @Test fun `D8 con resuelta falso, ausente, 404 o sin red no se cierra y se estampa la consulta`() = runTest {

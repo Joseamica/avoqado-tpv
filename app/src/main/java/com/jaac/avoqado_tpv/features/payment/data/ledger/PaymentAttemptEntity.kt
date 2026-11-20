@@ -160,6 +160,19 @@ data class PaymentAttemptEntity(
      * anterior a la v45.
      */
     @ColumnInfo(name = "sdk_returned_at") val sdkReturnedAt: Long? = null,
+    /**
+     * 🔴 F1 bloque 4 (I3, Room v48): cuántas consultas al historial de AngelPay de la recuperación (E1) tienen su respuesta ESCRITA
+     * («todavía no aparece»). Se gasta al escribir la respuesta, nunca al tomar la consulta: si la app muere en la quinta, vuelve la
+     * quinta. Un fallo técnico (red, credenciales, lectura ilegible) no la gasta. La firma no la repone. Registrar la venta tiene su
+     * propio contador (`verify_attempts`). La migración 47→48 trae el contador viejo menos el último turno (el único recuperable).
+     */
+    @ColumnInfo(name = "history_checks", defaultValue = "0") val historyChecks: Int = 0,
+    /**
+     * 🔴 F1 bloque 4 (Room v48): una lectura del historial de AngelPay (E1 o la de la pantalla, K19a) DESPACHADA cuya respuesta no
+     * quedó escrita; su valor es cuándo se despachó. Distingue «consultando» de una pausa (`lease_until` solo), no se poda, frena otra
+     * tarjeta de su cuenta ([SQL_CERCA_LA_TARJETA]) y la recuperación la retoma aunque haya vencido su reserva o cerrado la ventana.
+     */
+    @ColumnInfo(name = "history_read_at") val historyReadAt: Long? = null,
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
@@ -235,6 +248,15 @@ data class PaymentAttemptEntity(
         /** D22: ¿esta declaración del cajero quedó en Avoqado (no sólo en la libreta)? */
         fun declaradoEnAvoqado(lastError: String?): Boolean =
             lastError != null && lastError.startsWith(PREFIJO_DECLARADO_SIN_COBRO) && lastError.endsWith(SUFIJO_DECLARADO_EN_AVOQADO)
+
+        /**
+         * Codex código r1 #11 y final r1 #7: ¿la cerró una PERSONA? Su firma o declaración (`declarado_sin_cobro:`) o «no presentó
+         * tarjeta» (`OPERATOR_NO_INSTRUMENT`). La ventana automática (`RELEASED_NO_EVIDENCE`) no la firmó nadie. Gemela de la parte
+         * «quién» de [SQL_DECLARADA_POR_UNA_PERSONA].
+         */
+        fun cerradaPorUnaPersona(fila: PaymentAttemptEntity?): Boolean =
+            fila?.state == STATE_DESCARTADA &&
+                (fila.lastError?.startsWith(PREFIJO_DECLARADO_SIN_COBRO) == true || fila.serverOutcome == SERVER_OPERATOR_NO_INSTRUMENT)
         /** Único valor de `server_processor_evidence`: evidencia positiva del servidor sin veredicto aplicable (fix 4). */
         const val SERVER_PROCESSOR_EVIDENCE_APPROVED = "APPROVED"
 
@@ -354,7 +376,61 @@ data class PaymentAttemptEntity(
                 "OR last_error IS 'chip_rechazo_tras_aprobacion' " +
                 "OR server_outcome IN ('RECORDED','SECOND_CAPTURE_EVIDENCE','REFERENCE_COLLISION_EVIDENCE','PENDING_EVIDENCE') " +
                 "OR (last_error = 'cuarentena_por_antiguedad' AND process_token IS :processToken))) " +
-            "OR (state = 'DESCARTADA' AND (server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
+            // F1 bloque 3: el aprobado final de AngelPay escrito sobre una fila que cerró la ventana (conserva su motivo) — Caja ya
+            // la cuenta (`LocalShiftObligation`) y el registrador la toma; desde ese commit su cuenta queda protegida.
+            "OR (state = 'DESCARTADA' AND (host_approved IS 1 OR server_processor_evidence IS 'APPROVED' OR server_veto IS NOT NULL))))"
+
+        /**
+         * 🔴 F1 (17-nov, plan mínimo tarea 2; reemplaza para la TARJETA la regla del 25-sep «decide el cajero»): otra TARJETA de una
+         * cuenta se frena antes del lector si esa cuenta tiene dinero en juego ([SQL_CERCA_LA_VENTA]) o CUALQUIER venta en duda, de
+         * cualquier proceso y tras reiniciar. Sólo esa cuenta espera al gerente; otra cuenta, aunque sea del mismo importe, entra.
+         * La usan la admisión ([PaymentAttemptDao.reserveTerminal]), su lectura gemela y el CAS antes del banco y del lector. El SALDO
+         * (efectivo de Mesas, «Pedidos por pagar») sigue con [SQL_CERCA_LA_VENTA]: una duda sin dinero no cambia lo que se debe.
+         */
+        /**
+         * 🔴 F1 (Codex código r2 #1, `pasada-aprobado-tardio.md`): la venta que una PERSONA cerró como «no se cobró» — la firma o
+         * declaración de esta terminal (`declarado_sin_cobro:`) o la del POS / «no presentó tarjeta» que trajo el servidor
+         * (`OPERATOR_NO_INSTRUMENT`) — sin rechazo del banco, sin veto y sin Payment. Es la única DESCARTADA que la respuesta del
+         * banco puede reabrir: un positivo gana a una declaración. Fuera quedan la ventana o el silencio del banco
+         * (`RELEASED_NO_EVIDENCE`), «no salió al banco» del SDK (`sin_autorizacion:`) y el rechazo explícito. Sin alias.
+         */
+        const val SQL_DECLARADA_POR_UNA_PERSONA = "(state = 'DESCARTADA' AND legacy_shadow = 0 AND kind = 'SALE' " +
+            "AND host_approved IS NULL AND server_veto IS NULL AND server_payment_id IS NULL " +
+            "AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT'))"
+
+        /**
+         * 🔴 F1 · rediseño tras Codex r7 (20-nov, `pasada-r2-tpv.md` «Rediseño tras Codex r7»): lo más que la DUDA de un cobro del POS
+         * (venta con `terminal_payment_request_id`) frena otra tarjeta de su cuenta en ESTA terminal, contado desde `created_at` del intento:
+         * su estado `INDETERMINADO` y cualquier marca del historial de AngelPay (despachada, en vuelo, con fallo, muerta o «sin aprobar»).
+         * Pasado el techo nada de esa duda frena, tampoco una lectura en vuelo: el techo es EL límite. La firma de una persona suelta antes.
+         * El seguimiento del aprobado tardío NO depende de esto ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+         * ⚠️ DECISIÓN DEL FOUNDER PENDIENTE: 5 min / 30 min / 30 s (la ventana, como producción). 5 min porque Square vence a los 5 min un
+         * cobro sin respuesta (precedente del 20-oct). Límite dicho: un ajuste del reloj del aparato mueve el techo.
+         */
+        const val TECHO_DE_LA_DUDA_DEL_POS_MS = 300_000L
+
+        /** La hora del aparato en milisegundos, según SQLite (precisión de segundos). Sin parámetros: la ven igual todos los que la usan. */
+        const val SQL_AHORA_MS = "(CAST(strftime('%s','now') AS INTEGER) * 1000)"
+
+        /** F1 · r7: el intento tiene menos del techo ([TECHO_DE_LA_DUDA_DEL_POS_MS]). Hora de SQLite: la ven igual admisión, CAS y listas. */
+        private const val SQL_ANTES_DEL_TECHO = "created_at > " + SQL_AHORA_MS + " - " + TECHO_DE_LA_DUDA_DEL_POS_MS
+
+        /**
+         * 🔴 F1 · rediseño tras Codex r7 (20-nov): el freno de la TARJETA de una cuenta es UNA regla que sólo mira estado, edad y firma:
+         * - el dinero conocido o en vuelo ([SQL_CERCA_LA_VENTA], sin cambio);
+         * - la duda (`INDETERMINADO`) de una venta LOCAL (TPV SOLA, sin solicitud del POS): espera al gerente, sin techo;
+         * - la duda de un cobro del POS, sólo antes del techo;
+         * - una lectura del historial despachada o respondida sin «no aparece», sólo antes del techo, sin firma de una persona, sin
+         *   aprobado ni Payment y con el dinero no a salvo. «No aparece» quita la marca (AngelPay registra la venta ANTES de mandarla al
+         *   banco: no aparecer es evidencia de que no llegó).
+         * No mira la reserva (`lease_until`) ni distingue qué marca es: así un ajuste de hora no abre una lectura en vuelo antes del techo
+         * (Codex r7 #4) y una consulta que falló en la pantalla no frena pasado el techo ni tras la firma (Codex r7 #5).
+         */
+        const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
+            " OR (legacy_shadow = 0 AND kind = 'SALE' AND (" +
+            "(state = 'INDETERMINADO' AND (terminal_payment_request_id IS NULL OR " + SQL_ANTES_DEL_TECHO + "))" +
+            " OR (history_read_at IS NOT NULL AND " + SQL_ANTES_DEL_TECHO + " AND NOT " + SQL_DECLARADA_POR_UNA_PERSONA +
+            " AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
 
         /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el
@@ -376,6 +452,12 @@ data class PaymentAttemptEntity(
          * en el MISMO UPDATE: sin él la fila reabierta era una duda más, y muerto el proceso [SQL_CERCA_LA_VENTA] dejaba pasar su venta.
          */
         const val VETO_SDK_CONTRADICTION = "SDK_CONTRADICTION"
+        /**
+         * 🔴 F1 bloque 7 (I4): el `409 POSITIVE_EVIDENCE_EXISTS` es GENÉRICO: Avoqado tiene algo que impide liberar ese cobro, pero no
+         * dice si es dinero de ESTE intento (puede ser de otra terminal). Se guarda como impedimento (cerca la cuenta y sale en «Por
+         * revisar») y se consulta; nunca se escribe como aprobación del banco (`server_processor_evidence`).
+         */
+        const val VETO_IMPEDIMENTO_DEL_SERVIDOR = "SERVER_IMPEDIMENT"
 
         const val KIND_SALE = "SALE"
         const val KIND_REFUND = "REFUND"

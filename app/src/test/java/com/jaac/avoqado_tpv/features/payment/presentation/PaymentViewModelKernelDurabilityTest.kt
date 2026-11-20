@@ -875,9 +875,10 @@ class PaymentViewModelKernelDurabilityTest {
      * Conducido por el ViewModel real (variante sandbox); la de producción la fija `RechazoContactlessLiberaLaTerminalTest`.
      */
     private suspend fun kernelSinVeredicto(
-        respuesta: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse,
+        respuesta: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse?,
         mensajeEsperado: String,
         motivoEsperado: String,
+        falla: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure? = null,
     ) {
         val db = baseEnMemoria()
         val dao = db.paymentAttemptDao()
@@ -887,7 +888,7 @@ class PaymentViewModelKernelDurabilityTest {
         val vecesQueCorrioElKernel = java.util.concurrent.atomic.AtomicInteger(0)
         coEvery { kernel.run(any()) } answers {
             vecesQueCorrioElKernel.incrementAndGet()
-            com.blumonpay.pax.utils.clean.Either.Right(respuesta)
+            if (falla != null) com.blumonpay.pax.utils.clean.Either.Left(falla) else com.blumonpay.pax.utils.clean.Either.Right(respuesta!!)
         }
         val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
         try {
@@ -903,6 +904,11 @@ class PaymentViewModelKernelDurabilityTest {
             val duda = dao.findUnresolvedCharge()
             assertWithMessage("la fila queda en duda, no KERNEL_ACTIVO").that(duda?.state).isEqualTo(PaymentAttemptEntity.STATE_INDETERMINADO)
             assertWithMessage("con un motivo que nombra el caso").that(duda?.lastError).isEqualTo(motivoEsperado)
+            // 🔴 Codex código r1 #6: la terminal guardó la duda; la pantalla es la de la duda (sólo importe y [Seguir]), con el ID del
+            // intento. Sin él, PaymentScreen ofrecía «Reintentar» y «Cancelar» sobre un cobro que pudo haber pasado.
+            val error = vm.state.value as PaymentState.Error
+            assertWithMessage("la pantalla de duda lleva el intento").that(error.unresolvedAttemptId).isEqualTo(duda?.attemptId)
+            assertWithMessage("sin Reintentar").that(error.canRetry).isFalse()
             assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
             assertWithMessage("la siguiente venta entra en el mismo proceso")
                 .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
@@ -922,6 +928,16 @@ class PaymentViewModelKernelDurabilityTest {
             },
             mensajeEsperado = "Resultado desconocido",
             motivoEsperado = "kernel_sin_veredicto:RESULT_TRY_AGAIN",
+        )
+    }
+
+    @Test
+    fun `Codex r1 6 - un fallo del lector sin contacto que no es rechazo deja la duda con su pantalla, sin Reintentar`() = runTest {
+        kernelSinVeredicto(
+            respuesta = null,
+            mensajeEsperado = "Error leyendo tarjeta contactless",
+            motivoEsperado = "OTHER",
+            falla = com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.ContactlessFailure(12),
         )
     }
 
@@ -1603,6 +1619,149 @@ class PaymentViewModelKernelDurabilityTest {
         assertWithMessage(contexto).that(lectoresAbiertos.get()).isEqualTo(0)
         assertWithMessage("$contexto: ninguna reserva local").that(filasDeLaLibreta()).isEqualTo(0)
         assertWithMessage(contexto).that(vm.isPaymentInProgress.value).isFalse()
+    }
+
+    // ═══ F1 · Codex código r1 #5: la cerca de la CUENTA antes del lector, y la reserva rechazada no aparta la terminal ═══
+
+    /** A: la primera tarjeta de la cuenta, soltada sin dinero conocido; la otra tarjeta de A reserva. Lo que llega después es de A. */
+    private suspend fun cuentaConUnaTarjetaSoltada(ledger: PaymentAttemptLedger) {
+        assertThat(ledger.openAttempt("a", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-1"}""")).isTrue()
+        assertThat(ledger.markDiscardedBeforeCharge("a", "prueba")).isTrue()
+    }
+
+    private fun evidenciaDeA(db: com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase) =
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET server_processor_evidence = 'APPROVED' WHERE attempt_id = 'a'")
+
+    @Test fun `Codex r1 5 - la evidencia de A llega tras reservar su otra tarjeta - el lector no se enciende y la terminal queda libre`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            cuentaConUnaTarjetaSoltada(mockPaymentAttemptLedger)
+            caja.elegirComercio()
+            caja.vm.submitAmountWithExternalInputs(amount = "100.00", skipReview = true, orderId = "orden-1", orderNumber = "7", skipLocalOrderValidation = true)
+            esperarA { caja.vm.state.value is PaymentState.SelectingMerchant }
+            // Entre reservar la segunda tarjeta de A y encender el lector, llega la evidencia del primer cobro de A.
+            val reservas = java.util.concurrent.CopyOnWriteArrayList<PaymentAttemptEntity>()
+            coEvery { mockMultiMerchantSDKManager.ensureEffectivelyActive(any(), any()) } coAnswers {
+                reservas += caja.db.paymentAttemptDao().getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE)
+                evidenciaDeA(caja.db)
+                Result.success(Unit)
+            }
+
+            caja.vm.startPayment("100.00")
+            esperarA { caja.vm.state.value is PaymentState.Error || caja.lectoresAbiertos.get() > 0 }
+
+            assertWithMessage("precondición: la otra tarjeta de A sí reservó").that(reservas).hasSize(1)
+            assertWithMessage("el lector no se enciende; estado = ${caja.vm.state.value}").that(caja.lectoresAbiertos.get()).isEqualTo(0)
+            val error = caja.vm.state.value as PaymentState.Error
+            assertThat(error.message).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
+            assertThat(error.canRetry).isFalse()
+            assertWithMessage("la reserva rechazada se suelta").that(caja.db.paymentAttemptDao().getById(reservas.single().attemptId)?.state).isEqualTo("DESCARTADA")
+            assertWithMessage("la terminal queda lista para otra cuenta")
+                .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isTrue()
+        } finally { caja.cerrar() }
+    }
+
+    @Test fun `Codex r1 5 - la evidencia de A llega con el lector ya encendido - no entra al kernel y la reserva se suelta`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        cuentaConUnaTarjetaSoltada(mockPaymentAttemptLedger)
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.PICC
+        val lectores = java.util.concurrent.atomic.AtomicInteger(0)
+        val reservas = java.util.concurrent.CopyOnWriteArrayList<PaymentAttemptEntity>()
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        coEvery { detect.run(any()) } coAnswers {
+            lectores.incrementAndGet()
+            reservas += dao.getOpenOlderThan(testVenueId, listOf("PREPARANDO"), Long.MAX_VALUE)
+            evidenciaDeA(db) // mientras el cliente acerca la tarjeta
+            com.blumonpay.pax.utils.clean.Either.Right(
+                com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap))
+        }
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
+        val vm = createViewModel(startDetectCardUseCase = detect, startCtlssTransUseCase = kernel)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.submitAmountWithExternalInputs(amount = "100.00", skipReview = true, orderId = "orden-1", orderNumber = "7", skipLocalOrderValidation = true)
+            esperarA { vm.state.value is PaymentState.SelectingMerchant }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+
+            assertWithMessage("estado = ${vm.state.value}").that(lectores.get()).isEqualTo(1)
+            coVerify(exactly = 0) { kernel.run(any()) }
+            assertThat((vm.state.value as PaymentState.Error).message).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
+            assertWithMessage("la reserva rechazada se suelta").that(dao.getById(reservas.single().attemptId)?.state).isEqualTo("DESCARTADA")
+            assertWithMessage("la terminal queda lista para otra cuenta")
+                .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isTrue()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    /**
+     * Codex código r2 #3: el lector sin contacto pidió autorización en línea y, al leer los datos de la tarjeta (ANTES de `SaleCtls`), el
+     * SDK lanza una excepción. Nada salió al banco: la entrada al lector se suelta (antes quedaba `KERNEL_ACTIVO` apartando la terminal)
+     * y «Reintentar» es correcto.
+     */
+    @Test fun `Codex r2 3 - una excepcion del SDK al leer los datos del sin contacto suelta la entrada del lector y deja Reintentar`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository)
+        val respuesta = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
+            every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_REQ_ONLINE
+        }
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        val vecesQueCorrioElKernel = java.util.concurrent.atomic.AtomicInteger(0)
+        coEvery { kernel.run(any()) } answers {
+            vecesQueCorrioElKernel.incrementAndGet()
+            com.blumonpay.pax.utils.clean.Either.Right(respuesta)
+        }
+        coEvery { mockTransProcessRepository.getTagValue(any(), any()) } throws IllegalStateException("el SDK no pudo leer el tag")
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vm.state.value is PaymentState.Error }
+
+            assertWithMessage("el arnés debe ALCANZAR el kernel; estado = ${vm.state.value}").that(vecesQueCorrioElKernel.get()).isEqualTo(1)
+            val error = vm.state.value as PaymentState.Error
+            assertThat(error.message).contains("Error inesperado")
+            assertThat(error.canRetry).isTrue()
+            val filas = db.openHelper.readableDatabase.query("SELECT state FROM payment_attempts").use { c ->
+                generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList()
+            }
+            assertWithMessage("la entrada al lector se suelta").that(filas).containsExactly("DESCARTADA")
+            assertWithMessage("la terminal queda lista para otra cuenta")
+                .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    /**
+     * Codex código r2 #2 (aceptado sin arreglo): la evidencia de A llega mientras la PAX prepara el lector, así que la pantalla pide la
+     * tarjeta de A y B espera. Lo que se confirma aquí: «Cancelar» en esa pantalla suelta la reserva y la terminal queda para B. («Atrás»
+     * lo fija `Mindform leaving detection closes the reservation and ignores its late card after a new sale`.)
+     */
+    @Test fun `Codex r2 2 - Cancelar en la pantalla que pide la tarjeta de A suelta la terminal para B`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            cuentaConUnaTarjetaSoltada(mockPaymentAttemptLedger)
+            caja.elegirComercio()
+            caja.vm.submitAmountWithExternalInputs(amount = "100.00", skipReview = true, orderId = "orden-1", orderNumber = "7", skipLocalOrderValidation = true)
+            esperarA { caja.vm.state.value is PaymentState.SelectingMerchant }
+            caja.vm.startPayment("100.00")
+            esperarA { caja.lectoresAbiertos.get() > 0 }
+            evidenciaDeA(caja.db) // llega con la pantalla pidiendo la tarjeta
+            assertWithMessage("mientras la pantalla pide la tarjeta, B espera")
+                .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isFalse()
+
+            caja.vm.cancelPayment()
+            esperarA { caja.vm.state.value is PaymentState.Cancelled }
+
+            assertWithMessage("la reserva de la otra tarjeta de A se soltó; estado = ${caja.vm.state.value}")
+                .that(caja.filasEnElLector.single().attemptId.let { caja.db.paymentAttemptDao().getById(it)?.state }).isEqualTo("DESCARTADA")
+            assertWithMessage("la terminal queda para B")
+                .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isTrue()
+        } finally { caja.cerrar() }
     }
 
     @Test fun `D6 P1 un remoto reserva con su id original en el JSON y en la columna antes de abrir el lector, FAST y ORDER`() = runTest {

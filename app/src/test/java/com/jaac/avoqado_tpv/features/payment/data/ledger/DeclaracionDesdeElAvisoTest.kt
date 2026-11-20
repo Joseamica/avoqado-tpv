@@ -173,11 +173,20 @@ class DeclaracionDesdeElAvisoTest {
 
     @Test fun `el texto de cada resultado es el acordado`() {
         val textos = mapOf(
-            ResultadoDeLaDeclaracion.SinRed to "Sin conexión: esto necesita internet. Cuando vuelva, inténtalo otra vez.",
+            ResultadoDeLaDeclaracion.SinRed to "Sin conexión: la firma del gerente necesita internet. El cobro sigue por confirmar; inténtalo cuando vuelva.",
             ResultadoDeLaDeclaracion.UsaElPos to "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS.",
             ResultadoDeLaDeclaracion.FaltaConsultar to "Primero hay que consultar a Avoqado: conéctate a internet.",
             ResultadoDeLaDeclaracion.SinPermiso to "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente.",
-            ResultadoDeLaDeclaracion.HayEvidencia to "Avoqado tiene evidencia de este cobro: no lo declares ni lo vuelvas a cobrar.",
+            // F1 (Codex código r1 #9): también lo lee el gerente en una fila «sólo consulta»: el banco sí registró algo.
+            ResultadoDeLaDeclaracion.HayEvidencia to "El banco sí registró algo de este cobro: no lo vuelvas a cobrar ni lo marques como no cobrado.",
+            // F1 (Codex código r1 #11): una revisión de una persona no es la respuesta del banco.
+            ResultadoDeLaDeclaracion.YaResuelto to "Este cobro ya lo revisó otra persona: ya no está por revisar.",
+            // F1 (Codex código r2 #5 y #6) → F1 bloque 7 (I4, R5): el comprobante guardado es neutro (nunca «quedó tu firma») y un 409,
+            // un veto ajeno o evidencia sin dueño es un impedimento de Avoqado, no «evidencia de este cobro».
+            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.",
+            ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado to "Avoqado encontró información que impide liberar este cobro.",
+            // F1 bloque 7: la aprobación propia sin registro (tabla de I4).
+            ResultadoDeLaDeclaracion.AprobadoSinRegistro to "El banco autorizó este intento. Falta confirmar el registro.",
             ResultadoDeLaDeclaracion.Rechazado("lo que dijo el servidor") to "lo que dijo el servidor",
         )
         for ((resultado, texto) in textos) assertThat(resultado.texto()).isEqualTo(texto)

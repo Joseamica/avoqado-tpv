@@ -986,16 +986,13 @@ fun PaymentScreen(
                         val recovery: BlumonRecoveryViewModel = hiltViewModel()
                         val recoveryState by recovery.state.collectAsStateWithLifecycle()
                         LaunchedEffect(recoveryAttemptId) { recovery.start(recoveryAttemptId) }
+                        // F1 (tarea 5): [Seguir] es la salida de siempre. Con la autorización sin resolver, resetPayment() no emite ningún
+                        // desenlace ni cancela: el intento sigue en la libreta y su cuenta espera al gerente.
                         BlumonRecoveryContent(
                             result = recoveryState.result,
                             busy = recoveryState.busy,
                             secondsRemaining = recoveryState.secondsRemaining,
-                            hasPermission = recoveryState.hasPermission,
-                            onConsult = recovery::consultAgain,
-                            onDeclare = { recovery.declare() },
-                            onDeclareChecked = { recovery.declare(checked = true) },
-                            onBack = { viewModel.resetPayment(); navigateBack() },
-                            hasCheckPermission = recoveryState.hasCheckPermission,
+                            onSeguir = { viewModel.resetPayment(); navigateBack() },
                         )
                     } else PaymentErrorContent(
                         message = currentState.message,

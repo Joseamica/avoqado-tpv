@@ -75,17 +75,17 @@ object AvisoDeCobrosPendientes {
         val masReciente = cobros.firstOrNull() ?: return null
         // Codex r1 #1 y r2: con la consulta llena puede haber más viejos; se dice y el recuadro ofrece «Ver anteriores».
         val tope = if (recortada) " Hay más anteriores: toca «Ver anteriores»." else ""
-        val queHacer = "toca «No se cobró». Si sí se cobró, no lo vuelvas a cobrar y avísale a tu gerente.$tope"
+        // F1 (tarea 4): lo revisa el gerente con su PIN; el cajero no decide.
+        val queHacer = "El gerente lo revisa en «Revisar» con su PIN; mientras, no lo vuelvas a cobrar.$tope"
         if (cobros.size == 1) {
             return "Por revisar: un cobro con tarjeta de ${pesos(masReciente.totalCentavos)} quedó sin confirmar " +
-                "(${antiguedad(ahoraMillis - masReciente.desdeMillis)}). Si ya revisaste que no se cobró, $queHacer"
+                "(${antiguedad(ahoraMillis - masReciente.desdeMillis)}). $queHacer"
         }
         val nombradas = cobros.take(MAXIMO_ENUMERADO)
         val resto = cobros.size - nombradas.size
         val enumeradas = nombradas.joinToString(", ") { "${pesos(it.totalCentavos)} ${antiguedad(ahoraMillis - it.desdeMillis)}" }
         val cola = if (resto > 0) ", y $resto más" else ""
-        return "Por revisar: ${cobros.size} cobros con tarjeta quedaron sin confirmar: $enumeradas$cola. " +
-            "Si ya revisaste que alguno no se cobró, $queHacer"
+        return "Por revisar: ${cobros.size} cobros con tarjeta quedaron sin confirmar: $enumeradas$cola. $queHacer"
     }
 
     /**
@@ -103,6 +103,19 @@ object AvisoDeCobrosPendientes {
      */
     fun importeYAntiguedad(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
         "${pesos(totalCentavos)}, ${antiguedad(ahoraMillis - desdeMillis)}"
+
+    /**
+     * F1 (tarea 4): «$120.00 · 14:32 · ref E6A1B2» — el renglón que elige el gerente: importe, hora del negocio y una referencia corta
+     * que distingue dos filas del mismo importe y minuto. La hora va en la zona del negocio (nunca la del aparato).
+     */
+    fun renglonParaElGerente(totalCentavos: Long, desdeMillis: Long, referencia: String, zona: java.time.ZoneId): String =
+        "${pesos(totalCentavos)} · ${java.time.Instant.ofEpochMilli(desdeMillis).atZone(zona).format(HORA)} · ref $referencia"
+
+    /** F1 (Codex código r1 #10): «$120.00 de las 13:05», lo que el gerente firma en el paso del PIN. */
+    fun pesosYHora(totalCentavos: Long, desdeMillis: Long, zona: java.time.ZoneId): String =
+        "${pesos(totalCentavos)} de las ${java.time.Instant.ofEpochMilli(desdeMillis).atZone(zona).format(HORA)}"
+
+    private val HORA = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
 
     /** «$120.00 · hace 3 min»: el renglón de la lista del botón «No se cobró». */
     fun renglonDeCobro(totalCentavos: Long, desdeMillis: Long, ahoraMillis: Long): String =
@@ -141,9 +154,10 @@ object AvisoDeCobrosPendientes {
             "Esta venta ya se cobró ($apartaLaVenta): Avoqado lo registró. NO se inició otro cobro. " +
                 "Toca «Entendido» en el aviso de arriba."
         // La venta primero: es la más específica y la que de verdad puede cobrarse dos veces.
+        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide.
         apartaLaVenta != null ->
-            "Esta venta ya tiene un cobro sin confirmar ($apartaLaVenta). NO se inició otro cobro. " +
-                "Revísalo en Transacciones antes de volver a cobrarla."
+            "Esta cuenta tiene un cobro con tarjeta por confirmar ($apartaLaVenta). NO se inició otro cobro. " +
+                "No la repitas: avísale al gerente."
         // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
             "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +

@@ -41,7 +41,11 @@ class BandejaServerRecovery @Inject constructor(
      * @param conErrorDelServidor un 5xx (M-2): para el cajero es «sin conexión», porque el POS tampoco podrá responder; el worker no
      * lo repite, igual que un 5xx de la consulta por intento (sólo gasta el turno), para no insistirle a un servidor con problemas.
      */
-    data class Resultado(val consultadas: Int, val conciliadas: Int, val sinRespuesta: Int, val conErrorDelServidor: Int = 0)
+    data class Resultado(
+        val consultadas: Int, val conciliadas: Int, val sinRespuesta: Int, val conErrorDelServidor: Int = 0,
+        /** 🔴 Codex final r2 #2: Avoqado contestó que una solicitud consultada SÍ tiene cobro (`COMPLETED` o `paymentId`). No cierra nada. */
+        val conDinero: Boolean = false,
+    )
 
     /**
      * [soloLaSolicitud]: el banner pregunta por una a la vez, para que una lenta no tape a las demás. Pasa aunque no esté entre las 20 de
@@ -52,6 +56,7 @@ class BandejaServerRecovery @Inject constructor(
         var conciliadas = 0
         var sinRespuesta = 0
         var conErrorDelServidor = 0
+        var conDinero = false
 
         val candidatas = soloLaSolicitud?.let { listOf(HuerfanaDeBandeja(it, now)) }
             ?: runCatching { dao.candidatasHuerfanas(venueId) }.getOrDefault(emptyList())
@@ -68,6 +73,12 @@ class BandejaServerRecovery @Inject constructor(
                     continue
                 }
                 val cuerpo = respuesta.body()
+                // 🔴 Codex final r2 #2: el cobro de la solicitud se le dice a quien preguntó (la firma no invita a cobrar otra vez). Se lee
+                // ANTES de la puerta de `resuelta`, y no autoriza cerrar nada: lo cobrado lo resuelve la libreta por intento.
+                if (runCatching {
+                        cuerpo?.request?.get("status")?.takeIf { it.isJsonPrimitive }?.asString == "COMPLETED" ||
+                            cuerpo?.request?.get("paymentId")?.takeIf { it.isJsonPrimitive }?.asString?.isNotBlank() == true
+                    }.getOrDefault(false)) conDinero = true
                 // Sólo `resuelta = true` autoriza cerrar. Un cuerpo sin ese campo (servidor anterior a la pieza D)
                 // se comporta como antes: no se toca nada.
                 if (cuerpo?.resuelta != true) { dao.estamparConsultaHuerfana(fila.requestId, venueId, now); continue }
@@ -102,6 +113,6 @@ class BandejaServerRecovery @Inject constructor(
         if (consultadas + sinRespuesta + conErrorDelServidor > 0) {
             Timber.i("🧾 [BandejaD] pasada | consultadas=%d conciliadas=%d sinRespuesta=%d 5xx=%d", consultadas, conciliadas, sinRespuesta, conErrorDelServidor)
         }
-        return Resultado(consultadas, conciliadas, sinRespuesta, conErrorDelServidor)
+        return Resultado(consultadas, conciliadas, sinRespuesta, conErrorDelServidor, conDinero)
     }
 }

@@ -1166,7 +1166,7 @@ class CancelTrasReclamarRoomTest {
         // El servidor libera ese intento (declaración del cajero): INDETERMINADO → DESCARTADA. Ya no hay bloqueadores.
         assertThat(
             db.paymentAttemptDao().cerrarPorLiberacionDelServidor(
-                "a1", "venue-1", "req-1", "OPERATOR_NO_INSTRUMENT", "liberada_por_el_servidor:OPERATOR_RECONCILED", 2_000,
+                "a1", "venue-1", "req-1", "OPERATOR_NO_INSTRUMENT", "liberada_por_el_servidor:OPERATOR_RECONCILED", 2_000, "otro-proceso",
             ),
         ).isEqualTo(1)
         assertThat(db.remotePaymentRequestDao().contarIntentosBloqueadores("req-1")).isEqualTo(0)

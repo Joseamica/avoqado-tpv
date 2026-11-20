@@ -44,7 +44,9 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
     private val secureStorage: SecureStorage,
     private val observability: ObservabilityManager,
     private val approvalRecovery: LedgerApprovalRecovery,
-    private val unknownRecovery: LedgerUnknownRecovery
+    private val unknownRecovery: LedgerUnknownRecovery,
+    /** F1 bloque 6: el token de ESTE proceso, para no poner en duda por reloj un lector que sigue dentro. */
+    private val ledger: PaymentAttemptLedger,
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -67,7 +69,8 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
                 secureStorage = secureStorage,
                 dao = paymentAttemptDao,
                 observability = observability,
-                now = System.currentTimeMillis()
+                now = System.currentTimeMillis(),
+                procesoVivo = ledger.tokenDelProceso(),
             )
             if (result == null) {
                 Timber.d("📒 [LedgerSweep] Skipped (mode OFF or no venue)")
@@ -121,11 +124,12 @@ object LedgerSweepLogic {
         secureStorage: SecureStorage,
         dao: PaymentAttemptDao,
         observability: ObservabilityManager,
-        now: Long
+        now: Long,
+        procesoVivo: String = "",
     ): SweepResult? {
         if (settingsRepository.getCurrentSettings().paymentLedgerMode == PaymentLedgerMode.OFF) return null
         val venueId = secureStorage.getVenueId() ?: return null
-        return sweepOnce(dao, venueId, observability, now)
+        return sweepOnce(dao, venueId, observability, now, procesoVivo)
     }
 
     /**
@@ -138,7 +142,9 @@ object LedgerSweepLogic {
         dao: PaymentAttemptDao,
         venueId: String,
         observability: ObservabilityManager,
-        now: Long
+        now: Long,
+        /** F1 bloque 6: el proceso cuyo lector puede seguir dentro (su `KERNEL_ACTIVO` no se pone en duda por reloj); `""` = ninguno. */
+        procesoVivo: String = "",
     ): SweepResult {
         val staleCutoff = now - TimeUnit.MINUTES.toMillis(STALE_AUTHORIZING_MIN)
 
@@ -168,8 +174,9 @@ object LedgerSweepLogic {
 
         // 2. Bookkeeping transitions (venue-scoped; CAS-safe SQL in the DAO).
         val quarantined = dao.quarantineStaleAuthorizing(venueId, staleCutoff, now) +
-            // 🔴 El proceso murió DENTRO del kernel: pudo aprobar. Se cuarentena, nunca se descarta.
-            dao.quarantineStaleKernel(venueId, staleCutoff, now)
+            // 🔴 El proceso murió DENTRO del kernel: pudo aprobar. Se cuarentena, nunca se descarta. F1 bloque 6: el lector de ESTE
+            // proceso no (sigue dentro, sin envío; se suelta o se arma cuando regresa).
+            dao.quarantineStaleKernel(venueId, staleCutoff, now, procesoVivo)
         // 🔴 Y su contrapeso, de DISPONIBILIDAD: PREPARANDO retiene la terminal, así que una fila
         // huérfana (proceso muerto entre la reserva y el kernel) dejaría la caja sin poder cobrar.
         // Liberarla es seguro por construcción: en PREPARANDO ninguna llamada capaz de autorizar

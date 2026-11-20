@@ -40,6 +40,12 @@ data class RemotePaymentProbeAnswer(
     val executionAlive: Boolean = true,
     /** true sólo si la solicitud quedó (o ya estaba) cerrada para ejecución: `execution_closed_at`. */
     val closedForExecution: Boolean = false,
+    /**
+     * 🔴 F1 bloque 2 (R1, contrato del SERVIDOR §2): con el cese certificado, ¿esta solicitud se puede DECLARAR? `true` = terminé
+     * con el lector y se puede firmar; `false` = terminé, pero hay aprobado propio, evidencia pendiente o un hermano que lo impide;
+     * `null` = sin certificado (no se manda: el SERVIDOR no escribe nada). Sólo viaja con `executionAlive = false`.
+     */
+    val declarable: Boolean? = null,
 )
 
 data class RemotePaymentCancelDecision(
@@ -49,6 +55,8 @@ data class RemotePaymentCancelDecision(
     val executionAlive: Boolean = true,
     /** Igual que en [RemotePaymentProbeAnswer.closedForExecution]. */
     val closedForExecution: Boolean = false,
+    /** Igual que en [RemotePaymentProbeAnswer.declarable]. */
+    val declarable: Boolean? = null,
 )
 
 /**
@@ -69,6 +77,8 @@ class RemotePaymentInbox(
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val laTerminalRechazariaUnaVentaNueva: () -> Boolean = { true },
     private val cerrarSiCeso: suspend (requestId: String) -> Boolean = { false },
+    /** F1 bloque 2: con el cese certificado, si la solicitud se puede declarar ([RemotePaymentProbeAnswer.declarable]). Sin cablear, sin certificado. */
+    private val declarableTrasCese: suspend (requestId: String) -> Boolean? = { null },
 ) {
     /**
      * B2: Hilt cablea la pregunta a la libreta real. Constructor SECUNDARIO a propósito (mismo patrón que
@@ -88,6 +98,7 @@ class RemotePaymentInbox(
             com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estadoDeLasPantallas)
         },
         cerrarSiCeso = { requestId -> libreta.cerrarSolicitudSiCeso(requestId) },
+        declarableTrasCese = { requestId -> libreta.solicitudDeclarable(requestId) },
     )
 
     suspend fun receive(event: SocketEvent.TerminalPaymentRequest): RemotePaymentReceiveDecision {
@@ -256,6 +267,7 @@ class RemotePaymentInbox(
                         RemotePaymentCancelDisposition.ACTIVE,
                         executionAlive = respuesta.ejecucionViva,
                         closedForExecution = respuesta.cerradaParaEjecucion,
+                        declarable = respuesta.declarable,
                     )
                 }
             }
@@ -269,7 +281,7 @@ class RemotePaymentInbox(
         /** Caso 2: `resolverDesenlaceNegativo` escribió el desenlace (la libreta acredita que nadie tocó el SDK). */
         data class Resuelta(val resultadoJson: String) : RespuestaEnProceso
         /** Casos 1 y 3: sigue ACTIVE; con o sin ejecución viva, cerrada o no para ejecución. */
-        data class Activa(val ejecucionViva: Boolean, val cerradaParaEjecucion: Boolean) : RespuestaEnProceso
+        data class Activa(val ejecucionViva: Boolean, val cerradaParaEjecucion: Boolean, val declarable: Boolean? = null) : RespuestaEnProceso
     }
 
     /**
@@ -362,9 +374,15 @@ class RemotePaymentInbox(
             // `i` y no `w`: la libreta ya avisa con `w` al escribir el cierre; esto sale en cada sonda repetida.
             Timber.i("🔒 [RemotePaymentInbox] ${fila.requestId}: sin ejecución viva y CERRADA para ejecución (el dinero lo decide el servidor)")
         }
+        // F1 bloque 2: «terminé con el lector» no basta para firmar; con el cese certificado se dice además si se puede declarar.
+        val declarable = if (!certificado) null else runCatching { declarableTrasCese(fila.requestId) }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            false
+        }
         return RespuestaEnProceso.Activa(
             ejecucionViva = !certificado,
             cerradaParaEjecucion = certificado || fila.executionClosedAt != null,
+            declarable = declarable,
         )
     }
 
@@ -441,6 +459,7 @@ class RemotePaymentInbox(
                     RemotePaymentProbeDisposition.ACTIVE,
                     executionAlive = respuesta.ejecucionViva,
                     closedForExecution = respuesta.cerradaParaEjecucion,
+                    declarable = respuesta.declarable,
                 )
             }
         }

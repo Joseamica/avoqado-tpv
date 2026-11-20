@@ -686,6 +686,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var currentPaymentAttemptId: String? = null
     // Consumes external payment callback only once per launched attempt.
     private var consumedResultAttemptId: String? = null
+    /** F1 bloque 3: si el resultado consumido de [consumedResultAttemptId] fue un aprobado (ver [consumeResultForCurrentAttempt]). */
+    private var consumedResultFueAprobado: Boolean = false
     // 📒 [Libreta] Fingerprint of the last attempt THIS ViewModel instance successfully opened
     // a ledger row for: attemptId + the EXACT cents it was opened with. AngelPay deliberately
     // REUSES the attemptId on retry-after-decline (see [retryAfterError]) and on the SDK→
@@ -3056,6 +3058,19 @@ class AngelPayPaymentViewModel @Inject constructor(
             // varias, y «el más reciente» le colgaría a esta solicitud el desenlace de otra cuenta.
             _socketRequestId?.let { solicitud ->
               if (currentPaymentAttemptId == null) adoptarIntentoDeLaSolicitud(solicitud)
+              // 🔴 F1 bloque 3 (hueco 4): con varios intentos posibles en la solicitud no se adopta por parecido, y sin intento NO se
+              // registra desde la RAM (sería otra llave): el resultado lo concilia Avoqado y el historial lo trae por su llave.
+              if (currentPaymentAttemptId == null && paymentAttemptLedger.solicitudAmbigua(solicitud)) {
+                  authorizationWasLaunched = true
+                  confirmedNegativeOutcome = false
+                  confirmedNegativeEvidence = null
+                  Timber.e("🚨 [AngelPay] resultado app a app sin intento identificable en la solicitud %s: no se registra desde la RAM", solicitud)
+                  _state.value = AngelPayPaymentState.Error(
+                      message = "La terminal no pudo atar este resultado a su cobro. NO lo vuelvas a cobrar: Avoqado lo concilia.",
+                      canRetry = false,
+                  )
+                  return@launch
+              }
             }
             if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
@@ -3127,6 +3142,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     operationId = null,
                     referenceNumber = (result as? AngelPayResult.Success)?.referenceNumber,
                     authCode = (result as? AngelPayResult.Success)?.authorizationCode,
+                    // F1 bloque 3: el aprobado entra por la única puerta del aprobado final de AngelPay.
+                    origen = com.jaac.avoqado_tpv.features.payment.data.ledger.OrigenDelAprobado.APP_A_APP,
                 )
             }
 
@@ -3336,7 +3353,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             true -> AdopcionTrasRecrear.CON_CONTEXTO
             false -> AdopcionTrasRecrear.SIN_CONTEXTO
             // Había un intento lanzado y el resultado no se pudo atar a él: tampoco se registra desde la RAM vacía.
-            null -> if (lanzado != null) AdopcionTrasRecrear.SIN_CONTEXTO else AdopcionTrasRecrear.NADA
+            // F1 bloque 3 (hueco 4): sin llave y con varios intentos posibles en la solicitud, el resultado no se asigna por parecido.
+            null -> if (lanzado != null || (solicitud != null && paymentAttemptLedger.solicitudAmbigua(solicitud)))
+                AdopcionTrasRecrear.SIN_CONTEXTO else AdopcionTrasRecrear.NADA
         }
     }
 
@@ -3399,7 +3418,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 contextoDelIntentoDesconocido = true
             }
             val sinContexto = contextoDelIntentoDesconocido
-            if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
+            if (!consumeResultForCurrentAttempt(source = "sdk_contract", aprobado = result.approved)) return@launch
             // 🔒 B1: el intento DUEÑO de este resultado, fijado al recibirlo: el regreso del SDK se marca sobre ÉL.
             val intentoDelResultado = currentPaymentAttemptId
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}, montoCobrado=${result.amount}")
@@ -3500,6 +3519,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                         operationId = null,
                         referenceNumber = result.reference,
                         authCode = result.authCode,
+                        // F1 bloque 3: SDK y SDK con la pantalla recreada entran por la misma función del aprobado final.
+                        origen = com.jaac.avoqado_tpv.features.payment.data.ledger.OrigenDelAprobado.SDK,
                     )
                 }
             }
@@ -3981,6 +4002,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = "$motivo\n\nCobro sin confirmar: NO vuelvas a cobrar hasta verificar. " +
                 "Estamos consultando con AngelPay si el pago pasó.",
             verificando = true,
+            totalDelIntento = pendingAmount.add(pendingTip),
         )
 
         val attemptId = currentPaymentAttemptId
@@ -3996,6 +4018,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         // la excepción reventaría la corrutina y la pantalla se quedaría clavada en
         // "Consultando…" para siempre — un cobro sin confirmar Y sin salida. Ante cualquier
         // fallo el desenlace es el mismo que no poder preguntar: sigue sin saberse.
+        // 🔴 F1 bloque 4: la lectura queda DESPACHADA en la fila antes de preguntar: si la app muere o la ventana cierra mientras
+        // pregunta, la recuperación la retoma (y la cuenta no admite otra tarjeta hasta entonces). No gasta turnos de E1.
+        val lecturaDespachada = paymentAttemptLedger.despacharLecturaDelHistorial(attemptId)
         val verificacion = runCatching {
             chargeVerifier.verificar(
                 attemptId = attemptId,
@@ -4015,13 +4040,15 @@ class AngelPayPaymentViewModel @Inject constructor(
         when (verificacion) {
             is VerificacionDelCobro.Cobrado -> {
                 Timber.i("🔍 [AngelPay] El historial CONFIRMA el cobro — se registra la venta")
-                // 📒 Ahora sí hay veredicto: la fila sale de INDETERMINADO por su propio CAS.
+                // 📒 F1 bloque 3 (K19a): la misma puerta del aprobado final — aunque la ventana o una persona hayan cerrado la fila
+                // mientras se preguntaba, el aprobado queda escrito con una obligación de registro ANTES del POST.
                 paymentAttemptLedger.markHostResponded(
                     attemptId = attemptId,
                     approved = true,
                     operationId = null,
                     referenceNumber = verificacion.referencia,
                     authCode = verificacion.authCode,
+                    origen = com.jaac.avoqado_tpv.features.payment.data.ledger.OrigenDelAprobado.HISTORIAL_PANTALLA,
                 )
                 recordCardPayment(
                     authCode = verificacion.authCode,
@@ -4030,9 +4057,21 @@ class AngelPayPaymentViewModel @Inject constructor(
                 )
             }
 
-            VerificacionDelCobro.NoCobrado -> esperarVeredictoDelServidor("El historial no ofrece prueba final de ausencia de cobro")
+            VerificacionDelCobro.NoCobrado -> {
+                lecturaDespachada?.let { paymentAttemptLedger.terminarLecturaDelHistorial(attemptId, it) }
+                esperarVeredictoDelServidor("El historial no ofrece prueba final de ausencia de cobro")
+            }
 
-            is VerificacionDelCobro.NoSePudoVerificar -> esperarVeredictoDelServidor(verificacion.motivo)
+            is VerificacionDelCobro.NoSePudoVerificar -> {
+                // 🔴 Codex final r1 #3: un fallo técnico (red, credenciales, lectura ilegible) no es una respuesta: la lectura sigue
+                // despachada y la retoma la recuperación al vencer su reserva, aunque entre tanto la ventana haya cerrado la fila.
+                // Igual que una lectura que se abandonó (la pantalla se fue a media consulta).
+                esperarVeredictoDelServidor(verificacion.motivo)
+            }
+
+            // 🔴 Codex plan A #2: la venta está en el historial sin aprobar (`05AP`). Tampoco es «no aparece»: la lectura sigue despachada
+            // (frena la tarjeta de la cuenta sólo hasta el techo, F1 · r7) y la retoma la recuperación, que la sigue hasta 7 días.
+            is VerificacionDelCobro.EnElProcesador -> esperarVeredictoDelServidor("en el historial sin aprobar: ${verificacion.estado}")
         }
     }
 
@@ -4094,6 +4133,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = "No se pudo confirmar si el cobro pasó ($motivo).\n\n" +
                     "NO vuelvas a cobrar: revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
                 verificando = false,
+                totalDelIntento = pendingAmount.add(pendingTip),
             )
             return
         }
@@ -4103,6 +4143,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             // El último aviso de la declaración (409, «no se pudo confirmar en este aparato»…) sobrevive a la consulta nueva:
             // es lo que explica POR QUÉ se vuelve a consultar. Una declaración nueva lo limpia.
             error = previo?.takeIf { !it.verificando }?.error,
+            totalDelIntento = pendingAmount.add(pendingTip),
         )
         esperaAlServidorJob?.cancel()
         esperaAlServidorJob = viewModelScope.launch {
@@ -4174,6 +4215,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             actualizarIncierto {
                 it.copy(
                     esperandoAlServidor = false,
+                    // Codex final r1 #9: la pantalla de la duda lo dice (no lee `message`).
+                    sinConexion = requestId == null && !servidorContesto,
                     message = when {
                         // 🔴 Sin red (founder, 25-sep): una duda ya no aparta la terminal, así que no queda nada que cerrar a mano
                         // en el aparato. Se dice que el cobro queda sin confirmar y se revisa solo; el aviso de Inicio lo sigue
@@ -4228,10 +4271,35 @@ class AngelPayPaymentViewModel @Inject constructor(
             // salida acreditada), pero tampoco puede dejar la pantalla invitando a cobrar otra vez: va ANTES de los dos
             // `mostrarLiberada`. Sobrevive a recrear el ViewModel, que es de lo que se trataba r5-4.
             !fila.serverVeto.isNullOrBlank() -> { vetoDeDineroDelIntento = attemptId; mostrarContradiccion(); true }
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> { mostrarLiberada("OPERATOR_RECONCILED"); true }
-            fila.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> { mostrarLiberada("NO_EVIDENCE_AFTER_WINDOW"); true }
+            fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT || fila.serverOutcome == PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE -> {
+                // 🔴 Codex final r2 #3 (familia «el texto miente»): la liberación no se anuncia mientras el MISMO predicado que frena la
+                // tarjeta diga que algo de este cobro sigue abierto (dinero de un intento de su solicitud, la lectura del historial de
+                // AngelPay pendiente, otra tarjeta de su cuenta): se queda como duda, con [Seguir].
+                val freno = paymentAttemptLedger.loQueFrenaElResuelto(attemptId, fila.terminalPaymentRequestId?.takeIf { it.isNotBlank() })
+                when {
+                    // La lectura SUSPENDE (como la de arriba, Fix 3): un Success o un veto que llegó en ese hueco no se pisa.
+                    _state.value is AngelPayPaymentState.Success -> Unit
+                    vetoDeDineroDelIntento != null -> mostrarContradiccion()
+                    freno != null -> mostrarDudaFrenada(fila, freno)
+                    fila.serverOutcome == PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT -> mostrarLiberada("OPERATOR_RECONCILED")
+                    else -> mostrarLiberada("NO_EVIDENCE_AFTER_WINDOW")
+                }
+                true
+            }
             else -> false
         }
+    }
+
+    /** Familia «el texto miente»: el servidor liberó, pero la libreta todavía frena la tarjeta de este cobro: la duda, nunca «volver a cobrar». */
+    private fun mostrarDudaFrenada(fila: PaymentAttemptEntity, freno: com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto) {
+        esperaAlServidorJob?.cancel()
+        clearChargingOnTerminal()
+        _state.value = AngelPayPaymentState.ResultadoIncierto(
+            message = freno.freno.texto,
+            verificando = false,
+            totalDelIntento = java.math.BigDecimal.valueOf(fila.amountCents + fila.tipCents, 2),
+            historialPendiente = freno.freno == com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE,
+        )
     }
 
     /**
@@ -4366,7 +4434,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         val mostrado = AngelPayPaymentState.Error(
             message = when (evidencia) {
                 "OPERATOR_RECONCILED" -> "Confirmado: no se presentó tarjeta. Se puede volver a cobrar."
-                else -> "No se confirmó el cobro en 30 s. Se puede volver a cobrar. Si el banco lo aprueba tarde, se registra solo y la terminal avisa."
+                // Codex plan A #2: «si el banco lo aprueba tarde, se registra solo» era falso (el aviso de AngelPay sale una vez y las
+                // consultas de la terminal se agotan).
+                else -> "No se confirmó el cobro."
             },
             canRetry = false,
         )
@@ -4525,12 +4595,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                         }
                     }
                 }
-                // 🔴 Ronda 23 (Codex r21, P1-2): el servidor YA dijo que hay evidencia de dinero de ESTE intento: veta desde aquí y
-                // deja la marca durable, sin depender de la consulta siguiente (si falla, el respaldo sin red quedaba a la mano).
+                // 🔴 Ronda 23 (Codex r21, P1-2): el servidor YA dijo que algo impide declarar: veta desde aquí y deja la marca durable,
+                // sin depender de la consulta siguiente. F1 bloque 7 (I4): el 409 es GENÉRICO: la marca es el IMPEDIMENTO, no la aprobación.
                 codigo == "POSITIVE_EVIDENCE_EXISTS" -> {
                     vetoDeDineroDelIntento = attemptId
                     if (_state.value !is AngelPayPaymentState.Success) mostrarContradiccion()
-                    withContext(NonCancellable) { paymentAttemptLedger.marcarEvidenciaPositivaDelServidor(venueId, attemptId) }
+                    withContext(NonCancellable) { paymentAttemptLedger.marcarImpedimentoDelServidor(venueId, attemptId) }
                     currentCoroutineContext().ensureActive()
                     aplicarLoQueDigaLaLibreta(attemptId)
                 }
@@ -5874,6 +5944,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         contextoDelIntentoDesconocido = false
         ledgerOpenedAttemptId = null
         consumedResultAttemptId = null
+        consumedResultFueAprobado = false
         linkAutorizado = null
         decisionQueResolvioLaPantalla = null
         // El cajero retomó: el reloj de abandono ya no debe cerrarle la fila al POS.
@@ -6105,6 +6176,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         liberacionMostrada = false
         cierreSinAutorizacionAnunciado = null
         consumedResultAttemptId = null
+        consumedResultFueAprobado = false
         linkAutorizado = null
         decisionQueResolvioLaPantalla = null
         // Termina sólo el gesto UI. Su operación/fila sigue conciliándose por su solicitud original.
@@ -6135,11 +6207,23 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     private fun prepareExternalLaunch(attemptId: String) {
         consumedResultAttemptId = null
+        consumedResultFueAprobado = false
         Timber.d("🛡️ [AngelPay] Prepared external launch | paymentAttemptId=$attemptId")
     }
 
-    private fun consumeResultForCurrentAttempt(source: String): Boolean {
+    /**
+     * 🔴 F1 bloque 3 (`callback_inconcluso_no_consume_el_aprobado_siguiente`): un primer callback SIN aprobado (incierto, vacío o
+     * rechazo) no consume el intento para un APROBADO posterior: ése entra por la puerta del aprobado final, que no depende de lo que
+     * la fila diga ya. Sólo un aprobado ya consumido descarta otro aprobado (el mismo resultado entregado dos veces).
+     */
+    private fun consumeResultForCurrentAttempt(source: String, aprobado: Boolean = false): Boolean {
         val attemptId = currentPaymentAttemptId
+        if (aprobado && attemptId != null && consumedResultAttemptId == attemptId && !consumedResultFueAprobado) {
+            Timber.w("🛡️ [AngelPay] $source: aprobado tras un callback sin aprobado del mismo intento — se procesa | paymentAttemptId=$attemptId")
+            consumedResultFueAprobado = true
+            esperaAlServidorJob?.cancel()   // la espera del veredicto del primer callback ya no manda la pantalla
+            return true
+        }
         if (attemptId == null) {
             val terminalState = _state.value is AngelPayPaymentState.RecordingPayment ||
                     _state.value is AngelPayPaymentState.Success
@@ -6155,6 +6239,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             return false
         }
         consumedResultAttemptId = attemptId
+        consumedResultFueAprobado = aprobado
         return true
     }
 

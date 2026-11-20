@@ -20,8 +20,20 @@ sealed interface VerificacionDelCobro {
         val cardBin: String?,
     ) : VerificacionDelCobro
 
-    /** El procesador contestó y el cobro NO existe. Ahora sí es seguro reintentar. */
+    /**
+     * El historial CONTESTÓ (respuesta válida) y no trae este intento con autorización: «todavía no aparece». 🔴 NO prueba que no
+     * se cobró (el historial no garantiza estar completo) ni autoriza reintentar: sólo gasta una consulta (F1 bloque 4, I3).
+     */
     data object NoCobrado : VerificacionDelCobro
+
+    /**
+     * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): la venta de ESTE intento SÍ está en el historial y no está aprobada. AngelPay la
+     * registra ANTES de mandarla al banco: `05AP` («rejected», «05AP DECLINADA») es el banco que no contestó y puede volverse aprobada.
+     * Un rechazo definitivo trae el código del emisor, pero el historial del SDK 1.0.23 no trae ni código ni descripción (`TransactionItem`
+     * sólo tiene `status`): la terminal no los distingue y trata todo «no aprobada» como `05AP`. NO es «no aparece»: llegó al procesador,
+     * frena su tarjeta y se vuelve a preguntar. Sólo la resuelven el aprobado o la firma de una persona. [estado] = el `status` del historial.
+     */
+    data class EnElProcesador(val estado: String) : VerificacionDelCobro
 
     /** No se pudo preguntar (sin red, error del SDK…). Sigue sin saberse: NO reintentar. */
     data class NoSePudoVerificar(val motivo: String) : VerificacionDelCobro
@@ -53,25 +65,29 @@ class AngelPayChargeVerifier @Inject constructor(
     /**
      * @param attemptId el `paymentAttemptId` que viajó como `integratorReference`.
      * @param terminalSerial acota la consulta a esta terminal (null = sin filtro).
-     * @param hoy fecha civil del cobro; se consulta también el día anterior.
+     * @param fechaDelCobro fecha civil en que se ABRIÓ el intento (zona del negocio); por default hoy (la pantalla pregunta en el acto).
      * @param intentos vistazos al historial antes de rendirse.
      * @param esperaEntreIntentosMs pausa entre vistazos.
      */
     suspend fun verificar(
         attemptId: String,
         terminalSerial: String?,
-        hoy: LocalDate = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
+        fechaDelCobro: LocalDate = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO),
         intentos: Int = INTENTOS_POR_DEFECTO,
         esperaEntreIntentosMs: Long = ESPERA_ENTRE_INTENTOS_MS,
         affiliation: String? = null,
     ): VerificacionDelCobro {
         val adapter = adapterFactory.get(ProcessorType.ANGELPAY)
-        // 🔴 Se consulta ayer TAMBIÉN: un cobro de las 23:59 verificado pasada la medianoche
-        // desaparecería de una consulta de un solo día, y esa ausencia se leería como
-        // "no se cobró" — el error que cuesta dinero.
+        // 🔴 Se consulta el día del cobro, el ANTERIOR y el SIGUIENTE, nunca más allá de hoy. Una ausencia se leería como «todavía no
+        // aparece» y gastaría las consultas: el error que cuesta dinero.
+        //  · El anterior: el cobro de ayer verificado pasada la medianoche (la pantalla pregunta con la fecha de hoy) y un reloj del aparato
+        //    adelantado (la Nexgo con Android 9 corre +1 h de abril a octubre: un cobro de las 23:30 se abre «mañana»).
+        //  · El siguiente (Codex final r6 #3): la recuperación pregunta con la fecha de APERTURA; un intento abierto a las 23:59:55 que
+        //    AngelPay registra a las 00:00:05 no estaba en [día − 1, día]. Con el aviso de AngelPay perdido: cargo aprobado y cero Payment.
+        val hoy = LocalDate.now(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO)
         val query = TransactionHistoryQuery(
-            startDate = hoy.minusDays(1).format(FORMATO),
-            endDate = hoy.format(FORMATO),
+            startDate = fechaDelCobro.minusDays(1).format(FORMATO),
+            endDate = minOf(fechaDelCobro.plusDays(1), maxOf(hoy, fechaDelCobro)).format(FORMATO),
             // `reference` filtra por la referencia DE ANGELPAY, no por la nuestra: mandarle
             // el attemptId devuelve siempre vacío. El filtro nuestro se aplica abajo.
             reference = null,
@@ -80,6 +96,7 @@ class AngelPayChargeVerifier @Inject constructor(
         )
 
         var ultimoFallo: String? = null
+        var enElProcesador: String? = null
         repeat(intentos.coerceIn(1, 3)) { intento ->
             if (intento > 0 && esperaEntreIntentosMs > 0) delay(esperaEntreIntentosMs * (1L shl intento.coerceAtMost(4)))
 
@@ -88,14 +105,16 @@ class AngelPayChargeVerifier @Inject constructor(
 
             resultado.fold(
                 onSuccess = { transacciones ->
-                    val mia = transacciones.filter { it.integratorReference == attemptId }.singleOrNull()
-                    if (mia != null && mia.authorizationCode.isNotBlank() &&
+                    // La venta de ESTE intento: nuestra referencia, de esta terminal y afiliación, y una venta.
+                    val mia = transacciones.filter { it.integratorReference == attemptId }.singleOrNull()?.takeIf {
+                        it.processorType == ProcessorType.ANGELPAY &&
+                            !terminalSerial.isNullOrBlank() && it.terminal == terminalSerial &&
+                            (!affiliation.isNullOrBlank() && it.affiliation == affiliation) &&
+                            it.operationType?.uppercase() in setOf("VENTA", "SALE")
+                    }
+                    val aprobada = mia?.status?.uppercase() in setOf("APROBADA", "APPROVED")
+                    if (mia != null && aprobada && mia.authorizationCode.isNotBlank() &&
                         mia.reference.isNotBlank() &&
-                        mia.processorType == ProcessorType.ANGELPAY &&
-                        mia.status.uppercase() in setOf("APROBADA", "APPROVED") &&
-                        !terminalSerial.isNullOrBlank() && mia.terminal == terminalSerial &&
-                        (!affiliation.isNullOrBlank() && mia.affiliation == affiliation) &&
-                        mia.operationType?.uppercase() in setOf("VENTA", "SALE") &&
                         mia.postOperationStatus.isNullOrBlank()) {
                         // `idOperation` (SDK 1.0.20) va al log para MEDIR qué número usa AngelPay para «venta»;
                         // mientras no se mida, la condición sigue siendo el texto de `operationType`.
@@ -108,6 +127,12 @@ class AngelPayChargeVerifier @Inject constructor(
                             referencia = mia.reference,
                             cardBin = mia.cardBin.takeIf { bin -> bin.isNotBlank() },
                         )
+                    }
+                    // Codex plan A #2: está y no aprobada (`05AP`, o un rechazo cuyo código no trae el SDK 1.0.23). Se vuelve a mirar
+                    // (puede aprobarse en segundos), pero ya no se concluye «no aparece».
+                    if (mia != null && !aprobada) {
+                        enElProcesador = mia.status
+                        Timber.w("🔍 [AngelPay] La venta está en el historial SIN aprobar (%s): llegó al procesador | attemptId=%s", mia.status, attemptId)
                     }
                     // Todavía no está. Puede que el historial vaya con retraso frente a un
                     // cobro de hace segundos, así que se vuelve a mirar antes de concluir.
@@ -126,7 +151,11 @@ class AngelPayChargeVerifier @Inject constructor(
 
         // This API returns a history slice, with no completeness/finality guarantee.
         // An absent entry can never prove that authorization did not occur.
-        return VerificacionDelCobro.NoSePudoVerificar(ultimoFallo ?: "El historial aún no confirma este intento")
+        // F1 bloque 4: una respuesta VÁLIDA sin coincidencia («todavía no aparece») se distingue del fallo técnico (red, credenciales,
+        // lectura ilegible): la primera gasta un turno de la recuperación, el segundo sólo pausa.
+        // Codex plan A #2: verla «en el procesador» una vez gana a un fallo técnico o a un vistazo vacío posterior.
+        return enElProcesador?.let { VerificacionDelCobro.EnElProcesador(it) }
+            ?: ultimoFallo?.let { VerificacionDelCobro.NoSePudoVerificar(it) } ?: VerificacionDelCobro.NoCobrado
     }
 
     companion object {

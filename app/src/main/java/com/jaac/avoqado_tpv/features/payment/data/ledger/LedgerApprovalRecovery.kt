@@ -18,7 +18,8 @@ class LedgerApprovalRecovery(
     /**
      * 🔴 D3 (encargo 9308a7): ¿se puede registrar AHORA (sesión y red)? Sin sesión cada pasada terminaba en un 401, y sin
      * red en un error de transporte; los dos gastaban uno de los CINCO intentos (`verify_attempts < 5`, que sube al
-     * reclamar) de un cobro ya aprobado, y tras cinco la venta quedaba fuera de la recuperación para siempre. Sin sesión o
+     * reclamar) de un cobro ya aprobado, y tras cinco la venta quedaba fuera de la recuperación para siempre (desde Codex final r6 #4
+     * ya no hay tope, pero un intento sin sesión o sin red sólo alargaría la pausa). Sin sesión o
      * sin red no se reclama ninguna fila: esperan intactas (entrar y reconectar vuelven a pedir la pasada). Se pregunta
      * ANTES DE CADA FILA: un 401 con refresco fallido borra la sesión a media pasada (Codex r1 #1).
      */
@@ -55,9 +56,15 @@ class LedgerApprovalRecovery(
                 Timber.i("📒 [LedgerApproval] se fue la sesión o la red a media pasada: las demás aprobaciones esperan")
                 break
             }
-            if (row.venueId != venueId || row.state !in RECOVERABLE ||
-                (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
-                row.verifyAttempts >= 5) continue
+            // F1 bloque 3 (I2): también el aprobado final de AngelPay sobre una fila que cerró la ventana (sigue DESCARTADA con su motivo).
+            val aprobadoTrasLaVentana = row.state == PaymentAttemptEntity.STATE_DESCARTADA &&
+                row.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY && row.hostApproved == true &&
+                row.serverPaymentId == null && row.serverVeto == null
+            // 🔴 F1 · Codex final r6 #4: sin tope de intentos (antes `verifyAttempts >= 5` ⇒ fuera para siempre): un aprobado con evidencia
+            // nunca se abandona. La pausa crece 2 → 4 → 8 → 16 → 32 min y se queda en 32: a lo más un POST por fila cada 32 min, sólo en
+            // los barridos (al arrancar, al entrar, al volver la red y cada 6 h).
+            if (row.venueId != venueId || (row.state !in RECOVERABLE && !aprobadoTrasLaVentana) ||
+                (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO)) continue
             try {
                 val waitMs = 120_000L * (1L shl row.verifyAttempts.coerceIn(0, 4))
                 val acquiredAt = maxOf(now, System.currentTimeMillis())
@@ -102,7 +109,7 @@ class LedgerApprovalRecovery(
                         // Una fila AngelPay que el DAO declara fuera de alcance (devolución, heredada) sigue el camino anterior.
                         ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE ->
                             if (dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRADO, completedAt, null) == 1) recovered++
-                        // Un rechazo no guardó nada: la fila conserva su estado y su lease; el tope de 5 intentos la acota y S6/F0 la ven.
+                        // Un rechazo no guardó nada: la fila conserva su estado y su lease; se reintenta con la pausa (≤ 32 min) y S6/F0 la ven.
                         else -> Timber.e("🚨 [LedgerApproval] la libreta RECHAZÓ el veredicto del 2xx (%s) | attemptId=%s paymentId=%s",
                             aplicado.decision, row.attemptId, receipt.paymentId)
                     }

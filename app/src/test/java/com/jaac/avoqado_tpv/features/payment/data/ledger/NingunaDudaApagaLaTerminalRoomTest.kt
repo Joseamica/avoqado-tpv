@@ -121,14 +121,38 @@ class NingunaDudaApagaLaTerminalRoomTest {
             libreta.openAttempt("siguiente", "venue", "ANGELPAY", 100, 0, "FAST", "{}"))
     }
 
-    @Test fun `P1 una duda SIN dinero ya no cerca su venta - PAX y Nexgo por igual`() = runTest {
+    // F1 (17-nov, plan mínimo tarea 2): reemplaza la regla del 25-sep («una duda sin dinero no cerca su venta, decide el cajero»).
+    // Toda duda de una cuenta frena OTRA TARJETA de esa misma cuenta antes del lector; otra cuenta, aunque sea por el mismo importe, entra.
+    @Test fun `F1 una duda SIN dinero frena otra TARJETA de su cuenta - PAX y Nexgo por igual - y otra cuenta del mismo importe entra`() = runTest {
         for (procesador in listOf("ANGELPAY", "BLUMON")) {
             val libreta = proceso()
             dudaDeLaOrden(libreta, "a-$procesador", procesador, orden7)
-            assertTrue("[$procesador] se avisa y decide el cajero",
+            assertFalse("[$procesador] otra tarjeta de la MISMA cuenta espera al gerente",
                 libreta.openAttempt("b-$procesador", "venue", procesador, 100, 0, "ORDER", orden7))
-            libreta.markDiscardedBeforeCharge("b-$procesador", "fin de la prueba")
+            assertEquals("a-$procesador", libreta.retencionDeLaVenta("orden-7")?.attemptId)
+            assertTrue("[$procesador] la barrera lo dice como cobro por confirmar",
+                libreta.motivoDeLaBarrera("orden-7", "b-$procesador").contains("cobro con tarjeta por confirmar"))
+            assertTrue("[$procesador] otra cuenta, mismo importe, sí entra",
+                libreta.openAttempt("c-$procesador", "venue", procesador, 100, 0, "ORDER", orden8))
+            libreta.markDiscardedBeforeCharge("c-$procesador", "fin de la prueba")
+            db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a-$procesador'")
         }
+    }
+
+    @Test fun `F1 la duda de la cuenta no toca el efectivo - el saldo no la cuenta como dinero`() = runTest {
+        val libreta = proceso()
+        dudaDeLaOrden(libreta, "a", "BLUMON", orden7)
+        assertEquals("el efectivo de Mesas no la ve como dinero de tarjeta", null,
+            libreta.dineroDeTarjetaSinConfirmarDeLaCuenta("venue", "orden-7"))
+        assertFalse("«Pedidos por pagar» puede abrir el folio", libreta.hayDineroEnJuegoDeLaVenta("orden-7"))
+    }
+
+    @Test fun `F1 cuando la duda se resuelve sin cobro, la cuenta vuelve a aceptar tarjeta`() = runTest {
+        val libreta = proceso()
+        dudaDeLaOrden(libreta, "a", "BLUMON", orden7)
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'declarado_sin_cobro:gerente:avoqado' WHERE attempt_id = 'a'")
+        assertTrue(libreta.openAttempt("b", "venue", "BLUMON", 100, 0, "ORDER", orden7))
     }
 
     @Test fun `P1 la venta con dinero conocido sigue cercada`() = runTest {
@@ -146,6 +170,8 @@ class NingunaDudaApagaLaTerminalRoomTest {
     @Test fun `P1 el dinero que llega entre reservar y autorizar cierra el paso de ESA venta`() = runTest {
         val libreta = proceso()
         dudaDeLaOrden(libreta, "a", "ANGELPAY", orden7)
+        // F1: con A en duda B ya no reserva; el caso real es A liberada (DESCARTADA) → B reserva → llega el aprobado tardío de A.
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
         assertTrue(libreta.openAttempt("b", "venue", "ANGELPAY", 100, 0, "ORDER", orden7))
         db.openHelper.writableDatabase.execSQL(
             "UPDATE payment_attempts SET server_processor_evidence = 'APPROVED' WHERE attempt_id = 'a'")
@@ -174,14 +200,17 @@ class NingunaDudaApagaLaTerminalRoomTest {
             dao.casTransition("b", listOf("PREPARANDO"), "AUTORIZANDO", ahora, "otro"))
     }
 
-    @Test fun `P1 una duda SIN dinero de la MISMA venta no impide autorizar - el CAS lee la OTRA fila`() = runTest {
+    @Test fun `F1 la duda que aparece entre reservar y autorizar frena a B antes del banco y del lector`() = runTest {
         val libreta = proceso()
         dudaDeLaOrden(libreta, "a", "ANGELPAY", orden7)
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'DESCARTADA' WHERE attempt_id = 'a'")
         assertTrue(libreta.openAttempt("b", "venue", "ANGELPAY", 100, 0, "ORDER", orden7))
-        assertTrue("la duda de A no es dinero: B entra a autorizar", libreta.markAuthorizing("b"))
+        db.openHelper.writableDatabase.execSQL("UPDATE payment_attempts SET state = 'INDETERMINADO' WHERE attempt_id = 'a'")
+        assertFalse("A quedó en duda después de reservar B: B no autoriza", libreta.markAuthorizing("b"))
+        assertFalse("ni entra al lector", libreta.markKernelEntered("b"))
     }
 
-    @Test fun `P1 la cuarentena por reloj cerca SU venta mientras vive el proceso, y al reiniciar sólo avisa`() = runTest {
+    @Test fun `P1 la cuarentena por reloj cerca SU venta mientras vive el proceso, y al reiniciar sigue frenando su tarjeta`() = runTest {
         val libreta = proceso()
         assertTrue(libreta.openAttempt("colgado", "venue", "ANGELPAY", 100, 0, "ORDER", orden7))
         assertTrue(libreta.markAuthorizing("colgado"))
@@ -190,8 +219,10 @@ class NingunaDudaApagaLaTerminalRoomTest {
             "colgado", libreta.retencionDeLaVenta("orden-7")?.attemptId)
 
         val reiniciada = proceso()
-        assertEquals("tras reiniciar, la cuarentena es una duda más", null, reiniciada.retencionDeLaVenta("orden-7"))
-        assertTrue("y la misma cuenta se puede cobrar (el aviso la nombra)",
-            reiniciada.openAttempt("misma", "venue", "ANGELPAY", 100, 0, "ORDER", orden7))
+        // F1: tras reiniciar sigue siendo una duda de ESA cuenta: otra tarjeta suya espera al gerente; otra cuenta cobra.
+        assertEquals("tras reiniciar, la duda sigue frenando la tarjeta de su cuenta",
+            "colgado", reiniciada.retencionDeLaVenta("orden-7")?.attemptId)
+        assertFalse(reiniciada.openAttempt("misma", "venue", "ANGELPAY", 100, 0, "ORDER", orden7))
+        assertTrue(reiniciada.openAttempt("otra", "venue", "ANGELPAY", 100, 0, "ORDER", orden8))
     }
 }

@@ -40,7 +40,7 @@ class MigracionV47RoomTest {
 
         val db = DatabaseModule.provideDatabase(context)
         try {
-            assertThat(db.openHelper.readableDatabase.version).isEqualTo(47)
+            assertThat(db.openHelper.readableDatabase.version).isEqualTo(48)
             val queue = PaymentQueueRepositoryImpl(db.pendingPaymentDao())
             val vieja = queue.getAllPending().single { it.referenceNumber == "REF-V46" }
             assertThat(vieja.idempotencyKey).isEqualTo("k-v46")

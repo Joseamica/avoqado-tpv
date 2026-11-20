@@ -74,15 +74,5 @@ class BlumonRecoveryViewModel @Inject constructor(
         }
     }
 
-    fun declare(checked: Boolean = false) {
-        if (job?.isActive == true || _state.value.secondsRemaining > 0) return
-        val id = attemptId ?: return
-        val venue = venueId ?: return
-        job = viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true)
-            val result = if (checked) resolver.declareChecked(venue, id) else resolver.declare(venue, id)
-            result.resultJson?.let(socketManager::emitDurableTerminalPaymentResult)
-            _state.value = UiState(result, false, 0, resolver.hasPermission(), resolver.hasCheckPermission())
-        }
-    }
+    // F1 (tarea 5): la pantalla de la PAX ya no declara nada; la firma es del gerente en «Por revisar».
 }

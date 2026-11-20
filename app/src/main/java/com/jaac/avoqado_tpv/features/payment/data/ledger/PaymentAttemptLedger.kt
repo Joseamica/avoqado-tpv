@@ -127,10 +127,18 @@ class PaymentAttemptLedger(
     fun puedeLiberarseSola(fila: PaymentAttemptEntity, venueId: String): Boolean =
         fila.venueId == venueId && !fila.legacyShadow && fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY &&
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.terminalPaymentRequestId == null &&
+            // F1 (17-nov): sólo el Pago rápido. La duda de una cuenta (folio) no la cierra el silencio: espera al gerente.
+            !tieneCuenta(fila) &&
             fila.state == PaymentAttemptEntity.STATE_INDETERMINADO && fila.hostApproved != true && fila.serverOutcome == null &&
             fila.serverProcessorEvidence != PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED && fila.serverVeto == null &&
             !hayDineroSinEscribir(fila.attemptId) &&
             !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+
+    /** F1: la fila es de una cuenta — la misma regla que el SQL (`"orderId":"…"` no vacío; un orderId de espacios cuenta). */
+    private fun tieneCuenta(fila: PaymentAttemptEntity): Boolean = runCatching {
+        com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("orderId")
+            ?.takeIf { it.isJsonPrimitive }?.asString?.isNotEmpty() == true
+    }.getOrDefault(true) // ilegible: no se libera sola (el lado seguro)
 
     /** PAX operator recovery is never offered for a call still alive in this process. */
     fun puedeConciliarBlumon(fila: PaymentAttemptEntity, venueId: String): Boolean =
@@ -141,13 +149,100 @@ class PaymentAttemptLedger(
         fila.venueId == venueId && !fila.legacyShadow &&
             (fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON || fila.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY) &&
             fila.kind == PaymentAttemptEntity.KIND_SALE && fila.state == PaymentAttemptEntity.STATE_INDETERMINADO &&
-            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso)
+            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.attemptId in intentosDeEsteProceso) &&
+            // 🔴 F1 bloque 2 (R1): en la PAX se firma sólo cuando ESTE intento ya terminó con el lector y no trae aprobado propio.
+            !laEjecucionPuedeSeguir(fila) && fila.hostApproved != true && !hayDineroSinEscribir(fila.attemptId)
+
+    /**
+     * 🔴 F1 bloque 2 (R1): ¿el SDK de la PAX puede regresar todavía con ESTE intento? Misma ejecución (el proceso que lo lanzó sigue
+     * vivo) y su regreso no se comprobó (`sdk_returned_at`): también en cuarentena por reloj. Salir de la pantalla o cancelar la
+     * corrutina no acredita nada; el regreso real del SDK o la muerte del proceso, sí. Gemela de [PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]
+     * para la PAX; la N86 sigue con su regla (sólo la cuarentena por reloj de este proceso).
+     */
+    fun laEjecucionPuedeSeguir(fila: PaymentAttemptEntity): Boolean =
+        fila.processor == PaymentAttemptEntity.PROCESSOR_BLUMON && fila.processToken == processToken && fila.sdkReturnedAt == null &&
+            fila.state in EJECUCION_POSIBLE
+
+    /**
+     * 🔴 F1 bloque 2 (R1, contrato del SERVIDOR §2): con el cese ya certificado, ¿esta solicitud se puede DECLARAR? Bajo
+     * [candadoDeEvidencia]: ningún intento suyo puede seguir vivo, ninguno trae aprobado propio, evidencia pendiente de escribir (en
+     * memoria, también la del chip), dinero o veto del servidor, ni un hermano en un estado que lo impida. «Terminó con el lector» y
+     * «se puede declarar» son dos respuestas: ésta es la segunda. D5 ya escrito (sin `host_approved`) sí es declarable: lo firma el
+     * gerente por su camino. Nunca lanza (salvo cancelación): un fallo es false — el veto, el lado seguro.
+     */
+    suspend fun solicitudDeclarable(requestId: String): Boolean = try {
+        withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                withContext(Dispatchers.IO) {
+                    dao.intentosQuePuedenSeguirVivos(requestId, processToken) == 0 &&
+                        dao.intentosDeLaSolicitud(requestId).none(::impideDeclarar)
+                }
+            }
+        }
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo saber si la solicitud %s se puede declarar: no se certifica", requestId)
+        false
+    }
+
+    private fun impideDeclarar(fila: PaymentAttemptEntity): Boolean =
+        fila.legacyShadow || tieneDinero(fila) || fila.attemptId in chipRechazoSinEscribir ||
+            fila.state !in setOf(PaymentAttemptEntity.STATE_INDETERMINADO, PaymentAttemptEntity.STATE_DESCARTADA, PaymentAttemptEntity.STATE_PREPARANDO)
+
+    /** Dinero o un aprobado de ESTA fila: en Room, sólo en memoria (lo que no se pudo escribir) o de Avoqado (evidencia, veto, Payment). */
+    private fun tieneDinero(fila: PaymentAttemptEntity): Boolean =
+        fila.hostApproved == true || hayDineroSinEscribir(fila.attemptId) || fila.serverPaymentId != null ||
+            fila.serverProcessorEvidence == PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED || !fila.serverVeto.isNullOrBlank() ||
+            fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || fila.state in ESTADOS_CON_DINERO
+
+    /**
+     * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): el ÚNICO predicado del que salen todos los «ya se puede
+     * volver a cobrar», «ya se resolvió / ya no está por revisar» y «declaración guardada» (PAX y N86). null = se puede decir. Lo impide:
+     *  1. [FrenoDelResuelto.DINERO]: CUALQUIER intento de la solicitud (Reintentar crea varios; [PaymentAttemptDao.intentosDeLaSolicitud],
+     *     sin tope) o el propio, con dinero o aprobado ([tieneDinero], el mismo del certificado [impideDeclarar]);
+     *  2. la regla que frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) en el intento, su solicitud o su cuenta: con una
+     *     lectura del historial de AngelPay despachada, [FrenoDelResuelto.HISTORIAL_PENDIENTE]; si no, [FrenoDelResuelto.TARJETA_FRENADA].
+     * Una lectura fallida falla cerrado (nunca invita a cobrar).
+     */
+    suspend fun loQueFrenaElResuelto(attemptId: String?, requestId: String?): LoQueFrenaElResuelto? = try {
+        withContext(Dispatchers.IO) {
+            val filas = (listOfNotNull(attemptId?.let { dao.getById(it) }) + (requestId?.let { dao.intentosDeLaSolicitud(it) }.orEmpty()))
+                .distinctBy { it.attemptId }
+            val conDinero = filas.firstOrNull(::tieneDinero)
+            if (conDinero != null) return@withContext LoQueFrenaElResuelto(FrenoDelResuelto.DINERO, conDinero)
+            val cuenta = filas.firstNotNullOfOrNull(::cuentaDe) ?: requestId?.let { dao.cuentaDeLaSolicitud(it) }?.takeIf { it.isNotEmpty() }
+            dao.filaQueFrenaLaTarjetaDelCobro(attemptId, requestId, cuenta?.let { "\"orderId\":" + com.google.gson.Gson().toJson(it) }, processToken)
+                ?.let { LoQueFrenaElResuelto(if (it.historyReadAt != null) FrenoDelResuelto.HISTORIAL_PENDIENTE else FrenoDelResuelto.TARJETA_FRENADA, it) }
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo saber si %s / %s ya se puede dar por resuelto: no se dice", attemptId, requestId)
+        LoQueFrenaElResuelto(FrenoDelResuelto.TARJETA_FRENADA, null)
+    }
+
+    /** La cuenta (orderId) del contexto guardado; null sin cuenta o ilegible. */
+    private fun cuentaDe(fila: PaymentAttemptEntity): String? = runCatching {
+        com.google.gson.JsonParser.parseString(fila.paymentContextJson).asJsonObject.get("orderId")?.takeIf { it.isJsonPrimitive }?.asString
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     /** Lo que el banner verde puede ofrecer declarar: con el token de ESTE proceso, que sabe qué cuarentena por reloj sigue viva. */
     fun observarCobrosDeclarables(
         venueId: String,
         limite: Int = DeclaracionDesdeElAviso.TOPE_DE_LA_CONSULTA,
     ): kotlinx.coroutines.flow.Flow<List<CobroDeclarable>> = dao.observarCobrosDeclarables(venueId, processToken, limite)
+
+    /** F1 bloque 5: el total exacto de «Por revisar». */
+    fun observarTotalPorRevisar(venueId: String): kotlinx.coroutines.flow.Flow<Int> = dao.contarPorRevisar(venueId, processToken)
+
+    /** F1 bloque 5: UN renglón de «Por revisar» por su clave, sin tope. Un fallo de lectura es null (no se afirma que siga). */
+    suspend fun renglonPorRevisar(venueId: String, clase: String, clave: String): CobroDeclarable? = try {
+        withContext(Dispatchers.IO) { dao.renglonPorRevisar(venueId, processToken, clase, clave) }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo leer el renglón %s:%s de «Por revisar»", clase, clave)
+        null
+    }
 
     fun isEnabled(): Boolean =
         true // Financial durability is mandatory; the setting only controls shadow observability.
@@ -236,6 +331,9 @@ class PaymentAttemptLedger(
                     // aquí, dentro de ella, sólo se mira la memoria: una escritura aquí se podía deshacer después de soltar la memoria.
                     if (if (evidenceLockHeld) evidenciaSinGuardar.isNotEmpty() else puertaBajoCandado()) {
                         Timber.w("📒 [Libreta] reserva RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                        -1L
+                    } else if (aprobadoSinEscribirDeLaCuenta(fragment, attemptId) != null) {
+                        Timber.w("📒 [Libreta] reserva RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
                         -1L
                     } else dao.reserveTerminal(
                         attemptId = attemptId, venueId = venueId, processor = processor, kind = kind,
@@ -345,7 +443,13 @@ class PaymentAttemptLedger(
      */
     suspend fun adoptarCobroDeLaSolicitud(requestId: String): CobroSinResolver? = try {
         val fragmento = "\"terminalPaymentRequestId\":" + com.google.gson.Gson().toJson(requestId)
-        dao.findUnresolvedForRequest(fragmento)?.let { CobroSinResolver(it.attemptId) }
+        // 🔴 F1 bloque 3 (hueco 4): sin la llave del lanzamiento, la solicitud sólo identifica el intento si es INEQUÍVOCA. Con A1
+        // firmado y A2 en duda, «el más reciente» le colgaba a A2 el aprobado de A1. Con dos dueños posibles no se adopta nada: el
+        // resultado no se asigna por parecido y el aprobado de A1 lo trae el historial (E1, por su llave).
+        if (dao.duenosPosiblesDeUnResultado(requestId) > 1) {
+            Timber.e("📒🚨 [Libreta] NO se adopta: la solicitud %s tiene varios intentos que pueden ser dueños del resultado", requestId)
+            null
+        } else dao.findUnresolvedForRequest(fragmento)?.let { CobroSinResolver(it.attemptId) }
             ?: run {
                 Timber.w("📒 [Libreta] NO se adopta: ninguna fila lleva la solicitud %s", requestId)
                 null
@@ -355,6 +459,40 @@ class PaymentAttemptLedger(
     } catch (error: Exception) {
         Timber.e(error, "📒 [Libreta] no se pudo buscar el cobro de la solicitud %s", requestId)
         null
+    }
+
+    /** F1 bloque 3 (hueco 4): ¿varios intentos de esta solicitud pueden ser dueños de un resultado tardío? Un fallo de lectura dice sí. */
+    suspend fun solicitudAmbigua(requestId: String): Boolean = try {
+        withContext(Dispatchers.IO) { dao.duenosPosiblesDeUnResultado(requestId) } > 1
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        true
+    }
+
+    /**
+     * 🔴 F1 bloque 4: la lectura del historial de la PANTALLA (K19a) queda despachada en la fila ANTES de preguntar. Devuelve su
+     * marca (para terminarla), o null si no se pudo escribir — la consulta sigue igual: la pantalla no se frena por la libreta.
+     */
+    suspend fun despacharLecturaDelHistorial(attemptId: String, now: Long = System.currentTimeMillis()): Long? = try {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val fila = dao.getById(attemptId) ?: return@withContext null
+            if (dao.despacharLecturaDeLaPantalla(attemptId, fila.venueId, now, now + LedgerUnknownRecovery.RESERVA_DE_LA_LECTURA_MS) == 1) now
+            else null
+        }
+    } catch (error: Exception) {
+        Timber.e(error, "📒 [Libreta] no se pudo anotar la lectura del historial | attemptId=%s", attemptId)
+        null
+    }
+
+    /** F1 bloque 4: la lectura de la pantalla terminó sin aprobado (sin coincidencia o fallo): se quita SU marca, sólo la suya. */
+    suspend fun terminarLecturaDelHistorial(attemptId: String, marca: Long) {
+        runCatching {
+            withContext(NonCancellable + Dispatchers.IO) {
+                val fila = dao.getById(attemptId) ?: return@withContext
+                dao.terminarLecturaDeLaPantalla(attemptId, fila.venueId, marca)
+            }
+        }.onFailure { Timber.e(it, "📒 [Libreta] no se pudo cerrar la lectura del historial | attemptId=%s", attemptId) }
     }
 
     /**
@@ -379,6 +517,9 @@ class PaymentAttemptLedger(
         candadoDeEvidencia.withLock {
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] autorización RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
+                false
+            } else if (aprobadoSinEscribirFrenaA(attemptId)) {
+                Timber.w("📒 [Libreta] autorización RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
                 false
             } else withContext(Dispatchers.IO) {
                 // KERNEL_ACTIVO entra aquí como continuación EXPLÍCITA (kernel → autorización
@@ -414,6 +555,9 @@ class PaymentAttemptLedger(
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] entrada al lector RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                 false
+            } else if (aprobadoSinEscribirFrenaA(attemptId)) {
+                Timber.w("📒 [Libreta] entrada al lector RECHAZADA: la cuenta tiene un aprobado sin escribir | attemptId=%s", attemptId)
+                false
             } else withContext(Dispatchers.IO) {
                 dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
                     PaymentAttemptEntity.STATE_KERNEL_ACTIVO, System.currentTimeMillis(), processToken = processToken) == 1
@@ -439,9 +583,14 @@ class PaymentAttemptLedger(
         approved: Boolean,
         operationId: String?,
         referenceNumber: String?,
-        authCode: String?
+        authCode: String?,
+        /** F1 bloque 3: la sucursal del cobro que espera quien llama (AngelPay); null = la de la fila. */
+        venueId: String? = null,
+        /** F1 bloque 3: quién trae el aprobado final de AngelPay (el SDK, también con la pantalla recreada; app a app; K19a; E1). */
+        origen: OrigenDelAprobado = OrigenDelAprobado.SDK,
     ): Boolean {
         if (!isEnabled()) return true
+        if (approved && esVentaAngelPay(attemptId)) return aprobadoFinalAngelPay(attemptId, venueId, referenceNumber, authCode, origen).quedoEscrito
         if (approved) return aprobacionDelHost(attemptId, operationId, referenceNumber, authCode)
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
@@ -475,6 +624,58 @@ class PaymentAttemptLedger(
 
     /** ¿El banco aprobó este intento y la libreta todavía no lo pudo escribir (en ninguna forma)? */
     fun aprobacionPendienteDeGuardar(attemptId: String): Boolean = aprobacionSinGuardar.containsKey(attemptId)
+
+    /** ¿El intento es una VENTA de AngelPay? Un fallo de lectura sigue el camino de siempre (la memoria de abajo protege igual). */
+    private suspend fun esVentaAngelPay(attemptId: String): Boolean = try {
+        withContext(NonCancellable + Dispatchers.IO) { dao.getById(attemptId) }?.let {
+            it.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY && it.kind == PaymentAttemptEntity.KIND_SALE
+        } == true
+    } catch (error: Exception) {
+        false
+    }
+
+    /**
+     * 🔴 F1 bloque 3 (R2, I1): la ÚNICA entrada del aprobado FINAL de AngelPay — el SDK, el SDK con la pantalla recreada, la consulta
+     * de la pantalla (K19a) y la recuperación en segundo plano (E1). Su primera escritura no depende del estado de la fila ni de quién
+     * es dueño de la consulta ([PaymentAttemptDao.escribirAprobadoFinalAngelPay]): verifica sucursal, intento, procesador y venta,
+     * guarda referencia, autorización y origen, y en la MISMA transacción deja la obligación de registrar (reabre sólo lo que cerró
+     * una persona; lo que cerró la ventana conserva su motivo y queda para el registrador). Desde ese commit la cuenta queda protegida
+     * para otra tarjeta y Caja la cuenta. Bajo [candadoDeEvidencia] y con la copia en memoria ANTES de escribir: un error de escritura
+     * conserva la protección (ninguna salida «no se cobró» pasa) y sólo DESPUÉS del commit se suelta.
+     */
+    suspend fun aprobadoFinalAngelPay(
+        attemptId: String, venueId: String?, referencia: String?, autorizacion: String?, origen: OrigenDelAprobado,
+    ): AprobadoFinal = withContext(NonCancellable) {
+        candadoDeEvidencia.withLock {
+            aprobacionSinGuardar[attemptId] = AprobacionDelHost(null, referencia, autorizacion)
+            var resultado: AprobadoFinal? = null
+            for (vez in 0..1) {
+                resultado = try {
+                    withContext(Dispatchers.IO) {
+                        val sucursal = venueId ?: dao.getById(attemptId)?.venueId ?: return@withContext AprobadoFinal.SIN_FILA
+                        dao.escribirAprobadoFinalAngelPay(sucursal, attemptId, referencia, autorizacion, origen.columna, System.currentTimeMillis())
+                    }
+                } catch (error: Exception) {
+                    Timber.e(error, "📒 [Libreta] el aprobado de AngelPay NO quedó guardado (%s) | attemptId=%s", origen, attemptId)
+                    null
+                }
+                if (resultado != null) break
+            }
+            when {
+                resultado == null -> Timber.e("📒🚨 [Libreta] aprobado de AngelPay sólo en memoria: la cuenta sigue protegida | attemptId=%s", attemptId)
+                resultado.quedoEscrito -> {
+                    aprobacionSinGuardar.remove(attemptId)
+                    if (resultado != AprobadoFinal.REGISTRABLE && resultado != AprobadoFinal.YA_ESTABA)
+                        Timber.e("🚨 [Libreta] aprobado de AngelPay (%s) sobre una fila cerrada o en revisión: %s | attemptId=%s", origen, resultado, attemptId)
+                }
+                else -> {
+                    aprobacionSinGuardar.remove(attemptId)
+                    Timber.e("🚨 [Libreta] aprobado de AngelPay (%s) para un intento que no es de esta venta: %s | attemptId=%s", origen, resultado, attemptId)
+                }
+            }
+            resultado ?: AprobadoFinal.SIN_FILA
+        }
+    }
 
     /**
      * La aprobación es dinero: aterriza siempre. Codex r1 #1: la memoria se anota ANTES de escribir y todo va bajo
@@ -518,12 +719,13 @@ class PaymentAttemptLedger(
                         aprobacionSinGuardar.remove(attemptId)
                         false
                     }
-                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» (una liberación o la declaración del POS ganó)
-                    // y DESPUÉS llega la aprobación. NO es el caso de D13 (no falló una escritura): se queda como en main y se reporta.
-                    // Marcarla con dinero trababa el cierre de caja sin salida cuando el chip rechazaba el cierre; dejarla libre puede
-                    // cobrarse otra vez: es una decisión aparte (anotada en el pizarrón para el founder).
+                    // Codex r19: el orden inverso — la fila ya se cerró como «no se cobró» y DESPUÉS llega la aprobación. 🔴 F1 bloque 2 (R1):
+                    // se QUITA la reapertura de la PAX (2853bccb). Con las dos puertas (la firma sólo con el cese de ESTE intento y sin
+                    // aprobado propio, aquí y en el SERVIDOR) un aprobado de pantalla ya no llega tras una firma nueva. Lo que el SERVIDOR
+                    // acredite después (E3 `APPROVED`) marca, enseña y protege la cuenta por su camino; un `RECORDED` atribuible se reconoce.
+                    // Reabrirla dejaba registrar una venta que el chip podía revertir (Codex código r3 #4). Se queda como en main y se reporta.
                     fila.state == PaymentAttemptEntity.STATE_DESCARTADA -> {
-                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (como en main: no se toca) | attemptId=%s kind=%s", attemptId, fila.kind)
+                        Timber.e("🚨 [Libreta] el banco aprobó un intento que la libreta ya tenía como «no se cobró» (no se reabre) | attemptId=%s kind=%s", attemptId, fila.kind)
                         aprobacionSinGuardar.remove(attemptId)
                         false
                     }
@@ -665,6 +867,13 @@ class PaymentAttemptLedger(
      */
     @Volatile var onUncertaintyBorn: ((attemptId: String) -> Unit)? = null
 
+    /**
+     * 🔴 F1 · 05AP (20-nov): una PERSONA cerró una venta cuya lectura del historial de AngelPay sigue despachada (la marca que frena su
+     * tarjeta). La siguiente respuesta del historial la termina, y el barrido que la pregunta corre cada 6 h: se pide una pasada en
+     * cuanto vence la reserva de esa lectura ([delayMs]). Lo cablea [LedgerRecoveryTrigger]; sin él (pruebas), espera al barrido.
+     */
+    @Volatile var alFirmarConLecturaPendiente: ((delayMs: Long) -> Unit)? = null
+
     private fun avisarIncertidumbre(attemptId: String) {
         anotarEnDuda(attemptId)   // Ronda 21: la espera del aviso del banco cuenta desde que nace la duda
         runCatching { onUncertaintyBorn?.invoke(attemptId) }
@@ -727,7 +936,7 @@ class PaymentAttemptLedger(
                             Timber.w("📒 [Libreta] la declaración local de %s ya estaba en Avoqado: marcada", l.attemptId)
                         false
                     }
-            }
+            }.also { if (it) pedirLaSiguienteRespuestaDelHistorial(l.attemptId, now) }
         }
         val outcome = if (l.evidencia == "OPERATOR_RECONCILED") PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT else PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE
         // 🔴 Pieza C (22-sep): sin `requestId` la liberación es de un cobro LOCAL y va a su propio CAS, que exige
@@ -738,8 +947,8 @@ class PaymentAttemptLedger(
         // tiene dinero, aunque esa evidencia no se haya podido escribir todavía.
         val cerrada = salidaNegativa(l.attemptId, "liberación del servidor") {
             val n =
-                if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now)
-                else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now)
+                if (l.requestId == null) dao.cerrarPorLiberacionLocalDelServidor(l.attemptId, l.venueId, outcome, motivo, now, processToken)
+                else dao.cerrarPorLiberacionDelServidor(l.attemptId, l.venueId, l.requestId, outcome, motivo, now, processToken)
             n == 1
         }
         if (cerrada)
@@ -747,10 +956,28 @@ class PaymentAttemptLedger(
                 "📒 [Ledger] %s liberada por el servidor (%s, solicitud %s): la venta queda destrabada",
                 l.attemptId, l.evidencia, l.requestId ?: "LOCAL (cobro en la terminal)",
             )
+        if (cerrada && l.evidencia == "OPERATOR_RECONCILED") pedirLaSiguienteRespuestaDelHistorial(l.attemptId, now)
         cerrada
     }.onFailure {
         if (it is kotlinx.coroutines.CancellationException) throw it
         Timber.e(it, "📒 [Libreta] no se pudo aplicar la liberación del servidor | attemptId=%s", l.attemptId)
+    }
+
+    /**
+     * F1 · 05AP: una persona acaba de cerrar [attemptId] y su lectura del historial de AngelPay sigue despachada (frena su tarjeta): se
+     * pide la pasada que la termina en cuanto vence su reserva, sin esperar al barrido de 6 h. Nunca lanza; sin el hook, nada.
+     */
+    private suspend fun pedirLaSiguienteRespuestaDelHistorial(attemptId: String, now: Long) {
+        val pedir = alFirmarConLecturaPendiente ?: return
+        try {
+            val fila = withContext(Dispatchers.IO) { dao.getById(attemptId) } ?: return
+            if (fila.historyReadAt == null) return
+            pedir(maxOf(0L, (fila.leaseUntil ?: now) - now) + MARGEN_TRAS_LA_RESERVA_MS)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.w(error, "📒 [Libreta] no se pudo pedir la pasada del historial tras la firma | attemptId=%s", attemptId)
+        }
     }
 
     /**
@@ -795,7 +1022,7 @@ class PaymentAttemptLedger(
                     if (it is kotlinx.coroutines.CancellationException) throw it
                     // 🔴 Ronda 24 (Codex r22, P1-2): el servidor YA dijo que hay dinero; que la escritura falle no lo desdice. Se
                     // recuerda en memoria —bloquea las salidas negativas y la reserva— y la pasada siguiente la vuelve a escribir.
-                    evidenciaSinGuardar[attemptId] = venueId
+                    evidenciaSinGuardar[attemptId] = Pendiente(venueId, impedimento = false)
                     Timber.e(it, "📒 [Libreta] no se pudo guardar la evidencia positiva del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
                 }
             }
@@ -807,7 +1034,39 @@ class PaymentAttemptLedger(
      * la tocan; [reintentarEvidenciaSinGuardar] la vuelve a escribir en cada pasada. ⚠️ Residual declarado: si además el proceso
      * muere antes del reintento, se pierde — el servidor la conserva y la vuelve a dar en la consulta siguiente.
      */
-    private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val evidenciaSinGuardar = java.util.concurrent.ConcurrentHashMap<String, Pendiente>()
+
+    /** Lo que quedó por escribir: dinero del servidor o (F1 bloque 7) el impedimento genérico del `409`. Los dos frenan igual. */
+    private data class Pendiente(val venueId: String, val impedimento: Boolean)
+
+    /**
+     * 🔴 F1 bloque 7 (I4): el `409 POSITIVE_EVIDENCE_EXISTS` es GENÉRICO (puede ser evidencia de OTRA terminal): se guarda como
+     * IMPEDIMENTO ([PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR]: cerca la cuenta, cuenta en Caja y sale en «Por revisar»), nunca
+     * como aprobación del banco. Como la evidencia (Ronda 24, Codex r22 P1-2): si la escritura falla se recuerda en memoria —frena las
+     * salidas «no se cobró», la reserva y la autorización— y la puerta la reescribe. Nunca lanza (salvo cancelación).
+     */
+    suspend fun marcarImpedimentoDelServidor(venueId: String, attemptId: String, at: Long = System.currentTimeMillis()): Result<Boolean> =
+        withContext(NonCancellable) {
+            candadoDeEvidencia.withLock {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val n = dao.marcarVetoDelServidor(attemptId, venueId, PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR, at)
+                        if (n == 1) Timber.w("📒 [Libreta] IMPEDIMENTO del servidor (409) durable | attemptId=%s", attemptId)
+                        n == 1
+                    }
+                }.onSuccess {
+                    evidenciaSinGuardar.remove(attemptId, Pendiente(venueId, impedimento = true))
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    // Si ya había DINERO pendiente de este intento, se conserva: es lo más fuerte.
+                    evidenciaSinGuardar.putIfAbsent(attemptId, Pendiente(venueId, impedimento = true))
+                    Timber.e(it, "📒 [Libreta] no se pudo guardar el impedimento del servidor — queda en memoria y se reintenta | attemptId=%s", attemptId)
+                }
+            }
+        }
+
+    /** F1 bloque 7: lo pendiente de este intento es sólo el impedimento del `409` (la pantalla no lo presenta como del banco). */
+    fun tieneImpedimentoSinGuardar(attemptId: String): Boolean = evidenciaSinGuardar[attemptId]?.impedimento == true
 
     /**
      * 🔴 Codex, pasada final (P1-1): [evidenciaSinGuardar] frenaba sólo la oferta del botón, la declaración y el inicio de la
@@ -826,6 +1085,30 @@ class PaymentAttemptLedger(
         evidenciaSinGuardar.containsKey(attemptId) ||
             // Codex r2 #2: si el chip rechazó el cierre (D5), la aprobación ya no es «cobrado»: es la duda, aunque falte escribirla.
             (aprobacionSinGuardar.containsKey(attemptId) && attemptId !in chipRechazoSinEscribir)
+
+    /**
+     * 🔴 Codex plan A #1 (20-nov): el aprobado que la libreta tiene sólo en MEMORIA ([aprobacionSinGuardar]: sus escrituras fallaron) frena
+     * la tarjeta de SU cuenta igual que si estuviera escrito — la admisión por SQL ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]) no lo ve.
+     * Mismo criterio que [tieneDinero] ([hayDineroSinEscribir]) y mismo alcance que el SQL: la cuenta (`"orderId":"…"` del contexto, sin
+     * venue), una fila no heredada y que no esté ya a salvo (REGISTRADO, CERRADA, en la cola). La fila que frena, o null. Una lectura que
+     * falla se lanza: quien admite falla cerrado. Decide bajo [candadoDeEvidencia], donde nadie agrega a la memoria.
+     */
+    private suspend fun aprobadoSinEscribirDeLaCuenta(fragmento: String?, salvo: String?): PaymentAttemptEntity? {
+        if (fragmento == null) return null
+        for (id in aprobacionSinGuardar.keys) {
+            if (id == salvo || !hayDineroSinEscribir(id)) continue
+            val fila = dao.getById(id) ?: continue
+            if (!fila.legacyShadow && fila.state !in ESTADOS_A_SALVO && fila.paymentContextJson.contains(fragmento)) return fila
+        }
+        return null
+    }
+
+    /** [aprobadoSinEscribirDeLaCuenta] para un intento ya reservado (lector y autorización): su cuenta sale de su propia fila. */
+    private suspend fun aprobadoSinEscribirFrenaA(attemptId: String): Boolean =
+        aprobacionSinGuardar.keys.any { it != attemptId } && withContext(Dispatchers.IO) {
+            val cuenta = dao.getById(attemptId)?.let(::cuentaDe)
+            aprobadoSinEscribirDeLaCuenta(cuenta?.let { "\"orderId\":" + com.google.gson.Gson().toJson(it) }, attemptId) != null
+        }
 
     /** Una salida «no se cobró» bajo [candadoDeEvidencia]: con dinero del intento sin escribir, [escribir] ni se llama y da false. */
     private suspend fun salidaNegativa(attemptId: String, etiqueta: String, escribir: suspend () -> Boolean): Boolean =
@@ -851,10 +1134,14 @@ class PaymentAttemptLedger(
         for (attemptId in chipRechazoSinEscribir.toList()) {
             if (escribirChipRechazoBajoCandado(attemptId) != ChipRechazo.SIN_ESCRIBIR) soltarChipRechazoEscrito(attemptId)
         }
-        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) {
+        for ((attemptId, pendiente) in evidenciaSinGuardar.entries.toList()) {
             try {
-                withContext(Dispatchers.IO) { dao.marcarEvidenciaPositivaDelServidor(attemptId, venueId, now) }
-                evidenciaSinGuardar.remove(attemptId)
+                withContext(Dispatchers.IO) {
+                    if (pendiente.impedimento)
+                        dao.marcarVetoDelServidor(attemptId, pendiente.venueId, PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR, now)
+                    else dao.marcarEvidenciaPositivaDelServidor(attemptId, pendiente.venueId, now)
+                }
+                evidenciaSinGuardar.remove(attemptId, pendiente)
                 Timber.w("📒 [Libreta] la puerta escribió el dinero pendiente del servidor | attemptId=%s", attemptId)
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -867,7 +1154,10 @@ class PaymentAttemptLedger(
 
     /** Vuelve a escribir la evidencia pendiente. Devuelve cuántas siguen sin poder escribirse. */
     suspend fun reintentarEvidenciaSinGuardar(now: Long = System.currentTimeMillis()): Int {
-        for ((attemptId, venueId) in evidenciaSinGuardar.entries.toList()) marcarEvidenciaPositivaDelServidor(venueId, attemptId, now)
+        for ((attemptId, pendiente) in evidenciaSinGuardar.entries.toList()) {
+            if (pendiente.impedimento) marcarImpedimentoDelServidor(pendiente.venueId, attemptId, now)
+            else marcarEvidenciaPositivaDelServidor(pendiente.venueId, attemptId, now)
+        }
         return evidenciaSinGuardar.size
     }
 
@@ -1254,21 +1544,54 @@ class PaymentAttemptLedger(
     }
 
     /**
+     * 🔴 F1 (Codex código r1 #5): ¿OTRO intento frena la tarjeta de esta cuenta? La pantalla lo pregunta antes de encender el lector y
+     * cuando la barrera rechaza después de leer. Un fallo de lectura contesta «sí»: quien pregunta para no cobrar dos veces falla cerrado.
+     */
+    suspend fun otraCercaDeLaTarjeta(orderId: String, attemptIdPropio: String): Boolean = try {
+        orderId.isNotEmpty() && filaQueFrenaLaTarjeta(orderId, attemptIdPropio) != null
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer si la cuenta %s tiene otra tarjeta por confirmar", orderId)
+        true
+    }
+
+    private suspend fun filaQueFrenaLaTarjeta(orderId: String, attemptIdPropio: String?): PaymentAttemptEntity? {
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        return dao.otraCercaDeLaTarjeta(fragmento, attemptIdPropio.orEmpty(), processToken)
+            ?: aprobadoSinEscribirDeLaCuenta(fragmento, attemptIdPropio)   // Codex plan A #1: también lo que sólo está en memoria
+    }
+
+    /**
      * 🧾 Tienda híbrida (R89): ¿la libreta tiene DINERO EN JUEGO de esta venta que el SERVIDOR todavía no confirma? Es la MISMA
      * cerca 2 de `reserveTerminal` ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]) con el mismo fragmento que [retencionDeLaVenta]:
      * un cobro con tarjeta corriendo, aprobado y sin registrar (AUTORIZADO, REGISTRO_FALLIDO…) o con evidencia del servidor.
      * La PAX y la Nexgo escriben en la misma libreta. Lo que ya está en la cola (ENTREGADA_A_COLA) o registrado no cuenta.
      * A diferencia de [retencionDeLaVenta], un fallo de lectura SE LANZA: quien pregunta para no cobrar dos veces falla cerrado.
      */
-    suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean =
-        dao.retencionDeLaVenta("\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken) != null
+    suspend fun hayDineroEnJuegoDeLaVenta(orderId: String): Boolean {
+        // F1: el DINERO de la venta, no la cerca de la tarjeta: una duda sin dinero no impide abrir el folio ni cobrar su saldo.
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        // F1 · 05AP (20-nov, misma familia que Codex plan A #1): también el aprobado que sólo está en MEMORIA. Bajo el candado, donde
+        // se escribe: base y memoria son UNA foto (el aprobado no puede pasar de una a otra entre las dos lecturas).
+        return candadoDeEvidencia.withLock {
+            withContext(Dispatchers.IO) { dao.dineroEnJuegoDeLaVenta(fragmento, processToken) } != null ||
+                aprobadoSinEscribirDeLaCuenta(fragmento, null) != null
+        }
+    }
 
     /**
      * D9 (Mesas, Codex r3): [PaymentAttemptDao.dineroDeTarjetaDeLaCuenta] —cola y libreta de ESTA cuenta en una sola
      * fotografía— con el token de ESTE proceso. Un fallo de lectura SE LANZA: quien pregunta para no cobrar de más falla cerrado.
+     * F1 · 05AP: el aprobado sólo en memoria también es libreta ('LIBRETA'), en la misma foto (bajo el candado de la memoria).
      */
-    suspend fun dineroDeTarjetaSinConfirmarDeLaCuenta(venueId: String, orderId: String): String? =
-        dao.dineroDeTarjetaDeLaCuenta(venueId, orderId, "\"orderId\":" + com.google.gson.Gson().toJson(orderId), processToken)
+    suspend fun dineroDeTarjetaSinConfirmarDeLaCuenta(venueId: String, orderId: String): String? {
+        val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
+        return candadoDeEvidencia.withLock {
+            withContext(Dispatchers.IO) { dao.dineroDeTarjetaDeLaCuenta(venueId, orderId, fragmento, processToken) }
+                ?: aprobadoSinEscribirDeLaCuenta(fragmento, null)?.let { "LIBRETA" }
+        }
+    }
 
     /**
      * 🔴 Decisión del founder (23-sep, «corrige y avisa»): los cobros que la terminal dio por NO cobrados y el servidor SÍ
@@ -1324,7 +1647,16 @@ class PaymentAttemptLedger(
         fun describir(fila: PaymentAttemptEntity?): String? = fila
             ?.takeUnless { it.attemptId == attemptIdPropio }
             ?.let { AvisoDeCobrosPendientes.importeYAntiguedad(it.amountCents + it.tipCents, it.createdAt, ahoraMillis) }
-        val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let { retencionDeLaVenta(it) }
+        // F1 (Codex código r1 #5): la de OTRO intento. Con la reserva propia viva, `LIMIT 1` podía devolver la propia y no nombrar nada.
+        val filaVenta = orderId?.takeIf { it.isNotEmpty() }?.let {
+            try {
+                filaQueFrenaLaTarjeta(it, attemptIdPropio)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                null
+            }
+        }
         val filaAparato = retencionDelAparato()
         val laVenta = describir(filaVenta)
         val elAparato = describir(filaAparato)
@@ -1347,6 +1679,9 @@ class PaymentAttemptLedger(
      *
      * @return true si la fila quedó cerrada y la terminal libre.
      */
+    // F1 cierre TPV (I4): en producción NADIE cierra con un nombre y un booleano: el acuse de Avoqado entra por
+    // [aplicarLiberacionDelServidor] (validado por [LiberacionDelServidor.desdeAcuse]), que usa este mismo CAS. Queda para las pruebas.
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
     suspend fun declararSinCobroLocal(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean = false): Boolean = try {
         // Ronda 24 (Codex r22, P1-2): evidencia de dinero conocida y todavía sin escribir ⇒ no se declara nada. Pasada final
         // (P1-1): se mira DENTRO del candado, junto al CAS — mirarla antes dejaba cerrar si la evidencia llegaba en medio.
@@ -1362,7 +1697,7 @@ class PaymentAttemptLedger(
     private suspend fun declararSinCobroLocalYa(attemptId: String, venueId: String, quien: String?, enAvoqado: Boolean): Boolean {
         val motivo = PaymentAttemptEntity.PREFIJO_DECLARADO_SIN_COBRO + (quien?.takeIf { it.isNotBlank() } ?: "sin_identificar") +
             (if (enAvoqado) PaymentAttemptEntity.SUFIJO_DECLARADO_EN_AVOQADO else "")
-        val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis())
+        val filas = dao.declararSinCobroLocal(attemptId, venueId, motivo, System.currentTimeMillis(), processToken)
         if (filas == 1) Timber.w("📒 [Libreta] declarado SIN COBRO por el cajero | attemptId=%s motivo=%s", attemptId, motivo)
         else Timber.w("📒 [Libreta] la declaración NO aplicó (evidencia o estado cambiaron) | attemptId=%s", attemptId)
         return filas == 1
@@ -1492,6 +1827,44 @@ enum class CercaDeSolicitud {
     /** Ya salió su desenlace final (o hay lápida): la terminal no la ejecuta; el POS debe reenviarla. */
     CERRADA,
 }
+
+/** F1 bloque 2: los estados en que el SDK de la PAX puede seguir con el intento ([PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]). */
+private val EJECUCION_POSIBLE = setOf(
+    PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO, PaymentAttemptEntity.STATE_AUTORIZANDO,
+    PaymentAttemptEntity.STATE_HOST_RESPONDIO, PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO,
+    PaymentAttemptEntity.STATE_INDETERMINADO,
+)
+
+/** Familia «el texto miente»: estados en que la fila ya tiene un aprobado (registrado, en la cola o por registrar). */
+private val ESTADOS_CON_DINERO = setOf(
+    PaymentAttemptEntity.STATE_AUTORIZADO, PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_REGISTRADO,
+    PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, PaymentAttemptEntity.STATE_CERRADA,
+)
+
+/** F1 · 05AP: la pasada del historial que se pide tras una firma va un poco DESPUÉS de que venza la reserva de la lectura (su CAS la exige vencida). */
+internal const val MARGEN_TRAS_LA_RESERVA_MS = 5_000L
+
+/** Codex plan A #1: el dinero ya está a salvo (registrado o en la cola): no frena la tarjeta de su cuenta — el mismo corte que la marca de [PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]. */
+private val ESTADOS_A_SALVO = setOf(
+    PaymentAttemptEntity.STATE_REGISTRADO, PaymentAttemptEntity.STATE_CERRADA, PaymentAttemptEntity.STATE_ENTREGADA_A_COLA,
+)
+
+/**
+ * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3; tabla en `docs/audit/2026-11-17-f1-pantallas/pasada-r2-tpv.md`
+ * del workspace): por qué todavía NO se puede decir de un cobro «ya se puede volver a cobrar», «ya se resolvió» ni «hay una declaración
+ * guardada». Lo decide [PaymentAttemptLedger.loQueFrenaElResuelto]; [texto] es lo que se dice en su lugar (R5: sin afirmar de más).
+ */
+enum class FrenoDelResuelto(val texto: String) {
+    /** Un intento de la MISMA solicitud (o el propio) tiene dinero o un aprobado: en Room, en memoria o de Avoqado. */
+    DINERO("No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."),
+    /** Una lectura del historial de AngelPay despachada sin respuesta escrita: frena la tarjeta en la N86 y se sigue consultando. */
+    HISTORIAL_PENDIENTE("Historial de AngelPay pendiente: no vuelvas a cobrar esta tarjeta todavía. Si sigue así, avisa a soporte."),
+    /** Otra fila de este cobro o de su cuenta todavía frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). */
+    TARJETA_FRENADA("Todavía falta confirmar un cobro con tarjeta de esta venta: no la vuelvas a cobrar con tarjeta todavía. Vuelve a consultar en un momento."),
+}
+
+/** [fila] = la que lo impide (null si la libreta no se pudo leer: se falla cerrado). */
+data class LoQueFrenaElResuelto(val freno: FrenoDelResuelto, val fila: PaymentAttemptEntity?)
 
 /** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */
 private val ESPERANDO_AL_BANCO = setOf(

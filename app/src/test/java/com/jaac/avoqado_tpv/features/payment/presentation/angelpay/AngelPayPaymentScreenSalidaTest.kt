@@ -85,6 +85,49 @@ class AngelPayPaymentScreenSalidaTest {
         )
     }
 
+    // ── F1 mínimo, tarea 5 (17-nov): en la N86 el resultado incierto sólo muestra el importe y [Seguir] ─────────────────────
+
+    private val contenidoIncierto: String by lazy {
+        val inicio = pantalla.indexOf("private fun ResultadoInciertoContent(")
+        require(inicio >= 0) { "No encontré ResultadoInciertoContent en AngelPayPaymentScreen.kt" }
+        pantalla.substring(inicio, pantalla.indexOf("private fun ErrorContent(", inicio))
+    }
+
+    @Test
+    fun `F1 el resultado incierto de la N86 no ofrece ninguna decision al cajero - solo Seguir con el total del intento`() {
+        for (fuera in listOf("El cliente no presentó tarjeta", "Código de supervisor", "Consultar de nuevo", "Confirmar con código", "onDeclarar"))
+            assertFalse("El resultado incierto ya no ofrece «$fuera» (F1: decide el gerente en «Por revisar»).", contenidoIncierto.contains(fuera))
+        assertTrue("Muestra el total del intento original.", contenidoIncierto.contains("tarjetaPorConfirmar(state.totalDelIntento)"))
+        assertTrue("Un doble toque sale UNA vez.", contenidoIncierto.contains("if (!salio) { salio = true; onSeguir() }"))
+        val boton = contenidoIncierto.substring(contenidoIncierto.indexOf("Text(\"Seguir\")") - 300, contenidoIncierto.indexOf("Text(\"Seguir\")"))
+        assertFalse("[Seguir] nunca se apaga, ni durante una consulta lenta.", boton.contains("enabled"))
+        assertTrue(
+            "[Seguir] es la salida de siempre (onNavigateBack): no cancela el intento.",
+            pantalla.contains("ResultadoInciertoContent(state = currentState, onSeguir = onNavigateBack)"),
+        )
+    }
+
+    /** Codex final r1 #9: sin respuesta de Avoqado, la duda de la N86 dice que se revisa al volver la red (además del importe y [Seguir]). */
+    @Test
+    fun `N86 la duda sin red dice que se revisa al volver la red`() {
+        val linea = Regex(
+            """if \(state\.sinConexion\) \{[^}]*text = com\.jaac\.avoqado_tpv\.features\.payment\.presentation\.SIN_CONEXION_SE_REVISA_AL_VOLVER""",
+        )
+        assertTrue("La duda sin red dice qué pasa con el cobro.", linea.containsMatchIn(contenidoIncierto))
+        assertTrue("Sigue diciendo «No la repitas» con el importe.", contenidoIncierto.contains("tarjetaPorConfirmar(state.totalDelIntento)"))
+        assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))
+    }
+
+    /** Codex final r2 #3: con la lectura del historial de AngelPay pendiente, la duda de la N86 lo dice (además del importe y [Seguir]). */
+    @Test
+    fun `N86 la duda con el historial de AngelPay pendiente lo dice`() {
+        val linea = Regex(
+            """if \(state\.historialPendiente\) \{[^}]*text = com\.jaac\.avoqado_tpv\.features\.payment\.data\.ledger\.FrenoDelResuelto\.HISTORIAL_PENDIENTE\.texto""",
+        )
+        assertTrue("La duda con el historial pendiente lo dice.", linea.containsMatchIn(contenidoIncierto))
+        assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))
+    }
+
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(

@@ -212,7 +212,12 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // reproducido desde la cola mande el MISMO método. Aditiva y nullable (MIGRATION_46_47); filas viejas en NULL = como hoy.
     // 🔴 Cruza versión de esquema: instalar encima un APK con base v46 o anterior es un downgrade DESTRUCTIVO
     // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local. El retroceso exige un APK con v47.
-    version = 47,
+    // ⭐ Version 48 (18-nov-2026, F1 bloque 4): `payment_attempts.history_checks` (consultas al historial de AngelPay con respuesta
+    // ESCRITA; registrar tiene su propio `verify_attempts`) y `payment_attempts.history_read_at` (lectura del historial despachada sin
+    // respuesta). Aditivas (MIGRATION_47_48); las filas de AngelPay en duda traen su contador viejo menos el último turno heredado.
+    // 🔴 Cruza versión de esquema: instalar encima un APK con base v47 o anterior es un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`) que BORRA la base local. El retroceso exige un APK con v48.
+    version = 48,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -2252,6 +2257,33 @@ abstract class AvoqadoDatabase : RoomDatabase() {
          * v47 (D5): `pending_payments.card_nature` TEXT nullable. Sólo ADICIÓN, sin backfill: una fila de una cola vieja queda
          * NULL y se reproduce como hoy (crédito). Idempotente por `PRAGMA table_info`.
          */
+        /**
+         * F1 bloque 4 (I3): el turno de una consulta al historial se gasta al ESCRIBIR su respuesta, no al tomarla. Antes se gastaba al
+         * tomarla (`verify_attempts`), así que de una fila vieja sólo el último turno pudo morir sin respuesta: ése es el único que se
+         * devuelve. `verify_attempts` queda para registrar la venta. Idempotente (columnas por `PRAGMA`; el UPDATE ya no aplica).
+         */
+        val MIGRATION_47_48 = object : Migration(47, 48) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val columnas = db.query("PRAGMA table_info(payment_attempts)").use { cursor ->
+                    val nombre = cursor.getColumnIndex("name")
+                    generateSequence { if (cursor.moveToNext()) cursor.getString(nombre) else null }.toSet()
+                }
+                if ("history_checks" !in columnas)
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN history_checks INTEGER NOT NULL DEFAULT 0")
+                if ("history_read_at" !in columnas) db.execSQL("ALTER TABLE payment_attempts ADD COLUMN history_read_at INTEGER")
+                // 🔴 Codex final r1 #3: el turno devuelto de una fila que cerró la VENTANA queda como lectura DESPACHADA: si no, ninguna
+                // consulta la volvía a elegir (sólo eligen dudas y firmadas) y la quinta en vuelo de la v47 se perdía, con su cuenta sin
+                // cerca. Las dudas y las firmadas ya vuelven solas. Mismo UPDATE: idempotente (`verify_attempts` queda en 0).
+                db.execSQL(
+                    """UPDATE payment_attempts SET history_checks = MAX(verify_attempts - 1, 0), verify_attempts = 0,
+                       history_read_at = CASE WHEN state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE'
+                           THEN COALESCE(history_read_at, updated_at) ELSE history_read_at END
+                       WHERE processor = 'ANGELPAY' AND kind = 'SALE' AND host_approved IS NULL AND verify_attempts > 0
+                       AND state IN ('AUTORIZANDO','INDETERMINADO','DESCARTADA')""",
+                )
+            }
+        }
+
         val MIGRATION_46_47 = object : Migration(46, 47) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 val existe = db.query("PRAGMA table_info(pending_payments)").use { cursor ->

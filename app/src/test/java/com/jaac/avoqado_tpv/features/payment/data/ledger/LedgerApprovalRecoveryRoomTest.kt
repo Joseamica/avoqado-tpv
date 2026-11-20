@@ -165,6 +165,28 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(dao.getById("a4")!!.state).isEqualTo("REGISTRADO")
     }
 
+    /**
+     * 🔴 Codex final r7 #2: sin tope de intentos y eligiendo los 50 más viejos, 300 aprobados viejos cuyo registro falla siempre dejaban sin
+     * turno a un aprobado NUEVO (B), con su evidencia completa: cero Payment aunque el SERVIDOR ya pudiera registrarlo. Ahora van primero los
+     * que llevan menos intentos: B entra en la PRIMERA pasada.
+     */
+    @Test fun `F1 Codex r7 2 · 300 aprobados viejos que fallan no dejan sin turno a uno nuevo`() = runTest {
+        repeat(300) { i ->
+            dao.insert(angelPay("viejo-%03d".format(i)).copy(state = "REGISTRO_FALLIDO", verifyAttempts = 7,
+                createdAt = now - 86_400_000L - i, updatedAt = now - 86_400_000L))
+        }
+        dao.insert(angelPay("b-nuevo"))
+        val registrados = mutableListOf<String>()
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } coAnswers {
+            val llave = firstArg<PaymentContext>().idempotencyKey!!
+            if (llave != "b-nuevo") Result.failure(java.io.IOException("503"))
+            else { registrados += llave; Result.success(receipt.copy(solicitudLigada = "req-b-nuevo")) }
+        }
+        LedgerApprovalRecovery(dao, fast, order).recover("venue", now)
+        assertThat(registrados).containsExactly("b-nuevo")
+        assertThat(dao.getById("b-nuevo")!!.state).isEqualTo("REGISTRADO")
+    }
+
     @Test fun `B2 recovery legacy no demuestra OFF por un campo JSON redundante`() = runTest {
         val original = blumon("legacy-tag")
         val snapshot = Gson().fromJson(original.paymentContextJson, PaymentContext.FastPayment::class.java).copy(shiftMembership = "NO_SHIFT_SYSTEM")

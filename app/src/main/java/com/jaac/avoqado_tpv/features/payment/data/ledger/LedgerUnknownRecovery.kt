@@ -123,6 +123,7 @@ class LedgerUnknownRecovery @Inject constructor(
         const val RESERVA_DE_LA_LECTURA_MS = 300_000L
         /** Consultas al historial que un barrido INICIA como máximo (antes, filas leídas: `LIMIT 50`). */
         const val CONSULTAS_POR_CORRIDA = 50
+        const val SEGUIMIENTO_DEL_SIN_APROBAR_MS = 7 * 24 * 3_600_000L
         const val FILAS_POR_PAGINA = 50
     }
 }

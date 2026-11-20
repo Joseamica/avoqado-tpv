@@ -200,7 +200,8 @@ class FirmaTrasLaVentana05APRoomTest {
         assertWithMessage("…después de que venza la reserva de la lectura").that(despues + pedidas.single()).isAtLeast(reserva)
         assertWithMessage("…y en cuanto vence").that(pedidas.single()).isAtMost(reserva - antes + MARGEN_TRAS_LA_RESERVA_MS)
         assertWithMessage("ya no se ofrece firmar otra vez").that(renglon(l)?.declarable).isNotEqualTo(true)
-        assertWithMessage("antes de la siguiente respuesta, la tarjeta todavía espera").that(otraTarjeta(l)).isFalse()
+        // Rediseño tras Codex r7: la firma de una persona suelta la tarjeta DE INMEDIATO (antes esperaba la siguiente respuesta).
+        assertWithMessage("con la firma, la tarjeta entra de inmediato").that(otraTarjeta(l)).isTrue()
 
         t += 3_600_000
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t)   // AngelPay sigue en 05AP
@@ -360,6 +361,47 @@ class FirmaTrasLaVentana05APRoomTest {
         assertWithMessage("…y no se ofrece una firma que el SERVIDOR rechazaría").that(renglon(libreta())?.declarable).isNotEqualTo(true)
         envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
         assertWithMessage("pasado el techo, sola").that(otraTarjeta(libreta())).isTrue()
+    }
+
+    /**
+     * 🔴 Codex final r7 #3 · POS → N86 sin el vínculo intento↔solicitud en el SERVIDOR (un corte al abrir): S6 no trae la solicitud, la consulta
+     * por solicitud sólo trae la ventana (sin firma) y el `ACTIVE` viejo veta la firma. La fila se queda `INDETERMINADO`. Antes frenaba la
+     * tarjeta de A sin techo, para siempre. Ahora la duda de un cobro del POS frena como máximo el techo; otra cuenta nunca se frena. La MISMA
+     * duda de una venta LOCAL (sin solicitud) sigue esperando al gerente pasado el techo, hasta la firma.
+     */
+    @Test fun `Codex r7 3 · sin vinculo y con ACTIVE viejo la duda de un cobro del POS frena como maximo el techo`() = runBlocking<Unit> {
+        duda("a1")
+        coEvery { api.getAttemptStatus(venue, "a1") } returns Response.success(Gson().fromJson(
+            """{"success":true,"attemptId":"a1","requestId":null,"attempt":{"attemptId":"a1","outcome":"NOT_RECORDED","paymentId":null,""" +
+                """"processorEvidence":"NONE","paymentContradiction":false,"evidenceContradiction":false,"unattributedEvidence":false,""" +
+                """"resolution":null},"request":null,"declarationReceipt":null}""",
+            TerminalAttemptStatusResponse::class.java,
+        ))
+        coEvery { api.getRequestStatus(venue, "r-1") } returns Response.success(Gson().fromJson(
+            """{"success":true,"requestId":"r-1","resuelta":true,"request":{"requestId":"r-1","venueId":"$venue","status":"FAILED",""" +
+                """"failureCode":"NO_EVIDENCE_AFTER_WINDOW","outcome":"NOT_CHARGED","outcomeEvidence":"NO_EVIDENCE_AFTER_WINDOW"},"declarationReceipt":null}""",
+            TerminalRequestStatusResponse::class.java,
+        ))
+        coEvery { api.declararSinCobro(venue, "r-1", any()) } returns Response.error(
+            409, """{"success":false,"code":"EXECUTION_STILL_ACTIVE","message":"La terminal sigue trabajando en este cobro."}"""
+                .toResponseBody("application/json".toMediaTypeOrNull()),
+        )
+        LedgerServerRecovery(dao, libreta(), api).recoverOne(venue, "a1", estampar = false)
+        val l = libreta()
+        renglon(l)?.let { assertThat(declaracionCon(l).declarar(venue, it, supervisorPin = "1234")).isNotEqualTo(ResultadoDeLaDeclaracion.Declarado) }
+        assertWithMessage("nada la suelta: sigue en duda").that(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
+        assertWithMessage("antes del techo, frena").that(otraTarjeta(libreta())).isFalse()
+        assertWithMessage("otra cuenta, nunca").that(otraTarjeta(libreta(), "orden-B")).isTrue()
+        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertWithMessage("pasado el techo, entra").that(otraTarjeta(libreta())).isTrue()
+
+        // La misma duda de una venta LOCAL (TPV SOLA): espera al gerente, sin techo.
+        duda("l1", solicitud = null, orden = "orden-L")
+        envejecer("l1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        assertWithMessage("local, pasado el techo: sigue esperando al gerente").that(otraTarjeta(libreta(), "orden-L")).isFalse()
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'declarado_sin_cobro:gerente-1:avoqado' WHERE attempt_id = 'l1'")
+        assertWithMessage("local, con la firma: entra").that(otraTarjeta(libreta(), "orden-L")).isTrue()
     }
 
     // ═══════════════ De paso (misma familia «la admisión ve la memoria»): las puertas del EFECTIVO de la cuenta ═══════════════

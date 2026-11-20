@@ -172,7 +172,9 @@ class Encolador(
         val d = gsonCola.fromJson(a.cuerpoJson, Apartada::class.java)
         val hora = HoraDeCampo(d.ocurrioAt, d.origenHora, a.creadaAt)
         val foto = fotosDe(a.fotosJson).singleOrNull()
-        val t = turnoPara(a.tipo, staffId, a.venueId)
+        // Codex r1 #4: se decide con la hora del TOQUE (guardada al apartar), no con la de ahora: una salida apartada antes del
+        // corte que se completa después (Android mató la app esperando el GPS) sigue siendo la salida de ese turno.
+        val t = turnoPara(a.tipo, staffId, a.venueId, aLaHora = hora.epochMs)
         val entrada = a.tipo == TipoPieza.ENTRADA
         val llaveEntrada = if (!entrada && t!!.timeEntryId == null) t.llaveEntrada else null
         val cuerpo = CuerpoChecada(
@@ -229,9 +231,9 @@ class Encolador(
      * de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada nueva lo
      * reemplaza en el celular.
      */
-    private suspend fun turnoPara(tipo: String, staffId: String, venueId: String): TurnoLocal? {
+    private suspend fun turnoPara(tipo: String, staffId: String, venueId: String, aLaHora: Long = ahoraMs()): TurnoLocal? {
         val t = dao.turnoAhora()
-        val vivo = t != null && turnoVigente(t, ahoraMs())
+        val vivo = t != null && turnoVigente(t, aLaHora)
         if (tipo == TipoPieza.ENTRADA) {
             check(t == null || !vivo || t.staffId != staffId) { "Ya hay un turno abierto" }
             return null

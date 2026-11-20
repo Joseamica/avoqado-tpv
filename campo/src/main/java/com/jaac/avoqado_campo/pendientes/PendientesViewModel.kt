@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.jaac.avoqado_campo.checada.limiteDelTurno
+import com.jaac.avoqado_campo.checada.limiteEnElCelular
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
@@ -78,7 +78,7 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
             // D3: la entrada abierta del SERVIDOR sólo se ofrece si es del MISMO día que esta entrada; la de otro día es una
             // «salida olvidada» y usarla cerraba el turno con cientos de horas (Isaac, 267 h).
             val abiertaDesde = dato(p, "clockInTime")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
-            val deOtroDia = abiertaDesde != null && p.creadaAt >= limiteDelTurno(abiertaDesde)
+            val deOtroDia = abiertaDesde != null && p.creadaAt >= limiteEnElCelular(abiertaDesde)
             val entradaDeAqui =
                 code == "YA_TIENE_ENTRADA" && dato(p, "venueId") == p.venueId && dato(p, "timeEntryId") != null && !deOtroDia
             val texto = when {

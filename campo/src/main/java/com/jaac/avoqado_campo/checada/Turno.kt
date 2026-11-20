@@ -27,11 +27,22 @@ fun limiteDelTurno(abiertoAtMs: Long, zona: ZoneId = ZoneId.systemDefault()): Lo
 }
 
 /**
+ * Margen del celular sobre el límite (Codex r1 #3): el celular no conoce la zona de la sucursal ni el horario de la persona,
+ * y nunca debe declarar olvidado un turno ANTES que el SERVIDOR (las zonas de México difieren hasta 2 h; un nocturno con
+ * horario largo alarga el límite del SERVIDOR una hora después de su salida).
+ */
+private const val MARGEN_DEL_CELULAR_MS = 3 * 3_600_000L
+
+/** El límite con el que el celular decide: el del SERVIDOR más su margen. */
+fun limiteEnElCelular(abiertoAtMs: Long, zona: ZoneId = ZoneId.systemDefault()): Long =
+    limiteDelTurno(abiertoAtMs, zona) + MARGEN_DEL_CELULAR_MS
+
+/**
  * ¿El turno local sigue vivo a [ahoraMs]? Uno de un día ya terminado es «olvidado»: deja de ofrecer «Checar salida» y la
  * siguiente entrada se acepta (el SERVIDOR lo cerró o lo cierra con su regla). Sin hora (filas viejas) cuenta como vivo.
  */
 fun turnoVigente(t: TurnoLocal, ahoraMs: Long, zona: ZoneId = ZoneId.systemDefault()): Boolean =
-    t.abierto && (t.abiertoAt == null || ahoraMs < limiteDelTurno(t.abiertoAt, zona))
+    t.abierto && (t.abiertoAt == null || ahoraMs < limiteEnElCelular(t.abiertoAt, zona))
 
 /** El turno abierto que se quedó de un día anterior: la hora de su entrada, para decírselo a la persona; null = no hay. */
 fun turnoOlvidado(t: TurnoLocal?, staffId: String?, ahoraMs: Long, zona: ZoneId = ZoneId.systemDefault()): Long? =

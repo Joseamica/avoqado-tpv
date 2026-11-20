@@ -168,11 +168,14 @@ interface PaymentAttemptDao {
     // 🔴 F1 · Codex final r6 #4 (20-nov): sin tope de intentos. Todas son un aprobado con evidencia del banco, y con `verify_attempts < 5`
     // cinco fallos del SERVIDOR la sacaban de toda pasada para siempre: cargo aprobado con cero Payment. Un aprobado nunca se abandona; la
     // pausa entre intentos crece hasta 32 min (`LedgerApprovalRecovery`) y la reserva vigente la saca de la página mientras tanto.
+    // 🔴 F1 · Codex final r7 #2 (20-nov): y PRIMERO los que llevan menos intentos (`verify_attempts` sube al reclamar). Por antigüedad, 300
+    // aprobados viejos que fallan siempre y cuyas pausas vencen durante la pasada tapaban para siempre a un aprobado B nuevo: entra en la
+    // primera pasada en que su espera de 2 min ya pasó. Entre iguales, el más viejo.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
         AND ((state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO') AND (host_approved = 1 OR state = 'AUTORIZADO'))
              OR """ + SQL_APROBADO_TRAS_LA_VENTANA + """)
         AND created_at < :olderThan
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
+        AND (lease_until IS NULL OR lease_until < :now) ORDER BY verify_attempts ASC, created_at ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
     /**

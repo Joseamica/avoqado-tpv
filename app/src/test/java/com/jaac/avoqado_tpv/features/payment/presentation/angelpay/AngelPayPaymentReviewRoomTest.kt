@@ -480,7 +480,8 @@ class AngelPayPaymentReviewRoomTest {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
         val contextos = mutableListOf<PaymentContext>()
         coEvery { recordPaymentUseCase(capture(contextos), any(), any(), any()) } returns Result.success(
             PaymentReceipt(paymentId = "pay-d2", receiptUrl = "https://r/d2", accessKey = "k", amount = BigDecimal("150.00"), tipAmount = BigDecimal("22.50")),
@@ -504,11 +505,14 @@ class AngelPayPaymentReviewRoomTest {
             recreado = createViewModel(restaurado)
 
             // 1) El resultado pendiente llega PRIMERO (DisposableEffect del launcher en la primera composición)…
+            libreta.cerrar()
             recreado!!.onAngelPaySdkResult(aprobadoDelSdk(intento, cobradoCents = 17_250))
+            libreta.esperarLecturaDetenida()
             // 2) …y luego el auto-arranque de la pantalla, con los argumentos de un cobro local (sin propina: se eligió en el
             //    asistente). Se llama sin condición: es el peor caso, una pantalla que todavía leyera `Idle`.
             recreado!!.setSocketPaymentSource(null, null)
             recreado!!.initPayment("150.00", orderId = "o-loc", orderNumber = "12")
+            libreta.abrir()
 
             val final = kotlinx.coroutines.withTimeout(15_000) {
                 recreado!!.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Queued }
@@ -540,7 +544,8 @@ class AngelPayPaymentReviewRoomTest {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
-        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
         val contextos = mutableListOf<PaymentContext>()
         coEvery { recordPaymentUseCase(capture(contextos), any(), any(), any()) } returns Result.success(
             PaymentReceipt(paymentId = "pay-d2p", receiptUrl = "https://r/d2p", accessKey = "k", amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00")),
@@ -561,9 +566,12 @@ class AngelPayPaymentReviewRoomTest {
             val restaurado = androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) })
             recreado = createViewModel(restaurado)
 
+            libreta.cerrar()   // el auto-arranque llega MIENTRAS se registra el resultado ([LibretaConCompuerta])
             recreado!!.onAngelPaySdkResult(aprobadoDelSdk(intento, cobradoCents = 11_000))
+            libreta.esperarLecturaDetenida()
             recreado!!.setSocketPaymentSource("SOCKET", "req-d2")
             recreado!!.initPayment("100.00", orderId = "o-d2", orderNumber = "D2", skipReview = true, externalTipCents = 1_000)
+            libreta.abrir()
 
             val final = kotlinx.coroutines.withTimeout(15_000) {
                 recreado!!.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Queued }
@@ -586,6 +594,34 @@ class AngelPayPaymentReviewRoomTest {
     // (que el cobro se salta la reseña/propina, y la propina fija de la mesa de D9). Recreada la pantalla, `initPayment` queda
     // apartado mientras se registra el resultado; sin restaurarlas, tras un rechazo «Reintentar» y «Atrás» volvían a preguntar
     // la propina de un cobro que nunca la preguntó.
+
+    /**
+     * 🚪 Compuerta en la libreta para el «peor caso» de D2: el auto-arranque de la pantalla (`initPayment`) llega MIENTRAS el
+     * ViewModel recreado registra el resultado del SDK. Con la compuerta cerrada, la lectura de la fila (`getById`, lo primero
+     * que hace la adopción) espera; la prueba llama `initPayment` y luego abre. Sin ella el orden dependía de los hilos: si el
+     * registro (hilos reales de Room) terminaba antes de que la prueba llegara a `initPayment`, ese arranque ya no estaba
+     * apartado, pintaba «Método de pago» encima del rechazo o del cobro, y la espera del estado final se agotaba a los 15 s
+     * (CI del PR #92 de la TPV, corrida 44575803323: 15.05 s, contra ~0.06 s de siempre).
+     */
+    private class LibretaConCompuerta(
+        private val base: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao,
+    ) : com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao by base {
+        @Volatile private var compuerta: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        private val detenidas = java.util.concurrent.atomic.AtomicInteger(0)
+
+        fun cerrar() { compuerta = kotlinx.coroutines.CompletableDeferred() }
+        fun abrir() { compuerta?.complete(Unit) }
+
+        /** Que el registro de verdad esté detenido en la compuerta (si no, la prueba no probaría el peor caso). */
+        suspend fun esperarLecturaDetenida() {
+            kotlinx.coroutines.withTimeout(10_000) { while (detenidas.get() == 0) delay(5) }
+        }
+
+        override suspend fun getById(attemptId: String): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity? {
+            compuerta?.let { if (!it.isCompleted) { detenidas.incrementAndGet(); it.await() } }
+            return base.getById(attemptId)
+        }
+    }
 
     /** Un rechazo confirmado del banco (G500) con NUESTRA referencia. */
     private fun rechazoDelSdk(intento: String): PaymentResult = mockk(relaxed = true) {
@@ -618,7 +654,8 @@ class AngelPayPaymentReviewRoomTest {
         // El negocio SÍ pregunta propina; este cobro del POS (skipReview) se la salta.
         every { tpvSettingsRepository.getCurrentSettings() } returns
             TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
-        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
         val handle = androidx.lifecycle.SavedStateHandle()
         val original = createViewModel(handle)
         var recreado: AngelPayPaymentViewModel? = null
@@ -627,9 +664,12 @@ class AngelPayPaymentReviewRoomTest {
             original.initPayment("100.00", orderId = "o-r3", orderNumber = "R3", skipReview = true, externalTipCents = 1_000)
             val (vm, intento) = recrearConElSdkAlFrente(original, handle)
             recreado = vm
+            libreta.cerrar()   // peor caso: el auto-arranque llega MIENTRAS se registra el rechazo ([LibretaConCompuerta])
             vm.onAngelPaySdkResult(rechazoDelSdk(intento))
+            libreta.esperarLecturaDetenida()
             vm.setSocketPaymentSource("SOCKET", "req-r3-skip")
-            vm.initPayment("100.00", orderId = "o-r3", orderNumber = "R3", skipReview = true, externalTipCents = 1_000)   // peor caso
+            vm.initPayment("100.00", orderId = "o-r3", orderNumber = "R3", skipReview = true, externalTipCents = 1_000)
+            libreta.abrir()
             val rechazo = kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } } as AngelPayPaymentState.Error
             assertThat(rechazo.canRetry).isTrue()
 
@@ -653,7 +693,8 @@ class AngelPayPaymentReviewRoomTest {
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns
             TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
-        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
         val handle = androidx.lifecycle.SavedStateHandle()
         val original = createViewModel(handle)
         var recreado: AngelPayPaymentViewModel? = null
@@ -662,9 +703,12 @@ class AngelPayPaymentReviewRoomTest {
             original.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
             val (vm, intento) = recrearConElSdkAlFrente(original, handle)
             recreado = vm
+            libreta.cerrar()   // peor caso: el auto-arranque llega MIENTRAS se registra el rechazo ([LibretaConCompuerta])
             vm.onAngelPaySdkResult(rechazoDelSdk(intento))
+            libreta.esperarLecturaDetenida()
             vm.setSocketPaymentSource(null, null)
-            vm.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)   // peor caso
+            vm.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
+            libreta.abrir()
             val rechazo = kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } } as AngelPayPaymentState.Error
             assertThat(rechazo.canRetry).isTrue()
 
@@ -676,6 +720,42 @@ class AngelPayPaymentReviewRoomTest {
             com.google.common.truth.Truth.assertWithMessage("estado tras Atrás=%s", vm.state.value)
                 .that(vm.state.value).isNotInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
             assertThat(siguioEnElAsistente).isFalse()
+        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
+        Unit
+    }
+
+    // ⚠️ SONDA TEMPORAL (encargo 953f6e): reproduce A PROPÓSITO el orden que colgó el CI. Se borra en el commit siguiente.
+    @Test
+    fun `SONDA 953f6e - si el registro termina antes del auto-arranque, initPayment pinta encima del rechazo`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
+        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
+        val handle = androidx.lifecycle.SavedStateHandle()
+        val original = createViewModel(handle)
+        var recreado: AngelPayPaymentViewModel? = null
+        try {
+            original.setSocketPaymentSource(null, null)
+            original.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
+            val (vm, intento) = recrearConElSdkAlFrente(original, handle)
+            recreado = vm
+            vm.onAngelPaySdkResult(rechazoDelSdk(intento))
+            // El registro termina PRIMERO (lo que pasa cuando el hilo de la prueba se retrasa en un CI cargado)…
+            kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } }
+            // …y el auto-arranque llega DESPUÉS: ya no está apartado y pinta otra pantalla encima del rechazo.
+            vm.setSocketPaymentSource(null, null)
+            vm.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
+            com.google.common.truth.Truth.assertWithMessage("estado tras el arranque tardío=%s", vm.state.value)
+                .that(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Error::class.java)
+            // Con eso, la espera de las pruebas viejas (`first { Error }`) se agota: el Error ya pasó y no vuelve.
+            val espera = kotlinx.coroutines.withTimeoutOrNull(500) { vm.state.first { it is AngelPayPaymentState.Error } }
+            assertThat(espera).isNull()
         } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
         Unit
     }

@@ -6,6 +6,17 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+// Sufijo de QA aislado (igual que :app): sólo para depuración. Con la propiedad puesta, ninguna tarea release corre.
+val devApplicationIdSuffix = (project.findProperty("avoqado.devApplicationIdSuffix") as String?)?.trim()
+if (devApplicationIdSuffix != null) {
+    check(devApplicationIdSuffix.matches(Regex("\\.[a-z][a-z0-9_]*"))) {
+        "avoqado.devApplicationIdSuffix inválido: «$devApplicationIdSuffix» (ej. .lab)"
+    }
+    check(gradle.startParameter.taskNames.none { it.contains("release", ignoreCase = true) }) {
+        "avoqado.devApplicationIdSuffix es sólo para depuración: no se usa en un build release"
+    }
+}
+
 android {
     namespace = "com.jaac.avoqado_campo"
     compileSdk = 36
@@ -40,6 +51,10 @@ android {
             // La puerta del laboratorio sólo instala (y no frena el aparato con) un `com.jaac.avoqado_tpv*` de pruebas:
             // `perfil.es_version_de_pruebas` pide «-sandbox» o «-nexgo» en la versión. Release sigue en «0.4.0».
             versionNameSuffix = "-sandbox"
+            // La nube (puerta-compilar campo 0): `-Pavoqado.devApplicationIdSuffix=.lab` compila la depuración como OTRA
+            // app (`com.jaac.avoqado_tpv.campo.lab`), que se instala junto a la de la Mac sin tocarla ni su sesión.
+            // Sin la propiedad, nada cambia.
+            devApplicationIdSuffix?.let { applicationIdSuffix = it }
         }
         release { isMinifyEnabled = false }
     }

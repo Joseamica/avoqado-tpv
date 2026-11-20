@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **PAX · cobrar con tarjeta una cuenta de Órdenes ya no borra sus productos de la terminal (D23, tarjeta hz:e82938e1:D23; encargo bb2206)**: tras el cobro, `OrderSyncCoordinator.updateOrderMerchant` anotaba el comercio con un `INSERT … REPLACE`, que en SQLite borra la fila de la cuenta y la vuelve a crear; el `ON DELETE CASCADE` se llevaba todos sus renglones, también los agregados sin red que aún no subían. Ahora es un UPDATE de sólo esos campos (`DraftOrderDao.updateMerchant`). Prueba: `ComercioSinBorrarRenglonesTest` (Room en memoria).
+
 ---
 
 ## [2.22.2] - 2026-11-20

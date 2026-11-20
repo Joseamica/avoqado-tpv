@@ -18,6 +18,16 @@ const val SQL_CONSULTABLE_EN_EL_HISTORIAL = "((state IN ('AUTORIZANDO','INDETERM
     PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + ") AND server_veto IS NULL AND history_checks < 5)"
 
 /**
+ * 🔴 F1 · Codex final r8 #5 (A, 20-nov): el SERVIDOR ya acreditó el Payment de ESTE intento: `RECORDED` con Payment, el MISMO importe y la
+ * MISMA propina y, si vino del POS, sin otro ganador acreditado para su solicitud. Con eso el impedimento genérico del `409
+ * POSITIVE_EVIDENCE_EXISTS` ([PaymentAttemptEntity.VETO_IMPEDIMENTO_DEL_SERVIDOR]) queda resuelto: esa evidencia positiva ES este pago.
+ * NULL-segura (sólo `IS`): se usa negada. Sin alias.
+ */
+const val SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO = "(server_outcome IS 'RECORDED' AND server_payment_id IS NOT NULL " +
+    "AND server_amount_cents IS amount_cents AND server_tip_cents IS tip_cents " +
+    "AND (terminal_payment_request_id IS NULL OR server_winner_payment_id IS NULL OR server_winner_payment_id IS server_payment_id))"
+
+/**
  * 🔴 F1 bloque 3 (I2): el aprobado final de AngelPay escrito sobre una fila que cerró la VENTANA (no una persona): conserva su
  * `DESCARTADA` y su motivo, y es una obligación de registro que el registrador toma con la llave del intento. Sin alias.
  */
@@ -1408,6 +1418,8 @@ interface PaymentAttemptDao {
         guardarVeredictoDelServidor(
             v.attemptId, v.paymentId, v.outcome.name, v.recordedVia, v.amountCents, v.tipCents, v.ganadorAcreditado, now,
         )
+        // F1 · Codex final r8 #5 (A): el Payment de ESTE intento resuelve el impedimento genérico del 409 (nunca un veto propio).
+        resolverElImpedimentoConElPagoDeEsteIntento(v.attemptId)
         val transiciono = v.esFinalAprobado && registrarPorVeredictoDelServidor(v.attemptId, now) == 1
         val bandejaJson = v.ganadorAcreditado?.let { ganador -> requestId?.let { resolverBandejaConGanador(it, ganador, v.recordedVia, now) } }
         val estadoFinal = getById(v.attemptId)?.state
@@ -1496,11 +1508,28 @@ interface PaymentAttemptDao {
      * motivo: lo que importa es que algo contradice, no cuál fue el último aviso. No toca el estado ni la retención —
      * esto no cierra nada, sólo impide que una respuesta LIMPIA y ATRASADA libere lo que otra ya contradijo.
      */
+    // 🔴 F1 · Codex final r8 #5 (A): el impedimento genérico del `409` (`SERVER_IMPEDIMENT`) es el ÚNICO veto que se puede sustituir: por
+    // un veto propio del servidor (más preciso, sigue prohibiendo liberar), nunca al revés. Y no se escribe sobre una fila cuyo Payment de
+    // ESTE intento ya lo resolvió ([SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO]): el 409 que llega tarde, o el reintento del que
+    // quedó en memoria, ya no frena para siempre el saldo de la cuenta.
     @Query(
         """UPDATE payment_attempts SET server_veto = :motivo, updated_at = :now
-           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0 AND server_veto IS NULL""",
+           WHERE attempt_id = :attemptId AND venue_id = :venueId AND legacy_shadow = 0
+           AND (server_veto IS NULL OR (server_veto = 'SERVER_IMPEDIMENT' AND :motivo != 'SERVER_IMPEDIMENT'))
+           AND NOT (:motivo = 'SERVER_IMPEDIMENT' AND """ + SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO + """)""",
     )
     suspend fun marcarVetoDelServidor(attemptId: String, venueId: String, motivo: String, now: Long): Int
+
+    /**
+     * 🔴 F1 · Codex final r8 #5 (A): el SERVIDOR acreditó el Payment de ESTE intento (`RECORDED`, mismo importe y propina; con solicitud,
+     * sin otro ganador acreditado): el impedimento genérico del `409` queda resuelto y se quita, en la MISMA transacción que guarda el
+     * veredicto y antes de la regla de liberación. Sólo ese veto: uno propio del servidor se conserva.
+     */
+    @Query(
+        """UPDATE payment_attempts SET server_veto = NULL
+           WHERE attempt_id = :attemptId AND server_veto = 'SERVER_IMPEDIMENT' AND """ + SQL_EL_PAGO_DE_ESTE_INTENTO_RESUELVE_EL_IMPEDIMENTO,
+    )
+    suspend fun resolverElImpedimentoConElPagoDeEsteIntento(attemptId: String): Int
 
     /**
      * E4 · la bandeja responde por la SOLICITUD y sólo con un ganador acreditado: PROCESSING ⇒ RESOLVED `success`;

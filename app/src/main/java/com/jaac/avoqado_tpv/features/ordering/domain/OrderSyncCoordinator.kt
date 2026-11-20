@@ -900,22 +900,20 @@ class OrderSyncCoordinator @Inject constructor(
         merchantAccountName: String?
     ) = withContext(Dispatchers.IO) {
         try {
-            val draftOrder = draftOrderDao.getOrder(orderId)
-
-            if (draftOrder == null) {
-                Timber.w("⚠️ [Merchant Update] Order not found | orderId=$orderId")
-                return@withContext
-            }
-
-            // Update merchant fields
-            val updatedOrder = draftOrder.copy(
+            // D23: UPDATE de sólo estos campos. El INSERT … REPLACE de antes borraba y recreaba la fila, y el
+            // ON DELETE CASCADE se llevaba los renglones de la cuenta (también los agregados sin red).
+            val cambiadas = draftOrderDao.updateMerchant(
+                orderId = orderId,
                 merchantAccountId = merchantAccountId,
                 merchantAccountName = merchantAccountName,
                 syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING,
                 updatedAt = System.currentTimeMillis()
             )
 
-            draftOrderDao.insert(updatedOrder)
+            if (cambiadas == 0) {
+                Timber.w("⚠️ [Merchant Update] Order not found | orderId=$orderId")
+                return@withContext
+            }
 
             Timber.d("✅ [Merchant Update] Updated order | orderId=$orderId | merchant=$merchantAccountName ($merchantAccountId)")
 

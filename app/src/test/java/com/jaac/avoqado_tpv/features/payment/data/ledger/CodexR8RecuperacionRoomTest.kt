@@ -304,6 +304,7 @@ class CodexR8RecuperacionRoomTest {
      * dentro de una respuesta normal del SDK 1.0.23, `status=false`, lista vacía y un mensaje de error. El adaptador sólo leía la lista: la
      * terminal gastaba un turno, borraba la marca y dejaba de buscar A. Ahora es un fallo técnico: no gasta turno ni suelta nada.
      */
+    @org.junit.Ignore("D en espera: falta medir en la N86 cómo contesta AngelPay una búsqueda legítima sin ventas (encargo 27dd77)")
     @Test fun `r8_4 D · status false del SDK es un fallo tecnico - la fila sigue en las consultas con su marca`() = runBlocking<Unit> {
         dudaN86("a1")
         LedgerUnknownRecovery(dao, libreta(), historialReal { "rejected" }).recover(venue, System.currentTimeMillis())

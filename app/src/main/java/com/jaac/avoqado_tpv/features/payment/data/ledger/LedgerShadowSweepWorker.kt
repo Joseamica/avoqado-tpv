@@ -53,8 +53,7 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
         return try {
             // Financial recovery is mandatory even when shadow telemetry is OFF.
             secureStorage.getVenueId()?.let { venueId ->
-                unknownRecovery.recover(venueId, System.currentTimeMillis())
-                approvalRecovery.recover(venueId, System.currentTimeMillis())
+                LedgerSweepLogic.recuperarElDinero(approvalRecovery, unknownRecovery, venueId)
                 // Codex r4–r5 (D3): lo que sigue pendiente (reciente, que envejeció durante la pasada o que no cupo en la página)
                 // se agenda para cuando se pueda tomar, en vez de esperar la reconexión o las 6 h.
                 runCatching {
@@ -107,6 +106,22 @@ object LedgerSweepLogic {
 
     /** CERRADA/DESCARTADA pruned after a week. INDETERMINADO is NEVER pruned (DAO SQL). */
     const val PRUNE_DAYS = 7L
+
+    /**
+     * El dinero de la libreta en una pasada del trabajador: las consultas al historial de AngelPay ([LedgerUnknownRecovery]) y el registro
+     * de los aprobados ([LedgerApprovalRecovery]). [ahora] es la hora de pared que reciben las dos; [reloj] es monotónico (ms) y lo usa
+     * el arreglo C de Codex r8 (presupuesto de las consultas).
+     */
+    suspend fun recuperarElDinero(
+        approval: LedgerApprovalRecovery,
+        unknown: LedgerUnknownRecovery,
+        venueId: String,
+        ahora: () -> Long = { System.currentTimeMillis() },
+        @Suppress("UNUSED_PARAMETER") reloj: () -> Long = { System.nanoTime() / 1_000_000L },
+    ) {
+        unknown.recover(venueId, ahora())
+        approval.recover(venueId, ahora())
+    }
 
     data class SweepResult(
         val openRowsLogged: Int,

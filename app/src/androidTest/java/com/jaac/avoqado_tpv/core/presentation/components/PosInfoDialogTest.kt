@@ -94,7 +94,6 @@ class PosInfoDialogTest {
                             requireClockInToLogin = true,
                             onStartPaymentWithAmount = { operationalActions++ },
                             onNavigateToShifts = { operationalActions++ },
-                            onNavigateToOrdering = { operationalActions++ },
                             onNavigateToReports = { operationalActions++ },
                             onNavigateToPayments = { operationalActions++ },
                             onNavigateToSupport = { operationalActions++ },

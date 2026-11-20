@@ -71,6 +71,7 @@ fun Navegacion(
     val obligatoriaS = revisor.obligatoria.collectAsStateWithLifecycle()
     val pasoS = actualizador.paso.collectAsStateWithLifecycle()
     val copiaS = copia.copia.collectAsStateWithLifecycle()
+    val conSimsS = remember { dao.conSims() }.collectAsStateWithLifecycle(emptyList())
     val identidad by identidadS
     val piezas by piezasS
     val destino = destinoDe(identidad, piezas.isEmpty())
@@ -115,7 +116,7 @@ fun Navegacion(
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),
-                            enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion), articulo = c?.config?.etiquetaArticulo ?: "SIM",
+                            enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
                         ),
                         AccionesDeInicio(

@@ -85,7 +85,7 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
         e.error?.let { Recuadro(it, Tono.ERROR) }
         if (ventas) {
             // Codex r3 (parada): sin señal la lista puede ir atrasada; se dice de qué hora es en vez de fingir que está al día.
-            e.bajadaAt?.takeIf { it > 0 }?.let { Tenue("Así estaban tus ventas a las ${horaCorta(it)}. Con señal, toca «Actualizar».") }
+            e.bajadaAt?.takeIf { it > 0 }?.let { Tenue("La revisión de tu supervisor es de las ${horaCorta(it)}. Con señal, toca «Actualizar».") }
             if (e.ventasPorSubir.isNotEmpty()) {
                 Seccion("Por subir", e.ventasPorSubir, vacio = "") {}
                 Tenue("Todavía no llegan al servidor; las ves en «Ventas pendientes por subir».")

@@ -1,5 +1,11 @@
 package com.jaac.avoqado_campo.copia
 
+import com.google.gson.JsonParser
+import com.jaac.avoqado_campo.cola.EstadoPieza
+import com.jaac.avoqado_campo.cola.Pieza
+import com.jaac.avoqado_campo.cola.TipoPieza
+import com.jaac.avoqado_campo.cola.normalizarSerie
+import com.jaac.avoqado_campo.cola.seriesDeCustodia
 import com.jaac.avoqado_campo.red.MiSimDto
 import com.jaac.avoqado_campo.red.RespuestaModulos
 
@@ -14,6 +20,11 @@ data class Copia(
     val sims: List<SimEnCopia>,
     val config: ConfigDeSucursal,
     val bajadaAt: Long,
+    /**
+     * D1: las piezas de SIM (id) que ya habían llegado al SERVIDOR ANTES de pedir esta lista: ésas ya vienen en ella. Lo que
+     * llegó después o sigue en la cola manda sobre la lista ([loDelCelular]). null (copia de antes de D1) = ninguna.
+     */
+    val yaLlegadas: List<Long>? = null,
 )
 
 data class SimEnCopia(
@@ -76,3 +87,77 @@ fun MiSimDto.aSim(localmente: String?) = SimEnCopia(
     verificationStatus = verificationStatus, verificationId = verificationId, paymentId = paymentId,
     rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes,
 )
+
+/** D1 (Codex r3): lo último que ESTE celular hizo con una SIM y que la lista todavía no trae. */
+enum class LoDelCelular {
+    VENTA_POR_SUBIR, VENTA_NO_SUBIO, VENDIDA, ACEPTADA_POR_SUBIR, RECHAZADA_POR_SUBIR, ACEPTADA, RECHAZADA;
+
+    val esVenta get() = this == VENTA_POR_SUBIR || this == VENTA_NO_SUBIO || this == VENDIDA
+}
+
+/** HECHA o AVISO, o DESCARTADA con la respuesta del SERVIDOR (el «Entendido» de un AVISO la conserva). */
+fun llegoAlServidor(p: Pieza) = p.estado == EstadoPieza.HECHA || p.estado == EstadoPieza.AVISO ||
+    (p.estado == EstadoPieza.DESCARTADA && p.resultadoJson != null)
+
+/**
+ * D1: serie normalizada → lo último que el celular hizo con esa SIM, si la lista [c] todavía no lo trae. [piezas]: las ventas
+ * y custodias de la cola, también las terminadas (7 días). De cada tipo manda la última; la venta gana a la custodia. No
+ * cuentan lo que llegó al SERVIDOR antes de pedir la lista (`yaLlegadas`: ya viene en ella) ni lo DESCARTADO sin respuesta
+ * (Quitar, gracia descartada, la venta vieja de «corregir precio»: nunca existió). Sin ninguna pieza de la SIM (ya se purgó)
+ * queda la marca de la copia. `SOLD` en la lista lo decide quien llama: es del SERVIDOR.
+ */
+fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
+    val vistas = c.yaLlegadas.orEmpty().toSet()
+    val ventas = mutableMapOf<String, Pieza>()
+    val custodias = mutableMapOf<String, Pieza>()
+    for (p in piezas.sortedBy { it.id }) when (p.tipo) {
+        TipoPieza.VENTA -> serieDeVenta(p.cuerpoJson)?.let { ventas[it] = p }
+        TipoPieza.CUSTODIA_ACEPTAR, TipoPieza.CUSTODIA_RECHAZAR -> seriesDeCustodia(p.cuerpoJson).forEach { custodias[it] = p }
+    }
+    val r = mutableMapOf<String, LoDelCelular>()
+    for (s in c.sims) {
+        val serie = normalizarSerie(s.serialNumber)
+        if (serie in ventas || serie in custodias) continue
+        r[serie] = when (s.localmente) {
+            MarcaLocal.VENDIDA_EN_EL_CELULAR -> LoDelCelular.VENDIDA
+            MarcaLocal.ACEPTADA_EN_EL_CELULAR -> LoDelCelular.ACEPTADA_POR_SUBIR
+            MarcaLocal.RECHAZADA_EN_EL_CELULAR -> LoDelCelular.RECHAZADA_POR_SUBIR
+            else -> continue
+        }
+    }
+    for ((serie, k) in custodias) {
+        val acepta = k.tipo == TipoPieza.CUSTODIA_ACEPTAR
+        r[serie] = when {
+            k.estado in POR_SUBIR -> if (acepta) LoDelCelular.ACEPTADA_POR_SUBIR else LoDelCelular.RECHAZADA_POR_SUBIR
+            !llegoAlServidor(k) || k.id in vistas -> continue
+            // Un AVISO de aceptar: a las `fallidas` no se las aceptaron (lo que sigue lo dice la lista o «Te volvieron a
+            // asignar»); las `faltan` no se pudieron confirmar y siguen como antes, «por subir».
+            serie in seriesDe(k.rechazoDatosJson, "fallidas") -> continue
+            serie in seriesDe(k.rechazoDatosJson, "faltan") -> LoDelCelular.ACEPTADA_POR_SUBIR
+            acepta -> LoDelCelular.ACEPTADA
+            else -> LoDelCelular.RECHAZADA
+        }
+    }
+    for ((serie, v) in ventas) {
+        r[serie] = when {
+            v.estado == EstadoPieza.PENDIENTE || v.estado == EstadoPieza.RETENIDA -> LoDelCelular.VENTA_POR_SUBIR
+            v.estado == EstadoPieza.RECHAZADA -> LoDelCelular.VENTA_NO_SUBIO
+            llegoAlServidor(v) && v.id !in vistas -> LoDelCelular.VENDIDA
+            else -> continue
+        }
+    }
+    return r
+}
+
+private val POR_SUBIR = setOf(EstadoPieza.PENDIENTE, EstadoPieza.RETENIDA, EstadoPieza.RECHAZADA)
+
+private fun serieDeVenta(cuerpo: String?): String? = runCatching {
+    JsonParser.parseString(cuerpo).asJsonObject["serialNumber"]?.asString?.let(::normalizarSerie)
+}.getOrNull()
+
+/** Las series de `fallidas` (objetos con `serialNumber`) o de `faltan` (textos) de los datos de un AVISO de custodia. */
+private fun seriesDe(datos: String?, lista: String): Set<String> = runCatching {
+    JsonParser.parseString(datos).asJsonObject[lista].asJsonArray.mapNotNull { e ->
+        (if (e.isJsonObject) e.asJsonObject["serialNumber"] else e)?.asString?.let(::normalizarSerie)
+    }.toSet()
+}.getOrDefault(emptySet())

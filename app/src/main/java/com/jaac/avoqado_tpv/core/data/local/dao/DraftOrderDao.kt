@@ -273,4 +273,28 @@ interface DraftOrderDao {
         version: Int,
         updatedAt: Long = System.currentTimeMillis()
     )
+
+    /**
+     * Anota qué comercio cobró la cuenta (tras un cobro con tarjeta) y la deja PENDING para subirla.
+     *
+     * 🔴 UPDATE, nunca INSERT/REPLACE (D23, encargo bb2206): REPLACE borra la fila y la vuelve a crear, y el
+     * `ON DELETE CASCADE` de los renglones se llevaba los productos de la cuenta, también los que aún no subían.
+     *
+     * @return filas cambiadas (0 si la cuenta no está en el aparato)
+     */
+    @Query("""
+        UPDATE draft_orders
+        SET merchant_account_id = :merchantAccountId,
+            merchant_account_name = :merchantAccountName,
+            sync_status = :syncStatus,
+            updated_at = :updatedAt
+        WHERE id = :orderId
+    """)
+    suspend fun updateMerchant(
+        orderId: String,
+        merchantAccountId: String?,
+        merchantAccountName: String?,
+        syncStatus: String,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Int
 }

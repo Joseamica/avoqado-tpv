@@ -724,42 +724,6 @@ class AngelPayPaymentReviewRoomTest {
         Unit
     }
 
-    // ⚠️ SONDA TEMPORAL (encargo 953f6e): reproduce A PROPÓSITO el orden que colgó el CI. Se borra en el commit siguiente.
-    @Test
-    fun `SONDA 953f6e - si el registro termina antes del auto-arranque, initPayment pinta encima del rechazo`() = kotlinx.coroutines.runBlocking {
-        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
-        val db = androidx.room.Room.inMemoryDatabaseBuilder(
-            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
-            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java).allowMainThreadQueries().build()
-        every { authRepository.getVenueId() } returns "v1"
-        every { authRepository.getStaffId() } returns "s1"
-        every { tpvSettingsRepository.getCurrentSettings() } returns
-            TpvSettings(enableShifts = false, showReviewScreen = false, showTipScreen = true, showVerificationScreen = false)
-        val libreta = LibretaConCompuerta(db.paymentAttemptDao())
-        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(libreta, tpvSettingsRepository)
-        val handle = androidx.lifecycle.SavedStateHandle()
-        val original = createViewModel(handle)
-        var recreado: AngelPayPaymentViewModel? = null
-        try {
-            original.setSocketPaymentSource(null, null)
-            original.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
-            val (vm, intento) = recrearConElSdkAlFrente(original, handle)
-            recreado = vm
-            vm.onAngelPaySdkResult(rechazoDelSdk(intento))
-            // El registro termina PRIMERO (lo que pasa cuando el hilo de la prueba se retrasa en un CI cargado)…
-            kotlinx.coroutines.withTimeout(15_000) { vm.state.first { it is AngelPayPaymentState.Error } }
-            // …y el auto-arranque llega DESPUÉS: ya no está apartado y pinta otra pantalla encima del rechazo.
-            vm.setSocketPaymentSource(null, null)
-            vm.initPayment("150.00", orderId = "o-mesa", orderNumber = "M4", propinaYaElegidaCents = 2_000)
-            com.google.common.truth.Truth.assertWithMessage("estado tras el arranque tardío=%s", vm.state.value)
-                .that(vm.state.value).isNotInstanceOf(AngelPayPaymentState.Error::class.java)
-            // Con eso, la espera de las pruebas viejas (`first { Error }`) se agota: el Error ya pasó y no vuelve.
-            val espera = kotlinx.coroutines.withTimeoutOrNull(500) { vm.state.first { it is AngelPayPaymentState.Error } }
-            assertThat(espera).isNull()
-        } finally { original.viewModelScope.cancel(); recreado?.viewModelScope?.cancel(); db.close() }
-        Unit
-    }
-
     @Test
     fun `review parsed contradictory issuer and timeout callback never emits processor decline proof`() = runTest(testDispatcher) {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("offline")

@@ -1,7 +1,11 @@
 package com.jaac.avoqado_tpv.features.checkout.data
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
@@ -134,6 +138,31 @@ class RetiroDeVentaSinCobroTest {
         core.reintentarPendientes()
 
         assertThat(enviados).containsExactly("order-1")
+        assertThat(libro.filas).isEmpty()
+    }
+
+    @Test
+    fun `P1 un envio lento no frena que el SIGUIENTE retiro quede anotado en el aparato (Codex r2 #6)`() = runTest {
+        val sigue = CompletableDeferred<Unit>()
+        val nucleo = RetiroDeVentaSinCobroCore(
+            hayRastroDeCobro = { false },
+            libro = libro,
+            enviar = { _, orderId ->
+                if (orderId == "order-lenta") sigue.await()
+                Response.success(Unit)
+            },
+            reloj = { ahora },
+        )
+        val lento = launch { nucleo.retirarSiNuncaSeCobro("venue-1", "order-lenta") }
+        yield()
+        // Mientras la primera sigue en la red, la segunda ya quedó escrita (si la app muere aquí, se reintenta al volver).
+        val segunda = async { nucleo.retirarSiNuncaSeCobro("venue-1", "order-2") }
+        yield()
+        assertThat(libro.filas.keys).contains("order-2")
+
+        sigue.complete(Unit)
+        lento.join()
+        assertThat(segunda.await()).isEqualTo(DesenlaceDelRetiro.RETIRADA)
         assertThat(libro.filas).isEmpty()
     }
 

@@ -61,27 +61,40 @@ class RegresoDeCobrarTest {
     }
 
     @Test
-    fun `D36 si el lector no se prepara y la pantalla de cobro nunca abre, la venta de Cobrar tambien se retira (Codex r1 #10)`() {
+    fun `D36 si el lector no se prepara o la cajera sale mientras se espera, la venta de Cobrar se retira (Codex r1 #10 y r2 #5)`() {
         val cobrar = navegacion.substring(navegacion.indexOf("composable(NavRoute.Checkout.route)")).substringBefore("navController.navigate(getPaymentRoute())")
-        val sinLector = cobrar.substringAfter("awaitPaxPaymentReady(context, initializationManager, \"Checkout payment\")").substringBefore("return@launch")
-        assertThat(sinLector).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)")
-
-        val ruta = navegacion.substring(navegacion.indexOf("composable(NavRoute.Payment.route)"))
-        val gate = ruta.substringAfter("val ready = awaitPaxPaymentReady(context, initializationManager, \"Payment route\")").substringBefore("safePopBackStack()")
-        assertThat(gate).contains("argumentosDelCobro.get<String>(\"entryPoint\") == \"checkout\"")
-        assertThat(gate).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(")
+        val espera = cobrar.substringAfter("val lectorListo = soloEfectivo || try {").substringBefore("navController.currentBackStackEntry")
+        // La cajera sale de Cobrar mientras se espera el lector: la corrutina se cancela y se pide retirar antes de re-lanzar.
+        val alSalir = espera.substringAfter("catch (salio: kotlinx.coroutines.CancellationException) {").substringBefore("throw salio")
+        assertThat(alSalir).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)")
+        // El lector no quedó listo: tampoco hubo pantalla de cobro.
+        val noListo = espera.substringAfter("if (!lectorListo) {").substringBefore("return@launch")
+        assertThat(noListo).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)")
     }
 
     @Test
-    fun `D36 Nexgo el atras del SISTEMA en el asistente pasa por la misma salida que la flecha (Codex r1 #5)`() {
+    fun `P1 D36 la espera del lector DENTRO del cobro no pide retirar (vuelve a salir tras tocar Tarjeta, Codex r2 #1)`() {
+        val ruta = navegacion.substring(navegacion.indexOf("composable(NavRoute.Payment.route)"))
+        val gate = ruta.substringAfter("val ready = awaitPaxPaymentReady(context, initializationManager, \"Payment route\")").substringBefore("safePopBackStack()")
+        assertThat(gate).doesNotContain("alRegresarSinCobrar")
+    }
+
+    @Test
+    fun `D36 Nexgo el atras del SISTEMA pasa por la misma salida que la flecha, SOLO en una venta de Cobrar (Codex r1 #5 y r2 #7)`() {
+        val nexgo = navegacion.substring(navegacion.indexOf("composable(NavRoute.AngelPayPayment.route)"))
+        assertThat(nexgo.substringBefore("onNavigateBack = {")).contains("atrasDelSistemaComoLaFlecha = cameFromCheckout && folio == null,")
         val pantalla = File(
             "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/angelpay/AngelPayPaymentScreen.kt",
         ).readText()
+        assertThat(pantalla).contains("atrasDelSistemaComoLaFlecha: Boolean = false,")
         val manejador = pantalla.substringAfter("BackHandler(").substringBefore("Scaffold(")
-        assertThat(manejador).contains("state is AngelPayPaymentState.CollectingRating")
-        assertThat(manejador).contains("state is AngelPayPaymentState.CollectingTip")
+        assertThat(manejador).contains("enabled = atrasDelSistemaComoLaFlecha && (")
         assertThat(manejador).contains("state is AngelPayPaymentState.SelectingMerchant")
+        assertThat(manejador).contains("state is AngelPayPaymentState.Error")
         assertThat(manejador).contains("if (!viewModel.goBackOneStep()) onNavigateBack()")
+        // Ni en el cobro en curso ni en el «sin confirmar»: ahí el atrás del sistema sigue como hoy.
+        assertThat(manejador).doesNotContain("WaitingForResult")
+        assertThat(manejador).doesNotContain("ResultadoIncierto")
     }
 
     @Test

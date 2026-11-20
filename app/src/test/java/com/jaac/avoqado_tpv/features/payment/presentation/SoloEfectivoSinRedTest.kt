@@ -484,9 +484,9 @@ class SoloEfectivoSinRedTest {
     // Nexgo (AngelPay)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun nexgo(): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    private fun nexgo(registrar: RecordPaymentUseCase = mockk(relaxed = true)): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
         appContext = mockk(relaxed = true),
-        recordPaymentUseCase = mockk(relaxed = true),
+        recordPaymentUseCase = registrar,
         shiftRepository = mockk(relaxed = true),
         authRepository = mockk(relaxed = true) {
             every { getVenueId() } returns "venue-test-001"
@@ -626,9 +626,10 @@ class SoloEfectivoSinRedTest {
     }
 
     @Test
-    fun `D36 Nexgo «Método de pago» sin tocar nada no es intento (aunque la llave del intento ya exista); Efectivo sí y no se borra`() =
+    fun `D36 Nexgo «Método de pago» sin tocar nada no es intento (aunque la llave del intento ya exista), Efectivo sí y no se borra`() =
         runTest {
-            val viewModel = nexgo()
+            // El registro del efectivo con un doble de verdad (el relajado no devuelve un `Result` y truena al registrar).
+            val viewModel = nexgo(registrar = registrarPago)
             try {
                 viewModel.initPayment(amount = "100.00", skipReview = true, soloEfectivo = true)
                 esperarMetodoDePago(viewModel)

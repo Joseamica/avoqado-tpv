@@ -75,23 +75,28 @@ class RetiroDeVentaSinCobroCore(
     private val enviar: suspend (venueId: String, orderId: String) -> Response<Unit>,
     private val reloj: () -> Long = System::currentTimeMillis,
 ) {
+    /** Sólo el ENVÍO va en fila: anotar un retiro nuevo nunca espera a que otro termine de salir a la red (Codex D36 r2 #6). */
     private val candado = Mutex()
 
-    suspend fun retirarSiNuncaSeCobro(venueId: String, orderId: String): DesenlaceDelRetiro = candado.withLock {
+    suspend fun retirarSiNuncaSeCobro(venueId: String, orderId: String): DesenlaceDelRetiro {
         when (rastro(orderId)) {
-            null -> return@withLock DesenlaceDelRetiro.SIN_CERTEZA
+            null -> return DesenlaceDelRetiro.SIN_CERTEZA
             true -> {
                 Timber.i("🛒 D36: la venta %s tiene rastro de cobro en esta terminal: no se retira", orderId)
-                return@withLock DesenlaceDelRetiro.CON_RASTRO_DE_COBRO
+                return DesenlaceDelRetiro.CON_RASTRO_DE_COBRO
             }
             false -> Unit
         }
-        // ANTES de la red: si el proceso muere o no hay red, el retiro sigue pendiente y se reintenta.
-        if (!libro.anotar(RetiroPendiente(orderId, venueId, reloj()))) {
+        // ANTES de la red y SIN esperar el candado del envío: si el proceso muere o no hay red, el retiro sigue pendiente.
+        val pendiente = RetiroPendiente(orderId, venueId, reloj())
+        if (!libro.anotar(pendiente)) {
             Timber.w("🛒 D36: no se pudo anotar el retiro de %s: no se pide", orderId)
-            return@withLock DesenlaceDelRetiro.SIN_CERTEZA
+            return DesenlaceDelRetiro.SIN_CERTEZA
         }
-        mandar(RetiroPendiente(orderId, venueId, reloj()))
+        return candado.withLock {
+            // Un reintento pudo haberlo mandado mientras se esperaba el candado: si ya no está anotado, ya salió.
+            if (libro.pendientes().none { it.orderId == orderId }) DesenlaceDelRetiro.RETIRADA else mandar(pendiente)
+        }
     }
 
     /** Reintenta lo anotado (al abrir Cobrar, al volver la red). Lo de más de 24 h se olvida: el servidor ya no lo aceptaría. */
@@ -183,7 +188,8 @@ class RetiroDeVentaSinCobro @Inject constructor(
     init {
         // Al volver la red, lo que quedó anotado sin red sale solo (también si la cajera ya no vuelve a abrir Cobrar).
         alcance.launch {
-            conexion.connectionState.map { it.hasInternet }.distinctUntilChanged().filter { it }.collect { reintentarPendientes() }
+            // Internet Y SERVIDOR: si el SERVIDOR se cayó con el WiFi vivo, también lo anotado sale cuando vuelve (Codex D36 r2 #6).
+            conexion.connectionState.map { it.isFullyConnected }.distinctUntilChanged().filter { it }.collect { reintentarPendientes() }
         }
     }
     private val core = RetiroDeVentaSinCobroCore(

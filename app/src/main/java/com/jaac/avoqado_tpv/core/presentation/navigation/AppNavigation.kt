@@ -1597,7 +1597,17 @@ fun AppNavigation(
                                     conexionCompleta = connectionStateManager.isFullyConnected(),
                                 ),
                             )
-                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Checkout payment")) {
+                        val lectorListo = soloEfectivo || try {
+                            awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
+                        } catch (salio: kotlinx.coroutines.CancellationException) {
+                            // D36 (Codex r2 #5): la cajera salió de Cobrar mientras se esperaba el lector: la pantalla de cobro nunca
+                            // abrió y la venta ya existe en el SERVIDOR. Corre fuera de esta corrutina (que ya se canceló).
+                            if (payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order) {
+                                retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)
+                            }
+                            throw salio
+                        }
+                        if (!lectorListo) {
                             // D36 (Codex r1 #10): la venta ya se creó en el SERVIDOR y la pantalla de cobro nunca abrió (el lector no
                             // estuvo listo): no hubo ningún intento posible. El carrito sigue en Cobrar; si vuelve a cobrar, nace otra.
                             if (payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order) {
@@ -1805,12 +1815,8 @@ fun AppNavigation(
                 LaunchedEffect(Unit) {
                     val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
                     if (!ready) {
-                        // D36 (Codex r1 #10): la pantalla de cobro nunca montó, así que no hubo intento: la venta de Cobrar se retira.
-                        if (argumentosDelCobro.get<String>("entryPoint") == "checkout" &&
-                            argumentosDelCobro.get<Boolean>("wasPayLaterOrder") != true
-                        ) {
-                            retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), argumentosDelCobro.get<String>("orderId"))
-                        }
+                        // D36 (Codex r2 #1): aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta (la
+                        // reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
                         val popped = navController.safePopBackStack()
                         if (!popped) {
                             navController.navigate(NavRoute.Home.route) {
@@ -3003,6 +3009,8 @@ fun AppNavigation(
             val angelVm: com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentViewModel = hiltViewModel()
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 viewModel = angelVm,
+                // D36 (Codex r2 #7): sólo en una venta de Cobrar el atrás del sistema pasa por la misma salida que la flecha.
+                atrasDelSistemaComoLaFlecha = cameFromCheckout && folio == null,
                 initialAmount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,

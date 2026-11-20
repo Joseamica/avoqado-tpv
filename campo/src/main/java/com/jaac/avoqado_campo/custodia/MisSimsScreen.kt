@@ -85,7 +85,7 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
         if (ventas) {
             if (e.ventasPorSubir.isNotEmpty()) {
                 Seccion("Por subir", e.ventasPorSubir, vacio = "") {}
-                Tenue("Se suben solas; las ves en «Ventas pendientes por subir».")
+                Tenue("Todavía no llegan al servidor; las ves en «Ventas pendientes por subir».")
             }
             Seccion("Por revisar", e.porRevisar, vacio = "No tienes ventas por corregir.") { f ->
                 if (f.estado == EstadoFila.REVISAR) {
@@ -105,6 +105,7 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
 
 @Composable
 private fun ColumnScope.ContenidoDeSims(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean) {
+    Tenue("Lo que ya vendiste, y lo que te piden corregir, está en «Mis ventas».")
     // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
     val decidir = !e.ocupado && !obligatoria
     val porDecidir = e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR }
@@ -119,7 +120,6 @@ private fun ColumnScope.ContenidoDeSims(e: EstadoMisSims, a: AccionesDeMisSims, 
     if (obligatoria && porDecidir > 0) Recuadro(ACTUALIZA_PARA_SEGUIR, Tono.AVISO)
     if (porDecidir > 1) BotonPrincipal("Aceptar todas", a.aceptarTodas, enabled = decidir)
     Seccion("En tu custodia", e.enCustodia, vacio = "Todavía no tienes SIMs en tu custodia.") {}
-    Tenue("Lo que ya vendiste, y lo que te piden corregir, está en «Mis ventas».")
 }
 
 /** Una sección con su contador y sus SIMs en una sola tarjeta, separadas por una línea (como «Mis pendientes» del mockup). */

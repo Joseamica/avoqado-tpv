@@ -80,6 +80,8 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
                 code == "ASIGNACION_CAMBIO" -> "Te volvieron a asignar esta SIM: vuelve a decidir"
                 code == "YA_TIENE_ENTRADA" && !entradaDeAqui -> "Tu entrada abierta es de ${nombre(dato(p, "venueId"))}: marca la salida ahí"
                 code in DESCARTADOS && notaDelSupervisor != null -> "Tu supervisor no la aceptó: $notaDelSupervisor"
+                // Codex r2: una fila guardada por la 0.4.0 trae el texto viejo («Mis SIMs»); se lee el de hoy.
+                code == SubidorDeGracia.CORRECCION_SIN_SESION -> SubidorDeGracia.TEXTO_CORRECCION_SIN_SESION
                 else -> p.rechazoMensaje.siHay() ?: RESPALDO
             }
             val propia = when {
@@ -147,9 +149,13 @@ class PendientesViewModel @Inject constructor(
     /** El AVISO ya lo vio: pasa a DESCARTADA. */
     fun entendido(id: Long) = descartar(id, EstadoPieza.AVISO)
 
-    private fun descartar(id: Long, debeEstar: String) = correr {
+    private fun descartar(id: Long, debeEstar: String) = correr { generacion ->
         val p = dao.porId(id)?.takeIf { it.estado == debeEstar } ?: return@correr
         dao.descartarConHijos(id, if (p.tipo == TipoPieza.ENTRADA) "SU_ENTRADA_SE_DESCARTO" else "SU_VENTA_SE_DESCARTO")
+        // Codex r2: la venta rechazada que se quita no se hizo; sin esto la SIM seguía «vendida» en el celular hasta tener señal.
+        if (p.tipo == TipoPieza.VENTA && debeEstar == EstadoPieza.RECHAZADA) {
+            objetoJson(p.cuerpoJson)?.get("serialNumber")?.takeIf { it.isJsonPrimitive }?.asString?.let { copia.marcar(generacion, it, null) }
+        }
     }
 
     fun corregirPrecio(id: Long) = correr { generacion ->

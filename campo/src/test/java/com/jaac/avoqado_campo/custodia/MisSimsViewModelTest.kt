@@ -216,12 +216,29 @@ class MisSimsViewModelTest {
         assertEquals(listOf("S6"), e.enCustodia.map { it.sim.serialNumber })
     }
 
-    // Codex r1: la vendida en el celular que todavía no sube no es «exitosa»: sale aparte, «Por subir».
-    @Test fun `una venta del celular sin subir sale en Por subir y no en Exitosas`() {
-        ponerCopia(sim("S1", "PROMOTER_HELD").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), sim("S2", "SOLD", verificacion = "COMPLETED"))
+    private fun venta(serie: String, estado: String, id: Long) = Pieza(
+        id = id, tipo = TipoPieza.VENTA, llave = "kv$id", staffId = "s1", venueId = "v1",
+        cuerpoJson = """{"llave":"kv$id","serialNumber":"$serie","precioVisto":0}""", estado = estado, creadaAt = 0, resumen = "",
+    )
+
+    // Codex r1 + r2: la venta del celular se acomoda por la COLA, no por la marca de la copia (que se queda atrás).
+    @Test fun `las ventas del celular se acomodan por la cola y no por la marca de la copia`() {
+        cola.value = listOf(
+            venta("S1", EstadoPieza.PENDIENTE, 11), // sin marca: la app murió entre guardar y marcar
+            venta("S3", EstadoPieza.RECHAZADA, 13), // el SERVIDOR la rechazó (p. ej. PRECIO_CAMBIO)
+            venta("S4", EstadoPieza.AVISO, 14), // ya llegó (2xx), la copia aún no lo sabe
+        )
+        val vendidaEnCelular = MarcaLocal.VENDIDA_EN_EL_CELULAR
+        ponerCopia(
+            sim("S1", "PROMOTER_HELD"), sim("S2", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), // S2: ya subió
+            sim("S3", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), sim("S4", "PROMOTER_HELD").copy(localmente = vendidaEnCelular),
+            sim("S5", "SOLD", verificacion = "COMPLETED"),
+        )
         val e = vm().estado.value
-        assertEquals(listOf("S1"), e.ventasPorSubir.map { it.sim.serialNumber })
-        assertEquals(listOf("S2"), e.exitosas.map { it.sim.serialNumber })
+        assertEquals(listOf("S1", "S3"), e.ventasPorSubir.map { it.sim.serialNumber })
+        assertEquals("Por subir", e.ventasPorSubir[0].nota)
+        assertTrue(e.ventasPorSubir[1].nota!!.contains("No se pudo subir"))
+        assertEquals(listOf("S2", "S4", "S5"), e.exitosas.map { it.sim.serialNumber })
         assertTrue(e.enCustodia.isEmpty())
     }
 

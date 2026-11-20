@@ -274,10 +274,21 @@ class MisSimsViewModel @Inject constructor(
         val sinVersionNueva = aDecidirAhora.filter { (serie, r) -> porSerie[serie]?.custodyVersion == r.version }
         if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) bajar(avisar = false)
 
+        // Codex r2: una venta del celular se acomoda por la COLA (lo que de verdad falta subir), no por la marca de la copia,
+        // que se queda atrás si la app muere entre guardar y marcar, o si la venta se rechaza o se quita.
+        val ventasEnCola = cola.filter { it.tipo == TipoPieza.VENTA }
+            .mapNotNull { p -> campo(p.cuerpoJson, "serialNumber")?.let { normalizarSerie(it) to p } }.toMap()
+
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
+            val venta = ventasEnCola[serie]?.takeIf { s.custodyState != "SOLD" }
             when {
-                s.custodyState != "SOLD" && s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
+                // AVISO = el SERVIDOR ya la recibió (2xx): está vendida aunque la copia no lo sepa todavía.
+                venta?.estado == EstadoPieza.AVISO -> FilaSim(s, EstadoFila.VENDIDA)
+                venta?.estado == EstadoPieza.RECHAZADA -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, NO_SUBIO)
+                venta != null -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
+                // Sin venta viva pero con la marca: ya subió y la copia no se ha vuelto a bajar.
+                s.custodyState != "SOLD" && s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> FilaSim(s, EstadoFila.VENDIDA)
                 s.custodyState == "SOLD" -> when (s.verificationStatus) {
                     "FAILED" -> if (s.verificationId in corrigiendo) FilaSim(s, EstadoFila.CORRECCION_POR_SUBIR, "Corrección por subir")
                     else FilaSim(s, EstadoFila.REVISAR, motivos(s))
@@ -335,6 +346,7 @@ class MisSimsViewModel @Inject constructor(
                 .joinToString(" · ").ifEmpty { siNoHay }
 
         const val REASIGNADA = "Te volvieron a asignar esta SIM: vuelve a decidir"
+        const val NO_SUBIO = "No se pudo subir: revísala en «Ventas pendientes por subir»"
 
         /** Series de las filas `fallidas` (B12) con `ASIGNACION_CAMBIO`. */
         fun filasReasignadas(datos: String?): Set<String> = runCatching {

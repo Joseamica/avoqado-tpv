@@ -80,7 +80,8 @@ class RepositorioDeCopia(
      * La pantalla, justo después de encolar la venta o la custodia de [serial], con la [generacion] con la que encoló: la
      * copia de otra persona (un borrado y otra activación en medio) no se toca. Sin copia vigente no hace nada.
      */
-    suspend fun marcar(generacion: String, serial: String, marca: String) = candado.withLock {
+    /** [marca] null = se quita (la venta rechazada que la persona quitó de su celular: la SIM sigue en su custodia). */
+    suspend fun marcar(generacion: String, serial: String, marca: String?) = candado.withLock {
         val yo = quienSoy.instantanea()
         val c = _copia.value?.takeIf { !yo.limpiando && it.generacion == generacion && vigente(it, yo) } ?: return@withLock
         val s = normalizarSerie(serial)

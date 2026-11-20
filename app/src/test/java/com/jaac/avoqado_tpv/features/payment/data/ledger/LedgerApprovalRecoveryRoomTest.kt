@@ -167,8 +167,9 @@ class LedgerApprovalRecoveryRoomTest {
 
     /**
      * 🔴 Codex final r7 #2: sin tope de intentos y eligiendo los 50 más viejos, 300 aprobados viejos cuyo registro falla siempre dejaban sin
-     * turno a un aprobado NUEVO (B), con su evidencia completa: cero Payment aunque el SERVIDOR ya pudiera registrarlo. Ahora van primero los
-     * que llevan menos intentos: B entra en la PRIMERA pasada.
+     * turno a un aprobado NUEVO (B), con su evidencia completa: cero Payment aunque el SERVIDOR ya pudiera registrarlo. Reescrita por Codex
+     * final r8 #6 (el orden va por el ÚLTIMO TOQUE, no por «menos intentos»): cada viejo que se intenta queda detrás de B, así que B entra a
+     * más tardar en la pasada ⌈300 / 50⌉ + 1 = 7 (el peor caso, con las pausas vencidas en cada pasada, está en `CodexR8RecuperacionRoomTest`).
      */
     @Test fun `F1 Codex r7 2 · 300 aprobados viejos que fallan no dejan sin turno a uno nuevo`() = runTest {
         repeat(300) { i ->
@@ -182,8 +183,10 @@ class LedgerApprovalRecoveryRoomTest {
             if (llave != "b-nuevo") Result.failure(java.io.IOException("503"))
             else { registrados += llave; Result.success(receipt.copy(solicitudLigada = "req-b-nuevo")) }
         }
-        LedgerApprovalRecovery(dao, fast, order).recover("venue", now)
+        var pasadas = 0
+        while (registrados.isEmpty() && pasadas < 20) { pasadas++; LedgerApprovalRecovery(dao, fast, order).recover("venue", now) }
         assertThat(registrados).containsExactly("b-nuevo")
+        assertThat(pasadas).isAtMost(7)
         assertThat(dao.getById("b-nuevo")!!.state).isEqualTo("REGISTRADO")
     }
 

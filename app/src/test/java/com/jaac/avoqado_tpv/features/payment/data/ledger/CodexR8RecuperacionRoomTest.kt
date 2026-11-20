@@ -297,6 +297,61 @@ class CodexR8RecuperacionRoomTest {
         assertThat(reloj).isLessThan(600_000L)
     }
 
+    // ═══════════════ R9-1 · Codex final r9 «Peor 1»: las dos fases del trabajador con su propio presupuesto ═══════════════
+
+    /** TPV · PAGO RÁPIDO: un cobro de $100 sin cuenta que quedó en duda (su contexto no trae `orderId`; se registra por la ruta FAST). */
+    private suspend fun pagoRapidoEnDuda(id: String, creadoEn: Long) = dao.insert(
+        PaymentAttemptEntity(
+            attemptId = id, venueId = venue, processor = "ANGELPAY", state = "INDETERMINADO", amountCents = 10_000, tipCents = 0,
+            recordingRoute = "FAST", paymentContextJson = Gson().toJsonTree(
+                PaymentContext.AngelPayPayment(
+                    venueId = venue, staffId = "cajera", amount = BigDecimal("100.00"), tip = BigDecimal.ZERO, merchantAccountId = "merchant",
+                    deviceSerialNumber = "terminal", idempotencyKey = id,
+                ),
+            ).asJsonObject.apply { addProperty("processorAffiliation", "afiliacion") }.toString(),
+            serverAnsweredAt = 1L, createdAt = creadoEn, updatedAt = creadoEn,
+        ),
+    )
+
+    /**
+     * 🔴 Codex final r9 «Peor 1» · TPV · PAGO RÁPIDO: AngelPay aprobó un Pago rápido, la pantalla perdió el resultado y el aviso del banco no
+     * llegó; está en el historial. Hay 32 aprobados de otras cuentas cuyo registro tarda 20 s y falla. Registrando primero sin presupuesto,
+     * Android detenía la pasada a los 10 min antes de consultar el historial: cero Payment en cada pasada (la base consultaba primero). Ahora
+     * cada fase tiene su tiempo: se consulta y se registra el Pago rápido en la PRIMERA pasada, y la pasada termina antes de los 10 min.
+     */
+    @Test fun `r9_1 · 32 aprobados lentos que fallan no impiden consultar y registrar el Pago rapido en la primera pasada`() = runBlocking<Unit> {
+        val viejo = System.currentTimeMillis() - 3_600_000L
+        pagoRapidoEnDuda("pr", creadoEn = viejo - 60_000L)
+        val servidor = Servidor()
+        repeat(32) { i -> aprobado("a$i", creadoEn = viejo + i); servidor.fallanSiempre += "a$i" }
+        var reloj = 0L   // monotónico, en ms, desde que arrancó el trabajador
+        val recuperacion = registrador(servidor, alRegistrar = {
+            reloj += 20_000L
+            if (reloj > 600_000L) throw CancellationException("Android detuvo el trabajo a los 10 min")
+        })
+        var detenido = false
+        try {
+            LedgerSweepLogic.recuperarElDinero(recuperacion, LedgerUnknownRecovery(dao, libreta(), historialReal { "APROBADA" }), venue,
+                ahora = { System.currentTimeMillis() }, reloj = { reloj })
+        } catch (e: CancellationException) {
+            detenido = true
+        }
+        assertWithMessage("se consultó el historial del Pago rápido").that(consultasAlHistorial).isEqualTo(1)
+        assertWithMessage("…y se registró en la PRIMERA pasada").that(servidor.pagos).containsExactly("pr", 1)
+        assertWithMessage("Android no detiene el trabajo").that(detenido).isFalse()
+        assertThat(reloj).isLessThan(600_000L)
+    }
+
+    /** R9-1 · sin carga, la pasada hace lo de siempre: registra el aprobado, consulta la duda y registra lo que encontró. */
+    @Test fun `r9_1 · sin carga la pasada registra, consulta y registra lo encontrado como siempre`() = runBlocking<Unit> {
+        val viejo = System.currentTimeMillis() - 3_600_000L
+        aprobado("a", creadoEn = viejo)
+        pagoRapidoEnDuda("pr", creadoEn = viejo)
+        val servidor = Servidor()
+        LedgerSweepLogic.recuperarElDinero(registrador(servidor), LedgerUnknownRecovery(dao, libreta(), historialReal { "APROBADA" }), venue)
+        assertThat(servidor.pagos).containsExactly("a", 1, "pr", 1)
+    }
+
     // ═══════════════════════════ D · r8 #4: una consulta FALLIDA de AngelPay no es «no aparece» ═══════════════════════════
 
     /**

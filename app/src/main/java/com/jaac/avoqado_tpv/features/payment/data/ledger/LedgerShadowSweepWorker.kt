@@ -108,19 +108,30 @@ object LedgerSweepLogic {
     const val PRUNE_DAYS = 7L
 
     /**
-     * Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada del trabajador. Android detiene un
-     * `CoroutineWorker` a los 10 min; con la última consulta (4 min de tope) y el registro final, la pasada termina antes.
+     * 🔴 F1 · Codex final r9 «Peor 1» (R9-1, 20-nov): cada fase de una pasada tiene su PROPIO tiempo para INICIAR llamadas, y cada llamada
+     * un tope ([TOPE_DE_UNA_LLAMADA_MS]). Android detiene un `CoroutineWorker` a los 10 min. Peor caso, con la última llamada de cada fase
+     * en su tope: registrar 2 + 1, consultar 2.5 + 1, registrar lo encontrado 1 + 1 = 8.5 min; queda 1.5 min para el mantenimiento local.
+     * Antes (arreglo C) registrar no tenía tope: 32 aprobados que tardan 20 s en fallar se comían la pasada y nunca se consultaba el
+     * historial de un Pago rápido que sí pasó (la base lo consultaba primero).
      */
-    const val PRESUPUESTO_DE_CONSULTAS_MS = 4 * 60_000L
+    const val PRESUPUESTO_DE_REGISTROS_MS = 2 * 60_000L
+    /** Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada (antes 4 min, sin tope para registrar). */
+    const val PRESUPUESTO_DE_CONSULTAS_MS = 150_000L
+    /** Lo que pueden tardar en iniciarse, al final de la pasada, los registros de lo que encontraron las consultas. */
+    const val PRESUPUESTO_DE_REGISTROS_FINALES_MS = 60_000L
+    /**
+     * Lo más que espera la pasada una sola llamada (registro o consulta; antes 4 min). Un registro HTTP ya corta a los 25 s (OkHttp
+     * `callTimeout`); lo que no contestó a tiempo cuenta como un fallo y se reintenta con la misma llave (el SERVIDOR no duplica).
+     */
+    const val TOPE_DE_UNA_LLAMADA_MS = 60_000L
 
     /**
      * El dinero de la libreta en una pasada del trabajador.
      *
      * 🔴 F1 · Codex final r8 #7 (C, 20-nov): PRIMERO el dinero que ya está en la mano (registrar los aprobados) y DESPUÉS las consultas al
-     * historial, que tienen un presupuesto de tiempo para iniciarse ([PRESUPUESTO_DE_CONSULTAS_MS], con el reloj monotónico [reloj]). Antes
-     * se consultaba primero, una duda por una: con 80 consultas lentas (20 s cada una) Android detenía el trabajo a los 10 min y nunca llegaba
-     * a registrar un aprobado que ya tenía todo. Lo que las consultas encuentren aprobado se registra al final de la MISMA pasada; lo que no
-     * alcanzó a consultarse sigue en la siguiente (el orden por último toque lo pone primero).
+     * historial; lo que las consultas encuentren aprobado se registra al final de la MISMA pasada; lo que no alcanzó sigue en la siguiente
+     * (el orden por último toque lo pone primero). 🔴 R9-1: las tres fases con presupuesto propio (con el reloj monotónico [reloj]): ni los
+     * registros lentos se comen las consultas, ni las consultas lentas los registros.
      */
     suspend fun recuperarElDinero(
         approval: LedgerApprovalRecovery,
@@ -129,9 +140,9 @@ object LedgerSweepLogic {
         ahora: () -> Long = { System.currentTimeMillis() },
         reloj: () -> Long = { System.nanoTime() / 1_000_000L },
     ) {
-        approval.recover(venueId, ahora())
+        approval.recover(venueId, ahora(), reloj, PRESUPUESTO_DE_REGISTROS_MS)
         val confirmados = unknown.recover(venueId, ahora(), reloj, PRESUPUESTO_DE_CONSULTAS_MS)
-        if (confirmados > 0) approval.recover(venueId, ahora())
+        if (confirmados > 0) approval.recover(venueId, ahora(), reloj, PRESUPUESTO_DE_REGISTROS_FINALES_MS)
     }
 
     data class SweepResult(

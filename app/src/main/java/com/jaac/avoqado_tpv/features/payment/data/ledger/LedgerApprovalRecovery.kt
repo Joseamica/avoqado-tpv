@@ -43,7 +43,15 @@ class LedgerApprovalRecovery(
         { ledger.tokenDelProceso() },
     )
 
-    suspend fun recover(venueId: String, now: Long): Int {
+    /**
+     * @param reloj monotónico (ms) para [presupuestoMs].
+     * @param presupuestoMs F1 · Codex final r9 «Peor 1» (R9-1): pasado este tiempo desde que empezó, la pasada ya no INICIA registros (el que
+     *   está en vuelo termina, con su tope [LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS]). Sin presupuesto, como siempre (página de 50).
+     */
+    suspend fun recover(
+        venueId: String, now: Long, reloj: () -> Long = { System.nanoTime() / 1_000_000L }, presupuestoMs: Long = Long.MAX_VALUE,
+    ): Int {
+        val inicio = reloj()
         if (!puedeRegistrar()) {
             Timber.i("📒 [LedgerApproval] sin sesión o sin red: las aprobaciones esperan (no se gasta ningún intento)")
             return 0
@@ -54,6 +62,10 @@ class LedgerApprovalRecovery(
         for (row in rows) {
             if (!puedeRegistrar()) {
                 Timber.i("📒 [LedgerApproval] se fue la sesión o la red a media pasada: las demás aprobaciones esperan")
+                break
+            }
+            if (reloj() - inicio >= presupuestoMs) {
+                Timber.i("📒 [LedgerApproval] se acabó el tiempo de registrar en esta pasada: las demás aprobaciones van en la siguiente")
                 break
             }
             // F1 bloque 3 (I2): también el aprobado final de AngelPay sobre una fila que cerró la ventana (sigue DESCARTADA con su motivo).
@@ -81,13 +93,15 @@ class LedgerApprovalRecovery(
                 )
                 // Direct recorder = exactly one HTTP attempt. The ledger owns retry/backoff;
                 // ENTREGADA_A_COLA is excluded because PaymentSyncWorker already owns it.
-                val result = kotlinx.coroutines.withTimeout(240_000L) {
+                // R9-1: con tope por llamada; lo que no contestó a tiempo es un registro fallido (se reintenta con la misma llave), no
+                // una pasada cortada.
+                val result = kotlinx.coroutines.withTimeoutOrNull(LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS) {
                     if (row.recordingRoute == PaymentAttemptEntity.ROUTE_ORDER)
                         order.recordPayment(context, card, row.authCode.orEmpty(), row.referenceNumber.orEmpty())
                     else fast.recordPayment(context, card, row.authCode.orEmpty(), row.referenceNumber.orEmpty())
                 }
                 val completedAt = maxOf(now, System.currentTimeMillis())
-                val receipt = result.getOrNull()
+                val receipt = result?.getOrNull()
                 if (receipt != null && row.processor != PaymentAttemptEntity.PROCESSOR_ANGELPAY) {
                     // Codex (código, P1-6): el checkpoint 2 es Nexgo/AngelPay. Una aprobación Blumon/PAX conserva la recuperación
                     // que tenía ANTES (REST 2xx ⇒ REGISTRADO) hasta el port a PAX; pasarla por el veredicto la dejaba retenida

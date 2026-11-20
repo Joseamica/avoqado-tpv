@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Docs**
+- **«Órdenes» es legacy, en las reglas del repo (founder, 20-nov)**: `CLAUDE.md` y `AGENTS.md` dicen que la tarjeta «Órdenes» del inicio y lo que sólo ella abre (`OrderingWelcome`, el plano de mesas viejo, `MenuScreen`/`MenuViewModel`, la lista de órdenes y la libreta) no se arreglan ni se prueban. Mesas (`features/tables`), Cobrar (`features/checkout`) y lo que reusan de `features/ordering` siguen vivos. Quitarla: pizarrón hz:e82938e1:D34.
+
 ### **Fixed**
 - **PAX · cobrar con tarjeta una cuenta de Órdenes ya no borra sus productos de la terminal (D23, tarjeta hz:e82938e1:D23; encargo bb2206)**: tras el cobro, `OrderSyncCoordinator.updateOrderMerchant` anotaba el comercio con un `INSERT … REPLACE`, que en SQLite borra la fila de la cuenta y la vuelve a crear; el `ON DELETE CASCADE` se llevaba todos sus renglones, también los agregados sin red que aún no subían. Ahora es un UPDATE de sólo esos campos (`DraftOrderDao.updateMerchant`). Prueba: `ComercioSinBorrarRenglonesTest` (Room en memoria).
 

@@ -139,6 +139,7 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 
 ## Critical Rules (brief — details in `.claude/rules/`)
 
+0. 🔴 **LEGACY:** la tarjeta «Órdenes» (Ordenar) del inicio y lo que SÓLO ella abre: `OrderingWelcome`, su plano de mesas viejo (`FloorPlanCanvasScreen`), `MenuScreen`/`MenuViewModel`, la lista de órdenes y la libreta (`OrderSyncCoordinator`/`DraftOrder`). No se arreglan, no se prueban ni se les hacen proyectos (founder 25-sep, 20-oct y 20-nov: «para ordering se usa Mesas y Cobrar»); un defecto que sólo vive ahí se descarta. **Siguen vivos:** Mesas (`features/tables`, `NavRoute.Tables`), Cobrar (`features/checkout`) y lo que Cobrar y el cobro reusan de `features/ordering` (`Product`, `Customer`, `Discount`, `Order`, `formatoDePrecio`…). Quitar lo legacy: pizarrón `hz:e82938e1:D34`.
 1. **Changelog**: EVERY modification must be logged in `CHANGELOG.md` under `[Unreleased]`. No exceptions. Rotate at ~50KB. -> `changelog-policy.md`
 2. **PaymentViewModel safety**: 8 features share payment code. Test ALL flows, sync both variants. -> `critical-warnings.md`
 3. **Blumon distinction**: Always "Blumon TPV" or "Blumon E-commerce", never just "Blumon". -> `critical-warnings.md`

@@ -1,5 +1,9 @@
 # AGENTS.md - Avoqado TPV Agent Roles
 
+## 🔴 «Órdenes» (Ordenar) es LEGACY
+
+Es la tarjeta «Órdenes» (Ordenar) del inicio y lo que SÓLO ella abre: `OrderingWelcome`, su plano de mesas viejo (`FloorPlanCanvasScreen`), `MenuScreen`/`MenuViewModel`, la lista de órdenes y la libreta (`OrderSyncCoordinator`/`DraftOrder`). No se arreglan, no se prueban ni se les hacen proyectos (founder 25-sep, 20-oct y 20-nov: «para ordering se usa Mesas y Cobrar»); un defecto que sólo vive ahí se descarta. **Siguen vivos:** Mesas (`features/tables`, `NavRoute.Tables`), Cobrar (`features/checkout`) y lo que Cobrar y el cobro reusan de `features/ordering` (`Product`, `Customer`, `Discount`, `Order`, `formatoDePrecio`…). Quitar lo legacy: pizarrón `hz:e82938e1:D34`.
+
 ## 🔴 Verificación pesada: por `avq-verify`, nunca a mano
 
 **Van SIEMPRE por el script, sin importar cuánto tarden:** `./gradlew` (cualquier tarea que

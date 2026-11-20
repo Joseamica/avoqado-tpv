@@ -174,8 +174,14 @@ class AvisoDeCobrosPendientesTest {
             apartaLaVenta = "\$120.00, hace 3 min", apartaElAparato = "\$50.00, hace 1 h",
         )
 
-        assertThat(texto).contains("Esta cuenta tiene un cobro con tarjeta por confirmar (\$120.00, hace 3 min)")
+        // F1 · Codex r9 R9-2: K19c (una sola fuente con el efectivo de Mesas), con el importe y la cola de la tarjeta.
+        assertThat(texto).isEqualTo(
+            "Esta cuenta tiene un cobro por confirmar (\$120.00, hace 3 min). Avísale al gerente. NO se inició otro cobro.")
         assertThat(texto).doesNotContain("\$50.00")
+    }
+
+    @Test fun `R9-2 K19c es el texto del catalogo, sin detalle ni cola`() {
+        assertThat(AvisoDeCobrosPendientes.cobroPorConfirmar()).isEqualTo("Esta cuenta tiene un cobro por confirmar. Avísale al gerente.")
     }
 
     @Test fun `la barrera del aparato nombra un cobro EN CURSO y dice como salir`() {

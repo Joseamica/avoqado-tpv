@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentEntity
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
@@ -95,6 +96,7 @@ class TableCheckoutViewModelTest {
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
         coEvery { dineroDeTarjeta.motivo(any(), any()) } returns null
+        coEvery { dineroDeTarjeta.avisoDeDuda(any()) } returns null
     }
 
     @After
@@ -608,6 +610,41 @@ class TableCheckoutViewModelTest {
         assertThat(receipt.receiptUrl).isEqualTo("https://avoqado.io/r/1")
         assertThat(receipt.autofacturaAvailable).isTrue()
         assertThat(receipt.queued).isFalse()
+    }
+
+    /**
+     * F1 · Codex r9 R9-2 (TPV SOLA → Mesas, D10 «B»): una DUDA de tarjeta de esta cuenta no frena el efectivo. Se cobra (con y sin red)
+     * y el recibo dice K19c; sin duda, el recibo no dice nada. Qué cuenta como duda lo prueba `DineroDeTarjetaDeLaCuentaRoomTest`.
+     */
+    @Test
+    fun r9_2_con_una_duda_de_tarjeta_el_efectivo_se_cobra_y_el_recibo_avisa_K19c() = runTest {
+        for (sinRed in listOf(false, true)) {
+            tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+            coEvery { repository.getOrder(venueId, "orden-1") } returns
+                Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+            coEvery { dineroDeTarjeta.avisoDeDuda("orden-1") } returns AvisoDeCobrosPendientes.cobroPorConfirmar()
+            coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
+                Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = sinRed))
+            coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
+            val viewModel = createViewModel()
+            if (sinRed) viewModel.onConnectivityChanged(online = false)
+
+            viewModel.payCash(BigDecimal("150.00"))
+
+            assertWithMessage("sinRed=$sinRed: el efectivo se cobra").that(viewModel.state.value.cashReceipt?.amount).isEqualTo(BigDecimal("150.00"))
+            assertWithMessage("sinRed=$sinRed: el recibo avisa K19c").that(viewModel.state.value.cashReceipt?.avisoDeTarjeta)
+                .isEqualTo("Esta cuenta tiene un cobro por confirmar. Avísale al gerente.")
+            viewModel.consumeCashReceipt()
+        }
+        coVerify(exactly = 2) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
+
+        // Sin duda: se cobra igual y el recibo no avisa nada.
+        coEvery { dineroDeTarjeta.avisoDeDuda("orden-1") } returns null
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        viewModel.payCash(BigDecimal("150.00"))
+        assertThat(viewModel.state.value.cashReceipt?.amount).isEqualTo(BigDecimal("150.00"))
+        assertThat(viewModel.state.value.cashReceipt?.avisoDeTarjeta).isNull()
     }
 
     /**

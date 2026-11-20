@@ -1653,7 +1653,7 @@ class PaymentViewModelKernelDurabilityTest {
             assertWithMessage("precondición: la otra tarjeta de A sí reservó").that(reservas).hasSize(1)
             assertWithMessage("el lector no se enciende; estado = ${caja.vm.state.value}").that(caja.lectoresAbiertos.get()).isEqualTo(0)
             val error = caja.vm.state.value as PaymentState.Error
-            assertThat(error.message).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
+            assertThat(error.message).contains("Esta cuenta tiene un cobro por confirmar")
             assertThat(error.canRetry).isFalse()
             assertWithMessage("la reserva rechazada se suelta").that(caja.db.paymentAttemptDao().getById(reservas.single().attemptId)?.state).isEqualTo("DESCARTADA")
             assertWithMessage("la terminal queda lista para otra cuenta")
@@ -1690,7 +1690,7 @@ class PaymentViewModelKernelDurabilityTest {
 
             assertWithMessage("estado = ${vm.state.value}").that(lectores.get()).isEqualTo(1)
             coVerify(exactly = 0) { kernel.run(any()) }
-            assertThat((vm.state.value as PaymentState.Error).message).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
+            assertThat((vm.state.value as PaymentState.Error).message).contains("Esta cuenta tiene un cobro por confirmar")
             assertWithMessage("la reserva rechazada se suelta").that(dao.getById(reservas.single().attemptId)?.state).isEqualTo("DESCARTADA")
             assertWithMessage("la terminal queda lista para otra cuenta")
                 .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isTrue()

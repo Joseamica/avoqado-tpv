@@ -61,6 +61,7 @@ class TableCheckoutSesionNoQuedaPegadaTest {
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns MutableStateFlow(0)
         coEvery { dineroDeTarjeta.motivo(any(), any()) } returns null
+        coEvery { dineroDeTarjeta.avisoDeDuda(any()) } returns null
     }
 
     @After

@@ -1556,6 +1556,20 @@ class PaymentAttemptLedger(
         true
     }
 
+    /**
+     * 🔴 F1 · Codex r9 R9-2: ¿la tarjeta de esta cuenta está frenada? La MISMA regla que [otraCercaDeLaTarjeta] (estado, edad y firma),
+     * pero sólo para AVISAR al cobrar en efectivo (D10 «B»: el efectivo se cobra igual): un fallo de lectura es «no», porque el aviso no
+     * afirma lo que no pudo leer.
+     */
+    suspend fun tarjetaFrenadaDeLaCuenta(orderId: String): Boolean = try {
+        orderId.isNotEmpty() && filaQueFrenaLaTarjeta(orderId, null) != null
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Timber.w(error, "📒 [Libreta] no se pudo leer si la cuenta %s tiene un cobro por confirmar: el efectivo va sin aviso", orderId)
+        false
+    }
+
     private suspend fun filaQueFrenaLaTarjeta(orderId: String, attemptIdPropio: String?): PaymentAttemptEntity? {
         val fragmento = "\"orderId\":" + com.google.gson.Gson().toJson(orderId)
         return dao.otraCercaDeLaTarjeta(fragmento, attemptIdPropio.orEmpty(), processToken)

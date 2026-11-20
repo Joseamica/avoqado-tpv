@@ -129,6 +129,20 @@ class PendientesViewModelTest {
 
     private fun acciones(f: FilaPendiente) = f.botones.map { it.accion }
 
+    // D3 · «Usar esa entrada» sólo para una entrada del MISMO día: la de otro día es una salida olvidada (Isaac, 267 h).
+    @Test fun `D3 - la entrada abierta de otro dia no se ofrece para usar`() {
+        val nueve = java.time.Instant.parse("2026-11-09T15:00:00Z") // 09:00 en CDMX
+        val veinte = java.time.Instant.parse("2026-11-20T15:00:00Z").toEpochMilli()
+        val vieja = pieza(TipoPieza.ENTRADA, EstadoPieza.RECHAZADA, "YA_TIENE_ENTRADA", "Ya tienes una entrada",
+            """{"timeEntryId":"te1","venueId":"v1","clockInTime":"$nueve"}""").copy(creadaAt = veinte)
+        val f = filaDe(vieja, yo(), true, emptySet())
+        assertEquals("Tu entrada de otro día sigue abierta: pídele a tu supervisor que la cierre", f.texto)
+        assertEquals(listOf(Accion.QUITAR), acciones(f))
+
+        val mismoDia = vieja.copy(creadaAt = nueve.toEpochMilli() + 3 * 3_600_000L)
+        assertEquals(listOf(Accion.USAR_ENTRADA, Accion.QUITAR), acciones(filaDe(mismoDia, yo(), true, emptySet())))
+    }
+
     @Test fun `precio cambio ofrece corregir a 150 y al tocarlo queda una venta nueva con ese precio y otra llave`() = runBlocking {
         val vieja = ventaRechazada("PRECIO_CAMBIO", """{"code":"PRECIO_CAMBIO","message":"x","precioActual":"150.00"}""")
         val m = nuevoVm()

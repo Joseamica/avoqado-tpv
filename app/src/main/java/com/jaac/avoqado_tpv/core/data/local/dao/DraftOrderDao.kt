@@ -324,18 +324,19 @@ interface DraftOrderDao {
     suspend fun cerrarVueltaDeSubida(orderId: String, version: Int, ahora: Long)
 
     /**
-     * Rechazo permanente sin una lectura que sirva: de los renglones rechazados ([ids]), lo que el SERVIDOR ya tenía (un cambio de
-     * cantidad, un retiro) vuelve a `SYNCED` y la siguiente lectura lo deja como está allá; un alta que nunca aceptó se borra. Antes
-     * todo pasaba a `DELETED` y, con la puerta, la siguiente vuelta habría quitado del SERVIDOR un producto que nadie pidió quitar
-     * (Codex fase 1 mínima r1 #6). Lo que no está en [ids] (agregado después del rechazo) no se toca (r2 #4).
+     * Rechazo permanente: de los renglones rechazados ([ids]), lo que el SERVIDOR ya tenía (un cambio de cantidad, un retiro) vuelve
+     * a `SYNCED` y la siguiente lectura lo deja como está allá; un alta que nunca aceptó se borra; y el total se recalcula en la
+     * MISMA transacción. Antes todo pasaba a `DELETED` y, con la puerta, la siguiente vuelta habría quitado del SERVIDOR un
+     * producto que nadie pidió quitar (Codex fase 1 mínima r1 #6). Lo que no está en [ids] no se toca (r2 #4, r3 #1 #2).
      */
     @Transaction
-    suspend fun soltarRechazados(ids: List<String>) {
+    suspend fun soltarRechazados(orderId: String, ids: List<String>, ahora: Long) {
         if (ids.isEmpty()) return
-        val renglones = renglonesPorId(ids).filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }
+        val renglones = renglonesPorId(ids).filter { it.orderId == orderId && it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }
         val (yaEnElServidor, nuevas) = renglones.partition { it.isServerCreated }
         if (nuevas.isNotEmpty()) borrarRenglones(nuevas.map { it.id })
         if (yaEnElServidor.isNotEmpty()) marcarRenglonesSincronizados(yaEnElServidor.map { it.id })
+        recalcularTotalesLocales(orderId, ahora)
     }
 
     @Query("SELECT * FROM draft_order_items WHERE id IN (:ids)")
@@ -367,8 +368,6 @@ interface DraftOrderDao {
      *    esta lectura ya no trae (otra caja lo quitó) se borra; si no, la cola lo volvería a dar de alta.
      * 4. Cabecera: sin cola, la del SERVIDOR, por `UPDATE` ([ResultadoDeLectura.REEMPLAZADA]). Con cola, la del SERVIDOR con el
      *    subtotal de los renglones vivos de la libreta y su estado de sincronización ([ResultadoDeLectura.CON_COLA]).
-     * Con [soltar] (rechazo permanente) primero se sueltan esos renglones rechazados: quedan igual al SERVIDOR, como hacía el REPLACE;
-     * lo que se agregó después del rechazo sigue en cola.
      * Un retiro en cola de algo que el SERVIDOR aceptó y que esta lectura ya no trae (otra caja ya lo quitó) se da por cumplido y se
      * borra: si no, la siguiente vuelta mandaría otro DELETE que contesta 404 (Codex r2 #1).
      *
@@ -379,7 +378,6 @@ interface DraftOrderDao {
         cuenta: DraftOrderEntity,
         renglones: List<DraftOrderItemEntity>,
         llaves: Map<String, String>,
-        soltar: Set<String>,
     ): ResultadoDeLectura {
         val actual = getOrder(cuenta.id)
         if (actual == null) {
@@ -388,11 +386,6 @@ interface DraftOrderDao {
             return ResultadoDeLectura.NUEVA
         }
         if (actual.version > cuenta.version) return ResultadoDeLectura.VIEJA
-        if (soltar.isNotEmpty()) {
-            val aSoltar = renglonesDeLaCuenta(cuenta.id)
-                .filter { it.id in soltar && it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_SYNCED }.map { it.id }
-            if (aSoltar.isNotEmpty()) marcarRenglonesSincronizados(aSoltar)
-        }
 
         fun nombres(id: String) = listOfNotNull(id, llaves[id])
         val delServidor = renglones.flatMap { nombres(it.id) }.toSet()

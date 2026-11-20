@@ -173,8 +173,11 @@ class LibretaPuertaMinimaTest {
         // Otra caja ya cobró la cuenta: el SERVIDOR rechaza para siempre.
         coEvery { repo.addItemsToOrder(venue, cuenta, any(), any(), any()) } returns
             Result.failure(PermanentSyncException(400, "Esta cuenta ya está pagada"))
+        coEvery { repo.removeOrderItem(venue, cuenta, "renglon-srv-cafe", any()) } returns
+            Result.failure(PermanentSyncException(400, "Esta cuenta ya está pagada"))
         coEvery { repo.getOrder(venue, cuenta) } returns Result.success(delServidor(3, tacos, cafe, pagado = "150.00"))
 
+        coordinator.syncOrderImmediately(cuenta) // el alta se rechaza; el retiro, que no salió, sigue en cola y sale en la siguiente
         coordinator.syncOrderImmediately(cuenta)
 
         assertThat(renglones().map { it.id }).containsExactly("renglon-srv-tacos", "renglon-srv-cafe")
@@ -278,6 +281,7 @@ class LibretaPuertaMinimaTest {
         assertThat(renglones().map { it.productId }).containsExactly("prod-tacos", "prod-pan")
         assertThat(renglones().single { it.productId == "prod-pan" }.syncStatus).isEqualTo(DraftOrderItemEntity.SYNC_STATUS_PENDING)
         assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_PENDING)
+        assertThat(loQueVeLaCajera().total).isEqualToIgnoringScale("120.00") // tacos + pan, sin el café rechazado (Codex r3 #2)
     }
 
     @Test fun `M14 si falla la relectura tras un acuse atrasado la cuenta queda pendiente y la siguiente vuelta relee`() = runTest {
@@ -309,6 +313,25 @@ class LibretaPuertaMinimaTest {
 
         assertThat(renglones().map { it.id to it.syncStatus }).containsExactly("renglon-srv-tacos" to DraftOrderItemEntity.SYNC_STATUS_SYNCED)
         assertThat(cabecera().syncStatus).isEqualTo(DraftOrderEntity.SYNC_STATUS_SYNCED)
+        coVerify(exactly = 1) { repo.getOrder(venue, cuenta) } // usa la lectura del 409; no pide otra
+    }
+
+    @Test fun `M16 si falla la relectura tras un acuse atrasado, la siguiente vuelta relee aunque tenga algo que subir`() = runTest {
+        coordinator.cacheBackendOrder(delServidor(2, tacos))
+        val llave = agregar("prod-cafe", "Café", "50.00")
+        val cafeSrv = renglon("renglon-srv-cafe", "prod-cafe", "Café", "50.00", externalId = llave)
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), 2, any()) } coAnswers {
+            coordinator.cacheBackendOrder(delServidor(4, tacos)) // otra caja ya lo quitó
+            Result.success(delServidor(3, tacos, cafeSrv))
+        }
+        coEvery { repo.getOrder(venue, cuenta) } returnsMany listOf(Result.failure(Exception("sin red")), Result.success(delServidor(5, tacos)))
+        coordinator.syncOrderImmediately(cuenta)
+
+        agregar("prod-pan", "Pan", "20.00") // lo siguiente es una venta, no una vuelta vacía
+        coEvery { repo.addItemsToOrder(venue, cuenta, any(), 4, any()) } returns Result.success(delServidor(5, tacos))
+        coordinator.syncOrderImmediately(cuenta)
+
+        assertThat(renglones().none { it.productId == "prod-cafe" }).isTrue()
     }
 }
 

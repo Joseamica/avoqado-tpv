@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_campo.checada.limiteDelTurno
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
@@ -34,6 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
+import java.time.Instant
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -73,11 +75,17 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
         EstadoPieza.APARTADA -> "Buscando tu ubicación…" to emptyList() // r5: la checada que espera el GPS
         EstadoPieza.AVISO -> (p.rechazoMensaje.siHay() ?: RESPALDO_AVISO) to (if (code in CUSTODIA_A_MEDIAS) listOf(VOLVER, ENTENDIDO) else listOf(ENTENDIDO))
         EstadoPieza.RECHAZADA -> {
-            val entradaDeAqui = code == "YA_TIENE_ENTRADA" && dato(p, "venueId") == p.venueId && dato(p, "timeEntryId") != null
+            // D3: la entrada abierta del SERVIDOR sólo se ofrece si es del MISMO día que esta entrada; la de otro día es una
+            // «salida olvidada» y usarla cerraba el turno con cientos de horas (Isaac, 267 h).
+            val abiertaDesde = dato(p, "clockInTime")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            val deOtroDia = abiertaDesde != null && p.creadaAt >= limiteDelTurno(abiertaDesde)
+            val entradaDeAqui =
+                code == "YA_TIENE_ENTRADA" && dato(p, "venueId") == p.venueId && dato(p, "timeEntryId") != null && !deOtroDia
             val texto = when {
                 code == "SALE_REJECTED" -> "Tu supervisor rechazó esta venta"
                 code == "ENTRADA_SE_ENCIMA" || code == "SALIDA_SE_ENCIMA" -> "Se encima con otro turno. Tu supervisor lo revisa"
                 code == "ASIGNACION_CAMBIO" -> "Te volvieron a asignar esta SIM: vuelve a decidir"
+                code == "YA_TIENE_ENTRADA" && deOtroDia -> "Tu entrada de otro día sigue abierta: pídele a tu supervisor que la cierre"
                 code == "YA_TIENE_ENTRADA" && !entradaDeAqui -> "Tu entrada abierta es de ${nombre(dato(p, "venueId"))}: marca la salida ahí"
                 code in DESCARTADOS && notaDelSupervisor != null -> "Tu supervisor no la aceptó: $notaDelSupervisor"
                 else -> p.rechazoMensaje.siHay() ?: RESPALDO

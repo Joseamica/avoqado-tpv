@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.cola
 
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.identidad.HoraDeCampo
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
@@ -220,14 +221,22 @@ class Encolador(
         return n
     }
 
-    /** ENTRADA: no debe haber turno abierto de [staffId] (null). SALIDA: su turno abierto, de esa sucursal. Si no, lanza. */
+    /** La hora de ahora con el mismo reloj de las checadas (anclado al servidor si se puede). */
+    fun ahoraMs(): Long = reloj.ahora().epochMs
+
+    /**
+     * ENTRADA: no debe haber turno VIVO de [staffId] (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza. D3: un turno
+     * de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada nueva lo
+     * reemplaza en el celular.
+     */
     private suspend fun turnoPara(tipo: String, staffId: String, venueId: String): TurnoLocal? {
         val t = dao.turnoAhora()
+        val vivo = t != null && turnoVigente(t, ahoraMs())
         if (tipo == TipoPieza.ENTRADA) {
-            check(t == null || !t.abierto || t.staffId != staffId) { "Ya hay un turno abierto" }
+            check(t == null || !vivo || t.staffId != staffId) { "Ya hay un turno abierto" }
             return null
         }
-        check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
+        check(t != null && t.staffId == staffId && vivo) { "No hay turno abierto" }
         require(venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
         return t
     }

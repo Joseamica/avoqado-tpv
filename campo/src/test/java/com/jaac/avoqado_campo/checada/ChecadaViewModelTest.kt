@@ -394,10 +394,41 @@ class ChecadaViewModelTest {
         assertTrue(runBlocking { dao.siguientesParaSubir() }.isEmpty())
     }
 
+    // ── D3 · salida olvidada ────────────────────────────────────────────────────────────────────────────────────────
+    @Test fun `D3 - un turno local de un dia ya terminado no ofrece salida, lo dice, y la entrada de hoy se guarda`() {
+        val haceDosDias = 1_762_797_600_000 - 2 * 24 * 3_600_000L
+        runBlocking { dao.guardarTurno(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "vieja", "te-viejo", "v1", haceDosDias)) }
+        val e = runBlocking { withTimeout(5_000) { vm.estado.first { it.olvidadaAt != null } } }
+        assertNull("no ofrece «Marcar salida» de un turno olvidado", e.entrada)
+        assertEquals(haceDosDias, e.olvidadaAt)
+
+        vm.marcarEntrada()
+        quieto()
+        val entrada = piezas().single { it.tipo == TipoPieza.ENTRADA }
+        assertEquals(EstadoPieza.PENDIENTE, entrada.estado)
+        val t = runBlocking { dao.turnoAhora() }!!
+        assertEquals("la entrada nueva reemplaza al turno olvidado", entrada.llave, t.llaveEntrada)
+    }
+
+    @Test fun `D3 - el limite del turno es el corte de las 4 y nunca antes de 12 h`() {
+        val mx = java.time.ZoneId.of("America/Mexico_City")
+        fun ms(s: String) = java.time.ZonedDateTime.of(java.time.LocalDateTime.parse(s), mx).toInstant().toEpochMilli()
+        assertEquals(ms("2026-11-04T04:00"), limiteDelTurno(ms("2026-11-03T09:00"), mx))
+        assertEquals("turno nocturno: 12 h", ms("2026-11-04T10:00"), limiteDelTurno(ms("2026-11-03T22:00"), mx))
+        val t = com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", ms("2026-11-03T09:00"))
+        assertTrue(turnoVigente(t, ms("2026-11-03T23:59"), mx))
+        assertFalse(turnoVigente(t, ms("2026-11-04T04:00"), mx))
+        assertTrue("sin hora (fila vieja) cuenta como vivo", turnoVigente(t.copy(abiertoAt = null), ms("2026-12-01T00:00"), mx))
+        assertNull(refEntrada(t, "s1", ms("2026-11-04T09:00")))
+        assertEquals(ms("2026-11-03T09:00"), turnoOlvidado(t, "s1", ms("2026-11-04T09:00"), mx))
+        assertNull("del mismo día no es olvidado", turnoOlvidado(t, "s1", ms("2026-11-03T20:00"), mx))
+        assertTrue(textoDeSalidaOlvidada(ms("2026-11-09T09:00"), mx).contains("9-nov"))
+    }
+
     @Test fun `el turno de otra persona no cuenta`() {
-        assertNull(refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "otra", "k", null, "v1", 0L), "s1"))
-        assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1"))
-        assertEquals(RefEntrada.PorId("t"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", "t", "v1", 0L), "s1"))
+        assertNull(refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "otra", "k", null, "v1", 0L), "s1", 1_000L))
+        assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1", 1_000L))
+        assertEquals(RefEntrada.PorId("t"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", "t", "v1", 0L), "s1", 1_000L))
     }
 
     @Test fun `checar lee la generacion antes que la sesion - otra persona entre las dos no recibe la checada (H2)`() {

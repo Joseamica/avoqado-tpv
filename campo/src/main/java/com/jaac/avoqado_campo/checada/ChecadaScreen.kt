@@ -103,6 +103,8 @@ fun ChecadaContenido(
                 },
             )
         }
+        // D3 · la entrada de un día ya terminado sin salida: se dice qué pasó con ella y por qué ahora toca entrada.
+        e.olvidadaAt?.takeIf { !conEntrada }?.let { Recuadro(textoDeSalidaOlvidada(it), Tono.AVISO) }
         ChipDeUbicacion(e, conUbicacion)
         if (!conUbicacion) {
             Tarjeta {
@@ -130,4 +132,12 @@ private fun ChecadaPreview() = TemaCampo {
         ),
         conUbicacion = false, {}, {}, {}, {},
     )
+}
+
+private val MESES = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+
+/** «Tu entrada del 9-nov se quedó sin salida…»: el SERVIDOR la cierra como «salida olvidada» y la revisa el supervisor. */
+internal fun textoDeSalidaOlvidada(abiertoAtMs: Long, zona: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+    val d = java.time.Instant.ofEpochMilli(abiertoAtMs).atZone(zona)
+    return "Tu entrada del ${d.dayOfMonth}-${MESES[d.monthValue - 1]} se quedó sin salida: se cierra sola y la revisa tu supervisor. Marca tu entrada de hoy."
 }

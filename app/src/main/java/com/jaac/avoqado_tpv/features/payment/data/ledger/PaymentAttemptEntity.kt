@@ -410,6 +410,9 @@ data class PaymentAttemptEntity(
          */
         const val TECHO_DEL_05AP_MS = 300_000L
 
+        /** La hora del aparato en milisegundos, según SQLite (precisión de segundos). Sin parámetros: la ven igual todos los que la usan. */
+        const val SQL_AHORA_MS = "(CAST(strftime('%s','now') AS INTEGER) * 1000)"
+
         /**
          * F1 · techo del 05AP: «el historial contestó `05AP` y ya pasó el techo». La respuesta `05AP` se anota dejando en la marca de lectura
          * el `created_at` del intento ([PaymentAttemptDao.pausarTras05AP], [PaymentAttemptDao.anotar05APDeLaPantalla]): ninguna lectura real
@@ -419,13 +422,27 @@ data class PaymentAttemptEntity(
          * Sin alias. Sólo tiene sentido con `history_read_at IS NOT NULL` (va detrás de esa condición en [SQL_CERCA_LA_TARJETA]).
          */
         const val SQL_05AP_PASADO_EL_TECHO = "(history_read_at = created_at " +
-            "AND created_at <= CAST(strftime('%s','now') AS INTEGER) * 1000 - " + TECHO_DEL_05AP_MS + ")"
+            "AND created_at <= " + SQL_AHORA_MS + " - " + TECHO_DEL_05AP_MS + ")"
+
+        /**
+         * 🔴 F1 · C3 (20-nov): «la lectura del historial está EN VUELO»: reserva vigente y la marca ANTERIOR a ella. La toma de la recuperación
+         * escribe `marca = ahora` y `reserva = ahora + 5 min`; el despacho de la pantalla, su hora y una reserva posterior. Una lectura
+         * RESPONDIDA con fallo técnico deja la marca IGUAL al fin de su pausa, en el mismo UPDATE ([PaymentAttemptDao.pausarConsultaSinGastarTurno]),
+         * y una que murió sin respuesta deja la reserva vencida: ninguna de las dos está en vuelo. Sin alias; NULL-segura.
+         */
+        const val SQL_LECTURA_EN_VUELO = "(lease_until IS NOT NULL AND lease_until > " + SQL_AHORA_MS +
+            " AND history_read_at < lease_until)"
 
         // F1 bloque 4: y una lectura del historial despachada sin respuesta escrita: se retoma antes de armar otra tarjeta de su cuenta.
         // F1 · techo del 05AP: salvo la que el historial ya contestó `05AP` y pasó el techo ([SQL_05AP_PASADO_EL_TECHO]).
+        // 🔴 F1 · C3 (20-nov): y la marca, por sí sola, nunca frena más del techo: una lectura que NO está en vuelo (respondida con fallo técnico
+        // o muerta sin respuesta) deja de frenar pasado el techo, o en cuanto una PERSONA cerró la fila. La verificación sigue (la marca no se
+        // quita: la consulta la retoma sin gastar turno); sólo deja de frenar. Lo que frena por su propio estado (duda, dinero) no cambia.
         const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
             " OR (legacy_shadow = 0 AND kind = 'SALE' AND (state = 'INDETERMINADO' OR (history_read_at IS NOT NULL " +
             "AND NOT " + SQL_05AP_PASADO_EL_TECHO + " " +
+            "AND NOT (NOT " + SQL_LECTURA_EN_VUELO + " AND (created_at <= " + SQL_AHORA_MS + " - " + TECHO_DEL_05AP_MS +
+            " OR " + SQL_DECLARADA_POR_UNA_PERSONA + ")) " +
             "AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
 
         /**

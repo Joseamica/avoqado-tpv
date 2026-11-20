@@ -201,7 +201,10 @@ interface PaymentAttemptDao {
      * marca de la lectura despachada: al vencer la pausa se retoma aunque la ventana o una persona hayan cerrado la fila (sin la marca
      * ninguna consulta la volvía a elegir), y mientras tanto la tarjeta de su cuenta sigue frenada ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
      */
-    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta
+    // 🔴 F1 · C3 (20-nov): la marca queda IGUAL al fin de la pausa: «respondida con fallo técnico», ya no en vuelo
+    // ([PaymentAttemptEntity.SQL_LECTURA_EN_VUELO]). Sigue sin gastar turno y sigue siendo candidata (la verificación no se rinde); con la
+    // marca en el fin de la pausa también va al final del orden (último toque, Codex final r2 #4).
+    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta, history_read_at = :pausaHasta
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
     suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
 
@@ -224,10 +227,11 @@ interface PaymentAttemptDao {
      * quién tenga la reserva: si la app muere o la ventana cierra mientras pregunta, la recuperación la retoma. K19a conserva su
      * presupuesto interactivo: no gasta turnos de E1. Devuelve la marca a usar al terminar (la que ya hubiera, si E1 la tenía).
      * F1 · techo del 05AP: una respuesta `05AP` ya anotada (`created_at`) no es una lectura en vuelo: se reemplaza por la hora de ésta,
-     * para que frene mientras pregunta aunque haya pasado el techo.
+     * para que frene mientras pregunta aunque haya pasado el techo. C3: lo mismo con una respuesta de fallo técnico (marca = fin de su pausa).
      */
     @Query("""UPDATE payment_attempts SET
-        history_read_at = CASE WHEN history_read_at IS NULL OR history_read_at = created_at THEN :now ELSE history_read_at END,
+        history_read_at = CASE WHEN history_read_at IS NULL OR history_read_at = created_at OR history_read_at >= lease_until
+            THEN :now ELSE history_read_at END,
         lease_until = MAX(IFNULL(lease_until, 0), :leaseUntil)
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
         AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'""")

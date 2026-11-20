@@ -70,6 +70,7 @@ class LedgerUnknownRecovery @Inject constructor(
                         VerificacionDelCobro.NoCobrado -> dao.terminarConsultaSinCoincidencia(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
                         // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
+                        // C3: la marca queda como «respondida con fallo técnico» (ya no en vuelo): frena hasta el techo o la firma; se sigue preguntando.
                         is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y

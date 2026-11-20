@@ -895,7 +895,7 @@ afterEvaluate {
     }
     // Sin las dependencias de sandbox: con 2 trabajadores, compilar sandbox y Nexgo a la vez dejó sin memoria al compilador (2 corridas).
     tasks.named<Test>("testSandboxDebugUnitTest") {
-        setDependsOn(listOf("compileProductionDebugKotlin"))   // esta corrida: sólo compilar producción
+        setDependsOn(listOf("testNexgoDebugUnitTest"))
         classpath = files()
         testClassesDirs = files()
         onlyIf { false }

@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.app.Activity
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -488,6 +489,17 @@ fun AngelPayPaymentScreen(
     // "Cobro AngelPay" and a back arrow wired to nothing (`onNavigationClick`'s `when`
     // has no Queued branch, so it silently no-ops).
     val showTopBar = state !is AngelPayPaymentState.Success && state !is AngelPayPaymentState.Queued
+
+    // D36 (Codex r1 #5): en calificación, propina y método de pago, el «atrás» del SISTEMA hace lo mismo que la flecha de arriba.
+    // Antes salía directo a Cobrar sin pasar por `onNavigateBack` (la venta ya creada en el SERVIDOR se quedaba abierta para siempre).
+    // En los demás estados no se toca: el atrás del sistema sigue como hoy.
+    BackHandler(
+        enabled = state is AngelPayPaymentState.CollectingRating ||
+            state is AngelPayPaymentState.CollectingTip ||
+            state is AngelPayPaymentState.SelectingMerchant,
+    ) {
+        if (!viewModel.goBackOneStep()) onNavigateBack()
+    }
 
     // ── Scaffold with AvoqadoTopBar (matching Blumon) ────────────────
     Scaffold(

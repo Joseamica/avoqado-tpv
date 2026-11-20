@@ -2113,10 +2113,14 @@ fun AppNavigation(
                         Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
                         navController.volverALaCuentaDeLaMesa()
                     } else if (cameFromCheckout) {
-                        // D34 (Codex r1 #1): «atrás» antes de cobrar regresa a Cobrar con su carrito, igual que el riel AngelPay
-                        // (su onNavigateBack es un pop). Antes abría la orden en «Órdenes», que ya no existe.
-                        Timber.i("🛒 [Navigation] Cobro de Cobrar sin terminar (orden %s): de vuelta a Cobrar", continueOrderId)
-                        if (!navController.popBackStack()) navController.popAlInicio()
+                        // D34 (Codex r1 #1 y r2 #1-#2): antes abría la orden en «Órdenes», que ya no existe. Se regresa a un Cobrar
+                        // NUEVO y VACÍO, nunca al carrito de esta venta: este camino también lo toma «atrás» DESPUÉS de un cobro
+                        // registrado (p. ej. «sin papel» al imprimir), y el carrito lleno invitaba a cobrar la misma venta otra vez.
+                        // La orden ya creada queda en el SERVIDOR (cobrada, o abierta si nunca se cobró).
+                        Timber.i("🛒 [Navigation] Atrás desde el cobro de Cobrar (orden %s): Cobrar nuevo, vacío", continueOrderId)
+                        navController.navigate(NavRoute.Checkout.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
                     } else {
                         // D34 (20-nov): sin «Órdenes», la orden se sigue cobrando desde donde se abrió; aquí se regresa al Inicio.
                         Timber.i("🏠 [Navigation] Orden $continueOrderId sin pantalla de Órdenes (D34): de vuelta al Inicio")

@@ -325,7 +325,7 @@ class FirmaTrasLaVentana05APRoomTest {
         )
         assertThat(declaracionCon(l).declarar(venue, renglon(l)!!, supervisorPin = "1234")).isNotEqualTo(ResultadoDeLaDeclaracion.Declarado)
         assertWithMessage("sin firma posible, antes del techo sigue frenada").that(otraTarjeta(libreta())).isFalse()
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("pasado el techo, sola").that(otraTarjeta(libreta())).isTrue()
     }
 
@@ -359,7 +359,7 @@ class FirmaTrasLaVentana05APRoomTest {
         assertWithMessage("…sin tocar lo que dijo el lector").that(fila.hostApproved).isNull()
         assertWithMessage("antes del techo, el 05AP del historial sigue frenando").that(otraTarjeta(libreta())).isFalse()
         assertWithMessage("…y no se ofrece una firma que el SERVIDOR rechazaría").that(renglon(libreta())?.declarable).isNotEqualTo(true)
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("pasado el techo, sola").that(otraTarjeta(libreta())).isTrue()
     }
 
@@ -392,12 +392,12 @@ class FirmaTrasLaVentana05APRoomTest {
         assertWithMessage("nada la suelta: sigue en duda").that(dao.getById("a1")!!.state).isEqualTo("INDETERMINADO")
         assertWithMessage("antes del techo, frena").that(otraTarjeta(libreta())).isFalse()
         assertWithMessage("otra cuenta, nunca").that(otraTarjeta(libreta(), "orden-B")).isTrue()
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("pasado el techo, entra").that(otraTarjeta(libreta())).isTrue()
 
         // La misma duda de una venta LOCAL (TPV SOLA): espera al gerente, sin techo.
         duda("l1", solicitud = null, orden = "orden-L")
-        envejecer("l1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("l1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("local, pasado el techo: sigue esperando al gerente").that(otraTarjeta(libreta(), "orden-L")).isFalse()
         db.openHelper.writableDatabase.execSQL(
             "UPDATE payment_attempts SET state = 'DESCARTADA', last_error = 'declarado_sin_cobro:gerente-1:avoqado' WHERE attempt_id = 'l1'")

@@ -399,51 +399,38 @@ data class PaymentAttemptEntity(
             "AND (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%' OR server_outcome IS 'OPERATOR_NO_INSTRUMENT'))"
 
         /**
-         * 🔴 F1 · techo del 05AP (Codex final r6 #1 y #2, 20-nov, `decisiones-codigo-r1.md`): lo más que una venta que el historial de
-         * AngelPay trae SIN aprobar (`05AP`, o un rechazo que el SDK 1.0.23 no deja distinguir) frena la tarjeta de su cuenta en ESTA
-         * terminal, contado desde `created_at` del intento. Pasado el techo, su respuesta «sin aprobar» cuenta como «no aparece» (como antes
-         * del 20-nov: gasta turno y suelta la marca) y la admisión deja pasar la tarjeta sólo por el reloj; un aprobado tardío se registra
-         * por el camino de una fila soltada por la ventana. Una lectura EN VUELO sigue frenando.
-         * ⚠️ DECISIÓN DEL FOUNDER PENDIENTE: 5 min / 30 min / nada extra (30 s de la ventana, como producción). 5 min porque Square vence a
-         * los 5 min un cobro sin respuesta (precedente del 20-oct). La solución completa es del SERVIDOR con la consulta S2S de AngelPay
-         * (`hz:248b195b:D4`): sólo él podrá distinguir `05AP` de un rechazo definitivo.
+         * 🔴 F1 · rediseño tras Codex r7 (20-nov, `pasada-r2-tpv.md` «Rediseño tras Codex r7»): lo más que la DUDA de un cobro del POS
+         * (venta con `terminal_payment_request_id`) frena otra tarjeta de su cuenta en ESTA terminal, contado desde `created_at` del intento:
+         * su estado `INDETERMINADO` y cualquier marca del historial de AngelPay (despachada, en vuelo, con fallo, muerta o «sin aprobar»).
+         * Pasado el techo nada de esa duda frena, tampoco una lectura en vuelo: el techo es EL límite. La firma de una persona suelta antes.
+         * El seguimiento del aprobado tardío NO depende de esto ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+         * ⚠️ DECISIÓN DEL FOUNDER PENDIENTE: 5 min / 30 min / 30 s (la ventana, como producción). 5 min porque Square vence a los 5 min un
+         * cobro sin respuesta (precedente del 20-oct). Límite dicho: un ajuste del reloj del aparato mueve el techo.
          */
-        const val TECHO_DEL_05AP_MS = 300_000L
+        const val TECHO_DE_LA_DUDA_DEL_POS_MS = 300_000L
 
         /** La hora del aparato en milisegundos, según SQLite (precisión de segundos). Sin parámetros: la ven igual todos los que la usan. */
         const val SQL_AHORA_MS = "(CAST(strftime('%s','now') AS INTEGER) * 1000)"
 
-        /**
-         * F1 · techo del 05AP: «el historial contestó `05AP` y ya pasó el techo». La respuesta `05AP` se anota dejando en la marca de lectura
-         * el `created_at` del intento ([PaymentAttemptDao.pausarTras05AP], [PaymentAttemptDao.anotar05APDeLaPantalla]): ninguna lectura real
-         * se despacha en el milisegundo en que se abrió el intento (la toma y la pantalla escriben su hora, siempre posterior), así que no se
-         * confunde con una lectura EN VUELO o que murió sin respuesta, que siguen frenando como en `eac5f940`. La hora es la de SQLite
-         * (`'now'`, el reloj del aparato): así la ven igual la admisión, el CAS, «Por revisar» y las listas que se observan, sin pasarla.
-         * Sin alias. Sólo tiene sentido con `history_read_at IS NOT NULL` (va detrás de esa condición en [SQL_CERCA_LA_TARJETA]).
-         */
-        const val SQL_05AP_PASADO_EL_TECHO = "(history_read_at = created_at " +
-            "AND created_at <= " + SQL_AHORA_MS + " - " + TECHO_DEL_05AP_MS + ")"
+        /** F1 · r7: el intento tiene menos del techo ([TECHO_DE_LA_DUDA_DEL_POS_MS]). Hora de SQLite: la ven igual admisión, CAS y listas. */
+        private const val SQL_ANTES_DEL_TECHO = "created_at > " + SQL_AHORA_MS + " - " + TECHO_DE_LA_DUDA_DEL_POS_MS
 
         /**
-         * 🔴 F1 · C3 (20-nov): «la lectura del historial está EN VUELO»: reserva vigente y la marca ANTERIOR a ella. La toma de la recuperación
-         * escribe `marca = ahora` y `reserva = ahora + 5 min`; el despacho de la pantalla, su hora y una reserva posterior. Una lectura
-         * RESPONDIDA con fallo técnico deja la marca IGUAL al fin de su pausa, en el mismo UPDATE ([PaymentAttemptDao.pausarConsultaSinGastarTurno]),
-         * y una que murió sin respuesta deja la reserva vencida: ninguna de las dos está en vuelo. Sin alias; NULL-segura.
+         * 🔴 F1 · rediseño tras Codex r7 (20-nov): el freno de la TARJETA de una cuenta es UNA regla que sólo mira estado, edad y firma:
+         * - el dinero conocido o en vuelo ([SQL_CERCA_LA_VENTA], sin cambio);
+         * - la duda (`INDETERMINADO`) de una venta LOCAL (TPV SOLA, sin solicitud del POS): espera al gerente, sin techo;
+         * - la duda de un cobro del POS, sólo antes del techo;
+         * - una lectura del historial despachada o respondida sin «no aparece», sólo antes del techo, sin firma de una persona, sin
+         *   aprobado ni Payment y con el dinero no a salvo. «No aparece» quita la marca (AngelPay registra la venta ANTES de mandarla al
+         *   banco: no aparecer es evidencia de que no llegó).
+         * No mira la reserva (`lease_until`) ni distingue qué marca es: así un ajuste de hora no abre una lectura en vuelo antes del techo
+         * (Codex r7 #4) y una consulta que falló en la pantalla no frena pasado el techo ni tras la firma (Codex r7 #5).
          */
-        const val SQL_LECTURA_EN_VUELO = "(lease_until IS NOT NULL AND lease_until > " + SQL_AHORA_MS +
-            " AND history_read_at < lease_until)"
-
-        // F1 bloque 4: y una lectura del historial despachada sin respuesta escrita: se retoma antes de armar otra tarjeta de su cuenta.
-        // F1 · techo del 05AP: salvo la que el historial ya contestó `05AP` y pasó el techo ([SQL_05AP_PASADO_EL_TECHO]).
-        // 🔴 F1 · C3 (20-nov): y la marca, por sí sola, nunca frena más del techo: una lectura que NO está en vuelo (respondida con fallo técnico
-        // o muerta sin respuesta) deja de frenar pasado el techo, o en cuanto una PERSONA cerró la fila. La verificación sigue (la marca no se
-        // quita: la consulta la retoma sin gastar turno); sólo deja de frenar. Lo que frena por su propio estado (duda, dinero) no cambia.
         const val SQL_CERCA_LA_TARJETA = "(" + SQL_CERCA_LA_VENTA +
-            " OR (legacy_shadow = 0 AND kind = 'SALE' AND (state = 'INDETERMINADO' OR (history_read_at IS NOT NULL " +
-            "AND NOT " + SQL_05AP_PASADO_EL_TECHO + " " +
-            "AND NOT (NOT " + SQL_LECTURA_EN_VUELO + " AND (created_at <= " + SQL_AHORA_MS + " - " + TECHO_DEL_05AP_MS +
-            " OR " + SQL_DECLARADA_POR_UNA_PERSONA + ")) " +
-            "AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
+            " OR (legacy_shadow = 0 AND kind = 'SALE' AND (" +
+            "(state = 'INDETERMINADO' AND (terminal_payment_request_id IS NULL OR " + SQL_ANTES_DEL_TECHO + "))" +
+            " OR (history_read_at IS NOT NULL AND " + SQL_ANTES_DEL_TECHO + " AND NOT " + SQL_DECLARADA_POR_UNA_PERSONA +
+            " AND host_approved IS NULL AND server_payment_id IS NULL AND state NOT IN ('REGISTRADO','CERRADA','ENTREGADA_A_COLA')))))"
 
         /**
          * Gemelo en Kotlin de la mitad «evidencia de dinero» de [SQL_CONTRADICCION]: los `server_outcome` con los que el

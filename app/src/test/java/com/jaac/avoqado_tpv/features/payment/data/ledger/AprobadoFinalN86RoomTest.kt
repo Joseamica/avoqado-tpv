@@ -459,7 +459,7 @@ class AprobadoFinalN86RoomTest {
      * 🔴 Codex plan A #2 (AngelPay, 19-nov, punto 31): el historial trae la venta en `05AP` («rejected»): llegó al procesador y el banco no
      * ha contestado; puede volverse aprobada. Se trataba como «no aparece»: se gastaba el turno, se borraba la marca y, al soltarla la
      * ventana del SERVIDOR, otra tarjeta de la MISMA cuenta entraba. Ahora la marca se queda sin gastar turno y frena la tarjeta HASTA EL
-     * TECHO ([PaymentAttemptEntity.TECHO_DEL_05AP_MS], Codex final r6, 20-nov). Ajustada por el techo: antes exigía «sigue frenada tras
+     * TECHO ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS], Codex final r6, 20-nov). Ajustada por el techo: antes exigía «sigue frenada tras
      * siete respuestas 05AP» (sin límite); ahora pasado el techo la tarjeta entra sola y, si AngelPay la aprueba después, se registra una
      * venta con la llave del intento por el camino de una fila soltada por la ventana.
      */
@@ -471,7 +471,7 @@ class AprobadoFinalN86RoomTest {
         ventana("a1")   // el SERVIDOR la suelta: no le llegó el aviso del procesador
         assertWithMessage("antes del techo, la tarjeta de A sigue frenada").that(otraTarjetaDeA(libreta())).isFalse()
         assertWithMessage("05AP no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("pasado el techo, la tarjeta de A entra").that(otraTarjetaDeA(libreta())).isTrue()
 
         estado = "APROBADA"   // la respuesta del banco llegó tarde
@@ -502,7 +502,7 @@ class AprobadoFinalN86RoomTest {
             .that(libreta().renglonPorRevisar(venue, CobroDeclarable.CLASE_INTENTO, "a1")?.declarable).isTrue()
 
         val consultas = consultasAlHistorial
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         val reabierta = libreta()
         assertWithMessage("pasado el techo, sólo por el reloj: entra").that(otraTarjetaDeA(reabierta)).isTrue()
         assertWithMessage("la lectura antes de encender el lector tampoco la frena").that(reabierta.otraCercaDeLaTarjeta("orden-A", "b-x")).isFalse()
@@ -517,7 +517,7 @@ class AprobadoFinalN86RoomTest {
     @Test fun `N86_techo_aprobado_por_el_servidor_despues_del_techo_no_se_registra_dos_veces`() = runBlocking<Unit> {
         dudaN86("a1", solicitud = "r-1", creadoEn = reciente)
         LedgerUnknownRecovery(dao, libreta(), historialReal { "rejected" }).recover(venue, System.currentTimeMillis())
-        ventana("a1"); envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        ventana("a1"); envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertThat(otraTarjetaDeA(libreta())).isTrue()
         libreta().aplicarVeredictoDelServidor(
             VeredictoDeIntento(venue, "a1", "r-1", com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED,
@@ -584,7 +584,7 @@ class AprobadoFinalN86RoomTest {
         }
         vencerLaReserva("vencida")
         for (id in listOf("viva", "vencida")) assertWithMessage("$id: antes del techo, frena").that(otraTarjeta(libreta(), "orden-$id")).isFalse()
-        for (id in listOf("viva", "vencida")) envejecer(id, PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        for (id in listOf("viva", "vencida")) envejecer(id, PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         for (id in listOf("viva", "vencida")) assertWithMessage("$id: pasado el techo, entra").that(otraTarjeta(libreta(), "orden-$id")).isTrue()
     }
 
@@ -631,7 +631,7 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("antes del techo, frenada").that(otraTarjetaDeA(libreta())).isFalse()
         assertWithMessage("el fallo técnico no gasta turno").that(consultasGastadas("a1")).isEqualTo(0)
 
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("pasado el techo, sólo por el reloj: entra").that(otraTarjetaDeA(libreta())).isTrue()
         repeat(3) { t += 6 * 3_600_000L; LedgerUnknownRecovery(dao, libreta(), v).recover(venue, t) }
         assertWithMessage("la verificación sigue preguntando").that(consultas()).isEqualTo(6)
@@ -656,7 +656,7 @@ class AprobadoFinalN86RoomTest {
         assertWithMessage("antes del techo, con la reserva viva: frenada").that(otraTarjetaDeA(libreta())).isFalse()
         vencerLaReserva("a1")
         assertWithMessage("antes del techo, muerta: frenada").that(otraTarjetaDeA(libreta())).isFalse()
-        envejecer("a1", PaymentAttemptEntity.TECHO_DEL_05AP_MS)
+        envejecer("a1", PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS)
         assertWithMessage("reabierta y pasado el techo: entra sola").that(otraTarjetaDeA(libreta())).isTrue()
         val (v, consultas) = verificador(cobrado)
         LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())

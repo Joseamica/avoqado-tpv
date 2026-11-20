@@ -37,7 +37,7 @@ const val SQL_POR_REVISAR = """
         (amount_cents + tip_cents) AS total_centavos, created_at AS desde_millis, server_answered_at AS server_answered_at,
         state AS estado, kind AS tipo,
         CASE WHEN (state = 'INDETERMINADO'
-                   -- 🔴 F1 · 05AP (20-nov): la venta que la VENTANA del SERVIDOR ya soltó y la N86 sigue frenando porque el historial de
+                   -- 🔴 F1 · 05AP (20-nov): la venta que la VENTANA del SERVIDOR ya soltó y la N86 frena hasta el techo porque el historial de
                    -- AngelPay la trae sin aprobar (marca de lectura viva). Firmable: la firma va al SERVIDOR como cualquier otra.
                    OR (state = 'DESCARTADA' AND server_outcome IS 'RELEASED_NO_EVIDENCE' AND history_read_at IS NOT NULL
                        -- Codex final r6 #1: sólo la VENTANA; la que soltó el rechazo del banco el SERVIDOR ya no acepta firmarla.
@@ -199,39 +199,21 @@ interface PaymentAttemptDao {
     /**
      * 🔴 F1 bloque 4: fallo técnico (red, credenciales, lectura ilegible): pausa SIN gastar turno. 🔴 Codex final r1 #3: y SIN borrar la
      * marca de la lectura despachada: al vencer la pausa se retoma aunque la ventana o una persona hayan cerrado la fila (sin la marca
-     * ninguna consulta la volvía a elegir), y mientras tanto la tarjeta de su cuenta sigue frenada ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+     * ninguna consulta la volvía a elegir), y la tarjeta de su cuenta sigue frenada sólo hasta el techo ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
      */
-    // 🔴 F1 · C3 (20-nov): la marca queda IGUAL al fin de la pausa: «respondida con fallo técnico», ya no en vuelo
-    // ([PaymentAttemptEntity.SQL_LECTURA_EN_VUELO]). Sigue sin gastar turno y sigue siendo candidata (la verificación no se rinde); con la
-    // marca en el fin de la pausa también va al final del orden (último toque, Codex final r2 #4).
-    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta, history_read_at = :pausaHasta
+    // 🔴 F1 · rediseño tras Codex r7 (20-nov): la marca se queda tal cual (la escribió la toma: es el «último toque» del orden, Codex final
+    // r2 #4). Ya no distingue «en vuelo» de «respondida»: el freno sólo mira la edad ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). También
+    // la usa el «sin aprobar» (`05AP`) durante su seguimiento ([LedgerUnknownRecovery.SEGUIMIENTO_DEL_SIN_APROBAR_MS]).
+    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
     suspend fun pausarConsultaSinGastarTurno(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
 
     /**
-     * 🔴 F1 · techo del 05AP: la respuesta `05AP` de la lectura de [ownedLease] quedó escrita ANTES del techo. Sin gastar turno, la marca
-     * pasa a «el historial contestó 05AP» (`created_at`, [PaymentAttemptEntity.SQL_05AP_PASADO_EL_TECHO]) y la fila descansa hasta
-     * [pausaHasta]: frena la tarjeta de su cuenta hasta el techo y, después, ya no (sólo por el reloj).
-     */
-    @Query("""UPDATE payment_attempts SET lease_until = :pausaHasta, history_read_at = created_at
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND lease_until = :ownedLease AND history_read_at IS NOT NULL""")
-    suspend fun pausarTras05AP(attemptId: String, venueId: String, ownedLease: Long, pausaHasta: Long): Int
-
-    /** 🔴 F1 · techo del 05AP: la lectura de la PANTALLA contestó `05AP` antes del techo: SU marca pasa a «contestó 05AP». Sólo la suya. */
-    @Query("""UPDATE payment_attempts SET history_read_at = created_at
-        WHERE attempt_id = :attemptId AND venue_id = :venueId AND history_read_at = :despachadaEn""")
-    suspend fun anotar05APDeLaPantalla(attemptId: String, venueId: String, despachadaEn: Long): Int
-
-    /**
      * 🔴 F1 bloque 4: la lectura de la PANTALLA (K19a) queda despachada en la fila ANTES de preguntar, sin importar su estado ni
      * quién tenga la reserva: si la app muere o la ventana cierra mientras pregunta, la recuperación la retoma. K19a conserva su
-     * presupuesto interactivo: no gasta turnos de E1. Devuelve la marca a usar al terminar (la que ya hubiera, si E1 la tenía).
-     * F1 · techo del 05AP: una respuesta `05AP` ya anotada (`created_at`) no es una lectura en vuelo: se reemplaza por la hora de ésta,
-     * para que frene mientras pregunta aunque haya pasado el techo. C3: lo mismo con una respuesta de fallo técnico (marca = fin de su pausa).
+     * presupuesto interactivo: no gasta turnos de E1. Si E1 ya tenía su marca, ésa se queda.
      */
-    @Query("""UPDATE payment_attempts SET
-        history_read_at = CASE WHEN history_read_at IS NULL OR history_read_at = created_at OR history_read_at >= lease_until
-            THEN :now ELSE history_read_at END,
+    @Query("""UPDATE payment_attempts SET history_read_at = COALESCE(history_read_at, :now),
         lease_until = MAX(IFNULL(lease_until, 0), :leaseUntil)
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL AND server_payment_id IS NULL
         AND kind = 'SALE' AND legacy_shadow = 0 AND processor = 'ANGELPAY'""")

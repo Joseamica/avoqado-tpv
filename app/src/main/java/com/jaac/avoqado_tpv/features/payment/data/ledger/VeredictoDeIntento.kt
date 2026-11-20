@@ -294,7 +294,7 @@ data class LiberacionDelServidor(
          * de esa cuenta frenaba su tarjeta para siempre. Se aplica como la ventana: sin autor, nunca firma, por el único escritor (que
          * vuelve a mirar dinero, veto y pertenencia dentro del UPDATE). NO quita la marca del historial: el SERVIDOR llama «rechazo» a todo
          * estado de AngelPay que no es `approved` (`clasificarEstadoBancario`), también al `05AP`, así que si el historial la trae sin
-         * aprobar la tarjeta espera hasta el techo ([PaymentAttemptEntity.TECHO_DEL_05AP_MS]). El rechazo de OTRO intento de la solicitud
+         * aprobar la tarjeta espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). El rechazo de OTRO intento de la solicitud
          * (`processorEvidence` ≠ DECLINED en éste) no suelta nada.
          */
         private fun desdeRechazoDelBanco(venueId: String, attemptId: String, requestId: String, intento: TerminalAttemptResultDto?): LiberacionDelServidor? =

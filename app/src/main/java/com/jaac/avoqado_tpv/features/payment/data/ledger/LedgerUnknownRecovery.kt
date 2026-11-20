@@ -70,22 +70,19 @@ class LedgerUnknownRecovery @Inject constructor(
                         VerificacionDelCobro.NoCobrado -> dao.terminarConsultaSinCoincidencia(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
                         // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
-                        // C3: la marca queda como «respondida con fallo técnico» (ya no en vuelo): frena hasta el techo o la firma; se sigue preguntando.
                         is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
                             row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y
-                        // puede aprobarse tarde). No es «no aparece»: la marca se queda —frena su tarjeta aunque la ventana del SERVIDOR la
-                        // suelte— y se vuelve a preguntar sin gastar turno. La resuelven el aprobado (arriba) o una PERSONA: si ya la firmó,
-                        // cuenta como «no aparece» y su tarjeta sigue lo que decidió. Nunca el silencio. Si la VENTANA del SERVIDOR ya la
-                        // soltó, sigue siendo firmable en «Por revisar» (F1 · 05AP, 20-nov): el SERVIDOR guarda la firma sin cambiar el estado
-                        // financiero, su comprobante la deja «cerrada por una persona» y la libreta pide esta pasada al vencer la reserva.
-                        // 🔴 Techo del 05AP (Codex final r6 #1 y #2): pasado [PaymentAttemptEntity.TECHO_DEL_05AP_MS] desde el intento, también
-                        // cuenta como «no aparece»; antes, la marca queda como «contestó 05AP» y frena su tarjeta sólo hasta el techo.
+                        // puede aprobarse tarde). No es «no aparece»: la marca se queda y se vuelve a preguntar SIN gastar turno mientras el
+                        // intento tenga menos de [SEGUIMIENTO_DEL_SIN_APROBAR_MS] (F1 · Codex r7 #1: aunque la VENTANA del SERVIDOR la haya
+                        // soltado; la marca la mantiene entre las candidatas). El seguimiento ya no depende del freno: la tarjeta de su cuenta
+                        // sólo espera hasta el techo ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]). Si una PERSONA ya la firmó, o
+                        // pasaron los 7 días, cuenta como «no aparece» y gasta turno; con los turnos acabados, se acaba.
                         is VerificacionDelCobro.EnElProcesador ->
                             if (PaymentAttemptEntity.cerradaPorUnaPersona(dao.getById(row.attemptId)) ||
-                                terminadaEn - row.createdAt >= PaymentAttemptEntity.TECHO_DEL_05AP_MS) dao.terminarConsultaSinCoincidencia(
+                                terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_SIN_APROBAR_MS) dao.terminarConsultaSinCoincidencia(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
-                            else dao.pausarTras05AP(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
+                            else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -123,6 +120,11 @@ class LedgerUnknownRecovery @Inject constructor(
         const val RESERVA_DE_LA_LECTURA_MS = 300_000L
         /** Consultas al historial que un barrido INICIA como máximo (antes, filas leídas: `LIMIT 50`). */
         const val CONSULTAS_POR_CORRIDA = 50
+        /**
+         * 🔴 F1 · Codex r7 #1 (20-nov): cuánto se sigue buscando, sin gastar turno, el aprobado tardío de una venta que el historial de
+         * AngelPay trae «sin aprobar» (`05AP`), contado desde `created_at`. Se pregunta cuando una pasada la encuentra con su pausa vencida
+         * (5 min tras la anterior como mínimo): en el barrido de 6 h, al arrancar o entrar, y en las pasadas de seguimiento.
+         */
         const val SEGUIMIENTO_DEL_SIN_APROBAR_MS = 7 * 24 * 3_600_000L
         const val FILAS_POR_PAGINA = 50
     }

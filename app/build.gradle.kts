@@ -871,7 +871,7 @@ tasks.withType<Test>().configureEach { dependsOn(checkNoEmojiInTestNames) }
 
 // ⛔ TEMPORAL · nube, encargo 27dd77 (F1 · Codex r8). El CI del PR sólo corre `testSandboxDebugUnitTest` y la nube no puede cambiar el
 // workflow (GitHub pide el permiso `workflow`) ni correr Gradle a mano. En ESTE commit, esa tarea corre en su lugar la suite completa de
-// Nexgo (sin cortar si falla: imprime el total y el nombre de cada falla) y `compileProductionDebugKotlin`. El commit siguiente lo quita.
+// Nexgo (sin cortar si falla: imprime el total y el nombre de cada falla). El commit siguiente lo quita.
 afterEvaluate {
     tasks.named<Test>("testNexgoDebugUnitTest") {
         ignoreFailures = true
@@ -894,7 +894,7 @@ afterEvaluate {
         }
     }
     tasks.named<Test>("testSandboxDebugUnitTest") {
-        dependsOn("testNexgoDebugUnitTest", "compileProductionDebugKotlin")
+        dependsOn("testNexgoDebugUnitTest")   // compileProductionDebugKotlin va en otra corrida: juntas, el compilador se quedó sin memoria
         onlyIf { false }
     }
 }

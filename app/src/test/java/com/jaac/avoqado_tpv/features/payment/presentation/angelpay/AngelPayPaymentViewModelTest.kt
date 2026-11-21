@@ -6091,12 +6091,18 @@ class AngelPayPaymentViewModelTest {
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { printerManager.isPrinterAvailable() } returns true   // sabor sandbox: `canPrintReceipt` pregunta a la impresora PAX
+        // D1 (20-nov): sabor nexgo: `canPrintReceipt` le pregunta el modelo al SDK de AngelPay; sin esto da false, el ticket se
+        // omite y la prueba tronaba en ese carril (el CI sólo corre sandbox). La N86 trae impresora. `unmockkAll()` lo quita.
+        io.mockk.mockkObject(com.angelpay.angelpaysdk.AngelPaySDK)
+        every { com.angelpay.angelpaysdk.AngelPaySDK.getDeviceInfo() } returns mockk(relaxed = true) { every { model } returns "N86" }
         val importes = mutableListOf<BigDecimal?>()
         every { angelPayTicketBuilder.buildDeclineTicket(captureNullable(importes), any(), any(), any(), any(), any(), any(), any(), any()) } returns mockk(relaxed = true)
         // `leerIntento(any())` contesta null (setup): la libreta no devuelve la fila del intento lanzado.
         val vm = createViewModel(androidx.lifecycle.SavedStateHandle(mapOf("angelpay_intento_lanzado_al_sdk" to "att-sin-fila")))
         vm.ticketsDeRechazoEnEsteAparato = true   // como en la Nexgo
         try {
+            assertWithMessage("D1: sin impresora el ticket de rechazo se omite y esta prueba no mide nada")
+                .that(vm.canPrintReceipt).isTrue()
             vm.onAngelPaySdkResult(sdkFailureResult("G500", message = "Transacción rechazada por el gateway"))
             advanceTimeBy(5_000); runCurrent()
 

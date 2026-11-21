@@ -586,9 +586,15 @@ class Libreta internal constructor(
         /** Las libretas abiertas del proceso, por ruta canónica del archivo: una por archivo, con un solo dueño (r1 R1-4). */
         private val ABIERTAS = HashMap<String, Libreta>()
 
-        /** Una por archivo en todo el proceso: un segundo `abrir` del mismo archivo regresa LA MISMA (y su `ahora`). */
-        fun abrir(context: Context, nombre: String = "cobro_propio.db", ahora: () -> Long = SystemClock::elapsedRealtime): Libreta {
-            val archivo = File(context.noBackupFilesDir, nombre)
+        /** La libreta de producción: el archivo fijo `cobro_propio.db` en `noBackupFilesDir` de la aplicación. */
+        fun abrir(context: Context): Libreta = abrir(context, "cobro_propio.db")
+
+        /**
+         * Una por archivo en todo el proceso: un segundo `abrir` del mismo archivo regresa LA MISMA (y su `ahora`). El directorio
+         * sale de `applicationContext` (Codex r1 #7): otro `Context` (p. ej. de almacenamiento protegido) no abre otra libreta.
+         */
+        internal fun abrir(context: Context, nombre: String, ahora: () -> Long = SystemClock::elapsedRealtime): Libreta {
+            val archivo = File(context.applicationContext.noBackupFilesDir, nombre)
             return synchronized(ABIERTAS) {
                 ABIERTAS.getOrPut(archivo.canonicalPath) { Libreta(LibretaDatabase.constructor(context, archivo).build(), ahora) }
             }

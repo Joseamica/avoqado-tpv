@@ -164,10 +164,10 @@ object AvisoDeCobrosPendientes {
         // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide. F1-textos (catálogo D5, fila 17 ⚙):
         // si la que cerca es un cobro del POS, se suelta sola al techo, y se dice.
         apartaLaVenta != null && laVentaLaApartaUnCobroDelPos ->
-            "Esta cuenta tiene una tarjeta por confirmar ($apartaLaVenta). No se inició otro cobro. " +
+            "${CUENTA_EN_DUDA}una tarjeta por confirmar ($apartaLaVenta). No se inició otro cobro. " +
                 "Se libera sola a los ${com.jaac.avoqado_tpv.features.payment.data.ledger.MINUTOS_DEL_TECHO} o con el gerente."
         apartaLaVenta != null ->
-            "Esta cuenta tiene un cobro por confirmar ($apartaLaVenta). No se inició otro cobro. Avísale al gerente."
+            "${CUENTA_EN_DUDA}un cobro por confirmar ($apartaLaVenta). No se inició otro cobro. Avísale al gerente."
         // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
             "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +
@@ -176,6 +176,14 @@ object AvisoDeCobrosPendientes {
         // texto no afirma que la venta esté libre — sólo dice lo único que consta: no se cobró.
         else -> "No se pudo guardar el intento en esta terminal. NO se cobró. Vuelve a intentarlo."
     }
+
+    private const val CUENTA_EN_DUDA = "Esta cuenta tiene "
+
+    /**
+     * F1-textos (fila 17, Codex fila17 #1 y #3): ¿la barrera frenó por una duda de la cuenta (las dos frases de la fila 17)? Sólo esas
+     * van arriba de la pantalla de la duda: «Vuelve a intentarlo» y «Toca «Entendido»…» no caben junto a «No la repitas» y [Seguir].
+     */
+    fun esLaCuentaEnDuda(motivo: String): Boolean = motivo.startsWith(CUENTA_EN_DUDA)
 
     private fun pesos(centavos: Long): String =
         CurrencyFormatter.format(BigDecimal(centavos).movePointLeft(2))

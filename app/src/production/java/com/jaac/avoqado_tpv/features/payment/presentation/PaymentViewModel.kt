@@ -3814,8 +3814,9 @@ class PaymentViewModel @Inject constructor(
                         unresolvedAttemptId = blockedAttempt?.takeIf {
                             paymentAttemptLedger.puedeConciliarBlumon(it, currentVenueId)
                         }?.attemptId,
-                        // F1-textos (fila 17): con la duda que estorba, la pantalla es la de esa duda y `message` no se ve.
-                        avisoDeLaBarrera = motivo,
+                        // F1-textos (fila 17): con la duda que estorba, la pantalla es la de esa duda y `message` no se ve. Sólo las
+                        // frases de la cuenta en duda (Codex fila17 #1 y #3).
+                        avisoDeLaBarrera = motivo.takeIf { com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.esLaCuentaEnDuda(it) },
                     )
                 }
                 return@launch

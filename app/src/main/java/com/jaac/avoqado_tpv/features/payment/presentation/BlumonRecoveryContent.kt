@@ -55,6 +55,16 @@ internal fun textoDelIntentoCerrado(
     // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó. F1-textos (9c · F-D).
     else SE_MARCO_COMO_NO_COBRADO
 
+/**
+ * F1-textos (fila 17, Codex fila17 #1 y #2): la frase de la barrera es una foto del momento en que frenó. Sólo se enseña mientras la
+ * duda sigue por confirmar; registrada, con evidencia o cerrada, su propio texto manda («Se libera sola a los 5 min» ya no sería cierto).
+ */
+internal fun avisoDeLaBarreraVisible(aviso: String?, estado: BlumonAttemptResolver.State): String? =
+    aviso.takeIf {
+        estado != BlumonAttemptResolver.State.RECORDED && estado != BlumonAttemptResolver.State.RELEASED &&
+            estado != BlumonAttemptResolver.State.MONEY_EVIDENCE
+    }
+
 /** D5 (533d77): ¿la duda es «el banco aprobó y la tarjeta rechazó el cierre»? */
 internal fun chipRechazoTrasAprobacion(lastError: String?): Boolean =
     lastError == com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION
@@ -78,7 +88,7 @@ internal fun BlumonRecoveryContent(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        avisoDeLaBarrera?.let { Text(it) }
+        avisoDeLaBarreraVisible(avisoDeLaBarrera, result.state)?.let { Text(it) }
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Cobro registrado"
             BlumonAttemptResolver.State.RELEASED -> when (result.freno?.freno) {

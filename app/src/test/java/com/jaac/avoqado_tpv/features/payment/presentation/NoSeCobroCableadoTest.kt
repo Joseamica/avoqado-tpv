@@ -149,16 +149,41 @@ class NoSeCobroCableadoTest {
         assertThat(montaje).contains("avisoDeLaBarrera = currentState.avisoDeLaBarrera")
         val cuerpo = recuperacionPax.substring(recuperacionPax.indexOf("internal fun BlumonRecoveryContent("))
         assertThat(cuerpo).contains("avisoDeLaBarrera: String? = null")
-        val aviso = cuerpo.indexOf("avisoDeLaBarrera?.let { Text(it) }")
+        val aviso = cuerpo.indexOf("avisoDeLaBarreraVisible(avisoDeLaBarrera, result.state)?.let { Text(it) }")
         assertThat(aviso).isAtLeast(0)
         assertThat(aviso).isLessThan(cuerpo.indexOf("Text(when (result.state)"))
-        // En las dos variantes: un solo emisor (la barrera de `openAttemptForShift`), con la misma frase que su mensaje.
+        // En las dos variantes: un solo emisor (la barrera de `openAttemptForShift`), con su mensaje si es la cuenta en duda.
         for (variante in listOf("sandbox", "production")) {
             val vm = File("src/$variante/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentViewModel.kt").readText()
             assertWithMessage(variante).that(Regex("avisoDeLaBarrera =").findAll(vm).count()).isEqualTo(1)
             val emisor = vm.substring(vm.indexOf("val blockedAttempt = paymentAttemptLedger.retencionDelAparato()"))
-            assertWithMessage(variante).that(emisor.substring(0, emisor.indexOf("return@launch"))).contains("avisoDeLaBarrera = motivo,")
+            assertWithMessage(variante).that(emisor.substring(0, emisor.indexOf("return@launch")))
+                .contains("avisoDeLaBarrera = motivo.takeIf { com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes.esLaCuentaEnDuda(it) },")
         }
+    }
+
+    /** Codex fila17 #1 y #3: sólo las dos frases de la fila 17; «Vuelve a intentarlo» y «Toca «Entendido»» no van junto a la duda. */
+    @Test fun `fila 17 solo las frases de la cuenta en duda viajan a la pantalla de la duda`() {
+        val barrera = com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
+        for (si in listOf(
+            barrera.barreraDeLaLibreta("\$40.00, hace 2 min", null),
+            barrera.barreraDeLaLibreta("\$40.00, hace 2 min", null, laVentaLaApartaUnCobroDelPos = true),
+            barrera.barreraDeLaLibreta("\$40.00, hace 2 min", "\$10.00, hace 1 min"),
+        )) assertWithMessage(si).that(barrera.esLaCuentaEnDuda(si)).isTrue()
+        for (no in listOf(
+            barrera.barreraDeLaLibreta("\$40.00, hace 2 min", null, laVentaYaCobrada = true),
+            barrera.barreraDeLaLibreta(null, "\$10.00, hace 1 min"),
+            barrera.barreraDeLaLibreta(null, null),
+        )) assertWithMessage(no).that(barrera.esLaCuentaEnDuda(no)).isFalse()
+    }
+
+    /** Codex fila17 #1 y #2: la frase es una foto; resuelta la duda (registrada, con evidencia o cerrada), manda su propio texto. */
+    @Test fun `fila 17 la frase de la barrera se ve solo mientras la duda sigue por confirmar`() {
+        val s = com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver.State.entries
+        val ocultos = setOf("RECORDED", "RELEASED", "MONEY_EVIDENCE")
+        for (estado in s) assertWithMessage(estado.name).that(avisoDeLaBarreraVisible("Esta cuenta tiene…", estado))
+            .isEqualTo(if (estado.name in ocultos) null else "Esta cuenta tiene…")
+        for (estado in s) assertWithMessage(estado.name).that(avisoDeLaBarreraVisible(null, estado)).isNull()
     }
 
     // D8: la solicitud no admitida se contesta en el acto, con el motivo, en vez de callar.

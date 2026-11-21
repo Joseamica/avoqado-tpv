@@ -170,4 +170,25 @@ class RetiroDeVentaSinCobroTest {
     fun `el fragmento es el mismo con el que la libreta busca la venta`() {
         assertThat(RetiroDeVentaSinCobroCore.fragmentoDeLaVenta("cabc")).isEqualTo("\"orderId\":\"cabc\"")
     }
+
+    @Test
+    fun `D37 al nacer con la terminal ya conectada el reintento corre sin cerrar la app`() {
+        // En la PAX (21-nov) la app se cerró 3 de 3 arranques: el `init` lanzaba el reintento antes de que `core` existiera.
+        val libro = io.mockk.mockk<LibroDeRetirosEnPreferencias>(relaxed = true)
+        io.mockk.every { libro.pendientes() } returns emptyList()
+        RetiroDeVentaSinCobro(
+            dao = io.mockk.mockk(relaxed = true),
+            libro = libro,
+            api = io.mockk.mockk(relaxed = true),
+            conexion = com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), // nace conectada: internet y SERVIDOR en true
+        )
+        io.mockk.verify(timeout = 5_000) { libro.pendientes() }
+    }
+
+    @Test
+    fun `D37 core se declara ANTES del init que lanza el reintento (orden de inicializacion de Kotlin)`() {
+        val fuente = java.io.File("src/main/java/com/jaac/avoqado_tpv/features/checkout/data/RetiroDeVentaSinCobro.kt").readText()
+        val clase = fuente.substring(fuente.indexOf("class RetiroDeVentaSinCobro @Inject"))
+        assertThat(clase.indexOf("private val core = RetiroDeVentaSinCobroCore(")).isLessThan(clase.indexOf("    init {"))
+    }
 }

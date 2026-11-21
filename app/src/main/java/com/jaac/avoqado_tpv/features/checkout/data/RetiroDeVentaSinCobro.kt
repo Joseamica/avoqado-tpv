@@ -185,6 +185,16 @@ class RetiroDeVentaSinCobro @Inject constructor(
 ) {
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // 🔴 D37 (prueba en la PAX, 21-nov): `core` va ANTES del `init`. En Kotlin, inicializadores e `init` corren en el orden del
+    // archivo. El `init` lanza en IO un colector que, con la terminal ya conectada (el estado inicial), llama a
+    // `reintentarPendientes()` de inmediato; si `core` iba después, ese hilo lo leía todavía en null y la app se cerraba
+    // (NullPointerException en reintentarPendientes, 3 de 3 arranques en la PAX).
+    private val core = RetiroDeVentaSinCobroCore(
+        hayRastroDeCobro = { orderId -> dao.hayRastroDeCobroDeLaVenta(orderId, RetiroDeVentaSinCobroCore.fragmentoDeLaVenta(orderId)) },
+        libro = libro,
+        enviar = { venueId, orderId -> api.retirar(venueId, orderId) },
+    )
+
     init {
         // Al volver la red, lo que quedó anotado sin red sale solo (también si la cajera ya no vuelve a abrir Cobrar).
         alcance.launch {
@@ -192,11 +202,6 @@ class RetiroDeVentaSinCobro @Inject constructor(
             conexion.connectionState.map { it.isFullyConnected }.distinctUntilChanged().filter { it }.collect { reintentarPendientes() }
         }
     }
-    private val core = RetiroDeVentaSinCobroCore(
-        hayRastroDeCobro = { orderId -> dao.hayRastroDeCobroDeLaVenta(orderId, RetiroDeVentaSinCobroCore.fragmentoDeLaVenta(orderId)) },
-        libro = libro,
-        enviar = { venueId, orderId -> api.retirar(venueId, orderId) },
-    )
 
     fun alRegresarSinCobrar(venueId: String?, orderId: String?) {
         if (venueId.isNullOrBlank() || orderId.isNullOrBlank()) return

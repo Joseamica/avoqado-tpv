@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.screens
 
+import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
 import com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
@@ -172,12 +173,6 @@ class RecuadroPorPagarTest {
         assertEquals("2", dos.badge)
         assertEquals("2 pagados en línea", dos.subtitulo)
 
-        // Sin turno: el motivo arriba (como hoy) y abajo por qué suena.
-        val sinTurno = recuadroPorPagar(conTarjetas(tarjeta("t1")), false, true, "Abre la caja primero", 2_000L)!!
-        assertFalse(sinTurno.habilitado)
-        assertEquals("Abre la caja primero", sinTurno.badge)
-        assertEquals("1 pagado en línea", sinTurno.subtitulo)
-
         // La tienda se apagó (sin showTile) pero queda uno por abrir: el recuadro sigue.
         assertNotNull(recuadroPorPagar(conTarjetas(tarjeta("t1")).copy(showTile = false), true, true, null, 2_000L))
     }
@@ -194,21 +189,63 @@ class RecuadroPorPagarTest {
     }
 
     @Test fun `D661 el aviso de pagados en linea sale con una lectura en vivo y se esconde sin red, tras un 4xx o con la copia vieja`() {
-        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L))
+        val cobrar = NavRoute.Checkout.route
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L, cobrar))
         assertEquals(
             "Pedido pagado en línea · ábrelo para cobrar (2 por abrir)",
-            avisoDePagadosEnLinea(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L),
+            avisoDePagadosEnLinea(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L, cobrar),
         )
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(desactualizado = true), 2_000L))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 1_000L + 90_001L))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1", cobrando = true)), 2_000L))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(), 2_000L))
-        assertNull(avisoDePagadosEnLinea(EstadoDeFolios(tarjetasPorAbrir = listOf(tarjeta("t1"))), 2_000L)) // nunca leída
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L, cobrar))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(desactualizado = true), 2_000L, cobrar))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 1_000L + 90_001L, cobrar))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1", cobrando = true)), 2_000L, cobrar))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(), 2_000L, cobrar))
+        assertNull(avisoDePagadosEnLinea(EstadoDeFolios(tarjetasPorAbrir = listOf(tarjeta("t1"))), 2_000L, cobrar)) // nunca leída
     }
 
-    @Test fun `D661 el aviso sale en Mesas y en Cobrar`() {
-        assertEquals(setOf("tables", "checkout"), RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA)
+    @Test fun `Ruling 68 la banda sale en toda pantalla de la cajera, tambien en Pago rapido, y no en el cobro con tarjeta`() {
+        val e = conTarjetas(tarjeta("t1"))
+        val deLaCajera = listOf(
+            NavRoute.FastPaymentEntry.route, NavRoute.Home.route, NavRoute.Tables.route, NavRoute.Checkout.route,
+            NavRoute.PorPagar.route, NavRoute.Payments.route, NavRoute.Settings.route, NavRoute.TableCheckout.route,
+        )
+        for (ruta in deLaCajera) assertEquals(ruta, "Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(e, 2_000L, ruta))
+        // El cobro con tarjeta es dueño de la pantalla (el timbre sigue).
+        assertNull(avisoDePagadosEnLinea(e, 2_000L, NavRoute.Payment.route))
+        assertNull(avisoDePagadosEnLinea(e, 2_000L, NavRoute.AngelPayPayment.route))
+        assertNull(avisoDePagadosEnLinea(e, 2_000L, null))
+        // Sin red o con la copia vieja, en ninguna (como hoy).
+        assertNull(avisoDePagadosEnLinea(e.copy(sinConexion = true), 2_000L, NavRoute.FastPaymentEntry.route))
+        assertNull(avisoDePagadosEnLinea(e, 1_000L + 90_001L, NavRoute.FastPaymentEntry.route))
+    }
+
+    @Test fun `Ruling 68 la pantalla de bloqueo de la app lo dice con una lectura en vivo`() {
+        assertEquals("Pedido pagado en línea: desbloquea para abrirlo", avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")), 2_000L))
+        assertEquals(
+            "2 pedidos pagados en línea: desbloquea para abrirlos",
+            avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L),
+        )
+        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L))
+        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")), 1_000L + 90_001L))
+        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(), 2_000L))
+    }
+
+    @Test fun `Ruling 67 sin turno el recuadro sigue apagado y dice Abre tu turno para abrir el pedido pagado`() {
+        val sinTurno = recuadroPorPagar(conTarjetas(tarjeta("t1")), false, true, "Abre la caja primero", 2_000L)!!
+        assertFalse(sinTurno.habilitado)
+        assertEquals("Abre la caja primero", sinTurno.badge)
+        assertEquals("Abre tu turno para abrir el pedido pagado", sinTurno.subtitulo)
+        assertTrue(sinTurno.subtituloEsAviso)
+        assertEquals(
+            "Abre tu turno para abrir los 2 pedidos pagados",
+            recuadroPorPagar(conTarjetas(tarjeta("t1"), tarjeta("t2")), false, true, "Abre la caja primero", 2_000L)!!.subtitulo,
+        )
+    }
+
+    @Test fun `Ruling 67 sin turno la banda dice Abre tu turno para abrir el pedido pagado`() {
+        val e = conTarjetas(tarjeta("t1")).copy(sinTurno = true)
+        assertEquals("Abre tu turno para abrir el pedido pagado", avisoDePagadosEnLinea(e, 2_000L, NavRoute.Tables.route))
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(e.copy(sinTurno = false), 2_000L, NavRoute.Tables.route))
     }
 
     // endregion

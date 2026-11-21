@@ -176,4 +176,8 @@ data class EstadoDeFolios(
     val errorAlCargarMas: Boolean = false,
     /** D661: los pagados en línea por abrir de la última lista buena (si avisan o no lo dice [tarjetasQueAvisan]). */
     val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
+    /** D661 (Ruling 67): con turnos encendidos, esta terminal no tiene turno abierto: sigue sonando y el aviso dice cómo entrar. */
+    val sinTurno: Boolean = false,
+    /** D661 (Ruling 69): lo que ESTA terminal abrió y cuya comanda no salió aquí, mientras el SERVIDOR siga pidiendo su papel. */
+    val comandasSinSalir: List<ComandaPorImprimir> = emptyList(),
 )

@@ -381,8 +381,19 @@ sealed class NavRoute(val route: String) {
          *
          * Vive aquí, con las rutas de verdad, para que una prueba pueda vigilarlo: dentro del
          * composable nadie lo alcanzaba. Ver `AvisoDeCobrosPendientes`.
+         *
+         * `by lazy` (D661): este companion se inicializa con la clase `NavRoute`, y la primera ruta que se toque
+         * inicializa antes a `NavRoute`. Si era una de las de este conjunto, su `INSTANCE` todavía era null y
+         * la clase entera fallaba (`ExceptionInInitializerError`). Perezoso, se arma ya con las rutas listas.
          */
-        val RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES: Set<String> =
+        val RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES: Set<String> by lazy {
             setOf(Home.route, FastPaymentEntry.route, Checkout.route)
+        }
+
+        /**
+         * D661 (Ruling 68): la banda de los pedidos pagados en línea sale en TODA pantalla de la app, menos en el cobro con
+         * tarjeta: ahí el lector es dueño de la pantalla (el timbre sigue). La pantalla de bloqueo de la app lo dice aparte.
+         */
+        val RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route) }
     }
 }

@@ -95,8 +95,9 @@ class FoliosRepository @Inject constructor(
             val codigo = parseBackendErrorCode(cuerpo)
             val mensaje = parseBackendErrorMessage(cuerpo, respuesta.message())
             Result.failure(
-                if (respuesta.code() == 409 && codigo == "ORDER_STATE_CHANGED") {
-                    pedidoYaCambio(cuerpo, mensaje)
+                // Ruling 71: `ORDER_CLOSED_NOT_DELIVERED` (cerrado por devolución o «No lo recogió») se lee igual, y nunca es «hecho».
+                if (codigo == "ORDER_CLOSED_NOT_DELIVERED" || (respuesta.code() == 409 && codigo == "ORDER_STATE_CHANGED")) {
+                    pedidoYaCambio(cuerpo, mensaje, cerradoSinEntregar = codigo == "ORDER_CLOSED_NOT_DELIVERED")
                 } else {
                     BackendHttpException(statusCode = respuesta.code(), message = mensaje, errorCode = codigo)
                 },
@@ -116,14 +117,21 @@ data class ReclamoDeComanda(val reclamado: Boolean, val posibleRepetida: Boolean
  * D661 (Ruling 36): un 409 `ORDER_STATE_CHANGED`: el SERVIDOR no aplicó la acción. [estado] es el estado real del pedido y [marca], si se
  * cerró o se está devolviendo («No lo recogió», «Devolviendo…», «Devuelto»); [message] es su texto, en español.
  */
-class PedidoYaCambio(val estado: String?, val marca: MarcaDeCierre?, override val message: String) : Exception(message)
+class PedidoYaCambio(
+    val estado: String?,
+    val marca: MarcaDeCierre?,
+    override val message: String,
+    /** Ruling 71: se cerró sin entregarse (devuelto, devolviéndose o «No lo recogió»): nunca es «hecho». */
+    val cerradoSinEntregar: Boolean = marca != null,
+) : Exception(message)
 
 /** El 409 trae `status` y, opcionales, las marcas de cierre (ISO o null): un SERVIDOR viejo sólo `status`, y entonces no hay marca. */
-private fun pedidoYaCambio(cuerpo: String?, mensaje: String): PedidoYaCambio {
+private fun pedidoYaCambio(cuerpo: String?, mensaje: String, cerradoSinEntregar: Boolean): PedidoYaCambio {
     val json = runCatching { JsonParser.parseString(cuerpo.orEmpty()).asJsonObject }.getOrNull()
     fun texto(llave: String) = json?.get(llave)?.takeUnless { it.isJsonNull }?.let { runCatching { it.asString }.getOrNull() }
     fun fecha(llave: String) = texto(llave).aInstante() != null
-    return PedidoYaCambio(texto("status"), marcaDeCierre(fecha("notPickedUpAt"), fecha("refundRequestedAt"), fecha("refundedAt")), mensaje)
+    val marca = marcaDeCierre(fecha("notPickedUpAt"), fecha("refundRequestedAt"), fecha("refundedAt"))
+    return PedidoYaCambio(texto("status"), marca, mensaje, cerradoSinEntregar = cerradoSinEntregar || marca != null)
 }
 
 private fun ToPayEnvelope?.aPagina(): PaginaDeFolios {

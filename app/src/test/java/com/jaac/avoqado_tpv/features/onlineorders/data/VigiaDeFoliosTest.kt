@@ -878,33 +878,42 @@ class VigiaDeFoliosTest {
     }
 
     @Test
-    fun `una comanda atorada no frena a las demas`() = runTest {
+    fun `una comanda atorada no lanza otras detras - un papel a la vez y las demas salen cuando la impresora se suelta`() = runTest {
         conImpresora()
         val impresas = mutableSetOf<String>()
         respuesta = {
             Result.success(
                 pagina(
                     porPagar = emptyList(),
-                    porEntregar = listOf(cobrado("x"), cobrado("y").copy(necesitaImprimir = "y" !in impresas)),
-                    comandas = listOf(ComandaPorImprimir("x", "Wx"), ComandaPorImprimir("y", "Wy")).filter { it.orderId !in impresas },
+                    porEntregar = listOf(cobrado("x"), cobrado("y"), cobrado("z")),
+                    comandas = listOf(ComandaPorImprimir("x", "Wx"), ComandaPorImprimir("y", "Wy"), ComandaPorImprimir("z", "Wz"))
+                        .filter { it.orderId !in impresas },
                 ),
             )
         }
-        // El papel de «x» nunca termina (una impresora que no contesta).
-        coEvery { folios.reclamarImpresion("v1", "x") } coAnswers { awaitCancellation() }
-        coEvery { folios.reclamarImpresion("v1", "y") } returns Result.success(ReclamoDeComanda(true))
-        coEvery { folios.confirmarImpresion("v1", "y") } coAnswers {
-            impresas += "y"
+        // La comanda de «x» no termina hasta que la impresora se suelta; lo ya impreso el SERVIDOR ya no lo concede.
+        val suelta = CompletableDeferred<Unit>()
+        coEvery { folios.reclamarImpresion("v1", any()) } coAnswers {
+            val id = secondArg<String>()
+            if (id == "x") suelta.await()
+            Result.success(ReclamoDeComanda(id !in impresas))
+        }
+        coEvery { folios.confirmarImpresion("v1", any()) } coAnswers {
+            impresas += secondArg<String>()
             Result.success(true)
         }
         conVigia {
-            verify(exactly = 0) { impresora.printKitchenTicket("Wy", any(), any(), any(), any(), any(), any(), any(), any()) }
-            advanceTimeBy(20_001)
-            verify(exactly = 1) { impresora.printKitchenTicket("Wy", any(), any(), any(), any(), any(), any(), any(), any()) }
-
-            // Las siguientes lecturas no vuelven a intentar «x» mientras su trabajo siga vivo.
-            advanceTimeBy(60_000)
+            // Un minuto (y dos sondeos) después sigue UN solo papel en curso: ni «y» ni «z» se reclamaron detrás de él.
+            advanceTimeBy(61_000)
             coVerify(exactly = 1) { folios.reclamarImpresion("v1", "x") }
+            coVerify(exactly = 0) { folios.reclamarImpresion("v1", "y") }
+            coVerify(exactly = 0) { folios.reclamarImpresion("v1", "z") }
+
+            // La impresora se suelta: «x» sale y la vuelta sigue con «y» y «z», una vez cada una.
+            suelta.complete(Unit)
+            advanceTimeBy(1_000)
+            assertThat(impresas).containsExactly("x", "y", "z")
+            verify(exactly = 3) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         }
     }
 
@@ -922,9 +931,13 @@ class VigiaDeFoliosTest {
                 ),
             )
         }
-        // El papel de «x» tarda 25 s.
+        // El papel de «x» tarda 25 s (otra caja lo tenía); la segunda vez contesta al momento.
+        var primera = true
         coEvery { folios.reclamarImpresion("v1", "x") } coAnswers {
-            delay(25_000)
+            if (primera) {
+                primera = false
+                delay(25_000)
+            }
             Result.success(ReclamoDeComanda(false))
         }
         coEvery { folios.reclamarImpresion("v1", "z") } returns Result.success(ReclamoDeComanda(true))
@@ -939,8 +952,11 @@ class VigiaDeFoliosTest {
             vigia.sondearYa()
             verify(exactly = 0) { impresora.printKitchenTicket("Wz", any(), any(), any(), any(), any(), any(), any(), any()) }
 
-            // La vuelta deja de esperar a «x» a los 20 s y recorre la lista que llegó mientras tanto (antes del siguiente sondeo, a los 35 s).
+            // Un papel a la vez: mientras «x» siga, «z» espera…
             advanceTimeBy(16_000)
+            verify(exactly = 0) { impresora.printKitchenTicket("Wz", any(), any(), any(), any(), any(), any(), any(), any()) }
+            // …y sale en cuanto «x» suelta la impresora, de la lista que llegó mientras tanto (antes del siguiente sondeo, a los 35 s).
+            advanceTimeBy(5_000)
             verify(exactly = 1) { impresora.printKitchenTicket("Wz", any(), any(), any(), any(), any(), any(), any(), any()) }
         }
     }
@@ -1009,6 +1025,120 @@ class VigiaDeFoliosTest {
             vigia.sondearYa()
             coVerify(exactly = 1) { folios.reclamarImpresion("v1", "j") }
             coVerify(exactly = 1) { folios.confirmarImpresion("v1", "j") }
+        }
+    }
+
+    @Test
+    fun `una vuelta de comandas que se cancela a media lectura no deja el pedido sin intentarse hasta reiniciar`() = runTest {
+        conImpresora()
+        preparar()
+        var reclamos = 0
+        coEvery { folios.reclamarImpresion("v1", "x") } coAnswers {
+            reclamos++
+            Result.success(ReclamoDeComanda(true))
+        }
+        coEvery { folios.confirmarImpresion("v1", any()) } returns Result.success(true)
+        respuesta = { Result.success(pagina(porPagar = emptyList(), comandas = listOf(ComandaPorImprimir("x", "Wx")))) }
+        val vigia = VigiaDeFolios(
+            folios, shifts, asistencia, ajustes, storage, { hora }, { timbres++ }, { primerPlano }, ComandaDeApoyo(folios, impresora) { monotonico },
+        )
+        // 1) La actividad se va justo cuando la vuelta ya leyó el pedido: su alcance se cancela ahí mismo.
+        val primero = SupervisorJob()
+        coEvery { folios.leerPedido("v1", "x") } answers {
+            primero.cancel()
+            Result.success(cobrado("x"))
+        }
+        vigia.iniciar(CoroutineScope(coroutineContext + UnconfinedTestDispatcher(testScheduler) + primero))
+        val antes = reclamos
+
+        // 2) La actividad vuelve: el pedido se intenta otra vez (nada lo deja marcado «en curso» hasta reiniciar la app).
+        coEvery { folios.leerPedido("v1", "x") } returns Result.success(cobrado("x"))
+        val segundo = SupervisorJob()
+        val otra = CoroutineScope(coroutineContext + UnconfinedTestDispatcher(testScheduler) + segundo)
+        try {
+            vigia.iniciar(otra)
+            assertThat(reclamos).isGreaterThan(antes)
+        } finally {
+            otra.cancel()
+        }
+    }
+
+    @Test
+    fun `con comandas por imprimir el sondeo no espera mas de 30 s aunque la tienda este apagada`() = runTest {
+        conImpresora()
+        coEvery { folios.leerPedido(any(), any()) } returns Result.failure(IOException("sin red"))
+        respuesta = {
+            Result.success(pagina(showTile = false, poll = 600, porPagar = emptyList(), comandas = listOf(ComandaPorImprimir("x", "Wx"))))
+        }
+        conVigia {
+            advanceTimeBy(31_000)
+            coVerify(exactly = 2) { folios.listar("v1", any(), any()) }
+        }
+    }
+
+    @Test
+    fun `Ruling 67 sin turno sigue sonando, se anuncia como caja que avisa y el estado lo dice`() = runTest {
+        turnoAbierto = false
+        respuesta = { Result.success(pagina(porPagar = emptyList(), tarjetas = listOf(tarjeta("t1")))) }
+        conVigia { vigia ->
+            assertThat(vigia.estado.value.sinTurno).isTrue()
+            assertThat(cabeceras.last()).isFalse() // sin turno no cobra aquí…
+            assertThat(avisos.last()).isTrue() // …pero se anuncia como caja que avisa
+            advanceTimeBy(4_001)
+            assertThat(timbres).isEqualTo(1)
+
+            turnoAbierto = true
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.sinTurno).isFalse()
+        }
+    }
+
+    @Test
+    fun `Ruling 69 una terminal sin impresora que abrio el pedido avisa que su comanda no salio hasta que sale en otra`() = runTest {
+        // Sin impresora (relaxed: isPrinterAvailable = false), como una Nexgo N62.
+        var comandas = emptyList<ComandaPorImprimir>()
+        respuesta = { Result.success(pagina(porPagar = emptyList(), comandas = comandas)) }
+        conVigia { vigia ->
+            // Uno que abrió otra caja no se avisa aquí.
+            comandas = listOf(ComandaPorImprimir("y", "T-0041"))
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
+
+            // Esta caja abre «x»: su comanda no puede salir aquí y se avisa (sin leer el pedido).
+            vigia.abiertoAqui("x", "T-0042")
+            comandas = listOf(ComandaPorImprimir("y", "T-0041"), ComandaPorImprimir("x", "T-0042"))
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "T-0042"))
+            coVerify(exactly = 0) { folios.leerPedido(any(), any()) }
+
+            // Otra terminal la imprimió: el SERVIDOR ya no la pide y el aviso se va.
+            comandas = listOf(ComandaPorImprimir("y", "T-0041"))
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
+        }
+    }
+
+    @Test
+    fun `Ruling 69 si el papel falla aqui tambien avisa y Entendido lo quita para siempre`() = runTest {
+        conImpresora()
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(Exception("Error al imprimir comanda (código: 2)"))
+        coEvery { folios.reclamarImpresion("v1", any()) } returns Result.success(ReclamoDeComanda(true))
+        var comandas = emptyList<ComandaPorImprimir>()
+        respuesta = { Result.success(pagina(porPagar = emptyList(), porEntregar = listOf(cobrado("x")), comandas = comandas)) }
+        conVigia { vigia ->
+            vigia.abiertoAqui("x", "Wx")
+            comandas = listOf(ComandaPorImprimir("x", "Wx"))
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"))
+
+            // La cajera ya avisó a cocina: «Entendido» lo quita y no vuelve aunque el papel vuelva a fallar.
+            vigia.descartarComandaSinSalir("x")
+            assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
+            hora += 181_000
+            advanceTimeBy(181_000)
+            verify(atLeast = 2) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
         }
     }
 }

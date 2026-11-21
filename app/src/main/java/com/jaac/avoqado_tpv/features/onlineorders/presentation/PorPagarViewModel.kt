@@ -213,11 +213,20 @@ object TextosPorPagar {
         "No se pudo confirmar",
         "La lista se está actualizando y dirá dónde quedó el pedido; nunca se cobra dos veces.",
     )
-    /** Ruling 19: la banda de Mesas y Cobrar y la línea del recuadro mientras suena. */
+    /** Ruling 19 / 68: la banda de la app y la línea del recuadro mientras suena. */
     const val PAGADO_EN_LINEA_POR_ABRIR = "Pedido pagado en línea · ábrelo para cobrar"
     fun avisoDePagadosEnLinea(n: Int) = if (n > 1) "$PAGADO_EN_LINEA_POR_ABRIR ($n por abrir)" else PAGADO_EN_LINEA_POR_ABRIR
     fun pagadosEnLinea(n: Int) = if (n == 1) "1 pagado en línea" else "$n pagados en línea"
     const val VER = "Ver"
+    /** Ruling 67: sin turno abierto, el recuadro y la banda dicen por dónde se entra. */
+    fun abreTuTurno(n: Int) = if (n > 1) "Abre tu turno para abrir los $n pedidos pagados" else "Abre tu turno para abrir el pedido pagado"
+    /** Ruling 68: la pantalla de bloqueo de la app (la banda queda debajo). */
+    fun desbloqueaParaAbrir(n: Int) =
+        if (n > 1) "$n pedidos pagados en línea: desbloquea para abrirlos" else "Pedido pagado en línea: desbloquea para abrirlo"
+    /** Ruling 69: esta terminal abrió el pedido y su comanda no salió aquí (sin impresora o falló el papel). */
+    fun comandaNoSalio(folio: String) = "La comanda del pedido $folio no salió en esta terminal: avísale a cocina"
+    /** Ruling 70: el pedido abierto ya no vino en la lista: se relee antes de volver a ofrecer «Listo» o «Entregado». */
+    const val ACTUALIZANDO = "Actualizando…"
 }
 
 /** Un diálogo con un solo botón. [irAPorEntregar]: al cerrarlo se vuelve a la lista, sin búsqueda, para ver «Por entregar». */
@@ -272,6 +281,8 @@ data class PorPagarUi(
     val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
     /** D661 (R2-6): el SERVIDOR dijo «confirmando el pago»: esperan una lectura buena posterior antes de volver a ofrecerse. */
     val cobrandoEnOtraCaja: Set<String> = emptySet(),
+    /** D661 (Ruling 70): el pedido abierto no vino en la última lista buena: se relee y, mientras, sin «Listo» ni «Entregado». */
+    val seleccionadoActualizando: Boolean = false,
 ) {
     /** D12: el folio no se cobra ni se cancela aquí: tiene un cobro con saldo sin confirmar, o no se sabe porque el almacén no se lee. */
     fun saldoEnDuda(orderId: String): Boolean = orderId in saldoSinConfirmar || saldoIlegible
@@ -316,7 +327,13 @@ class PorPagarViewModel @Inject constructor(
         val abiertosAqui: Set<String> = emptySet(),
         /** D661 (R2-6): «confirmando el pago» (409) → `actualizadoEnMs` de la lista que se veía; espera una lectura buena POSTERIOR. */
         val confirmando: Map<String, Long?> = emptyMap(),
+        /** D661 (Ruling 70): lo que contestó la relectura del pedido abierto que la lista dejó de traer, y de qué lista salió. */
+        val releido: Releido? = null,
+        /** D661 (Ruling 70): la relectura en vuelo (orderId y la lista que la pidió): una por lista. */
+        val releyendo: Pair<String, Long?>? = null,
     )
+
+    private data class Releido(val deLaLista: Long?, val folio: Folio)
 
     /**
      * R92 M2 / R94 / R96 / R97: un folio que esta caja sacó, con la [seccion], el [estado] y lo que faltaba ([faltaCentavos]) ANTES
@@ -371,6 +388,11 @@ class PorPagarViewModel @Inject constructor(
                         confirmando = if (lecturaBuena) l.confirmando.filterValues { it == e.actualizadoEnMs } else l.confirmando,
                     )
                 }
+                // Ruling 70: el pedido abierto ya no vino en esta lista buena (devuelto, cerrado u otra caja lo sacó): se relee para ver cómo
+                // quedó. Mientras, el detalle no ofrece «Listo» ni «Entregado» (ver `componer`).
+                val l = local.value
+                val abierto = l.seleccionado?.orderId
+                if (abierto != null && lecturaBuena && pideRelectura(e, l, abierto)) releerAbierto(abierto, e.actualizadoEnMs)
             }
         }
         viewModelScope.launch {
@@ -584,6 +606,8 @@ class PorPagarViewModel @Inject constructor(
                     },
                 )
             }
+            // Ruling 69: el vigía sabe que ESTA caja lo abrió (antes de la lectura que trae su comanda) para avisar si no sale aquí.
+            if (r.isSuccess) vigia.abiertoAqui(vigente.orderId, vigente.folio)
             vigia.sondearYa()
         }
     }
@@ -686,9 +710,29 @@ class PorPagarViewModel @Inject constructor(
         }
     }
 
+    /** Ruling 70: [orderId] no viene en la lista buena [e] y nadie lo releyó (ni lo está releyendo) para ESA lista. */
+    private fun pideRelectura(e: EstadoDeFolios, l: Local, orderId: String): Boolean =
+        e.actualizadoEnMs != null && (e.porPagar + e.porEntregar).none { it.orderId == orderId } &&
+            l.releido?.let { it.folio.orderId == orderId && it.deLaLista == e.actualizadoEnMs } != true &&
+            l.releyendo != (orderId to e.actualizadoEnMs)
+
+    private fun releerAbierto(orderId: String, deLaLista: Long?) {
+        val venueId = storage.getVenueId()?.takeIf { it.isNotBlank() } ?: return
+        local.update { it.copy(releyendo = orderId to deLaLista) }
+        viewModelScope.launch {
+            val leido = folios.leerPedido(venueId, orderId).getOrNull()
+            local.update { l ->
+                val base = if (l.releyendo == orderId to deLaLista) l.copy(releyendo = null) else l
+                // Sin respuesta, sigue sin acciones hasta la lista siguiente (que lo vuelve a pedir).
+                if (leido != null && l.seleccionado?.orderId == orderId) base.copy(releido = Releido(deLaLista, leido)) else base
+            }
+        }
+    }
+
     private fun avisoDeFallo(e: Throwable, accion: Accion): AvisoDeFolio = when {
-        // D661 (Ruling 36): devuelto, devolviéndose o «No lo recogió» NO es «hecho»: se dice el texto del SERVIDOR (la relectura lo pinta).
-        e is PedidoYaCambio && e.marca != null -> AvisoDeFolio(TextosPorPagar.YA_CAMBIO.titulo, e.message)
+        // D661 (Ruling 36 · 71): devuelto, devolviéndose o «No lo recogió» NO es «hecho» (con marca, o con `ORDER_CLOSED_NOT_DELIVERED`
+        // aunque no la traiga): se dice el texto del SERVIDOR y la relectura lo pinta.
+        e is PedidoYaCambio && e.cerradoSinEntregar -> AvisoDeFolio(TextosPorPagar.YA_CAMBIO.titulo, e.message)
         // Sin marca, como siempre (también un COMPLETED: otra caja ya lo entregó).
         e is PedidoYaCambio -> TextosPorPagar.YA_CAMBIO
         else -> when ((e as? BackendHttpException)?.errorCode) {
@@ -727,6 +771,11 @@ class PorPagarViewModel @Inject constructor(
         val entregar = e.porEntregar.filterNot { escondido(it, SeccionDeFolios.POR_ENTREGAR) }
         // R92 I1: a la lista en que se sacó, el SERVIDOR todavía lo contaba; desde la vuelta siguiente ya viene descontado.
         fun sinDescontar(f: Folio, seccion: SeccionDeFolios) = escondido(f, seccion) && l.quitados[f.orderId]?.marca == e.actualizadoEnMs
+        // Ruling 70: el abierto que la lista buena ya no trae se ve con lo que contestó su relectura (de ESA lista); mientras, sin acciones.
+        val enLista = l.seleccionado?.let { s -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == s.orderId } }
+        val releido = l.releido?.takeIf { it.folio.orderId == l.seleccionado?.orderId }
+        val actualizando = l.seleccionado != null && enLista == null && !e.sinConexion && !e.desactualizado &&
+            e.actualizadoEnMs != null && releido?.deLaLista != e.actualizadoEnMs
         return PorPagarUi(
             folios = e,
             busqueda = l.busqueda,
@@ -737,7 +786,7 @@ class PorPagarViewModel @Inject constructor(
             numeroPorEntregar = numeroDeSeccion(e.counts.porEntregar, e.porEntregar.count { sinDescontar(it, SeccionDeFolios.POR_ENTREGAR) }),
             puedeEntregar = l.puedeEntregar,
             puedeCancelar = l.puedeCancelar,
-            seleccionado = l.seleccionado?.let { s -> (e.porPagar + e.porEntregar).firstOrNull { it.orderId == s.orderId } ?: s },
+            seleccionado = l.seleccionado?.let { s -> enLista ?: releido?.folio ?: s },
             ocupados = l.ocupados,
             aviso = l.aviso,
             toast = l.toast,
@@ -747,6 +796,7 @@ class PorPagarViewModel @Inject constructor(
             saldoIlegible = l.saldoIlegible,
             tarjetasPorAbrir = e.tarjetasPorAbrir.filterNot { it.orderId in l.abiertosAqui },
             cobrandoEnOtraCaja = l.confirmando.keys,
+            seleccionadoActualizando = actualizando,
         )
     }
 
@@ -840,9 +890,10 @@ data class BotonDeAbrir(val activo: Boolean, val texto: String)
 /** D661: null = sin `orders:update` (no hay botón: se dice a quién pedírselo). Sin red, en gris y lo dice; nunca se encola. */
 fun botonDeAbrir(tarjeta: TarjetaPorAbrir, ui: PorPagarUi): BotonDeAbrir? = when {
     !ui.puedeEntregar -> null
+    // Primero lo de ESTA caja: su propio cobro en curso nunca se dice «en otra caja».
+    tarjeta.orderId in ui.ocupados -> BotonDeAbrir(false, TextosPorPagar.ABRIENDO)
     tarjeta.cobrando || tarjeta.orderId in ui.cobrandoEnOtraCaja -> BotonDeAbrir(false, TextosPorPagar.COBRANDO_EN_OTRA_CAJA)
     ui.folios.sinConexion -> BotonDeAbrir(false, TextosPorPagar.ABRIR_NECESITA_CONEXION)
-    tarjeta.orderId in ui.ocupados -> BotonDeAbrir(false, TextosPorPagar.ABRIENDO)
     else -> BotonDeAbrir(true, TextosPorPagar.ABRIR_Y_COBRAR)
 }
 

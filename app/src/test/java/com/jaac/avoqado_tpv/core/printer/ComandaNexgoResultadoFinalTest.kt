@@ -21,7 +21,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -146,8 +148,11 @@ class ComandaNexgoResultadoFinalTest {
         assertFalse("sin la marca, como siempre", renglones.any { it.contains("POSIBLE REPETIDA") })
     }
 
-    /** D661 · Ruling 50: se pregunta ya con la impresora libre (dentro de su candado), antes del primer renglón; si ya no toca, nada. */
-    @Test fun `Ruling 50 si ya no toca al soltarse la impresora no sale ni un renglon`() {
+    /**
+     * D661 · Ruling 50 (enmendado): se pregunta justo antes del ARRANQUE físico (`start()`), con todo ya dictado y la impresora en mano;
+     * si ya no toca, no arranca: el dictado se tira y no sale nada.
+     */
+    @Test fun `Ruling 50 si ya no toca justo antes de arrancar la impresora no sale nada aunque ya este dictada`() {
         val pax = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), mockk())
         val hardware = mockk<ImpresoraTermica>(relaxed = true)
         every { hardware.start() } returns 0
@@ -156,18 +161,36 @@ class ComandaNexgoResultadoFinalTest {
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(pax, true)
         PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(pax, lazyOf(hardware))
         val candado = PrinterManager::class.java.getDeclaredField("candado").apply { isAccessible = true }.get(pax)!!
-        var conLaImpresoraLibre = false
+        var dictadosAlPreguntar = -1
+        var conLaImpresora = false
 
         val r = pax.printKitchenTicket(
             "W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true,
-            sigueVigente = { conLaImpresoraLibre = Thread.holdsLock(candado); false },
+            sigueVigente = {
+                dictadosAlPreguntar = renglones.size
+                conLaImpresora = Thread.holdsLock(candado)
+                false
+            },
         )
-        assertTrue("se pregunta después de esperar la impresora", conLaImpresoraLibre)
+        assertTrue("se pregunta ya dictada, justo antes de arrancar: $dictadosAlPreguntar", dictadosAlPreguntar > 0)
+        assertTrue("con la impresora en mano", conLaImpresora)
         assertTrue("regresa ComandaNoEmpezada: ${r.exceptionOrNull()}", r.exceptionOrNull() is ComandaNoEmpezada)
-        assertTrue("ni un renglón: $renglones", renglones.isEmpty())
         verify(exactly = 0) { hardware.start() }
 
         assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, sigueVigente = { true }).isSuccess)
-        assertTrue("si todavía toca, sale como siempre", renglones.any { it.contains("COMANDA DE COCINA") })
+        verify(exactly = 1) { hardware.start() }
+    }
+
+    /** D661 · Ruling 69 (b): un arranque fallido de la impresora no se queda guardado: el siguiente uso lo intenta otra vez. */
+    @Test fun `Ruling 69 un arranque fallido de la impresora se reintenta y uno bueno se guarda`() {
+        var intentos = 0
+        val impresora by lazyQueReintenta {
+            intentos++
+            if (intentos == 1) null else "PAX"
+        }
+        assertNull("la primera falla", impresora)
+        assertEquals("la siguiente arranca sin reiniciar la app", "PAX", impresora)
+        assertEquals("PAX", impresora)
+        assertEquals("la buena se guarda", 2, intentos)
     }
 }

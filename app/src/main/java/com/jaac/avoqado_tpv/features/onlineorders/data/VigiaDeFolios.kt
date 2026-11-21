@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -51,7 +53,10 @@ import javax.inject.Singleton
  * vieja, no) y sin los que otra caja cobra; y no espera más de [SONDEO_CON_TARJETAS_S] para volver a preguntar. Ruling 45: este sondeo
  * (y sólo éste) manda `x-online-orders-card-alert: 1`, y sólo con la app al frente: así la tienda sólo ofrece la tarjeta mientras una
  * caja pueda sonar y enseñarla. La comanda de lo ya cobrado sale de aquí ([imprimirComandas]), de una lectura fresca de
- * `comandasPorImprimir`, nunca de la respuesta de abrir.
+ * `comandasPorImprimir`, nunca de la respuesta de abrir, y un papel a la vez (la terminal tiene UNA impresora). Ruling 67: sin turno
+ * sigue sonando y anunciándose (el aviso dice «Abre tu turno…», [EstadoDeFolios.sinTurno]). Ruling 69: lo que ESTA caja abrió y cuya
+ * comanda no sale aquí (sin impresora o el papel falló) se avisa hasta que salga en otra o la cajera lo descarte
+ * ([EstadoDeFolios.comandasSinSalir]).
  *
  * Constructor primario `internal` (con reloj) para las pruebas; el que usa Hilt es el secundario (Dagger rechaza los defaults).
  */
@@ -168,6 +173,43 @@ class VigiaDeFolios internal constructor(
     /** Pregunta ahora mismo (p. ej. al volver al inicio o tras cobrar) y reinicia la espera. */
     fun sondearYa() {
         despertar.trySend(Unit)
+    }
+
+    /** D661 (Ruling 69): ESTA terminal abrió [orderId]: si su comanda no sale aquí, se avisa hasta que salga en otra o se descarte. */
+    fun abiertoAqui(orderId: String, folio: String) {
+        synchronized(candadoDeAvisos) { abiertosAqui[orderId] = folio }
+    }
+
+    /** D661 (Ruling 69): la cajera ya avisó a cocina («Entendido»): se quita y ese pedido ya no se vuelve a avisar aquí. */
+    fun descartarComandaSinSalir(orderId: String) {
+        synchronized(candadoDeAvisos) {
+            comandasQueNoSalieron.remove(orderId)
+            abiertosAqui.remove(orderId)
+        }
+        _estado.update { e -> e.copy(comandasSinSalir = e.comandasSinSalir.filterNot { it.orderId == orderId }) }
+    }
+
+    private val candadoDeAvisos = Any()
+    /** Ruling 69: lo que esta terminal abrió (orderId → folio), los últimos [MAX_ABIERTOS_AQUI]. En memoria, como los descansos. */
+    private val abiertosAqui = object : LinkedHashMap<String, String>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > MAX_ABIERTOS_AQUI
+    }
+    /** Ruling 69: de ésos, los que no salieron aquí (orderId → folio). */
+    private val comandasQueNoSalieron = LinkedHashMap<String, String>()
+
+    /** Ruling 69: la comanda de [c] no salió aquí; si ESTA terminal abrió el pedido, se avisa ya (sin esperar la lectura siguiente). */
+    private fun noSalioAqui(c: ComandaPorImprimir) {
+        val avisar = synchronized(candadoDeAvisos) {
+            (c.orderId in abiertosAqui).also { if (it) comandasQueNoSalieron[c.orderId] = c.folio }
+        }
+        if (avisar) _estado.update { e -> if (e.comandasSinSalir.any { it.orderId == c.orderId }) e else e.copy(comandasSinSalir = e.comandasSinSalir + c) }
+    }
+
+    /** Ruling 69: con cada lectura buena, lo que el SERVIDOR ya no pide (salió en otra terminal, o aquí) deja de avisarse. */
+    private fun comandasSinSalir(lista: List<ComandaPorImprimir>): List<ComandaPorImprimir> = synchronized(candadoDeAvisos) {
+        val vivas = lista.mapTo(HashSet()) { it.orderId }
+        comandasQueNoSalieron.keys.retainAll(vivas)
+        lista.filter { it.orderId in comandasQueNoSalieron }
     }
 
     /**
@@ -299,7 +341,9 @@ class VigiaDeFolios internal constructor(
             negocioActual = venueId
         }
         // Ruling 45: «esta caja suena y enseña los pagados en línea» sólo con la app al frente (se mira en cada vuelta).
-        val pagina = folios.listar(venueId, puedeCobrar(venueId), avisaTarjetas = enPrimerPlano()).getOrElse { error ->
+        // Ruling 67: sin turno no cobra aquí, pero sigue sonando, anunciándose y diciendo por dónde se entra.
+        val conTurno = turnoAbierto(venueId)
+        val pagina = folios.listar(venueId, puedeCobrar(venueId, conTurno), avisaTarjetas = enPrimerPlano()).getOrElse { error ->
             // Red caída o 5xx = «sin conexión»; un 4xx (401/403/404) sí es respuesta: la lista ya no es fiable y se dice «desactualizado».
             _estado.value = if (esRespuesta(error)) _estado.value.copy(desactualizado = true) else _estado.value.copy(sinConexion = true)
             Timber.w(error, "[Folios] sin respuesta del servidor")
@@ -310,7 +354,7 @@ class VigiaDeFolios internal constructor(
         // R79 #6: las páginas extra NO regresan a la página 1; se releen después de esta vuelta (ver [releerSeccion]). Una sección
         // cuya página 1 ya no trae cursor no tiene camino a ellas: se sueltan YA (nunca quedan tarjetas viejas, p. ej. un «Listo»).
         for (sec in SeccionDeFolios.values()) if (sec !in pagina.siguientes) { extras = extras - sec; cursorExtra = cursorExtra - sec }
-        _estado.value = componer(pagina.aEstado(ahora).copy(errorAlCargarMas = _estado.value.errorAlCargarMas))
+        _estado.value = componer(pagina.aEstado(ahora, sinTurno = !conTurno).copy(errorAlCargarMas = _estado.value.errorAlCargarMas))
         if (extras.values.any { it.isNotEmpty() }) releer.trySend(Unit)
         imprimirComandas(venueId, pagina)
         segundosDeEspera(pagina) * 1000L
@@ -326,8 +370,6 @@ class VigiaDeFolios internal constructor(
     private var vueltaDeComandasViva = false
     /** La lista que llegó mientras corría una vuelta: se recorre al terminarla (la más nueva gana; sin comandas, se borra). */
     private var listaQueEspera: Pair<String, PaginaDeFolios>? = null
-    /** Pedidos cuyo papel sigue en curso aquí: su trabajo puede seguir vivo después de que la vuelta dejó de esperarlo. */
-    private val comandasEnCurso: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** orderId → cuándo (reloj) no salió aquí su papel o no se pudo leer. En memoria: reiniciar la app lo olvida, que es lo seguro. */
     private val descansos = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -346,7 +388,7 @@ class VigiaDeFolios internal constructor(
         scope.launch {
             var siguiente: Pair<String, PaginaDeFolios>? = venueId to pagina
             while (siguiente != null) {
-                recorrerComandas(scope, siguiente.first, siguiente.second)
+                recorrerComandas(siguiente.first, siguiente.second)
                 siguiente = synchronized(candadoDeComandas) {
                     listaQueEspera.also {
                         listaQueEspera = null
@@ -364,16 +406,21 @@ class VigiaDeFolios internal constructor(
     }
 
     /**
-     * De uno en uno (nunca hasta 50 lecturas a la vez). Antes de leer un pedido se pregunta en el aparato si podría sacar su papel: hay
-     * impresora (un modelo sin impresora no lee nada), no está en curso aquí y no descansa. El papel va en su PROPIO trabajo y la vuelta
-     * lo espera a lo más [ESPERA_POR_COMANDA_MS]: uno atorado no frena a los demás ni al sondeo (y su marca de «en curso» hace que las
-     * vueltas siguientes lo salten sin leerlo).
+     * De uno en uno (nunca hasta 50 lecturas a la vez) y un papel a la vez: esta terminal tiene UNA impresora detrás de un candado, así
+     * que el papel lo saca la propia vuelta. Si uno se atora, la vuelta lo espera con su lista (lo que llega mientras tanto se guarda, ver
+     * [imprimirComandas]) y sigue cuando la impresora se suelta: lanzar otro detrás sólo estacionaba otro hilo, y una marca de «en curso»
+     * podía quedarse pegada si su trabajo se cancelaba antes de empezar. Antes de leer un pedido se pregunta en el aparato si podría sacar
+     * su papel: un modelo sin impresora no lee nada (y avisa lo que esta caja abrió, Ruling 69), y lo que descansa se salta.
      */
-    private suspend fun recorrerComandas(scope: CoroutineScope, venueId: String, pagina: PaginaDeFolios) {
+    private suspend fun recorrerComandas(venueId: String, pagina: PaginaDeFolios) {
         for (c in pagina.comandasPorImprimir) {
             if (negocioActual != venueId) return
             try {
-                if (!comanda.puedeImprimir() || c.orderId in comandasEnCurso || enDescanso(c.orderId)) continue
+                if (!comanda.puedeImprimir()) {
+                    noSalioAqui(c)
+                    continue
+                }
+                if (enDescanso(c.orderId)) continue
                 // Sus renglones: la fila de «Por entregar» de esta MISMA lectura o, si no está ahí (página siguiente, o ya cerrado por el
                 // corte del día), ESE pedido por su camino (Ruling 14). Una lectura fallida descansa: no se relee en cada sondeo.
                 val pedido = pagina.porEntregar.firstOrNull { it.orderId == c.orderId }
@@ -387,31 +434,21 @@ class VigiaDeFolios internal constructor(
                     descansar(c.orderId)
                     continue
                 }
-                comandasEnCurso.add(c.orderId)
-                // ponytail: un papel atorado dentro del SDK deja su trabajo (y un hilo de IO) vivo hasta que la impresora conteste; a lo
-                // más uno por pedido (≤ 50, el tope del SERVIDOR). Si llegara a pasar, se le pone tope al SDK, no a esta vuelta.
-                val papel = scope.launch {
-                    try {
-                        // Ruling 50: si esperó la impresora hasta que su reclamo casi vence, no sale y NO descansa: el siguiente sondeo
-                        // la vuelve a pedir (el SERVIDOR la lista otra vez en cuanto el reclamo vence).
-                        val resultado = comanda.intentar(venueId, pedido.aComanda(), ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
-                        if (resultado == ResultadoDeComanda.NO_SALIO) descansar(c.orderId)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Timber.w(e, "🧾 [Folios] La comanda de %s falló", c.folio)
-                        descansar(c.orderId)
-                    } finally {
-                        comandasEnCurso.remove(c.orderId)
-                    }
-                }
-                if (withTimeoutOrNull(ESPERA_POR_COMANDA_MS) { papel.join() } == null) {
-                    Timber.w("🧾 [Folios] La comanda de %s sigue esperando la impresora; sigo con las demás", c.folio)
+                // ponytail: un papel atorado dentro del SDK detiene esta vuelta (y su hilo de IO) hasta que la impresora conteste; es UNO
+                // solo y las demás no podrían salir de todos modos. Si llegara a pasar seguido, se le pone tope al SDK.
+                // Ruling 50: si su reclamo envejeció esperando la impresora, no sale y NO descansa: el siguiente sondeo la vuelve a pedir
+                // (el SERVIDOR la lista otra vez en cuanto el reclamo vence).
+                val resultado = comanda.intentar(venueId, pedido.aComanda(), ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
+                if (resultado == ResultadoDeComanda.NO_SALIO) {
+                    descansar(c.orderId)
+                    noSalioAqui(c)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Timber.w(e, "🧾 [Folios] No se pudo intentar la comanda de %s", c.folio)
+                Timber.w(e, "🧾 [Folios] La comanda de %s falló", c.folio)
+                descansar(c.orderId)
+                noSalioAqui(c)
             }
         }
     }
@@ -440,18 +477,22 @@ class VigiaDeFolios internal constructor(
         return storage.getVenueId()?.takeIf { it.isNotBlank() }
     }
 
-    /** D661: con pagados en línea por abrir nunca más de [SONDEO_CON_TARJETAS_S], aunque la tienda cambie de modo o se apague. */
+    /**
+     * D661: con pagados en línea por abrir, o con comandas que el SERVIDOR sigue pidiendo, nunca más de [SONDEO_CON_TARJETAS_S], aunque
+     * la tienda cambie de modo o se apague: una comanda que no salió (o cuyo reclamo venció) se vuelve a intentar en un sondeo, no en 10 min.
+     */
     private fun segundosDeEspera(p: PaginaDeFolios): Long {
         val segundos = (p.pollSeconds ?: if (p.showTile) 30 else 600).coerceIn(5, 3600)
-        return (if (p.tarjetasPorAbrir.isNotEmpty()) minOf(segundos, SONDEO_CON_TARJETAS_S) else segundos).toLong()
+        val pendientes = p.tarjetasPorAbrir.isNotEmpty() || p.comandasPorImprimir.isNotEmpty()
+        return (if (pendientes) minOf(segundos, SONDEO_CON_TARJETAS_S) else segundos).toLong()
     }
 
-    /** `(turnoPermiteVender || !sistemaDeTurnos) && (entradaRegistrada || !checadaObligatoria)`, igual que «Cobrar». */
-    private suspend fun puedeCobrar(venueId: String): Boolean {
-        val turnoOk = !storage.isShiftSystemEnabled() || hayTurnoParaVender(venueId)
-        if (!turnoOk) return false
-        return !ajustes.getCurrentSettings().requireClockInToLogin || entradaRegistrada(venueId)
-    }
+    /** `turnoPermiteVender || !sistemaDeTurnos`, igual que «Cobrar». */
+    private suspend fun turnoAbierto(venueId: String): Boolean = !storage.isShiftSystemEnabled() || hayTurnoParaVender(venueId)
+
+    /** `[conTurno] && (entradaRegistrada || !checadaObligatoria)`, igual que «Cobrar». */
+    private suspend fun puedeCobrar(venueId: String, conTurno: Boolean): Boolean =
+        conTurno && (!ajustes.getCurrentSettings().requireClockInToLogin || entradaRegistrada(venueId))
 
     private suspend fun hayTurnoParaVender(venueId: String): Boolean =
         when (val r = shifts.getCurrentShift(venueId)) {
@@ -481,7 +522,7 @@ class VigiaDeFolios internal constructor(
     private fun esRespuesta(error: Throwable): Boolean =
         error is BackendHttpException && error.statusCode in 400..499
 
-    private fun PaginaDeFolios.aEstado(ahora: Long) = EstadoDeFolios(
+    private fun PaginaDeFolios.aEstado(ahora: Long, sinTurno: Boolean) = EstadoDeFolios(
         showTile = showTile,
         counts = conteo,
         porPagar = porPagar,
@@ -491,6 +532,8 @@ class VigiaDeFolios internal constructor(
         actualizadoEnMs = ahora,
         desfaseDelServidorMs = horaDelServidor?.let { it.toEpochMilli() - ahora } ?: 0L,
         tarjetasPorAbrir = tarjetasPorAbrir,
+        sinTurno = sinTurno,
+        comandasSinSalir = comandasSinSalir(comandasPorImprimir),
     )
 
     private fun PaginaDeFolios.de(seccion: SeccionDeFolios) = if (seccion == SeccionDeFolios.POR_PAGAR) porPagar else porEntregar
@@ -500,8 +543,8 @@ class VigiaDeFolios internal constructor(
         const val ESPERA_SIN_SESION_MS = 10_000L
         /** D661: cada cuánto suena mientras haya un pagado en línea por abrir. */
         const val REPETIR_TIMBRE_MS = 4_000L
-        /** D661: lo más que una vuelta de comandas espera el papel de UNA antes de seguir con la siguiente (el trabajo sigue solo). */
-        const val ESPERA_POR_COMANDA_MS = 20_000L
+        /** D661 (Ruling 69): cuántos pedidos abiertos aquí se recuerdan para avisar si su comanda no sale (los más nuevos). */
+        const val MAX_ABIERTOS_AQUI = 50
         /** D661: tras un papel que no salió (o una lectura fallida), ese pedido descansa antes de volver a intentarse aquí. */
         const val DESCANSO_DE_COMANDA_MS = 3 * 60_000L
         /** D661: mientras haya pagados en línea por abrir, el sondeo nunca espera más que esto, diga lo que diga `pollSeconds`. */

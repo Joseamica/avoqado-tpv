@@ -390,6 +390,34 @@ class FoliosRepositoryTest {
         assertThat(marcado.message).isEqualTo(noLoRecogio)
         assertThat(sinMarca.estado).isEqualTo("READY")
         assertThat(sinMarca.marca).isNull()
+        assertThat(sinMarca.cerradoSinEntregar).isFalse()
+    }
+
+    @Test
+    fun `Ruling 71 ORDER_CLOSED_NOT_DELIVERED se lee como un cierre marcado, con o sin marcas en el cuerpo`() = runTest {
+        val devuelto = "Este pedido se devolvió: no se marca entregado. No se aplicó nada."
+        server.enqueue(
+            MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json").setBody(
+                """{"success":false,"code":"ORDER_CLOSED_NOT_DELIVERED","status":"COMPLETED","refundRequestedAt":"2026-11-21T10:00:00.000Z","refundedAt":"2026-11-21T10:00:05.000Z","error":"$devuelto"}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json").setBody(
+                """{"success":false,"code":"ORDER_CLOSED_NOT_DELIVERED","status":"COMPLETED","error":"$devuelto"}""",
+            ),
+        )
+
+        val conMarca = repo.entregado("v1", "co9").exceptionOrNull() as PedidoYaCambio
+        val sinMarca = repo.listo("v1", "co9").exceptionOrNull() as PedidoYaCambio
+
+        assertThat(conMarca.estado).isEqualTo("COMPLETED")
+        assertThat(conMarca.marca).isEqualTo(MarcaDeCierre.DEVUELTO)
+        assertThat(conMarca.message).isEqualTo(devuelto)
+        assertThat(conMarca.cerradoSinEntregar).isTrue()
+        // Aun sin marcas en el cuerpo, ese código nunca es «hecho».
+        assertThat(sinMarca.marca).isNull()
+        assertThat(sinMarca.cerradoSinEntregar).isTrue()
+        assertThat(sinMarca.message).isEqualTo(devuelto)
     }
 
     // endregion

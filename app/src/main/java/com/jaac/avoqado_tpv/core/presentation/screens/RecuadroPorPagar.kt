@@ -35,7 +35,11 @@ fun recuadroPorPagar(
     val pagadosEnLinea = if (porAbrir > 0) TextosPorPagar.pagadosEnLinea(porAbrir) else null
     if (!estado.showTile && porAbrir == 0) return null
     if (!canWork) return RecuadroPorPagar(false, "Registra tu entrada", pagadosEnLinea, false)
-    if (!canOperate) return RecuadroPorPagar(false, motivoSinTurno ?: "Abre la caja primero", pagadosEnLinea, false)
+    // Ruling 67: sin turno sigue apagado (el turno se abre primero) y, si suena uno pagado en línea, dice por dónde se entra.
+    if (!canOperate) {
+        val entrada = if (porAbrir > 0) TextosPorPagar.abreTuTurno(porAbrir) else null
+        return RecuadroPorPagar(false, motivoSinTurno ?: "Abre la caja primero", entrada, entrada != null)
+    }
 
     // Tras un 4xx la lista es la última buena pero ya no es fiable: no se enseña su número como si fuera de hoy.
     // Con 0 por pagar no hay insignia (un «0» parece un aviso); «N por entregar» se queda abajo.
@@ -78,14 +82,21 @@ fun avisoDeSaldoSinConfirmar(estado: EstadoDeFolios, pendientes: List<SolicitudD
 }
 
 /**
- * D661 (Ruling 19): mientras suena un pedido pagado en línea, Mesas y Cobrar lo dicen arriba y llevan a «Pedidos por pagar». null = no
- * hay nada que avisar (o la lista no es de una lectura en vivo: sin red o vieja no se avisa).
+ * D661 (Ruling 19 · 67 · 68): mientras suena un pedido pagado en línea, la banda lo dice arriba de [ruta] y lleva a «Pedidos por pagar»;
+ * sin turno, dice por dónde se entra. null = no hay nada que avisar ahí (o la lista no es de una lectura en vivo: sin red o vieja, no).
  */
-fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long): String? =
-    tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 }?.let { TextosPorPagar.avisoDePagadosEnLinea(it) }
+fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long, ruta: String?): String? {
+    if (!rutaConAvisosDeLaTienda(ruta)) return null
+    val n = tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 } ?: return null
+    return if (estado.sinTurno) TextosPorPagar.abreTuTurno(n) else TextosPorPagar.avisoDePagadosEnLinea(n)
+}
 
-/** D661 (Ruling 19): las pantallas principales que dicen el aviso de los pagados en línea (el Inicio lo dice en su recuadro). */
-val RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA: Set<String> = setOf(NavRoute.Tables.route, NavRoute.Checkout.route)
+/** D661 (Ruling 68): los avisos de la tienda en línea salen en toda pantalla de la app menos en el cobro con tarjeta (el lector manda). */
+fun rutaConAvisosDeLaTienda(ruta: String?): Boolean = ruta != null && ruta !in NavRoute.RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA
+
+/** D661 (Ruling 68): lo que dice la pantalla de bloqueo de la app mientras suena un pagado en línea (la banda queda debajo). */
+fun avisoDePagadosEnElBloqueo(estado: EstadoDeFolios, ahoraMs: Long): String? =
+    tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 }?.let { TextosPorPagar.desbloqueaParaAbrir(it) }
 
 /** D12 (Codex r1 #2, r3): el almacén cifrado no se pudo leer; no se sabe si hay un cobro con saldo en duda. */
 const val SALDO_GUARDADO_ILEGIBLE =

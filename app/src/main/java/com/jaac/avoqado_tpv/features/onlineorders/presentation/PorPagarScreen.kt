@@ -161,8 +161,8 @@ internal fun PorPagarContenido(
     onReintentar: () -> Unit,
     onCerrarAviso: () -> Unit,
     onToastMostrado: () -> Unit,
-    /** D661: «Abrir y cobrar» un pagado en línea (lo cobra el SERVIDOR). */
-    onAbrirYCobrar: (TarjetaPorAbrir) -> Unit = {},
+    /** D661: «Abrir y cobrar» un pagado en línea (lo cobra el SERVIDOR). Sin default: una acción de dinero no se pierde en silencio. */
+    onAbrirYCobrar: (TarjetaPorAbrir) -> Unit,
 ) {
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(ui.toast) {
@@ -406,6 +406,11 @@ private fun MarcaListo(modifier: Modifier = Modifier, texto: String = TextosPorP
  */
 @Composable
 private fun AccionesDeEntrega(folio: Folio, ui: PorPagarUi, onListo: (Folio) -> Unit, onEntregado: (Folio) -> Unit, modifier: Modifier) {
+    // D661 (Ruling 70): el pedido abierto que la lista ya no trae se está releyendo: ni «Listo» ni «Entregado» hasta saber cómo quedó.
+    if (ui.seleccionadoActualizando && folio.orderId == ui.seleccionado?.orderId) {
+        Text(TextosPorPagar.ACTUALIZANDO, modifier, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
     // D661 (Ruling 36): «Devuelto», «Devolviendo…» o «No lo recogió»: se dice y no se entrega (ni «Listo» ni «Entregado»).
     if (!sePuedeEntregar(folio)) {
         folio.marca?.let { MarcaListo(modifier, texto = it.texto) }
@@ -881,6 +886,7 @@ private fun uiDePrueba(sinConexion: Boolean = false, seleccionado: Folio? = null
 private fun Previa(ui: PorPagarUi) = AvoqadoTheme(darkTheme = true) {
     PorPagarContenido(
         ui, AHORA_PREVIA.toEpochMilli(), ZoneOffset.ofHours(-6), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        onAbrirYCobrar = {},
     )
 }
 
@@ -932,6 +938,7 @@ private fun PreviaFolioSinRedClara() = AvoqadoTheme(darkTheme = false) {
     PorPagarContenido(
         uiDePrueba(sinConexion = true, seleccionado = folioDePrueba("W7K3P", "Ana", "134.00")).copy(puedeUsarSaldo = true),
         AHORA_PREVIA.toEpochMilli(), ZoneOffset.ofHours(-6), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        onAbrirYCobrar = {},
     )
 }
 

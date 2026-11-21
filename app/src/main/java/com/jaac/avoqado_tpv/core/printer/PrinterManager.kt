@@ -105,10 +105,10 @@ class PrinterManager @Inject constructor(
             "Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado."
         }
 
-    private val dal: IDAL? by lazy {
+    private val dal: IDAL? by lazyQueReintenta {
         if (!esHardwarePax) {
             Timber.i("🖨️ [Printer] Terminal sin hardware PAX — impresora nativa no disponible")
-            return@lazy null
+            return@lazyQueReintenta null
         }
         try {
             val instance = NeptuneLiteUser.getInstance().getDal(context)
@@ -121,8 +121,9 @@ class PrinterManager @Inject constructor(
         }
     }
 
-    private val impresoraPax: ImpresoraTermica? by lazy {
-        if (!esHardwarePax) return@lazy null
+    // D661 (Ruling 69 b): un arranque fallido no se queda guardado hasta reiniciar la app: el siguiente papel lo intenta otra vez.
+    private val impresoraPax: ImpresoraTermica? by lazyQueReintenta {
+        if (!esHardwarePax) return@lazyQueReintenta null
         try {
             dal?.getPrinter()?.also {
                 it.init()
@@ -1670,8 +1671,8 @@ class PrinterManager @Inject constructor(
      * @param cliente 🧾 Tienda híbrida: a quién se le entrega («Para: Ana»); null = no se imprime
      * @param notaDelPedido 🧾 Tienda híbrida: la nota del pedido entero («Nota: sin azúcar»); null = no se imprime
      * @param posibleRepetida 🧾 Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; arriba sale «POSIBLE REPETIDA»
-     * @param sigueVigente 🧾 D661 · Ruling 50: se pregunta ya con la impresora libre, justo antes del primer renglón; `false` = no sale
-     *   nada y regresa [ComandaNoEmpezada]. null = sin condición, como siempre.
+     * @param sigueVigente 🧾 D661 · Ruling 50 (enmendado): se pregunta justo antes de ARRANCAR la impresora (`start()`), con todo dictado
+     *   y la impresora en mano; `false` = no arranca, el dictado se tira y regresa [ComandaNoEmpezada]. null = sin condición, como siempre.
      * @return Result.success if printed, Result.failure if error
      */
     fun printKitchenTicket(
@@ -1698,10 +1699,6 @@ class PrinterManager @Inject constructor(
             if (orderItems.isEmpty()) {
                 return Result.failure(Exception("No hay productos para imprimir"))
             }
-
-            // 🧾 D661 · Ruling 50: lo de arriba pudo esperar (otra impresión tenía la impresora). Ya libre y antes del PRIMER renglón se
-            // pregunta si todavía toca; si no, no sale ni un renglón.
-            if (sigueVigente?.invoke() == false) return Result.failure(ComandaNoEmpezada())
 
             Timber.i("🖨️ [Printer] Printing kitchen ticket for order: $orderNumber")
 
@@ -1783,6 +1780,11 @@ class PrinterManager @Inject constructor(
 
             printerInstance.printStr("================================\n", null)
             printerInstance.printStr("\n\n\n", null) // Feed paper
+
+            // 🧾 D661 · Ruling 50 (enmendado): todo lo de arriba pudo esperar (otra impresión tenía la impresora; en la Nexgo `printStr`
+            // sólo junta texto). Justo antes de ARRANCAR se pregunta si todavía toca: si no, no arranca y el dictado se tira (el
+            // `init()` del siguiente papel lo borra; en la Nexgo era de este ticket).
+            if (sigueVigente?.invoke() == false) return Result.failure(ComandaNoEmpezada())
 
             // Execute print
             val result = printerInstance.start()
@@ -2185,6 +2187,14 @@ class PrinterManager @Inject constructor(
         val status = checkPrinterStatus()
         return status.isReady && status.hasPaper
     }
+}
+
+/** D661 (Ruling 69 b): como `lazy`, pero un arranque fallido (null) no se guarda: el siguiente uso lo intenta otra vez. */
+internal fun <T : Any> lazyQueReintenta(crear: () -> T?): Lazy<T?> = object : Lazy<T?> {
+    @Volatile private var listo: T? = null
+    override val value: T?
+        get() = listo ?: synchronized(this) { listo ?: crear()?.also { listo = it } }
+    override fun isInitialized(): Boolean = listo != null
 }
 
 /** D661 · Ruling 50: quien pidió la comanda dijo, ya con la impresora libre, que ya no tocaba (su reclamo envejeció esperándola). */

@@ -26,6 +26,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -33,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import android.content.Context
@@ -42,6 +44,8 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -62,7 +66,16 @@ import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar
+import com.jaac.avoqado_tpv.core.presentation.screens.rutaConAvisosDeLaTienda
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
+import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
+import com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
@@ -261,23 +274,31 @@ private suspend fun ensureAngelPayRefundAccount(
 }
 
 /**
- * 🔔 D661 (Ruling 19): la banda de «Pedido pagado en línea · ábrelo para cobrar» con «Ver». Sale con la MISMA regla que el timbre
- * (`tarjetasQueAvisan`: lectura en vivo, sin los que otra caja cobra), así que sin red o con la copia vieja no sale. Lleva su propio
- * reloj (cada 15 s) para que una copia que envejece sin cambiar la quite sola, sin recomponer el resto de la navegación.
+ * 🔔 D661 (Ruling 19 · 68 · 69): los avisos de la tienda en línea arriba de la app. La banda de «Pedido pagado en línea · ábrelo para
+ * cobrar» con «Ver» sale en toda pantalla menos en el cobro con tarjeta y con la MISMA regla que el timbre ([avisoDePagadosEnLinea]); sin
+ * turno dice cómo entrar. Debajo, una por pedido que ESTA caja abrió y cuya comanda no salió aquí, con «Entendido». Lleva su propio reloj
+ * (cada 15 s) para que una copia que envejece sin cambiar se quite sola, sin recomponer el resto de la navegación.
  */
 @Composable
-private fun BandaDePagadosEnLinea(
-    estado: kotlinx.coroutines.flow.StateFlow<com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios>,
+private fun AvisosDeLaTienda(
+    estado: StateFlow<EstadoDeFolios>,
+    ruta: String?,
     onVer: () -> Unit,
+    onEntendido: (String) -> Unit,
 ) {
     val folios by estado.collectAsStateWithLifecycle()
-    val ahoraMs by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+    val ahoraMs by produceState(System.currentTimeMillis()) {
         while (true) {
             delay(15_000)
             value = System.currentTimeMillis()
         }
     }
-    val texto = com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea(folios, ahoraMs) ?: return
+    avisoDePagadosEnLinea(folios, ahoraMs, ruta)?.let { BandaDePagadosEnLinea(it, onVer) }
+    if (rutaConAvisosDeLaTienda(ruta)) folios.comandasSinSalir.forEach { c -> BandaDeComandaSinSalir(c) { onEntendido(c.orderId) } }
+}
+
+@Composable
+private fun BandaDePagadosEnLinea(texto: String, onVer: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -287,10 +308,69 @@ private fun BandaDePagadosEnLinea(
             Text(
                 text = texto,
                 style = MaterialTheme.typography.bodySmall,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f).padding(vertical = 8.dp),
             )
-            TextButton(onClick = onVer) { Text(com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar.VER) }
+            TextButton(onClick = onVer) { Text(TextosPorPagar.VER) }
+        }
+    }
+}
+
+/** Ruling 69: sólo «Entendido» la quita (tocar la banda no hace nada: que no se vaya por un roce). */
+@Composable
+private fun BandaDeComandaSinSalir(comanda: ComandaPorImprimir, onEntendido: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = TextosPorPagar.comandaNoSalio(comanda.folio),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            TextButton(onClick = onEntendido) { Text(TextosPorPagar.ENTENDIDO) }
+        }
+    }
+}
+
+/** D12: un cobro con saldo de un folio guardado sin desenlace, con la lista de folios desactualizada. */
+@Composable
+private fun AvisoDeSaldoSinConfirmar(texto: String) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Text(
+            text = texto,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+}
+
+/** TPV regla 19: los avisos en la PAX A910S (360×640), debajo de la banda del negocio y del aviso de D12. */
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun AvisosDeLaTiendaPreview() {
+    AvoqadoTheme {
+        Column(Modifier.fillMaxSize()) {
+            VenueStatusBanner(status = VenueStatus.TRIAL)
+            AvisoDeSaldoSinConfirmar(
+                "Cobro con saldo sin confirmar en el folio W494E (\$20.00). No lo cobres otra vez: se comprueba en «Pedidos por pagar» " +
+                    "cuando haya conexión.",
+            )
+            AvisosDeLaTienda(
+                estado = MutableStateFlow(
+                    EstadoDeFolios(
+                        actualizadoEnMs = System.currentTimeMillis(),
+                        tarjetasPorAbrir = listOf(
+                            TarjetaPorAbrir("t1", "W5GZD", "Ana N.", BigDecimal("250.50"), null, cobrando = false),
+                            TarjetaPorAbrir("t2", "W6H2J", "Luis", BigDecimal("89.00"), null, cobrando = false),
+                        ),
+                        comandasSinSalir = listOf(ComandaPorImprimir("t0", "T-0042")),
+                    ),
+                ),
+                ruta = NavRoute.FastPaymentEntry.route,
+                onVer = {},
+                onEntendido = {},
+            )
         }
     }
 }
@@ -1099,25 +1179,18 @@ fun AppNavigation(
                 ) {
                     value = withContext(Dispatchers.IO) { cobroConSaldo.pendientes() }
                 }
-                com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar(estadoDeLosFolios, saldosGuardados)?.let { texto ->
-                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                        Text(
-                            text = texto,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
-                    }
-                }
+                avisoDeSaldoSinConfirmar(estadoDeLosFolios, saldosGuardados)?.let { AvisoDeSaldoSinConfirmar(it) }
             }
         }
 
-        // 🔔 D661 (Ruling 19): mientras suena un pedido pagado en línea, Mesas y Cobrar lo dicen arriba y llevan a «Pedidos por pagar».
-        if (bannerRoute in com.jaac.avoqado_tpv.core.presentation.screens.RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA) {
-            BandaDePagadosEnLinea(vigiaDeFolios.estado) {
-                navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true }
-            }
-        }
+        // 🔔 D661 (Ruling 19 · 68 · 69): mientras suena un pedido pagado en línea, toda pantalla lo dice arriba (menos el cobro con tarjeta)
+        // y lleva a «Pedidos por pagar»; y la comanda de lo que esta caja abrió y no salió aquí, también.
+        AvisosDeLaTienda(
+            estado = vigiaDeFolios.estado,
+            ruta = bannerRoute,
+            onVer = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
+            onEntendido = vigiaDeFolios::descartarComandaSinSalir,
+        )
 
         // Main navigation content (takes remaining space)
         Box(modifier = Modifier.weight(1f)) {

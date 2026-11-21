@@ -8,7 +8,10 @@ plugins {
 android {
     namespace = "com.avoqado.cobropropio"
     compileSdk = 36
-    defaultConfig { minSdk = 27 }
+    defaultConfig {
+        minSdk = 27
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -48,4 +51,9 @@ dependencies {
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     testImplementation("org.robolectric:robolectric:4.11.1")
     testImplementation("androidx.test:core:1.5.0")
+
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core) // sólo trae el AndroidJUnitRunner, con la versión de :app
+    androidTestImplementation("com.squareup.okhttp3:okhttp:4.12.0")
+    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 }

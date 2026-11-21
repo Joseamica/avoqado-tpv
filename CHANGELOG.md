@@ -12,6 +12,7 @@
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
+  - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.
   - El observador de pruebas de DUKPT ya no vive en producción: la prueba inyecta su borrador.
   - Prueba guardia: las constantes de los enums que guarda la libreta sólo se agregan.
   - La libreta lee cada fila por un solo punto validado (con dos reglas de dinero: un aviso «reversada» exige el reverso confirmado y un «aprobado» exige folio o pago): una fila ilegible ya no detiene la recuperación ni los avisos al SERVIDOR y nunca se convierte en un desenlace; queda «por confirmar» (I3; Codex r1–r4).

@@ -94,6 +94,22 @@ class ModulosSinRespuestaViejaTest {
     }
 
     @Test
+    fun `P1 una respuesta que llega despues de que el latido dio de baja la terminal no se guarda - Codex r2 3`() = runBlocking {
+        val repo = repo()
+        val enVuelo = CompletableDeferred<Response<ModulesApiResponse>>()
+        respuestas.addLast(enVuelo)
+
+        val peticion = async { repo.fetchAndCache() }
+        while (respuestas.isNotEmpty()) kotlinx.coroutines.delay(5)
+        // El latido (RETIRED) borra SecureStorage directo, sin pasar por clearCache.
+        every { storage.getVenueId() } returns null
+        enVuelo.complete(conModulos("A")); peticion.await()
+
+        assertThat(repo.modules.value).isEmpty()
+        verify(exactly = 0) { storage.saveModules(any()) }
+    }
+
+    @Test
     fun `una sola peticion se guarda como siempre`() = runBlocking {
         val repo = repo()
         respuestas.addLast(CompletableDeferred(conModulos("A", "C")))

@@ -80,17 +80,19 @@ class ModulesRepositoryImpl @Inject constructor(
                 val moduleDtos = response.body()!!.modules
                 val modules = moduleDtos.map { it.toDomain() }
 
-                // Update both in-memory (StateFlow) and persistent cache — sólo si nadie más nuevo ya guardó (097e01)
+                // Update both in-memory (StateFlow) and persistent cache — sólo si nadie más nuevo ya guardó y el aparato
+                // sigue en el MISMO negocio (097e01, Codex r2 #3: una baja del latido borra SecureStorage sin clearCache).
+                // Disco primero y luego memoria, bajo el candado que también toma la lectura del disco (Codex r2 #2).
                 val guardada = synchronized(candado) {
-                    if (estaPeticion <= ultimaGuardada) false else {
+                    if (estaPeticion <= ultimaGuardada || secureStorage.getVenueId() != venueId) false else {
                         ultimaGuardada = estaPeticion
-                        _modules.value = modules
                         secureStorage.saveModules(moduleDtos)
+                        _modules.value = modules
                         true
                     }
                 }
                 if (!guardada) {
-                    Timber.w("📦 Respuesta vieja de módulos descartada: una petición más nueva (o un cierre de sesión) ya mandó")
+                    Timber.w("📦 Respuesta vieja de módulos descartada: una petición más nueva, un cierre de sesión o un cambio de negocio ya mandó")
                     return@withContext Result.success(_modules.value)
                 }
 
@@ -117,10 +119,13 @@ class ModulesRepositoryImpl @Inject constructor(
 
     override fun getCachedModules(): List<VenueModule> {
         val currentModules = _modules.value.ifEmpty {
-            // Try loading from persistent cache if in-memory is empty
+            // Try loading from persistent cache if in-memory is empty — bajo el candado de la escritura (097e01, Codex r2 #2):
+            // nunca se lee el disco a media escritura de una respuesta nueva.
             Timber.d("📦 getCachedModules: in-memory cache empty, loading from persistent")
-            loadFromPersistentCache()
-            _modules.value
+            synchronized(candado) {
+                if (_modules.value.isEmpty()) loadFromPersistentCache()
+                _modules.value
+            }
         }
         Timber.d("📦 getCachedModules: returning ${currentModules.size} modules: ${currentModules.map { it.moduleCode }}")
         return currentModules

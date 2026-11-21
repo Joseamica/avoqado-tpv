@@ -3205,22 +3205,15 @@ private fun SplashScreen(
         // This prevents routing to LoginScreen when terminal has venueId locally
         // but activatedAt = NULL on backend (happens after DB reset)
         // 🚀 Encargo 097e01: con la terminal ya activada en el aparato, el logo espera al SERVIDOR a lo más
-        // ArranqueDeLaTerminal.ESPERA_MAXIMA; si no contesta, se sigue con lo guardado (antes: ~80 s con el
+        // ArranqueDeLaTerminal.ESPERA_MAXIMA; si no contesta, se sigue con lo guardado (antes: ~62-80 s con el
         // SERVIDOR mudo). Las llamadas de red van en IO para no congelar la animación (~2.6 s, 160 cuadros).
         val destino = com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.decidir(
             alFondo = alFondo,
             activadaEnElAparato = { deviceInfoManager.isDeviceActivated() },
             haySesion = { secureStorage.isAuthenticated() },
-            consultarActivacion = {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    deviceInfoManager.checkActivationStatusWithBackend()
-                }
-            },
-            traerModulos = {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    modulesRepository.fetchAndCache()
-                }
-            }
+            // La activación corre en IO dentro de `decidir` (guarda ahí su respuesta: Codex r2 #1); fetchAndCache ya va en IO.
+            consultarActivacion = { deviceInfoManager.checkActivationStatusWithBackend() },
+            traerModulos = { modulesRepository.fetchAndCache() }
         )
 
         when (destino) {

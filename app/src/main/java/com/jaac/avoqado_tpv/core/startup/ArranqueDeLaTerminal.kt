@@ -7,9 +7,11 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -53,6 +55,8 @@ object ArranqueDeLaTerminal {
      * @param alFondo alcance donde los módulos siguen si se vence la espera ([alFondoDelProceso] en la app).
      * @param consultarActivacion la consulta de siempre (`checkActivationStatusWithBackend`), con sus efectos.
      * @param traerModulos `modulesRepository.fetchAndCache()`; si falla, se quedan los módulos guardados.
+     * @param hiloDeRed donde corre la consulta de activación (IO: sin congelar la animación del logo; las pruebas ponen el
+     *   suyo para el tiempo virtual).
      */
     suspend fun decidir(
         alFondo: CoroutineScope,
@@ -61,12 +65,13 @@ object ArranqueDeLaTerminal {
         consultarActivacion: suspend () -> Result<ActivationStatusResponse>,
         traerModulos: suspend () -> Unit,
         esperaMaxima: Duration = ESPERA_MAXIMA,
+        hiloDeRed: CoroutineContext = Dispatchers.IO,
     ): Destino {
         fun segunLaSesion() = if (haySesion()) Destino.INICIO else Destino.LOGIN
 
         // Sin la activación en el aparato sólo el servidor sabe a dónde ir: se le espera completo, como antes.
         if (!activadaEnElAparato()) {
-            return when (val respuesta = consultarActivacion()) {
+            return when (val respuesta = withContext(hiloDeRed) { consultarActivacion() }) {
                 is Result.Success -> if (!respuesta.data.isActivated) Destino.ACTIVACION else {
                     traerModulos()
                     segunLaSesion()
@@ -80,25 +85,39 @@ object ArranqueDeLaTerminal {
 
         // UNA espera para las dos consultas. Al vencer, la de activación se cancela: lo que conteste después no toca nada
         // (ni RETIRED ni reponer el venue). Los módulos viven en `alFondo`: al vencer sólo se deja de esperarlos.
-        var respuesta: Result<ActivationStatusResponse>? = null
+        // La respuesta se guarda EN el hilo de red (Codex r2 #1): si el plazo vence justo cuando vuelve a la pantalla,
+        // `withContext` la tiraría, y un «no activada» que sí llegó a tiempo se perdería.
+        val respuesta = AtomicReference<Result<ActivationStatusResponse>?>(null)
         var modulos: Deferred<Unit>? = null
         val aTiempo = withTimeoutOrNull(esperaMaxima) {
-            val r = consultarActivacion().also { respuesta = it }
+            val r = withContext(hiloDeRed) { consultarActivacion().also { respuesta.set(it) } }
             if (r is Result.Success && !r.data.isActivated) return@withTimeoutOrNull
-            val enCamino = alFondo.async { traerModulos() }
+            val enCamino = modulosDelProceso(alFondo, traerModulos)
             modulos = enCamino
             enCamino.await()
         } != null
 
-        val contestada = respuesta
+        val contestada = respuesta.get()
         if (contestada is Result.Success && !contestada.data.isActivated) return Destino.ACTIVACION
         if (!aTiempo) {
             Timber.w("🚀 [Arranque] El SERVIDOR no contestó en ${esperaMaxima.inWholeSeconds} s: se sigue con lo guardado")
-            if (modulos == null) alFondo.launch { traerModulos() } else Timber.w("🚀 [Arranque] Los módulos siguen al fondo")
+            if (modulos == null) modulosDelProceso(alFondo, traerModulos) else Timber.w("🚀 [Arranque] Los módulos siguen al fondo")
         }
 
         // RETIRED borra los datos dentro de la consulta: se vuelve a mirar el aparato antes de decidir.
         if (!activadaEnElAparato()) return Destino.ACTIVACION
         return segunLaSesion()
     }
+
+    /**
+     * Una sola consulta de módulos del arranque a la vez en el proceso (Codex r2 #4): si la actividad se recrea con el logo
+     * visible, el logo nuevo espera la que ya iba en camino en vez de lanzar otra.
+     */
+    private var modulosEnCamino: Deferred<Unit>? = null
+
+    private fun modulosDelProceso(alFondo: CoroutineScope, traerModulos: suspend () -> Unit): Deferred<Unit> =
+        synchronized(this) {
+            modulosEnCamino?.takeIf { it.isActive }
+                ?: alFondo.async { traerModulos() }.also { modulosEnCamino = it }
+        }
 }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.io.IOException
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Encargo 097e01 (21-nov-2026): reiniciar la TPV con el SERVIDOR mudo dejaba ~80 s el logo.
@@ -57,6 +58,7 @@ class ArranqueDeLaTerminalTest {
         haySesion = { haySesion },
         consultarActivacion = { registro.consultas++; consultar() },
         traerModulos = { traerModulos(); registro.modulosTraidos++ },
+        hiloDeRed = EmptyCoroutineContext,
     )
 
     @Test
@@ -174,6 +176,7 @@ class ArranqueDeLaTerminalTest {
             // Como checkActivationStatusWithBackend: al contestar «activada» restaura el venue en el aparato.
             consultarActivacion = { registro.consultas++; delay(30_000); activadaLocal = true; activada },
             traerModulos = { registro.modulosTraidos++ },
+            hiloDeRed = EmptyCoroutineContext,
         )
 
         assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.INICIO)
@@ -198,6 +201,7 @@ class ArranqueDeLaTerminalTest {
             // Como un RETIRED: el aparato borró sus datos y la consulta sigue colgada.
             consultarActivacion = { activadaLocal = false; awaitCancellation() },
             traerModulos = {},
+            hiloDeRed = EmptyCoroutineContext,
         )
 
         assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.ACTIVACION)

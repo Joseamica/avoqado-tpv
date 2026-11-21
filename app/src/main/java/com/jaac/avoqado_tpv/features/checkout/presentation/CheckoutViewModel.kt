@@ -1244,7 +1244,9 @@ class CheckoutViewModel @Inject constructor(
         borradoDelCarrito?.join()
 
         val amountPesos = (current.totalCents / 100.0).toString()
-        val hayRed = connectionStateManager.hasInternet()
+        // 📴 «Red» para cobrar = internet Y servidor: con la franja de «sin servidor» crear la orden esperaba ~25 s y luego caía a la
+        // venta local con la misma llave. Ahora va directo, como sin internet (encargo 97042c). El carrito guardado y su llave no cambian.
+        val hayRed = connectionStateManager.isFullyConnected()
         // 🔴 D5: el cupón necesita al SERVIDOR: sin red no se guarda como venta local (se subiría como un descuento libre), se dice. Y un
         // cobro rápido no tiene orden donde ligarlo: con cupón siempre hay orden, aunque sean puros importes. Igual con el descuento del
         // cliente (D1): se registra como lo que es, en su orden.

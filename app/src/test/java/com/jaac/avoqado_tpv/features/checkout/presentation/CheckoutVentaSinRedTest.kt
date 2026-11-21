@@ -216,6 +216,34 @@ class CheckoutVentaSinRedTest {
     }
 
     @Test
+    fun `P1 con internet pero la franja de sin servidor ⇒ VentaLocal directa, sin esperar a crear la orden`() = runTest {
+        // Encargo 97042c: antes esperaba ~25 s a que crear la orden venciera y luego caía a la venta local.
+        connectionStateManager.setServerConnected(false)
+        val vm = viewModel()
+        vm.addProduct(producto(), quantity = 2)
+
+        val venta = ventaDe(vm.prepareForPayment().getOrThrow())
+
+        assertEquals(10000, venta.totalCents)
+        assertEquals(venta.llave, aparato.carritos["venue-1"]?.llave)
+        assertEquals(venta.llave, pedido(venta).get("externalId").asString)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 con la franja de sin servidor y solo importes ⇒ VentaLocal, no el cobro rapido que esperaria al servidor`() = runTest {
+        connectionStateManager.setServerConnected(false)
+        val vm = viewModel()
+        vm.addCustomAmount("Importe", 8000)
+
+        val payload = vm.prepareForPayment().getOrThrow()
+
+        assertTrue("Se esperaba una venta local y salió $payload", payload is PaymentNavigationPayload.VentaLocal)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun `createOrder falla con 503 ⇒ VentaLocal con la MISMA llave que el intento, guardada ANTES del POST`() = runTest {
         val enviados = mutableListOf<TpvCreateOrderWithItemsRequest>()
         var llaveGuardadaAlLlamar: String? = null

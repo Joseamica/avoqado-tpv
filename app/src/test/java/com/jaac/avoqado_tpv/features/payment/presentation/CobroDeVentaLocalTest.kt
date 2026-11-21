@@ -79,6 +79,8 @@ class CobroDeVentaLocalTest {
     private lateinit var vm: PaymentViewModel
     private lateinit var impresor: com.jaac.avoqado_tpv.core.printer.PrinterManager
     private val impresiones = mutableListOf<List<Any?>>()
+    /** Con servidor por omisión: las pruebas de abajo hacen que la RED falle (mock de la API). La franja se prueba aparte (97042c). */
+    private val conexion = ConnectionStateManager()
     private val llave = "c000000000000000000000001"
     private val venta = VentaLocal(
         llave, "venue-1", "staff-1", "shift-1", 1_760_000_000_000L, 10000,
@@ -170,6 +172,24 @@ class CobroDeVentaLocalTest {
         assertThat(fila()!!.syncStatus).isEqualTo("PENDING")
         assertThat(fila()!!.claimToken).isNull()
         coVerifyOrder { dao.insert(any()); api.crearOrden("venue-1", any()) }
+        coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
+        verify(exactly = 1) { PaymentSyncScheduler.runNow(context) }
+    }
+
+    @Test fun `P1 con la franja de sin servidor la venta local se guarda y no espera al servidor`() = runTest {
+        conexion.setServerConnected(false)
+
+        vm.processCashPayment("100.00")
+        esperarFinal()
+
+        val exito = vm.state.value as PaymentState.Success
+        assertThat(exito.pendingSyncMessage).isEqualTo("Venta guardada sin conexión: se manda sola al volver el internet")
+        assertThat(fila()!!.syncStatus).isEqualTo("PENDING")
+        assertThat(fila()!!.claimToken).isNull()
+        assertThat(fila()!!.retryCount).isEqualTo(0) // sin intento no se suma intento
+        assertThat(fila()!!.idempotencyKey).isEqualTo(llave)
+        coVerify(exactly = 0) { api.crearOrden(any(), any()) }
+        coVerify(exactly = 0) { api.pagar(any(), any(), any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
         verify(exactly = 1) { PaymentSyncScheduler.runNow(context) }
     }
@@ -391,7 +411,7 @@ class CobroDeVentaLocalTest {
         verificationUploadManager = mockk(relaxed = true), paymentApiService = mockk(relaxed = true), apiService = mockk(relaxed = true),
         customerRepository = mockk(relaxed = true), secureStorage = mockk(relaxed = true) { every { getSerialNumber() } returns "AVQD-1" },
         modulesRepository = mockk(relaxed = true) { every { modules } returns MutableStateFlow(emptyList()) },
-        connectionStateManager = ConnectionStateManager().apply { setInternetConnected(false); setServerConnected(false) },
+        connectionStateManager = conexion,
         merchantRepository = mockk(relaxed = true), merchantEligibilityRepository = mockk(relaxed = true),
         criticalNetworkOperationManager = mockk(relaxed = true),
         paymentStateHolder = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder(),

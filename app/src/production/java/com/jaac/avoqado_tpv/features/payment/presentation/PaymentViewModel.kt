@@ -5932,7 +5932,14 @@ class PaymentViewModel @Inject constructor(
         }
         if (!repetida) {
             val token = checkNotNull(guardada.getOrThrow().claimToken)
-            when (val resultado = subirVentaGuardadaUseCase(fila.toQueuedPayment())) {
+            // 📴 Con la franja de «sin servidor» (o sin internet) no se sube: la venta ya está guardada y la cola la manda al
+            // volver. Sin intento no se suma intento (encargo 97042c: antes esperaba ~25 s sin respuesta en cada venta).
+            val resultado = if (connectionStateManager.isFullyConnected()) subirVentaGuardadaUseCase(fila.toQueuedPayment()) else null
+            when (resultado) {
+                null -> {
+                    paymentQueueRepository.release(fila.id, token, fila.retryCount, "Sin conexión con el servidor: se manda sola al volver")
+                    runCatching { PaymentSyncScheduler.runNow(appContext) }
+                }
                 SyncOutcome.Synced -> paymentQueueRepository.markSynced(fila.id, token)
                 is SyncOutcome.Permanent -> paymentQueueRepository.markPermanentlyFailed(fila.id, token, resultado.reason)
                 SyncOutcome.Retryable -> {

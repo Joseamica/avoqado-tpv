@@ -1,6 +1,10 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
 import android.app.Application
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination
 import androidx.navigation.NavGraph
@@ -55,9 +59,18 @@ class VerPedidosPorPagarTest {
         override fun createDestination(): NavDestination = NavDestination(this)
     }
 
-    /** Arranca en el Inicio, como la app, y recorre [camino]. */
-    private fun controlador(vararg camino: NavRoute): NavHostController {
+    /**
+     * Arranca en el Inicio, como la app, y recorre [camino]. [conEstado]: con dueño de ciclo de vida y de ViewModels, como el NavHost,
+     * para poder leer el `savedStateHandle` de cada entrada.
+     */
+    private fun controlador(vararg camino: NavRoute, conEstado: Boolean = false): NavHostController {
         val nav = NavHostController(ApplicationProvider.getApplicationContext())
+        if (conEstado) {
+            nav.setLifecycleOwner(object : LifecycleOwner {
+                override val lifecycle = LifecycleRegistry.createUnsafe(this).apply { currentState = Lifecycle.State.RESUMED }
+            })
+            nav.setViewModelStore(ViewModelStore())
+        }
         val navegador = NavegadorDePrueba()
         nav.navigatorProvider.addNavigator(navegador)
         val grafo = NavGraph(nav.navigatorProvider.getNavigator(NavGraphNavigator::class.java))
@@ -199,6 +212,48 @@ class VerPedidosPorPagarTest {
         issuingBank = null, cardMethod = null, creationDate = "2026-07-01T12:00:00Z", aid = null, arqc = null,
         postOperationType = null, postOperationReference = null, postOperationAuthorization = null, postOperationStatus = null,
     )
+
+    /**
+     * Ruling 116. En la Nexgo, el registro de una devolución puede tardar hasta 25 s después de que AngelPay contestó, ya sin la bandera
+     * de devolución en curso: en ese rato «Ver» o un cobro del POS ponen otra pantalla arriba. Al terminar, la salida sólo saca la
+     * confirmación si sigue arriba; antes sacaba la que estuviera («Pedidos por pagar» o un cobro vivo). `Tables` hace de «Pagos».
+     */
+    @Test
+    fun `Ruling 116 al terminar de registrar una devolucion sale de la confirmacion solo si sigue arriba`() {
+        // Sigue arriba: sale a «Pagos» y le pide recargar, como siempre.
+        val nav = controlador(NavRoute.Tables, NavRoute.RefundConfirmation, conEstado = true)
+        val devolucion = checkNotNull(nav.currentBackStackEntry)
+        SafeNavigationHelper.resetForTesting()
+        nav.salirDeLaDevolucion(devolucion, refrescarPagos = true)
+        assertEquals(NavRoute.Tables.route, nav.currentDestination?.route)
+        assertEquals(true, nav.currentBackStackEntry?.savedStateHandle?.get<Boolean>("refreshAfterRefund"))
+
+        // «Ver» ya la sacó: «Pedidos por pagar» se queda y nadie le escribe al Inicio.
+        val conVer = controlador(NavRoute.Tables, NavRoute.RefundConfirmation, conEstado = true)
+        val devolucionConVer = checkNotNull(conVer.currentBackStackEntry)
+        conVer.verPedidosPorPagar(ventaEnCurso = false)
+        SafeNavigationHelper.resetForTesting()
+        conVer.salirDeLaDevolucion(devolucionConVer, refrescarPagos = true)
+        assertEquals(NavRoute.PorPagar.route, conVer.currentDestination?.route)
+        assertFalse(conVer.getBackStackEntry(NavRoute.Home.route).savedStateHandle.contains("refreshAfterRefund"))
+
+        // Un cobro del POS encima: su pantalla se queda.
+        val conCobro = controlador(NavRoute.Tables, NavRoute.RefundConfirmation, conEstado = true)
+        val devolucionConCobro = checkNotNull(conCobro.currentBackStackEntry)
+        conCobro.navigate(NavRoute.AngelPayPayment.route)
+        SafeNavigationHelper.resetForTesting()
+        conCobro.salirDeLaDevolucion(devolucionConCobro, refrescarPagos = false)
+        assertEquals(NavRoute.AngelPayPayment.route, conCobro.currentDestination?.route)
+    }
+
+    /** Ruling 116, la misma familia en la PAX: tras esperar a que el sistema de pagos esté listo, abre el cobro sólo si sigue arriba. */
+    @Test
+    fun `Ruling 116 en la PAX la devolucion abre el cobro solo si la confirmacion sigue arriba`() {
+        val navegacion = File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt").readText()
+        val pax = navegacion.substringAfter("awaitPaxPaymentReady(context, initializationManager, \"Refund payment\")")
+            .substringBefore("navController.navigate(NavRoute.Payment.route)")
+        assertTrue(pax, pax.contains("if (navController.currentBackStackEntry !== backStackEntry) return@launch"))
+    }
 
     /** El montaje de la banda no se puede ejecutar aquí (`createComposeRule` sólo está en `androidTest`): se lee la fuente. */
     @Test

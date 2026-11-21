@@ -2593,10 +2593,7 @@ fun AppNavigation(
                                             )
                                             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                                             // Force Pagos to refresh so the "Reembolsado" badge shows up.
-                                            navController.previousBackStackEntry
-                                                ?.savedStateHandle
-                                                ?.set("refreshAfterRefund", true)
-                                            navController.safePopBackStack()
+                                            navController.salirDeLaDevolucion(backStackEntry, refrescarPagos = true)
                                         },
                                         onFailure = { backendError ->
                                             Timber.e(
@@ -2626,7 +2623,7 @@ fun AppNavigation(
                                             Toast.makeText(context, aviso, Toast.LENGTH_LONG).show()
                                             // Still pop back — the SDK cancellation
                                             // already returned money to the customer.
-                                            navController.safePopBackStack()
+                                            navController.salirDeLaDevolucion(backStackEntry, refrescarPagos = false)
                                         }
                                     )
                                 },
@@ -2644,6 +2641,9 @@ fun AppNavigation(
                         if (!awaitPaxPaymentReady(context, initializationManager, "Refund payment")) {
                             return@launch
                         }
+                        // D661 · Ruling 116: mientras se preparaba el sistema de pagos, «Ver» o un cobro del POS pudieron poner otra
+                        // pantalla: la devolución sólo abre el cobro si la confirmación sigue arriba.
+                        if (navController.currentBackStackEntry !== backStackEntry) return@launch
 
                         navController.currentBackStackEntry?.savedStateHandle?.apply {
                             // Refund mode flag

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
 
 /**
@@ -25,4 +26,16 @@ internal fun NavController.verPedidosPorPagar(ventaEnCurso: Boolean) {
         if (desdeElCobro) popUpTo(NavRoute.Home.route) { inclusive = false }
         launchSingleTop = true
     }
+}
+
+/**
+ * Sale de la confirmación de una devolución de la Nexgo ([entrada]) al terminar de registrarla; [refrescarPagos] pide a «Pagos» recargar.
+ *
+ * D661 · Ruling 116: sólo si [entrada] sigue arriba. El registro puede tardar hasta 25 s después de que AngelPay contestó, ya sin la
+ * bandera de devolución en curso; en ese rato «Ver» o un cobro del POS ponen otra pantalla, y antes se sacaba ésa.
+ */
+internal fun NavController.salirDeLaDevolucion(entrada: NavBackStackEntry, refrescarPagos: Boolean) {
+    if (currentBackStackEntry !== entrada) return
+    if (refrescarPagos) previousBackStackEntry?.savedStateHandle?.set("refreshAfterRefund", true)
+    safePopBackStack()
 }

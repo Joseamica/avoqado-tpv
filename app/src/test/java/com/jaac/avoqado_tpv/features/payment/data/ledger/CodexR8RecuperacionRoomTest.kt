@@ -492,4 +492,35 @@ class CodexR8RecuperacionRoomTest {
         assertWithMessage("un solo Payment").that(servidor.pagos).containsExactly("b", 1)
         assertThat(dao.getById("b")!!.state).isEqualTo("REGISTRADO")
     }
+
+    /**
+     * 🔴 Codex final r10 #3 · POS → N86: el SERVIDOR soltó la cuenta a los 30 s, sin consulta pendiente. A los 2:30 la base y r9 admiten otra
+     * tarjeta. Con R9-3 la consulta de SEGUIMIENTO del trabajador la volvía a marcar y, con menos de 5 min, la tarjeta se frenaba otra vez.
+     */
+    @Test fun `r10_3 · la cuenta que solto el SERVIDOR no se vuelve a frenar cuando el trabajador la sigue`() = runBlocking<Unit> {
+        dudaN86("a1")
+        ventana("a1")
+        assertWithMessage("a los 2:30 la tarjeta de la cuenta entra").that(otraTarjeta(libreta())).isTrue()
+        var consultas = 0
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers { consultas++; VerificacionDelCobro.NoSePudoVerificar("sin red") }
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
+        assertWithMessage("…también después de la pasada del trabajador").that(otraTarjeta(libreta())).isTrue()
+        // Pasado el techo el seguimiento sigue (no se pierde) y tampoco frena.
+        sql("UPDATE payment_attempts SET created_at = created_at - 600000 WHERE attempt_id = 'a1'")
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis() + 3_600_000L)
+        assertWithMessage("se sigue consultando").that(consultas).isAtLeast(1)
+        assertThat(otraTarjeta(libreta())).isTrue()
+    }
+
+    /** R10-3 · el caso contrario: la PRIMERA consulta de una duda viva, en vuelo, sigue frenando aunque el SERVIDOR la suelte antes del techo. */
+    @Test fun `r10_3 · una duda viva con su primera consulta en vuelo sigue frenando aunque la suelten`() = runBlocking<Unit> {
+        dudaN86("a1")
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin respuesta")
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
+        assertWithMessage("la lectura sigue despachada (en vuelo)").that(dao.getById("a1")!!.historyReadAt).isNotNull()
+        ventana("a1")
+        assertWithMessage("antes del techo, la lectura en vuelo sigue frenando").that(otraTarjeta(libreta())).isFalse()
+    }
 }

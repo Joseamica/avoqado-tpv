@@ -760,7 +760,9 @@ class AprobadoFinalN86RoomTest {
      * toque: las 10 que quedaron detrás vuelven a tocar ANTES que las 50 de la primera pasada (por `created_at` se quedaban sin turno).
      */
     @Test fun `N86_r9_3_el_seguimiento_va_por_ultimo_toque_y_esta_acotado_por_pasada`() = runBlocking<Unit> {
-        repeat(60) { i -> dudaN86("s%02d".format(i), orden = "orden-$i", solicitud = "r-$i", creadoEn = reciente); ventana("s%02d".format(i)) }
+        // R10-3: la soltada sin lectura pendiente sólo se sigue pasado el techo (antes no frena): abiertas hace 10 min.
+        val hace10Min = System.currentTimeMillis() - 600_000L
+        repeat(60) { i -> dudaN86("s%02d".format(i), orden = "orden-$i", solicitud = "r-$i", creadoEn = hace10Min); ventana("s%02d".format(i)) }
         val consultadas = mutableListOf<String>()
         val v = mockk<AngelPayChargeVerifier>()
         coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } coAnswers { consultadas += firstArg<String>(); VerificacionDelCobro.NoCobrado }

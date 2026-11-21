@@ -160,10 +160,17 @@ interface PaymentAttemptDao {
     // pausa), no la marca: un «no aparece» ya no saca la fila del seguimiento pero sí le quita la marca (para soltar el freno), y por la
     // marca volvía al lugar de su `created_at`, delante de todas: 50 «no aparece» viejas dejaban sin turno a una nueva. Lo nunca tomado, su
     // `created_at`.
+    // 🔴 F1 · Codex final r10 #3 (R10-3): una fila que ya dejó de frenar (la soltó el SERVIDOR: `DESCARTADA` sin firma) y no tiene lectura
+    // pendiente no EMPIEZA su seguimiento antes del techo: tomar la consulta escribe la marca y, con menos de T, la marca vuelve a frenar
+    // la tarjeta de la cuenta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). Pasado T la marca ya no frena. No abre el caso contrario: la
+    // lectura que SÍ debe frenar (la primera de una duda viva, o una ya despachada) trae la marca y entra por `history_read_at IS NOT NULL`;
+    // la duda viva (`INDETERMINADO`, `AUTORIZANDO`) frena por su estado y la firmada no frena con marca o sin ella.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE' AND legacy_shadow = 0
         AND processor = 'ANGELPAY' AND host_approved IS NULL AND server_payment_id IS NULL
         AND (lease_until IS NULL OR lease_until < :now)
-        AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan))
+        AND (history_read_at IS NOT NULL OR (""" + SQL_CONSULTABLE_EN_EL_HISTORIAL + """ AND created_at < :olderThan
+             AND (state != 'DESCARTADA' OR """ + PaymentAttemptEntity.SQL_DECLARADA_POR_UNA_PERSONA + """
+                  OR created_at < :now - """ + PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS + """)))
         AND (COALESCE(lease_until, created_at) > :trasToque
              OR (COALESCE(lease_until, created_at) = :trasToque AND attempt_id > :trasId))
         ORDER BY COALESCE(lease_until, created_at) ASC, attempt_id ASC LIMIT :limite""")

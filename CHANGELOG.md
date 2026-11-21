@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **PAX y Nexgo · «Terminal bloqueada» y «Modo mantenimiento» ya detienen el dedo (D665, tarjeta hz:b433ec6d:D665)**: el velo oscuro sólo tapaba la vista; un toque fuera del aviso llegaba a la app de abajo y con la terminal bloqueada desde Avoqado se podía seguir usando (p. ej. «Cobrar») tocando alrededor. Ahora el velo de los dos avisos es blanco de toques (`pointerInput` vacío, como la `Surface` de Material): lo de abajo no recibe nada, y «Salir de mantenimiento» sigue funcionando. Con los dos puestos, el bloqueo tapa también ese botón. No cambia el botón «atrás» del sistema, los diálogos que ya estuvieran abiertos ni un cobro que mande el POS a una terminal bloqueada (anotados aparte). Prueba: `VeloQueDetieneElDedoTest` (Robolectric, toques reales en la pantalla de la PAX).
+
 ---
 
 ## [2.22.3] - 2026-11-21

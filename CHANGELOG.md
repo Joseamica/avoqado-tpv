@@ -7,13 +7,6 @@
 
 ## [Unreleased]
 
----
-
-## [2.22.3] - 2026-11-21
-
-### **Added**
-- **Interno, sin efecto en la app:** módulo `cobropropio` (SDK propio de cobro, fase 2) con la venta, el reverso y la cancelación con la tarjeta hablando directo con Blumon, un simulador de Blumon y pruebas de punta a punta. No está conectado a la app (`:app` no depende de él): no cambia nada de lo que hace la terminal hoy.
-
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
   - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.
@@ -24,6 +17,16 @@
   - Fábrica pública `crearMotorDeCobro`: fija Blumon, el transporte, la identidad, los relojes y la libreta de producción; el SERVIDOR exige https en producción y, si trae pines, https y que apliquen a su host.
   - Un motor que no se arma (identidad sin forma) ya no deja tomada su libreta: el reintento correcto arma el motor.
   - Superficie pública cerrada con `explicitApi()`: la app sólo ve 35 nombres (los puertos de Blumon, del transporte y del SERVIDOR ya no); una venta con importe fuera de rango no se construye.
+  - Ola de arreglos tras la revisión final y Codex r1 sobre el código: una cancelación que una cancelación hermana ilegible frena antes de anotar su fila se queda «por confirmar» (sin veto ni «No salió» tardío; antes quedaba «No salió»); la fábrica se prueba por lo que arma (endpoints e identidad de Blumon por ambiente, pines del SERVIDOR, y lo rechazado no abre la libreta); `pendientesDeReporte()` vuelve a revisar que cada aviso siga pendiente al leerlo; las guardias de lectura cruda, del DAO, de la superficie pública con sangría, del borrador de DUKPT y de las `var` se cierran; la prueba de `salud()` y la instrumentada del TLS (cabeceras y cuerpo leídos aparte) se endurecen.
+
+---
+
+## [2.22.3] - 2026-11-21
+
+### **Added**
+- **Interno, sin efecto en la app:** módulo `cobropropio` (SDK propio de cobro, fase 2) con la venta, el reverso y la cancelación con la tarjeta hablando directo con Blumon, un simulador de Blumon y pruebas de punta a punta. No está conectado a la app (`:app` no depende de él): no cambia nada de lo que hace la terminal hoy.
+
+### **Changed**
 - **PAX y Nexgo · se quitó «Órdenes» del Inicio (D34, tarjeta hz:e82938e1:D34; encargo bd9624)**: el founder (25-sep, 20-oct y 20-nov): «para ordering se usa Mesas y Cobrar». Ya no hay tarjeta «Órdenes» en el Inicio ni sus pantallas (bienvenida de Órdenes, menú de la orden, lista de órdenes y cuentas por cobrar, plano viejo de mesas): se borraron `features/ordering/presentation` salvo `ReglasDeOrdenes.kt`, que usa Cobrar. Los regresos de la pantalla de cobro que caían ahí («Nueva Orden» de un cobro que no vino de Cobrar, Mesas ni un folio; «Pagar cuenta»; volver a la orden) ahora van al Inicio (`popAlInicio`). `showOrderManagement` se sigue leyendo y guardando (contrato con el SERVIDOR, que ya lo manda siempre en `false`), pero ya no enciende nada y su default es `false`. Se quedan a propósito los datos de Órdenes (Room, repositorios) y `OrderSyncCoordinator`. Su pantalla era la única que subía las cuentas guardadas sin red; ahora las sube el Inicio, al abrir y cada vez que vuelve la red (`HomeViewModel.subirCuentasDeOrdenesPendientes`), así que una terminal que se actualiza con una cuenta pendiente no la pierde. Codex r1: «atrás» desde el cobro Blumon de una venta de Cobrar abre un Cobrar nuevo y vacío (nunca el carrito de esa venta: el mismo camino lo toma «atrás» tras un cobro registrado, p. ej. «sin papel», y el carrito lleno invitaba a cobrarla otra vez), y el «Continuar pagando» de un abono que mandó el POS ahora dice «Listo · faltan $X en el POS» y regresa a donde estaba la terminal (el pedido es del POS). Mesas, Pago rápido, Kiosco y los cobros completos del POS no cambian. Pruebas: `RegresoDeCobrarTest`, `BotonDeLoQueFaltaTest`, `TpvSettingsRestaurantModeTest` (`P1 el Inicio no tiene tarjeta de Ordenes…`), `HomeViewModelTest` (`D34 …`), `ReglasDeOrdenesTest` (las de `MenuFamiliasTest` que no dependían de la pantalla), `ArgumentosDelCobroSeLeenUnaVezTest`.
 
 ### **Docs**

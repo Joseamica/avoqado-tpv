@@ -25,7 +25,7 @@
 | Camino | Escritor de la fila | Hoy con el SERVIDOR mudo | Con el cambio |
 |---|---|---|---|
 | Pago rápido y orden de Cobrar ya creada, efectivo en vivo (PAX `PaymentViewModel` ×2 variantes, Nexgo `AngelPayPaymentViewModel`) | `RecordPaymentUseCase` → `enqueueAndClaim` antes del POST; luego `markSynced` o `release` | 5 intentos × ~11 s ≈ 58 s, luego `release` + `handleRecordFailure` (cola) | con la franja: 0 POST, `release` inmediato con un `ConnectException` (Retryable) → la misma cola; sin franja: igual que hoy. PAX: si quedó EN COLA y era de una orden, el GET de la orden se salta con la franja (sólo ese camino; tarjeta igual) |
-| Worker (`PaymentSyncWorker`), fin de la tanda | el worker | otra pasada sólo si la tanda venía llena (10) | además, si subió algo y quedan pendientes: otra pasada (protegida: si agendar falla, queda la periódica) |
+| Worker (`PaymentSyncWorker`) | el worker | sin cambio. Su aviso (`runNow`, KEEP) se pierde si ya corre una tanda: una venta puede esperar la periódica de 15 min (ya existía; anotado, Codex r3 #2 / r4) | sin cambio |
 | Replay del worker (`PaymentSyncWorker`, `alreadyQueued = true`) | el worker con su claim | igual | **sin cambio** (sigue intentando: es quien sube al volver) |
 | Tarjeta (Blumon/AngelPay), registro tras la aprobación | libreta + cola de tarjeta | igual | **sin cambio** |
 | Cobrar → venta local (3 VM): `guardar` (fila reclamada) → `SubirVentaGuardadaUseCase` → `markSynced` / `markPermanentlyFailed` / `release(+1)` | `VentaLocalRepository` | 1 intento ≈ 25 s | con la franja: no se sube; `release` sin sumar intento + `runNow` (como hoy) |

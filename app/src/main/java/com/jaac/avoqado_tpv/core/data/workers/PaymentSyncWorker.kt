@@ -236,12 +236,6 @@ class PaymentSyncWorker @AssistedInject constructor(
                 (sessionProgress > 0 && shiftRepository?.haySesionesPorReproducir() == true) ||
                 moreProofs) {
                 com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext)
-            } else if (paymentProgress > 0 && paymentQueueRepository.getPendingCount() > 0) {
-                // Encargo 97042c (Codex r3 #2): esta tanda subió algo (el servidor contesta) y quedan pendientes, p. ej. una venta
-                // que entró a media tanda y cuyo `runNow` (y el de la reconexión) se perdió por KEEP: otra pasada, no la de 15 min.
-                // Sin avance no se repite (servidor mudo: no hay vuelta caliente). Si agendar falla, queda la periódica.
-                runCatching { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.continuarDespuesDeEstaPasada(applicationContext) }
-                    .onFailure { Timber.w(it, "⚠️ [Payment Sync] No se pudo agendar otra pasada; queda la periódica") }
             }
 
             // 🔴 Avisar al banner (bug real 2026-08-07): el contador de

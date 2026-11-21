@@ -31,6 +31,10 @@ tasks.withType<Test>().configureEach {
         outputs.upToDateWhen { false }
         outputs.cacheIf { false }
     }
+    // Las guardias (GuardasTest, SuperficieTest) leen estos archivos como TEXTO: quitar `explicitApi()` no cambia el bytecode,
+    // y sin declararlos la prueba saldría verde del caché.
+    inputs.file("build.gradle.kts").withPropertyName("guardasBuildScript").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/java").withPropertyName("guardasFuentes").withPathSensitivity(PathSensitivity.RELATIVE)
     // Ola final, 6ª parte: si una prueba truena, el log del CI dice por qué (el mensaje del assert y su pila completa).
     testLogging {
         events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)

@@ -1,5 +1,6 @@
 package com.avoqado.cobropropio.libreta
 
+import com.avoqado.cobropropio.motor.MotorDeCobro
 import com.avoqado.cobropropio.servidor.ColaDeResultados
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -22,6 +23,14 @@ class SuperficieTest {
     @Test fun `la libreta y la cola solo dejan leer por fuera del motor`() {
         assertEquals(setOf("buscar", "pendientesDeReporte", "salud"), publicas(Libreta::class.java))
         assertEquals(emptySet<String>(), publicas(ColaDeResultados::class.java))
+    }
+
+    /** Fase 3, bloque 1 (ronda 1 de la tarea 7): del motor, la app sólo cobra, cancela, corta, recupera y escucha lo tardío. */
+    @Test fun `el motor solo deja cobrar cancelar cortar recuperar y escuchar`() {
+        assertEquals(
+            setOf("getResolucionesTardias", "cobrar", "cancelar", "recuperar", "cortar"),
+            publicas(MotorDeCobro::class.java),
+        )
     }
 
     /**

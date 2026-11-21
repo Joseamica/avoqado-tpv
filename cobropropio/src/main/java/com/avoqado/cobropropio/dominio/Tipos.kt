@@ -131,7 +131,11 @@ public sealed interface Solicitud {
 /** El importe más grande que admite una venta (12 dígitos, el ancho del 9F02): `SolicitudDeVenta` y la admisión lo comparten. */
 internal const val IMPORTE_MAXIMO_CENTAVOS = 999_999_999_999L
 
-/** `importeCentavos` es el TOTAL de la tarjeta, con propina, de 1 a [IMPORTE_MAXIMO_CENTAVOS] centavos (D11). */
+/**
+ * `importeCentavos` es el TOTAL de la tarjeta, con propina, de 1 a [IMPORTE_MAXIMO_CENTAVOS] centavos (D11).
+ *
+ * @throws IllegalArgumentException si `importeCentavos` está fuera de `1..IMPORTE_MAXIMO_CENTAVOS`: la venta no se construye.
+ */
 public data class SolicitudDeVenta(
     override val id: AttemptId,
     override val venueId: String,

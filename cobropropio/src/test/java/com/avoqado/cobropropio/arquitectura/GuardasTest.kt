@@ -106,6 +106,20 @@ class GuardasTest {
     @Test fun `borrador no aparece en src main fuera de Dukpt`() {
         val fuera = apariciones(Regex("""\bborrador\b""")).filterNot { it.first == "cripto/Dukpt.kt" }
         assertTrue("borrador fuera de cripto/Dukpt.kt: $fuera", fuera.isEmpty())
+        // Ronda 1 de la revisión de la tarea 7: el borrador es el último parámetro y de tipo función, así que una lambda final
+        // (`Dukpt.llaveDeTransaccion(ipek, ksn) { }`) lo cambia sin nombrarlo. Cada llamada a las cuatro funciones que lo reciben
+        // (o una referencia `Dukpt::`) es EXACTAMENTE uno de estos renglones: una lambda final, un argumento de más o una llamada
+        // partida en líneas cambian el renglón y lo ponen rojo.
+        val llamadas = apariciones(Regex("""Dukpt\.(?:llaveDeTransaccion|cifrarTrack2|llaveDeDatos|tdes)\b|Dukpt::"""))
+            .filterNot { it.first == "cripto/Dukpt.kt" }
+        assertEquals(
+            listOf(
+                "blumon/ArmadoDelMensaje.kt" to "val llave = Dukpt.llaveDeTransaccion(dukpt.ipek, ksn)",
+                "blumon/ArmadoDelMensaje.kt" to "try { cifrada = Dukpt.cifrarTrack2(llave, banda) } finally { llave.fill(0) }",
+                "blumon/ClienteBlumon.kt" to "val material = MaterialDeSesion(Dukpt.tdes(tk, llave.hexABytes(), cifrar = false), base.hexABytes())",
+            ).sortedBy { it.toString() },
+            llamadas.sortedBy { it.toString() },
+        )
     }
 
     /**
@@ -114,10 +128,20 @@ class GuardasTest {
      * entra porque `Libreta.buscar` la lanza y la app la tiene que poder atrapar.
      */
     @Test fun `la superficie publica es la lista cerrada`() {
-        assertTrue("explicitApi() en el módulo", "explicitApi()" in File("build.gradle.kts").readText())
-        val declaracion = Regex("""^public (?:(?:data|sealed|enum|abstract|value|const)\s+)*(?:class|interface|object|fun|val) (\w+)""")
-        val publicas = raiz.walk().filter { it.extension == "kt" }
-            .flatMap { f -> f.readLines().mapNotNull { declaracion.find(it)?.groupValues?.get(1) } }.toSet()
+        // Un renglón de código, no un comentario: sin `//` antes de la llamada.
+        val explicito = Regex("""^[^/\n]*\bexplicitApi\(\)""", RegexOption.MULTILINE)
+        assertTrue("explicitApi() en el módulo", explicito.containsMatchIn(File("build.gradle.kts").readText()))
+        // Ronda 1: toda línea de primer nivel que empieza con `public` (con anotaciones antes, o no) se tiene que leer aquí; la
+        // que no se lee truena, para que una forma que nadie pensó no se cuele.
+        val publico = Regex("""^(?:@.*?\s+)?public\b""")
+        val declaracion = Regex(
+            """^(?:@.*?\s+)?public\b[^(=:{]*?\b(?:class|interface|object|fun|val|var|typealias)\s+(?:<[^>]*>\s*)?(?:\w+\.)?(\w+)""",
+        )
+        val lineas = raiz.walk().filter { it.extension == "kt" }.flatMap { f -> f.readLines().map { f.relativeTo(raiz).path to it } }
+            .filter { publico.containsMatchIn(it.second) }.toList()
+        val sinLeer = lineas.filter { declaracion.find(it.second) == null }
+        assertTrue("líneas públicas que la guardia no sabe leer: $sinLeer", sinLeer.isEmpty())
+        val publicas = lineas.map { declaracion.find(it.second)!!.groupValues[1] }.toSet()
         assertEquals(
             setOf(
                 "AttemptId", "Marca", "Medio", "Entrada", "Operacion", "Ambiente", "ResultadoKernel", "Cvm", "Identidad", "Lectura",

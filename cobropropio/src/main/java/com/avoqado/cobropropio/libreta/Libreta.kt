@@ -396,6 +396,9 @@ public class Libreta internal constructor(
      * La fila de ese folio, validada, o null si no existe. Una fila ilegible (Room no la lee, no pasa la validación de hoy o
      * trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan; los barridos la saltan
      * sin tocarla; `salud()` la cuenta (I3).
+     *
+     * @throws FilaIlegible si la fila de ese folio existe pero no se puede leer o no pasa la validación: quien llama trata el
+     *   intento como «por confirmar», nunca como un desenlace.
      */
     public fun buscar(id: AttemptId): IntentoEntity? = fila(id)
 

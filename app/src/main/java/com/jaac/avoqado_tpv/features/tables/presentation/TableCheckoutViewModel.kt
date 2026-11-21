@@ -998,8 +998,6 @@ class TableCheckoutViewModel @Inject constructor(
                 if (cambio == SALISTE_DE_LA_CUENTA) releerAlTerminarElCobro = false else alTerminarElCobro()
                 return@launch
             }
-            // F1 · Codex r9 R9-2 (D10 «B»): una DUDA de tarjeta de esta cuenta no frena el efectivo; el recibo la avisa (K19c).
-            val avisoDeTarjeta = dineroDeTarjeta.avisoDeDuda(session.orderId)
             repository.payCash(
                 venueId = vId,
                 orderId = session.orderId,
@@ -1033,7 +1031,6 @@ class TableCheckoutViewModel @Inject constructor(
                                 autofacturaAvailable = outcome.autofacturaAvailable,
                                 queued = outcome.queued,
                                 isSettlingPayment = willSettle,
-                                avisoDeTarjeta = avisoDeTarjeta,
                             ),
                         )
                     }
@@ -1053,6 +1050,12 @@ class TableCheckoutViewModel @Inject constructor(
                         }
                     }
                     alTerminarElCobro()
+                    // F1 · Codex r9 R9-2 (D10 «B»): una DUDA de tarjeta de esta cuenta no frena el efectivo; el recibo la avisa (K19c).
+                    // 🔴 Codex final r10 #2: se lee DESPUÉS de guardar el efectivo y de liberar la mesa, nunca entre confirmar y guardar. Si
+                    // tarda y el cajero sale de Mesas, la cancelación ya no alcanza al cobro: sólo se queda sin aviso.
+                    dineroDeTarjeta.avisoDeDuda(session.orderId)?.let { aviso ->
+                        _state.update { it.copy(cashReceipt = it.cashReceipt?.copy(avisoDeTarjeta = aviso)) }
+                    }
                 },
                 onFailure = { e ->
                     if (e is CancellationException) throw e

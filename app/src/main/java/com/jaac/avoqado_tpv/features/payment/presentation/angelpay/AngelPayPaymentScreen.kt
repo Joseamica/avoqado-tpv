@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.app.Activity
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -147,6 +148,12 @@ fun AngelPayPaymentScreen(
      * `resolveSuccessRouting` en el riel Blumon.
      */
     newPaymentLabel: String = "Nuevo Pago",
+    /**
+     * D36: en una venta de Cobrar, el atrás del SISTEMA hace lo mismo que la flecha de arriba en el asistente y tras un error,
+     * cancelado o la espera inicial (antes salía directo a Cobrar sin pasar por [onNavigateBack]). Los demás flujos (Pago rápido,
+     * Mesas, folios, cobro del POS) no cambian: por default es false (Codex D36 r2 #7).
+     */
+    atrasDelSistemaComoLaFlecha: Boolean = false,
     viewModel: AngelPayPaymentViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -488,6 +495,30 @@ fun AngelPayPaymentScreen(
     // "Cobro AngelPay" and a back arrow wired to nothing (`onNavigationClick`'s `when`
     // has no Queued branch, so it silently no-ops).
     val showTopBar = state !is AngelPayPaymentState.Success && state !is AngelPayPaymentState.Queued
+
+    // D36 (Codex r1 #5 y r2 #5/#7): en una venta de Cobrar, el «atrás» del SISTEMA hace lo mismo que la flecha de arriba en estos
+    // estados (antes salía directo a Cobrar sin pasar por `onNavigateBack` y la venta ya creada quedaba abierta para siempre). En los
+    // demás estados y en los demás flujos no se toca: el atrás del sistema sigue como hoy.
+    BackHandler(
+        enabled = atrasDelSistemaComoLaFlecha && (
+            state is AngelPayPaymentState.CollectingRating ||
+                state is AngelPayPaymentState.CollectingTip ||
+                state is AngelPayPaymentState.SelectingMerchant ||
+                state is AngelPayPaymentState.Error ||
+                state is AngelPayPaymentState.Cancelled ||
+                state is AngelPayPaymentState.Idle
+            ),
+    ) {
+        when (state) {
+            is AngelPayPaymentState.CollectingRating,
+            is AngelPayPaymentState.CollectingTip,
+            is AngelPayPaymentState.SelectingMerchant -> if (!viewModel.goBackOneStep()) onNavigateBack()
+            else -> {
+                viewModel.resetPayment()
+                onNavigateBack()
+            }
+        }
+    }
 
     // ── Scaffold with AvoqadoTopBar (matching Blumon) ────────────────
     Scaffold(

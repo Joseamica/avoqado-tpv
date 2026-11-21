@@ -1244,14 +1244,16 @@ class CheckoutViewModel @Inject constructor(
         borradoDelCarrito?.join()
 
         val amountPesos = (current.totalCents / 100.0).toString()
-        // 📴 «Red» para cobrar = internet Y servidor: con la franja de «sin servidor» crear la orden esperaba ~25 s y luego caía a la
-        // venta local con la misma llave. Ahora va directo, como sin internet (encargo 97042c). El carrito guardado y su llave no cambian.
-        val hayRed = connectionStateManager.isFullyConnected()
+        // 📴 Lo que lleva orden necesita al SERVIDOR: con la franja de «sin servidor» crear la orden esperaba ~25 s y luego caía a la
+        // venta local con la misma llave. Ahora va directo, como sin internet (encargo 97042c). Sólo importes sigue mirando internet:
+        // su cobro rápido no espera al servidor (efectivo a la cola al instante) y la tarjeta puede no necesitarlo (Codex r1 #5).
+        val hayServidor = connectionStateManager.isFullyConnected()
         // 🔴 D5: el cupón necesita al SERVIDOR: sin red no se guarda como venta local (se subiría como un descuento libre), se dice. Y un
         // cobro rápido no tiene orden donde ligarlo: con cupón siempre hay orden, aunque sean puros importes. Igual con el descuento del
         // cliente (D1): se registra como lo que es, en su orden.
-        if (current.couponCode != null && !hayRed) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED))
+        if (current.couponCode != null && !hayServidor) return Result.failure(IllegalStateException(TEXTO_CUPON_SIN_RED))
         val llevaOrden = current.hasProductItems || current.couponCode != null || current.descuentoEsDelCliente
+        val hayRed = if (llevaOrden) hayServidor else connectionStateManager.hasInternet()
         return when (caminoDelCobro(llevaOrden, current.totalCents, hayRed)) {
             CaminoDelCobro.RAPIDO -> {
                 // Sin orden y sin carrito durable (como hoy). Un carrito a medias de un intento anterior ya no es esta venta.

@@ -232,14 +232,16 @@ class CheckoutVentaSinRedTest {
     }
 
     @Test
-    fun `P1 con la franja de sin servidor y solo importes ⇒ VentaLocal, no el cobro rapido que esperaria al servidor`() = runTest {
+    fun `P1 con la franja de sin servidor y solo importes ⇒ Fast como hoy, sin crear orden`() = runTest {
+        // Codex r1 #5/#6: sólo importes no lleva orden; su cobro rápido no espera al servidor y conserva la tarjeta y el referido.
         connectionStateManager.setServerConnected(false)
         val vm = viewModel()
         vm.addCustomAmount("Importe", 8000)
 
         val payload = vm.prepareForPayment().getOrThrow()
 
-        assertTrue("Se esperaba una venta local y salió $payload", payload is PaymentNavigationPayload.VentaLocal)
+        assertTrue("Se esperaba Fast y salió $payload", payload is PaymentNavigationPayload.Fast)
+        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any()) }
         vm.viewModelScope.cancel()
     }
 

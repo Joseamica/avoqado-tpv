@@ -79,8 +79,8 @@ class CobroDeVentaLocalTest {
     private lateinit var vm: PaymentViewModel
     private lateinit var impresor: com.jaac.avoqado_tpv.core.printer.PrinterManager
     private val impresiones = mutableListOf<List<Any?>>()
-    /** Con servidor por omisión: las pruebas de abajo hacen que la RED falle (mock de la API). La franja se prueba aparte (97042c). */
-    private val conexion = ConnectionStateManager()
+    /** Sin internet (como siempre en este arnés): ahí la subida se intenta y falla al instante. La franja se prueba aparte (97042c). */
+    private val conexion = ConnectionStateManager().apply { setInternetConnected(false); setServerConnected(false) }
     private val llave = "c000000000000000000000001"
     private val venta = VentaLocal(
         llave, "venue-1", "staff-1", "shift-1", 1_760_000_000_000L, 10000,
@@ -177,7 +177,7 @@ class CobroDeVentaLocalTest {
     }
 
     @Test fun `P1 con la franja de sin servidor la venta local se guarda y no espera al servidor`() = runTest {
-        conexion.setServerConnected(false)
+        conexion.setInternetConnected(true); conexion.setServerConnected(false) // hay internet, el servidor no contesta
 
         vm.processCashPayment("100.00")
         esperarFinal()
@@ -191,7 +191,8 @@ class CobroDeVentaLocalTest {
         coVerify(exactly = 0) { api.crearOrden(any(), any()) }
         coVerify(exactly = 0) { api.pagar(any(), any(), any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
-        verify(exactly = 1) { PaymentSyncScheduler.runNow(context) }
+        // No se despierta a la cola contra el silencio (gastaría un intento): la despierta el aviso de reconexión.
+        verify(exactly = 0) { PaymentSyncScheduler.runNow(any()) }
     }
 
     @Test fun `morir despues del insert no pierde la venta aunque no se llegue a pintar el exito`() = runTest {

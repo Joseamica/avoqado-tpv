@@ -31,7 +31,7 @@ class CashAdmissionRejectedException(error: Throwable) : IllegalStateException(e
 }
 
 /**
- * El efectivo NO tocó la red: la franja ya dice que el servidor no contesta (o no hay internet). Es un `ConnectException`
+ * El efectivo NO tocó la red: la franja ya dice que el servidor no contesta. Es un `ConnectException`
  * («no se conectó»), así que la cola lo trata como cualquier falla de red: Retryable, con su misma llave. Como nada salió por
  * el cable, nada se pudo duplicar (encargo 97042c; misma idea que `RendirseRapido` de ANDROID).
  */
@@ -98,7 +98,7 @@ class RecordPaymentUseCase @Inject constructor(
     private val actionableSales: ActionableSalesRepository? = null,
     /**
      * La franja de conexión (latido HTTP, 2 fallos seguidos). null en pruebas viejas = como antes. Sólo la lee el efectivo en
-     * vivo: si ya se sabe que el servidor no contesta, no se le pregunta (encargo 97042c).
+     * vivo: si ya se sabe que el servidor no contesta ([ConnectionStateManager.servidorMudo]), no se le pregunta (97042c).
      */
     private val conexion: com.jaac.avoqado_tpv.core.util.ConnectionStateManager? = null,
 ) {
@@ -130,7 +130,8 @@ class RecordPaymentUseCase @Inject constructor(
         private const val INITIAL_RETRY_DELAY_MS = 500L
 
         /**
-         * Efectivo en vivo cuyo servidor NO contesta (plazo vencido, sin conexión, sin DNS): a los 2 intentos va a la cola.
+         * Efectivo en vivo cuyo servidor NO contesta (plazo vencido, sin conexión, sin DNS): a las 2 fallas SIN RESPUESTA
+         * (no a las 2 vueltas: un 503 sí es respuesta y no cuenta, Codex r1 #7) va a la cola.
          * El 2.º cubre una conexión vieja de HTTP/2 que se atora (el reintento abre otra); el 3.º al 5.º nunca ayudaron:
          * medido en la PAX con el SERVIDOR congelado, 5 × ~11 s = 58 s por venta (encargo 97042c). Un servidor que contesta
          * (5xx, 401, 429…) sigue con sus 5 intentos.
@@ -278,9 +279,9 @@ class RecordPaymentUseCase @Inject constructor(
 
         // Un throw/cancel conserva SYNCING: tras vencer el claim el worker retoma esta
         // misma identidad. Nunca se borra o reinserta dinero para manejar una cancelación.
-        // 📴 Efectivo en vivo con la franja de «sin servidor» (o sin internet): la fila ya está guardada y reclamada; no se
-        // pregunta al servidor y se suelta a la cola al instante. Tarjeta y replay del worker (alreadyQueued) no cambian.
-        val result = if (cashClaim != null && conexion?.isFullyConnected() == false) {
+        // 📴 Efectivo en vivo con la franja de «sin servidor» (hay internet, el servidor no contesta): la fila ya está guardada
+        // y reclamada; no se le pregunta y se suelta a la cola al instante. Tarjeta y replay del worker (alreadyQueued) no cambian.
+        val result = if (cashClaim != null && conexion?.servidorMudo() == true) {
             Timber.w("📴 Efectivo con el servidor sin contestar: queda en la cola sin intentar | ref=$referenceNumber")
             Result.failure(ServidorSinContestarException())
         } else recordPaymentWithRetry(
@@ -366,6 +367,7 @@ class RecordPaymentUseCase @Inject constructor(
         rendirseSinRespuesta: Boolean = false,
     ): Result<PaymentReceipt> {
         var lastError: Exception? = null
+        var sinRespuesta = 0
 
         repeat(MAX_RETRIES) { attemptIndex ->
             val attemptNumber = attemptIndex + 1
@@ -409,8 +411,9 @@ class RecordPaymentUseCase @Inject constructor(
                 return result
             }
 
-            if (rendirseSinRespuesta && attemptNumber >= MAX_INTENTOS_SIN_RESPUESTA && nadieContesto(exception)) {
-                Timber.w("📴 Efectivo: el servidor no contestó $attemptNumber veces; pasa a la cola sin más intentos: ${exception?.message}")
+            if (nadieContesto(exception)) sinRespuesta++
+            if (rendirseSinRespuesta && sinRespuesta >= MAX_INTENTOS_SIN_RESPUESTA) {
+                Timber.w("📴 Efectivo: el servidor no contestó $sinRespuesta veces; pasa a la cola sin más intentos: ${exception?.message}")
                 return result
             }
 

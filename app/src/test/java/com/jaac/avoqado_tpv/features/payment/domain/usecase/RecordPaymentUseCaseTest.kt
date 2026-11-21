@@ -506,15 +506,34 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `P1 efectivo sin internet tampoco toca la red`() = runTest {
+    fun `P1 sin internet no es la franja - intenta como siempre, falla al instante y va a la cola a las 2`() = runTest {
+        // Sin internet la petición no espera ningún plazo (no hay ruta ni DNS): conserva su camino, sólo con 2 fallas, no 5.
         stubClaim(); stubRelease()
-        conexion.setInternetConnected(false)
+        conexion.setInternetConnected(false); conexion.setServerConnected(false)
+        val sinDns = java.net.UnknownHostException("sin DNS")
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(sinDns)
 
         val result = conFranja(cashContext, CardDetails.CASH, authorization, reference)
 
-        assertThat(result.exceptionOrNull()).isInstanceOf(ServidorSinContestarException::class.java)
-        coVerify(exactly = 0) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(sinDns)
+        coVerify(exactly = 2) { fastRecorder.recordPayment(any(), any(), any(), any()) }
         coVerify(exactly = 1) { queue.release(7L, ownToken, any(), any()) }
+    }
+
+    @Test
+    fun `P1 un 503 entre dos plazos no adelanta la cola - cuentan sólo las fallas sin respuesta`() = runTest {
+        // Codex r1 #7: 503 → plazo → 200. El 503 SÍ es respuesta: sólo hay 1 falla sin respuesta y el 3.er intento registra.
+        stubClaim()
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(BackendHttpException(503, "Servicio no disponible")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+            Result.success(receipt),
+        )
+
+        assertThat(conFranja(cashContext, CardDetails.CASH, authorization, reference).getOrNull()).isSameInstanceAs(receipt)
+
+        coVerify(exactly = 3) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { queue.markSynced(7L, ownToken) }
     }
 
     @Test

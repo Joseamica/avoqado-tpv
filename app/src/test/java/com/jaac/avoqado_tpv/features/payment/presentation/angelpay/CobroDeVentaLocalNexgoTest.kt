@@ -207,7 +207,7 @@ class CobroDeVentaLocalNexgoTest {
     }
 
     @Test fun `P1 con la franja de sin servidor la venta local se guarda y no espera al servidor`() = runTest {
-        conexion.setServerConnected(false)
+        conexion.setInternetConnected(true); conexion.setServerConnected(false) // hay internet, el servidor no contesta
 
         cobrar(tip = 500)
 
@@ -218,6 +218,7 @@ class CobroDeVentaLocalNexgoTest {
         assertThat(fila()!!.retryCount).isEqualTo(0) // sin intento no se suma intento
         coVerify(exactly = 0) { api.crearOrden(any(), any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
+        io.mockk.verify(exactly = 0) { PaymentSyncScheduler.runNow(any()) }
     }
 
     @Test fun `dos toques guardan y suben una sola fila`() = runTest {

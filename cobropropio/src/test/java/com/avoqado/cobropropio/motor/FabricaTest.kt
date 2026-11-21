@@ -77,9 +77,47 @@ class FabricaTest {
         assertTrue(m.servidor is ReversoDelServidorHttp)
     }
 
-    @Test fun `la fabrica elige los endpoints del ambiente`() {
-        assertEquals(Endpoints.PRODUCCION, endpointsDe(Ambiente.PRODUCCION))
-        assertEquals(Endpoints.SANDBOX, endpointsDe(Ambiente.SANDBOX))
+    /** Un campo privado de lo armado. Sólo pruebas: así se ve lo que la fábrica ARMA sin abrir nada en producción. */
+    private fun Any.campo(nombre: String): Any? = javaClass.getDeclaredField(nombre).apply { isAccessible = true }.get(this)
+
+    /**
+     * C2 (Codex b1 r1, + m4 de la revisión final): lo que la fábrica ARMA, en los dos ambientes. El cliente de Blumon (y su
+     * envío) lleva los endpoints de ESE ambiente y la MISMA identidad que el motor; el cliente del SERVIDOR, los pines que se
+     * pasaron. Reemplaza a la prueba suelta de `endpointsDe`, que llamaba a la función aparte y no veía lo armado.
+     */
+    @Test fun `la fabrica arma blumon y el servidor con lo de su ambiente`() {
+        for ((ambiente, esperados) in listOf(Ambiente.SANDBOX to Endpoints.SANDBOX, Ambiente.PRODUCCION to Endpoints.PRODUCCION)) {
+            val pines = pinesDe("api.ejemplo.invalid")
+            val m = crear(ambiente = ambiente, pinner = pines)
+            val blumon = m.blumon as ClienteBlumon
+            assertEquals(ambiente.name, esperados, blumon.campo("endpoints"))
+            assertEquals(ambiente.name, esperados, blumon.campo("envio")!!.campo("endpoints"))
+            val delMotor = m.campo("identidad") as Identidad
+            assertEquals(ambiente, delMotor.ambiente)
+            assertSame("la misma identidad en el motor y en Blumon", delMotor, blumon.campo("identidad"))
+            assertEquals(ambiente.name, pines.pins, (m.servidor as ReversoDelServidorHttp).cliente.certificatePinner.pins)
+            Libreta.abrir(context).cerrar() // una fábrica por proceso: la siguiente vuelta abre otra libreta
+        }
+    }
+
+    /** C2: lo que la fábrica rechaza no llega a la libreta: cero accesos a la base o a su directorio. */
+    @Test fun `una url rechazada no abre la libreta`() {
+        var accesos = 0
+        val contando = object : ContextWrapper(context) {
+            override fun getApplicationContext(): Context = context.applicationContext.also { accesos++ }
+            override fun getNoBackupFilesDir(): File = context.noBackupFilesDir.also { accesos++ }
+            override fun getDatabasePath(name: String): File = context.getDatabasePath(name).also { accesos++ }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            crear(contexto = contando, ambiente = Ambiente.PRODUCCION, url = "http://api.ejemplo.invalid/")
+        }
+        assertThrows(IllegalArgumentException::class.java) { crear(contexto = contando, pinner = pinesDe("otro.ejemplo.invalid")) }
+        assertThrows(IllegalArgumentException::class.java) {
+            crear(contexto = contando, url = "http://api.ejemplo.invalid/", pinner = pinesDe("api.ejemplo.invalid"))
+        }
+        assertEquals("ninguna rechazada tocó la base", 0, accesos)
+        crear(contexto = contando)
+        assertTrue("la que sí se arma abre la libreta por ese contexto", accesos > 0)
     }
 
     /**

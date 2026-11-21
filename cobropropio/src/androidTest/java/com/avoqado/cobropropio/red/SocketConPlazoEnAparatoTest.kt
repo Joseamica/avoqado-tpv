@@ -12,6 +12,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetAddress
 import java.util.concurrent.CompletableFuture
@@ -60,35 +61,43 @@ class SocketConPlazoEnAparatoTest {
     /**
      * Una conexión: anota el SNI, lee los headers Y el cuerpo completo (`Content-Length`), y sólo entonces contesta `200 {}`.
      * [bytes] = los bytes de aplicación que llegaron, contados AL leerlos: si el socket falla a la mitad, conserva lo que ya llegó.
-     * [completa] = la petición entera (headers + cuerpo), o lo que alcanzó a llegar.
+     * C6 (Codex b1 r1): [cabeceras] se leen byte por byte hasta su delimitador, SIN consumir nada del cuerpo; [cuerpo] se lee
+     * después, aparte, exactamente `Content-Length` bytes. Lo que no alcanzó a llegar queda como cadena vacía.
      */
     private inner class Servidor : AutoCloseable {
         private val socket = delServidor.sslContext().serverSocketFactory.createServerSocket(0, 1, ip) as SSLServerSocket
         val puerto: Int get() = socket.localPort
         private val leidos = AtomicLong(0)
         val sni = CompletableFuture<List<SNIServerName>>()
-        val completa = CompletableFuture<String>()
+        val cabeceras = CompletableFuture<String>()
+        val cuerpo = CompletableFuture<String>()
         val bytes = CompletableFuture<Long>()
 
         init {
             thread(isDaemon = true) {
-                val texto = StringBuilder()
                 try {
                     (socket.accept() as SSLSocket).use { s ->
                         s.startHandshake()
                         sni.complete((s.session as? ExtendedSSLSession)?.requestedServerNames.orEmpty())
-                        val buf = ByteArray(4096)
-                        fun leer(): Boolean {
-                            val k = s.inputStream.read(buf)
-                            if (k < 0) return false
-                            leidos.addAndGet(k.toLong())
-                            texto.append(String(buf, 0, k, Charsets.ISO_8859_1))
-                            return true
+                        val entrada = s.inputStream
+                        val cab = StringBuilder()
+                        while (!cab.endsWith("\r\n\r\n")) {
+                            val b = entrada.read()
+                            if (b < 0) return@use
+                            leidos.incrementAndGet()
+                            cab.append(b.toChar()) // ISO-8859-1: un byte, un carácter
                         }
-                        while ("\r\n\r\n" !in texto) if (!leer()) return@use
-                        val largo = Regex("(?i)\r\ncontent-length: *([0-9]+)").find(texto)?.groupValues?.get(1)?.toInt() ?: 0
-                        val cuerpoEsperado = texto.indexOf("\r\n\r\n") + 4 + largo
-                        while (texto.length < cuerpoEsperado) if (!leer()) return@use
+                        cabeceras.complete(cab.toString())
+                        val largo = Regex("(?i)\r\ncontent-length: *([0-9]+)").find(cab)?.groupValues?.get(1)?.toInt() ?: 0
+                        val leido = ByteArrayOutputStream()
+                        val buf = ByteArray(4096)
+                        while (leido.size() < largo) {
+                            val k = entrada.read(buf, 0, minOf(buf.size, largo - leido.size()))
+                            if (k < 0) return@use
+                            leidos.addAndGet(k.toLong())
+                            leido.write(buf, 0, k)
+                        }
+                        cuerpo.complete(leido.toString("ISO-8859-1"))
                         s.outputStream.write(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
                                 .toByteArray(Charsets.ISO_8859_1),
@@ -98,7 +107,8 @@ class SocketConPlazoEnAparatoTest {
                 } catch (_: IOException) {
                 } finally {
                     sni.complete(emptyList())
-                    completa.complete(texto.toString())
+                    cabeceras.complete("")
+                    cuerpo.complete("")
                     bytes.complete(leidos.get())
                 }
             }
@@ -113,9 +123,12 @@ class SocketConPlazoEnAparatoTest {
             val e = envio(srv.puerto)
             val r = runBlocking { e.post(url(srv.puerto), "Bearer prueba", cuerpo(), 10.seconds, reloj.get() + 60_000) }
             assertTrue(r.toString(), r is Respuesta.Http && r.codigo == 200)
-            val peticion = srv.completa.get(5, TimeUnit.SECONDS)
-            assertTrue(peticion.startsWith("POST /retail/present/charge HTTP/1.1\r\n"))
-            assertTrue("el cuerpo llegó entero", peticion.endsWith("\"reference\":\"0f8fad5bd9cb469fa165b0867728950e\"}"))
+            val cabeceras = srv.cabeceras.get(5, TimeUnit.SECONDS)
+            assertTrue(cabeceras, cabeceras.startsWith("POST /retail/present/charge HTTP/1.1\r\n"))
+            val esperado = "{\"reference\":\"0f8fad5bd9cb469fa165b0867728950e\"}"
+            val declarado = Regex("(?i)\r\ncontent-length: *([0-9]+)").find(cabeceras)?.groupValues?.get(1)?.toInt()
+            assertEquals("Content-Length", esperado.length, declarado)
+            assertEquals("el cuerpo exacto, leído aparte de las cabeceras", esperado, srv.cuerpo.get(5, TimeUnit.SECONDS))
             assertTrue("SNI", SNIHostName(host) in srv.sni.get(5, TimeUnit.SECONDS))
             assertTrue(e.bytesDelUltimoEnvio > 0)
         }

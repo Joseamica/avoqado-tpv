@@ -5447,7 +5447,7 @@ class AngelPayPaymentViewModelTest {
         try {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             vm.declararSinTarjeta(); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("no se presentó tarjeta")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.")   // F1-textos fila 10 (F-D)
             assertThat(pantalla.salidas).isEmpty()
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
             assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)

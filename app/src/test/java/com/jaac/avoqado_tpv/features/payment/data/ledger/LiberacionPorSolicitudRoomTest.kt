@@ -464,7 +464,7 @@ class LiberacionPorSolicitudRoomTest {
         val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
 
         assertThat(mensaje).doesNotContain("Validation error")
-        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).contains("una operación con tarjeta")
         assertThat(mensaje).contains("POS") // dónde se resuelve
         assertThat(mensaje).doesNotContain("Sin conexión") // Avoqado sí contestó
         coVerify(exactly = 1) { api.getAttemptStatus(venue, "a-d3b") }
@@ -536,7 +536,7 @@ class LiberacionPorSolicitudRoomTest {
         }
 
         assertThat(mensaje).doesNotContain("Sin conexión")
-        assertThat(mensaje).contains("responde")
+        assertThat(mensaje).contains("Avísale al gerente")
     }
 
     @Test fun `D3 P1 sin nada pendiente no le pregunta nada a nadie y cierra como siempre`() = runBlocking<Unit> {
@@ -588,7 +588,7 @@ class LiberacionPorSolicitudRoomTest {
 
         val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
 
-        assertThat(mensaje).contains("1 operación del POS")
+        assertThat(mensaje).contains("una operación del POS")
         assertThat(mensaje).doesNotContain("Sin conexión")
         assertThat(db.remotePaymentRequestDao().getById("req-d3e")!!.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
     }
@@ -603,7 +603,7 @@ class LiberacionPorSolicitudRoomTest {
 
         val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
 
-        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).contains("una operación con tarjeta")
         val fila = dao.getById("a-d3f")!!
         assertThat(fila.state).isEqualTo("INDETERMINADO")
         assertThat(fila.serverProcessorEvidence).isEqualTo(PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED)
@@ -621,7 +621,7 @@ class LiberacionPorSolicitudRoomTest {
         val mensaje = shifts.closeShift(venue, sesion.localSessionId).mensaje()
 
         coVerify(exactly = 0) { api.getAttemptStatus(any(), any()) }
-        assertThat(mensaje).contains("1 operación con tarjeta")
+        assertThat(mensaje).contains("una operación con tarjeta")
         assertThat(mensaje).doesNotContain("Sin conexión")
     }
 
@@ -1136,7 +1136,7 @@ class LiberacionPorSolicitudRoomTest {
             val cierre = shifts.closeShift(venue, sesion.localSessionId)
 
             assertWithMessage(nombre).that(cierre).isInstanceOf(AppResult.Error::class.java)
-            assertWithMessage(nombre).that(cierre.mensaje()).contains("1 operación del POS")
+            assertWithMessage(nombre).that(cierre.mensaje()).contains("operación del POS")
             val bandeja = db.remotePaymentRequestDao().getById("req-d8b")!!
             assertWithMessage(nombre).that(bandeja.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
             assertWithMessage(nombre).that(bandeja.updatedAt).isGreaterThan(1L)

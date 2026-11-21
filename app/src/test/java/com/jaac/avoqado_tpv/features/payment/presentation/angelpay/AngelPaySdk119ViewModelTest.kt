@@ -1206,8 +1206,8 @@ class AngelPaySdk119ViewModelTest {
             verificarUnFailedPreAutorizacion("req-barrera", CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)
             val estado = vm.state.value as AngelPayPaymentState.Error
             assertThat(estado.canRetry).isFalse()
-            assertThat(estado.message).contains("NO se inició")
-            assertThat(estado.message).contains("en curso")
+            assertThat(estado.message).contains("no se inició")
+            assertThat(estado.message).contains("ocupada con otro")
             assertThat(estado.message).contains("$5.00")
             assertThat(estado.message).contains("hace 2 min")
             assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_COBRO_EN_CURSO)

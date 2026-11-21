@@ -116,6 +116,31 @@ class NavegacionTest {
         assertNull("copia de otra sucursal", cuantasEnCustodia(c, "v2"))
     }
 
+    // D1: el número del Inicio sigue la misma regla que «Mis SIMs» (lo que el celular hizo y la lista aún no trae).
+    @Test fun `en custodia cuenta con lo que el celular hizo despues de bajar la lista`() {
+        fun sim(serie: String, estado: String, marca: String? = null) =
+            SimEnCopia(serie, estado, 1, "De caja", "0", marca, null, null, null, emptyList(), null)
+        fun pieza(tipo: String, cuerpo: String, estado: String, id: Long, resultado: String?) = com.jaac.avoqado_campo.cola.Pieza(
+            id = id, tipo = tipo, llave = "k$id", staffId = "s1", venueId = "v1", cuerpoJson = cuerpo, estado = estado,
+            resultadoJson = resultado, creadaAt = 0, resumen = "",
+        )
+        val c = Copia(
+            4, "v1", "g",
+            listOf(
+                sim("1", "PROMOTER_HELD"), // vendida y subida tras bajar la lista, sin marca (caso 3): ya no cuenta
+                sim("2", "PROMOTER_HELD", MarcaLocal.VENDIDA_EN_EL_CELULAR), // venta descartada (caso 2): sí cuenta
+                sim("3", "PROMOTER_PENDING"), // aceptada y confirmada tras bajar la lista (caso 1): sí cuenta
+            ),
+            ConfigDeSucursal("SIM", "ICCID", true, true, false, false, false, false, true), 0, emptyList(),
+        )
+        val piezas = listOf(
+            pieza("VENTA", """{"serialNumber":"1"}""", "HECHA", 1, """{"paymentId":"p"}"""),
+            pieza("VENTA", """{"serialNumber":"2"}""", "DESCARTADA", 2, null),
+            pieza("CUSTODIA_ACEPTAR", """{"sims":[{"serialNumber":"3","custodyVersion":1}]}""", "HECHA", 3, """{"summary":{}}"""),
+        )
+        assertEquals(2, cuantasEnCustodia(c, "v1", piezas))
+    }
+
     // Codex rediseño #4: «Entraste HH:MM» sólo para la entrada tocada en ESTE celular; si se usó la entrada que ya existía en
     // el SERVIDOR, su hora no es la del intento local y no se muestra.
     @Test fun `la hora de entrada solo es la de la entrada tocada aqui`() {

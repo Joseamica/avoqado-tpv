@@ -11,6 +11,10 @@ TPV (`/avoqado:release-production`).
   no sale como «Vendida». El Inicio dice cuántas hay por revisar.
 - «Mis pendientes» ahora se llama «Ventas pendientes por subir», y una venta sin señal sale en una sola línea: su foto y su
   número viajan con ella.
+- Sin señal, «Mis ventas», «Mis SIMs», «N en tu custodia» y el escáner ya no se equivocan cuando la lista del celular va
+  atrasada: cada SIM se decide con lo último que hizo el celular y cómo terminó. Una venta quitada o descartada no sale en
+  «Exitosas», una que ya subió no vuelve a «En tu custodia» ni se deja escanear otra vez, una SIM ya aceptada no regresa a
+  «Por aceptar» al quitar su venta, y la venta de una SIM que te reasignaron sigue en «Mis ventas».
 
 ## 0.4.0 (código 4) — la primera que se reparte
 - Pantallas rehechas sobre los mockups aprobados el 8-nov: Inicio en mosaicos (Vender SIM, Mis SIMs con «N en tu custodia»,

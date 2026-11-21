@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -65,8 +66,8 @@ class MisSimsViewModelTest {
     private fun sim(serie: String, estado: String = "PROMOTER_PENDING", version: Int = 3, verificacion: String? = null) =
         SimEnCopia(serie, estado, version, "Prepago", "150.00", null, verificacion, "ver-$serie", "pay-$serie", listOf("REVIEW_ILLEGIBLE_IMAGES"), "Se ve borrosa")
 
-    private fun ponerCopia(vararg s: SimEnCopia) {
-        laCopia.value = Copia(2, "v1", quienSoy.generacion, s.toList(), ConfigDeSucursal("SIM", "ICCID", false, false, false, false, false, false, true), 0L)
+    private fun ponerCopia(vararg s: SimEnCopia, yaLlegadas: List<Long>? = null) {
+        laCopia.value = Copia(2, "v1", quienSoy.generacion, s.toList(), ConfigDeSucursal("SIM", "ICCID", false, false, false, false, false, false, true), 0L, yaLlegadas)
     }
 
     private fun custodia(tipo: String, cuerpo: String, estado: String = EstadoPieza.PENDIENTE, code: String? = null, id: Long = 1) =
@@ -83,7 +84,9 @@ class MisSimsViewModelTest {
         coEvery { copia.leer() } answers { laCopia.value }
         coEvery { copia.actualizar(any()) } returns false
         coEvery { copia.marcar(any(), any(), any()) } just runs
-        every { dao.pendientesDeVer() } returns cola
+        // Como Room: «pendientes de ver» sin lo terminado; «con SIMs» (D1) las ventas y custodias en todos sus estados.
+        every { dao.pendientesDeVer() } returns cola.map { l -> l.filter { it.estado != EstadoPieza.HECHA && it.estado != EstadoPieza.DESCARTADA } }
+        every { dao.conSims() } returns cola.map { l -> l.filter { it.tipo == TipoPieza.VENTA || it.tipo.startsWith("CUSTODIA_") } }
         coEvery { dao.actualizar(any()) } just runs
         coEvery { encolador.aceptarCustodia(any(), any(), any(), any()) } returns "k"
         coEvery { encolador.rechazarCustodia(any(), any(), any(), any()) } returns "k"
@@ -221,6 +224,147 @@ class MisSimsViewModelTest {
         cuerpoJson = """{"llave":"kv$id","serialNumber":"$serie","precioVisto":0}""", estado = estado, creadaAt = 0, resumen = "",
     )
 
+    private fun aceptada(serie: String, estado: String, id: Long) =
+        custodia(TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"$serie","custodyVersion":3}]}""", estado, id = id)
+            .copy(resultadoJson = """{"summary":{"total":1,"succeeded":1,"failed":0}}""".takeIf { estado == EstadoPieza.HECHA })
+
+    private val conPago = """{"paymentId":"pay-1"}"""
+
+    // ---------- D1 (Codex r3): «Mis ventas» acierta sin señal con la lista atrasada ----------
+
+    // Caso 1: la aceptación ya llegó y la lista sigue en PROMOTER_PENDING; «Quitar» descarta la venta rechazada.
+    @Test fun `quitar la venta de una SIM cuya aceptacion ya llego la deja en custodia y no por aceptar`() {
+        cola.value = listOf(aceptada("S1", EstadoPieza.HECHA, 1), venta("S1", EstadoPieza.DESCARTADA, 2))
+        ponerCopia(sim("S1", "PROMOTER_PENDING").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.enCustodia.map { it.sim.serialNumber })
+        assertTrue(e.porAceptar.isEmpty())
+        assertTrue(e.vendidas.isEmpty())
+    }
+
+    // Caso 2: la venta quedó DESCARTADA sin respuesta del SERVIDOR (gracia descartada, o la app murió entre «Quitar» y la marca).
+    @Test fun `una venta descartada no sale en exitosas aunque la copia siga marcada`() {
+        cola.value = listOf(venta("S1", EstadoPieza.DESCARTADA, 1))
+        ponerCopia(sim("S1", "PROMOTER_HELD").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertTrue(e.exitosas.isEmpty())
+        assertEquals(listOf("S1"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    // Caso 3: la app murió entre guardar la venta y marcar la copia; la venta subió (HECHA) después de bajar la lista.
+    @Test fun `una venta que subio despues de bajar la lista sale vendida aunque la copia no tenga marca`() {
+        cola.value = listOf(venta("S1", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago))
+        ponerCopia(sim("S1", "PROMOTER_HELD"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.exitosas.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
+    // Caso 4: el supervisor reasignó la SIM; el SERVIDOR rechazó la venta y la lista nueva ya no la trae.
+    @Test fun `una venta rechazada de una SIM que ya no esta en la lista sigue en mis ventas`() {
+        cola.value = listOf(venta("S9", EstadoPieza.RECHAZADA, 7))
+        ponerCopia(sim("S1", "PROMOTER_HELD"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S9"), e.ventasPorSubir.map { it.sim.serialNumber })
+        assertTrue(e.ventasPorSubir.single().nota!!.contains("No se pudo subir"))
+        assertEquals(listOf("S1"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    @Test fun `lo que ya habia llegado al pedir la lista lo dice la lista`() {
+        cola.value = listOf(venta("S1", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago), aceptada("S2", EstadoPieza.HECHA, 6))
+        ponerCopia(sim("S1", "PROMOTER_HELD"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = listOf(5L, 6L))
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.enCustodia.map { it.sim.serialNumber })
+        assertEquals(listOf(EstadoFila.POR_DECIDIR), e.porAceptar.map { it.estado })
+        assertTrue(e.vendidas.isEmpty())
+    }
+
+    @Test fun `un rechazo de custodia que ya llego saca la SIM de por aceptar`() {
+        cola.value = listOf(
+            custodia(TipoPieza.CUSTODIA_RECHAZAR, """{"serialNumber":"S1","custodyVersion":3}""", EstadoPieza.HECHA, id = 3)
+                .copy(resultadoJson = """{"custodyState":"PROMOTER_REJECTED"}"""),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING").copy(localmente = MarcaLocal.RECHAZADA_EN_EL_CELULAR), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S2"), e.porAceptar.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
+    @Test fun `corregir precio deja la venta nueva por subir aunque la vieja este descartada`() {
+        cola.value = listOf(venta("S1", EstadoPieza.DESCARTADA, 1), venta("S1", EstadoPieza.PENDIENTE, 2))
+        ponerCopia(sim("S1", "PROMOTER_HELD"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.ventasPorSubir.map { it.sim.serialNumber })
+        assertEquals("Por subir", e.ventasPorSubir.single().nota)
+    }
+
+    // Codex misventas r1 #2: una aceptación vieja no pisa la asignación NUEVA que ya trae la lista, ni una copia de antes de D1.
+    @Test fun `una aceptacion que ya llego no pisa otra asignacion de la SIM ni una copia sin yaLlegadas`() {
+        cola.value = listOf(aceptada("S1", EstadoPieza.HECHA, 1), aceptada("S2", EstadoPieza.HECHA, 2))
+        ponerCopia(sim("S1", "PROMOTER_PENDING", version = 5), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.porAceptar.map { it.sim.serialNumber }) // la recogieron y se la volvieron a dar
+        assertEquals(listOf("S2"), e.enCustodia.map { it.sim.serialNumber })
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING")) // copia de antes de D1: manda la lista
+        assertEquals(listOf("S1", "S2"), vm.estado.value.porAceptar.map { it.sim.serialNumber })
+    }
+
+    // Codex misventas r1 #1: un AVISO «en parte» sin saber cuáles fallaron (la gracia lo guardaba así) no acepta a ninguna.
+    @Test fun `un aviso en parte sin la lista de fallidas no da ninguna por aceptada`() {
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.AVISO, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(rechazoDatosJson = """{"fallidas":[]}"""),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf(EstadoFila.POR_SUBIR, EstadoFila.POR_SUBIR), e.porAceptar.map { it.estado })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
+    // Codex misventas r2 #4: el AVISO guardado con `fallidas: []` (antes del arreglo de Desenlace) las lee de la respuesta.
+    @Test fun `un aviso en parte guardado sin fallidas las toma de la respuesta del SERVIDOR`() {
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.AVISO, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(
+                rechazoDatosJson = """{"fallidas":[]}""",
+                resultadoJson = """{"summary":{"total":2,"succeeded":1,"failed":1},"fallidas":[{"serialNumber":"S1","status":"error","code":"X"}]}""",
+            ),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf(EstadoFila.POR_DECIDIR), e.porAceptar.map { it.estado })
+        assertEquals(listOf("S2"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    // Codex misventas r2 #2: con una copia de antes de D1 (mismo versionCode), la marca sigue mandando como en la 0.5.0.
+    @Test fun `con una copia de antes de D1 la venta que ya subio sigue vendida por su marca`() {
+        cola.value = listOf(venta("S1", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago))
+        ponerCopia(sim("S1", "PROMOTER_HELD").copy(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR))
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.exitosas.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+    }
+
+    @Test fun `entendido de un aviso de aceptacion sigue contando como aceptada`() {
+        cola.value = listOf(
+            custodia(
+                TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"S1","custodyVersion":3},{"serialNumber":"S2","custodyVersion":3}]}""",
+                EstadoPieza.DESCARTADA, "CUSTODIA_EN_PARTE", id = 4,
+            ).copy(
+                resultadoJson = """{"summary":{"total":2,"succeeded":1,"failed":1}}""",
+                rechazoDatosJson = """{"fallidas":[{"serialNumber":"S1","status":"error","code":"OTRO"}]}""",
+            ),
+        )
+        ponerCopia(sim("S1", "PROMOTER_PENDING"), sim("S2", "PROMOTER_PENDING"), yaLlegadas = emptyList())
+        val e = vm().estado.value
+        assertEquals(listOf("S2"), e.enCustodia.map { it.sim.serialNumber })
+        assertEquals(listOf("S1"), e.porAceptar.map { it.sim.serialNumber }) // a S1 no se la aceptaron
+    }
+
     // Codex r1 + r2: la venta del celular se acomoda por la COLA, no por la marca de la copia (que se queda atrás).
     @Test fun `las ventas del celular se acomodan por la cola y no por la marca de la copia`() {
         cola.value = listOf(
@@ -233,6 +377,7 @@ class MisSimsViewModelTest {
             sim("S1", "PROMOTER_HELD"), sim("S2", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), // S2: ya subió
             sim("S3", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), sim("S4", "PROMOTER_HELD").copy(localmente = vendidaEnCelular),
             sim("S5", "SOLD", verificacion = "COMPLETED"),
+            yaLlegadas = emptyList(), // la lista se bajó antes de que llegara S4
         )
         val e = vm().estado.value
         assertEquals(listOf("S1", "S3"), e.ventasPorSubir.map { it.sim.serialNumber })
@@ -240,7 +385,7 @@ class MisSimsViewModelTest {
         assertTrue(e.ventasPorSubir[1].nota!!.contains("No se pudo subir"))
         assertEquals(listOf("S2", "S4", "S5"), e.exitosas.map { it.sim.serialNumber })
         assertTrue(e.enCustodia.isEmpty())
-        assertEquals(0L, e.bajadaAt) // la hora de la lista viaja a la pantalla («Así estaban tus ventas a las…»)
+        assertEquals(0L, e.bajadaAt) // la hora de la lista viaja a la pantalla («La revisión de tu supervisor es de las…»)
     }
 
     @Test fun `corregir evidencia encola una evidencia suelta con su pago y su verificacion`() {

@@ -6,9 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
+import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SimYaEnCola
+import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.Copia
@@ -72,8 +74,19 @@ class VentaViewModelTest {
     private fun config(portabilidad: Boolean = false, numero: Boolean = false) =
         ConfigDeSucursal("SIM", "ICCID", portabilidad, numero, false, false, false, false, modulo = true)
 
-    private fun copiaCon(vararg s: SimEnCopia, config: ConfigDeSucursal = config()) =
-        Copia(2, "v1", quienSoy.generacion, s.toList(), config, 0L)
+    private fun copiaCon(vararg s: SimEnCopia, config: ConfigDeSucursal = config(), yaLlegadas: List<Long>? = null) =
+        Copia(2, "v1", quienSoy.generacion, s.toList(), config, 0L, yaLlegadas)
+
+    private fun pieza(tipo: String, cuerpo: String, estado: String, id: Long, resultado: String? = null) = Pieza(
+        id = id, tipo = tipo, llave = "k$id", staffId = "s1", venueId = "v1", cuerpoJson = cuerpo, estado = estado,
+        resultadoJson = resultado, creadaAt = 0, resumen = "",
+    )
+    private fun ventaDe(estado: String, id: Long, resultado: String? = null) =
+        pieza(TipoPieza.VENTA, """{"llave":"k$id","serialNumber":"$serie","precioVisto":0}""", estado, id, resultado)
+    private fun aceptarDe(estado: String, id: Long) = pieza(
+        TipoPieza.CUSTODIA_ACEPTAR, """{"sims":[{"serialNumber":"$serie","custodyVersion":1}]}""", estado, id,
+        """{"summary":{"total":1,"succeeded":1,"failed":0}}""".takeIf { estado == EstadoPieza.HECHA },
+    )
 
     @Before fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -84,7 +97,7 @@ class VentaViewModelTest {
         quienSoy.guardarActivacion(
             DatosDeActivacion("cel", "c".repeat(64), "s1", "Ana", Sesion("a", "1".repeat(64), "v1"), listOf(Sucursal("v1", "Centro", null))),
         )
-        coEvery { dao.ventaConSerieEnCola(any()) } returns null
+        coEvery { dao.conSimsAhora() } returns emptyList()
         coEvery { copia.actualizar(any()) } returns false
         coEvery { copia.marcar(any(), any(), any()) } just runs
         coEvery { encolador.venta(quienSoy.generacion, capture(venta)) } returns "llave"
@@ -109,7 +122,6 @@ class VentaViewModelTest {
         v.alEscanear("8952 0200 1234 5678 901f")
         assertEquals(serie, v.estado.value.sim?.serialNumber)
         assertNull(v.estado.value.error)
-        coVerify { dao.ventaConSerieEnCola(serie) }
     }
 
     @Test fun `una SIM ajena refresca la copia una vez y dice que no es tuya`() {
@@ -145,10 +157,72 @@ class VentaViewModelTest {
         v.alEscanear(serie)
         assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
         coEvery { copia.leer() } returns copiaCon(sim())
-        coEvery { dao.ventaConSerieEnCola(serie) } returns mockk<Pieza>()
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.PENDIENTE, 9))
         v.alEscanear(serie)
         assertNull(v.estado.value.sim)
         assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
+    }
+
+    // ---------- D1 (Codex r3): el escáner usa la misma regla que «Mis ventas» ----------
+
+    @Test fun `caso 3 - una venta que ya subio sin marca en la copia no se deja vender otra vez`() {
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
+        val v = vm(copiaCon(sim(), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertNull(v.estado.value.sim)
+        assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
+    }
+
+    @Test fun `caso 2 - una venta descartada no bloquea la SIM aunque la copia siga marcada`() {
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.DESCARTADA, 5))
+        val v = vm(copiaCon(sim(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertEquals(serie, v.estado.value.sim?.serialNumber)
+        assertNull(v.estado.value.error)
+    }
+
+    @Test fun `caso 1 - quitada la venta y con la aceptacion ya llegada se deja vender`() {
+        coEvery { dao.conSimsAhora() } returns listOf(aceptarDe(EstadoPieza.HECHA, 1), ventaDe(EstadoPieza.DESCARTADA, 2))
+        val v = vm(copiaCon(sim(estado = "PROMOTER_PENDING", localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertEquals(serie, v.estado.value.sim?.serialNumber)
+        assertNull(v.estado.value.error)
+    }
+
+    @Test fun `un rechazo de custodia que ya llego dice que no es tuya`() {
+        coEvery { dao.conSimsAhora() } returns listOf(
+            pieza(TipoPieza.CUSTODIA_RECHAZAR, """{"serialNumber":"$serie","custodyVersion":1}""", EstadoPieza.HECHA, 3, """{"custodyState":"PROMOTER_REJECTED"}"""),
+        )
+        val v = vm(copiaCon(sim(estado = "PROMOTER_PENDING"), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertEquals("Esta SIM no está en tu custodia.", v.estado.value.error)
+    }
+
+    // Codex misventas r1 #1: a la SIM que falló en un AVISO de aceptar no se le da por aceptada.
+    @Test fun `una SIM fallida de una aceptacion en parte pide aceptarla primero`() {
+        coEvery { dao.conSimsAhora() } returns listOf(
+            aceptarDe(EstadoPieza.AVISO, 4).copy(
+                rechazoCode = "CUSTODIA_EN_PARTE", rechazoDatosJson = """{"fallidas":[{"serialNumber":"$serie","status":"error","code":"X"}]}""",
+            ),
+        )
+        val v = vm(copiaCon(sim(estado = "PROMOTER_PENDING", localmente = MarcaLocal.ACEPTADA_EN_EL_CELULAR), yaLlegadas = emptyList()))
+        v.alEscanear(serie)
+        assertEquals("Primero acepta esta SIM en Mis SIMs.", v.estado.value.error)
+    }
+
+    // Codex misventas r2 #2: copia de antes de D1 (sin yaLlegadas): la marca bloquea como en la 0.5.0.
+    @Test fun `con una copia de antes de D1 la marca de vendida sigue bloqueando`() {
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
+        val v = vm(copiaCon(sim(localmente = MarcaLocal.VENDIDA_EN_EL_CELULAR)))
+        v.alEscanear(serie)
+        assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
+    }
+
+    @Test fun `una venta que ya venia en la lista la decide la lista`() {
+        coEvery { dao.conSimsAhora() } returns listOf(ventaDe(EstadoPieza.HECHA, 5, """{"paymentId":"p1"}"""))
+        val v = vm(copiaCon(sim(), yaLlegadas = listOf(5L)))
+        v.alEscanear(serie)
+        assertEquals(serie, v.estado.value.sim?.serialNumber) // el SERVIDOR ya la regresó a su custodia
     }
 
     @Test fun `precio 0 es de caja y se encola en 0`() {

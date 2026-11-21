@@ -35,8 +35,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.cola.SubidorDeGracia
 import com.jaac.avoqado_campo.cola.TurnoLocal
+import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.copia.Copia
-import com.jaac.avoqado_campo.copia.MarcaLocal
+import com.jaac.avoqado_campo.copia.LoDelCelular
+import com.jaac.avoqado_campo.copia.loDelCelular
+import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.gps.Bateria
 import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
@@ -75,9 +78,18 @@ internal fun DatosDeInicio.cuidaElGps() = turnoAbierto && gps != ResultadoGps.No
 internal fun horaDeEntrada(t: TurnoLocal?, staffId: String?): Long? =
     t?.takeIf { it.abierto && it.staffId == staffId && it.llaveEntrada != null }?.abiertoAt
 
-/** Las que cuenta «En tu custodia» de «Mis SIMs»: suyas y aceptadas, sin las que ya se vendieron en el celular. */
-internal fun cuantasEnCustodia(c: Copia?, venueId: String?): Int? =
-    c?.takeIf { it.venueId == venueId }?.sims?.count { it.custodyState == "PROMOTER_HELD" && it.localmente != MarcaLocal.VENDIDA_EN_EL_CELULAR }
+/**
+ * Las que cuenta «En tu custodia» de «Mis SIMs»: suyas y aceptadas, sin las que ya se vendieron en el celular. D1: con la misma
+ * regla que «Mis SIMs» ([piezas]: ventas y custodias del celular, también terminadas).
+ */
+internal fun cuantasEnCustodia(c: Copia?, venueId: String?, piezas: List<Pieza> = emptyList()): Int? {
+    val copia = c?.takeIf { it.venueId == venueId } ?: return null
+    val lo = loDelCelular(copia, piezas)
+    return copia.sims.count { s ->
+        val l = lo[normalizarSerie(s.serialNumber)]
+        s.custodyState != "SOLD" && l?.esVenta != true && (s.custodyState == "PROMOTER_HELD" || l == LoDelCelular.ACEPTADA)
+    }
+}
 
 /** Las ventas que el supervisor regresó para corregir (las «Por revisar» de «Mis ventas»). */
 internal fun cuantasPorRevisar(c: Copia?, venueId: String?): Int =

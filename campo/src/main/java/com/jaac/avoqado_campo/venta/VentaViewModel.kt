@@ -13,9 +13,11 @@ import com.jaac.avoqado_campo.cola.SimYaEnCola
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
+import com.jaac.avoqado_campo.copia.LoDelCelular
 import com.jaac.avoqado_campo.copia.MarcaLocal
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.copia.loDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -97,14 +99,15 @@ class VentaViewModel @Inject constructor(
                 c = copia.leer()
                 sim = c?.sims?.firstOrNull { normalizarSerie(it.serialNumber) == serie }
             }
+            // D1: la misma regla que «Mis ventas»: lo que hizo ESTE celular con la SIM y la lista todavía no trae.
+            val lo = if (c != null && sim != null) loDelCelular(c, dao.conSimsAhora())[serie] else null
             val error = when {
                 c == null -> "Todavía no están tus SIMs en el celular. Conéctate a internet una vez para bajarlas."
                 !c.config.modulo -> "Las ventas de SIM no están activas en esta sucursal."
                 sim == null -> NO_ES_TUYA
-                sim.custodyState == "SOLD" || sim.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR ||
-                    dao.ventaConSerieEnCola(serie) != null -> "Esta SIM ya está vendida (o por subir)."
-                sim.localmente == MarcaLocal.RECHAZADA_EN_EL_CELULAR -> NO_ES_TUYA
-                sim.localmente == MarcaLocal.ACEPTADA_EN_EL_CELULAR || sim.custodyState == "PROMOTER_HELD" -> null
+                sim.custodyState == "SOLD" || lo?.esVenta == true -> "Esta SIM ya está vendida (o por subir)."
+                lo == LoDelCelular.RECHAZADA || lo == LoDelCelular.RECHAZADA_POR_SUBIR -> NO_ES_TUYA
+                lo == LoDelCelular.ACEPTADA || lo == LoDelCelular.ACEPTADA_POR_SUBIR || sim.custodyState == "PROMOTER_HELD" -> null
                 sim.custodyState == "PROMOTER_PENDING" -> "Primero acepta esta SIM en Mis SIMs."
                 else -> NO_ES_TUYA
             }

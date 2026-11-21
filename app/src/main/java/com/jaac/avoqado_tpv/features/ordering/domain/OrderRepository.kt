@@ -554,6 +554,11 @@ data class TpvCreateOrderWithItemsRequest(
      *  el cuerpo, nunca en `X-Permission-Override` (ése es de la cortesía); el servidor lo lee sin gastarlo y nunca rechaza por él.
      *  NO entra en la huella de la venta: un reintento con o sin él conserva su `externalId`. */
     val autorizacionDelDescuento: String? = null,
+    /** D36: la intención de la venta (`false` = Cobrar, para cobrarse en el momento; `true` = «Pagar después»). Lo pone
+     *  [com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutViewModel] al MANDAR, igual que la llave: NO entra en la huella, así
+     *  que «Cobrar» y «Pagar después» del mismo carrito comparten llave y nunca hacen dos ventas (Codex D36 r1 #3). `null` = no se
+     *  manda (Gson omite el nulo) y el SERVIDOR la deja como hoy. */
+    val payLater: Boolean? = null,
 )
 
 data class TpvCreateOrderWithItemsItem(

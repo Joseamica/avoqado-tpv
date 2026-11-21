@@ -152,6 +152,9 @@ interface AppNavigationEntryPoint {
     fun cobroConSaldo(): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
+    // D661 (ronda 4): el bloqueo y el mantenimiento de la app; bajo sus velos no sale la banda de pagados en línea.
+    fun lockScreenManager(): com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+    fun maintenanceManager(): com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
     fun tpvSettingsRepository(): com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 
@@ -278,13 +281,16 @@ private suspend fun ensureAngelPayRefundAccount(
  * ([avisoALaVista]; la misma regla con la que el vigía se anuncia como «puedo avisar»). La banda de «Pedido pagado en línea · ábrelo
  * para cobrar» lleva a «Pedidos por pagar»; sin turno o sin entrada sólo dice por dónde se entra. Debajo, UNA banda con las comandas de
  * lo que ESTA caja abrió y no salió aquí, con «Entendido». Lleva su propio reloj (cada 15 s) para que una copia que envejece se quite
- * sola, y en el cobro con tarjeta mira cada 250 ms si hay una venta en curso (esas banderas no avisan).
+ * sola, y en el cobro con tarjeta mira cada 250 ms si hay una venta en curso (esas banderas no avisan). Ronda 4: con la app bloqueada o
+ * en mantenimiento ([bloqueo], [mantenimiento]) no sale ninguna: sus velos son translúcidos y dejan ver la app de abajo.
  */
 @Composable
 private fun AvisosDeLaTienda(
     estado: StateFlow<EstadoDeFolios>,
     ruta: String?,
     cobro: PaymentStateProvider,
+    bloqueo: StateFlow<Boolean>,
+    mantenimiento: StateFlow<Boolean>,
     onVer: () -> Unit,
     onEntendido: (List<String>) -> Unit,
 ) {
@@ -302,8 +308,9 @@ private fun AvisosDeLaTienda(
         }
         value = false
     }
-    // El bloqueo y el mantenimiento tapan la app entera: aquí no hace falta mirarlos (el vigía sí, para la cabecera).
-    val aLaVista = avisoALaVista(ruta, ventaEnCurso, bloqueada = false, mantenimiento = false)
+    val bloqueada by bloqueo.collectAsStateWithLifecycle()
+    val enMantenimiento by mantenimiento.collectAsStateWithLifecycle()
+    val aLaVista = avisoALaVista(ruta, ventaEnCurso, bloqueada = bloqueada, mantenimiento = enMantenimiento)
     avisoDePagadosEnLinea(folios, ahoraMs, aLaVista)?.let { BandaDePagadosEnLinea(it, onVer) }
     if (aLaVista) {
         val comandas = folios.comandasSinSalir
@@ -487,6 +494,8 @@ fun AppNavigation(
     }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
+    val lockScreenManager = remember { kioskEntryPoint.lockScreenManager() }
+    val maintenanceManager = remember { kioskEntryPoint.maintenanceManager() }
     val autorizacionDeGerente = remember { kioskEntryPoint.autorizacionDeGerente() }
 
     // Durable approved-but-unregistered attempts catch up after reconnect. Unique
@@ -1195,6 +1204,8 @@ fun AppNavigation(
             estado = vigiaDeFolios.estado,
             ruta = bannerRoute,
             cobro = paymentStateProvider,
+            bloqueo = lockScreenManager.isLocked,
+            mantenimiento = maintenanceManager.isInMaintenance,
             // Ronda 4: desde el cobro con tarjeta sale primero al Inicio, como toda salida del cobro; la venta en curso se lee al tocar.
             onVer = {
                 navController.verPedidosPorPagar(

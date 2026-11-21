@@ -92,10 +92,11 @@ data class AvisoDePagados(val texto: String, val llevaAPorPagar: Boolean)
 fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long, aLaVista: Boolean): AvisoDePagados? {
     if (!aLaVista) return null
     val n = tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 } ?: return null
-    // Ruling 67: sin turno (o sin entrada) dice por dónde se entra y sólo informa: nunca entra a «Pedidos por pagar» saltándose el Inicio.
+    // Ruling 67: sin entrada (o sin turno) dice por dónde se entra y sólo informa: nunca entra a «Pedidos por pagar» saltándose el Inicio.
+    // Ronda 4: en el orden del recuadro del Inicio, que pide primero la entrada y después el turno.
     return when {
-        estado.sinTurno -> AvisoDePagados(TextosPorPagar.abreTuTurno(n), llevaAPorPagar = false)
         estado.sinEntrada -> AvisoDePagados(TextosPorPagar.registraTuEntrada(n), llevaAPorPagar = false)
+        estado.sinTurno -> AvisoDePagados(TextosPorPagar.abreTuTurno(n), llevaAPorPagar = false)
         else -> AvisoDePagados(TextosPorPagar.avisoDePagadosEnLinea(n), llevaAPorPagar = true)
     }
 }

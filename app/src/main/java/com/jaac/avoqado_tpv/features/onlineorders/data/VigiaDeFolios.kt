@@ -362,7 +362,9 @@ class VigiaDeFolios internal constructor(
         // (se mira en cada vuelta, con la pantalla que tiene enfrente). Ruling 67: sin turno o sin entrada no cobra aquí, pero sigue
         // sonando, anunciándose y diciendo por dónde se entra.
         val conTurno = turnoAbierto(venueId)
-        val cobra = puedeCobrar(venueId, conTurno)
+        // Ronda 4: la entrada se mira también sin turno: el Inicio la pide primero, y el aviso lo dice en ese orden.
+        val conEntrada = entradaCumplida(venueId)
+        val cobra = conTurno && conEntrada
         val pagina = folios.listar(venueId, cobra, avisaTarjetas = anunciaQueAvisa(rutaALaVista)).getOrElse { error ->
             // Red caída o 5xx = «sin conexión»; un 4xx (401/403/404) sí es respuesta: la lista ya no es fiable y se dice «desactualizado».
             _estado.value = if (esRespuesta(error)) _estado.value.copy(desactualizado = true) else _estado.value.copy(sinConexion = true)
@@ -375,7 +377,7 @@ class VigiaDeFolios internal constructor(
         // cuya página 1 ya no trae cursor no tiene camino a ellas: se sueltan YA (nunca quedan tarjetas viejas, p. ej. un «Listo»).
         for (sec in SeccionDeFolios.values()) if (sec !in pagina.siguientes) { extras = extras - sec; cursorExtra = cursorExtra - sec }
         _estado.value = componer(
-            pagina.aEstado(ahora, sinTurno = !conTurno, sinEntrada = conTurno && !cobra).copy(errorAlCargarMas = _estado.value.errorAlCargarMas),
+            pagina.aEstado(ahora, sinTurno = !conTurno, sinEntrada = !conEntrada).copy(errorAlCargarMas = _estado.value.errorAlCargarMas),
         )
         if (extras.values.any { it.isNotEmpty() }) releer.trySend(Unit)
         imprimirComandas(venueId, pagina)
@@ -512,9 +514,9 @@ class VigiaDeFolios internal constructor(
     /** `turnoPermiteVender || !sistemaDeTurnos`, igual que «Cobrar». */
     private suspend fun turnoAbierto(venueId: String): Boolean = !storage.isShiftSystemEnabled() || hayTurnoParaVender(venueId)
 
-    /** `[conTurno] && (entradaRegistrada || !checadaObligatoria)`, igual que «Cobrar». */
-    private suspend fun puedeCobrar(venueId: String, conTurno: Boolean): Boolean =
-        conTurno && (!ajustes.getCurrentSettings().requireClockInToLogin || entradaRegistrada(venueId))
+    /** `entradaRegistrada || !checadaObligatoria`, igual que «Cobrar» (con o sin turno). */
+    private suspend fun entradaCumplida(venueId: String): Boolean =
+        !ajustes.getCurrentSettings().requireClockInToLogin || entradaRegistrada(venueId)
 
     private suspend fun hayTurnoParaVender(venueId: String): Boolean =
         when (val r = shifts.getCurrentShift(venueId)) {

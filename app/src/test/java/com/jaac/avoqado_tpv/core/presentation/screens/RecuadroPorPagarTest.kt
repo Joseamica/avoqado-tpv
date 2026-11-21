@@ -252,6 +252,19 @@ class RecuadroPorPagarTest {
         assertFalse(sinEntrada.llevaAPorPagar)
     }
 
+    @Test fun `ronda 4 sin entrada ni turno la banda pide primero la entrada, en el orden del recuadro del Inicio`() {
+        val ninguna = conTarjetas(tarjeta("t1")).copy(sinTurno = true, sinEntrada = true)
+        val banda = avisoDePagadosEnLinea(ninguna, 2_000L, aLaVista = true)!!
+        assertEquals("Registra tu entrada para abrir el pedido pagado", banda.texto)
+        assertFalse(banda.llevaAPorPagar)
+        // El recuadro del Inicio, con lo mismo: lo primero que pide es la entrada.
+        assertEquals("Registra tu entrada", recuadroPorPagar(ninguna, false, false, "Abre la caja primero", 2_000L)!!.badge)
+        // Ya con la entrada, falta el turno: la banda lo pide, igual que el recuadro.
+        val conEntrada = ninguna.copy(sinEntrada = false)
+        assertEquals("Abre tu turno para abrir el pedido pagado", avisoDePagadosEnLinea(conEntrada, 2_000L, aLaVista = true)!!.texto)
+        assertEquals("Abre tu turno para abrir el pedido pagado", recuadroPorPagar(conEntrada, false, true, "Abre la caja primero", 2_000L)!!.subtitulo)
+    }
+
     @Test fun `Ruling 69 una sola banda para todas las comandas que no salieron aqui`() {
         assertNull(avisoDeComandasSinSalir(emptyList()))
         assertEquals(

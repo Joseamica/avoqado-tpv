@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
 import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea
 import com.jaac.avoqado_tpv.core.presentation.screens.recuadroPorPagar
 import com.jaac.avoqado_tpv.core.printer.ComandaNoEmpezada
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
@@ -1239,13 +1240,35 @@ class VigiaDeFoliosTest {
             entradaRegistrada = true
             vigia.sondearYa()
             assertThat(vigia.estado.value.sinEntrada).isFalse()
+        }
+    }
 
-            // Sin turno, lo primero es abrirlo: el aviso dice eso (no la entrada).
-            turnoAbierto = false
-            entradaRegistrada = false
-            vigia.sondearYa()
+    /**
+     * Ronda 4 (Minor): sin turno y sin entrada, el recuadro del Inicio pide primero la entrada («Registra tu entrada») y la banda
+     * pedía el turno: dos instrucciones distintas en la misma pantalla. El vigía mira la entrada también sin turno, y la banda sigue
+     * el orden del Inicio. El latido de «Por pagar» no cambia: sin turno o sin entrada, no cobra aquí.
+     */
+    @Test
+    fun `ronda 4 sin turno ni entrada el estado dice las dos y la banda pide primero la entrada, como el Inicio`() = runTest {
+        checadaObligatoria = true
+        turnoAbierto = false
+        entradaRegistrada = false
+        respuesta = { Result.success(pagina(porPagar = emptyList(), tarjetas = listOf(tarjeta("t1")))) }
+        conVigia { vigia ->
             assertThat(vigia.estado.value.sinTurno).isTrue()
+            assertThat(vigia.estado.value.sinEntrada).isTrue()
+            assertThat(avisoDePagadosEnLinea(vigia.estado.value, hora, aLaVista = true)!!.texto)
+                .isEqualTo("Registra tu entrada para abrir el pedido pagado")
+            assertThat(cabeceras.last()).isFalse()
+            assertThat(avisos.last()).isTrue() // sigue sonando y anunciándose (Ruling 67)
+
+            // Ya con la entrada, falta el turno: lo pide.
+            entradaRegistrada = true
+            vigia.sondearYa()
             assertThat(vigia.estado.value.sinEntrada).isFalse()
+            assertThat(avisoDePagadosEnLinea(vigia.estado.value, hora, aLaVista = true)!!.texto)
+                .isEqualTo("Abre tu turno para abrir el pedido pagado")
+            assertThat(cabeceras.last()).isFalse()
         }
     }
 }

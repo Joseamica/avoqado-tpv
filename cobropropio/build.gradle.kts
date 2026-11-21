@@ -19,6 +19,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+// Fase 3, bloque 1: la superficie pública es una lista cerrada (GuardasTest); cada declaración pública lleva `public` escrito.
+kotlin { explicitApi() }
+
 // La libreta (Room) exporta su esquema: es el DDL canónico para cualquier migración futura.
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 

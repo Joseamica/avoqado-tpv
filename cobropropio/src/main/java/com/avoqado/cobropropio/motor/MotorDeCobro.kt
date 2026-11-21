@@ -81,7 +81,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * - `SIN_CONFIRMAR`: el veto no se guardó a tiempo (un intento en curso quedó frenado en RAM); la app sigue consultando.
  * - `SIN_INTENTO_VIVO`: aquí no hay nada que cortar (fila en otro estado, o ya terminó); la app consulta el folio.
  */
-enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIVO }
+public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIVO }
 
 /**
  * El motor de la venta: cobra, espera, pide permiso al SERVIDOR, reversa y suelta a la cajera a los 30 s, EXACTAMENTE según la
@@ -98,7 +98,7 @@ enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIV
  * - La IPEK de la sesión vive en RAM mientras la sesión sirve, porque cada venta la necesita; se borra al renovar las llaves
  *   y cuando [fondo] termina (R2-5): entonces ya no entra ningún cobro nuevo.
  */
-class MotorDeCobro(
+public class MotorDeCobro internal constructor(
     private val identidad: Identidad,
     private val lector: LectorDeTarjeta,
     private val red: Red,
@@ -188,7 +188,7 @@ class MotorDeCobro(
      * Todos los finales de cada intento, haya o no alguien escuchando; la fila es la verdad; quien consume deduplica por id, y
      * un `PorConfirmar` nunca reemplaza a un definitivo.
      */
-    val resolucionesTardias: SharedFlow<Pair<AttemptId, EventoDeCobro>> = tardias.asSharedFlow()
+    public val resolucionesTardias: SharedFlow<Pair<AttemptId, EventoDeCobro>> = tardias.asSharedFlow()
 
     /**
      * Lo que vive de un intento en este proceso. `historia` termina en un solo evento terminal: `actual`, el último según su
@@ -349,7 +349,7 @@ class MotorDeCobro(
      * Ninguna lectura vieja se usa: las filas de un folio sólo las escribe su intento, que entra a [intentos] antes de anotar
      * y no sale de ahí mientras alguien admite (v3.1). Un «sin fila» viejo contra el veto de [cortar] lo arbitra `anotar`.
      */
-    fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> = entrar(s)
+    public fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> = entrar(s)
 
     /**
      * T9: la cancelación con la tarjeta de una venta aprobada. Las mismas reglas que [cobrar] (N, C, M y la cajera), con su
@@ -357,7 +357,7 @@ class MotorDeCobro(
      * Blumon, el contador, el punto de no retorno con [Libreta.marcarCancelacionEnviada] (original, venue, ámbito y huellas en
      * el mismo CAS) y la cancelación. Nunca se reversa: sin respuesta, `NO_SE` + `PorConfirmar`.
      */
-    fun cancelar(s: SolicitudDeCancelacion): Flow<EventoDeCobro> = entrar(s)
+    public fun cancelar(s: SolicitudDeCancelacion): Flow<EventoDeCobro> = entrar(s)
 
     private fun entrar(s: Solicitud): Flow<EventoDeCobro> = flow {
         admisionesEnVuelo.incrementAndGet()
@@ -423,7 +423,7 @@ class MotorDeCobro(
      * Al arrancar: cierra lo que dejó un proceso muerto (sin inventar respuestas de Blumon) y entrega los reportes pendientes.
      * Un `reversed` que llega aquí se publica tarde. Regresa los ids que cambiaron o se entregaron.
      */
-    suspend fun recuperar(): List<AttemptId> {
+    public suspend fun recuperar(): List<AttemptId> {
         // También las filas de ESTE proceso sin `Registro` vivo (r1 R1-5 c). Sin `puerta` (r7 C4, R7-3): la foto de los vivos
         // se toma DENTRO de la transacción (R2-1). Quien se registra antes de esa foto sale en ella; quien se registra después
         // todavía no anotó su fila (anotar es una escritura, que espera a que esta transacción termine).
@@ -507,7 +507,7 @@ class MotorDeCobro(
      * Recibe la solicitud para poder escribir el veto aunque el folio no tenga `Registro`: un corte que llega mientras el
      * folio se admite lo arbitra `anotar` (insertar-si-no-existe), y el intento termina con `NoSalioAlBanco`.
      */
-    suspend fun cortar(s: Solicitud): ResultadoDelCorte {
+    public suspend fun cortar(s: Solicitud): ResultadoDelCorte {
         val r = intentos[s.id]
         if (r != null) {
             if (r.retirado) return ResultadoDelCorte.SIN_INTENTO_VIVO // una lápida: ese folio ya terminó

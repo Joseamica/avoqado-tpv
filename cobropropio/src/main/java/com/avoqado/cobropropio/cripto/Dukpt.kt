@@ -9,7 +9,7 @@ import javax.crypto.spec.SecretKeySpec
  * llave de la transacción → variante de DATOS → 3DES de esa variante consigo misma → 3DES-ECB de la banda rellenada con F.
  * Rescatado del piloto (`lectorlab/Dukpt.kt`). Ningún mensaje de error lleva llaves, KSN ni la banda.
  */
-object Dukpt {
+internal object Dukpt {
 
     const val CONTADOR_MAXIMO = 0x1FFFFF
 

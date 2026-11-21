@@ -34,7 +34,7 @@ import javax.crypto.SecretKey
  * y la URL es `https://` (OkHttp sólo revisa el pin en TLS).
  * Una segunda llamada en el mismo proceso truena.
  */
-fun crearMotorDeCobro(
+public fun crearMotorDeCobro(
     context: Context,
     identidad: Identidad,
     lector: LectorDeTarjeta,

@@ -100,6 +100,38 @@ class GuardasTest {
     }
 
     /**
+     * Fase 3, bloque 1 (revisión de una tarea anterior): ningún llamador de producción le pasa a `Dukpt` un borrador que no
+     * borre. El parámetro `borrador` sólo se nombra dentro de `cripto/Dukpt.kt`; las pruebas inyectan el suyo.
+     */
+    @Test fun `borrador no aparece en src main fuera de Dukpt`() {
+        val fuera = apariciones(Regex("""\bborrador\b""")).filterNot { it.first == "cripto/Dukpt.kt" }
+        assertTrue("borrador fuera de cripto/Dukpt.kt: $fuera", fuera.isEmpty())
+    }
+
+    /**
+     * Fase 3, bloque 1: lo que la app puede tocar es ESTA lista (los puertos de Blumon, del transporte y del SERVIDOR ya no).
+     * Con `explicitApi()`, cada declaración pública lleva `public` escrito: aquí se leen las de primer nivel. `FilaIlegible`
+     * entra porque `Libreta.buscar` la lanza y la app la tiene que poder atrapar.
+     */
+    @Test fun `la superficie publica es la lista cerrada`() {
+        assertTrue("explicitApi() en el módulo", "explicitApi()" in File("build.gradle.kts").readText())
+        val declaracion = Regex("""^public (?:(?:data|sealed|enum|abstract|value|const)\s+)*(?:class|interface|object|fun|val) (\w+)""")
+        val publicas = raiz.walk().filter { it.extension == "kt" }
+            .flatMap { f -> f.readLines().mapNotNull { declaracion.find(it)?.groupValues?.get(1) } }.toSet()
+        assertEquals(
+            setOf(
+                "AttemptId", "Marca", "Medio", "Entrada", "Operacion", "Ambiente", "ResultadoKernel", "Cvm", "Identidad", "Lectura",
+                "ResultadoDeLectura", "LectorDeTarjeta", "Red", "Origen", "Solicitud", "SolicitudDeVenta", "SolicitudDeCancelacion",
+                "EventoDeCobro", "MotivoNoSalio", "MotivoNoAdmitida", "ResultadoDelCorte", "MotorDeCobro", "crearMotorDeCobro",
+                "Libreta", "SaludDeLaLibreta", "FilaIlegible", "IntentoEntity", "EstadoDelIntento", "EstadoDelReverso",
+                "EstadoDelReporte", "ResultadoParaReportar", "OrigenDeLaAprobacion", "EstadoDelReversoEnServidor",
+                "CredencialDelCliente", "CredencialDelServidor",
+            ),
+            publicas,
+        )
+    }
+
+    /**
      * Lo que Java ve PÚBLICO de [c]: métodos y campos públicos y no sintéticos. Ola final, 2ª parte (Codex r22): un `internal`
      * deja en la JVM un accesor público con sufijo (`getTags$cobropropio_debug`) que Java sí llama, así que ya NO se ignoran los
      * nombres con `$`: se cuentan con el nombre sin el sufijo. Sólo `@JvmSynthetic` los saca de aquí.
@@ -149,6 +181,9 @@ class GuardasTest {
             "com.avoqado.cobropropio.blumon.CuerpoDeBlumon" to listOf("json"),
             "com.avoqado.cobropropio.dominio.Lectura" to listOf("tags"),
             "com.avoqado.cobropropio.blumon.MaterialDukpt" to listOf("ipek"),
+            // Fase 3, bloque 1 (A3): con la base, cualquiera escribe una fila sin pasar por el motor.
+            "com.avoqado.cobropropio.libreta.Libreta" to listOf("getDb", "db"),
+            "com.avoqado.cobropropio.libreta.LibretaDatabase\$Companion" to listOf("constructor"),
         )) {
             val clase = Class.forName(nombre)
             for (m in cerrados) assertTrue("${clase.simpleName}.$m lo ve Java", m !in publicos(clase))

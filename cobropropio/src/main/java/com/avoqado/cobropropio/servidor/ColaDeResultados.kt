@@ -18,14 +18,14 @@ import kotlinx.coroutines.withContext
  * no se llamó al SERVIDOR). `fila` = la fila tal como quedó (la del acuse aplicado, o la de ahora si el CAS no aplicó); null si
  * el id no existe.
  */
-data class ResultadoDeEntrega(val acuse: AcuseDelResultado?, val fila: IntentoEntity?)
+internal data class ResultadoDeEntrega(val acuse: AcuseDelResultado?, val fila: IntentoEntity?)
 
 /**
  * La cola durable de `/resultado`: la obligación vive en la libreta (`reporte = PENDIENTE`), y cada acuse se aplica con el CAS
  * de [Libreta.aplicarAcuse] en una transacción por id (r3 R3-09). La cola no tiene reloj: `reversadoEn` sale de la fila.
  * La app sólo la construye para dársela al motor; entregar es del motor (`MotorDeCobro.recuperar`), r2 familia A.
  */
-class ColaDeResultados(
+internal class ColaDeResultados(
     private val libreta: Libreta,
     private val servidor: ReversoDelServidor,
     /** Donde corren las llamadas de la libreta. Sólo las pruebas lo cambian, para que el tiempo virtual las espere. */

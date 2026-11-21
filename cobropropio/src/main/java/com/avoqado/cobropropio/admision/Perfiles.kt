@@ -7,7 +7,7 @@ import com.avoqado.cobropropio.dominio.Medio
 import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.ResultadoKernel
 
-data class Combinacion(val marca: Marca, val medio: Medio, val entrada: Entrada, val operacion: Operacion)
+internal data class Combinacion(val marca: Marca, val medio: Medio, val entrada: Entrada, val operacion: Operacion)
 
 /**
  * La forma exacta en que llegó una lectura medida con $1 real. Una lectura entra si encaja en TODO:
@@ -15,7 +15,7 @@ data class Combinacion(val marca: Marca, val medio: Medio, val entrada: Entrada,
  * - `exigeTags` / `prohibeTags`: tags que tienen que venir o no venir (así se separa la Amex del celular del plástico);
  * - `emisorExtranjero`: el 5F28 tiene que venir y no ser 0484 (la Visa extranjera que pide banco al cancelar).
  */
-data class PerfilMedido(
+internal data class PerfilMedido(
     val combinacion: Combinacion,
     val resultadoKernel: Set<ResultadoKernel>,
     val codigoKernel: Set<Int>,
@@ -26,7 +26,7 @@ data class PerfilMedido(
     val emisorExtranjero: Boolean = false,
 )
 
-object Perfiles {
+internal object Perfiles {
 
     /** El módulo EMV de PAX rellena el 9F34 de Visa con este valor fijo (`ClssPayWaveProcess.getTlv`); no viene de la tarjeta. */
     private val RELLENO_VISA = setOf("1E0302")

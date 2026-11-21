@@ -16,7 +16,7 @@ import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.atomic.AtomicBoolean
 
-sealed interface Arbitraje {
+internal sealed interface Arbitraje {
     data object Vigente : Arbitraje
     data object Tardia : Arbitraje
     data class YaResuelta(val fila: IntentoEntity) : Arbitraje
@@ -26,20 +26,24 @@ sealed interface Arbitraje {
 /**
  * I3: la fila de la libreta no se puede leer (Room no la convierte, o no pasa la validación de hoy). Mensaje FIJO y sin la
  * excepción original como causa: Room pone el valor crudo en su mensaje (Codex r4 #3). Quien la recibe nunca da un desenlace.
+ *
+ * Pública porque [Libreta.buscar] la lanza (fase 3, bloque 1). Quien la atrape trata ese folio como «por confirmar», nunca
+ * como un desenlace (ni aprobado, ni rechazado, ni «no se cobró», ni «no salió»), y no muestra ni registra la fila. Sólo el
+ * módulo la construye.
  */
-internal class FilaIlegible : IllegalStateException("fila ilegible")
+public class FilaIlegible internal constructor() : IllegalStateException("fila ilegible")
 
 /** `FolioUsado`: ese id ya tenía fila (venta o cancelación) y no se tocó; se contesta desde ella (regla N). */
-enum class ResultadoDeAnotarCancelacion { Anotada, YaExiste, SinVentaAprobada, OtroAmbito, FolioUsado }
+internal enum class ResultadoDeAnotarCancelacion { Anotada, YaExiste, SinVentaAprobada, OtroAmbito, FolioUsado }
 
 /**
  * `YaNoAplica`: la PROPIA fila ya no puede salir (no está, no es cancelación, no está `ANOTADO` o la cortaron). `SinVentaAprobada`:
  * la original no existe o ya no es una venta aprobada. `YaExiste`: otra cancelación viva de la misma original (r1 C).
  */
-enum class ResultadoDeEnviarCancelacion { Enviada, OtraTarjeta, LecturaRepetida, OtroAmbito, YaNoAplica, SinVentaAprobada, YaExiste }
+internal enum class ResultadoDeEnviarCancelacion { Enviada, OtraTarjeta, LecturaRepetida, OtroAmbito, YaNoAplica, SinVentaAprobada, YaExiste }
 
 /** Lo único de la lectura que se guarda al salir al banco: formas verificadas y huellas. Amex no gasta contador. */
-data class DatosDelEnvio(
+internal data class DatosDelEnvio(
     val ksnBase: String?,
     val contadorUsado: Long?,
     val marca: Marca?,
@@ -56,7 +60,7 @@ data class DatosDelEnvio(
  * Un aviso sin hora nunca se entrega (`ResultadoDelReverso.deLaFila` da null): va aparte en `reportesSinHora`.
  * `filasIlegibles` cuenta las que tienen trabajo abierto (en negativo, Codex r1 #6) y que Room no lee o no pasan la validación.
  */
-data class SaludDeLaLibreta(
+public data class SaludDeLaLibreta(
     val reportesPendientes: Int,
     val reportePendienteMasViejo: Instant?,
     val reportesSinHora: Int,
@@ -77,8 +81,9 @@ data class SaludDeLaLibreta(
  * ([buscar], [pendientesDeReporte], [salud]). Toda escritura, el constructor y [cerrar] son `internal`: ninguna fila cambia sin pasar
  * por el motor, y nadie cierra ni reabre la libreta debajo de un motor vivo.
  */
-class Libreta internal constructor(
-    internal val db: LibretaDatabase,
+public class Libreta internal constructor(
+    /** A3: con la base, cualquiera escribe una fila sin el motor; `@JvmSynthetic` la esconde también de Java. */
+    @get:JvmSynthetic internal val db: LibretaDatabase,
     private val ahora: () -> Long,
     private val relojDePared: () -> Instant = Instant::now,
     /** Sólo las pruebas lo cambian, para simular otro proceso. */
@@ -385,20 +390,20 @@ class Libreta internal constructor(
      * no pasa la validación de hoy o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras
      * lanzan; los barridos la saltan sin tocarla; `salud()` la cuenta (I3).
      */
-    fun pendientesDeReporte(): List<IntentoEntity> = dao.rowidsPendientesDeReporte().mapNotNull { legible(it) }
+    public fun pendientesDeReporte(): List<IntentoEntity> = dao.rowidsPendientesDeReporte().mapNotNull { legible(it) }
 
     /**
      * La fila de ese folio, validada, o null si no existe. Una fila ilegible (Room no la lee, no pasa la validación de hoy o
      * trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan; los barridos la saltan
      * sin tocarla; `salud()` la cuenta (I3).
      */
-    fun buscar(id: AttemptId): IntentoEntity? = fila(id)
+    public fun buscar(id: AttemptId): IntentoEntity? = fila(id)
 
     /**
      * Los números para alarmar ([SaludDeLaLibreta]). Síncrona y de sólo lectura: no cambia ninguna fila. Lee la base: llámala
      * fuera del hilo principal. Cuenta como ilegible todo lo que [legible] salta, sea cual sea la causa.
      */
-    fun salud(): SaludDeLaLibreta {
+    public fun salud(): SaludDeLaLibreta {
         // Codex r2: un solo recorrido, leyendo cada fila una vez (`rowidsConTrabajoAbierto` ya incluye los `PENDIENTE`).
         var pendientes = 0
         var sinHora = 0
@@ -562,12 +567,12 @@ class Libreta internal constructor(
 
     private fun forma(valor: String?, r: Regex, campo: String) = require(valor == null || r.matches(valor)) { "$campo sin forma" }
 
-    companion object {
+    public companion object {
         /** Uno por PROCESO de Android, no por motor: los tiempos monotónicos sólo se comparan dentro del mismo proceso. */
-        val PROCESO_ID: String = UUID.randomUUID().toString()
+        internal val PROCESO_ID: String = UUID.randomUUID().toString()
 
         /** Sin fila de contador para esa base (nueva o libreta perdida), se salta hacia adelante (ANSI X9.24 lo permite). */
-        const val SALTO_SIN_HISTORIAL = 256L
+        internal const val SALTO_SIN_HISTORIAL = 256L
 
         private val RESUELTOS = setOf(EstadoDelIntento.APROBADO, EstadoDelIntento.RECHAZADO, EstadoDelIntento.CANCELADA)
         private val RECLAMABLES = setOf(EstadoDelReverso.COMPROMETIDO, EstadoDelReverso.NO_CONCLUYENTE)
@@ -587,7 +592,7 @@ class Libreta internal constructor(
         private val ABIERTAS = HashMap<String, Libreta>()
 
         /** La libreta de producción: el archivo fijo `cobro_propio.db` en `noBackupFilesDir` de la aplicación. */
-        fun abrir(context: Context): Libreta = abrir(context, "cobro_propio.db")
+        public fun abrir(context: Context): Libreta = abrir(context, "cobro_propio.db")
 
         /**
          * Una por archivo en todo el proceso: un segundo `abrir` del mismo archivo regresa LA MISMA (y su `ahora`). El directorio

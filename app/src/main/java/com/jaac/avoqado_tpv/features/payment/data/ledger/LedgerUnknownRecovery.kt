@@ -64,10 +64,11 @@ class LedgerUnknownRecovery @Inject constructor(
                     iniciadas++
                     val date = Instant.ofEpochMilli(row.createdAt).atZone(com.jaac.avoqado_tpv.core.util.VenueTimeZone.MEXICO).toLocalDate()
                     // One provider request per durable lease. No inner 3x retry multiplied by the worker.
-                    // R9-1: con tope por llamada; sin respuesta a tiempo es un fallo técnico (no gasta turno, la marca se queda), no una pasada cortada.
-                    val result = kotlinx.coroutines.withTimeoutOrNull(LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS) {
+                    // R9-1: con tope por llamada; sin respuesta a tiempo es un fallo técnico, no una pasada cortada. R10-1: el tope es el del SDK
+                    // más margen, nunca menos (un historial que contesta a los 75 s entrega su aprobado).
+                    val result = kotlinx.coroutines.withTimeoutOrNull(LedgerSweepLogic.TOPE_DE_UNA_CONSULTA_MS) {
                         verifier.verificar(row.attemptId, consulta.terminal, date, 1, 0, consulta.afiliacion)
-                    } ?: VerificacionDelCobro.NoSePudoVerificar("sin respuesta del historial en ${LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS / 1000} s")
+                    } ?: VerificacionDelCobro.NoSePudoVerificar("sin respuesta del historial en ${LedgerSweepLogic.TOPE_DE_UNA_CONSULTA_MS / 1000} s")
                     val terminadaEn = maxOf(now, System.currentTimeMillis())
                     when (result) {
                         is VerificacionDelCobro.Cobrado -> {
@@ -132,7 +133,7 @@ class LedgerUnknownRecovery @Inject constructor(
     private fun pausa(turnos: Int): Long = maxOf(120_000L * (1L shl turnos.coerceIn(0, 4)), 300_000L)
 
     companion object {
-        /** Lo que dura la reserva de una lectura en vuelo (cada consulta tiene [LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS] de tope, más margen). */
+        /** Lo que dura la reserva de una lectura en vuelo (cada consulta tiene [LedgerSweepLogic.TOPE_DE_UNA_CONSULTA_MS] de tope, más margen). */
         const val RESERVA_DE_LA_LECTURA_MS = 300_000L
         /** Consultas al historial que un barrido INICIA como máximo (antes, filas leídas: `LIMIT 50`). */
         const val CONSULTAS_POR_CORRIDA = 50

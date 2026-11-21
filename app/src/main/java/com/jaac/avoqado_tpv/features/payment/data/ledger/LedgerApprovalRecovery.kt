@@ -46,7 +46,7 @@ class LedgerApprovalRecovery(
     /**
      * @param reloj monotónico (ms) para [presupuestoMs].
      * @param presupuestoMs F1 · Codex final r9 «Peor 1» (R9-1): pasado este tiempo desde que empezó, la pasada ya no INICIA registros (el que
-     *   está en vuelo termina, con su tope [LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS]). Sin presupuesto, como siempre (página de 50).
+     *   está en vuelo termina, con su tope [LedgerSweepLogic.TOPE_DE_UN_REGISTRO_MS]). Sin presupuesto, como siempre (página de 50).
      */
     suspend fun recover(
         venueId: String, now: Long, reloj: () -> Long = { System.nanoTime() / 1_000_000L }, presupuestoMs: Long = Long.MAX_VALUE,
@@ -95,7 +95,7 @@ class LedgerApprovalRecovery(
                 // ENTREGADA_A_COLA is excluded because PaymentSyncWorker already owns it.
                 // R9-1: con tope por llamada; lo que no contestó a tiempo es un registro fallido (se reintenta con la misma llave), no
                 // una pasada cortada.
-                val result = kotlinx.coroutines.withTimeoutOrNull(LedgerSweepLogic.TOPE_DE_UNA_LLAMADA_MS) {
+                val result = kotlinx.coroutines.withTimeoutOrNull(LedgerSweepLogic.TOPE_DE_UN_REGISTRO_MS) {
                     if (row.recordingRoute == PaymentAttemptEntity.ROUTE_ORDER)
                         order.recordPayment(context, card, row.authCode.orEmpty(), row.referenceNumber.orEmpty())
                     else fast.recordPayment(context, card, row.authCode.orEmpty(), row.referenceNumber.orEmpty())

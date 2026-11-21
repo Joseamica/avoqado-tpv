@@ -28,7 +28,9 @@ import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkAll
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -441,5 +443,53 @@ class CodexR8RecuperacionRoomTest {
         registrador(servidor).recover(venue, t + 7 * 3_600_000L)
         registrador(servidor).recover(venue, t + 8 * 3_600_000L)
         assertWithMessage("una venta, con la llave del intento").that(servidor.pagos).containsExactly("a1", 1)
+    }
+
+    // ═══════════════ Codex final r10 (20-nov, `codex-final-r10-tpv.md`): los cuatro retrocesos de r9 frente a producción ═══════════════
+
+    /**
+     * 🔴 Codex final r10 #1 · TPV · PAGO RÁPIDO (N86): AngelPay aprobó, el aviso se perdió y el historial devuelve el cobro a los 75 s. El SDK
+     * 1.0.23 espera hasta 140 s; la base esperaba 240 y registraba 1 pago en la primera pasada. R9-1 cortaba cada consulta a los 60 s: la duda
+     * seguía y, con la misma demora toda la semana, 29 consultas y 0 pagos. Tiempo virtual: los 75 s no se esperan de verdad.
+     */
+    @Test fun `r10_1 · el historial que contesta a los 75 s registra el pago en la primera pasada`() = runTest {
+        pagoRapidoEnDuda("pr", creadoEn = System.currentTimeMillis() - 3_600_000L)
+        val adapter = mockk<PaymentPostOperationsAdapter>()
+        coEvery { adapter.getTransactionHistory(any()) } coAnswers {
+            consultasAlHistorial++
+            delay(75_000L)
+            Result.success(listOf(ventaEnElHistorial(firstArg<TransactionHistoryQuery>().integratorReference!!, "APROBADA")))
+        }
+        val servidor = Servidor()
+        LedgerSweepLogic.recuperarElDinero(registrador(servidor), LedgerUnknownRecovery(dao, libreta(), verificadorCon(adapter)), venue,
+            ahora = { System.currentTimeMillis() }, reloj = { testScheduler.currentTime })
+        assertWithMessage("una consulta").that(consultasAlHistorial).isEqualTo(1)
+        assertWithMessage("un pago, en la primera pasada").that(servidor.pagos).containsExactly("pr", 1)
+    }
+
+    /**
+     * R10-1 · el tope del REGISTRO se queda en 1 min: un registro que el SERVIDOR sí guardó pero cuya respuesta no llega se corta, y el
+     * reintento lleva la MISMA llave (la del intento), así que el SERVIDOR no hace un segundo `Payment` (índice único por `idempotencyKey`).
+     */
+    @Test fun `r10_1 · un registro cortado por el tope se reintenta con la misma llave y queda un solo pago`() = runTest {
+        aprobado("b", creadoEn = System.currentTimeMillis() - 3_600_000L)
+        val servidor = Servidor()
+        val llaves = mutableListOf<String>()
+        var primera = true
+        val order = mockk<OrderPaymentRecorder>()
+        coEvery { order.recordPayment(any(), any(), any(), any()) } coAnswers {
+            val ctx = firstArg<PaymentContext>()
+            llaves += ctx.idempotencyKey!!
+            val respuesta = servidor.registrar(ctx)   // el SERVIDOR lo guarda…
+            if (primera) { primera = false; delay(10 * 60_000L) }   // …y la respuesta no llega
+            respuesta
+        }
+        val recuperacion = LedgerApprovalRecovery(dao, mockk<FastPaymentRecorder>(), order, { true })
+        recuperacion.recover(venue, System.currentTimeMillis(), { testScheduler.currentTime })
+        assertWithMessage("cortado: sigue sin registrar").that(dao.getById("b")!!.state).isNotEqualTo("REGISTRADO")
+        recuperacion.recover(venue, System.currentTimeMillis() + 3_600_000L, { testScheduler.currentTime })
+        assertWithMessage("dos intentos, la misma llave").that(llaves).containsExactly("b", "b")
+        assertWithMessage("un solo Payment").that(servidor.pagos).containsExactly("b", 1)
+        assertThat(dao.getById("b")!!.state).isEqualTo("REGISTRADO")
     }
 }

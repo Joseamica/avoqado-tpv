@@ -109,21 +109,29 @@ object LedgerSweepLogic {
 
     /**
      * 🔴 F1 · Codex final r9 «Peor 1» (R9-1, 20-nov): cada fase de una pasada tiene su PROPIO tiempo para INICIAR llamadas, y cada llamada
-     * un tope ([TOPE_DE_UNA_LLAMADA_MS]). Android detiene un `CoroutineWorker` a los 10 min. Peor caso, con la última llamada de cada fase
-     * en su tope: registrar 2 + 1, consultar 2.5 + 1, registrar lo encontrado 1 + 1 = 8.5 min; queda 1.5 min para el mantenimiento local.
-     * Antes (arreglo C) registrar no tenía tope: 32 aprobados que tardan 20 s en fallar se comían la pasada y nunca se consultaba el
-     * historial de un Pago rápido que sí pasó (la base lo consultaba primero).
+     * su tope. Android detiene un `CoroutineWorker` a los 10 min. Antes (arreglo C) registrar no tenía tope: 32 aprobados que tardan 20 s en
+     * fallar se comían la pasada y nunca se consultaba el historial de un Pago rápido que sí pasó (la base lo consultaba primero).
+     * 🔴 Codex final r10 #1 (R10-1): el tope de una CONSULTA nunca es menor que lo que el SDK puede tardar ([TOPE_DE_UNA_CONSULTA_MS]); los
+     * presupuestos se reajustan para que el peor caso, con la última llamada de cada fase en su tope, siga cabiendo: registrar 1 + 1,
+     * consultar 2 + 2.5, registrar lo encontrado 1 + 1 = 8.5 min; queda 1.5 min para el trabajo local (poda, cuarentena y agenda: sólo base).
      */
-    const val PRESUPUESTO_DE_REGISTROS_MS = 2 * 60_000L
-    /** Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada (antes 4 min, sin tope para registrar). */
-    const val PRESUPUESTO_DE_CONSULTAS_MS = 150_000L
+    const val PRESUPUESTO_DE_REGISTROS_MS = 60_000L
+    /** Lo que pueden tardar en INICIARSE las consultas al historial de AngelPay en una pasada (base: 4 min; r9: 2.5). */
+    const val PRESUPUESTO_DE_CONSULTAS_MS = 120_000L
     /** Lo que pueden tardar en iniciarse, al final de la pasada, los registros de lo que encontraron las consultas. */
     const val PRESUPUESTO_DE_REGISTROS_FINALES_MS = 60_000L
     /**
-     * Lo más que espera la pasada una sola llamada (registro o consulta; antes 4 min). Un registro HTTP ya corta a los 25 s (OkHttp
-     * `callTimeout`); lo que no contestó a tiempo cuenta como un fallo y se reintenta con la misma llave (el SERVIDOR no duplica).
+     * Lo más que espera la pasada un REGISTRO (base: 4 min). El HTTP ya corta a los 25 s (OkHttp `callTimeout`); lo que no contestó a
+     * tiempo es un registro fallido y se reintenta con la MISMA llave, la del intento: el SERVIDOR no hace otro `Payment` (índice único por
+     * `idempotencyKey`; lo prueba `CodexR8RecuperacionRoomTest` «r10_1 · un registro cortado…»).
      */
-    const val TOPE_DE_UNA_LLAMADA_MS = 60_000L
+    const val TOPE_DE_UN_REGISTRO_MS = 60_000L
+    /**
+     * 🔴 R10-1: lo más que espera la pasada una CONSULTA al historial de AngelPay (base: 4 min; r9 la cortaba a 1 min). El SDK 1.0.23 espera
+     * hasta 140 s (constante interna `140000`, sin API pública para leerla) + 10 s de margen: un historial que contesta a los 75 s entrega su
+     * aprobado. Si se cambia el SDK, revisar su tiempo.
+     */
+    const val TOPE_DE_UNA_CONSULTA_MS = 150_000L
 
     /**
      * El dinero de la libreta en una pasada del trabajador.

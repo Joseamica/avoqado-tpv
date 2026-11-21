@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -44,7 +45,9 @@ fun FastPaymentEntryScreen(
     onNavigateBack: () -> Unit = {},
     onAmountSubmit: (String) -> Unit = {}
 ) {
-    var amount by remember { mutableStateOf("0") }
+    // D661 · Ruling 109: «Ver» (la banda de pagados en línea) pone «Pedidos por pagar» encima y «atrás» regresa a ESTA entrada: el
+    // importe tecleado se guarda con ella. Un Pago rápido nuevo (del Inicio o de «Nuevo Pago») es otra entrada y empieza en $0.
+    var amount by rememberSaveable { mutableStateOf("0") }
     var showError by remember { mutableStateOf(false) }
 
     // Display amount as typed (no forced decimals while typing)

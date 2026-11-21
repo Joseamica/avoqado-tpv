@@ -1089,6 +1089,7 @@ fun AppNavigation(
                 deviceInfoManager = deviceInfoManager,
                 secureStorage = secureStorage,
                 modulesRepository = modulesRepository,
+                alFondo = com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.alFondoDelProceso,
                 onNavigateToActivation = {
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(NavRoute.Splash.route) { inclusive = true }
@@ -3194,6 +3195,7 @@ private fun SplashScreen(
     deviceInfoManager: DeviceInfoManager,
     secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository,
+    alFondo: kotlinx.coroutines.CoroutineScope,
     onNavigateToActivation: () -> Unit,
     onNavigateToLogin: () -> Unit,
     onNavigateToHome: () -> Unit
@@ -3202,63 +3204,37 @@ private fun SplashScreen(
         // ✅ Square/Toast Pattern: Check activation status with BACKEND first
         // This prevents routing to LoginScreen when terminal has venueId locally
         // but activatedAt = NULL on backend (happens after DB reset)
-
-        // 🚀 Optimization: Run network call on IO thread to prevent freezing Splash animation
-        // Previously caused ~2.6s UI freeze (160 skipped frames)
-        val backendStatusResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            deviceInfoManager.checkActivationStatusWithBackend()
-        }
-
-        when (backendStatusResult) {
-            is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {
-                val status = backendStatusResult.data
-
-                if (!status.isActivated) {
-                    // Backend says not activated → force re-activation
-                    Timber.w("🔐 Backend reports not activated - navigating to activation")
-                    onNavigateToActivation()
-                } else {
-                    // ✅ Backend confirms activation → fetch modules BEFORE navigating
-                    Timber.d("✅ Backend confirms activation - fetching modules")
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        modulesRepository.fetchAndCache()
-                    }
-
-                    // Now check session and navigate
-                    val hasValidSession = secureStorage.isAuthenticated()
-                    if (hasValidSession) {
-                        Timber.d("🔑 Valid session found - navigating to Home")
-                        onNavigateToHome()
-                    } else {
-                        Timber.d("🔐 No valid session - navigating to Login")
-                        onNavigateToLogin()
-                    }
+        // 🚀 Encargo 097e01: con la terminal ya activada en el aparato, el logo espera al SERVIDOR a lo más
+        // ArranqueDeLaTerminal.ESPERA_MAXIMA; si no contesta, se sigue con lo guardado (antes: ~80 s con el
+        // SERVIDOR mudo). Las llamadas de red van en IO para no congelar la animación (~2.6 s, 160 cuadros).
+        val destino = com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.decidir(
+            alFondo = alFondo,
+            activadaEnElAparato = { deviceInfoManager.isDeviceActivated() },
+            haySesion = { secureStorage.isAuthenticated() },
+            consultarActivacion = {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    deviceInfoManager.checkActivationStatusWithBackend()
+                }
+            },
+            traerModulos = {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    modulesRepository.fetchAndCache()
                 }
             }
-            is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
-                // Network error → trust local venueId (offline support)
-                Timber.w(backendStatusResult.exception, "⚠️ Network error checking backend - using local venueId")
+        )
 
-                val localActivated = deviceInfoManager.isDeviceActivated()
-                if (!localActivated) {
-                    Timber.d("🔐 No local venueId - navigating to activation")
-                    onNavigateToActivation()
-                } else {
-                    // Trust local venueId when offline - try to fetch modules anyway
-                    Timber.d("📱 Offline mode - trusting local venueId, trying to fetch modules")
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        modulesRepository.fetchAndCache()
-                    }
-
-                    val hasValidSession = secureStorage.isAuthenticated()
-                    if (hasValidSession) {
-                        Timber.d("🔑 Valid session found - navigating to Home")
-                        onNavigateToHome()
-                    } else {
-                        Timber.d("🔐 No valid session - navigating to Login")
-                        onNavigateToLogin()
-                    }
-                }
+        when (destino) {
+            com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.Destino.ACTIVACION -> {
+                Timber.d("🔐 [Arranque] Terminal sin activar - navigating to activation")
+                onNavigateToActivation()
+            }
+            com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.Destino.INICIO -> {
+                Timber.d("🔑 Valid session found - navigating to Home")
+                onNavigateToHome()
+            }
+            com.jaac.avoqado_tpv.core.startup.ArranqueDeLaTerminal.Destino.LOGIN -> {
+                Timber.d("🔐 No valid session - navigating to Login")
+                onNavigateToLogin()
             }
         }
     }

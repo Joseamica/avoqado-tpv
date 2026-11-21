@@ -36,6 +36,15 @@ class ModulesRepositoryImpl @Inject constructor(
     private val _modules = MutableStateFlow<List<VenueModule>>(emptyList())
     override val modules: StateFlow<List<VenueModule>> = _modules.asStateFlow()
 
+    /**
+     * Encargo 097e01 (Codex r1 #4): el logo ya no espera al SERVIDOR, así que la consulta del arranque puede seguir al
+     * fondo mientras el PIN pide la suya. Cada petición lleva su número; sólo se guarda una respuesta si ninguna petición
+     * MÁS NUEVA ya guardó la suya, y cerrar sesión ([clearCache]) descarta lo que siga en vuelo.
+     */
+    private val peticiones = java.util.concurrent.atomic.AtomicLong(0)
+    private var ultimaGuardada = 0L
+    private val candado = Any()
+
     init {
         // Load from persistent cache on init
         loadFromPersistentCache()
@@ -61,6 +70,7 @@ class ModulesRepositoryImpl @Inject constructor(
                 return@withContext Result.failure(Exception("Device not activated"))
             }
 
+            val estaPeticion = peticiones.incrementAndGet()
             Timber.d("📦 Fetching modules for venue: $venueId")
 
             // Pass venueId as header for semi-public endpoint (works before login)
@@ -70,9 +80,19 @@ class ModulesRepositoryImpl @Inject constructor(
                 val moduleDtos = response.body()!!.modules
                 val modules = moduleDtos.map { it.toDomain() }
 
-                // Update both in-memory (StateFlow) and persistent cache
-                _modules.value = modules
-                secureStorage.saveModules(moduleDtos)
+                // Update both in-memory (StateFlow) and persistent cache — sólo si nadie más nuevo ya guardó (097e01)
+                val guardada = synchronized(candado) {
+                    if (estaPeticion <= ultimaGuardada) false else {
+                        ultimaGuardada = estaPeticion
+                        _modules.value = modules
+                        secureStorage.saveModules(moduleDtos)
+                        true
+                    }
+                }
+                if (!guardada) {
+                    Timber.w("📦 Respuesta vieja de módulos descartada: una petición más nueva (o un cierre de sesión) ya mandó")
+                    return@withContext Result.success(_modules.value)
+                }
 
                 Timber.i("✅ Fetched and cached ${modules.size} modules: ${modules.map { it.moduleCode }}")
 
@@ -127,8 +147,12 @@ class ModulesRepositoryImpl @Inject constructor(
     }
 
     override fun clearCache() {
-        _modules.value = emptyList()
-        secureStorage.clearCachedModules()
+        synchronized(candado) {
+            // Lo que siga en vuelo ya no se guarda: la sesión que lo pidió se cerró (097e01).
+            ultimaGuardada = peticiones.get()
+            _modules.value = emptyList()
+            secureStorage.clearCachedModules()
+        }
         Timber.d("📦 Module cache cleared")
     }
 

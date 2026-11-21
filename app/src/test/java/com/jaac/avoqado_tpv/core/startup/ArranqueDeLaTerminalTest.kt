@@ -21,7 +21,7 @@ import java.io.IOException
  * El logo esperaba DOS consultas al servidor en fila (activación y módulos), cada una con tope de 25 s de
  * OkHttp — y ese tope no cuenta lo que la consulta pasa haciendo fila detrás de otras al mismo servidor.
  * Con la terminal ya activada en el aparato, el logo ahora espera a lo más [ArranqueDeLaTerminal.ESPERA_MAXIMA]
- * y sigue con lo guardado; lo que el servidor conteste después se aplica al fondo.
+ * y sigue con lo guardado; la activación tardía se cancela y sólo los módulos siguen al fondo.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ArranqueDeLaTerminalTest {
@@ -85,16 +85,53 @@ class ArranqueDeLaTerminalTest {
     }
 
     @Test
-    fun `servidor lento sigue al fondo y trae los modulos cuando por fin contesta`() = runTest {
+    fun `P1 la activacion que contesta tarde se cancela y no aplica nada - Codex r1 2`() = runTest {
         val registro = Registro()
-        val destino = decidir(registro, consultar = { delay(60_000); activada })
+        var efectoAplicado = false
+        var cancelada = false
+        val destino = decidir(registro, consultar = {
+            try {
+                delay(60_000)
+                efectoAplicado = true // como un RETIRED que borra la sesión, o reponer el venue
+                activada
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                cancelada = true
+                throw c
+            }
+        })
 
         assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.INICIO)
+        advanceTimeBy(120_000)
+        runCurrent()
+        assertThat(cancelada).isTrue()
+        assertThat(efectoAplicado).isFalse()
+        // Los módulos sí se piden al fondo una vez, como el camino «sin red» de siempre.
+        assertThat(registro.modulosTraidos).isEqualTo(1)
+    }
+
+    @Test
+    fun `modulos lentos siguen al fondo y se guardan cuando por fin contestan`() = runTest {
+        val registro = Registro()
+        val destino = decidir(registro, consultar = { activada }, traerModulos = { delay(60_000) })
+
+        assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.INICIO)
+        assertThat(currentTime).isAtMost(ArranqueDeLaTerminal.ESPERA_MAXIMA.inWholeMilliseconds)
         assertThat(registro.modulosTraidos).isEqualTo(0)
 
         advanceTimeBy(60_000)
         runCurrent()
-        assertThat(registro.consultas).isEqualTo(1)
+        assertThat(registro.modulosTraidos).isEqualTo(1)
+    }
+
+    @Test
+    fun `la espera es una sola para las dos consultas`() = runTest {
+        val registro = Registro()
+        val destino = decidir(registro, consultar = { delay(3_000); activada }, traerModulos = { delay(3_000) })
+
+        assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.INICIO)
+        assertThat(currentTime).isEqualTo(ArranqueDeLaTerminal.ESPERA_MAXIMA.inWholeMilliseconds)
+        advanceTimeBy(5_000)
+        runCurrent()
         assertThat(registro.modulosTraidos).isEqualTo(1)
     }
 

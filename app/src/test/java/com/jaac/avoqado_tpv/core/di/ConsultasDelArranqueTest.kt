@@ -105,9 +105,30 @@ class ConsultasDelArranqueTest {
         while (general.dispatcher.runningCallsCount() < 5) Thread.sleep(10)
 
         val api = api(ConsultasDelArranque.cliente(general))
-        val ms = milisDe { runCatching { runBlocking { api.checkActivationStatus("AVQD-1", "SAND") } } }
+        var error: Throwable? = null
+        val ms = milisDe { error = runCatching { runBlocking { api.checkActivationStatus("AVQD-1", "SAND") } }.exceptionOrNull() }
 
         // Con la fila del cliente general esperaría a que se liberara un lugar (25 s) antes de empezar su tope.
+        assertThat(error).isInstanceOf(IOException::class.java)
+        assertThat(ms).isAtLeast(tope - 500) // se rindió por el tope, no por un fallo inmediato
+        assertThat(ms).isLessThan(tope + 2_000)
+        // y sí salió al servidor: no se quedó en la fila (Codex r5 #2)
+        val rutas = List(6) { servidor.takeRequest(1, TimeUnit.SECONDS)?.path }
+        assertThat(rutas).contains("/api/v1/tpv/terminals/AVQD-1/activation-status?environment=SAND")
+    }
+
+    @Test
+    fun `P1 un servidor que contesta gota a gota tambien se rinde en el tope total, no por lectura`() {
+        // Cada gota llega antes del tope de lectura (3 s): sólo el tope TOTAL (callTimeout) la corta (Codex r5 #2).
+        servidor.enqueue(
+            MockResponse().setBody("""{"modules":[]}""" + " ".repeat(40)).throttleBody(1, 500, TimeUnit.MILLISECONDS)
+        )
+        val api = api(ConsultasDelArranque.cliente(general))
+
+        var error: Throwable? = null
+        val ms = milisDe { error = runCatching { runBlocking { api.getModules("venue-1") } }.exceptionOrNull() }
+
+        assertThat(error).isInstanceOf(IOException::class.java)
         assertThat(ms).isLessThan(tope + 2_000)
     }
 

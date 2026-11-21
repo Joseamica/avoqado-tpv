@@ -1400,6 +1400,7 @@ fun AppNavigation(
                 window.beginAction()
                 try { block() } finally { window.endAction() }
             }
+            val envioDePagoRapido = remember { EnvioDePagoRapido(NavRoute.Home.route) }
 
 
             // Refresh attendance when returning from TimeclockScreen
@@ -1452,17 +1453,18 @@ fun AppNavigation(
                 estadoDeFolios = estadoDeFolios,
                 onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
                 onStartPaymentWithAmount = { amount ->
-                    launchHomeAction action@ {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
-                            return@action
+                    // D667: la hoja de Pago rápido del Inicio tenía el mismo hueco (otro «Cobrar» mientras se prepara la PAX).
+                    val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                    val lanzado = envioDePagoRapido.lanzar(sinEspera = soloEfectivo) { turno ->
+                        launchHomeAction action@ {
+                            if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
+                                return@action
+                            }
+                            Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
+                            envioDePagoRapido.abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)
                         }
-                        Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
-                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
-                        }
-                        navController.navigate(getPaymentRoute())
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(homeContext)
                 },
                 onNavigateToShifts = {
                     Timber.d("[PERF] NAV: Welcome → Shifts START")
@@ -1683,21 +1685,24 @@ fun AppNavigation(
         // Fast Payment Entry Screen - Dedicated screen for amount input
         composable(NavRoute.FastPaymentEntry.route) {
             val fastPaymentScope = rememberCoroutineScope()
+            // D667: un «Cobrar» a la vez, y el cobro sólo se abre si Pago rápido sigue arriba.
+            val envio = remember { EnvioDePagoRapido(NavRoute.FastPaymentEntry.route) }
             FastPaymentEntryScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onAmountSubmit = { amount ->
-                    fastPaymentScope.launch {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
-                            return@launch
+                    // Sólo efectivo no espera al lector: no pasa por el candado (D667, Codex r1 #1).
+                    val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                    val lanzado = envio.lanzar(sinEspera = soloEfectivo) { turno ->
+                        fastPaymentScope.launch {
+                            if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
+                                return@launch
+                            }
+                            envio.abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)
                         }
-                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
-                        }
-                        navController.navigate(getPaymentRoute())
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(context)
                 }
             )
         }
@@ -3541,6 +3546,46 @@ internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String, 
 }
 
 /**
+ * D667 (21-nov) · TPV · PAGO RÁPIDO: «Cobrar» abre UN cobro por envío.
+ *
+ * Con la PAX lenta («Preparando sistema de pagos») la pantalla ya está en $0 (Ruling 115) y el cajero vuelve a teclear y a
+ * cobrar. Antes arrancaban dos envíos, los dos navegaban, el segundo escribía su importe en la entrada del PRIMER cobro y
+ * apilaba otro encima: al salir del segundo con «atrás» quedaba el primero listo para cobrar.
+ *  - [lanzar]: mientras un envío espera al sistema de pagos, otro no arranca. Se suelta cuando ese envío termina como sea:
+ *    abrió el cobro, el sistema de pagos falló, o la pantalla salió (su scope se cancela). Un envío en sólo efectivo
+ *    ([sinEspera]: sin red, D7) no espera al lector y no respeta el candado: si la red se cae mientras otro «Cobrar»
+ *    espera, el efectivo abre ya (Codex r1 #1) y deja suelto el candado.
+ *  - Cada envío que arranca recibe su turno y sólo el ÚLTIMO puede abrir: el que esperaba al lector cuando arrancó el
+ *    efectivo ya no abre nada aunque el cajero regrese a esta pantalla antes de que el lector termine (Codex r2).
+ *  - [abrir]: además, sólo si la pantalla que lo pidió ([origen]) sigue arriba. Si no (el cobro ya se abrió y un toque cae
+ *    en la animación de salida, el POS abrió su cobro primero), no escribe en la entrada de nadie ni apila otro.
+ * Una instancia por pantalla (`remember`), usada sólo en el hilo principal.
+ */
+internal class EnvioDePagoRapido(private val origen: String) {
+    private var ultimoTurno = 0
+    private var turnoEsperando: Int? = null
+
+    fun lanzar(sinEspera: Boolean = false, arrancar: (turno: Int) -> kotlinx.coroutines.Job): Boolean {
+        if (!sinEspera && turnoEsperando != null) return false
+        val turno = ++ultimoTurno
+        turnoEsperando = if (sinEspera) null else turno
+        arrancar(turno).invokeOnCompletion { if (turnoEsperando == turno) turnoEsperando = null }
+        return true
+    }
+
+    fun abrir(turno: Int, navController: androidx.navigation.NavController, rutaDelCobro: String, amount: String, soloEfectivo: Boolean): Boolean {
+        val arriba = navController.currentDestination?.route
+        if (turno != ultimoTurno || arriba != origen) {
+            Timber.w("💳 [Pago rápido] No se abre el cobro del turno $turno (último $ultimoTurno; arriba «$arriba», origen «$origen») (D667)")
+            return false
+        }
+        navController.currentBackStackEntry?.savedStateHandle?.let { prepareManualPaymentArgs(it, amount, soloEfectivo) }
+        navController.navigate(rutaDelCobro)
+        return true
+    }
+}
+
+/**
  * Todas las claves que las dos pantallas de cobro (Blumon y AngelPay) leen de quien las lanzó.
  * Una clave que se lea en esas pantallas y no esté aquí llegaría siempre nula: lo vigila
  * `ArgumentosDelCobroSeLeenUnaVezTest`.
@@ -3621,6 +3666,12 @@ private fun formatAmountFromCents(amountCents: Long): String {
         .movePointLeft(2)
         .setScale(2, RoundingMode.HALF_UP)
         .toPlainString()
+}
+
+/** D667: un segundo «Cobrar» de Pago rápido mientras el primero se prepara no hace nada, pero se dice. */
+private fun avisarQueYaSeAbreUnCobro(context: Context) {
+    Timber.w("💳 [Pago rápido] «Cobrar» ignorado: ya se está abriendo un cobro (D667)")
+    Toast.makeText(context, "Ya se está abriendo un cobro. Espera un momento.", Toast.LENGTH_SHORT).show()
 }
 
 private suspend fun awaitPaxPaymentReady(

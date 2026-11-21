@@ -115,10 +115,10 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         val cuerpo = cuerpoDe("NavRoute.FastPaymentEntry.route")
         assertTrue(
             "La pantalla de monto de Pago rápido debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
-                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+                "con soloEfectivo, y pasarlo al abrir el cobro (EnvioDePagoRapido.abrir → prepareManualPaymentArgs, D667).",
             cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
                 cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
-                cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
+                cuerpo.contains(".abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)"),
         )
     }
 
@@ -129,10 +129,10 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         val cuerpo = navegacion.substring(inicio, navegacion.indexOf("onNavigateToShifts", inicio))
         assertTrue(
             "El Pago rápido del Inicio debe decidir con pagoRapidoVaEnSoloEfectivo() y saltarse awaitPaxPaymentReady " +
-                "con soloEfectivo, y pasarlo a prepareManualPaymentArgs.",
+                "con soloEfectivo, y pasarlo al abrir el cobro (EnvioDePagoRapido.abrir → prepareManualPaymentArgs, D667).",
             cuerpo.contains("pagoRapidoVaEnSoloEfectivo()") &&
                 cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady(") &&
-                cuerpo.contains("prepareManualPaymentArgs(handle, amount, soloEfectivo)"),
+                cuerpo.contains(".abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)"),
         )
     }
 

@@ -21,4 +21,22 @@ class PagoRapidoConservaElMontoTest {
         assertThat(pantalla).contains("var amount by rememberSaveable { mutableStateOf(\"0\") }")
         assertThat(pantalla).doesNotContain("var amount by remember { mutableStateOf(\"0\") }")
     }
+
+    /**
+     * Ruling 115 (regresión del 109). El importe se guarda con la entrada, así que regresaba en CADA vuelta a ella, también después de un
+     * cobro (la flecha de «Sin papel» tras un cobro aprobado, «atrás» en el recibo de la PAX o en la Nexgo): «$75» quedaba listo detrás de
+     * «Cobrar», como el P1 de `RegresoDeCobrarTest`. «Cobrar» lo manda y deja la pantalla en $0; «Ver» no pasa por «Cobrar» y lo conserva.
+     */
+    @Test
+    fun `Ruling 115 Cobrar manda el importe y al regresar del cobro la pantalla esta en cero`() {
+        assertThat(cobrarPagoRapido("75")).isEqualTo("75.00" to "0")
+        assertThat(cobrarPagoRapido("75.5")).isEqualTo("75.50" to "0")
+        // $0 no manda nada ni cambia lo tecleado (sale «Ingresa un monto mayor a $0.00»).
+        assertThat(cobrarPagoRapido("0")).isEqualTo(null to "0")
+        assertThat(cobrarPagoRapido("0.")).isEqualTo(null to "0.")
+        // La pantalla se queda con lo que regresa ANTES de mandar.
+        assertThat(pantalla).containsMatch(
+            """val \(aCobrar, queda\) = cobrarPagoRapido\(amount\)\s+amount = queda\s+if \(aCobrar != null\) onAmountSubmit\(aCobrar\) else showError = true"""
+        )
+    }
 }

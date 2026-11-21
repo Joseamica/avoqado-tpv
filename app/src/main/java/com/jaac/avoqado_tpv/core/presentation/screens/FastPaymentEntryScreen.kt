@@ -46,7 +46,7 @@ fun FastPaymentEntryScreen(
     onAmountSubmit: (String) -> Unit = {}
 ) {
     // D661 · Ruling 109: «Ver» (la banda de pagados en línea) pone «Pedidos por pagar» encima y «atrás» regresa a ESTA entrada: el
-    // importe tecleado se guarda con ella. Un Pago rápido nuevo (del Inicio o de «Nuevo Pago») es otra entrada y empieza en $0.
+    // importe tecleado se guarda con ella. Ruling 115: «Cobrar» la deja en $0 (`cobrarPagoRapido`): de un cobro no se regresa con él.
     var amount by rememberSaveable { mutableStateOf("0") }
     var showError by remember { mutableStateOf(false) }
 
@@ -146,12 +146,9 @@ fun FastPaymentEntryScreen(
                         }
                     },
                     onConfirmClick = {
-                        if (isValid) {
-                            val decimal = amount.toBigDecimalOrNull() ?: BigDecimal.ZERO
-                            onAmountSubmit(String.format(java.util.Locale.US, "%.2f", decimal))
-                        } else {
-                            showError = true
-                        }
+                        val (aCobrar, queda) = cobrarPagoRapido(amount)
+                        amount = queda
+                        if (aCobrar != null) onAmountSubmit(aCobrar) else showError = true
                     }
                 )
 
@@ -169,6 +166,17 @@ fun FastPaymentEntryScreen(
             }
         }
     }
+}
+
+/**
+ * «Cobrar» con lo tecleado en Pago rápido: el importe a mandar con dos decimales (`null` si es $0) y con qué se queda la pantalla.
+ *
+ * D661 · Ruling 115: en cuanto se manda, la pantalla se queda en $0. El importe se guarda con la entrada (Ruling 109), así que sin
+ * esto regresaba de CADA cobro (la flecha de «Sin papel», «atrás» en el recibo) listo para cobrarse otra vez. «Ver» no pasa por aquí.
+ */
+internal fun cobrarPagoRapido(amount: String): Pair<String?, String> {
+    val decimal = amount.toBigDecimalOrNull() ?: BigDecimal.ZERO
+    return if (decimal > BigDecimal.ZERO) String.format(java.util.Locale.US, "%.2f", decimal) to "0" else null to amount
 }
 
 // ══════════════════════════════════════════════════════════════════════════

@@ -1286,7 +1286,7 @@ class CheckoutViewModel @Inject constructor(
         if (!ventaSinRed.guardarCarrito(venueId, llave, current, cliente)) {
             return Result.failure(IllegalStateException(TEXTO_NO_SE_GUARDO_LA_VENTA))
         }
-        val creada = crearOrdenEnLinea(venueId, pedido, llave)
+        val creada = crearOrdenEnLinea(venueId, pedido, llave, pagarDespues = false)
         val fallo = creada.exceptionOrNull()
         if (fallo != null) {
             if (!pasaALaVentaLocal(fallo)) return Result.failure(fallo) // 4xx, 500…: como hoy (el carrito y su llave se quedan)
@@ -1439,7 +1439,8 @@ class CheckoutViewModel @Inject constructor(
         val current = _cartState.value
         val staffId = staffDe(current) ?: return Result.failure(IllegalStateException("No staffId in secure storage"))
         val pedido = pedidoEnLinea(current, staffId, _selectedCustomer.value?.id)
-        return crearOrdenEnLinea(venueId, pedido, llaveDelIntento(pedido))
+        // Sólo lo usa «Pagar después» (createPayLaterOrder): la cuenta queda abierta A PROPÓSITO.
+        return crearOrdenEnLinea(venueId, pedido, llaveDelIntento(pedido), pagarDespues = true)
     }
 
     private fun staffDe(current: CartState): String? =
@@ -1516,12 +1517,22 @@ class CheckoutViewModel @Inject constructor(
     private val TEXTO_NO_CONFIRMADA_COBRAR = "No pudimos confirmar la venta. Toca Cobrar otra vez"
     private val TEXTO_VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
 
-    private suspend fun crearOrdenEnLinea(venueId: String, pedido: TpvCreateOrderWithItemsRequest, llave: String): Result<Order> {
+    /**
+     * [pagarDespues] (D36): la intención de la venta, que el SERVIDOR guarda en `Order.payLater` — `false` al cobrar, `true` en
+     * «Pagar después». Va al MANDAR, como la llave: no entra en la huella de [llaveDelIntento] (Codex D36 r1 #3).
+     */
+    private suspend fun crearOrdenEnLinea(
+        venueId: String,
+        pedido: TpvCreateOrderWithItemsRequest,
+        llave: String,
+        pagarDespues: Boolean,
+    ): Result<Order> {
         // D1: la autorización del PIN para el descuento del cliente va en el CUERPO (el encabezado es de la cortesía), y sólo mientras
         // el descuento puesto sea el del cliente (tras «Quitar» u otro descuento se queda en el carrito, pero ya no viaja).
         val peticion = pedido.copy(
             externalId = llave,
             autorizacionDelDescuento = _cartState.value.let { c -> c.autorizacionDelDescuento.takeIf { c.descuentoEsDelCliente } },
+            payLater = pagarDespues,
         )
         var token: String? = null
         // «Sin autorizar» sólo si sabemos que esta llave nunca salió. Si ya salió (o volvió de disco), la orden pudo crearse y se dice.

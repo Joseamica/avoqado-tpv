@@ -2197,6 +2197,7 @@ class PaymentViewModel @Inject constructor(
      * resetPayment() and cancelPayment().
      */
     private fun ensurePaymentAttemptId(): String {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         val existing = sessionSnapshot.paymentAttemptId
         if (existing != null) {
             Timber.d("🛡️ [Idempotency] Reusing existing paymentAttemptId=$existing")
@@ -3542,6 +3543,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun startPayment(amount: String, selectedMsiMonths: Int?) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (authorizationUnresolved) { showUnresolvedAuthorization(); return }
         // 🚦 GUARD: Prevent multiple concurrent payment flows (Square/Toast pattern)
         // Critical for slow network: User clicking "Tarjeta" multiple times during API delay
@@ -4464,6 +4466,17 @@ class PaymentViewModel @Inject constructor(
     @Volatile private var authorizationApproved = false
     @Volatile private var negativeOutcomeEvidence: String? = null
     @Volatile private var financialOperationStarted = false
+
+    /**
+     * 🔴 D36 (hz:e82938e1:D36): esta pantalla de cobro YA intentó cobrar (tarjeta, efectivo, cripto o el efectivo del kiosco) al menos
+     * una vez. A propósito NO se limpia en [resetPayment] ni en ningún otro lado: «atrás» desde Cobrar sólo pide anular la venta en el
+     * SERVIDOR si esta pantalla NUNCA intentó cobrarla, y cada cobro abre su propia pantalla (un ViewModel por entrada de navegación).
+     * Limpiarla haría que un reintento, un error o un reset borraran la prueba de que hubo un intento (Codex D36 r1 #4).
+     */
+    @Volatile private var seIntentoCobrar = false
+
+    /** D36: ¿esta pantalla intentó cobrar alguna vez? Lo lee la navegación ANTES de pedir que se anule la venta de Cobrar. */
+    fun yaSeIntentoCobrar(): Boolean = seIntentoCobrar
 
     /** 🛑 C.5: el POS canceló esta solicitud y la terminal lo aceptó — este cobro ya no continúa. */
     @Volatile private var cobroCanceladoPorElPos = false
@@ -5970,6 +5983,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun processCashPayment(totalAmount: String) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         financialOperationStarted = true
         negativeOutcomeEvidence = null
         Timber.d("💵 [Cash Payment] Processing cash payment: \$$totalAmount")
@@ -6361,6 +6375,7 @@ class PaymentViewModel @Inject constructor(
      * @param totalAmount Formatted total amount string (e.g., "55.00")
      */
     fun processCryptoPayment(totalAmount: String) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         financialOperationStarted = true
         negativeOutcomeEvidence = null
         Timber.d("🪙 [Crypto Payment] Processing crypto payment: \$$totalAmount")
@@ -6637,6 +6652,7 @@ class PaymentViewModel @Inject constructor(
      * @param confirmedByStaffId Optional: The staff ID who confirmed (for audit trail)
      */
     fun confirmCashPayment(confirmedByStaffId: String? = null) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         Timber.i("🥝 [KIOSK CASH] Staff confirmed cash payment received")
 
         val currentState = _state.value as? PaymentState.AwaitingCashConfirmation
@@ -7180,6 +7196,7 @@ class PaymentViewModel @Inject constructor(
      * @param context Preserved payment data from Error state
      */
     fun retryPayment(context: RetryContext?) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (authorizationUnresolved) { showUnresolvedAuthorization(); return }
         Timber.i("🔄 [Smart Retry] Called with context: $context")
 

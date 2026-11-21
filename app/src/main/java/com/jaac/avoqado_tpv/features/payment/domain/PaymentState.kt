@@ -492,7 +492,12 @@ sealed class PaymentState {
         val showOpenShiftButton: Boolean = false,  // Show "Abrir caja" button for shift validation errors
         val showCashFallback: Boolean = false,
         /** Saved PAX attempt whose SDK call has ended; never offered during authorization. */
-        val unresolvedAttemptId: String? = null
+        val unresolvedAttemptId: String? = null,
+        /**
+         * F1-textos (catálogo D5, fila 17): sólo la barrera de la libreta lo pone. Con [unresolvedAttemptId] la pantalla es la de la
+         * duda que estorba y [message] no se ve: esta frase va arriba de la duda para que el cajero sepa por qué no se inició el cobro.
+         */
+        val avisoDeLaBarrera: String? = null
     ) : PaymentState()
     data object Cancelled : PaymentState()
 

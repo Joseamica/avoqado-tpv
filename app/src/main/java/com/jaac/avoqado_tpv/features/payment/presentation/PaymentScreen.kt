@@ -992,6 +992,7 @@ fun PaymentScreen(
                             result = recoveryState.result,
                             busy = recoveryState.busy,
                             secondsRemaining = recoveryState.secondsRemaining,
+                            avisoDeLaBarrera = currentState.avisoDeLaBarrera,
                             onSeguir = { viewModel.resetPayment(); navigateBack() },
                         )
                     } else PaymentErrorContent(

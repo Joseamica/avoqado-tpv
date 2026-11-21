@@ -69,6 +69,8 @@ internal fun BlumonRecoveryContent(
     result: BlumonAttemptResolver.Result,
     busy: Boolean,
     secondsRemaining: Int,
+    /** F1-textos (fila 17): por qué la barrera no inició ESTE cobro; va arriba de la duda que estorba. null = la duda es del propio cobro. */
+    avisoDeLaBarrera: String? = null,
     onSeguir: () -> Unit,
 ) {
     var salio by remember { mutableStateOf(false) }
@@ -76,6 +78,7 @@ internal fun BlumonRecoveryContent(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        avisoDeLaBarrera?.let { Text(it) }
         Text(when (result.state) {
             BlumonAttemptResolver.State.RECORDED -> "Cobro registrado"
             BlumonAttemptResolver.State.RELEASED -> when (result.freno?.freno) {

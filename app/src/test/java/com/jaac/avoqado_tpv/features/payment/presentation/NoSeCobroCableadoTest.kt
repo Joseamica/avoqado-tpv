@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 import java.io.File
 
@@ -140,6 +141,24 @@ class NoSeCobroCableadoTest {
         assertThat(montaje).contains("onSeguir = { viewModel.resetPayment(); navigateBack() }")
         assertThat(montaje).doesNotContain("declare")
         assertThat(montaje).doesNotContain("consultAgain")
+    }
+
+    // ── F1-textos, fila 17 (21-nov): la barrera de la cuenta que muestra la duda que estorba también dice su frase ──────────────
+    @Test fun `fila 17 la pantalla de la duda pinta arriba la frase de la barrera, y solo el emisor de la barrera la pone`() {
+        val montaje = pantallaPax.substring(pantallaPax.indexOf("BlumonRecoveryContent("), pantallaPax.indexOf("} else PaymentErrorContent("))
+        assertThat(montaje).contains("avisoDeLaBarrera = currentState.avisoDeLaBarrera")
+        val cuerpo = recuperacionPax.substring(recuperacionPax.indexOf("internal fun BlumonRecoveryContent("))
+        assertThat(cuerpo).contains("avisoDeLaBarrera: String? = null")
+        val aviso = cuerpo.indexOf("avisoDeLaBarrera?.let { Text(it) }")
+        assertThat(aviso).isAtLeast(0)
+        assertThat(aviso).isLessThan(cuerpo.indexOf("Text(when (result.state)"))
+        // En las dos variantes: un solo emisor (la barrera de `openAttemptForShift`), con la misma frase que su mensaje.
+        for (variante in listOf("sandbox", "production")) {
+            val vm = File("src/$variante/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentViewModel.kt").readText()
+            assertWithMessage(variante).that(Regex("avisoDeLaBarrera =").findAll(vm).count()).isEqualTo(1)
+            val emisor = vm.substring(vm.indexOf("val blockedAttempt = paymentAttemptLedger.retencionDelAparato()"))
+            assertWithMessage(variante).that(emisor.substring(0, emisor.indexOf("return@launch"))).contains("avisoDeLaBarrera = motivo,")
+        }
     }
 
     // D8: la solicitud no admitida se contesta en el acto, con el motivo, en vez de callar.

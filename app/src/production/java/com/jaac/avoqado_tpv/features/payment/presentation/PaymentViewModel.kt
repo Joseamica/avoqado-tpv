@@ -3807,14 +3807,15 @@ class PaymentViewModel @Inject constructor(
                     // dejaba al cajero sin saber qué resolver (founder, 21-sep, viéndolo en la TPV).
                     val blockedAttempt = paymentAttemptLedger.retencionDelAparato()
                         ?: getOrderIdForFlow()?.let { paymentAttemptLedger.retencionDeLaVenta(it) }
+                    val motivo = paymentAttemptLedger.motivoDeLaBarrera(getOrderIdForFlow(), sessionSnapshot.paymentAttemptId)
                     _state.value = PaymentState.Error(
-                        paymentAttemptLedger.motivoDeLaBarrera(
-                            getOrderIdForFlow(), sessionSnapshot.paymentAttemptId,
-                        ),
+                        motivo,
                         context = createPaymentContext(), canRetry = false,
                         unresolvedAttemptId = blockedAttempt?.takeIf {
                             paymentAttemptLedger.puedeConciliarBlumon(it, currentVenueId)
                         }?.attemptId,
+                        // F1-textos (fila 17): con la duda que estorba, la pantalla es la de esa duda y `message` no se ve.
+                        avisoDeLaBarrera = motivo,
                     )
                 }
                 return@launch

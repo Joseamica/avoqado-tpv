@@ -909,6 +909,8 @@ class PaymentViewModelKernelDurabilityTest {
             val error = vm.state.value as PaymentState.Error
             assertWithMessage("la pantalla de duda lleva el intento").that(error.unresolvedAttemptId).isEqualTo(duda?.attemptId)
             assertWithMessage("sin Reintentar").that(error.canRetry).isFalse()
+            // F1-textos (fila 17): la duda del PROPIO cobro no lleva la frase de la barrera.
+            assertWithMessage("sin frase de la barrera").that(error.avisoDeLaBarrera).isNull()
             assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
             assertWithMessage("la siguiente venta entra en el mismo proceso")
                 .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
@@ -1695,6 +1697,33 @@ class PaymentViewModelKernelDurabilityTest {
             assertWithMessage("la terminal queda lista para otra cuenta")
                 .that(mockPaymentAttemptLedger.openAttempt("b", testVenueId, "BLUMON", 10000, 0, "ORDER", """{"orderId":"orden-2"}""")).isTrue()
         } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    /**
+     * F1-textos, fila 17 (segunda pasada en la PAX, 21-nov): la barrera de la cuenta frena la otra tarjeta y la pantalla es la de la
+     * duda que estorba (para revisarla con Blumon). Su frase no salía: el cajero no sabía por qué no se inició el cobro.
+     */
+    @Test fun `fila 17 - la barrera de la cuenta con una duda revisable lleva su frase a la pantalla de la duda`() = runTest {
+        val caja = CajaConLibretaReal()
+        try {
+            val hace1Min = System.currentTimeMillis() - 60_000
+            caja.db.paymentAttemptDao().insert(PaymentAttemptEntity(attemptId = "duda", venueId = testVenueId, processor = "BLUMON",
+                state = PaymentAttemptEntity.STATE_INDETERMINADO, amountCents = 4000, tipCents = 0, recordingRoute = "ORDER",
+                paymentContextJson = """{"orderId":"orden-1"}""", createdAt = hace1Min, updatedAt = hace1Min))
+            caja.elegirComercio()
+            caja.vm.submitAmountWithExternalInputs(amount = "40.00", skipReview = true, orderId = "orden-1", orderNumber = "7", skipLocalOrderValidation = true)
+            esperarA { caja.vm.state.value is PaymentState.SelectingMerchant }
+            caja.vm.startPayment("40.00")
+            esperarA { caja.vm.state.value is PaymentState.Error || caja.lectoresAbiertos.get() > 0 }
+
+            assertWithMessage("el lector no se enciende; estado = ${caja.vm.state.value}").that(caja.lectoresAbiertos.get()).isEqualTo(0)
+            val error = caja.vm.state.value as PaymentState.Error
+            assertWithMessage("la pantalla es la de la duda que estorba").that(error.unresolvedAttemptId).isEqualTo("duda")
+            assertThat(error.canRetry).isFalse()
+            assertWithMessage("la frase de la barrera viaja a la pantalla de la duda").that(error.avisoDeLaBarrera).isEqualTo(error.message)
+            assertThat(error.avisoDeLaBarrera).contains("\$40.00")
+            assertThat(error.avisoDeLaBarrera).contains("No se inició otro cobro.")
+        } finally { caja.cerrar() }
     }
 
     /**

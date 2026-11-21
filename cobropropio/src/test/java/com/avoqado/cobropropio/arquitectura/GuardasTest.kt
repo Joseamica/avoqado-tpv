@@ -80,6 +80,14 @@ class GuardasTest {
         }
     }
 
+    /** D8: ningún gancho de prueba mutable vive en el código de cifrado de producción. */
+    @Test fun `cripto no guarda ganchos de prueba`() {
+        val dukpt = File(raiz, "cripto/Dukpt.kt").readText()
+        assertTrue("antesDeBorrar volvió", "antesDeBorrar" !in dukpt)
+        // Sólo miembros del objeto (4 espacios): las `var` locales de las funciones (8 espacios) no cuentan.
+        assertTrue("una variable mutable en Dukpt", Regex("""^ {4}(?:@\S+ )*(?:internal |private )?var """, RegexOption.MULTILINE).find(dukpt) == null)
+    }
+
     /**
      * Lo que Java ve PÚBLICO de [c]: métodos y campos públicos y no sintéticos. Ola final, 2ª parte (Codex r22): un `internal`
      * deja en la JVM un accesor público con sufijo (`getTags$cobropropio_debug`) que Java sí llama, así que ya NO se ignoran los
@@ -113,7 +121,7 @@ class GuardasTest {
 
         // 2ª parte: las otras clases que guardan el token, la credencial Basic, la IPEK, la llave derivada o la banda cifrada.
         for ((nombre, cerrados) in listOf(
-            "com.avoqado.cobropropio.cripto.Dukpt" to listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes", "getAntesDeBorrar", "setAntesDeBorrar"),
+            "com.avoqado.cobropropio.cripto.Dukpt" to listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes", "getCEROS", "CEROS"),
             // 3ª parte (Codex r23): los `internal` que Java todavía veía.
             "com.avoqado.cobropropio.motor.MotorDeCobro" to listOf("tokenNuevo"),
             "com.avoqado.cobropropio.red.EnvioUnico" to listOf("getBase"),

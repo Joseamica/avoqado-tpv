@@ -1203,7 +1203,9 @@ interface PaymentAttemptDao {
         """DELETE FROM payment_attempts WHERE venue_id = :venueId AND state IN ('CERRADA','DESCARTADA') AND updated_at < :olderThan
            AND NOT """ + PaymentAttemptEntity.SQL_CONTRADICCION + """
            -- F1 bloques 3 y 4: ni una lectura del historial despachada sin respuesta, ni un aprobado propio sin registrar.
-           AND history_read_at IS NULL AND NOT """ + SQL_APROBADO_TRAS_LA_VENTANA + """
+           -- 🔴 Codex final r10 #4 (R10-4): la lectura despachada protege sólo dentro del seguimiento (7 días desde la apertura, lo mismo que
+           -- `PRUNE_DAYS`): una soltada más vieja con la marca de un fallo técnico persistente ya no se sigue y quitaba turno a las nuevas.
+           AND (history_read_at IS NULL OR created_at < :olderThan) AND NOT """ + SQL_APROBADO_TRAS_LA_VENTANA + """
            -- `IFNULL`: con `last_error` NULL, `NULL LIKE …` es NULL, `NOT (NULL AND …)` es NULL, y el WHERE excluía EN
            -- SILENCIO toda fila sin motivo — la poda dejó de podar (lo cazaron las pruebas de la poda de siempre).
            AND NOT (IFNULL(last_error, '') LIKE 'declarado_sin_cobro:%'

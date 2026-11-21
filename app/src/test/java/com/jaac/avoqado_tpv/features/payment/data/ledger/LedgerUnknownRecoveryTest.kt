@@ -26,7 +26,9 @@ class LedgerUnknownRecoveryTest {
     }
 
     @Test fun `missing history cannot clear durable uncertainty`() = runTest {
-        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any(), any(), any(), any()) } returns listOf(row)
+        // R10-4: una duda de HOY (dentro del seguimiento de 7 días); `createdAt = 1000` (1970) ya cae fuera y ahí el fallo sí gasta turno.
+        coEvery { dao.getUnknownRecoveryCandidates("venue", any(), any(), any(), any(), any()) } returns
+            listOf(row.copy(createdAt = System.currentTimeMillis()))
         coEvery { dao.claimUnknownRecovery(any(), any(), any(), any()) } returns 1
         coEvery { verifier.verificar(any(), any(), any(), any(), any(), any()) } returns
             VerificacionDelCobro.NoSePudoVerificar("empty history")

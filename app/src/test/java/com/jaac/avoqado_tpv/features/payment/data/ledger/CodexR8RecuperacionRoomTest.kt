@@ -523,4 +523,60 @@ class CodexR8RecuperacionRoomTest {
         ventana("a1")
         assertWithMessage("antes del techo, la lectura en vuelo sigue frenando").that(otraTarjeta(libreta())).isFalse()
     }
+
+    /**
+     * 🔴 Codex final r10 #4 · N86: tres ventas soltadas hace 10 días cuya lectura del historial nunca contesta (fallo técnico) conservaban la
+     * marca, esquivaban la poda y en cada pasada gastaban el presupuesto de consultas (50 s cada una): un aprobado nuevo quedaba sin
+     * consultar. La base ya las había podado. Ahora, pasados los 7 días, el fallo técnico gasta turno y la soltada se poda aunque conserve la
+     * marca: en la pasada siguiente ya no están y el aprobado nuevo se consulta y se registra.
+     */
+    @Test fun `r10_4 · pasado el dia 7 el fallo tecnico gasta turno, la soltada se poda y el aprobado nuevo se consulta`() = runBlocking<Unit> {
+        val hace10Dias = System.currentTimeMillis() - 10 * 86_400_000L
+        for (id in listOf("f1", "f2", "f3", "f4")) {
+            dudaN86(id, orden = "orden-$id", solicitud = "r-$id", creadoEn = hace10Dias)
+            ventana(id)
+            sql("UPDATE payment_attempts SET history_read_at = created_at + 30000 WHERE attempt_id = '$id'")
+        }
+        // f4 no alcanza consulta en esta pasada (su reserva sigue): sólo la poda la quita.
+        sql("UPDATE payment_attempts SET lease_until = ${System.currentTimeMillis() + 86_400_000L} WHERE attempt_id = 'f4'")
+        var reloj = 0L
+        val adapter = mockk<PaymentPostOperationsAdapter>()
+        coEvery { adapter.getTransactionHistory(any()) } coAnswers {
+            val id = firstArg<TransactionHistoryQuery>().integratorReference!!
+            consultasAlHistorial++
+            if (id == "n") Result.success(listOf(ventaEnElHistorial(id, "APROBADA")))
+            else { reloj += 50_000L; Result.failure(java.io.IOException("sin respuesta")) }
+        }
+        val servidor = Servidor()
+        val observability = mockk<com.jaac.avoqado_tpv.core.observability.ObservabilityManager>(relaxed = true)
+        suspend fun pasada(ahora: Long) {
+            reloj = 0L
+            LedgerSweepLogic.recuperarElDinero(registrador(servidor), LedgerUnknownRecovery(dao, libreta(), verificadorCon(adapter)), venue,
+                ahora = { ahora }, reloj = { reloj })
+            LedgerSweepLogic.sweepOnce(dao, venue, observability, ahora)
+        }
+        val t1 = System.currentTimeMillis()
+        pasada(t1)
+        for (id in listOf("f1", "f2", "f3", "f4")) assertWithMessage("$id: podada").that(dao.getById(id)).isNull()
+        // 6 h después nace un aprobado nuevo (aviso perdido): se consulta y se registra en ESA pasada.
+        val t2 = t1 + 6 * 3_600_000L
+        pagoRapidoEnDuda("n", creadoEn = t2 - 180_000L)
+        pasada(t2)
+        assertWithMessage("el aprobado nuevo se registra").that(servidor.pagos).containsExactly("n", 1)
+    }
+
+    /** R10-4 · dentro de los 7 días nada cambia: el fallo técnico no gasta turno, la marca se queda y la poda no la toca. */
+    @Test fun `r10_4 · dentro de los 7 dias el fallo tecnico no gasta turno y no se poda`() = runBlocking<Unit> {
+        val hace6Dias = System.currentTimeMillis() - 6 * 86_400_000L
+        dudaN86("f1", creadoEn = hace6Dias)
+        ventana("f1")
+        sql("UPDATE payment_attempts SET history_read_at = created_at + 30000 WHERE attempt_id = 'f1'")
+        val v = mockk<AngelPayChargeVerifier>()
+        coEvery { v.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin respuesta")
+        LedgerUnknownRecovery(dao, libreta(), v).recover(venue, System.currentTimeMillis())
+        LedgerSweepLogic.sweepOnce(dao, venue, mockk(relaxed = true), System.currentTimeMillis())
+        assertThat(dao.getById("f1")).isNotNull()
+        assertThat(consultasGastadas("f1")).isEqualTo(0)
+        assertThat(dao.getById("f1")!!.historyReadAt).isNotNull()
+    }
 }

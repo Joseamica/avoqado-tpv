@@ -85,8 +85,12 @@ class LedgerUnknownRecovery @Inject constructor(
                                 row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
                             else dao.soltarLaMarcaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // Red, credenciales o lectura ilegible: pausa sin gastar el turno y sin borrar la lectura despachada (Codex final r1 #3).
-                        is VerificacionDelCobro.NoSePudoVerificar -> dao.pausarConsultaSinGastarTurno(
-                            row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
+                        // 🔴 Codex final r10 #4 (R10-4): pasado [SEGUIMIENTO_DEL_HISTORIAL_MS], también gasta turno (y con los cinco se acaba):
+                        // un fallo técnico persistente ya no sigue quitando consultas a las nuevas para siempre.
+                        is VerificacionDelCobro.NoSePudoVerificar ->
+                            if (terminadaEn - row.createdAt >= SEGUIMIENTO_DEL_HISTORIAL_MS) dao.terminarConsultaSinCoincidencia(
+                                row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks + 1))
+                            else dao.pausarConsultaSinGastarTurno(row.attemptId, venueId, ownedLease, terminadaEn + pausa(row.historyChecks))
                         // 🔴 Codex plan A #2 (AngelPay, punto 31): la venta está en el historial sin aprobar (`05AP`: llegó al procesador y
                         // puede aprobarse tarde). No es «no aparece»: la marca se queda y se vuelve a preguntar SIN gastar turno mientras el
                         // intento tenga menos de [SEGUIMIENTO_DEL_HISTORIAL_MS] (F1 · Codex r7 #1: aunque la VENTANA del SERVIDOR la haya

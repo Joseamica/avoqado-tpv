@@ -61,6 +61,8 @@ class RepositorioDeCopia(
         val yo = quienSoy.instantanea() // r3: la sesión que baja y la generación que se escribe son de la misma persona
         if (yo.limpiando) return false
         val generacion = yo.generacion
+        // D1: lo que ya llegó al SERVIDOR ANTES de pedir la lista viene en ella; lo que llegue mientras baja quizá no: no cuenta.
+        val yaLlegadas = dao.conSimsAhora().filter(::llegoAlServidor).map { it.id }
         val misSims = (guardia.conSesion(venueId, yo) { api.misSims(it, venueId) } as? ResultadoConSesion.Respuesta)
             ?.r?.takeIf { it.isSuccessful }?.body() ?: return false
         val modulos = (llamarSeguro { api.modulos(venueId) } as? Llamada.Contesto)
@@ -71,7 +73,7 @@ class RepositorioDeCopia(
             val marcas = marcasDeLaCola()
             if (!puedeEscribir(generacion, venueId)) return@withLock false
             val sims = misSims.items.orEmpty().filterNotNull().map { it.aSim(marcas[normalizarSerie(it.serialNumber!!)]) }
-            publicar(Copia(BuildConfig.VERSION_CODE, venueId, generacion, sims, configDe(modulos), ahora()))
+            publicar(Copia(BuildConfig.VERSION_CODE, venueId, generacion, sims, configDe(modulos), ahora(), yaLlegadas))
             true
         }
     }

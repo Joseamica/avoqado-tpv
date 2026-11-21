@@ -83,7 +83,8 @@ private fun evidencia(o: JsonObject, pidioNumero: Boolean): Lectura {
 /** Las aceptadas cuentan como hechas; las fallidas (o las que la bitácora no confirmó) van en `datosJson`. */
 private fun custodia(o: JsonObject): Lectura {
     val fallidas = JsonArray().apply {
-        o.arreglo("results")?.filter { it.isJsonObject && it.asJsonObject.txt("status") == "error" }?.forEach { add(it) }
+        // Codex misventas r1 #1: la ruta normal las trae en `results`; la gracia, ya filtradas, en `fallidas` (envioDeCampo.ts).
+        (o.arreglo("results") ?: o.arreglo("fallidas"))?.filter { it.isJsonObject && it.asJsonObject.txt("status") == "error" }?.forEach { add(it) }
     }
     val failed = runCatching { o.getAsJsonObject("summary")?.get("failed")?.asInt }.getOrNull() ?: 0
     if (failed > 0 || fallidas.size() > 0) {

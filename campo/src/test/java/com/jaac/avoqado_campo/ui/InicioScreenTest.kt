@@ -63,6 +63,7 @@ class InicioScreenTest {
                 AccionesDeInicio(
                     vender = { toques += "vender" }, sims = { toques += "sims" }, checar = { toques += "checar" },
                     pendientes = { toques += "pendientes" }, ayuda = { toques += "ayuda" }, entrar = {}, actualizar = { toques += "actualizar" },
+                    ventas = { toques += "ventas" },
                 ),
             )
         }
@@ -88,7 +89,7 @@ class InicioScreenTest {
         compose.onNodeWithText("Vender SIM").assertIsNotEnabled()
         compose.onNodeWithText(actualiza).assertExists()
         compose.onNodeWithText("Actualizar").assertIsEnabled()
-        compose.onNodeWithText("Mis pendientes").assertIsEnabled()
+        compose.onNodeWithText("Ventas pendientes por subir").assertIsEnabled()
         compose.onNodeWithText("Ayuda").assertIsEnabled()
         compose.onNodeWithText("Checar entrada").assertIsEnabled()
         compose.onNodeWithText("Mis SIMs").assertIsEnabled()
@@ -301,8 +302,16 @@ class InicioScreenTest {
     @Test fun `Mis pendientes lleva su contador, y sin pendientes dice «Todo subido»`() {
         inicio(base.copy(pendientes = 3))
         compose.onNodeWithText("3").assertExists()
-        compose.onNodeWithText("Mis pendientes").performClick()
+        compose.onNodeWithText("Ventas pendientes por subir").performClick()
         assertEquals(listOf("pendientes"), toques)
+    }
+
+    // Isaac (PlayTelecom, 20-nov): «Mis ventas» aparte, y avisa cuántas regresó el supervisor para corregir.
+    @Test fun `Mis ventas abre sus ventas y dice cuantas hay por revisar`() {
+        inicio(base.copy(porRevisar = 2))
+        compose.onNodeWithText("2 por revisar").assertExists()
+        compose.onNodeWithText("Mis ventas").performClick()
+        assertEquals(listOf("ventas"), toques)
     }
 
     @Test fun `sin pendientes no hay contador`() {

@@ -102,6 +102,42 @@ class RepositorioDeCopiaTest {
         return dao.porId(id)!!
     }
 
+    // ---------- D1: lo que ya había llegado al SERVIDOR al pedir la lista ----------
+
+    @Test fun `la copia guarda lo que ya habia llegado ANTES de pedir la lista y no lo que llega a media descarga`() = runBlocking {
+        val hecha = ventaEnCola("8952140000101", EstadoPieza.HECHA)
+        val porSubir = ventaEnCola("8952140000102")
+        val entendida = ventaEnCola("8952140000103", EstadoPieza.DESCARTADA).copy(resultadoJson = """{"paymentId":"p"}""").also { dao.actualizar(it) }
+        val quitada = ventaEnCola("8952140000104", EstadoPieza.DESCARTADA)
+        val aviso = dao.porId(
+            dao.insertar(
+                Pieza(
+                    tipo = TipoPieza.CUSTODIA_ACEPTAR, llave = UUID.randomUUID().toString(), staffId = "s1", venueId = "v1",
+                    cuerpoJson = """{"sims":[{"serialNumber":"8952140000105","custodyVersion":1}]}""", estado = EstadoPieza.AVISO,
+                    resultadoJson = "{}", creadaAt = 1, resumen = "r",
+                ),
+            ),
+        )!!
+        // La que sube mientras el SERVIDOR arma la lista quizá no viene en ella: no cuenta como vista.
+        alBajar = { runBlocking { dao.actualizar(porSubir.copy(estado = EstadoPieza.HECHA, resultadoJson = """{"paymentId":"p2"}""")) } }
+        val r = repo()
+        assertTrue(r.actualizar("v1"))
+        assertEquals(listOf(hecha.id, entendida.id, aviso.id), r.copia.value!!.yaLlegadas)
+        assertFalse(quitada.id in r.copia.value!!.yaLlegadas!!)
+        // `marcar` la conserva, y se lee igual del archivo.
+        r.marcar(quienSoy.generacion, "8952140000001", MarcaLocal.VENDIDA_EN_EL_CELULAR)
+        assertEquals(listOf(hecha.id, entendida.id, aviso.id), repo().leer()!!.yaLlegadas)
+    }
+
+    @Test fun `conSims trae las ventas y custodias tambien terminadas y nada mas`() = runBlocking {
+        val a = ventaEnCola("8952140000201", EstadoPieza.HECHA)
+        val b = ventaEnCola("8952140000202", EstadoPieza.DESCARTADA)
+        dao.insertar(
+            Pieza(tipo = TipoPieza.ENTRADA, llave = UUID.randomUUID().toString(), staffId = "s1", venueId = "v1", cuerpoJson = "{}", creadaAt = 1, resumen = "r"),
+        )
+        assertEquals(listOf(a.id, b.id), dao.conSimsAhora().map { it.id })
+    }
+
     // ---------- la copia que ya no sirve se tira ----------
 
     @Test fun `una copia de versionApp vieja se tira al leer`() = runBlocking {

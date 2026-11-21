@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_campo.ayuda.AyudaScreen
 import com.jaac.avoqado_campo.checada.ChecadaScreen
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
@@ -26,6 +27,7 @@ import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.pendientes.PendientesScreen
+import com.jaac.avoqado_campo.pendientes.visiblesEnPendientes
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.venta.VentaScreen
 import com.jaac.avoqado_campo.version.Actualizador
@@ -70,6 +72,7 @@ fun Navegacion(
     val obligatoriaS = revisor.obligatoria.collectAsStateWithLifecycle()
     val pasoS = actualizador.paso.collectAsStateWithLifecycle()
     val copiaS = copia.copia.collectAsStateWithLifecycle()
+    val conSimsS = remember { dao.conSims() }.collectAsStateWithLifecycle(emptyList())
     val identidad by identidadS
     val piezas by piezasS
     val destino = destinoDe(identidad, piezas.isEmpty())
@@ -88,7 +91,7 @@ fun Navegacion(
                 }
                 composable("gracia") {
                     PantallaDeGracia(
-                        pendientes = piezasS.value.size,
+                        pendientes = visiblesEnPendientes(piezasS.value).size,
                         puedeActivarDeNuevo = piezasS.value.isEmpty(),
                         onPendientes = { nav.navigate("pendientes") },
                         onActivarDeNuevo = { borrado.activarDeNuevo() },
@@ -109,17 +112,19 @@ fun Navegacion(
                         .mapNotNull { p -> yo.sucursales.firstOrNull { it.venueId == p.venueId }?.nombre }.distinct()
                     InicioScreen(
                         DatosDeInicio(
-                            nombre = yo.nombre, pendientes = piezasS.value.size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
-                            turnoAbierto = t != null && t.abierto && t.staffId == yo.staffId, gps = gpsS.value,
+                            nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
+                            // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
+                            turnoAbierto = t != null && turnoVigente(t, System.currentTimeMillis()) && t.staffId == yo.staffId, gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),
-                            enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion), articulo = c?.config?.etiquetaArticulo ?: "SIM",
+                            enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
+                            porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },
                             pendientes = { nav.navigate("pendientes") }, ayuda = { nav.navigate("ayuda") }, entrar = { nav.navigate("pin") },
-                            actualizar = actualizador::empezar,
+                            actualizar = actualizador::empezar, ventas = { nav.navigate("ventas") },
                         ),
                     )
                 }
@@ -130,6 +135,7 @@ fun Navegacion(
                     )
                 }
                 composable("sims") { MisSimsScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
+                composable("ventas") { MisSimsScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar, ventas = true) }
                 composable("checada") { ChecadaScreen(hiltViewModel(), obligatoria = obligatoriaS.value, onRegresar = regresar) }
                 composable("pendientes") {
                     PendientesScreen(hiltViewModel(), onRegresar = regresar, onMisSims = {

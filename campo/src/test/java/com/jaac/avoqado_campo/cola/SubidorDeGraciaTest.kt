@@ -223,7 +223,7 @@ class SubidorDeGraciaTest {
         assertEquals(SubidorDeGracia.CORRECCION_SIN_SESION, p.rechazoCode)
         assertEquals(
             "El celular se desvinculó antes de subir esta corrección. Cuando tu celular esté activado otra vez, la venta va a " +
-                "volver a salir en «Mis SIMs» como «Revisar» y la corriges de nuevo.",
+                "volver a salir en «Mis ventas» como «Revisar» y la corriges de nuevo.",
             p.rechazoMensaje,
         )
         assertEquals(listOf(TipoPieza.CUSTODIA_RECHAZAR), gracias().map { it.tipo })

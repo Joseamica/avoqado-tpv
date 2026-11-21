@@ -1,0 +1,332 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "3dd71003f20d711a9cd730a7d890cf38",
+    "entities": [
+      {
+        "tableName": "intentos",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attemptId` TEXT NOT NULL, `operacion` TEXT NOT NULL, `venueId` TEXT NOT NULL, `importeCentavos` INTEGER NOT NULL, `vinculado` INTEGER NOT NULL, `posId` TEXT NOT NULL, `serieBlumon` TEXT NOT NULL, `ambiente` TEXT NOT NULL, `versionSdk` TEXT NOT NULL, `origen` TEXT NOT NULL, `estado` TEXT NOT NULL, `motivoNoSalio` TEXT, `reverso` TEXT NOT NULL, `pudoEntrar` INTEGER NOT NULL, `ultimoCodigoReverso` TEXT, `reporte` TEXT NOT NULL, `resultadoParaReportar` TEXT, `codigoParaReportar` TEXT, `horaObservadaIso` TEXT, `estadoEnServidor` TEXT, `origenDeLaAprobacion` TEXT, `vinculoAcreditadoPorPermiso` INTEGER NOT NULL, `reclamadoEnIso` TEXT, `parcialOperacion` INTEGER, `parcialImporteCentavos` INTEGER, `operationNumber` INTEGER, `autorizacion` TEXT, `evidenciaTardiaOperacion` INTEGER, `evidenciaTardiaAutorizacion` TEXT, `paymentId` TEXT, `operacionOriginal` TEXT, `codigo` TEXT, `leyenda` TEXT, `marca` TEXT, `medio` TEXT, `bin` TEXT, `ultimos4` TEXT, `paisEmisor` TEXT, `huellaTarjeta` TEXT, `huellaLectura` TEXT, `ksnBase` TEXT, `contadorUsado` INTEGER, `enviadoEnMs` INTEGER, `cortarAntesDeSalir` INTEGER NOT NULL, `procesoId` TEXT NOT NULL, `creadoEnMs` INTEGER NOT NULL, `actualizadoEnMs` INTEGER NOT NULL, PRIMARY KEY(`attemptId`))",
+        "fields": [
+          {
+            "fieldPath": "attemptId",
+            "columnName": "attemptId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operacion",
+            "columnName": "operacion",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venueId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "importeCentavos",
+            "columnName": "importeCentavos",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "vinculado",
+            "columnName": "vinculado",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "posId",
+            "columnName": "posId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serieBlumon",
+            "columnName": "serieBlumon",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ambiente",
+            "columnName": "ambiente",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionSdk",
+            "columnName": "versionSdk",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "origen",
+            "columnName": "origen",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "estado",
+            "columnName": "estado",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "motivoNoSalio",
+            "columnName": "motivoNoSalio",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "reverso",
+            "columnName": "reverso",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pudoEntrar",
+            "columnName": "pudoEntrar",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ultimoCodigoReverso",
+            "columnName": "ultimoCodigoReverso",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "reporte",
+            "columnName": "reporte",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultadoParaReportar",
+            "columnName": "resultadoParaReportar",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "codigoParaReportar",
+            "columnName": "codigoParaReportar",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "horaObservadaIso",
+            "columnName": "horaObservadaIso",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "estadoEnServidor",
+            "columnName": "estadoEnServidor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "origenDeLaAprobacion",
+            "columnName": "origenDeLaAprobacion",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "vinculoAcreditadoPorPermiso",
+            "columnName": "vinculoAcreditadoPorPermiso",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reclamadoEnIso",
+            "columnName": "reclamadoEnIso",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "parcialOperacion",
+            "columnName": "parcialOperacion",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "parcialImporteCentavos",
+            "columnName": "parcialImporteCentavos",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "operationNumber",
+            "columnName": "operationNumber",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "autorizacion",
+            "columnName": "autorizacion",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "evidenciaTardiaOperacion",
+            "columnName": "evidenciaTardiaOperacion",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "evidenciaTardiaAutorizacion",
+            "columnName": "evidenciaTardiaAutorizacion",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "paymentId",
+            "columnName": "paymentId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "operacionOriginal",
+            "columnName": "operacionOriginal",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "codigo",
+            "columnName": "codigo",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "leyenda",
+            "columnName": "leyenda",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "marca",
+            "columnName": "marca",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "medio",
+            "columnName": "medio",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "bin",
+            "columnName": "bin",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ultimos4",
+            "columnName": "ultimos4",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "paisEmisor",
+            "columnName": "paisEmisor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "huellaTarjeta",
+            "columnName": "huellaTarjeta",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "huellaLectura",
+            "columnName": "huellaLectura",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ksnBase",
+            "columnName": "ksnBase",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "contadorUsado",
+            "columnName": "contadorUsado",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "enviadoEnMs",
+            "columnName": "enviadoEnMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "cortarAntesDeSalir",
+            "columnName": "cortarAntesDeSalir",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "procesoId",
+            "columnName": "procesoId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creadoEnMs",
+            "columnName": "creadoEnMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "actualizadoEnMs",
+            "columnName": "actualizadoEnMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "attemptId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_intentos_operacionOriginal",
+            "unique": false,
+            "columnNames": [
+              "operacionOriginal"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_intentos_operacionOriginal` ON `${TABLE_NAME}` (`operacionOriginal`)"
+          },
+          {
+            "name": "index_intentos_reporte",
+            "unique": false,
+            "columnNames": [
+              "reporte"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_intentos_reporte` ON `${TABLE_NAME}` (`reporte`)"
+          },
+          {
+            "name": "index_intentos_huellaLectura",
+            "unique": false,
+            "columnNames": [
+              "huellaLectura"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_intentos_huellaLectura` ON `${TABLE_NAME}` (`huellaLectura`)"
+          }
+        ]
+      },
+      {
+        "tableName": "contadores",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`ksnBaseHex` TEXT NOT NULL, `siguiente` INTEGER NOT NULL, PRIMARY KEY(`ksnBaseHex`))",
+        "fields": [
+          {
+            "fieldPath": "ksnBaseHex",
+            "columnName": "ksnBaseHex",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "siguiente",
+            "columnName": "siguiente",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "ksnBaseHex"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '3dd71003f20d711a9cd730a7d890cf38')"
+    ]
+  }
+}

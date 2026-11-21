@@ -35,6 +35,8 @@ enum class TipoChecada { ENTRADA, SALIDA }
 data class EstadoChecada(
     /** La entrada abierta de este celular y de esta persona; null = no hay (B10). */
     val entrada: RefEntrada? = null,
+    /** D3 · la hora de una entrada de un día ya terminado que se quedó sin salida («salida olvidada»); null = no hay. */
+    val olvidadaAt: Long? = null,
     /** La pantalla abre la cámara frontal para esta checada (B9). */
     val pideSelfie: TipoChecada? = null,
     val ocupado: Boolean = false,
@@ -62,7 +64,13 @@ class ChecadaViewModel @Inject constructor(
     val estado: StateFlow<EstadoChecada> = _estado
 
     init {
-        viewModelScope.launch { dao.turno().collect { t -> _estado.update { it.copy(entrada = refEntrada(t, quienSoy.staffId)) } } }
+        viewModelScope.launch {
+            dao.turno().collect { t ->
+                // D3: un turno de un día ya terminado no ofrece «Marcar salida»: la de hoy es una entrada nueva.
+                val ahora = encolador.ahoraMs()
+                _estado.update { it.copy(entrada = refEntrada(t, quienSoy.staffId, ahora), olvidadaAt = turnoOlvidado(t, quienSoy.staffId, ahora)) }
+            }
+        }
         // Si el GPS empieza a seguir (p. ej., concedió el permiso sin salir de «Checar»), el aviso de la entrada deja de decir
         // que no sigue (Codex D2 r2): la UI no miente.
         viewModelScope.launch {

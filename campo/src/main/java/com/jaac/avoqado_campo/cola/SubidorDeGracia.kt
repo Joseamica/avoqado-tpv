@@ -145,7 +145,7 @@ class SubidorDeGracia(
         const val CORRECCION_SIN_SESION = "CORRECCION_SIN_SESION"
         const val TEXTO_CORRECCION_SIN_SESION =
             "El celular se desvinculó antes de subir esta corrección. Cuando tu celular esté activado otra vez, la venta va a " +
-                "volver a salir en «Mis SIMs» como «Revisar» y la corriges de nuevo."
+                "volver a salir en «Mis ventas» como «Revisar» y la corriges de nuevo."
         const val EN_REVISION = "En revisión de tu supervisor"
         const val USA_TU_SESION = "USA_TU_SESION"
         private const val SIN_RED = "SIN_RED"

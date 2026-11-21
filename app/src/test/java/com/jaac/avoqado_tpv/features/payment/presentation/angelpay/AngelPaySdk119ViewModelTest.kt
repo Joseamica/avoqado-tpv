@@ -289,7 +289,7 @@ class AngelPaySdk119ViewModelTest {
             val estado = vm.state.value as AngelPayPaymentState.Error
             assertThat(estado.noSeCobro).isTrue()
             assertThat(estado.canRetry).isTrue()
-            assertThat(estado.message).isEqualTo("Tiempo agotado: nadie acercó una tarjeta. No se cobró nada.")
+            assertThat(estado.message).isEqualTo("Tiempo agotado: la terminal no leyó ninguna tarjeta. No se cobró nada.")
             // Sin verificador, sin incertidumbre, sin «rechazo del banco» ni su ticket, y un cobro LOCAL no emite nada.
             coVerify(exactly = 0) { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) }
             coVerify(exactly = 0) { paymentAttemptLedger.markIndeterminate(any(), any()) }
@@ -369,18 +369,18 @@ class AngelPaySdk119ViewModelTest {
             runCurrent()
 
             coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(intento, "v1", any()) }
-            verificarUnFailedPreAutorizacion("req-u101", "Nadie acercó una tarjeta: no se cobró.")
+            verificarUnFailedPreAutorizacion("req-u101", "La terminal no leyó ninguna tarjeta a tiempo: no se cobró.")
             val estado = vm.state.value as AngelPayPaymentState.Error
             assertThat(estado.noSeCobro).isTrue()
             assertThat(estado.canRetry).isFalse() // la solicitud ya se cerró: el POS la reenvía
             assertThat(estado.message).isEqualTo(
-                "Tiempo agotado: nadie acercó una tarjeta. No se cobró nada. Vuelve a enviar el cobro desde el punto de venta.",
+                "Tiempo agotado: la terminal no leyó ninguna tarjeta. No se cobró nada. Vuelve a enviar el cobro desde el punto de venta.",
             )
-            assertThat(vm.mensajeDelPos.value).isEqualTo("Nadie acercó una tarjeta: no se cobró.")
+            assertThat(vm.mensajeDelPos.value).isEqualTo("La terminal no leyó ninguna tarjeta a tiempo: no se cobró.")
             // Decisión del founder (18-sep): nada de retención H.3 — salir de la pantalla no emite un segundo desenlace.
             vm.resetPayment()
             runCurrent()
-            verificarUnFailedPreAutorizacion("req-u101", "Nadie acercó una tarjeta: no se cobró.")
+            verificarUnFailedPreAutorizacion("req-u101", "La terminal no leyó ninguna tarjeta a tiempo: no se cobró.")
         } finally {
             vm.viewModelScope.cancel()
         }

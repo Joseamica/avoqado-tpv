@@ -4338,7 +4338,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
             val s = vm.state.value as AngelPayPaymentState.Error
-            assertThat(s.canRetry).isFalse(); assertThat(s.message).isEqualTo("No se confirmó el cobro.")
+            assertThat(s.canRetry).isFalse(); assertThat(s.message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
             assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
             verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
@@ -4365,8 +4365,30 @@ class AngelPayPaymentViewModelTest {
             val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
             assertThat(s.historialPendiente).isTrue()
             assertThat(s.message).doesNotContain("Se puede volver a cobrar")
+            // F1-textos (catálogo D5, fila 4 ⚙): la fila que frena no trae solicitud del POS: TPV SOLA, espera al gerente.
+            assertThat(s.textoDelHistorial).isEqualTo("Confirmando con el banco… No pases la tarjeta otra vez. Avísale al gerente.")
+            assertThat(s.message).isEqualTo(s.textoDelHistorial)
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)   // sin reinicio automático
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** F1-textos (catálogo D5, fila 4 ⚙): si la fila que frena es de un cobro del POS, se dice que se libera sola al techo. */
+    @Test fun `N86 F1-textos el historial pendiente de un cobro del POS dice que se libera sola a los 5 min`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
+        coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
+        val fila = filaLiberada("att", "NO_EVIDENCE_AFTER_WINDOW").also { every { it.terminalPaymentRequestId } returns "REQ-H2" }
+        coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen fila
+        coEvery { paymentAttemptLedger.loQueFrenaElResuelto(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto(
+                com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE, fila,
+            )
+        val vm = vmConCobroDelPos("REQ-H2")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
+            advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
+            val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
+            assertThat(s.textoDelHistorial).isEqualTo("Confirmando con el banco… No pases la tarjeta otra vez. Se libera sola a los 5 min.")
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -4754,7 +4776,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val mio = ids.last()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")   // liberación mostrada
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)   // liberación mostrada
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W17", mio, "pay-s5", 10000, 0, registrado = false)); runCurrent()
             val contradiccion = vm.state.value as AngelPayPaymentState.Error
             assertThat(contradiccion.message).contains("evidencia de cobro")
@@ -4781,7 +4803,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val mio = ids.last()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")   // liberación mostrada
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)   // liberación mostrada
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W19", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
             val exito = vm.state.value as AngelPayPaymentState.Success
             assertThat(exito.receipt?.paymentId).isEqualTo("pay-s5")
@@ -4824,7 +4846,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             vm.declararSinTarjeta(); runCurrent()   // POST en vuelo
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()   // el sondeo lee la fila liberada y la anuncia
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             puertaPost.complete(Unit); runCurrent()   // el POST responde CON dinero; el guardado queda suspendido
             assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")   // retirada AL INSTANTE
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()
@@ -4880,6 +4902,9 @@ class AngelPayPaymentViewModelTest {
             coVerify { attemptApi.resolveNoInstrument("v1", any(), match { it.supervisorPin == null && it.statement == "NO_INSTRUMENT_PRESENTED" && it.requestId == "REQ-W4" }) }
             coVerify { paymentAttemptLedger.aplicarLiberacionDelServidor(match { it.evidencia == "OPERATOR_RECONCILED" && it.requestId == "REQ-W4" && it.quien == "cajera" }, any()) }
             assertThat((vm.state.value as AngelPayPaymentState.Error).canRetry).isFalse()
+            // F1-textos (catálogo D5, fila 10 · F-D): ni «no se presentó tarjeta» ni culpa al cliente; una persona lo revisó.
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message)
+                .isEqualTo("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.")
         } finally { vm.viewModelScope.cancel() }
     }
 
@@ -5144,7 +5169,7 @@ class AngelPayPaymentViewModelTest {
             advanceTimeBy(vm.msEsperaLocal + 100); runCurrent()   // la liberación se pinta al vencer los 10 s…
             val s = vm.state.value as AngelPayPaymentState.Error
             assertThat(s.canRetry).isFalse()
-            assertThat(s.message).isEqualTo("No se confirmó el cobro.")
+            assertThat(s.message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             advanceTimeBy(vm.msMostrarLiberada + 100); runCurrent()   // …y a los 4 s la pantalla vuelve a cobrar
             assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
         } finally { vm.viewModelScope.cancel() }
@@ -5329,7 +5354,7 @@ class AngelPayPaymentViewModelTest {
         try {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")   // liberación mostrada: reset programado a 4 s
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)   // liberación mostrada: reset programado a 4 s
             vm.resetPayment(); runCurrent()   // Salir antes de los 4 s
             assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Idle)
             vm.initPayment(amount = "50.00"); runCurrent()
@@ -5380,7 +5405,7 @@ class AngelPayPaymentViewModelTest {
         return PantallaQueEscucha(salidas, job)
     }
 
-    /** Un cobro del POS cuya liberación por VENTANA ya está en pantalla («No se confirmó el cobro.»); el reset vence en 4 s. */
+    /** Un cobro del POS cuya liberación por VENTANA ya está en pantalla («No se pudo confirmar con el banco…», F-B); el reset vence en 4 s. */
     private fun kotlinx.coroutines.test.TestScope.vmConLiberacionPorVentana(requestId: String): AngelPayPaymentViewModel {
         coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("x")
         coEvery { ledgerServerRecovery.recoverOne(any(), any(), any(), any()) } returns LecturaDelIntento(null)
@@ -5388,7 +5413,7 @@ class AngelPayPaymentViewModelTest {
         val vm = vmConCobroDelPos(requestId)
         vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
         advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-        assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+        assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
         return vm
     }
 
@@ -5445,7 +5470,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val mio = ids.last()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-T10C", mio, "pay-s5", 10000, 0, registrado = false)); runCurrent()
             val contradiccion = vm.state.value as AngelPayPaymentState.Error
             assertThat(contradiccion.message).contains("evidencia de cobro")
@@ -5467,7 +5492,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val mio = ids.last()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-T10D", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
             val exito = vm.state.value as AngelPayPaymentState.Success
             advanceTimeBy(vm.msMostrarLiberada * 3); runCurrent()
@@ -5680,7 +5705,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             val mio = ids.last()
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")   // liberación mostrada
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)   // liberación mostrada
             vm.manejarConfirmacionDelServidor(SocketEvent.TerminalPaymentConfirmed("REQ-W24", mio, "pay-s5", 10000, 0, registrado = true)); runCurrent()
             val exito = vm.state.value as AngelPayPaymentState.Success
             // Un S5 repetido/atrasado sin transición en la libreta NO puede convertir un Success en contradicción.
@@ -6315,7 +6340,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
             vm.declararSinTarjeta(); runCurrent()   // POST en vuelo
             advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()   // el sondeo lee la fila liberada y la anuncia
-            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
             puertaPost.complete(Unit); runCurrent()   // el 2xx: banco APPROVED sin Payment; la lectura de Room queda suspendida
             val contradiccion = vm.state.value as AngelPayPaymentState.Error
             assertThat(contradiccion.message).contains("evidencia de cobro")   // retirada ANTES de suspender
@@ -6908,7 +6933,7 @@ class AngelPayPaymentViewModelTest {
                 vm.onAngelPaySdkResult(sdkInciertoResult()); runCurrent()
                 vm.declararSinTarjeta(); runCurrent()   // POST en vuelo
                 advanceTimeBy(vm.msEntreConsultasS6 + 100); runCurrent()   // el sondeo lee la fila liberada y la anuncia
-                assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo("No se confirmó el cobro.")
+                assertThat((vm.state.value as AngelPayPaymentState.Error).message).isEqualTo(TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO)
                 puertaPost.complete(Unit); runCurrent()   // el 2xx con el aviso
                 val final = vm.state.value as AngelPayPaymentState.Error
                 assertThat(final.message).contains("evidencia de cobro")

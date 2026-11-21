@@ -19,15 +19,22 @@ internal object TextosNoSeCobro {
     const val INTENTAR_DE_NUEVO = "Intentar de nuevo"
     const val VUELVE_A_ENVIAR = "Vuelve a enviar el cobro desde el punto de venta."
 
+    /**
+     * F1-textos (catálogo D5, fila 3 · F-B): el SERVIDOR soltó la cuenta, pero el banco todavía puede aprobar tarde. Nunca «no se
+     * cobró»; si el cliente paga otra vez, mejor en efectivo. Mismo texto en ANDROID y el SERVIDOR.
+     */
+    const val SIN_RESPUESTA_DEL_BANCO = "No se pudo confirmar con el banco. Si el cliente paga otra vez, mejor en efectivo."
+
+    // F1-textos (catálogo D5, fila 21): el lector no vio tarjeta; no se culpa al cliente de no acercarla.
     fun pagoRapido(codigoSdk: String?, mensajeSdk: String?): String = when (normalizar(codigoSdk)) {
-        "U101" -> "Tiempo agotado: nadie acercó una tarjeta. No se cobró nada."
+        "U101" -> "Tiempo agotado: la terminal no leyó ninguna tarjeta. No se cobró nada."
         "E618" -> "Retira la tarjeta del lector: no se cobró nada."
         "U100" -> "Cobro cancelado en la terminal: no se cobró nada."
         else -> "No se cobró nada: ${causa(codigoSdk, mensajeSdk)}"
     }
 
     fun paraElPos(codigoSdk: String?, mensajeSdk: String?): String = when (normalizar(codigoSdk)) {
-        "U101" -> "Nadie acercó una tarjeta: no se cobró."
+        "U101" -> "La terminal no leyó ninguna tarjeta a tiempo: no se cobró."
         "E618" -> "La terminal tenía una tarjeta puesta: no se cobró. Pide que la retiren y vuelve a cobrar."
         "U100" -> "Se canceló en la terminal: no se cobró."
         // §2.4: para E622 · E699 · I999 (y cualquier otro) la tablet dice «lo mismo» que la terminal.

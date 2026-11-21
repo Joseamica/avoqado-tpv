@@ -13,8 +13,11 @@ internal object CobroRemotoDelPos {
     /** El POS canceló ANTES de que nada capaz de autorizar empezara, y la terminal lo aceptó. */
     const val CANCELADO_POR_EL_POS = "El POS canceló este cobro. No se cobró."
 
-    /** Ya salió el desenlace final de esa solicitud: esta terminal no la vuelve a ejecutar. */
-    const val SOLICITUD_CERRADA = "Este cobro ya se cerró. Pídele al POS que lo vuelva a enviar."
+    /**
+     * Ya salió el desenlace final de esa solicitud: esta terminal no la vuelve a ejecutar. F1-textos (catálogo D5, fila 20): pudo
+     * haberse cobrado, así que no se pide reenviarlo sin revisar cómo quedó.
+     */
+    const val SOLICITUD_CERRADA = "Este cobro ya se cerró en Avoqado. Revisa en el POS cómo quedó antes de enviarlo otra vez."
 
     /** El POS pidió cancelar cuando el cobro ya estaba en marcha: la terminal NO lo detiene. */
     const val CANCEL_TARDE = "El POS pidió cancelar, pero el cobro ya empezó: termina o cancela en la terminal."
@@ -26,9 +29,12 @@ internal object CobroRemotoDelPos {
     //    dice AL INSTANTE (`failed + PRE_AUTHORIZATION`, verificado por la bandeja en su transacción) en vez de dejar a la
     //    tablet «esperando a la terminal» hasta que el servidor retenga la ranura como UNKNOWN (medido el 17-sep 21:45). ──
 
-    /** Lo que ve la tablet cuando la terminal tiene otro cobro en curso (founder, 25-sep: sólo eso la aparta). */
+    /**
+     * Lo que ve la tablet cuando la terminal tiene otro cobro en curso (founder, 25-sep: sólo eso la aparta). F1-textos (catálogo D5,
+     * fila 19): si el otro es de la MISMA cuenta, mandarla a otra terminal la cobra dos veces; sólo se ofrece si es de otra.
+     */
     const val NO_INICIADO_POR_COBRO_EN_CURSO =
-        "La terminal tiene otro cobro en curso: este cobro NO se inició. Espera a que termine y vuelve a enviarlo, o cobra con otra terminal."
+        "La terminal está ocupada con otro cobro: este no se inició. Espera a que termine; si el otro es de otra cuenta, usa otra terminal."
 
     /** Lo que ve la tablet cuando la terminal está terminando una devolución con AngelPay (unos segundos, founder 29-sep). */
     const val NO_INICIADO_POR_DEVOLUCION_EN_CURSO =
@@ -63,15 +69,20 @@ internal object CobroRemotoDelPos {
     fun laTerminalRechazariaUnaVentaNueva(estado: PaymentStateProvider): Boolean =
         motivoParaNoIniciar(enPantallaDeCobro = true, estado = estado) != null
 
-    /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
+    /**
+     * Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). F1-textos (catálogo
+     * D5, fila 18): no se cambió; ver [noIniciadoEnLaTerminal].
+     */
     const val NO_INICIADO_SIN_DETALLE =
         "La terminal no pudo iniciar este cobro (tiene un cobro pendiente o no pudo guardar el intento): este cobro NO se inició."
 
     /** La pantalla de la terminal, NOMBRANDO la fila que la aparta («$10.00, hace 2 min») cuando se conoce. */
     fun noIniciadoEnLaTerminal(queLaAparta: String?): String = if (queLaAparta != null) {
-        "Este cobro del POS NO se inició: la terminal tiene otro cobro en curso ($queLaAparta). " +
-            "Espera a que termine o cobra con otra terminal."
+        // F1-textos (catálogo D5, fila 19): sin «cobra con otra terminal» (si es la misma cuenta, la cobra dos veces).
+        "Este cobro del POS no se inició: la terminal está ocupada con otro ($queLaAparta). Espera a que termine."
     } else {
+        // F1-textos (fila 18, no hecha): para escoger entre «una cuenta por confirmar» y «no se pudo guardar» habría que leer aquí
+        // la fila que cerca la venta (una consulta nueva); queda la frase de hoy, que no afirma ninguna de las dos.
         "Este cobro del POS NO se inició: la terminal tiene un cobro pendiente o no pudo guardar el intento. No se cobró."
     }
 

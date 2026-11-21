@@ -101,7 +101,8 @@ sealed interface ResultadoDeLaDeclaracion {
         HayEvidenciaEnAvoqado -> "Avoqado encontró información que impide liberar este cobro."
         // Codex código r2 #5: no firmó este gerente; la declaración ya estaba (no hay un nombre que mostrar: el acuse trae un id).
         // F1 bloque 7: la declaración que ya estaba guardada (otra persona, o la respuesta perdida): nunca «quedó tu firma».
-        YaDeclaradoEnAvoqado -> "Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar."
+        // F1-textos (catálogo D5, fila 6): la de ANDROID (`yaEstabaDeclarada`), sin la hora: este texto no la tiene a la mano.
+        YaDeclaradoEnAvoqado -> "Avoqado ya tenía guardada la firma de este cobro. No se agregó otra."
         FaltaConsultar -> "Primero hay que consultar a Avoqado: conéctate a internet."
         SinPermiso -> "Para dejar constancia de que no se cobró se necesita el permiso de conciliar cobros; pídeselo a tu gerente."
         UsaElPos -> "Esta versión todavía no permite declararlo desde la terminal: contéstalo en el POS."
@@ -113,13 +114,15 @@ sealed interface ResultadoDeLaDeclaracion {
         EsDevolucion -> "Es una devolución: se revisa en Devoluciones, no aquí."
         EnLaCola -> "Este cobro ya está en la cola para subir a Avoqado. No lo vuelvas a cobrar."
         AprobadoSinRegistro -> "El banco autorizó este intento. Falta confirmar el registro."
+        // F1-textos (catálogo D5, filas 4 y 5 ⚙): aquí no se escoge por flujo (la fila no viaja en el resultado; pasarla cruzaría
+        // capas): va la frase que vale para POS → TPV y para TPV SOLA.
         HistorialPendiente -> FrenoDelResuelto.HISTORIAL_PENDIENTE.texto
         TarjetaPorConfirmar -> FrenoDelResuelto.TARJETA_FRENADA.texto
         // D22: después de declarar un Pago rápido se dice cuál de los dos pasó; la confirmación no lo podía saber de antemano.
-        // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no».
-        DeclaradoEnAvoqado -> "Listo: quedó en Avoqado la firma del gerente, con su nombre y la hora: revisó la terminal y este cobro no aparece. Ya se puede volver a cobrar."
-        DeclaradoSoloEnLaTerminal ->
-            "Listo, pero Avoqado no lo recibió: quedó anotado sólo en esta terminal y no aparece en Avoqado. Puedes volver a cobrar."
+        // F1: lo que acredita la firma es lo que el gerente revisó, no que el banco dijo «no». F1-textos (fila 7): lo lee el gerente mismo.
+        DeclaradoEnAvoqado -> "Listo: quedó tu firma con tu nombre y la hora."
+        // F1-textos (fila 8 · F-F): puede que Avoqado sí la guardó y se perdió la respuesta; no se invita a cobrar.
+        DeclaradoSoloEnLaTerminal -> FALTA_CONFIRMAR_LA_REVISION
         Declarado, PidePin -> ""
     }
 }

@@ -14,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.payment.data.ledger.BlumonAttemptResolver
+import com.jaac.avoqado_tpv.features.payment.data.ledger.FALTA_CONFIRMAR_LA_REVISION
+import com.jaac.avoqado_tpv.features.payment.data.ledger.SE_MARCO_COMO_NO_COBRADO
 import java.math.BigDecimal
 
 /**
@@ -43,14 +45,15 @@ internal fun textoDelIntentoCerrado(
     /** 🔴 Familia «el texto miente» (Codex final r2): si algo de este cobro todavía frena su tarjeta, eso se dice en vez de «volver a cobrar». */
     freno: com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto? = null,
 ): String =
-    if (freno != null) freno.freno.texto
-    else if (com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.declaradoEnAvoqado(lastError))
-        "Quedó anotado en Avoqado que se revisó y no se cobró, con el nombre de quien lo declaró y la hora. Puedes volver a cobrar esta venta."
-    else if (lastError?.startsWith("declarado_sin_cobro:") == true)
-        "Quedó anotado sólo en esta terminal que revisaste y no se cobró: Avoqado no lo recibió y no aparece ahí. Puedes volver a cobrar esta venta."
+    // F1-textos (catálogo D5, fila 5 ⚙): la frase según la fila que frena (cobro del POS o de la terminal sola).
+    if (freno != null) freno.textoSegunElFlujo
+    // F1-textos (fila 9a · F-D): quién lo decidió y que la cuenta ya se puede cobrar, igual que ANDROID y el SERVIDOR.
+    else if (com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.declaradoEnAvoqado(lastError)) SE_MARCO_COMO_NO_COBRADO
+    // F1-textos (fila 9b · F-F): no consta que Avoqado lo tenga (puede haberse perdido la respuesta): no se invita a cobrar.
+    else if (lastError?.startsWith("declarado_sin_cobro:") == true) FALTA_CONFIRMAR_LA_REVISION
     // D5 (533d77, Codex r4): neutral. La liberación del servidor deja el mismo `last_error` para «no presentó tarjeta» y para
-    // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó.
-    else "Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar."
+    // «revisé y no se cobró» declarado en el POS; en un chip que rechazó tras aprobar, la tarjeta SÍ se presentó. F1-textos (9c · F-D).
+    else SE_MARCO_COMO_NO_COBRADO
 
 /** D5 (533d77): ¿la duda es «el banco aprobó y la tarjeta rechazó el cierre»? */
 internal fun chipRechazoTrasAprobacion(lastError: String?): Boolean =

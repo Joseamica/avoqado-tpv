@@ -316,10 +316,25 @@ class PaymentAttemptLedgerTest {
 
         val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 180_000L)
 
-        assertThat(motivo).contains("Esta cuenta tiene un cobro con tarjeta por confirmar")
+        // F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca es de la terminal sola (sin solicitud del POS): espera al gerente.
+        assertThat(motivo).contains("Esta cuenta tiene un cobro por confirmar")
+        assertThat(motivo).contains("Avísale al gerente.")
         assertThat(motivo).contains("\$120.00")
         assertThat(motivo).contains("hace 3 min")
         assertThat(motivo).doesNotContain("No se pudo guardar el intento")
+    }
+
+    @Test
+    fun `F1-textos fila 17 si la venta la cerca un cobro del POS, la barrera dice que se libera sola al techo`() = runTest {
+        coEvery { dao.otraCercaDeLaTarjeta(any(), any(), any()) } returns
+            fila("otro", 12000, 0L).copy(terminalPaymentRequestId = "req-del-pos")
+        coEvery { dao.findTerminalHold(any()) } returns null
+
+        val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 120_000L)
+
+        assertThat(motivo).isEqualTo(
+            "Esta cuenta tiene una tarjeta por confirmar (\$120.00, hace 2 min). No se inició otro cobro. " +
+                "Se libera sola a los 5 min o con el gerente.")
     }
 
     @Test

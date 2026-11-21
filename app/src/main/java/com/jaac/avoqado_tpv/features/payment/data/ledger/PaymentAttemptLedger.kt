@@ -1669,6 +1669,8 @@ class PaymentAttemptLedger(
         return AvisoDeCobrosPendientes.barreraDeLaLibreta(
             laVenta, elAparato,
             laVentaYaCobrada = laVenta != null && filaVenta != null && esCobroPorReconocer(filaVenta),
+            // F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca ya está a la mano; con solicitud es un cobro del POS.
+            laVentaLaApartaUnCobroDelPos = !filaVenta?.terminalPaymentRequestId.isNullOrBlank(),
         )
     }
 
@@ -1854,17 +1856,65 @@ private val ESTADOS_A_SALVO = setOf(
  * del workspace): por qué todavía NO se puede decir de un cobro «ya se puede volver a cobrar», «ya se resolvió» ni «hay una declaración
  * guardada». Lo decide [PaymentAttemptLedger.loQueFrenaElResuelto]; [texto] es lo que se dice en su lugar (R5: sin afirmar de más).
  */
-enum class FrenoDelResuelto(val texto: String) {
+enum class FrenoDelResuelto(
+    /** F1-textos (catálogo D5): la frase que vale para los dos flujos; la usa quien no tiene la fila a la mano («Por revisar»). */
+    val texto: String,
+    /** **POS → TPV**: la fila que frena trae `terminal_payment_request_id` (se suelta sola al techo o con el gerente). */
+    private val delPos: String = texto,
+    /** **TPV SOLA**: la fila que frena es un cobro local (sólo la suelta el gerente). */
+    private val local: String = texto,
+) {
     /** Un intento de la MISMA solicitud (o el propio) tiene dinero o un aprobado: en Room, en memoria o de Avoqado. */
     DINERO("No vuelvas a pasar la tarjeta ni cobres esta venta en efectivo. Revisa el pago con el gerente; la evidencia sigue guardada."),
-    /** Una lectura del historial de AngelPay despachada sin respuesta escrita: frena la tarjeta en la N86 y se sigue consultando. */
-    HISTORIAL_PENDIENTE("Historial de AngelPay pendiente: no vuelvas a cobrar esta tarjeta todavía. Si sigue así, avisa a soporte."),
-    /** Otra fila de este cobro o de su cuenta todavía frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]). */
-    TARJETA_FRENADA("Todavía falta confirmar un cobro con tarjeta de esta venta: no la vuelvas a cobrar con tarjeta todavía. Vuelve a consultar en un momento."),
+    /**
+     * Una lectura del historial de AngelPay despachada sin respuesta escrita: frena la tarjeta en la N86 y se sigue consultando.
+     * F1-textos (catálogo D5, fila 4 ⚙): sin «historial de AngelPay» ni «soporte»; quien decide es el gerente.
+     */
+    HISTORIAL_PENDIENTE(
+        texto = TEXTO_CONFIRMANDO,
+        delPos = "$TEXTO_CONFIRMANDO Se libera sola a los $MINUTOS_DEL_TECHO.",
+        local = "$TEXTO_CONFIRMANDO Avísale al gerente.",
+    ),
+    /**
+     * Otra fila de este cobro o de su cuenta todavía frena la tarjeta ([PaymentAttemptEntity.SQL_CERCA_LA_TARJETA]).
+     * F1-textos (catálogo D5, fila 5 ⚙): «vuelve a consultar en un momento» era falso en **TPV SOLA**.
+     */
+    TARJETA_FRENADA(
+        texto = TEXTO_CUENTA_POR_CONFIRMAR,
+        delPos = "Otra tarjeta de esta cuenta sigue por confirmar. Se libera sola a los $MINUTOS_DEL_TECHO o con el gerente.",
+        local = TEXTO_CUENTA_POR_CONFIRMAR,
+    ),
+    ;
+
+    /** F1-textos (⚙ filas 4 y 5): la frase según el flujo de la fila que frena; sin fila, la que vale para los dos. */
+    fun textoSegun(fila: PaymentAttemptEntity?): String = when {
+        fila == null -> texto
+        !fila.terminalPaymentRequestId.isNullOrBlank() -> delPos
+        else -> local
+    }
 }
 
+/** K19a (`diseno.md`), la misma de [com.jaac.avoqado_tpv.features.payment.presentation.CONFIRMANDO_CON_EL_BANCO]. */
+private const val TEXTO_CONFIRMANDO = "Confirmando con el banco… No pases la tarjeta otra vez."
+
+/** K19c (`diseno.md`): una tarjeta de esta cuenta espera al gerente. */
+private const val TEXTO_CUENTA_POR_CONFIRMAR = "Esta cuenta tiene un cobro por confirmar. Avísale al gerente."
+
+/** F1-textos (catálogo D5 · F-D): una persona (el gerente) firmó «no se cobró». Mismo texto en ANDROID y el SERVIDOR. */
+const val SE_MARCO_COMO_NO_COBRADO = "Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta."
+
+/** F1-textos (catálogo D5 · F-F + qué hacer): se firmó, pero no consta que Avoqado recibió la firma: no se invita a cobrar. */
+const val FALTA_CONFIRMAR_LA_REVISION =
+    "Falta confirmar si Avoqado recibió la revisión. No la cobres otra vez todavía: avísale al gerente."
+
+/** F1-textos: «5 min», leído del techo de la duda de un cobro del POS, nunca escrito a mano. */
+internal val MINUTOS_DEL_TECHO: String = "${PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS / 60_000} min"
+
 /** [fila] = la que lo impide (null si la libreta no se pudo leer: se falla cerrado). */
-data class LoQueFrenaElResuelto(val freno: FrenoDelResuelto, val fila: PaymentAttemptEntity?)
+data class LoQueFrenaElResuelto(val freno: FrenoDelResuelto, val fila: PaymentAttemptEntity?) {
+    /** F1-textos (⚙ filas 4 y 5): lo que se dice, según si la fila que frena es de un cobro del POS o de la terminal sola. */
+    val textoSegunElFlujo: String get() = freno.textoSegun(fila)
+}
 
 /** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */
 private val ESPERANDO_AL_BANCO = setOf(

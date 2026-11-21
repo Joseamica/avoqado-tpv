@@ -4295,10 +4295,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         esperaAlServidorJob?.cancel()
         clearChargingOnTerminal()
         _state.value = AngelPayPaymentState.ResultadoIncierto(
-            message = freno.freno.texto,
+            // F1-textos (catálogo D5, filas 4 y 5 ⚙): la frase según la fila que frena (cobro del POS o de la terminal sola).
+            message = freno.textoSegunElFlujo,
             verificando = false,
             totalDelIntento = java.math.BigDecimal.valueOf(fila.amountCents + fila.tipCents, 2),
             historialPendiente = freno.freno == com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE,
+            textoDelHistorial = freno.textoSegunElFlujo,
         )
     }
 
@@ -4433,10 +4435,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         liberacionMostrada = true
         val mostrado = AngelPayPaymentState.Error(
             message = when (evidencia) {
-                "OPERATOR_RECONCILED" -> "Confirmado: no se presentó tarjeta. Se puede volver a cobrar."
+                // F1-textos (catálogo D5, fila 10 · F-D): ni culpa al cliente ni dice que no presentó tarjeta; una persona lo revisó.
+                "OPERATOR_RECONCILED" -> com.jaac.avoqado_tpv.features.payment.data.ledger.SE_MARCO_COMO_NO_COBRADO
                 // Codex plan A #2: «si el banco lo aprueba tarde, se registra solo» era falso (el aviso de AngelPay sale una vez y las
-                // consultas de la terminal se agotan).
-                else -> "No se confirmó el cobro."
+                // consultas de la terminal se agotan). F1-textos (fila 3 · F-B): el banco todavía puede aprobar tarde.
+                else -> TextosNoSeCobro.SIN_RESPUESTA_DEL_BANCO
             },
             canRetry = false,
         )

@@ -122,7 +122,8 @@ class AngelPayPaymentScreenSalidaTest {
     @Test
     fun `N86 la duda con el historial de AngelPay pendiente lo dice`() {
         val linea = Regex(
-            """if \(state\.historialPendiente\) \{[^}]*text = com\.jaac\.avoqado_tpv\.features\.payment\.data\.ledger\.FrenoDelResuelto\.HISTORIAL_PENDIENTE\.texto""",
+            // F1-textos (catálogo D5, fila 4 ⚙): la frase la escoge el ViewModel según la fila que frena.
+            """if \(state\.historialPendiente\) \{[^}]*text = state\.textoDelHistorial""",
         )
         assertTrue("La duda con el historial pendiente lo dice.", linea.containsMatchIn(contenidoIncierto))
         assertTrue("Y sigue con [Seguir].", contenidoIncierto.contains("Text(\"Seguir\")"))

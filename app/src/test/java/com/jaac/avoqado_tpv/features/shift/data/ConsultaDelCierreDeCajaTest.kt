@@ -175,6 +175,17 @@ class ConsultaDelCierreDeCajaTest {
     // ── El mensaje: qué falta y qué hacer ───────────────────────────────────────────────────────────────────────────────────
 
     @Test fun `el mensaje cuenta lo que falta, en singular y en plural`() {
+        // F1-textos (catálogo D5, fila 24 · K27): con respuesta de Avoqado.
+        for ((operaciones, delPos, esperado) in listOf(
+            Triple(1, 0, "Hay una operación con tarjeta por confirmar: no se puede cerrar. Avísale al gerente."),
+            Triple(3, 0, "Hay 3 operaciones con tarjeta por confirmar: no se puede cerrar."),
+            Triple(0, 1, "Hay una operación del POS sin terminar: no se puede cerrar."),
+            Triple(0, 2, "Hay 2 operaciones del POS sin terminar: no se puede cerrar."),
+            Triple(1, 2, "Hay una operación con tarjeta por confirmar y 2 operaciones del POS sin terminar: no se puede cerrar."),
+        )) {
+            assertThat(textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = false)).contains(esperado)
+        }
+        // La variante sin conexión se queda como estaba.
         for ((operaciones, delPos, esperado) in listOf(
             Triple(1, 0, "1 operación con tarjeta sin confirmar"),
             Triple(3, 0, "3 operaciones con tarjeta sin confirmar"),
@@ -182,9 +193,16 @@ class ConsultaDelCierreDeCajaTest {
             Triple(0, 2, "2 operaciones del POS sin terminar"),
             Triple(1, 2, "1 operación con tarjeta sin confirmar y 2 operaciones del POS sin terminar"),
         )) {
-            assertThat(textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = false)).contains(esperado)
             assertThat(textoDelCierreBloqueado(operaciones, delPos, sinRespuesta = true)).contains(esperado)
         }
+    }
+
+    @Test fun `F1-textos fila 24 con una operacion con tarjeta dice K27, quien la revisa y donde`() {
+        assertThat(textoDelCierreBloqueado(1, 0, sinRespuesta = false)).isEqualTo(
+            "Hay una operación con tarjeta por confirmar: no se puede cerrar. Avísale al gerente.\n\n" +
+                "La revisa en Pagos › «Por revisar», o en el POS si vino de ahí. Si no aparece ahí, llama a soporte.")
+        // Desde F1 el cajero ya no «responde» nada en el POS: firma el gerente.
+        cadaMensaje { _, texto -> assertThat(texto).doesNotContain("responde") }
     }
 
     /** Todas las combinaciones que pueden bloquear un cierre, con y sin respuesta de Avoqado. */
@@ -199,15 +217,22 @@ class ConsultaDelCierreDeCajaTest {
         assertThat(texto.lowercase()).doesNotContain("venta")
     }
 
-    @Test fun `M-1 con una sola habla en singular y con varias en plural`() = cadaMensaje { total, texto ->
-        if (total == 1) {
-            assertThat(texto).contains("No la repitas")
-            assertThat(texto).doesNotContain("Las que")
-            assertThat(texto).doesNotContain("siguen")
-        } else {
-            assertThat(texto).contains("No las repitas")
-            assertThat(texto).doesNotContain("Si vino")
-            assertThat(texto).doesNotContain("sigue igual")
+    @Test fun `M-1 con una sola habla en singular y con varias en plural`() {
+        for (sinRespuesta in listOf(false, true)) for (operaciones in 0..3) for (delPos in 0..3) {
+            val total = operaciones + delPos
+            if (total == 0) continue
+            val texto = textoDelCierreBloqueado(operaciones, delPos, sinRespuesta)
+            if (sinRespuesta) {
+                assertThat(texto).contains(if (total == 1) "No la repitas" else "No las repitas")
+            } else if (total == 1) {
+                assertThat(texto).contains("La revisa")
+                assertThat(texto).doesNotContain("Las revisa")
+                assertThat(texto).doesNotContain("vinieron")
+            } else {
+                assertThat(texto).contains("Las revisa")
+                assertThat(texto).doesNotContain("La revisa")
+                assertThat(texto).doesNotContain("si vino")
+            }
         }
     }
 
@@ -220,6 +245,8 @@ class ConsultaDelCierreDeCajaTest {
         assertThat(conRed).doesNotContain("Sin conexión")
         assertThat(conRed).contains("POS")
         assertThat(conRed).contains("soporte")
+        // F1-textos (fila 24): primero el gerente, después soporte.
+        assertThat(conRed.indexOf("gerente")).isLessThan(conRed.indexOf("soporte"))
     }
 
     /** D20: lo que el aviso verde ya no nombra se resuelve en Pagos › «Por revisar»; soporte queda al final, no como única salida. */

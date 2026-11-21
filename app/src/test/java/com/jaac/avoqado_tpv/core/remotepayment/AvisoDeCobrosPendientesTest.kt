@@ -76,7 +76,10 @@ class AvisoDeCobrosPendientesTest {
         assertThat(texto).contains("«Revisar»")
         assertThat(texto).contains("gerente")
         assertThat(texto).doesNotContain("«No se cobró»")
-        assertThat(texto).contains("no lo vuelvas a cobrar")
+        // F1-textos (catálogo D5, fila 23): sólo prohíbe la tarjeta (el efectivo sí se deja, D10 «B»).
+        assertThat(texto).isEqualTo(
+            "Por revisar: cobro con tarjeta de \$10.00 sin confirmar (hace 3 h). El gerente lo revisa con su PIN en «Revisar». " +
+                "Mientras, no lo cobres otra vez con tarjeta.")
         // Un Pago rápido de la PAX no llega a Avoqado: decir que «Avoqado lo concilia» sería una pantalla que miente.
         assertThat(texto).doesNotContain("Avoqado")
     }
@@ -174,8 +177,30 @@ class AvisoDeCobrosPendientesTest {
             apartaLaVenta = "\$120.00, hace 3 min", apartaElAparato = "\$50.00, hace 1 h",
         )
 
-        assertThat(texto).contains("Esta cuenta tiene un cobro con tarjeta por confirmar (\$120.00, hace 3 min)")
+        assertThat(texto).contains("Esta cuenta tiene un cobro por confirmar (\$120.00, hace 3 min)")
         assertThat(texto).doesNotContain("\$50.00")
+    }
+
+    // ── F1-textos (catálogo D5, fila 17 ⚙): la frase según quién cerca la cuenta ──
+
+    @Test fun `F1-textos fila 17 si la cerca un cobro de la terminal sola, espera al gerente`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta("\$120.00, hace 2 min", null)
+        assertThat(texto).isEqualTo(
+            "Esta cuenta tiene un cobro por confirmar (\$120.00, hace 2 min). No se inició otro cobro. Avísale al gerente.")
+    }
+
+    @Test fun `F1-textos fila 17 si la cerca un cobro del POS, se libera sola al techo o con el gerente`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta("\$120.00, hace 2 min", null, laVentaLaApartaUnCobroDelPos = true)
+        assertThat(texto).isEqualTo(
+            "Esta cuenta tiene una tarjeta por confirmar (\$120.00, hace 2 min). No se inició otro cobro. " +
+                "Se libera sola a los 5 min o con el gerente.")
+        // «5 min» sale del techo de la libreta, no escrito a mano.
+        assertThat(texto).contains("${com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS / 60_000} min")
+    }
+
+    @Test fun `F1-textos fila 17 un cobro que si paso gana a la eleccion por flujo`() {
+        val texto = AvisoDeCobrosPendientes.barreraDeLaLibreta("\$40.00, hace 5 min", null, laVentaYaCobrada = true, laVentaLaApartaUnCobroDelPos = true)
+        assertThat(texto).contains("ya se cobró")
     }
 
     @Test fun `la barrera del aparato nombra un cobro EN CURSO y dice como salir`() {

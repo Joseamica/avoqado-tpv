@@ -26,14 +26,27 @@ internal fun textoDelCierreBloqueado(operaciones: Int, delPos: Int, sinRespuesta
     // D20 (founder, 17-nov: «lista»): lo que el aviso verde ya no nombra se declara en Pagos › «Por revisar»; soporte queda al final.
     // Sólo si hay operaciones con tarjeta: las del POS no salen ahí. «Búscala… si no aparece» (Codex r1 #2): aquí también cuentan una
     // devolución, un aprobado del banco o algo en curso, que «Por revisar» no ofrece declarar. Y sin «cobro» ni «venta» (M-1).
-    val queHacer = when {
-        sinRespuesta -> "Sin conexión con Avoqado no se puede confirmar qué pasó. $noRepetir Revisa el internet de la terminal y vuelve a cerrar."
-        varias && operaciones > 0 -> "Las que vinieron del POS se responden ahí; las demás, búscalas en Pagos › «Por revisar». Si no aparecen ahí o siguen igual, llama a soporte. $noRepetir Después vuelve a cerrar."
-        varias -> "Las que vinieron del POS se responden ahí; para las demás, o si siguen igual, llama a soporte. $noRepetir Después vuelve a cerrar."
-        operaciones > 0 -> "Si vino del POS, responde ahí qué pasó; si no, búscala en Pagos › «Por revisar». Si no aparece ahí o sigue igual, llama a soporte. $noRepetir Después vuelve a cerrar."
-        else -> "Si vino del POS, responde ahí qué pasó; si no, o si sigue igual, llama a soporte. $noRepetir Después vuelve a cerrar."
+    // La variante sin conexión se queda como estaba (catálogo D5, fila 24).
+    if (sinRespuesta) {
+        return "No se puede cerrar la caja: hay $falta.\n\n" +
+            "Sin conexión con Avoqado no se puede confirmar qué pasó. $noRepetir Revisa el internet de la terminal y vuelve a cerrar."
     }
-    return "No se puede cerrar la caja: hay $falta.\n\n$queHacer"
+    // F1-textos (catálogo D5, fila 24 · K27 de `diseno.md`): desde F1 el cajero no «responde» nada (firma el gerente), y soporte va
+    // después del gerente. Se conserva «si no aparece ahí» (Codex r1 #2): lo que bloquea puede ser una devolución, un aprobado o algo
+    // en curso, que «Por revisar» no ofrece.
+    fun cuentaK27(cuantas: Int, cuales: String) = when (cuantas) {
+        0 -> null
+        1 -> "una operación $cuales"
+        else -> "$cuantas operaciones $cuales"
+    }
+    val hay = listOfNotNull(cuentaK27(operaciones, "con tarjeta por confirmar"), cuentaK27(delPos, "del POS sin terminar")).joinToString(" y ")
+    val donde = when {
+        varias && operaciones > 0 -> "Las revisa en Pagos › «Por revisar», o en el POS si vinieron de ahí. Si no aparecen ahí, llama a soporte."
+        varias -> "Las revisa en el POS. Si no aparecen ahí, llama a soporte."
+        operaciones > 0 -> "La revisa en Pagos › «Por revisar», o en el POS si vino de ahí. Si no aparece ahí, llama a soporte."
+        else -> "La revisa en el POS. Si no aparece ahí, llama a soporte."
+    }
+    return "Hay $hay: no se puede cerrar. Avísale al gerente.\n\n$donde"
 }
 
 /**

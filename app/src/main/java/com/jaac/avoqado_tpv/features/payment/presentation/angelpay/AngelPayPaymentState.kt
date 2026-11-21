@@ -198,6 +198,8 @@ sealed class AngelPayPaymentState {
          * respuesta y frena su tarjeta: la pantalla lo dice en vez de «Se puede volver a cobrar». La fila se sigue consultando sola.
          */
         val historialPendiente: Boolean = false,
+        /** F1-textos (catálogo D5, fila 4 ⚙): la frase de [historialPendiente] según el flujo de la fila que frena. */
+        val textoDelHistorial: String = com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE.texto,
     ) : AngelPayPaymentState()
 
     /**

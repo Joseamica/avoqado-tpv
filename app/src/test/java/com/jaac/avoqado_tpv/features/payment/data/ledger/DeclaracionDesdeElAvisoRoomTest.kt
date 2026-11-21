@@ -580,7 +580,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         assertThat(declaracion.declarar(venue, cobro, "918273")).isEqualTo(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado)
         assertThat(dao.getById("a-1")!!.lastError).isEqualTo("declarado_sin_cobro:gerente-1:avoqado")
         assertThat(cuerpo.captured.amountCents).isEqualTo(10_000)
-        assertThat(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado.texto()).contains("la firma del gerente")
+        assertThat(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado.texto()).isEqualTo("Listo: quedó tu firma con tu nombre y la hora.")
     }
 
     @Test fun `P1 Codex 1 - falla SOLO la escritura del veto y la siguiente escritura funciona - no se declara y dice hay evidencia`() = runBlocking<Unit> {
@@ -907,7 +907,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         val dijo = declaracion.declarar(venue, cobro, pinDelGerente)
         assertThat(dijo).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
         // F1 bloque 7 (R5): el comprobante guardado se dice neutro: «Avoqado tiene guardada una declaración».
-        assertThat(dijo!!.texto()).isEqualTo("Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.")
+        assertThat(dijo!!.texto()).isEqualTo("Avoqado ya tenía guardada la firma de este cobro. No se agregó otra.")
         assertThat(dijo.texto()).doesNotContain("gerente")
         assertThat(dao.getById("a-2")!!.lastError).isEqualTo("declarado_sin_cobro:cajera:avoqado")
 
@@ -1230,7 +1230,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         }
         val resultado = declaracion.declarar(venue, cobro, pinDelGerente)
         assertThat(resultado).isEqualTo(ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado)
-        assertThat(resultado!!.texto()).isEqualTo("Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.")
+        assertThat(resultado!!.texto()).isEqualTo("Avoqado ya tenía guardada la firma de este cobro. No se agregó otra.")
         assertThat(resultado.texto()).doesNotContain("firma del gerente")
     }
 
@@ -1327,7 +1327,8 @@ class DeclaracionDesdeElAvisoRoomTest {
     // ── 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3, `pasada-r2-tpv.md` del workspace) ────────────────
 
     private val historialPendiente =
-        "Historial de AngelPay pendiente: no vuelvas a cobrar esta tarjeta todavía. Si sigue así, avisa a soporte."
+        // F1-textos (catálogo D5, fila 4): en «Por revisar», la frase que vale para los dos flujos.
+        "Confirmando con el banco… No pases la tarjeta otra vez."
 
     /** Otro intento físico de una solicitud del POS («Reintentar»), insertado tal cual. */
     private suspend fun hermano(id: String, requestId: String, estado: String, processor: String = "ANGELPAY") {

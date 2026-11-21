@@ -75,17 +75,19 @@ object AvisoDeCobrosPendientes {
         val masReciente = cobros.firstOrNull() ?: return null
         // Codex r1 #1 y r2: con la consulta llena puede haber más viejos; se dice y el recuadro ofrece «Ver anteriores».
         val tope = if (recortada) " Hay más anteriores: toca «Ver anteriores»." else ""
-        // F1 (tarea 4): lo revisa el gerente con su PIN; el cajero no decide.
-        val queHacer = "El gerente lo revisa en «Revisar» con su PIN; mientras, no lo vuelvas a cobrar.$tope"
+        // F1 (tarea 4): lo revisa el gerente con su PIN; el cajero no decide. F1-textos (catálogo D5, fila 23): más corto para el
+        // recuadro de 360 dp, y sólo prohíbe la TARJETA (el efectivo sí se deja, D10 «B»).
         if (cobros.size == 1) {
-            return "Por revisar: un cobro con tarjeta de ${pesos(masReciente.totalCentavos)} quedó sin confirmar " +
-                "(${antiguedad(ahoraMillis - masReciente.desdeMillis)}). $queHacer"
+            return "Por revisar: cobro con tarjeta de ${pesos(masReciente.totalCentavos)} sin confirmar " +
+                "(${antiguedad(ahoraMillis - masReciente.desdeMillis)}). El gerente lo revisa con su PIN en «Revisar». " +
+                "Mientras, no lo cobres otra vez con tarjeta.$tope"
         }
         val nombradas = cobros.take(MAXIMO_ENUMERADO)
         val resto = cobros.size - nombradas.size
         val enumeradas = nombradas.joinToString(", ") { "${pesos(it.totalCentavos)} ${antiguedad(ahoraMillis - it.desdeMillis)}" }
         val cola = if (resto > 0) ", y $resto más" else ""
-        return "Por revisar: ${cobros.size} cobros con tarjeta quedaron sin confirmar: $enumeradas$cola. $queHacer"
+        return "Por revisar: ${cobros.size} cobros con tarjeta sin confirmar: $enumeradas$cola. " +
+            "El gerente los revisa con su PIN en «Revisar». Mientras, no los cobres otra vez con tarjeta.$tope"
     }
 
     /**
@@ -148,16 +150,21 @@ object AvisoDeCobrosPendientes {
      */
     fun barreraDeLaLibreta(
         apartaLaVenta: String?, apartaElAparato: String?, laVentaYaCobrada: Boolean = false,
+        /** F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca la venta es de un cobro del POS (se suelta sola al techo). */
+        laVentaLaApartaUnCobroDelPos: Boolean = false,
     ): String = when {
         // Decisión del founder (23-sep): un cobro que SÍ pasó se resuelve con el «Entendido» del aviso, no en otra terminal.
         apartaLaVenta != null && laVentaYaCobrada ->
             "Esta venta ya se cobró ($apartaLaVenta): Avoqado lo registró. NO se inició otro cobro. " +
                 "Toca «Entendido» en el aviso de arriba."
         // La venta primero: es la más específica y la que de verdad puede cobrarse dos veces.
-        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide.
+        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide. F1-textos (catálogo D5, fila 17 ⚙):
+        // si la que cerca es un cobro del POS, se suelta sola al techo, y se dice.
+        apartaLaVenta != null && laVentaLaApartaUnCobroDelPos ->
+            "Esta cuenta tiene una tarjeta por confirmar ($apartaLaVenta). No se inició otro cobro. " +
+                "Se libera sola a los ${com.jaac.avoqado_tpv.features.payment.data.ledger.MINUTOS_DEL_TECHO} o con el gerente."
         apartaLaVenta != null ->
-            "Esta cuenta tiene un cobro con tarjeta por confirmar ($apartaLaVenta). NO se inició otro cobro. " +
-                "No la repitas: avísale al gerente."
+            "Esta cuenta tiene un cobro por confirmar ($apartaLaVenta). No se inició otro cobro. Avísale al gerente."
         // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
             "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +

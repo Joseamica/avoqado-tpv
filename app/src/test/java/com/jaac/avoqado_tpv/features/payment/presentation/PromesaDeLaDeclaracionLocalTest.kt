@@ -19,8 +19,10 @@ import org.junit.Test
 class PromesaDeLaDeclaracionLocalTest {
 
     private fun promesaHonesta(texto: String) {
-        assertThat(texto).contains("en esta terminal")
-        assertThat(texto).contains("no aparece")
+        // F1-textos (catálogo D5, fila 9b · F-F): no consta que Avoqado la tenga (puede haberse perdido la respuesta): no se afirma ni
+        // que llegó ni que no, y no se invita a cobrar.
+        assertThat(texto).isEqualTo("Falta confirmar si Avoqado recibió la revisión. No la cobres otra vez todavía: avísale al gerente.")
+        assertThat(texto).doesNotContain("volver a cobrar")
         assertThat(texto).doesNotContain("queda tu nombre")
         assertThat(texto).doesNotContain("registrado")
         assertThat(texto).doesNotContain("no se envía")
@@ -37,14 +39,16 @@ class PromesaDeLaDeclaracionLocalTest {
 
     @Test fun `P1 tras declarar un cobro local que Avoqado guardó dice que quedó en Avoqado (D22)`() {
         val texto = textoDelIntentoCerrado("declarado_sin_cobro:staff-1:avoqado")
-        assertThat(texto).contains("Quedó anotado en Avoqado")
+        // F1-textos (catálogo D5, fila 9a · F-D).
+        assertThat(texto).isEqualTo("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.")
         assertThat(texto).doesNotContain("no aparece")
         assertThat(texto).doesNotContain("sólo en esta terminal")
         assertThat(texto).doesNotContain("avis")
     }
 
     @Test fun `P2 una liberacion que dio el servidor conserva su texto`() {
-        assertThat(textoDelIntentoCerrado(null)).isEqualTo("Quedó guardada la declaración de que no se cobró. Puedes volver a cobrar.")
+        // F1-textos (catálogo D5, fila 9c · F-D).
+        assertThat(textoDelIntentoCerrado(null)).isEqualTo("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.")
     }
 
     // F1 (tarea 4 y Codex código r1 #10): lo que firma el gerente es SU marca, en el mismo paso del PIN; nunca «el banco dijo no».

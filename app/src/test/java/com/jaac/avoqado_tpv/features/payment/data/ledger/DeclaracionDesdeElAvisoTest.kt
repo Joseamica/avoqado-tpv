@@ -183,11 +183,19 @@ class DeclaracionDesdeElAvisoTest {
             ResultadoDeLaDeclaracion.YaResuelto to "Este cobro ya lo revisó otra persona: ya no está por revisar.",
             // F1 (Codex código r2 #5 y #6) → F1 bloque 7 (I4, R5): el comprobante guardado es neutro (nunca «quedó tu firma») y un 409,
             // un veto ajeno o evidencia sin dueño es un impedimento de Avoqado, no «evidencia de este cobro».
-            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Avoqado tiene guardada una declaración de este cobro. Ya se puede volver a cobrar.",
+            // F1-textos (catálogo D5, fila 6): la de ANDROID, sin la hora (este texto no la tiene).
+            ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado to "Avoqado ya tenía guardada la firma de este cobro. No se agregó otra.",
             ResultadoDeLaDeclaracion.HayEvidenciaEnAvoqado to "Avoqado encontró información que impide liberar este cobro.",
             // F1 bloque 7: la aprobación propia sin registro (tabla de I4).
             ResultadoDeLaDeclaracion.AprobadoSinRegistro to "El banco autorizó este intento. Falta confirmar el registro.",
             ResultadoDeLaDeclaracion.Rechazado("lo que dijo el servidor") to "lo que dijo el servidor",
+            // F1-textos (catálogo D5, filas 7 y 8): lo lee el gerente que firmó; sin constancia de Avoqado no se invita a cobrar.
+            ResultadoDeLaDeclaracion.DeclaradoEnAvoqado to "Listo: quedó tu firma con tu nombre y la hora.",
+            ResultadoDeLaDeclaracion.DeclaradoSoloEnLaTerminal to
+                "Falta confirmar si Avoqado recibió la revisión. No la cobres otra vez todavía: avísale al gerente.",
+            // F1-textos (filas 4 y 5): aquí no viaja la fila que frena; va la frase que vale para POS → TPV y TPV SOLA.
+            ResultadoDeLaDeclaracion.HistorialPendiente to "Confirmando con el banco… No pases la tarjeta otra vez.",
+            ResultadoDeLaDeclaracion.TarjetaPorConfirmar to "Esta cuenta tiene un cobro por confirmar. Avísale al gerente.",
         )
         for ((resultado, texto) in textos) assertThat(resultado.texto()).isEqualTo(texto)
         assertThat(DeclaracionDesdeElAviso.TEXTO_GENERICO).isEqualTo("Este cobro todavía no se puede declarar. Vuelve a consultar en un momento.")

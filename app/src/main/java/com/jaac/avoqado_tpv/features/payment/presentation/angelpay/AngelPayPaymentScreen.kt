@@ -996,7 +996,7 @@ private fun ResultadoInciertoContent(
         if (state.historialPendiente) {
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE.texto,
+                text = state.textoDelHistorial,
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )

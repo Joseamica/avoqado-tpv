@@ -246,6 +246,19 @@ class DeviceInfoManager @Inject constructor(
      * @return Result.Error on network failure or server error
      */
     suspend fun checkActivationStatusWithBackend(): Result<ActivationStatusResponse> {
+        val respuesta = consultarActivacionSinEfectos()
+        if (respuesta is Result.Success) aplicarRespuestaDeActivacion(respuesta.data)
+        return respuesta
+    }
+
+    /**
+     * Sólo PREGUNTA al servidor si la terminal está activada; no borra ni repone nada (encargo 097e01).
+     *
+     * El logo la deja correr al fondo sin cancelarla y, si contestó dentro de su espera, aplica la respuesta con
+     * [aplicarRespuestaDeActivacion]; si contesta tarde, sólo se anota. Así una respuesta tardía nunca borra la sesión
+     * con el cajero cobrando, y ninguna respuesta que sí llegó a tiempo se pierde por una cancelación.
+     */
+    suspend fun consultarActivacionSinEfectos(): Result<ActivationStatusResponse> {
         return try {
             val serialNumber = getSerialNumber()
             Timber.d("🔍 Checking activation status with backend for serial: $serialNumber")
@@ -258,41 +271,46 @@ class DeviceInfoManager @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 val status = response.body()!!
                 Timber.d("✅ Backend activation check: isActivated=${status.isActivated}, status=${status.status}")
-
-                // 🚨 SECURITY: Only clear local data if terminal is RETIRED (stolen/revoked)
-                // DO NOT clear on !isActivated - could be temporary server issue
-                // This prevents losing venueId when server is down and comes back up
-                if (status.status == "RETIRED") {
-                    Timber.w("🚨 Terminal RETIRED by administrator - clearing all local data")
-                    secureStorage.clearAll()
-                } else if (!status.isActivated) {
-                    // Terminal not activated but NOT retired - preserve venueId for recovery
-                    // User will be sent to Activation screen but can recover when server confirms
-                    Timber.w("⚠️ Backend says terminal not activated - preserving venueId for recovery")
-                    // NOTE: Do NOT clear secureStorage here - allows recovery when server confirms
-                } else {
-                    // ✅ Square/Toast pattern: Restore local cache from backend if missing
-                    // This handles: app reinstall, cache clear, data migration, variant switch
-                    val localVenueId = secureStorage.getVenueId()
-                    if (localVenueId == null && status.venueId != null) {
-                        Timber.w("🔄 Restoring activation data from backend (local cache was empty)")
-                        Timber.d("   → venueId: ${status.venueId}")
-                        Timber.d("   → serialNumber: $serialNumber")
-                        secureStorage.saveVenueId(status.venueId)
-                        secureStorage.saveSerialNumber(serialNumber)
-                    }
-                }
-
                 Result.Success(status)
             } else {
                 val errorMessage = "Error checking activation: ${response.code()} ${response.message()}"
                 Timber.e("❌ Backend activation check failed: $errorMessage")
                 Result.Error(ApiException.HttpError(response.code(), errorMessage))
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "❌ Network error checking activation status")
             // Offline: Trust local venueId (don't block app)
             Result.Error(ApiException.NetworkError(e))
+        }
+    }
+
+    /** Lo que la respuesta del servidor cambia en el aparato (RETIRED borra; activada repone el venue si falta). */
+    fun aplicarRespuestaDeActivacion(status: ActivationStatusResponse) {
+        // 🚨 SECURITY: Only clear local data if terminal is RETIRED (stolen/revoked)
+        // DO NOT clear on !isActivated - could be temporary server issue
+        // This prevents losing venueId when server is down and comes back up
+        if (status.status == "RETIRED") {
+            Timber.w("🚨 Terminal RETIRED by administrator - clearing all local data")
+            secureStorage.clearAll()
+        } else if (!status.isActivated) {
+            // Terminal not activated but NOT retired - preserve venueId for recovery
+            // User will be sent to Activation screen but can recover when server confirms
+            Timber.w("⚠️ Backend says terminal not activated - preserving venueId for recovery")
+            // NOTE: Do NOT clear secureStorage here - allows recovery when server confirms
+        } else {
+            // ✅ Square/Toast pattern: Restore local cache from backend if missing
+            // This handles: app reinstall, cache clear, data migration, variant switch
+            val localVenueId = secureStorage.getVenueId()
+            if (localVenueId == null && status.venueId != null) {
+                val serialNumber = getSerialNumber()
+                Timber.w("🔄 Restoring activation data from backend (local cache was empty)")
+                Timber.d("   → venueId: ${status.venueId}")
+                Timber.d("   → serialNumber: $serialNumber")
+                secureStorage.saveVenueId(status.venueId)
+                secureStorage.saveSerialNumber(serialNumber)
+            }
         }
     }
 

@@ -88,7 +88,12 @@ class ModulesRepositoryImpl @Inject constructor(
                         ultimaGuardada = estaPeticion
                         secureStorage.saveModules(moduleDtos)
                         _modules.value = modules
-                        true
+                        // El latido borra sin este candado (Codex r3 #3): si la baja cayó a media escritura, se deshace.
+                        if (secureStorage.getVenueId() != venueId) {
+                            _modules.value = emptyList()
+                            secureStorage.clearCachedModules()
+                            false
+                        } else true
                     }
                 }
                 if (!guardada) {

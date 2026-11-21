@@ -3211,8 +3211,10 @@ private fun SplashScreen(
             alFondo = alFondo,
             activadaEnElAparato = { deviceInfoManager.isDeviceActivated() },
             haySesion = { secureStorage.isAuthenticated() },
-            // La activación corre en IO dentro de `decidir` (guarda ahí su respuesta: Codex r2 #1); fetchAndCache ya va en IO.
-            consultarActivacion = { deviceInfoManager.checkActivationStatusWithBackend() },
+            // La activación corre en IO dentro de `decidir`, sin cancelarse; su respuesta sólo se aplica si llegó dentro
+            // de la espera (Codex r3). fetchAndCache ya va en IO.
+            consultarActivacion = { deviceInfoManager.consultarActivacionSinEfectos() },
+            aplicarActivacion = { deviceInfoManager.aplicarRespuestaDeActivacion(it) },
             traerModulos = { modulesRepository.fetchAndCache() }
         )
 

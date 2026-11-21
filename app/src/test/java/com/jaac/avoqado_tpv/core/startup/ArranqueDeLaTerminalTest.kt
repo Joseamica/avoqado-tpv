@@ -44,6 +44,7 @@ class ArranqueDeLaTerminalTest {
     private class Registro {
         var consultas = 0
         var modulosTraidos = 0
+        val aplicadas = mutableListOf<ActivationStatusResponse>()
     }
 
     private suspend fun TestScope.decidir(
@@ -57,6 +58,7 @@ class ArranqueDeLaTerminalTest {
         activadaEnElAparato = { activadaEnElAparato },
         haySesion = { haySesion },
         consultarActivacion = { registro.consultas++; consultar() },
+        aplicarActivacion = { registro.aplicadas += it },
         traerModulos = { traerModulos(); registro.modulosTraidos++ },
         hiloDeRed = EmptyCoroutineContext,
     )
@@ -87,28 +89,48 @@ class ArranqueDeLaTerminalTest {
     }
 
     @Test
-    fun `P1 la activacion que contesta tarde se cancela y no aplica nada - Codex r1 2`() = runTest {
+    fun `P1 la activacion que contesta tarde no se cancela pero no aplica nada - Codex r1 2 y r3`() = runTest {
         val registro = Registro()
-        var efectoAplicado = false
-        var cancelada = false
-        val destino = decidir(registro, consultar = {
-            try {
-                delay(60_000)
-                efectoAplicado = true // como un RETIRED que borra la sesión, o reponer el venue
-                activada
-            } catch (c: kotlinx.coroutines.CancellationException) {
-                cancelada = true
-                throw c
-            }
-        })
+        var contesto = false
+        val destino = decidir(registro, consultar = { delay(60_000); contesto = true; activada })
 
         assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.INICIO)
         advanceTimeBy(120_000)
         runCurrent()
-        assertThat(cancelada).isTrue()
-        assertThat(efectoAplicado).isFalse()
+        assertThat(contesto).isTrue() // nadie la canceló: no se puede tragar una respuesta
+        assertThat(registro.aplicadas).isEmpty() // pero lo que dijo tarde no toca el aparato (RETIRED, reponer venue)
         // Los módulos sí se piden al fondo una vez, como el camino «sin red» de siempre.
         assertThat(registro.modulosTraidos).isEqualTo(1)
+    }
+
+    @Test
+    fun `P1 una respuesta que ya llego se aplica aunque los modulos venzan la espera - Codex r3 1 y 2`() = runTest {
+        var activadaLocal = true
+        val retirada = ActivationStatusResponse(
+            isActivated = true, status = "RETIRED", venueId = "venue-1", venueName = null,
+            venueSlug = null, activatedAt = null, message = null
+        )
+        val destino = ArranqueDeLaTerminal.decidir(
+            alFondo = backgroundScope,
+            activadaEnElAparato = { activadaLocal },
+            haySesion = { true },
+            consultarActivacion = { delay(1_000); Result.Success(retirada) },
+            // Como aplicarRespuestaDeActivacion con RETIRED: borra los datos del aparato.
+            aplicarActivacion = { if (it.status == "RETIRED") activadaLocal = false },
+            traerModulos = { awaitCancellation() },
+            hiloDeRed = EmptyCoroutineContext,
+        )
+
+        assertThat(destino).isEqualTo(ArranqueDeLaTerminal.Destino.ACTIVACION)
+        assertThat(currentTime).isAtMost(ArranqueDeLaTerminal.ESPERA_MAXIMA.inWholeMilliseconds)
+    }
+
+    @Test
+    fun `una respuesta a tiempo se aplica una sola vez`() = runTest {
+        val registro = Registro()
+        decidir(registro, consultar = { activada })
+
+        assertThat(registro.aplicadas).containsExactly(activada.data)
     }
 
     @Test
@@ -173,8 +195,9 @@ class ArranqueDeLaTerminalTest {
             alFondo = backgroundScope,
             activadaEnElAparato = { activadaLocal },
             haySesion = { true },
+            consultarActivacion = { registro.consultas++; delay(30_000); activada },
             // Como checkActivationStatusWithBackend: al contestar «activada» restaura el venue en el aparato.
-            consultarActivacion = { registro.consultas++; delay(30_000); activadaLocal = true; activada },
+            aplicarActivacion = { activadaLocal = true },
             traerModulos = { registro.modulosTraidos++ },
             hiloDeRed = EmptyCoroutineContext,
         )
@@ -198,8 +221,9 @@ class ArranqueDeLaTerminalTest {
             alFondo = backgroundScope,
             activadaEnElAparato = { activadaLocal },
             haySesion = { true },
-            // Como un RETIRED: el aparato borró sus datos y la consulta sigue colgada.
+            // Otra pieza (el latido, RETIRED) borró los datos mientras la consulta sigue colgada.
             consultarActivacion = { activadaLocal = false; awaitCancellation() },
+            aplicarActivacion = {},
             traerModulos = {},
             hiloDeRed = EmptyCoroutineContext,
         )

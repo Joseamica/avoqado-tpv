@@ -372,6 +372,29 @@ class CommandExecutorTest {
         verify { mockLockScreenManager.unlock() }
     }
 
+    /**
+     * D665: el velo del bloqueo ya detiene el dedo, así que una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒
+     * Login, un cobro que mandó el POS, una pantalla de actualización) ya no tiene cómo volver a Inicio tocando. Si UNLOCK
+     * esperara a Inicio como los demás comandos, Avoqado no podría quitar el candado nunca.
+     */
+    @Test
+    fun `P1 D665 UNLOCK se aplica en cualquier pantalla porque el velo ya no deja volver a Inicio`() = runTest {
+        every { mockLockScreenManager.isCurrentlyLocked() } returns true
+        listOf("login", "payment", "self_update").forEachIndexed { i, ruta ->
+            CommandExecutionWindow.setRoute(ruta)
+            val result = commandExecutor.execute(createCommand(TpvCommandType.UNLOCK).copy(commandId = "unlock-$i"))
+            assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        }
+        verify(exactly = 3) { mockLockScreenManager.unlock() }
+    }
+
+    @Test
+    fun `P1 D665 LOCK sigue esperando a Inicio aunque UNLOCK ya no espere`() = runTest {
+        CommandExecutionWindow.setRoute("login")
+        assertThat(commandExecutor.execute(createCommand(TpvCommandType.LOCK)).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
+        verify(exactly = 0) { mockLockScreenManager.lock(any(), any(), any()) }
+    }
+
     @Test
     fun `UNLOCK command should be rejected when not locked`() = runTest {
         // Given

@@ -145,8 +145,12 @@ class CommandExecutor @Inject constructor(
         if (!commandInbox.remember(command)) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Hay confirmaciones pendientes")
         commandInbox.previousResult(command.commandId)?.let { return@withLock it }
-        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
-            paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight()) {
+        // D665: UNLOCK sólo baja el candado (no navega, no cobra, no borra) y corre en cualquier pantalla. El velo del bloqueo
+        // ya detiene el dedo: una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒ Login, un cobro del POS) no
+        // puede volver tocando, y si UNLOCK esperara a Inicio el candado no se podría quitar nunca desde Avoqado.
+        val enCualquierPantalla = command.type == TpvCommandType.UNLOCK
+        if (!enCualquierPantalla && (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
+            paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())) {
             return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Pendiente hasta volver a Inicio sin pagos ni devoluciones")
         }
@@ -189,7 +193,7 @@ class CommandExecutor @Inject constructor(
                 com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Hay pagos o devoluciones pendientes de resolver")
         }
-        if (!CommandExecutionWindow.tryBeginCommand()) return@withLock CommandResult(
+        if (!CommandExecutionWindow.tryBeginCommand(requireSafe = !enCualquierPantalla)) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
         try {
         run {
@@ -207,7 +211,7 @@ class CommandExecutor @Inject constructor(
             }
         }
         // Recheck after the network suspension, before starting any device effect.
-        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())
+        if (!enCualquierPantalla && (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight()))
             return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
         commandInbox.begin(command.commandId)
         val result = try {

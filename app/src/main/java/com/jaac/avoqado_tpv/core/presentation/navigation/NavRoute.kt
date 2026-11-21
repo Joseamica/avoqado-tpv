@@ -402,7 +402,11 @@ sealed class NavRoute(val route: String) {
             )
         }
 
-        /** D661 (Ruling 68, enmendado): el cobro con tarjeta. Ahí la banda se esconde sólo MIENTRAS hay una venta en curso. */
-        val RUTAS_DEL_COBRO_CON_TARJETA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route) }
+        /**
+         * D661 (Ruling 68, enmendado): el cobro con tarjeta. Ahí la banda se esconde sólo MIENTRAS hay una venta en curso. Ruling 106: también
+         * la confirmación de una devolución, donde la Nexgo le pide a AngelPay devolver (en la PAX se devuelve en `Payment`): mientras
+         * la devolución está en curso, ni banda ni «Ver» (sacar la pantalla cancelaba la devolución a media llamada); terminada, como el recibo.
+         */
+        val RUTAS_DEL_COBRO_CON_TARJETA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route, RefundConfirmation.route) }
     }
 }

@@ -13,6 +13,10 @@ import androidx.navigation.NavController
  * [ventaEnCurso] se lee al tocar: la banda tarda hasta 250 ms en esconderse cuando arranca una venta, y un toque en ese rato no le quita
  * la pantalla al cobro (las otras salidas sólo existen con el cobro resuelto). Desde cualquier otra pantalla, como antes: «Pedidos por
  * pagar» encima y «atrás» regresa a donde estaba.
+ *
+ * Ruling 106: lo mismo en la confirmación de una devolución (también está en `RUTAS_DEL_COBRO_CON_TARJETA`). En la Nexgo, AngelPay
+ * devuelve ahí, en el scope de esa pantalla: con AngelPay contestando, [ventaEnCurso] (`isCharging()` incluye la devolución en curso)
+ * deja el toque sin efecto, y la devolución se registra. Antes de la llamada no salió dinero; después, el registro es `NonCancellable`.
  */
 internal fun NavController.verPedidosPorPagar(ventaEnCurso: Boolean) {
     val desdeElCobro = currentDestination?.route in NavRoute.RUTAS_DEL_COBRO_CON_TARJETA

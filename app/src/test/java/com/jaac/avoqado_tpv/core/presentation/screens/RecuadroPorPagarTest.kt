@@ -220,6 +220,13 @@ class RecuadroPorPagarTest {
         }
     }
 
+    @Test fun `Ruling 106 en la confirmacion de una devolucion el aviso se esconde mientras la devolucion esta en curso`() {
+        // En la Nexgo, AngelPay devuelve ahí: con la devolución hablando con el procesador, ni banda ni cabecera, como en un cobro.
+        assertFalse(avisoALaVista(NavRoute.RefundConfirmation.route, ventaEnCurso = true, bloqueada = false, mantenimiento = false))
+        // Terminada (o antes de confirmarla), como el recibo de un cobro: a la vista.
+        assertTrue(avisoALaVista(NavRoute.RefundConfirmation.route, ventaEnCurso = false, bloqueada = false, mantenimiento = false))
+    }
+
     @Test fun `Ruling 68 sin poder usar la terminal no hay aviso a la vista - bloqueo, mantenimiento, kiosco y antes de la sesion`() {
         assertFalse(avisoALaVista(NavRoute.Home.route, ventaEnCurso = false, bloqueada = true, mantenimiento = false))
         assertFalse(avisoALaVista(NavRoute.Home.route, ventaEnCurso = false, bloqueada = false, mantenimiento = true))

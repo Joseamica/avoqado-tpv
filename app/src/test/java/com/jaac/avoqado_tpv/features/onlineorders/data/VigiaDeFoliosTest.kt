@@ -1158,6 +1158,42 @@ class VigiaDeFoliosTest {
         }
     }
 
+    /**
+     * Ruling 108 (Codex r2). Mientras vive el reclamo de ESTA terminal, el SERVIDOR omite el pedido de `comandasPorImprimir` aunque su
+     * papel no haya salido (sin papel). El aviso no se va por eso: sigue hasta que el papel se confirme, el pedido se cierre o la cajera
+     * toque «Entendido». Vencido el reclamo (90 s), si el pedido no regresó a la lista es que salió en otra o se cerró.
+     */
+    @Test
+    fun `Ruling 108 sin papel el aviso sigue mientras vive el reclamo de esta terminal`() = runTest {
+        conImpresora()
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(Exception("La impresora no tiene papel"))
+        coEvery { folios.reclamarImpresion("v1", any()) } returns Result.success(ReclamoDeComanda(true))
+        var comandas = emptyList<ComandaPorImprimir>()
+        respuesta = { Result.success(pagina(porPagar = emptyList(), porEntregar = listOf(cobrado("x")), comandas = comandas)) }
+        conVigia { vigia ->
+            vigia.abiertoAqui("x", "Wx")
+            comandas = listOf(ComandaPorImprimir("x", "Wx"))
+            vigia.sondearYa()
+            coVerify(exactly = 1) { folios.reclamarImpresion("v1", "x") }
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"))
+
+            // El reclamo de esta terminal sigue vivo: el SERVIDOR ya no lista el pedido, pero su papel no salió.
+            comandas = emptyList()
+            hora += 30_000
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"))
+            hora += 59_000 // 89 s
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"))
+
+            // Vencido el reclamo, el pedido no regresó: salió en otra terminal o se cerró. El aviso se va.
+            hora += 2_000 // 91 s
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
+        }
+    }
+
     @Test
     fun `Ruling 68 el vigia pregunta si puede anunciarse con la pantalla que la cajera tiene enfrente`() = runTest {
         conVigia { vigia ->

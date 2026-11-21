@@ -214,20 +214,37 @@ class VigiaDeFolios internal constructor(
     }
     /** Ruling 69: de ésos, los que no salieron aquí (orderId → folio). */
     private val comandasQueNoSalieron = LinkedHashMap<String, String>()
+    /** Ruling 108: de ésos, cuándo (reloj) falló aquí el papel con el reclamo de ESTA terminal (sin impresora no hay reclamo). */
+    private val reclamoPropioDesde = HashMap<String, Long>()
 
-    /** Ruling 69: la comanda de [c] no salió aquí; si ESTA terminal abrió el pedido, se avisa ya (sin esperar la lectura siguiente). */
-    private fun noSalioAqui(c: ComandaPorImprimir) {
+    /**
+     * Ruling 69: la comanda de [c] no salió aquí; si ESTA terminal abrió el pedido, se avisa ya (sin esperar la lectura siguiente).
+     * [conReclamo] (Ruling 108): falló con el reclamo de esta terminal vivo, que el SERVIDOR deja fuera de la lista hasta que venza.
+     */
+    private fun noSalioAqui(c: ComandaPorImprimir, conReclamo: Boolean = false) {
         val avisar = synchronized(candadoDeAvisos) {
-            (c.orderId in abiertosAqui).also { if (it) comandasQueNoSalieron[c.orderId] = c.folio }
+            (c.orderId in abiertosAqui).also {
+                if (it) {
+                    comandasQueNoSalieron[c.orderId] = c.folio
+                    if (conReclamo) reclamoPropioDesde[c.orderId] = reloj() else reclamoPropioDesde.remove(c.orderId)
+                }
+            }
         }
         if (avisar) _estado.update { e -> if (e.comandasSinSalir.any { it.orderId == c.orderId }) e else e.copy(comandasSinSalir = e.comandasSinSalir + c) }
     }
 
-    /** Ruling 69: con cada lectura buena, lo que el SERVIDOR ya no pide (salió en otra terminal, o aquí) deja de avisarse. */
-    private fun comandasSinSalir(lista: List<ComandaPorImprimir>): List<ComandaPorImprimir> = synchronized(candadoDeAvisos) {
+    /**
+     * Ruling 69: con cada lectura buena, lo que el SERVIDOR ya no pide (salió en otra terminal, o aquí) deja de avisarse. Ruling 108:
+     * menos mientras viva el reclamo de ESTA terminal ([RECLAMO_DEL_SERVIDOR_MS] desde que su papel falló): el SERVIDOR la omite aunque su
+     * papel no haya salido (sin papel). Vencido el reclamo, si no regresó a la lista es que salió en otra o el pedido se cerró.
+     */
+    private fun comandasSinSalir(lista: List<ComandaPorImprimir>, ahora: Long): List<ComandaPorImprimir> = synchronized(candadoDeAvisos) {
         val vivas = lista.mapTo(HashSet()) { it.orderId }
-        comandasQueNoSalieron.keys.retainAll(vivas)
-        lista.filter { it.orderId in comandasQueNoSalieron }
+        comandasQueNoSalieron.keys.retainAll { id ->
+            id in vivas || reclamoPropioDesde[id]?.let { ahora - it < RECLAMO_DEL_SERVIDOR_MS } == true
+        }
+        reclamoPropioDesde.keys.retainAll(comandasQueNoSalieron.keys)
+        comandasQueNoSalieron.map { (id, folio) -> lista.firstOrNull { it.orderId == id } ?: ComandaPorImprimir(id, folio) }
     }
 
     /**
@@ -465,7 +482,7 @@ class VigiaDeFolios internal constructor(
                 val resultado = comanda.intentar(venueId, pedido.aComanda(), ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
                 if (resultado == ResultadoDeComanda.NO_SALIO) {
                     descansar(c.orderId)
-                    noSalioAqui(c)
+                    noSalioAqui(c, conReclamo = true)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -558,7 +575,7 @@ class VigiaDeFolios internal constructor(
         tarjetasPorAbrir = tarjetasPorAbrir,
         sinTurno = sinTurno,
         sinEntrada = sinEntrada,
-        comandasSinSalir = comandasSinSalir(comandasPorImprimir),
+        comandasSinSalir = comandasSinSalir(comandasPorImprimir, ahora),
     )
 
     private fun PaginaDeFolios.de(seccion: SeccionDeFolios) = if (seccion == SeccionDeFolios.POR_PAGAR) porPagar else porEntregar
@@ -574,6 +591,8 @@ class VigiaDeFolios internal constructor(
         const val DESCANSO_DE_COMANDA_MS = 3 * 60_000L
         /** D661: mientras haya pagados en línea por abrir, el sondeo nunca espera más que esto, diga lo que diga `pollSeconds`. */
         const val SONDEO_CON_TARJETAS_S = 30
+        /** D661 · Ruling 108: lo que dura un reclamo de comanda en el SERVIDOR (`PRINT_CLAIM_TTL_MS`); mientras, la omite de la lista. */
+        const val RECLAMO_DEL_SERVIDOR_MS = 90_000L
     }
 }
 

@@ -18,7 +18,7 @@ object CommandExecutionWindow {
         if (route != value) { route = value; revision.value++ }
     }
     @Synchronized fun isSafe() = foreground && activeActions == 0 && route in setOf("home", "activation")
-    /** [requireSafe] = false sólo para UNLOCK (D665, ver CommandExecutor.execute): nunca dos comandos a la vez. */
+    /** [requireSafe] = false sólo para el candado (D665, ver CommandExecutor.execute): nunca dos comandos a la vez. */
     @Synchronized fun tryBeginCommand(requireSafe: Boolean = true): Boolean {
         if ((requireSafe && !isSafe()) || running.value) return false
         running.value = true

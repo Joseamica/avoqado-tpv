@@ -83,7 +83,11 @@ class CommandExecutor @Inject constructor(
     private val recoveryMutex = Mutex()
 
     suspend fun recoverPending() {
-        if (!CommandExecutionWindow.isSafe() || !recoveryMutex.tryLock()) return
+        // D665: con el candado puesto el velo ya no deja volver a Inicio tocando, así que la recuperación también corre fuera
+        // de Inicio. Ahí `execute` sólo aplica UNLOCK (y LOCK sobre el candado ya puesto); lo demás queda DEFERRED, guardado y
+        // sin acuse final, hasta volver a Inicio. Los recibos ya guardados (un LOCK cuyo acuse se perdió) se reenvían igual.
+        if (!CommandExecutionWindow.isSafe() && !lockScreenManager.isCurrentlyLocked()) return
+        if (!recoveryMutex.tryLock()) return
         try {
             val repository = heartbeatRepositoryProvider.get()
             val serial = secureStorage.getSerialNumber() ?: return
@@ -113,6 +117,13 @@ class CommandExecutor @Inject constructor(
 
         } finally { recoveryMutex.unlock() }
     }
+
+    /**
+     * D665: con el candado puesto nadie cambia de pantalla (el velo detiene el dedo) y fuera de Inicio no hay socket, así que
+     * los eventos que despiertan [recoverPending] no llegan. El latido la despierta mientras dure el candado; sin candado no
+     * hace nada (no agrega consultas al servidor).
+     */
+    suspend fun recoverPendingWhileLocked() { if (lockScreenManager.isCurrentlyLocked()) recoverPending() }
 
     /** El `versionCode` de INSTALL_VERSION o REQUEST_UPDATE, con el mismo parseo flexible que [executeInstallVersion]. */
     private fun versionCodeDelComando(command: TpvCommand): Int? = when (val raw = command.payload?.get("versionCode")) {
@@ -148,7 +159,11 @@ class CommandExecutor @Inject constructor(
         // D665: UNLOCK sólo baja el candado (no navega, no cobra, no borra) y corre en cualquier pantalla. El velo del bloqueo
         // ya detiene el dedo: una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒ Login, un cobro del POS) no
         // puede volver tocando, y si UNLOCK esperara a Inicio el candado no se podría quitar nunca desde Avoqado.
-        val enCualquierPantalla = command.type == TpvCommandType.UNLOCK
+        // LOCK sobre un candado ya puesto tampoco cambia nada en pantalla y es la salida de «Activación incompleta»: ese
+        // candado sólo existe en la terminal (el SERVIDOR cree que no está bloqueada y rechaza UNLOCK), así que el panel
+        // primero manda LOCK y después UNLOCK.
+        val enCualquierPantalla = command.type == TpvCommandType.UNLOCK ||
+            (command.type == TpvCommandType.LOCK && lockScreenManager.isCurrentlyLocked())
         if (!enCualquierPantalla && (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
             paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())) {
             return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,

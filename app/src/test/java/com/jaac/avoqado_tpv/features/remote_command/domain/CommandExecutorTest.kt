@@ -372,13 +372,108 @@ class CommandExecutorTest {
         verify { mockLockScreenManager.unlock() }
     }
 
-    /**
-     * D665: el velo del bloqueo ya detiene el dedo, así que una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒
-     * Login, un cobro que mandó el POS, una pantalla de actualización) ya no tiene cómo volver a Inicio tocando. Si UNLOCK
-     * esperara a Inicio como los demás comandos, Avoqado no podría quitar el candado nunca.
-     */
+    // ========================================
+    // D665: EL CANDADO PUESTO FUERA DE INICIO
+    // ========================================
+    // El velo del bloqueo ya detiene el dedo: una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒ Login, un
+    // cobro que mandó el POS, una pantalla de actualización) ya no puede volver a Inicio tocando. Estas pruebas entran por
+    // `recoverPending()`, que es por donde llegan los comandos en producción (latido, socket, eventos de pantalla).
+
+    /** El candado de verdad: `unlock()` lo quita y `lock()` lo pone (el mock relajado no recuerda nada). */
+    private fun candadoPuesto() {
+        var puesto = true
+        every { mockLockScreenManager.isCurrentlyLocked() } answers { puesto }
+        every { mockLockScreenManager.unlock() } answers { puesto = false }
+        every { mockLockScreenManager.lock(any(), any(), any()) } answers { puesto = true }
+    }
+
+    private fun listos(vararg comandos: Pair<String, String>) =
+        coEvery { mockHeartbeatRepository.commandsReady(any()) } returns com.jaac.avoqado_tpv.core.domain.models.Result.Success(
+            comandos.map { (id, tipo) -> com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto(
+                commandId = id, correlationId = "corr-$id", type = tipo, payload = null, priority = "NORMAL",
+                requiresPin = false, expiresAt = null, requestedBy = "sa", requestedByName = null,
+                createdAt = Instant.now().toString(),
+            ) })
+
+    /** Como el repositorio real: un DEFERRED no sale a la red ni se confirma; lo demás sí. */
+    private fun acusesComoElRepositorio() =
+        coEvery { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) } answers {
+            if (thirdArg<CommandResult>().status == TpvCommandResultStatus.DEFERRED)
+                com.jaac.avoqado_tpv.core.domain.models.Result.Error(
+                    com.jaac.avoqado_tpv.core.domain.models.ApiException.HttpError(425, "Comando pendiente"))
+            else {
+                CommandInbox(mockSecureStorage).acknowledge(firstArg())
+                com.jaac.avoqado_tpv.core.domain.models.Result.Success(Unit)
+            }
+        }
+
+    private fun acusoFinal(id: String) =
+        coVerify { mockHeartbeatRepository.sendCommandAck(id, any(), match { it.status != TpvCommandResultStatus.DEFERRED }) }
+
+    private fun sinAcuseFinal(id: String) =
+        coVerify(exactly = 0) { mockHeartbeatRepository.sendCommandAck(id, any(), match { it.status != TpvCommandResultStatus.DEFERRED }) }
+
     @Test
-    fun `P1 D665 UNLOCK se aplica en cualquier pantalla porque el velo ya no deja volver a Inicio`() = runTest {
+    fun `P1 D665 bloqueada en el Login la recuperacion aplica el UNLOCK y manda su acuse`() = runTest {
+        candadoPuesto(); listos("unlock-1" to "UNLOCK"); acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        commandExecutor.recoverPending()
+        verify(exactly = 1) { mockLockScreenManager.unlock() }
+        acusoFinal("unlock-1")
+    }
+
+    @Test
+    fun `P1 D665 bloqueada en el Login sólo el UNLOCK corre - los demás esperan a Inicio sin acuse final`() = runTest {
+        candadoPuesto(); listos("unlock-1" to "UNLOCK", "mant-1" to "MAINTENANCE_MODE", "lock-1" to "LOCK"); acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        commandExecutor.recoverPending()
+        verify(exactly = 1) { mockLockScreenManager.unlock() }
+        acusoFinal("unlock-1")
+        verify(exactly = 0) { mockLockScreenManager.lock(any(), any(), any()) }
+        verify(exactly = 0) { mockMaintenanceManager.enterMaintenance(any(), any()) }
+        sinAcuseFinal("lock-1"); sinAcuseFinal("mant-1")
+        // Siguen guardados: al volver a Inicio se ejecutan como siempre.
+        assertThat(CommandInbox(mockSecureStorage).pending().map { it.commandId }).containsExactly("mant-1", "lock-1")
+        listos(); CommandExecutionWindow.setRoute("home")
+        commandExecutor.recoverPending()
+        verify(exactly = 1) { mockLockScreenManager.lock(any(), any(), any()) }
+        acusoFinal("lock-1"); acusoFinal("mant-1")
+    }
+
+    @Test
+    fun `P1 D665 bloqueada en el Login se reenvía el recibo guardado de un LOCK cuyo acuse se perdió`() = runTest {
+        candadoPuesto(); listos()
+        val lock = createCommand(TpvCommandType.LOCK).copy(commandId = "lock-perdido")
+        val bandeja = CommandInbox(mockSecureStorage)
+        bandeja.remember(lock); bandeja.begin(lock.commandId); bandeja.complete(lock.commandId, CommandResult.success("Terminal locked successfully"))
+        acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        commandExecutor.recoverPending()
+        acusoFinal("lock-perdido")
+        verify(exactly = 0) { mockLockScreenManager.lock(any(), any(), any()) }
+    }
+
+    /** «Activación incompleta» pone el candado sólo en la terminal (el SERVIDOR cree que no está bloqueada y rechaza UNLOCK):
+     *  la salida es LOCK + UNLOCK desde el panel, y ese LOCK tiene que poder aplicarse aunque la terminal no esté en Inicio. */
+    @Test
+    fun `P1 D665 un LOCK sobre un candado ya puesto se aplica en el Login - salida de Activación incompleta`() = runTest {
+        candadoPuesto(); listos("lock-2" to "LOCK"); acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        commandExecutor.recoverPending()
+        verify(exactly = 1) { mockLockScreenManager.lock(any(), any(), any()) }
+        acusoFinal("lock-2")
+    }
+
+    @Test
+    fun `P1 D665 sin candado fuera de Inicio la recuperación ni siquiera pregunta al servidor - como hoy`() = runTest {
+        listos("lock-3" to "LOCK")
+        CommandExecutionWindow.setRoute("payment")
+        commandExecutor.recoverPending()
+        coVerify(exactly = 0) { mockHeartbeatRepository.commandsReady(any()) }
+    }
+
+    @Test
+    fun `unidad D665 execute deja pasar UNLOCK fuera de Inicio`() = runTest {
         every { mockLockScreenManager.isCurrentlyLocked() } returns true
         listOf("login", "payment", "self_update").forEachIndexed { i, ruta ->
             CommandExecutionWindow.setRoute(ruta)
@@ -389,7 +484,7 @@ class CommandExecutorTest {
     }
 
     @Test
-    fun `P1 D665 LOCK sigue esperando a Inicio aunque UNLOCK ya no espere`() = runTest {
+    fun `P1 D665 sin candado LOCK sigue esperando a Inicio`() = runTest {
         CommandExecutionWindow.setRoute("login")
         assertThat(commandExecutor.execute(createCommand(TpvCommandType.LOCK)).status).isEqualTo(TpvCommandResultStatus.DEFERRED)
         verify(exactly = 0) { mockLockScreenManager.lock(any(), any(), any()) }

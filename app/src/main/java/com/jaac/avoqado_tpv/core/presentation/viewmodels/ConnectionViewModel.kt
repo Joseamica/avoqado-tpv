@@ -174,7 +174,8 @@ class ConnectionViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.events.collect {
-                if (com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.isSafe()) commandExecutor.recoverPending()
+                // D665: `recoverPending` decide sola cuándo corre (en Inicio, o en cualquier pantalla con el candado puesto).
+                commandExecutor.recoverPending()
             }
         }
         // Send immediate heartbeat when app starts/restarts
@@ -483,6 +484,8 @@ class ConnectionViewModel @Inject constructor(
                         Timber.i("📥 [Connection] Received ${pendingCommands.size} pending command(s)")
                         processPendingCommands(pendingCommands)
                     }
+                    // D665: con el candado puesto nada más despierta la recuperación (ni toques ni, fuera de Inicio, socket).
+                    viewModelScope.launch { commandExecutor.recoverPendingWhileLocked() }
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Heartbeat: backend unreachable: ${result.exception?.message}")

@@ -138,12 +138,19 @@ class VeloQueDetieneElDedoTest {
     }
 
     @Test
-    fun `P1 bloqueada encima de mantenimiento ni la app ni Salir de mantenimiento reciben el toque`() {
+    fun `P1 bloqueada encima de mantenimiento Salir de mantenimiento no recibe el toque`() {
         val vista = montar(bloqueo = true, mantenimiento = true)
         val boton = centroDe(vista, "Salir de mantenimiento")
         tocar(vista, boton.x, boton.y)
-        tocarAlrededorDelAviso(vista)
         assertEquals("El bloqueo debe tapar también el botón de mantenimiento", 0, salidas)
         assertEquals(0, toquesDebajo)
+    }
+
+    @Test
+    fun `P1 bloqueada encima de mantenimiento ningun toque fuera del aviso llega a la app de abajo`() {
+        val vista = montar(bloqueo = true, mantenimiento = true)
+        tocarAlrededorDelAviso(vista)
+        assertEquals("Bloqueo + mantenimiento: un toque alrededor del aviso llegó a la app (D665)", 0, toquesDebajo)
+        assertEquals(0, salidas)
     }
 }

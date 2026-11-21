@@ -357,7 +357,17 @@ class ConnectionViewModelTest {
 
         val viewModel = createViewModel()
 
+        // D665: los eventos de pantalla ya llaman `recoverPending` siempre; lo propio del latido es recordar SUS comandos.
+        verify { commandExecutor.rememberCommands(match { it.any { c -> c.commandId == "cmd-123" } }) }
         coVerify { commandExecutor.recoverPending() }
+        viewModel.viewModelScope.cancel()
+    }
+
+    /** D665: con el candado puesto no hay toques ni, fuera de Inicio, socket que despierten la recuperación: el latido sí. */
+    @Test
+    fun `P1 D665 cada latido bueno despierta la recuperacion del candado`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        coVerify { commandExecutor.recoverPendingWhileLocked() }
         viewModel.viewModelScope.cancel()
     }
 

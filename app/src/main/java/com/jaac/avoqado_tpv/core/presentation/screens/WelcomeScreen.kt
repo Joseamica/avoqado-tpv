@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Receipt
-import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Inventory2
@@ -98,7 +97,6 @@ import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.domain.inicioEsperaAlLector
-import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowOrderManagementTile
 import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowTablesTile
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
@@ -146,7 +144,6 @@ fun WelcomeScreen(
     modifier: Modifier = Modifier,
     onStartPaymentWithAmount: (String) -> Unit = {},  // ✅ Keep modal for first-time flow
     onNavigateToShifts: () -> Unit = {},
-    onNavigateToOrdering: () -> Unit = {},
     onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6) — restaurant mode entry point
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar) — additive rollout
     estadoDeFolios: EstadoDeFolios = EstadoDeFolios(),  // «Pedidos por pagar» (lo decide el vigía)
@@ -315,7 +312,6 @@ fun WelcomeScreen(
         },
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
-        onNavigateToOrdering = onNavigateToOrdering,
         onNavigateToTables = onNavigateToTables,  // 🪑 Pass Mesas navigation
         onNavigateToCheckout = onNavigateToCheckout,  // 🆕 Pass Checkout navigation
         estadoDeFolios = estadoDeFolios,
@@ -544,7 +540,6 @@ internal fun WelcomeScreenContent(
     onRefresh: () -> Unit = {},
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
-    onNavigateToOrdering: () -> Unit,
     onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6)
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar)
     estadoDeFolios: EstadoDeFolios = EstadoDeFolios(),
@@ -838,8 +833,8 @@ internal fun WelcomeScreenContent(
     } else {
         // ════════════════════════════════════════════════════════════════════
         // 📦 NORMAL MODE (Restaurant/Retail)
-        // Full feature set: Pago rápido, Órdenes, Reportes, Turnos, Pagos, Soporte
-        // Visibility of "Pago rápido" and "Órdenes" controlled by tpvSettings
+        // Full feature set: Pago rápido, Mesas, Cobrar, Reportes, Turnos, Pagos, Soporte
+        // Visibility of "Pago rápido" controlled by tpvSettings («Órdenes» se quitó: D34)
         // ════════════════════════════════════════════════════════════════════
         val allButtons = mutableListOf<ActionButton>()
 
@@ -863,10 +858,9 @@ internal fun WelcomeScreenContent(
         }
 
         // 🪑 "Mesas" — restaurant mode tile (Mesas module, `features/tables/`).
-        // Takes the exact slot where "Órdenes" sits — the two never coexist
-        // (spec D-4, enforced by shouldShowTablesTile/shouldShowOrderManagementTile
-        // below, not a raw tpvSettings read). Task 6 built `TablesScreen`, so
-        // the tile now actually navigates — gated the SAME way as "Órdenes"
+        // Takes the slot where the legacy "Órdenes" sat (removed 20-nov, D34),
+        // gated by shouldShowTablesTile, not a raw tpvSettings read. Task 6 built `TablesScreen`, so
+        // the tile now actually navigates — gated the SAME way as Pago rápido/Cobrar
         // (shift open + clocked in) since it's the same class of operational
         // work. Plan lock (D-1: PRO+ with visible teaser) keeps the tile
         // disabled+badged rather than navigating to an upsell screen — no
@@ -892,29 +886,10 @@ internal fun WelcomeScreenContent(
             )
         }
 
-        // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement, hidden
-        // once restaurant mode is ON (spec D-4 — never shown alongside Mesas)
-        // and wherever "Cobrar" is on: it replaces this legacy tile (founder, 25-sep).
-        if (shouldShowOrderManagementTile(tpvSettings)) {
-            val ordersEnabled = canOperate && canWork
-            val ordersBadge = when {
-                !canWork -> "Registra tu entrada"
-                !canOperate -> motivoSinTurno
-                else -> null
-            }
-            allButtons.add(
-                ActionButton(
-                    icon = Icons.Default.Restaurant,
-                    label = "Órdenes",
-                    enabled = ordersEnabled,
-                    badge = ordersBadge,
-                    onClick = onNavigateToOrdering
-                )
-            )
-        }
+        // «Órdenes» se quitó de la terminal (D34, founder 20-nov): «para ordering se usa Mesas y Cobrar».
 
         // 🆕 "Cobrar" — unified Checkout (Phase 2 of refactor/home/tpv).
-        // Runs in parallel with "Pago rápido" + "Órdenes" during validation.
+        // Runs in parallel with "Pago rápido".
         // Once validated in production, those two get removed in a separate ola.
         if (tpvSettings.showCheckout) {
             val checkoutEnabled = canOperate && canWork
@@ -1318,7 +1293,6 @@ private fun WelcomeScreenPreview() {
             onRefresh = {},
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
-            onNavigateToOrdering = {},
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},
@@ -1341,7 +1315,6 @@ private fun WelcomeScreenPreviewLarge() {
             onRefresh = {},
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
-            onNavigateToOrdering = {},
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},
@@ -1383,7 +1356,6 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             ),
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
-            onNavigateToOrdering = {},
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},

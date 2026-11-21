@@ -911,15 +911,22 @@ class LibretaTest {
         val l = libreta()
         assertEquals(SaludDeLaLibreta(0, null, 0, 0), l.salud())
         val viejo = pared
+        // C4 (Codex b1 r1): el aviso más viejo NO se inserta primero (las filas se recorren por rowid).
+        val nuevo = viejo.plusSeconds(60)
+        val b = reclamada(l)
+        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
         val a = reclamada(l)
         assertTrue(l.cerrarVuelta(a.id(), ClaseDelReverso.Confirmado(viejo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
-        pared = viejo.plusSeconds(60)
-        val b = reclamada(l)
-        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
         val c = reclamada(l)
-        assertTrue(l.cerrarVuelta(c.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertTrue(l.cerrarVuelta(c.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
         val sql = l.db.openHelper.writableDatabase
         sql.execSQL("UPDATE intentos SET horaObservadaIso = NULL WHERE attemptId = ?", arrayOf(c.attemptId))
+        // C4: una hora que no se puede leer cuenta como «sin hora», sin tronar.
+        val d = reclamada(l)
+        assertTrue(l.cerrarVuelta(d.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        sql.execSQL("UPDATE intentos SET horaObservadaIso = 'no es una hora' WHERE attemptId = ?", arrayOf(d.attemptId))
+        // C4: una fila legible abierta (ENVIADO) SIN aviso pendiente no es un aviso.
+        enviada(l)
         // Las tres ilegibles: enum desconocido, id de 36, y un reverso abierto (RECLAMADO) de una fila NO_SE con valor desconocido.
         val enumRaro = enviada(l)
         sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.attemptId))
@@ -929,9 +936,36 @@ class LibretaTest {
         assertNotNull(l.transicionar(reversoRaro.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
         sql.execSQL("UPDATE intentos SET reverso = 'DESCONOCIDO' WHERE attemptId = ?", arrayOf(reversoRaro.attemptId))
         assertEquals(
-            SaludDeLaLibreta(reportesPendientes = 3, reportePendienteMasViejo = viejo, reportesSinHora = 1, filasIlegibles = 3),
+            SaludDeLaLibreta(reportesPendientes = 4, reportePendienteMasViejo = viejo, reportesSinHora = 2, filasIlegibles = 3),
             l.salud(),
         )
+    }
+
+    /**
+     * m1 (revisión final): el listado de avisos es sólo de ids y cada fila se lee después, aparte. Un aviso que alguien cierra
+     * entre el listado y su lectura (aquí, justo antes de leer su fila) ya no se entrega.
+     */
+    @Test fun `un aviso que se cierra entre el listado y su lectura no se entrega`() {
+        var cerrarAntesDeLeer: String? = null
+        lateinit var base: LibretaDatabase
+        base = LibretaDatabase.constructor(context, archivo).allowMainThreadQueries()
+            .setQueryCallback({ sql, _ ->
+                val id = cerrarAntesDeLeer
+                if (id != null && "WHERE rowid" in sql) {
+                    cerrarAntesDeLeer = null
+                    base.openHelper.writableDatabase.execSQL("UPDATE intentos SET reporte = 'ENTREGADO' WHERE attemptId = ?", arrayOf(id))
+                }
+            }, Runnable::run)
+            .build().also { abiertas += it }
+        val l = Libreta(base, { reloj }, { pared })
+        val a = reclamada(l)
+        assertTrue(l.cerrarVuelta(a.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val b = reclamada(l)
+        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertEquals(listOf(a.attemptId, b.attemptId), l.pendientesDeReporte().map { it.attemptId })
+        cerrarAntesDeLeer = a.attemptId
+        assertEquals(listOf(b.attemptId), l.pendientesDeReporte().map { it.attemptId })
+        assertEquals("el aviso sí se cerró", EstadoDelReporte.ENTREGADO, l.buscar(a.id())!!.reporte)
     }
 
     /** Codex r4 #3: Room pone el valor crudo en su mensaje; el lector lanza un error de mensaje fijo, sin la excepción original. */

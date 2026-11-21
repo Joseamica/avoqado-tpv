@@ -426,6 +426,9 @@ public class MotorDeCobro internal constructor(
     /**
      * Al arrancar: cierra lo que dejó un proceso muerto (sin inventar respuestas de Blumon) y entrega los reportes pendientes.
      * Un `reversed` que llega aquí se publica tarde. Regresa los ids que cambiaron o se entregaron.
+     *
+     * Puede lanzar (la libreta o la entrega al SERVIDOR fallan): la app la llama dentro de un `try` y la reintenta; lo que no
+     * se cerró sigue en la libreta para la siguiente vuelta.
      */
     public suspend fun recuperar(): List<AttemptId> {
         // También las filas de ESTE proceso sin `Registro` vivo (r1 R1-5 c). Sin `puerta` (r7 C4, R7-3): la foto de los vivos

@@ -388,14 +388,18 @@ public class Libreta internal constructor(
     /**
      * Los avisos `PENDIENTE` al SERVIDOR, en orden; cada fila se lee aparte, con [legible]. Una fila ilegible (Room no la lee,
      * no pasa la validación de hoy o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras
-     * lanzan; los barridos la saltan sin tocarla; `salud()` la cuenta (I3).
+     * lanzan; los barridos la saltan sin tocarla; `salud()` la cuenta (I3). m1: el listado es sólo de ids; cada fila se vuelve a
+     * revisar al leerla, y la que ya no está `PENDIENTE` no se entrega. Lee la base: llámala fuera del hilo principal.
      */
-    public fun pendientesDeReporte(): List<IntentoEntity> = dao.rowidsPendientesDeReporte().mapNotNull { legible(it) }
+    public fun pendientesDeReporte(): List<IntentoEntity> =
+        dao.rowidsPendientesDeReporte().mapNotNull { legible(it)?.takeIf { f -> f.reporte == EstadoDelReporte.PENDIENTE } }
 
     /**
      * La fila de ese folio, validada, o null si no existe. Una fila ilegible (Room no la lee, no pasa la validación de hoy o
      * trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan; los barridos la saltan
      * sin tocarla; `salud()` la cuenta (I3).
+     *
+     * Lee la base: llámala fuera del hilo principal.
      *
      * @throws FilaIlegible si la fila de ese folio existe pero no se puede leer o no pasa la validación: quien llama trata el
      *   intento como «por confirmar», nunca como un desenlace.
